@@ -65,6 +65,8 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
     private var insertedText = ""
     /// The app receiving keystrokes, when the target is typed into rather than written directly.
     private var typedAppName: String?
+    /// A streamed write may have landed without being confirmed; the result must not claim it failed.
+    private var streamUnverified = false
     private var removeFillers: Bool {
         get { UserDefaults.standard.object(forKey: "removeFillers") as? Bool ?? true }
         set { UserDefaults.standard.set(newValue, forKey: "removeFillers") }
@@ -258,12 +260,17 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
             insertionBlockReason = nil
             insertedText = ""
             latestCommitted = ""
+            streamUnverified = false
             typedAppName = nil
             if let app = NSWorkspace.shared.frontmostApplication { TextInsertion.enableAccessibility(for: app) }
             if let terminal = KeystrokeTarget.captureTerminal() {
                 target = .keystrokes(terminal)
                 typedAppName = terminal.appName
                 log.notice("Target: terminal \(terminal.appName, privacy: .public)")
+            } else if let web = KeystrokeTarget.captureWebEditor() {
+                target = .keystrokes(web)
+                typedAppName = web.appName
+                log.notice("Target: web editor in \(web.appName, privacy: .public)")
             } else {
                 do {
                     target = .field(try TextInsertion.captureTarget())
@@ -384,6 +391,7 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
         case .typed:
             insertedText = committed
         case .needsCopy(let reason), .unverified(let reason):
+            if case .unverified = outcome { streamUnverified = true }
             target = nil
             insertionBlockReason = reason
         }
@@ -415,7 +423,7 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
             let outcome: InsertionOutcome = if enabled, insertionBlockReason == nil, let destination {
                 write(text, to: destination)
             } else {
-                .needsCopy(insertionBlockReason ?? "No writable target.")
+                blockedOutcome(default: "No writable target.")
             }
             log.notice("Nothing streamed; whole result of \(text.utf16.count) units: \(String(describing: outcome), privacy: .public)")
             conclude(outcome, unwritten: text, partial: false)
@@ -433,10 +441,15 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
         let outcome: InsertionOutcome = if enabled, insertionBlockReason == nil, let destination {
             write(rest, to: destination)
         } else {
-            .needsCopy(insertionBlockReason ?? "Insertion stopped.")
+            blockedOutcome(default: "Insertion stopped.")
         }
         log.notice("Final chunk of \(rest.utf16.count) units: \(String(describing: outcome), privacy: .public)")
         conclude(outcome, unwritten: remainder, partial: true)
+    }
+
+    private func blockedOutcome(default reason: String) -> InsertionOutcome {
+        let reason = insertionBlockReason ?? reason
+        return streamUnverified ? .unverified(reason) : .needsCopy(reason)
     }
 
     /// Text that could not be written goes to the clipboard right away, so it is one ⌘V from the field.

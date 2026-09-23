@@ -203,8 +203,13 @@ enum InsertionPolicy {
         let role = (try? attribute(element, kAXRoleAttribute as CFString)) as? String
         let editableRoles = [kAXTextFieldRole, kAXTextAreaRole, kAXComboBoxRole].map { $0 as String }
         if let role, editableRoles.contains(role) { return element }
-        // Web rich-text editors report their editable root through this attribute.
-        return (try? attribute(element, "AXEditableAncestor" as CFString)) != nil ? element : nil
+        return isWebEditable(element) ? element : nil
+    }
+
+    /// Editable web content (inputs, text areas, rich-text editors) reports its editable root through
+    /// this attribute. Browsers accept Accessibility writes there but do not read them back reliably.
+    static func isWebEditable(_ element: AXUIElement) -> Bool {
+        (try? attribute(element, "AXEditableAncestor" as CFString)) != nil
     }
 
     static func focusedElement() throws -> AXUIElement {
@@ -334,6 +339,14 @@ enum InsertionPolicy {
 
     /// A target for a focused editable field that cannot take a direct Accessibility write, such as a
     /// web editor. Typing stops as soon as focus leaves that exact element.
+    /// A target for editable web content, which is typed into rather than written through Accessibility.
+    public static func captureWebEditor() -> KeystrokeTarget? {
+        guard let app = NSWorkspace.shared.frontmostApplication,
+              let element = TextInsertion.focusedEditableElement(),
+              TextInsertion.isWebEditable(element) else { return nil }
+        return KeystrokeTarget(pid: app.processIdentifier, appName: app.localizedName ?? "the browser", element: element)
+    }
+
     public static func captureEditableField() -> KeystrokeTarget? {
         guard let app = NSWorkspace.shared.frontmostApplication,
               let element = TextInsertion.focusedEditableElement() else { return nil }
