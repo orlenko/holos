@@ -19,6 +19,8 @@ public enum TextInsertionError: Error, LocalizedError, Sendable {
 
 public enum InsertionOutcome: Sendable, Equatable {
     case inserted
+    /// Keystrokes were posted to the target app; terminals cannot report what they received.
+    case typed
     case needsCopy(String)
     case unverified(String)
 }
@@ -67,6 +69,11 @@ enum InsertionPolicy {
 
     static func fingerprint(_ sample: String) -> String {
         SHA256.hash(data: Data(sample.utf8)).map { String(format: "%02x", $0) }.joined()
+    }
+
+    /// The part of `transcript` not yet written, or nil when it no longer extends what was written.
+    static func pending(_ transcript: String, after written: String) -> String? {
+        transcript.hasPrefix(written) ? String(transcript.dropFirst(written.count)) : nil
     }
 
     static func matches(_ target: InsertionSnapshot, _ live: InsertionSnapshot) -> Bool {
@@ -138,6 +145,22 @@ enum InsertionPolicy {
             return .unverified("Could not verify the inserted text; inspect the field before copying.")
         }
         return .inserted
+    }
+
+    /// The part of a growing transcript not yet written, or nil when it no longer extends `written`.
+    public static func unwritten(_ transcript: String, after written: String) -> String? {
+        InsertionPolicy.pending(transcript, after: written)
+    }
+
+    /// After a verified insert, the target for the next streamed chunk: the caret must sit right after
+    /// the inserted text and the field must not have changed otherwise. Nil stops streaming.
+    public static func advance(_ target: InsertionTarget, past text: String) -> InsertionTarget? {
+        let inserted = text.utf16.count
+        let expectedSelection = NSRange(location: target.selectedUTF16Range.location + inserted, length: 0)
+        let expectedLength = target.snapshot.totalUTF16Length - target.selectedUTF16Range.length + inserted
+        guard let live = try? readSnapshot(target.element), live.pid == target.pid,
+              live.selection == expectedSelection, live.totalUTF16Length == expectedLength else { return nil }
+        return InsertionTarget(element: target.element, snapshot: live)
     }
 
     private static func focusedElement() throws -> AXUIElement {
@@ -231,5 +254,61 @@ enum InsertionPolicy {
             throw TextInsertionError.unsupported("The focused field does not expose \(key).")
         }
         return raw
+    }
+}
+
+/// Terminals draw their input line rather than exposing a writable text field, so text reaches them
+/// only as keystrokes. Keystrokes go to the captured process and cannot be read back.
+@MainActor public final class KeystrokeTarget {
+    /// Marks Holos's own keystrokes so the hotkey monitor does not treat them as typing.
+    public static let syntheticEventMarker: Int64 = 0x484F_4C4F_53
+
+    static let terminalBundleIDs: Set<String> = [
+        "com.apple.Terminal", "com.googlecode.iterm2", "com.mitchellh.ghostty", "com.github.wez.wezterm",
+        "net.kovidgoyal.kitty", "org.alacritty", "dev.warp.Warp-Stable",
+    ]
+
+    public let pid: pid_t
+    public let appName: String
+
+    private init(pid: pid_t, appName: String) {
+        self.pid = pid
+        self.appName = appName
+    }
+
+    /// A target when the frontmost app is a known terminal; nil otherwise.
+    public static func captureTerminal() -> KeystrokeTarget? {
+        guard let app = NSWorkspace.shared.frontmostApplication,
+              let bundleID = app.bundleIdentifier, terminalBundleIDs.contains(bundleID) else { return nil }
+        return KeystrokeTarget(pid: app.processIdentifier, appName: app.localizedName ?? bundleID)
+    }
+
+    public func type(_ text: String) -> InsertionOutcome {
+        guard InsertionPolicy.permits(text) else {
+            return .needsCopy("Text contains a line break or control character; copy it explicitly.")
+        }
+        guard !IsSecureEventInputEnabled() else {
+            return .needsCopy("Secure keyboard entry is on; typing was skipped.")
+        }
+        guard NSWorkspace.shared.frontmostApplication?.processIdentifier == pid else {
+            return .needsCopy("\(appName) is no longer frontmost; copy the transcript explicitly.")
+        }
+        // A private source keeps the held shortcut modifier out of the typed characters.
+        let source = CGEventSource(stateID: .privateState)
+        for character in text {
+            let units = Array(String(character).utf16)
+            for keyDown in [true, false] {
+                guard let event = CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: keyDown) else {
+                    return .unverified("Could not create a keystroke; inspect \(appName) before copying.")
+                }
+                event.flags = []
+                units.withUnsafeBufferPointer {
+                    event.keyboardSetUnicodeString(stringLength: $0.count, unicodeString: $0.baseAddress)
+                }
+                event.setIntegerValueField(.eventSourceUserData, value: Self.syntheticEventMarker)
+                event.postToPid(pid)
+            }
+        }
+        return .typed
     }
 }

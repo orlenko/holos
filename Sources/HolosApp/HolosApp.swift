@@ -52,10 +52,21 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
     private var assetTask: Task<Void, Never>?
     private var expiryTask: Task<Void, Never>?
     private var observers: [NSObjectProtocol] = []
-    private var target: InsertionTarget?
+    private enum Destination {
+        case field(InsertionTarget)
+        case keystrokes(KeystrokeTarget)
+    }
+
+    private var target: Destination?
     private var insertionBlockReason: String?
+    /// Transcript prefix already written into the target during this utterance.
+    private var insertedText = ""
+    private var terminalName: String?
     private var resultText = ""
-    private var message = "Disabled — setup is available below"
+    private var message = "Disabled — open Setup… to get started"
+    private var setupWindow: SetupWindow?
+    private var setupRefreshTask: Task<Void, Never>?
+    private var assetState: String?
     private var shortcut: HotkeyChoice = .rightOption
     private let locale = "en-CA"
 
@@ -82,11 +93,11 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
                 self.insertionBlockReason = "The active application changed; use Copy Result."
             }
         })
-        if UserDefaults.standard.bool(forKey: "dictationEnabled") { enable() }
+        if UserDefaults.standard.bool(forKey: "dictationEnabled") { enable() } else { showSetup() }
     }
 
     func applicationWillTerminate(_ notification: Notification) {
-        enableTask?.cancel(); assetTask?.cancel(); expiryTask?.cancel()
+        enableTask?.cancel(); assetTask?.cancel(); expiryTask?.cancel(); setupRefreshTask?.cancel()
         monitor?.stop(); controller?.cancel()
         for observer in observers { NSWorkspace.shared.notificationCenter.removeObserver(observer) }
         overlay.hide()
@@ -133,17 +144,12 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
         discard.isEnabled = !resultText.isEmpty && !isBusy
         menu.addItem(discard)
         menu.addItem(.separator())
-        menu.addItem(item("Grant Microphone Access…", #selector(requestMicrophone)))
-        menu.addItem(item("Grant Accessibility Access…", #selector(requestAccessibility)))
-        menu.addItem(item("Grant Input Monitoring Access…", #selector(requestInputMonitoring)))
-        let assets = item(installingAssets ? "Installing English Speech Assets…" : "Install English Speech Assets…", #selector(installAssets))
-        assets.isEnabled = !installingAssets && !isBusy && !enabled && !enabling
-        menu.addItem(assets)
-        menu.addItem(item("Show Setup Status", #selector(showSetupStatus)))
+        menu.addItem(item("Setup…", #selector(showSetup)))
         menu.addItem(.separator())
         menu.addItem(item("Quit Holos", #selector(quit)))
         statusItem.menu = menu
         statusItem.button?.toolTip = "Holos — \(message)"
+        updateSetupWindow()
     }
 
     private func item(_ title: String, _ action: Selector) -> NSMenuItem {
@@ -157,7 +163,8 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
     private func enable() {
         guard !enabled, !enabling, !installingAssets else { return }
         guard AudioCapture.microphonePermission == "authorized", AXIsProcessTrusted() else {
-            show("Grant Microphone and Accessibility access from the Holos menu, then enable dictation.")
+            show("Grant Microphone and Accessibility access in Holos Setup, then enable dictation.")
+            showSetup()
             return
         }
         enabling = true
@@ -169,9 +176,11 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
             do {
                 let state = try await AppleSpeechEngine.assetStatus(locale: self.locale, backend: .speech)
                 guard !Task.isCancelled, generation == self.enableGeneration else { return }
+                self.assetState = state
                 guard state == "installed" else {
                     self.enabling = false
-                    self.show("Install English Speech Assets from the Holos menu first.")
+                    self.show("Install English Speech Assets in Holos Setup first.")
+                    self.showSetup()
                     return
                 }
                 let monitor = GlobalHotkeyMonitor(shortcut: self.shortcut) { [weak self] action in self?.handle(action) }
@@ -218,14 +227,21 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
         case .began:
             guard !isBusy, !TextInsertion.isSecureInputActive() else { return }
             insertionBlockReason = nil
-            do { target = try TextInsertion.captureTarget() }
-            catch TextInsertionError.secureInput {
-                target = nil
-                show("Dictation is disabled in secure/password fields.")
-                return
-            } catch {
-                target = nil
-                insertionBlockReason = "This field cannot be safely updated; use Copy Result."
+            insertedText = ""
+            terminalName = nil
+            if let terminal = KeystrokeTarget.captureTerminal() {
+                target = .keystrokes(terminal)
+                terminalName = terminal.appName
+            } else {
+                do { target = .field(try TextInsertion.captureTarget()) }
+                catch TextInsertionError.secureInput {
+                    target = nil
+                    show("Dictation is disabled in secure/password fields.")
+                    return
+                } catch {
+                    target = nil
+                    insertionBlockReason = "This field cannot be safely updated; use Copy Result."
+                }
             }
             expiryTask?.cancel()
             resultText = ""
@@ -251,6 +267,7 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
         case .listening:
             message = "Listening — release \(shortcutTitle) to finish"
             overlay.show(title: message, text: update.text.isEmpty ? "Speak now · Esc to cancel" : update.text)
+            stream(update.committedText)
         case .finalizing:
             if let reason = update.message {
                 target = nil
@@ -258,31 +275,102 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
             }
             message = update.message ?? "Finishing locally…"
             overlay.show(title: message, text: update.text)
+            stream(update.committedText)
         case .result:
-            resultText = update.text.trimmingCharacters(in: .whitespacesAndNewlines)
             let destination = target
-            target = nil // No callback or retry can write to this target a second time.
-            if resultText.isEmpty {
-                message = "No speech recognized"
-            } else if enabled, insertionBlockReason == nil, let destination {
-                switch TextInsertion.insert(resultText, into: destination) {
-                case .inserted: message = "Inserted — hold \(shortcutTitle) for another dictation"
-                case .needsCopy(let reason): message = "Not inserted: \(reason) Use Copy Result."
-                case .unverified(let reason): message = "Insertion unverified: \(reason) Check the field before copying."
-                }
-            } else {
-                message = insertionBlockReason ?? "Result ready — use Copy Result."
-            }
+            target = nil // No callback or retry can write to this target again.
+            finish(update.text.trimmingCharacters(in: .whitespacesAndNewlines), into: destination)
             overlay.show(title: message, text: resultText)
             scheduleExpiry()
         case .failed:
             target = nil
             message = update.message ?? "Dictation failed; no text was inserted."
+            if !insertedText.isEmpty { message += " Text inserted before the failure stays in the field." }
             resultText = update.text
             overlay.show(title: message, text: resultText)
             scheduleExpiry()
         }
         rebuildMenu()
+    }
+
+    /// Writes newly finalized words while the user is still speaking. Any refusal stops streaming for
+    /// the rest of the utterance, and the unwritten remainder is offered through Copy Result.
+    private func stream(_ committed: String) {
+        guard enabled, insertionBlockReason == nil, let destination = target else { return }
+        guard let chunk = TextInsertion.unwritten(committed, after: insertedText) else {
+            target = nil
+            insertionBlockReason = "The recognizer revised text that was already inserted; check the field."
+            return
+        }
+        guard !chunk.isEmpty else { return }
+        switch write(chunk, to: destination) {
+        case .inserted:
+            insertedText = committed
+            if case .field(let field) = destination {
+                if let next = TextInsertion.advance(field, past: chunk) { target = .field(next) }
+                else {
+                    target = nil
+                    insertionBlockReason = "The field changed after the last insertion."
+                }
+            }
+        case .typed:
+            insertedText = committed
+        case .needsCopy(let reason), .unverified(let reason):
+            target = nil
+            insertionBlockReason = reason
+        }
+    }
+
+    /// Writes whatever the final transcript adds beyond the streamed prefix, in a single attempt.
+    private func finish(_ text: String, into destination: Destination?) {
+        resultText = text
+        guard !insertedText.isEmpty else {
+            if text.isEmpty {
+                message = "No speech recognized"
+            } else if enabled, insertionBlockReason == nil, let destination {
+                message = outcomeMessage(write(text, to: destination))
+            } else {
+                message = insertionBlockReason ?? "Result ready — use Copy Result."
+            }
+            return
+        }
+        guard let rest = TextInsertion.unwritten(text, after: insertedText) else {
+            message = "Text was inserted while you spoke, but the final transcript differs. Check the field; Copy Result copies the full transcript."
+            return
+        }
+        let remainder = rest.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !remainder.isEmpty else {
+            message = outcomeMessage(terminalName == nil ? .inserted : .typed)
+            return
+        }
+        let outcome: InsertionOutcome = if enabled, insertionBlockReason == nil, let destination {
+            write(rest, to: destination)
+        } else {
+            .needsCopy(insertionBlockReason ?? "Insertion stopped.")
+        }
+        switch outcome {
+        case .inserted, .typed:
+            message = outcomeMessage(outcome)
+        case .needsCopy(let reason), .unverified(let reason):
+            resultText = remainder
+            message = "Inserted the first part. \(reason) Copy Result copies the rest."
+        }
+    }
+
+    private func write(_ text: String, to destination: Destination) -> InsertionOutcome {
+        switch destination {
+        case .field(let field): TextInsertion.insert(text, into: field)
+        case .keystrokes(let terminal): terminal.type(text)
+        }
+    }
+
+    private func outcomeMessage(_ outcome: InsertionOutcome) -> String {
+        switch outcome {
+        case .inserted: "Inserted — hold \(shortcutTitle) for another dictation"
+        case .typed: "Typed into \(terminalName ?? "the terminal") — hold \(shortcutTitle) for another dictation"
+        case .needsCopy(let reason): "Not inserted: \(reason) Use Copy Result."
+        case .unverified(let reason): "Insertion unverified: \(reason) Check the field before copying."
+        }
     }
 
     private func show(_ value: String) {
@@ -325,25 +413,72 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
         rebuildMenu()
     }
 
-    @objc private func requestMicrophone() {
+    private func requestMicrophone() {
         Task { [weak self] in
             let granted = await AVCaptureDevice.requestAccess(for: .audio)
             self?.show(granted ? "Microphone access granted; enable dictation when ready" : "Microphone denied; review System Settings → Privacy & Security")
         }
     }
 
-    @objc private func requestAccessibility() {
-        let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
-        _ = AXIsProcessTrustedWithOptions(options)
-        show("Review Holos under System Settings → Privacy & Security → Accessibility")
+    @objc private func showSetup() {
+        if setupWindow == nil {
+            setupWindow = SetupWindow(perform: { [weak self] action in self?.performSetup(action) },
+                                      onClose: { [weak self] in self?.setupRefreshTask?.cancel(); self?.setupRefreshTask = nil })
+        }
+        setupWindow?.show()
+        refreshAssetState()
+        // TCC has no change notification, so poll while the window is open.
+        setupRefreshTask?.cancel()
+        setupRefreshTask = Task { [weak self] in
+            while !Task.isCancelled {
+                self?.updateSetupWindow()
+                try? await Task.sleep(for: .seconds(1))
+            }
+        }
     }
 
-    @objc private func requestInputMonitoring() {
-        _ = CGRequestListenEventAccess()
-        show("Review Holos under Privacy & Security → Input Monitoring; relaunch if macOS asks")
+    private func updateSetupWindow() {
+        guard let setupWindow, setupWindow.isVisible else { return }
+        setupWindow.update(SetupState(
+            microphone: AudioCapture.microphonePermission, accessibility: AXIsProcessTrusted(),
+            inputMonitoring: CGPreflightListenEventAccess(), assets: assetState, installingAssets: installingAssets,
+            dictationEnabled: enabled, enabling: enabling, busy: isBusy, shortcutTitle: shortcutTitle, message: message))
     }
 
-    @objc private func installAssets() {
+    private func refreshAssetState() {
+        Task { [weak self] in
+            guard let self else { return }
+            self.assetState = (try? await AppleSpeechEngine.assetStatus(locale: self.locale, backend: .speech)) ?? "unknown"
+            self.updateSetupWindow()
+        }
+    }
+
+    private func performSetup(_ action: SetupAction) {
+        switch action {
+        case .microphone:
+            if AudioCapture.microphonePermission == "notDetermined" { requestMicrophone() }
+            else { openPrivacySettings("Privacy_Microphone") }
+        case .accessibility:
+            if !AXIsProcessTrusted() {
+                // Asking adds Holos to the Accessibility list; macOS shows its own prompt only once.
+                let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
+                _ = AXIsProcessTrustedWithOptions(options)
+            }
+            openPrivacySettings("Privacy_Accessibility")
+        case .inputMonitoring:
+            if !CGPreflightListenEventAccess() { _ = CGRequestListenEventAccess() }
+            openPrivacySettings("Privacy_ListenEvent")
+        case .assets: installAssets()
+        case .dictation: toggleEnabled()
+        }
+    }
+
+    private func openPrivacySettings(_ anchor: String) {
+        guard let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?\(anchor)") else { return }
+        NSWorkspace.shared.open(url)
+    }
+
+    private func installAssets() {
         guard !installingAssets, !isBusy, !enabled, !enabling else { return }
         installingAssets = true
         show("Installing en-CA assets — this may download Apple's model")
@@ -352,16 +487,14 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
             do {
                 try await AppleSpeechEngine.installAssets(locale: self.locale, backend: .speech)
                 self.installingAssets = false
+                self.assetState = "installed"
                 self.show("English speech assets ready; enable dictation when ready")
             } catch {
                 self.installingAssets = false
+                self.refreshAssetState()
                 self.show("Asset setup failed: \(error.localizedDescription)")
             }
         }
-    }
-
-    @objc private func showSetupStatus() {
-        show("Mic: \(AudioCapture.microphonePermission) · AX: \(AXIsProcessTrusted() ? "yes" : "no") · Input: \(CGPreflightListenEventAccess() ? "yes" : "no") · en-CA")
     }
 
     private func suspendForSessionChange() {
