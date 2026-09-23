@@ -304,6 +304,8 @@ enum InsertionPolicy {
 /// Terminals draw their input line rather than exposing a writable text field, so text reaches them
 /// only as keystrokes. Keystrokes go to the captured process and cannot be read back.
 @MainActor public final class KeystrokeTarget {
+    private static let log = Logger(subsystem: "ca.orlenko.holos.app", category: "insertion")
+
     /// Marks Holos's own keystrokes so the hotkey monitor does not treat them as typing.
     public static let syntheticEventMarker: Int64 = 0x484F_4C4F_53
 
@@ -355,6 +357,16 @@ enum InsertionPolicy {
         }
         // A private source keeps the held shortcut modifier out of the typed characters.
         let source = CGEventSource(stateID: .privateState)
+        let started = ContinuousClock.now
+        let heldFlags = CGEventSource.flagsState(.hidSystemState)
+        defer {
+            let elapsed = started.duration(to: .now)
+            Self.log.notice("""
+                Typed \(text.count) characters into \(self.appName, privacy: .public) (pid \(self.pid)) in \
+                \(elapsed.components.attoseconds / 1_000_000_000_000_000 + elapsed.components.seconds * 1000) ms; \
+                option held: \(heldFlags.contains(.maskAlternate)), secure input: \(IsSecureEventInputEnabled())
+                """)
+        }
         for character in text {
             let units = Array(String(character).utf16)
             for keyDown in [true, false] {
