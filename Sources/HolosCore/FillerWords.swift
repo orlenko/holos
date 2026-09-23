@@ -6,7 +6,9 @@ import Foundation
 public enum FillerWords {
     // "mm", "hm", and "er" are left alone: they collide with units and abbreviations ("5 mm", "ER").
     nonisolated(unsafe) private static let pattern = try! NSRegularExpression(
-        pattern: "(?<![\\p{L}\\p{N}'’-])(?:um+|uhm*|uh+|erm|ah+|hm{2,})(?![\\p{L}\\p{N}'’-])",
+        // Identifier and address punctuation counts as part of the token ("um@example.com", "foo_um_bar",
+        // "um.example.com"); a period followed by a space still ends a sentence.
+        pattern: "(?<![\\p{L}\\p{N}'’@._/\\\\#-])(?:um+|uhm*|uh+|erm|ah+|hm{2,})(?![\\p{L}\\p{N}'’@_/\\\\#-]|\\.[\\p{L}\\p{N}])",
         options: [.caseInsensitive])
 
     private static let openers: Set<Character> = ["“", "‘", "\"", "'", "(", "[", "{", "«"]

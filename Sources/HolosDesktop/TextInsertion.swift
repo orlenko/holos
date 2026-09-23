@@ -213,10 +213,16 @@ enum InsertionPolicy {
     static func focusedEditableElement() -> AXUIElement? {
         guard AXIsProcessTrusted(), !IsSecureEventInputEnabled(), let element = try? focusedElement(),
               !secureSubrole(element) else { return nil }
+        if isWebEditable(element) { return element }
         let role = (try? attribute(element, kAXRoleAttribute as CFString)) as? String
         let editableRoles = [kAXTextFieldRole, kAXTextAreaRole, kAXComboBoxRole].map { $0 as String }
-        if let role, editableRoles.contains(role) { return element }
-        return isWebEditable(element) ? element : nil
+        guard let role, editableRoles.contains(role) else { return nil }
+        // A read-only or disabled field would silently ignore keystrokes while Holos reports success.
+        if let enabled = (try? attribute(element, kAXEnabledAttribute as CFString)) as? Bool, !enabled { return nil }
+        var settable: DarwinBoolean = false
+        guard AXUIElementIsAttributeSettable(element, kAXValueAttribute as CFString, &settable) == .success,
+              settable.boolValue else { return nil }
+        return element
     }
 
     /// Editable web content (inputs, text areas, rich-text editors) reports its editable root through
@@ -366,6 +372,13 @@ enum InsertionPolicy {
         return KeystrokeTarget(pid: app.processIdentifier, appName: app.localizedName ?? "the app", element: element)
     }
 
+    private func stillTargeted() -> Bool {
+        guard NSWorkspace.shared.frontmostApplication?.processIdentifier == pid else { return false }
+        guard let element else { return true }
+        guard let focused = try? TextInsertion.focusedElement() else { return false }
+        return CFEqual(focused, element)
+    }
+
     public func type(_ text: String) -> InsertionOutcome {
         guard InsertionPolicy.permits(text) else {
             return .needsCopy("Text contains a line break or control character; copy it explicitly.")
@@ -376,10 +389,8 @@ enum InsertionPolicy {
         guard NSWorkspace.shared.frontmostApplication?.processIdentifier == pid else {
             return .needsCopy("\(appName) is no longer frontmost; copy the transcript explicitly.")
         }
-        if let element {
-            guard let focused = try? TextInsertion.focusedElement(), CFEqual(focused, element) else {
-                return .needsCopy("Focus moved to a different field; copy the transcript explicitly.")
-            }
+        guard stillTargeted() else {
+            return .needsCopy("Focus moved to a different field; copy the transcript explicitly.")
         }
         // A private source keeps the held shortcut modifier out of the typed characters.
         let source = CGEventSource(stateID: .privateState)
@@ -393,7 +404,11 @@ enum InsertionPolicy {
                 option held: \(heldFlags.contains(.maskAlternate)), secure input: \(IsSecureEventInputEnabled())
                 """)
         }
-        for character in text {
+        for (index, character) in text.enumerated() {
+            // Recheck in bounded steps so a focus change mid-chunk stops typing into the wrong control.
+            if index > 0, index.isMultiple(of: 16), !stillTargeted() {
+                return .unverified("Focus moved while typing; check \(appName) before pasting the rest.")
+            }
             let units = Array(String(character).utf16)
             for keyDown in [true, false] {
                 guard let event = CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: keyDown) else {

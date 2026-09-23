@@ -18,6 +18,10 @@ import Testing
 @Test func keepsWordsThatOnlyLookLikeFillers() {
     let text = "Uh-huh, Ahmed measured 5 mm in the ER; umbrella drum"
     #expect(FillerWords.remove(from: text) == text)
+    for token in ["write to um@example.com", "call foo_um_bar", "open um.example.com", "see path/um/file", "tag #um"] {
+        #expect(FillerWords.remove(from: token) == token)
+    }
+    #expect(FillerWords.remove(from: "Okay. Um. Next") == "Okay. Next")
 }
 
 @Test func cleaningAGrowingTranscriptKeepsAPrefix() {
