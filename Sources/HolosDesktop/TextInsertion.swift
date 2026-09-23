@@ -25,6 +25,8 @@ public enum InsertionOutcome: Sendable, Equatable {
     /// Keystrokes were posted to the target app; terminals cannot report what they received.
     case typed
     case needsCopy(String)
+    /// The app or field changed since key-down, so pasting now would land somewhere else.
+    case targetChanged(String)
     case unverified(String)
 }
 
@@ -121,7 +123,7 @@ enum InsertionPolicy {
               let live = try? readSnapshot(liveElement),
               InsertionPolicy.matches(target.snapshot, live) else {
             log.notice("Insert refused: focus or field state differs from the snapshot")
-            return .needsCopy("Focus, selection, or nearby text changed; copy the transcript explicitly.")
+            return .targetChanged("Focus, selection, or nearby text changed; copy the transcript explicitly.")
         }
         var writable: DarwinBoolean = false
         guard AXUIElementIsAttributeSettable(liveElement, kAXSelectedTextAttribute as CFString, &writable) == .success,
@@ -387,10 +389,10 @@ enum InsertionPolicy {
             return .needsCopy("Secure keyboard entry is on; typing was skipped.")
         }
         guard NSWorkspace.shared.frontmostApplication?.processIdentifier == pid else {
-            return .needsCopy("\(appName) is no longer frontmost; copy the transcript explicitly.")
+            return .targetChanged("\(appName) is no longer frontmost; copy the transcript explicitly.")
         }
         guard stillTargeted() else {
-            return .needsCopy("Focus moved to a different field; copy the transcript explicitly.")
+            return .targetChanged("Focus moved to a different field; copy the transcript explicitly.")
         }
         // A private source keeps the held shortcut modifier out of the typed characters.
         let source = CGEventSource(stateID: .privateState)

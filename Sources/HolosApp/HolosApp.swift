@@ -67,6 +67,8 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
     private var typedAppName: String?
     /// A streamed write may have landed without being confirmed; the result must not claim it failed.
     private var streamUnverified = false
+    /// The app or field changed during the utterance; ⌘V now would paste somewhere else.
+    private var targetMoved = false
     private var removeFillers: Bool {
         get { UserDefaults.standard.object(forKey: "removeFillers") as? Bool ?? true }
         set { UserDefaults.standard.set(newValue, forKey: "removeFillers") }
@@ -119,6 +121,7 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
                 if self.enabled, let app { TextInsertion.enableAccessibility(for: app) }
                 guard self.isBusy else { return }
                 self.target = nil
+                self.targetMoved = true
                 self.insertionBlockReason = "The active application changed; use Copy Result."
             }
         })
@@ -261,6 +264,7 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
             insertedText = ""
             latestCommitted = ""
             streamUnverified = false
+            targetMoved = false
             typedAppName = nil
             if let app = NSWorkspace.shared.frontmostApplication { TextInsertion.enableAccessibility(for: app) }
             if let terminal = KeystrokeTarget.captureTerminal() {
@@ -361,6 +365,10 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
                     message += copied
                         ? " Some text may already be in the field — check it before pasting the clipboard."
                         : " Some text may already be in the field — check it before using Copy Result."
+                } else if targetMoved {
+                    message += copied
+                        ? " The words that were not inserted are on the clipboard — go back to the original field before pressing ⌘V."
+                        : " Copy Result has the words that were not inserted; return to the original field first."
                 } else {
                     message += copied
                         ? " The words that were not inserted are on the clipboard — press ⌘V."
@@ -408,13 +416,15 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
                 else {
                     target = nil
                     insertionBlockReason = "The field changed after the last insertion."
+                    targetMoved = true
                     log.notice("Stream stopped: field did not match the expected state after insertion")
                 }
             }
         case .typed:
             insertedText = committed
-        case .needsCopy(let reason), .unverified(let reason):
+        case .needsCopy(let reason), .unverified(let reason), .targetChanged(let reason):
             if case .unverified = outcome { streamUnverified = true }
+            if case .targetChanged = outcome { targetMoved = true }
             target = nil
             insertionBlockReason = reason
         }
@@ -473,7 +483,8 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
 
     private func blockedOutcome(default reason: String) -> InsertionOutcome {
         let reason = insertionBlockReason ?? reason
-        return streamUnverified ? .unverified(reason) : .needsCopy(reason)
+        if streamUnverified { return .unverified(reason) }
+        return targetMoved ? .targetChanged(reason) : .needsCopy(reason)
     }
 
     /// Text that could not be written goes to the clipboard right away, so it is one ⌘V from the field.
@@ -481,9 +492,17 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
         switch outcome {
         case .inserted, .typed:
             message = outcomeMessage(outcome)
-        case .needsCopy(let reason), .unverified(let reason):
+        case .needsCopy(let reason), .unverified(let reason), .targetChanged(let reason):
             log.notice("Not written: \(reason, privacy: .public)")
             resultText = unwritten
+            let copied = copyToClipboard(unwritten)
+            if case .targetChanged = outcome {
+                let head = partial ? "Inserted the first part; then the app or field changed."
+                                   : "The app or field changed before Holos could write."
+                message = copied ? "\(head) Copied to the clipboard — go back to the original field before pressing ⌘V."
+                                 : "\(head) Use Copy Result after returning to the original field."
+                return
+            }
             let head: String = if case .unverified = outcome {
                 "Insertion unverified — check the field before pasting."
             } else if partial {
@@ -491,7 +510,7 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
             } else {
                 "Couldn't write into this field."
             }
-            message = copyToClipboard(unwritten) ? "\(head) Copied to the clipboard — press ⌘V." : "\(head) Use Copy Result."
+            message = copied ? "\(head) Copied to the clipboard — press ⌘V." : "\(head) Use Copy Result."
         }
     }
 
@@ -553,6 +572,7 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
         case .inserted: "Inserted — hold \(shortcutTitle) for another dictation"
         case .typed: "Typed into \(typedAppName ?? "the app") — hold \(shortcutTitle) for another dictation"
         case .needsCopy(let reason): "Not inserted: \(reason) Use Copy Result."
+        case .targetChanged(let reason): "Not inserted: \(reason) Return to the original field, then use Copy Result."
         case .unverified(let reason): "Insertion unverified: \(reason) Check the field before copying."
         }
     }

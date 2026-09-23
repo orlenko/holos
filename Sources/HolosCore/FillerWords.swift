@@ -67,8 +67,9 @@ public enum FillerWords {
 
     private static func append(_ piece: Substring, to output: inout String, capitalizeNext: inout Bool) {
         guard !piece.isEmpty else { return }
-        if capitalizeNext, let first = piece.first, first.isLetter {
-            output += first.uppercased() + piece.dropFirst()
+        // Look past opening quotes and brackets: "Um, “hello”" → "“Hello”".
+        if capitalizeNext, let letter = piece.firstIndex(where: { !openers.contains($0) }), piece[letter].isLetter {
+            output += piece[..<letter] + piece[letter].uppercased() + piece[piece.index(after: letter)...]
         } else {
             output += piece
         }
