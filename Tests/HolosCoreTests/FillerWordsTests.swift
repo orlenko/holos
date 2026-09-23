@@ -9,6 +9,8 @@ import Testing
     #expect(FillerWords.remove(from: "Okay. Um. Next one") == "Okay. Next one")
     #expect(FillerWords.remove(from: "Hmm?") == "")
     #expect(FillerWords.remove(from: "Ahh, uh, right") == "Right")
+    #expect(FillerWords.remove(from: "Um... next") == "Next")
+    #expect(FillerWords.remove(from: "we did it, um... and then") == "we did it... and then")
 }
 
 @Test func keepsWordsThatOnlyLookLikeFillers() {

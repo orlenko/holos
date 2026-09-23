@@ -8,12 +8,14 @@ import os
 public enum TextInsertionError: Error, LocalizedError, Sendable {
     case secureInput
     case permissionDenied(String)
+    /// The focused element offers no direct text write, as opposed to failing a safety check.
+    case notWritable(String)
     case unsupported(String)
 
     public var errorDescription: String? {
         switch self {
         case .secureInput: "Dictation is unavailable in a secure or password field."
-        case .permissionDenied(let message), .unsupported(let message): message
+        case .permissionDenied(let message), .notWritable(let message), .unsupported(let message): message
         }
     }
 }
@@ -103,7 +105,7 @@ enum InsertionPolicy {
         var writable: DarwinBoolean = false
         guard AXUIElementIsAttributeSettable(element, kAXSelectedTextAttribute as CFString, &writable) == .success,
               writable.boolValue else {
-            throw TextInsertionError.unsupported("The focused field does not support direct selected-text insertion. Copy the transcript instead.")
+            throw TextInsertionError.notWritable("The focused field does not support direct selected-text insertion. Copy the transcript instead.")
         }
         return InsertionTarget(element: element, snapshot: snapshot)
     }
@@ -236,7 +238,7 @@ enum InsertionPolicy {
         if IsSecureEventInputEnabled() || secureSubrole(element) { throw TextInsertionError.secureInput }
         guard let role = try? attribute(element, kAXRoleAttribute as CFString) as? String,
               role == (kAXTextFieldRole as String) || role == (kAXTextAreaRole as String) else {
-            throw TextInsertionError.unsupported("The focused element is not a supported plain text field.")
+            throw TextInsertionError.notWritable("The focused element is not a supported plain text field.")
         }
         var pid: pid_t = 0
         guard AXUIElementGetPid(element, &pid) == .success else {

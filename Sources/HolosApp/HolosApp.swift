@@ -279,16 +279,22 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
                     target = nil
                     show("Dictation is disabled in secure/password fields.")
                     return
-                } catch {
+                } catch TextInsertionError.notWritable(let reason) {
+                    // The field has no direct write; typing is the only way in. Safety-check failures
+                    // (large selection, unreadable range) fall through to Copy instead.
                     if let editable = KeystrokeTarget.captureEditableField() {
                         target = .keystrokes(editable)
                         typedAppName = editable.appName
-                        log.notice("Target: typing into a field in \(editable.appName, privacy: .public) (\(error.localizedDescription, privacy: .public))")
+                        log.notice("Target: typing into a field in \(editable.appName, privacy: .public) (\(reason, privacy: .public))")
                     } else {
                         target = nil
                         insertionBlockReason = "This field cannot be safely updated; use Copy Result."
-                        log.notice("No target: \(error.localizedDescription, privacy: .public)")
+                        log.notice("No target: \(reason, privacy: .public)")
                     }
+                } catch {
+                    target = nil
+                    insertionBlockReason = "This field cannot be safely updated; use Copy Result."
+                    log.notice("No target: \(error.localizedDescription, privacy: .public)")
                 }
             }
             expiryTask?.cancel()
@@ -345,13 +351,22 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
             if !insertedText.isEmpty { message += " Text inserted before the failure stays in the field." }
             // Keep committed words that were withheld or not yet written, so Copy Result still has them.
             let committed = cleaned(latestCommitted).trimmingCharacters(in: .whitespacesAndNewlines)
-            let unwritten = (TextInsertion.unwritten(committed, after: insertedText) ?? committed)
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-            if !unwritten.isEmpty {
-                resultText = unwritten
-                message += copyToClipboard(unwritten)
+            if let rest = TextInsertion.unwritten(committed, after: insertedText),
+               !rest.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                // Keep the leading space so pasting after the inserted prefix does not join words.
+                resultText = insertedText.isEmpty ? rest.trimmingCharacters(in: .whitespaces) : rest
+                message += copyToClipboard(resultText)
                     ? " The words that were not inserted are on the clipboard — press ⌘V."
                     : " Copy Result has the words that were not inserted."
+                overlay.show(title: message, text: resultText)
+                scheduleExpiry()
+                rebuildMenu()
+                return
+            }
+            if TextInsertion.unwritten(committed, after: insertedText) == nil, !committed.isEmpty {
+                // The transcript no longer extends what was inserted, so no tail is safe to paste.
+                resultText = committed
+                message += " The transcript changed after text was inserted; check the field. Copy Result has the full transcript."
                 overlay.show(title: message, text: resultText)
                 scheduleExpiry()
                 rebuildMenu()
@@ -444,7 +459,8 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
             blockedOutcome(default: "Insertion stopped.")
         }
         log.notice("Final chunk of \(rest.utf16.count) units: \(String(describing: outcome), privacy: .public)")
-        conclude(outcome, unwritten: remainder, partial: true)
+        // Keep the leading space so pasting after the inserted prefix does not join words.
+        conclude(outcome, unwritten: rest.trimmingCharacters(in: .newlines), partial: true)
     }
 
     private func blockedOutcome(default reason: String) -> InsertionOutcome {

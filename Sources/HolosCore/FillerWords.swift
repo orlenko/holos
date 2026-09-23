@@ -21,6 +21,8 @@ public enum FillerWords {
             while output.last?.isWhitespace == true { output.removeLast() }
             if output.last == "," { output.removeLast() }
             while output.last?.isWhitespace == true { output.removeLast() }
+            // Capitalize what follows only when the filler itself began a sentence.
+            let beganSentence = output.last.map { ".!?…".contains($0) } ?? true
 
             var rest = found.upperBound
             if rest < text.endIndex {
@@ -28,14 +30,17 @@ public enum FillerWords {
                 if mark == "," {
                     rest = text.index(after: rest)
                 } else if ".!?…".contains(mark) {
-                    rest = text.index(after: rest)
+                    // Take the whole run ("...", "?!") as one mark.
+                    var end = rest
+                    while end < text.endIndex, ".!?…".contains(text[end]) { end = text.index(after: end) }
                     // Keep the mark when it ends a sentence that had words before the filler.
-                    if let last = output.last, !".!?…".contains(last) { output.append(mark) }
+                    if let last = output.last, !".!?…".contains(last) { output += text[rest..<end] }
+                    rest = end
                 }
             }
             while rest < text.endIndex, text[rest].isWhitespace { rest = text.index(after: rest) }
             if rest < text.endIndex, !output.isEmpty, !",.;:!?…)".contains(text[rest]) { output.append(" ") }
-            capitalizeNext = output.isEmpty || output.trimmingCharacters(in: .whitespaces).last.map { ".!?…".contains($0) } == true
+            capitalizeNext = beganSentence
             cursor = rest
         }
         append(text[cursor...], to: &output, capitalizeNext: &capitalizeNext)

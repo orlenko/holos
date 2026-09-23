@@ -118,7 +118,8 @@ behavior, and permission owner for each row.
 | Scenario | Expected check |
 | --- | --- |
 | TextEdit plain text, empty caret and selected text | One insertion/replacement, with no extra newline or duplicate text. |
-| Browser text field and editor text area | Insert only if direct writable Accessibility text is supported; otherwise preserve Copy. |
+| Browser text field and rich editor (e.g. ChatGPT in Chrome) | Phrases are typed as you pause while that field keeps focus; moving focus stops typing and copies the rest. |
+| Native field without direct Accessibility writes | Typed into while it keeps focus; a field that fails a safety check (large selection, unreadable range) is not typed into and its text goes to the clipboard. |
 | Terminal input (shell prompt and a TUI such as Claude Code) | Phrases are typed as you pause; never a Return; Secure Keyboard Entry refuses. |
 | Learn "bull request" → "pull request", then dictate it | Corrected in preview and in the field; "bull market" unchanged. |
 | Long utterance with pauses in TextEdit | Finalized phrases appear while speaking, the tail on release, no duplicates or missing spaces. |
@@ -128,11 +129,13 @@ behavior, and permission owner for each row.
 | Esc during listening and again during finalizing | Stop and suppress late results/insertion; already-streamed text stays. |
 | Rapid repeat presses and unrelated typing while holding | One utterance at a time; no stuck mic or duplicate insertion. |
 | Missing/denied permissions or assets | Clear setup status; no implicit asset download or microphone prompt on shortcut press. |
-| Maximum duration and delayed finalization | Stop at 120 seconds; any forced result requires Copy, and post-listening finalization does not hang past 30 seconds. |
+| Maximum duration and delayed finalization | Stop at 120 seconds; the unwritten part of a forced result is copied to the clipboard, not inserted, and post-listening finalization does not hang past 30 seconds. |
+| Unwritable target after a streamed prefix | The clipboard holds only the unwritten tail, with its leading space; pasting after the prefix gives correctly spaced text. |
 | Sleep/lock and wake | Capture stops; shortcut stays paused until manually re-enabled. |
 
-Also test explicit Copy and Discard: Copy should write the transcript to the
-clipboard only when selected; Discard should remove the retained result. After a
+Also test the clipboard: text Holos could not write should be on the clipboard
+right after the status says to press ⌘V, and **Copy Result** should copy the
+retained text again; Discard should remove the retained result. After a
 completed utterance, check that the overlay hides after about eight seconds and
 the retained result expires after about ten minutes. If the app reports an
 unverified Accessibility write, inspect the target before using Copy.
