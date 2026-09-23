@@ -8,6 +8,7 @@ import HolosDesktop
 import HolosDictation
 import HolosSpeech
 import os
+import Security
 
 @main
 enum HolosAppMain {
@@ -63,7 +64,19 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
     private var insertionBlockReason: String?
     /// Transcript prefix already written into the target during this utterance.
     private var insertedText = ""
-    private var terminalName: String?
+    /// The app receiving keystrokes, when the target is typed into rather than written directly.
+    private var typedAppName: String?
+    /// A streamed write may have landed without being confirmed; the result must not claim it failed.
+    private var streamUnverified = false
+    /// The app or field changed during the utterance; ⌘V now would paste somewhere else.
+    private var targetMoved = false
+    /// Where the user was at key-down, to check before telling them to paste.
+    private var originPID: pid_t?
+    private var originFocus: AXUIElement?
+    private var removeFillers: Bool {
+        get { UserDefaults.standard.object(forKey: "removeFillers") as? Bool ?? true }
+        set { UserDefaults.standard.set(newValue, forKey: "removeFillers") }
+    }
     private var corrections = CorrectionList()
     /// False when an existing corrections file could not be read, so it is never overwritten.
     private var correctionsWritable = true
@@ -105,10 +118,14 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
             })
         }
         observers.append(center.addObserver(forName: NSWorkspace.didActivateApplicationNotification,
-                                            object: nil, queue: .main) { [weak self] _ in
+                                            object: nil, queue: .main) { [weak self] notification in
+            let app = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication
             Task { @MainActor in
-                guard let self, self.isBusy else { return }
+                guard let self else { return }
+                if self.enabled, let app { TextInsertion.enableAccessibility(for: app) }
+                guard self.isBusy else { return }
                 self.target = nil
+                self.targetMoved = true
                 self.insertionBlockReason = "The active application changed; use Copy Result."
             }
         })
@@ -180,8 +197,27 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func toggleEnabled() { enabled ? disable() : enable() }
 
+    /// False when the app bundle was replaced on disk while this process runs (a rebuild). macOS then
+    /// treats Holos as unknown code: permissions re-prompt, and typing into a terminal froze it.
+    private static func codeSignatureIsIntact() -> Bool {
+        var code: SecCode?
+        guard SecCodeCopySelf([], &code) == errSecSuccess, let code else { return false }
+        return SecCodeCheckValidity(code, [], nil) == errSecSuccess
+    }
+
+    private func refuseIfReplaced() -> Bool {
+        guard !Self.codeSignatureIsIntact() else { return false }
+        log.error("Code signature no longer matches the app on disk; dictation paused")
+        if enabled || enabling { disable(persist: false) }
+        show("Holos was rebuilt while running. Quit and reopen Holos to dictate again.")
+        overlay.show(title: "Holos was rebuilt while running", text: "Quit and reopen Holos to dictate again.")
+        scheduleExpiry()
+        return true
+    }
+
     private func enable() {
         guard !enabled, !enabling, !installingAssets else { return }
+        guard !refuseIfReplaced() else { return }
         guard AudioCapture.microphonePermission == "authorized", AXIsProcessTrusted() else {
             show("Grant Microphone and Accessibility access in Holos Setup, then enable dictation.")
             showSetup()
@@ -209,6 +245,7 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
                 self.enabled = true
                 self.enabling = false
                 UserDefaults.standard.set(true, forKey: "dictationEnabled")
+                if let app = NSWorkspace.shared.frontmostApplication { TextInsertion.enableAccessibility(for: app) }
                 self.show("Ready — hold \(self.shortcutTitle); wait for Listening")
                 self.overlay.hide()
             } catch {
@@ -245,15 +282,24 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
         guard enabled else { return }
         switch action {
         case .began:
-            guard !isBusy, !TextInsertion.isSecureInputActive() else { return }
+            guard !isBusy, !refuseIfReplaced(), !TextInsertion.isSecureInputActive() else { return }
             insertionBlockReason = nil
             insertedText = ""
             latestCommitted = ""
-            terminalName = nil
+            streamUnverified = false
+            targetMoved = false
+            originPID = NSWorkspace.shared.frontmostApplication?.processIdentifier
+            originFocus = TextInsertion.currentFocus()
+            typedAppName = nil
+            if let app = NSWorkspace.shared.frontmostApplication { TextInsertion.enableAccessibility(for: app) }
             if let terminal = KeystrokeTarget.captureTerminal() {
                 target = .keystrokes(terminal)
-                terminalName = terminal.appName
+                typedAppName = terminal.appName
                 log.notice("Target: terminal \(terminal.appName, privacy: .public)")
+            } else if let web = KeystrokeTarget.captureWebEditor() {
+                target = .keystrokes(web)
+                typedAppName = web.appName
+                log.notice("Target: web editor in \(web.appName, privacy: .public)")
             } else {
                 do {
                     target = .field(try TextInsertion.captureTarget())
@@ -262,6 +308,18 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
                     target = nil
                     show("Dictation is disabled in secure/password fields.")
                     return
+                } catch TextInsertionError.notWritable(let reason) {
+                    // The field has no direct write; typing is the only way in. Safety-check failures
+                    // (large selection, unreadable range) fall through to Copy instead.
+                    if let editable = KeystrokeTarget.captureEditableField() {
+                        target = .keystrokes(editable)
+                        typedAppName = editable.appName
+                        log.notice("Target: typing into a field in \(editable.appName, privacy: .public) (\(reason, privacy: .public))")
+                    } else {
+                        target = nil
+                        insertionBlockReason = "This field cannot be safely updated; use Copy Result."
+                        log.notice("No target: \(reason, privacy: .public)")
+                    }
                 } catch {
                     target = nil
                     insertionBlockReason = "This field cannot be safely updated; use Copy Result."
@@ -292,22 +350,22 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
         case .listening:
             message = "Listening — release \(shortcutTitle) to finish"
             overlay.show(title: message,
-                         text: update.text.isEmpty ? "Speak now · Esc to cancel" : corrections.apply(to: update.text))
+                         text: update.text.isEmpty ? "Speak now · Esc to cancel" : cleaned(update.text))
             latestCommitted = update.committedText
-            stream(corrections.applyWithholdingPartialMatch(to: update.committedText))
+            stream(cleanedForStreaming(update.committedText))
         case .finalizing:
             if let reason = update.message {
                 target = nil
                 insertionBlockReason = reason + " Use Copy Result."
             }
             message = update.message ?? "Finishing locally…"
-            overlay.show(title: message, text: corrections.apply(to: update.text))
+            overlay.show(title: message, text: cleaned(update.text))
             if !update.committedText.isEmpty { latestCommitted = update.committedText }
-            stream(corrections.applyWithholdingPartialMatch(to: update.committedText))
+            stream(cleanedForStreaming(update.committedText))
         case .result:
             let destination = target
             target = nil // No callback or retry can write to this target again.
-            let recognized = update.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            let recognized = withoutFillers(update.text).trimmingCharacters(in: .whitespacesAndNewlines)
             let text = corrections.apply(to: recognized)
             if !text.isEmpty {
                 lastTranscript = text
@@ -321,12 +379,35 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
             message = update.message ?? "Dictation failed; no text was inserted."
             if !insertedText.isEmpty { message += " Text inserted before the failure stays in the field." }
             // Keep committed words that were withheld or not yet written, so Copy Result still has them.
-            let committed = corrections.apply(to: latestCommitted).trimmingCharacters(in: .whitespacesAndNewlines)
-            let unwritten = (TextInsertion.unwritten(committed, after: insertedText) ?? committed)
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-            if !unwritten.isEmpty {
-                message += " Copy Result has the words that were not inserted."
-                resultText = unwritten
+            let committed = cleaned(latestCommitted).trimmingCharacters(in: .whitespacesAndNewlines)
+            if let rest = TextInsertion.unwritten(committed, after: insertedText),
+               !rest.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                // Keep the leading space so pasting after the inserted prefix does not join words.
+                resultText = insertedText.isEmpty ? rest.trimmingCharacters(in: .whitespaces) : rest
+                let copied = copyToClipboard(resultText)
+                if streamUnverified {
+                    // An unconfirmed write may already have landed; pasting blindly could duplicate it.
+                    message += copied
+                        ? " Some text may already be in the field — check it before pasting the clipboard."
+                        : " Some text may already be in the field — check it before using Copy Result."
+                } else if focusMovedSinceKeyDown() {
+                    message += copied
+                        ? " The words that were not inserted are on the clipboard — go back to the original field before pressing ⌘V."
+                        : " Copy Result has the words that were not inserted; return to the original field first."
+                } else {
+                    message += copied
+                        ? " The words that were not inserted are on the clipboard — press ⌘V."
+                        : " Copy Result has the words that were not inserted."
+                }
+                overlay.show(title: message, text: resultText)
+                scheduleExpiry()
+                rebuildMenu()
+                return
+            }
+            if TextInsertion.unwritten(committed, after: insertedText) == nil, !committed.isEmpty {
+                // The transcript no longer extends what was inserted, so no tail is safe to paste.
+                resultText = committed
+                message += " The transcript changed after text was inserted; check the field. Copy Result has the full transcript."
                 overlay.show(title: message, text: resultText)
                 scheduleExpiry()
                 rebuildMenu()
@@ -360,30 +441,50 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
                 else {
                     target = nil
                     insertionBlockReason = "The field changed after the last insertion."
+                    targetMoved = true
                     log.notice("Stream stopped: field did not match the expected state after insertion")
                 }
             }
         case .typed:
             insertedText = committed
-        case .needsCopy(let reason), .unverified(let reason):
+        case .needsCopy(let reason), .unverified(let reason), .targetChanged(let reason):
+            if case .unverified = outcome { streamUnverified = true }
+            if case .targetChanged = outcome { targetMoved = true }
             target = nil
             insertionBlockReason = reason
         }
     }
 
     /// Writes whatever the final transcript adds beyond the streamed prefix, in a single attempt.
+    private func withoutFillers(_ text: String) -> String {
+        removeFillers ? FillerWords.remove(from: text) : text
+    }
+
+    /// Filler removal, then learned corrections: the text Holos shows and writes.
+    private func cleaned(_ text: String) -> String {
+        corrections.apply(to: withoutFillers(text))
+    }
+
+    /// Like `cleaned`, but holds back a trailing comma or phrase start that later words may still change.
+    private func cleanedForStreaming(_ text: String) -> String {
+        corrections.applyWithholdingPartialMatch(
+            to: removeFillers ? FillerWords.removeWithholdingTrailingComma(from: text) : text)
+    }
+
     private func finish(_ text: String, into destination: Destination?) {
         resultText = text
         guard !insertedText.isEmpty else {
-            if text.isEmpty {
+            guard !text.isEmpty else {
                 message = "No speech recognized"
-            } else if enabled, insertionBlockReason == nil, let destination {
-                let outcome = write(text, to: destination)
-                log.notice("Nothing streamed; whole result of \(text.utf16.count) units: \(String(describing: outcome), privacy: .public)")
-                message = outcomeMessage(outcome)
-            } else {
-                message = insertionBlockReason ?? "Result ready — use Copy Result."
+                return
             }
+            let outcome: InsertionOutcome = if enabled, insertionBlockReason == nil, let destination {
+                write(text, to: destination)
+            } else {
+                blockedOutcome(default: "No writable target.")
+            }
+            log.notice("Nothing streamed; whole result of \(text.utf16.count) units: \(String(describing: outcome), privacy: .public)")
+            conclude(outcome, unwritten: text, partial: false)
             return
         }
         guard let rest = TextInsertion.unwritten(text, after: insertedText) else {
@@ -392,22 +493,64 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
         }
         let remainder = rest.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !remainder.isEmpty else {
-            message = outcomeMessage(terminalName == nil ? .inserted : .typed)
+            message = outcomeMessage(typedAppName == nil ? .inserted : .typed)
             return
         }
         let outcome: InsertionOutcome = if enabled, insertionBlockReason == nil, let destination {
             write(rest, to: destination)
         } else {
-            .needsCopy(insertionBlockReason ?? "Insertion stopped.")
+            blockedOutcome(default: "Insertion stopped.")
         }
         log.notice("Final chunk of \(rest.utf16.count) units: \(String(describing: outcome), privacy: .public)")
+        // Keep the leading space so pasting after the inserted prefix does not join words.
+        conclude(outcome, unwritten: rest.trimmingCharacters(in: .newlines), partial: true)
+    }
+
+    private func blockedOutcome(default reason: String) -> InsertionOutcome {
+        let reason = insertionBlockReason ?? reason
+        if streamUnverified { return .unverified(reason) }
+        return targetMoved ? .targetChanged(reason) : .needsCopy(reason)
+    }
+
+    /// Text that could not be written goes to the clipboard right away, so it is one ⌘V from the field.
+    private func conclude(_ outcome: InsertionOutcome, unwritten: String, partial: Bool) {
         switch outcome {
         case .inserted, .typed:
             message = outcomeMessage(outcome)
-        case .needsCopy(let reason), .unverified(let reason):
-            resultText = remainder
-            message = "Inserted the first part. \(reason) Copy Result copies the rest."
+        case .needsCopy(let reason), .unverified(let reason), .targetChanged(let reason):
+            log.notice("Not written: \(reason, privacy: .public)")
+            resultText = unwritten
+            let copied = copyToClipboard(unwritten)
+            let moved: Bool = if case .targetChanged = outcome { true } else { focusMovedSinceKeyDown() }
+            if moved {
+                let head = partial ? "Inserted the first part; then the app or field changed."
+                                   : "The app or field changed before Holos could write."
+                message = copied ? "\(head) Copied to the clipboard — go back to the original field before pressing ⌘V."
+                                 : "\(head) Use Copy Result after returning to the original field."
+                return
+            }
+            let head: String = if case .unverified = outcome {
+                "Insertion unverified — check the field before pasting."
+            } else if partial {
+                "Inserted the first part; couldn't write the rest."
+            } else {
+                "Couldn't write into this field."
+            }
+            message = copied ? "\(head) Copied to the clipboard — press ⌘V." : "\(head) Use Copy Result."
         }
+    }
+
+    /// Checked at the moment Holos suggests ⌘V, so a focus change inside the same app counts too.
+    private func focusMovedSinceKeyDown() -> Bool {
+        if targetMoved { return true }
+        if NSWorkspace.shared.frontmostApplication?.processIdentifier != originPID { return true }
+        if let originFocus { return !TextInsertion.stillFocused(originFocus) }
+        return false
+    }
+
+    private func copyToClipboard(_ text: String) -> Bool {
+        NSPasteboard.general.clearContents()
+        return NSPasteboard.general.setString(text, forType: .string)
     }
 
     @objc private func showCorrections() {
@@ -461,8 +604,9 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
     private func outcomeMessage(_ outcome: InsertionOutcome) -> String {
         switch outcome {
         case .inserted: "Inserted — hold \(shortcutTitle) for another dictation"
-        case .typed: "Typed into \(terminalName ?? "the terminal") — hold \(shortcutTitle) for another dictation"
+        case .typed: "Typed into \(typedAppName ?? "the app") — hold \(shortcutTitle) for another dictation"
         case .needsCopy(let reason): "Not inserted: \(reason) Use Copy Result."
+        case .targetChanged(let reason): "Not inserted: \(reason) Return to the original field, then use Copy Result."
         case .unverified(let reason): "Insertion unverified: \(reason) Check the field before copying."
         }
     }
@@ -493,8 +637,7 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func copyResult() {
         guard !resultText.isEmpty else { return }
-        NSPasteboard.general.clearContents()
-        let copied = NSPasteboard.general.setString(resultText, forType: .string)
+        let copied = copyToClipboard(resultText)
         show(copied ? "Copied — paste where you choose" : "Clipboard write failed; result is still available")
     }
 
@@ -536,7 +679,8 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
         setupWindow.update(SetupState(
             microphone: AudioCapture.microphonePermission, accessibility: AXIsProcessTrusted(),
             inputMonitoring: CGPreflightListenEventAccess(), assets: assetState, installingAssets: installingAssets,
-            dictationEnabled: enabled, enabling: enabling, busy: isBusy, shortcutTitle: shortcutTitle, message: message))
+            dictationEnabled: enabled, enabling: enabling, busy: isBusy, shortcutTitle: shortcutTitle,
+            removeFillers: removeFillers, message: message))
     }
 
     private func refreshAssetState() {
@@ -564,6 +708,9 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
             openPrivacySettings("Privacy_ListenEvent")
         case .assets: installAssets()
         case .dictation: toggleEnabled()
+        case .toggleFillers:
+            removeFillers.toggle()
+            updateSetupWindow()
         }
     }
 

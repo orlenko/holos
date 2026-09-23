@@ -8,12 +8,14 @@ import os
 public enum TextInsertionError: Error, LocalizedError, Sendable {
     case secureInput
     case permissionDenied(String)
+    /// The focused element offers no direct text write, as opposed to failing a safety check.
+    case notWritable(String)
     case unsupported(String)
 
     public var errorDescription: String? {
         switch self {
         case .secureInput: "Dictation is unavailable in a secure or password field."
-        case .permissionDenied(let message), .unsupported(let message): message
+        case .permissionDenied(let message), .notWritable(let message), .unsupported(let message): message
         }
     }
 }
@@ -23,6 +25,8 @@ public enum InsertionOutcome: Sendable, Equatable {
     /// Keystrokes were posted to the target app; terminals cannot report what they received.
     case typed
     case needsCopy(String)
+    /// The app or field changed since key-down, so pasting now would land somewhere else.
+    case targetChanged(String)
     case unverified(String)
 }
 
@@ -103,7 +107,7 @@ enum InsertionPolicy {
         var writable: DarwinBoolean = false
         guard AXUIElementIsAttributeSettable(element, kAXSelectedTextAttribute as CFString, &writable) == .success,
               writable.boolValue else {
-            throw TextInsertionError.unsupported("The focused field does not support direct selected-text insertion. Copy the transcript instead.")
+            throw TextInsertionError.notWritable("The focused field does not support direct selected-text insertion. Copy the transcript instead.")
         }
         return InsertionTarget(element: element, snapshot: snapshot)
     }
@@ -119,7 +123,7 @@ enum InsertionPolicy {
               let live = try? readSnapshot(liveElement),
               InsertionPolicy.matches(target.snapshot, live) else {
             log.notice("Insert refused: focus or field state differs from the snapshot")
-            return .needsCopy("Focus, selection, or nearby text changed; copy the transcript explicitly.")
+            return .targetChanged("Focus, selection, or nearby text changed; copy the transcript explicitly.")
         }
         var writable: DarwinBoolean = false
         guard AXUIElementIsAttributeSettable(liveElement, kAXSelectedTextAttribute as CFString, &writable) == .success,
@@ -153,6 +157,15 @@ enum InsertionPolicy {
         return .inserted
     }
 
+    /// The focused element right now, if Accessibility can report one.
+    public static func currentFocus() -> AXUIElement? { try? focusedElement() }
+
+    /// Whether `element` still has keyboard focus in the frontmost app.
+    public static func stillFocused(_ element: AXUIElement) -> Bool {
+        guard let focused = try? focusedElement() else { return false }
+        return CFEqual(focused, element)
+    }
+
     /// The part of a growing transcript not yet written, or nil when it no longer extends `written`.
     public static func unwritten(_ transcript: String, after written: String) -> String? {
         InsertionPolicy.pending(transcript, after: written)
@@ -179,7 +192,57 @@ enum InsertionPolicy {
         return InsertionTarget(element: target.element, snapshot: live)
     }
 
-    private static func focusedElement() throws -> AXUIElement {
+    /// Chromium browsers and Electron apps build their accessibility tree only when an assistive app
+    /// asks for it; until then the system reports no focused element. Safe to call for any app.
+    public static func enableAccessibility(for app: NSRunningApplication) {
+        // Only Chromium and Electron apps need this; asking every activated app would put a cross-process
+        // call on the main actor for apps that gain nothing from it.
+        guard chromiumBrowserBundleIDs.contains(app.bundleIdentifier ?? "") || isElectron(app) else { return }
+        let element = AXUIElementCreateApplication(app.processIdentifier)
+        // A hung app must not stall Holos's menu and hotkey handling.
+        AXUIElementSetMessagingTimeout(element, 0.25)
+        let manual = AXUIElementSetAttributeValue(element, "AXManualAccessibility" as CFString, kCFBooleanTrue)
+        guard manual != .success, chromiumBrowserBundleIDs.contains(app.bundleIdentifier ?? "") else { return }
+        // Older Chromium builds only respond to the VoiceOver switch.
+        let enhanced = AXUIElementSetAttributeValue(element, "AXEnhancedUserInterface" as CFString, kCFBooleanTrue)
+        log.notice("Enabled accessibility for \(app.bundleIdentifier ?? "?", privacy: .public) via AXEnhancedUserInterface: \(enhanced.rawValue)")
+    }
+
+    private static func isElectron(_ app: NSRunningApplication) -> Bool {
+        guard let bundle = app.bundleURL else { return false }
+        let framework = bundle.appendingPathComponent("Contents/Frameworks/Electron Framework.framework")
+        return FileManager.default.fileExists(atPath: framework.path)
+    }
+
+    static let chromiumBrowserBundleIDs: Set<String> = [
+        "com.google.Chrome", "com.google.Chrome.beta", "com.google.Chrome.canary", "com.brave.Browser",
+        "com.microsoft.edgemac", "company.thebrowser.Browser", "com.vivaldi.Vivaldi", "org.chromium.Chromium",
+    ]
+
+    /// The focused element when it accepts typing (a text field, text area, combo box, or rich-text
+    /// editor such as a web contenteditable), even if it does not support direct Accessibility writes.
+    static func focusedEditableElement() -> AXUIElement? {
+        guard AXIsProcessTrusted(), !IsSecureEventInputEnabled(), let element = try? focusedElement(),
+              !secureSubrole(element) else { return nil }
+        if isWebEditable(element) { return element }
+        let role = (try? attribute(element, kAXRoleAttribute as CFString)) as? String
+        let editableRoles = [kAXTextFieldRole, kAXTextAreaRole, kAXComboBoxRole].map { $0 as String }
+        guard let role, editableRoles.contains(role) else { return nil }
+        // A read-only or disabled field would silently ignore keystrokes while Holos reports success.
+        if let enabled = (try? attribute(element, kAXEnabledAttribute as CFString)) as? Bool, !enabled { return nil }
+        var settable: DarwinBoolean = false
+        guard AXUIElementIsAttributeSettable(element, kAXValueAttribute as CFString, &settable) == .success,
+              settable.boolValue else { return nil }
+        return element
+    }
+
+    /// Editable web content (inputs, text areas, rich-text editors) reports its editable root through
+    /// this attribute. Browsers accept Accessibility writes there but do not read them back reliably.
+    static func isWebEditable(_ element: AXUIElement) -> Bool {
+        (try? attribute(element, "AXEditableAncestor" as CFString)) != nil
+    }
+
+    static func focusedElement() throws -> AXUIElement {
         guard let frontmost = NSWorkspace.shared.frontmostApplication else {
             throw TextInsertionError.unsupported("No frontmost application is available for insertion.")
         }
@@ -203,7 +266,7 @@ enum InsertionPolicy {
         if IsSecureEventInputEnabled() || secureSubrole(element) { throw TextInsertionError.secureInput }
         guard let role = try? attribute(element, kAXRoleAttribute as CFString) as? String,
               role == (kAXTextFieldRole as String) || role == (kAXTextAreaRole as String) else {
-            throw TextInsertionError.unsupported("The focused element is not a supported plain text field.")
+            throw TextInsertionError.notWritable("The focused element is not a supported plain text field.")
         }
         var pid: pid_t = 0
         guard AXUIElementGetPid(element, &pid) == .success else {
@@ -276,6 +339,8 @@ enum InsertionPolicy {
 /// Terminals draw their input line rather than exposing a writable text field, so text reaches them
 /// only as keystrokes. Keystrokes go to the captured process and cannot be read back.
 @MainActor public final class KeystrokeTarget {
+    private static let log = Logger(subsystem: "ca.orlenko.holos.app", category: "insertion")
+
     /// Marks Holos's own keystrokes so the hotkey monitor does not treat them as typing.
     public static let syntheticEventMarker: Int64 = 0x484F_4C4F_53
 
@@ -286,10 +351,13 @@ enum InsertionPolicy {
 
     public let pid: pid_t
     public let appName: String
+    /// For a field in a regular app, the element that must still have focus before each chunk.
+    private let element: AXUIElement?
 
-    private init(pid: pid_t, appName: String) {
+    private init(pid: pid_t, appName: String, element: AXUIElement? = nil) {
         self.pid = pid
         self.appName = appName
+        self.element = element
     }
 
     /// A target when the frontmost app is a known terminal; nil otherwise.
@@ -297,6 +365,29 @@ enum InsertionPolicy {
         guard let app = NSWorkspace.shared.frontmostApplication,
               let bundleID = app.bundleIdentifier, terminalBundleIDs.contains(bundleID) else { return nil }
         return KeystrokeTarget(pid: app.processIdentifier, appName: app.localizedName ?? bundleID)
+    }
+
+    /// A target for a focused editable field that cannot take a direct Accessibility write, such as a
+    /// web editor. Typing stops as soon as focus leaves that exact element.
+    /// A target for editable web content, which is typed into rather than written through Accessibility.
+    public static func captureWebEditor() -> KeystrokeTarget? {
+        guard let app = NSWorkspace.shared.frontmostApplication,
+              let element = TextInsertion.focusedEditableElement(),
+              TextInsertion.isWebEditable(element) else { return nil }
+        return KeystrokeTarget(pid: app.processIdentifier, appName: app.localizedName ?? "the browser", element: element)
+    }
+
+    public static func captureEditableField() -> KeystrokeTarget? {
+        guard let app = NSWorkspace.shared.frontmostApplication,
+              let element = TextInsertion.focusedEditableElement() else { return nil }
+        return KeystrokeTarget(pid: app.processIdentifier, appName: app.localizedName ?? "the app", element: element)
+    }
+
+    private func stillTargeted() -> Bool {
+        guard NSWorkspace.shared.frontmostApplication?.processIdentifier == pid else { return false }
+        guard let element else { return true }
+        guard let focused = try? TextInsertion.focusedElement() else { return false }
+        return CFEqual(focused, element)
     }
 
     public func type(_ text: String) -> InsertionOutcome {
@@ -307,11 +398,28 @@ enum InsertionPolicy {
             return .needsCopy("Secure keyboard entry is on; typing was skipped.")
         }
         guard NSWorkspace.shared.frontmostApplication?.processIdentifier == pid else {
-            return .needsCopy("\(appName) is no longer frontmost; copy the transcript explicitly.")
+            return .targetChanged("\(appName) is no longer frontmost; copy the transcript explicitly.")
+        }
+        guard stillTargeted() else {
+            return .targetChanged("Focus moved to a different field; copy the transcript explicitly.")
         }
         // A private source keeps the held shortcut modifier out of the typed characters.
         let source = CGEventSource(stateID: .privateState)
-        for character in text {
+        let started = ContinuousClock.now
+        let heldFlags = CGEventSource.flagsState(.hidSystemState)
+        defer {
+            let elapsed = started.duration(to: .now)
+            Self.log.notice("""
+                Typed \(text.count) characters into \(self.appName, privacy: .public) (pid \(self.pid)) in \
+                \(elapsed.components.attoseconds / 1_000_000_000_000_000 + elapsed.components.seconds * 1000) ms; \
+                option held: \(heldFlags.contains(.maskAlternate)), secure input: \(IsSecureEventInputEnabled())
+                """)
+        }
+        for (index, character) in text.enumerated() {
+            // Recheck in bounded steps so a focus change mid-chunk stops typing into the wrong control.
+            if index > 0, index.isMultiple(of: 16), !stillTargeted() {
+                return .unverified("Focus moved while typing; check \(appName) before pasting the rest.")
+            }
             let units = Array(String(character).utf16)
             for keyDown in [true, false] {
                 guard let event = CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: keyDown) else {

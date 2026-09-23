@@ -33,6 +33,10 @@ open build/Holos.app
 ```
 
 The build does not install or launch the app, add a login item, or enable dictation.
+Quit Holos before rebuilding; the script refuses to replace a running copy, because
+that invalidates its code signature (macOS re-prompts for permissions, and dictation
+into a terminal has frozen the terminal). A running Holos that detects this pauses
+dictation and asks to be reopened.
 On first launch, dictation is disabled and the Holos Setup window opens (reopen it
 with **Setup…** in the menu). It shows live status for each step: explicitly grant
 Microphone, Accessibility, and Input Monitoring access, install Apple's `en-CA`

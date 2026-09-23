@@ -54,12 +54,23 @@ write is read back. For a known terminal app (Terminal, iTerm2, Ghostty, WezTerm
 kitty, Alacritty, Warp), which has no writable text field, chunks are typed as
 keystrokes posted only to the terminal that was frontmost at key-down, and only
 while it is still frontmost; typed text cannot be read back, and switching tabs or
-panes inside the terminal while speaking redirects it. A password/secure field or
-Secure Keyboard Entry is refused.
+panes inside the terminal while speaking redirects it. A focused editable field that
+has no direct Accessibility write, such as a web rich-text editor, is typed into the
+same way, but only while that exact element keeps focus. Chromium browsers and
+Electron apps are asked to expose accessibility (`AXManualAccessibility`) when they
+become active, since they otherwise report no focused element. A password/secure
+field or Secure Keyboard Entry is refused.
+
+Hesitation sounds ("um", "uh", "ah", "erm", "hmm") and the commas around them are
+removed before corrections are applied, unless **Remove filler words** is turned
+off in the Setup window. "mm", "hm", and "er" are kept because they collide with
+units and abbreviations.
 
 The first refusal stops writing for the rest of that utterance. Text already
-written stays in place, and the unwritten remainder is kept for explicit **Copy
-Result** or **Discard Result**; the app does not paste via the clipboard. If the
+written stays in place, and the unwritten remainder is copied to the clipboard right
+away (the status says to press ⌘V) and also kept for **Copy Result** or **Discard
+Result**; the app never pastes on its own. The same applies to committed words
+left unwritten when an utterance fails. If the
 recognizer's final transcript no longer starts with what was already written,
 nothing more is written and Copy Result holds the full transcript. Direct insertion
 support is target-app dependent and has not been broadly established. If insertion
@@ -68,10 +79,11 @@ text.
 
 The maximum utterance is 120 seconds; finalization after listening has a
 30-second limit. When the maximum duration forces a stop, anything already
-streamed stays and the remainder is retained for Copy rather than auto-inserted. The overlay hides eight seconds after a result, but its text remains
+streamed stays and the remainder goes to the clipboard rather than being auto-inserted. The overlay hides eight seconds after a result, but its text remains
 in app memory and the menu's Copy/Discard actions for up to ten minutes (unless
-replaced, discarded, or the app quits). **Copy Result** overwrites the system
-clipboard only at the user's explicit request. No raw dictation audio is saved.
+replaced, discarded, or the app quits). The system clipboard is overwritten when
+text could not be written or when **Copy Result** is chosen. No raw dictation audio
+is saved.
 
 ## Corrections
 
@@ -106,7 +118,8 @@ behavior, and permission owner for each row.
 | Scenario | Expected check |
 | --- | --- |
 | TextEdit plain text, empty caret and selected text | One insertion/replacement, with no extra newline or duplicate text. |
-| Browser text field and editor text area | Insert only if direct writable Accessibility text is supported; otherwise preserve Copy. |
+| Browser text field and rich editor (e.g. ChatGPT in Chrome) | Phrases are typed as you pause while that field keeps focus; moving focus stops typing and copies the rest. |
+| Native field without direct Accessibility writes | Typed into while it keeps focus; a field that fails a safety check (large selection, unreadable range) is not typed into and its text goes to the clipboard. |
 | Terminal input (shell prompt and a TUI such as Claude Code) | Phrases are typed as you pause; never a Return; Secure Keyboard Entry refuses. |
 | Learn "bull request" → "pull request", then dictate it | Corrected in preview and in the field; "bull market" unchanged. |
 | Long utterance with pauses in TextEdit | Finalized phrases appear while speaking, the tail on release, no duplicates or missing spaces. |
@@ -116,11 +129,13 @@ behavior, and permission owner for each row.
 | Esc during listening and again during finalizing | Stop and suppress late results/insertion; already-streamed text stays. |
 | Rapid repeat presses and unrelated typing while holding | One utterance at a time; no stuck mic or duplicate insertion. |
 | Missing/denied permissions or assets | Clear setup status; no implicit asset download or microphone prompt on shortcut press. |
-| Maximum duration and delayed finalization | Stop at 120 seconds; any forced result requires Copy, and post-listening finalization does not hang past 30 seconds. |
+| Maximum duration and delayed finalization | Stop at 120 seconds; the unwritten part of a forced result is copied to the clipboard, not inserted, and post-listening finalization does not hang past 30 seconds. |
+| Unwritable target after a streamed prefix | The clipboard holds only the unwritten tail, with its leading space; pasting after the prefix gives correctly spaced text. |
 | Sleep/lock and wake | Capture stops; shortcut stays paused until manually re-enabled. |
 
-Also test explicit Copy and Discard: Copy should write the transcript to the
-clipboard only when selected; Discard should remove the retained result. After a
+Also test the clipboard: text Holos could not write should be on the clipboard
+right after the status says to press ⌘V, and **Copy Result** should copy the
+retained text again; Discard should remove the retained result. After a
 completed utterance, check that the overlay hides after about eight seconds and
 the retained result expires after about ten minutes. If the app reports an
 unverified Accessibility write, inspect the target before using Copy.

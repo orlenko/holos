@@ -11,11 +11,12 @@ struct SetupState {
     var enabling: Bool
     var busy: Bool
     var shortcutTitle: String
+    var removeFillers: Bool
     var message: String
 }
 
 enum SetupAction: Int, CaseIterable {
-    case microphone, accessibility, inputMonitoring, assets, dictation
+    case microphone, accessibility, inputMonitoring, assets, dictation, toggleFillers
 }
 
 /// A regular titled window, so setup status stays visible while the user works in System Settings.
@@ -28,6 +29,8 @@ final class SetupWindow: NSObject, NSWindowDelegate {
     private let perform: (SetupAction) -> Void
     private let onClose: () -> Void
     private let messageLabel = NSTextField(wrappingLabelWithString: "")
+    private let fillerToggle = NSButton(checkboxWithTitle: "Remove filler words (um, uh, ah, erm, hmm)",
+                                        target: nil, action: nil)
     private var rows: [SetupAction: Row] = [:]
     private var positioned = false
 
@@ -41,6 +44,11 @@ final class SetupWindow: NSObject, NSWindowDelegate {
         super.init()
         window.title = "Holos Setup"
         window.isReleasedWhenClosed = false
+        // Holos has no Dock icon, so a window that falls behind System Settings is hard to find again.
+        // Keep setup above other apps until the user closes it.
+        window.level = .floating
+        window.hidesOnDeactivate = false
+        window.collectionBehavior = [.moveToActiveSpace, .fullScreenAuxiliary]
         window.delegate = self
 
         let grid = NSGridView()
@@ -85,7 +93,11 @@ final class SetupWindow: NSObject, NSWindowDelegate {
         note.textColor = .secondaryLabelColor
         note.preferredMaxLayoutWidth = 500
 
-        let stack = NSStackView(views: [messageLabel, grid, note])
+        fillerToggle.target = self
+        fillerToggle.action = #selector(buttonPressed(_:))
+        fillerToggle.tag = SetupAction.toggleFillers.rawValue
+
+        let stack = NSStackView(views: [messageLabel, grid, fillerToggle, note])
         stack.orientation = .vertical
         stack.alignment = .leading
         stack.spacing = 20
@@ -114,6 +126,7 @@ final class SetupWindow: NSObject, NSWindowDelegate {
 
     func update(_ state: SetupState) {
         messageLabel.stringValue = "Status: \(state.message)"
+        fillerToggle.state = state.removeFillers ? .on : .off
 
         switch state.microphone {
         case "authorized":
