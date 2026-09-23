@@ -3,9 +3,11 @@ import AppKit
 import AVFoundation
 import Foundation
 import HolosAudio
+import HolosCore
 import HolosDesktop
 import HolosDictation
 import HolosSpeech
+import os
 
 @main
 enum HolosAppMain {
@@ -62,6 +64,17 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
     /// Transcript prefix already written into the target during this utterance.
     private var insertedText = ""
     private var terminalName: String?
+    private var corrections = CorrectionList()
+    /// False when an existing corrections file could not be read, so it is never overwritten.
+    private var correctionsWritable = true
+    private var correctionsWindow: CorrectionsWindow?
+    /// The last complete transcript as Holos wrote it, for the Corrections window.
+    private var lastTranscript = ""
+    /// The same transcript before corrections, so edits are learned against what the recognizer heard.
+    private var lastRecognized = ""
+    /// The recognizer's latest committed text, kept so a failure can still offer what was not written.
+    private var latestCommitted = ""
+    private let log = Logger(subsystem: "ca.orlenko.holos.app", category: "insertion")
     private var resultText = ""
     private var message = "Disabled — open Setup… to get started"
     private var setupWindow: SetupWindow?
@@ -75,6 +88,12 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
             shortcut = saved
         }
         controller = DictationController(locale: locale) { [weak self] update in self?.receive(update) }
+        do { corrections = try CorrectionList.load(from: CorrectionList.defaultURL) }
+        catch {
+            correctionsWritable = false
+            message = "Could not read corrections.json; corrections are off until it is fixed or removed."
+        }
+        controller.contextualStrings = corrections.vocabulary
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         statusItem.button?.image = NSImage(systemSymbolName: "waveform", accessibilityDescription: "Holos")
         statusItem.button?.toolTip = "Holos — local push-to-talk"
@@ -143,6 +162,7 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
         let discard = item("Discard Result", #selector(discardResult))
         discard.isEnabled = !resultText.isEmpty && !isBusy
         menu.addItem(discard)
+        menu.addItem(item("Correct Last Dictation…", #selector(showCorrections)))
         menu.addItem(.separator())
         menu.addItem(item("Setup…", #selector(showSetup)))
         menu.addItem(.separator())
@@ -228,19 +248,24 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
             guard !isBusy, !TextInsertion.isSecureInputActive() else { return }
             insertionBlockReason = nil
             insertedText = ""
+            latestCommitted = ""
             terminalName = nil
             if let terminal = KeystrokeTarget.captureTerminal() {
                 target = .keystrokes(terminal)
                 terminalName = terminal.appName
+                log.notice("Target: terminal \(terminal.appName, privacy: .public)")
             } else {
-                do { target = .field(try TextInsertion.captureTarget()) }
-                catch TextInsertionError.secureInput {
+                do {
+                    target = .field(try TextInsertion.captureTarget())
+                    log.notice("Target: text field")
+                } catch TextInsertionError.secureInput {
                     target = nil
                     show("Dictation is disabled in secure/password fields.")
                     return
                 } catch {
                     target = nil
                     insertionBlockReason = "This field cannot be safely updated; use Copy Result."
+                    log.notice("No target: \(error.localizedDescription, privacy: .public)")
                 }
             }
             expiryTask?.cancel()
@@ -266,26 +291,47 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
             overlay.show(title: message, text: "Release to stop · Esc to cancel")
         case .listening:
             message = "Listening — release \(shortcutTitle) to finish"
-            overlay.show(title: message, text: update.text.isEmpty ? "Speak now · Esc to cancel" : update.text)
-            stream(update.committedText)
+            overlay.show(title: message,
+                         text: update.text.isEmpty ? "Speak now · Esc to cancel" : corrections.apply(to: update.text))
+            latestCommitted = update.committedText
+            stream(corrections.applyWithholdingPartialMatch(to: update.committedText))
         case .finalizing:
             if let reason = update.message {
                 target = nil
                 insertionBlockReason = reason + " Use Copy Result."
             }
             message = update.message ?? "Finishing locally…"
-            overlay.show(title: message, text: update.text)
-            stream(update.committedText)
+            overlay.show(title: message, text: corrections.apply(to: update.text))
+            if !update.committedText.isEmpty { latestCommitted = update.committedText }
+            stream(corrections.applyWithholdingPartialMatch(to: update.committedText))
         case .result:
             let destination = target
             target = nil // No callback or retry can write to this target again.
-            finish(update.text.trimmingCharacters(in: .whitespacesAndNewlines), into: destination)
+            let recognized = update.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            let text = corrections.apply(to: recognized)
+            if !text.isEmpty {
+                lastTranscript = text
+                lastRecognized = recognized
+            }
+            finish(text, into: destination)
             overlay.show(title: message, text: resultText)
             scheduleExpiry()
         case .failed:
             target = nil
             message = update.message ?? "Dictation failed; no text was inserted."
             if !insertedText.isEmpty { message += " Text inserted before the failure stays in the field." }
+            // Keep committed words that were withheld or not yet written, so Copy Result still has them.
+            let committed = corrections.apply(to: latestCommitted).trimmingCharacters(in: .whitespacesAndNewlines)
+            let unwritten = (TextInsertion.unwritten(committed, after: insertedText) ?? committed)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            if !unwritten.isEmpty {
+                message += " Copy Result has the words that were not inserted."
+                resultText = unwritten
+                overlay.show(title: message, text: resultText)
+                scheduleExpiry()
+                rebuildMenu()
+                return
+            }
             resultText = update.text
             overlay.show(title: message, text: resultText)
             scheduleExpiry()
@@ -300,10 +346,13 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
         guard let chunk = TextInsertion.unwritten(committed, after: insertedText) else {
             target = nil
             insertionBlockReason = "The recognizer revised text that was already inserted; check the field."
+            log.notice("Stream stopped: committed text no longer extends the inserted prefix")
             return
         }
         guard !chunk.isEmpty else { return }
-        switch write(chunk, to: destination) {
+        let outcome = write(chunk, to: destination)
+        log.notice("Stream chunk of \(chunk.utf16.count) units: \(String(describing: outcome), privacy: .public)")
+        switch outcome {
         case .inserted:
             insertedText = committed
             if case .field(let field) = destination {
@@ -311,6 +360,7 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
                 else {
                     target = nil
                     insertionBlockReason = "The field changed after the last insertion."
+                    log.notice("Stream stopped: field did not match the expected state after insertion")
                 }
             }
         case .typed:
@@ -328,7 +378,9 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
             if text.isEmpty {
                 message = "No speech recognized"
             } else if enabled, insertionBlockReason == nil, let destination {
-                message = outcomeMessage(write(text, to: destination))
+                let outcome = write(text, to: destination)
+                log.notice("Nothing streamed; whole result of \(text.utf16.count) units: \(String(describing: outcome), privacy: .public)")
+                message = outcomeMessage(outcome)
             } else {
                 message = insertionBlockReason ?? "Result ready — use Copy Result."
             }
@@ -348,12 +400,54 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
         } else {
             .needsCopy(insertionBlockReason ?? "Insertion stopped.")
         }
+        log.notice("Final chunk of \(rest.utf16.count) units: \(String(describing: outcome), privacy: .public)")
         switch outcome {
         case .inserted, .typed:
             message = outcomeMessage(outcome)
         case .needsCopy(let reason), .unverified(let reason):
             resultText = remainder
             message = "Inserted the first part. \(reason) Copy Result copies the rest."
+        }
+    }
+
+    @objc private func showCorrections() {
+        if correctionsWindow == nil {
+            correctionsWindow = CorrectionsWindow(
+                onLearn: { [weak self] edited in self?.learnCorrections(from: edited) },
+                onAdd: { [weak self] correction in self?.changeCorrections { $0.add(correction) } ?? false },
+                onRemove: { [weak self] correction in self?.changeCorrections { $0.remove(correction) } ?? false })
+        }
+        correctionsWindow?.show(lastTranscript: lastTranscript, corrections: corrections.entries)
+    }
+
+    private func learnCorrections(from edited: String) -> [Correction]? {
+        // Diff against the recognizer's words, so fixing text an existing rule produced replaces that rule.
+        let learned = CorrectionList.learn(original: lastRecognized, corrected: edited) { word in
+            NSSpellChecker.shared.checkSpelling(of: word, startingAt: 0).location == NSNotFound
+        }.filter { corrections.apply(to: $0.heard) != $0.meant }
+        guard !learned.isEmpty else { return [] }
+        guard changeCorrections({ list in for correction in learned { list.add(correction) } }) else { return nil }
+        lastTranscript = edited
+        lastRecognized = edited
+        return learned
+    }
+
+    /// Returns false when the change was rejected or could not be saved.
+    @discardableResult
+    private func changeCorrections(_ change: (inout CorrectionList) -> Void) -> Bool {
+        guard correctionsWritable else {
+            show("Could not read corrections.json; fix or remove it, then relaunch Holos.")
+            return false
+        }
+        change(&corrections)
+        controller.contextualStrings = corrections.vocabulary
+        correctionsWindow?.update(corrections: corrections.entries)
+        do {
+            try corrections.save(to: CorrectionList.defaultURL)
+            return true
+        } catch {
+            show("Could not save corrections: \(error.localizedDescription)")
+            return false
         }
     }
 

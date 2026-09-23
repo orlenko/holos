@@ -61,13 +61,14 @@ private final class MicrophoneCapture: DictationCapture {
 struct DictationDependencies {
     var permission: () -> String
     var makeCapture: () -> any DictationCapture
-    var makeSpeech: (String, SpeechBackend, @escaping @Sendable (TranscriptUpdate) -> Void) async throws -> any DictationSpeech
+    var makeSpeech: (String, SpeechBackend, [String], @escaping @Sendable (TranscriptUpdate) -> Void) async throws -> any DictationSpeech
 
     static var live: Self {
         Self(permission: { AudioCapture.microphonePermission },
              makeCapture: { MicrophoneCapture() },
-             makeSpeech: { locale, backend, onUpdate in
-                 try await AppleSpeechSession.make(locale: locale, backend: backend, onUpdate: onUpdate)
+             makeSpeech: { locale, backend, vocabulary, onUpdate in
+                 try await AppleSpeechSession.make(locale: locale, backend: backend,
+                                                   contextualStrings: vocabulary, onUpdate: onUpdate)
              })
     }
 }
@@ -76,6 +77,8 @@ struct DictationDependencies {
 @MainActor
 public final class DictationController {
     public private(set) var status = DictationStatus(phase: .idle)
+    /// Phrases the recognizer should expect; read when each utterance starts.
+    public var contextualStrings: [String] = []
 
     private let locale: String
     private let backend: SpeechBackend
@@ -208,7 +211,7 @@ public final class DictationController {
             for await update in pair.stream { self?.accept(update, for: id) }
         }
         do {
-            let session = try await dependencies.makeSpeech(locale, backend) { update in
+            let session = try await dependencies.makeSpeech(locale, backend, contextualStrings) { update in
                 pair.continuation.yield(update)
             }
             guard generation == id else {

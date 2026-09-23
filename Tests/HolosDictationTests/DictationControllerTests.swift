@@ -8,7 +8,7 @@ import HolosAudio
     var updates: [DictationStatus] = []
     let dependencies = DictationDependencies(permission: { "denied" },
         makeCapture: { fatalError("capture must not start") },
-        makeSpeech: { _, _, _ in fatalError("speech must not start") })
+        makeSpeech: { _, _, _, _ in fatalError("speech must not start") })
     let controller = DictationController(dependencies: dependencies) { updates.append($0) }
     #expect(controller.begin())
     #expect(updates.map(\.phase) == [.preparing, .failed])
@@ -79,7 +79,7 @@ private final class Harness {
 
     var dependencies: DictationDependencies {
         DictationDependencies(permission: { "authorized" }, makeCapture: { self.capture },
-            makeSpeech: { _, _, onUpdate in
+            makeSpeech: { _, _, _, onUpdate in
                 self.update = onUpdate
                 if self.delaySpeech {
                     return try await withCheckedThrowingContinuation { self.speechWaiter = $0 }
@@ -234,7 +234,7 @@ private func eventually(_ condition: () -> Bool) async -> Bool {
     let speechHarness = Harness()
     let dependencies = DictationDependencies(permission: { "authorized" },
         makeCapture: { speechHarness.capture },
-        makeSpeech: { _, _, _ in throw HolosError.unavailable("Speech assets missing") })
+        makeSpeech: { _, _, _, _ in throw HolosError.unavailable("Speech assets missing") })
     let second = DictationController(dependencies: dependencies) { _ in }
     #expect(second.begin())
     #expect(await eventually { second.status.phase == .failed })
@@ -287,7 +287,7 @@ private func eventually(_ condition: () -> Bool) async -> Bool {
             let capture = FakeCapture()
             captures.append(capture)
             return capture
-        }, makeSpeech: { _, _, _ in FakeSpeech() })
+        }, makeSpeech: { _, _, _, _ in FakeSpeech() })
     let controller = DictationController(dependencies: dependencies) { _ in }
     #expect(controller.begin())
     let firstID = controller.status.utteranceID
