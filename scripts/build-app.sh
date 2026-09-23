@@ -3,6 +3,12 @@ set -eu
 cd "$(dirname "$0")/.."
 
 plutil -lint Resources/App-Info.plist
+# Replacing the executable of a running Holos invalidates its code signature: macOS then re-prompts
+# for the microphone and dictation into a terminal has frozen the terminal until Holos quit.
+if pgrep -f "$PWD/build/Holos.app/Contents/MacOS/HolosApp" >/dev/null 2>&1; then
+    printf 'Holos is running from build/Holos.app. Quit it first, then rebuild.\n' >&2
+    exit 1
+fi
 swift build --product HolosApp "$@"
 holos_app_bin_dir=$(swift build --show-bin-path "$@")
 holos_app_root="$PWD/build"

@@ -8,6 +8,7 @@ import HolosDesktop
 import HolosDictation
 import HolosSpeech
 import os
+import Security
 
 @main
 enum HolosAppMain {
@@ -196,8 +197,27 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func toggleEnabled() { enabled ? disable() : enable() }
 
+    /// False when the app bundle was replaced on disk while this process runs (a rebuild). macOS then
+    /// treats Holos as unknown code: permissions re-prompt, and typing into a terminal froze it.
+    private static func codeSignatureIsIntact() -> Bool {
+        var code: SecCode?
+        guard SecCodeCopySelf([], &code) == errSecSuccess, let code else { return false }
+        return SecCodeCheckValidity(code, [], nil) == errSecSuccess
+    }
+
+    private func refuseIfReplaced() -> Bool {
+        guard !Self.codeSignatureIsIntact() else { return false }
+        log.error("Code signature no longer matches the app on disk; dictation paused")
+        if enabled || enabling { disable(persist: false) }
+        show("Holos was rebuilt while running. Quit and reopen Holos to dictate again.")
+        overlay.show(title: "Holos was rebuilt while running", text: "Quit and reopen Holos to dictate again.")
+        scheduleExpiry()
+        return true
+    }
+
     private func enable() {
         guard !enabled, !enabling, !installingAssets else { return }
+        guard !refuseIfReplaced() else { return }
         guard AudioCapture.microphonePermission == "authorized", AXIsProcessTrusted() else {
             show("Grant Microphone and Accessibility access in Holos Setup, then enable dictation.")
             showSetup()
@@ -262,7 +282,7 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
         guard enabled else { return }
         switch action {
         case .began:
-            guard !isBusy, !TextInsertion.isSecureInputActive() else { return }
+            guard !isBusy, !refuseIfReplaced(), !TextInsertion.isSecureInputActive() else { return }
             insertionBlockReason = nil
             insertedText = ""
             latestCommitted = ""
