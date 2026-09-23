@@ -69,6 +69,9 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
     private var streamUnverified = false
     /// The app or field changed during the utterance; ⌘V now would paste somewhere else.
     private var targetMoved = false
+    /// Where the user was at key-down, to check before telling them to paste.
+    private var originPID: pid_t?
+    private var originFocus: AXUIElement?
     private var removeFillers: Bool {
         get { UserDefaults.standard.object(forKey: "removeFillers") as? Bool ?? true }
         set { UserDefaults.standard.set(newValue, forKey: "removeFillers") }
@@ -265,6 +268,8 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
             latestCommitted = ""
             streamUnverified = false
             targetMoved = false
+            originPID = NSWorkspace.shared.frontmostApplication?.processIdentifier
+            originFocus = TextInsertion.currentFocus()
             typedAppName = nil
             if let app = NSWorkspace.shared.frontmostApplication { TextInsertion.enableAccessibility(for: app) }
             if let terminal = KeystrokeTarget.captureTerminal() {
@@ -365,7 +370,7 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
                     message += copied
                         ? " Some text may already be in the field — check it before pasting the clipboard."
                         : " Some text may already be in the field — check it before using Copy Result."
-                } else if targetMoved {
+                } else if focusMovedSinceKeyDown() {
                     message += copied
                         ? " The words that were not inserted are on the clipboard — go back to the original field before pressing ⌘V."
                         : " Copy Result has the words that were not inserted; return to the original field first."
@@ -496,7 +501,8 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
             log.notice("Not written: \(reason, privacy: .public)")
             resultText = unwritten
             let copied = copyToClipboard(unwritten)
-            if case .targetChanged = outcome {
+            let moved: Bool = if case .targetChanged = outcome { true } else { focusMovedSinceKeyDown() }
+            if moved {
                 let head = partial ? "Inserted the first part; then the app or field changed."
                                    : "The app or field changed before Holos could write."
                 message = copied ? "\(head) Copied to the clipboard — go back to the original field before pressing ⌘V."
@@ -512,6 +518,14 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
             }
             message = copied ? "\(head) Copied to the clipboard — press ⌘V." : "\(head) Use Copy Result."
         }
+    }
+
+    /// Checked at the moment Holos suggests ⌘V, so a focus change inside the same app counts too.
+    private func focusMovedSinceKeyDown() -> Bool {
+        if targetMoved { return true }
+        if NSWorkspace.shared.frontmostApplication?.processIdentifier != originPID { return true }
+        if let originFocus { return !TextInsertion.stillFocused(originFocus) }
+        return false
     }
 
     private func copyToClipboard(_ text: String) -> Bool {

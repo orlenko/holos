@@ -157,6 +157,15 @@ enum InsertionPolicy {
         return .inserted
     }
 
+    /// The focused element right now, if Accessibility can report one.
+    public static func currentFocus() -> AXUIElement? { try? focusedElement() }
+
+    /// Whether `element` still has keyboard focus in the frontmost app.
+    public static func stillFocused(_ element: AXUIElement) -> Bool {
+        guard let focused = try? focusedElement() else { return false }
+        return CFEqual(focused, element)
+    }
+
     /// The part of a growing transcript not yet written, or nil when it no longer extends `written`.
     public static func unwritten(_ transcript: String, after written: String) -> String? {
         InsertionPolicy.pending(transcript, after: written)

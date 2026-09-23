@@ -20,10 +20,12 @@ import Testing
 @Test func keepsWordsThatOnlyLookLikeFillers() {
     let text = "Uh-huh, Ahmed measured 5 mm in the ER; umbrella drum"
     #expect(FillerWords.remove(from: text) == text)
-    for token in ["write to um@example.com", "call foo_um_bar", "open um.example.com", "see path/um/file", "tag #um"] {
+    for token in ["write to um@example.com", "call foo_um_bar", "open um.example.com", "see path/um/file", "tag #um", "set x=um", "https://example.test/?q=um&x=1",
+                  "host um:8080", "a+um"] {
         #expect(FillerWords.remove(from: token) == token)
     }
     #expect(FillerWords.remove(from: "Okay. Um. Next") == "Okay. Next")
+    #expect(FillerWords.remove(from: "Hmm? Right: um, yes") == "Right: yes")
 }
 
 @Test func cleaningAGrowingTranscriptKeepsAPrefix() {
