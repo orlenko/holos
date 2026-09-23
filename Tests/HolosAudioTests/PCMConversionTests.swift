@@ -24,3 +24,15 @@ import Testing
     #expect(result.channels == original.channels)
     #expect(result.startTime == original.startTime)
 }
+
+@Test func microphoneTimelineIgnoresHostClockJitter() {
+    var timeline = MicrophoneTimeline(sampleRate: 48000)
+    // Host times from a real tap: buffer 3 arrives 4.3 µs early relative to the previous buffer's end.
+    let host = [11065.032509, 11065.132509, 11065.232510, 11065.332506, 11065.432506]
+    var previousEnd: Double?
+    for (index, hostSeconds) in host.enumerated() {
+        let start = timeline.startTime(hostSeconds: hostSeconds, sampleTime: Int64(index * 4800))
+        if let previousEnd { #expect(abs(start - previousEnd) < 0.000_001) }
+        previousEnd = start + 0.1
+    }
+}
