@@ -70,6 +70,10 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
     private var correctionsWindow: CorrectionsWindow?
     /// The last complete transcript as Holos wrote it, for the Corrections window.
     private var lastTranscript = ""
+    /// The same transcript before corrections, so edits are learned against what the recognizer heard.
+    private var lastRecognized = ""
+    /// The recognizer's latest committed text, kept so a failure can still offer what was not written.
+    private var latestCommitted = ""
     private let log = Logger(subsystem: "ca.orlenko.holos.app", category: "insertion")
     private var resultText = ""
     private var message = "Disabled — open Setup… to get started"
@@ -244,6 +248,7 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
             guard !isBusy, !TextInsertion.isSecureInputActive() else { return }
             insertionBlockReason = nil
             insertedText = ""
+            latestCommitted = ""
             terminalName = nil
             if let terminal = KeystrokeTarget.captureTerminal() {
                 target = .keystrokes(terminal)
@@ -288,6 +293,7 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
             message = "Listening — release \(shortcutTitle) to finish"
             overlay.show(title: message,
                          text: update.text.isEmpty ? "Speak now · Esc to cancel" : corrections.apply(to: update.text))
+            latestCommitted = update.committedText
             stream(corrections.applyWithholdingPartialMatch(to: update.committedText))
         case .finalizing:
             if let reason = update.message {
@@ -296,12 +302,17 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
             }
             message = update.message ?? "Finishing locally…"
             overlay.show(title: message, text: corrections.apply(to: update.text))
+            if !update.committedText.isEmpty { latestCommitted = update.committedText }
             stream(corrections.applyWithholdingPartialMatch(to: update.committedText))
         case .result:
             let destination = target
             target = nil // No callback or retry can write to this target again.
-            let text = corrections.apply(to: update.text.trimmingCharacters(in: .whitespacesAndNewlines))
-            if !text.isEmpty { lastTranscript = text }
+            let recognized = update.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            let text = corrections.apply(to: recognized)
+            if !text.isEmpty {
+                lastTranscript = text
+                lastRecognized = recognized
+            }
             finish(text, into: destination)
             overlay.show(title: message, text: resultText)
             scheduleExpiry()
@@ -309,6 +320,18 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
             target = nil
             message = update.message ?? "Dictation failed; no text was inserted."
             if !insertedText.isEmpty { message += " Text inserted before the failure stays in the field." }
+            // Keep committed words that were withheld or not yet written, so Copy Result still has them.
+            let committed = corrections.apply(to: latestCommitted).trimmingCharacters(in: .whitespacesAndNewlines)
+            let unwritten = (TextInsertion.unwritten(committed, after: insertedText) ?? committed)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            if !unwritten.isEmpty {
+                message += " Copy Result has the words that were not inserted."
+                resultText = unwritten
+                overlay.show(title: message, text: resultText)
+                scheduleExpiry()
+                rebuildMenu()
+                return
+            }
             resultText = update.text
             overlay.show(title: message, text: resultText)
             scheduleExpiry()
@@ -390,33 +413,42 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
     @objc private func showCorrections() {
         if correctionsWindow == nil {
             correctionsWindow = CorrectionsWindow(
-                onLearn: { [weak self] edited in self?.learnCorrections(from: edited) ?? [] },
-                onAdd: { [weak self] correction in self?.changeCorrections { $0.add(correction) } },
-                onRemove: { [weak self] correction in self?.changeCorrections { $0.remove(correction) } })
+                onLearn: { [weak self] edited in self?.learnCorrections(from: edited) },
+                onAdd: { [weak self] correction in self?.changeCorrections { $0.add(correction) } ?? false },
+                onRemove: { [weak self] correction in self?.changeCorrections { $0.remove(correction) } ?? false })
         }
         correctionsWindow?.show(lastTranscript: lastTranscript, corrections: corrections.entries)
     }
 
-    private func learnCorrections(from edited: String) -> [Correction] {
-        let learned = CorrectionList.learn(original: lastTranscript, corrected: edited) { word in
+    private func learnCorrections(from edited: String) -> [Correction]? {
+        // Diff against the recognizer's words, so fixing text an existing rule produced replaces that rule.
+        let learned = CorrectionList.learn(original: lastRecognized, corrected: edited) { word in
             NSSpellChecker.shared.checkSpelling(of: word, startingAt: 0).location == NSNotFound
-        }
+        }.filter { corrections.apply(to: $0.heard) != $0.meant }
         guard !learned.isEmpty else { return [] }
-        changeCorrections { list in for correction in learned { list.add(correction) } }
+        guard changeCorrections({ list in for correction in learned { list.add(correction) } }) else { return nil }
         lastTranscript = edited
+        lastRecognized = edited
         return learned
     }
 
-    private func changeCorrections(_ change: (inout CorrectionList) -> Void) {
+    /// Returns false when the change was rejected or could not be saved.
+    @discardableResult
+    private func changeCorrections(_ change: (inout CorrectionList) -> Void) -> Bool {
         guard correctionsWritable else {
             show("Could not read corrections.json; fix or remove it, then relaunch Holos.")
-            return
+            return false
         }
         change(&corrections)
         controller.contextualStrings = corrections.vocabulary
         correctionsWindow?.update(corrections: corrections.entries)
-        do { try corrections.save(to: CorrectionList.defaultURL) }
-        catch { show("Could not save corrections: \(error.localizedDescription)") }
+        do {
+            try corrections.save(to: CorrectionList.defaultURL)
+            return true
+        } catch {
+            show("Could not save corrections: \(error.localizedDescription)")
+            return false
+        }
     }
 
     private func write(_ text: String, to destination: Destination) -> InsertionOutcome {

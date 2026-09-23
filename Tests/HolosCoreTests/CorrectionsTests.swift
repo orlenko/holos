@@ -50,3 +50,25 @@ import Testing
     #expect(try CorrectionList.load(from: url) == list)
     #expect(try CorrectionList.load(from: url.appendingPathExtension("missing")) == CorrectionList())
 }
+
+@Test func reviewFindingsOnMatchingAndStreaming() {
+    let overlapping = CorrectionList(entries: [.init(heard: "foo", meant: "bar"), .init(heard: "foo baz", meant: "qux")])
+    let streamed = overlapping.applyWithholdingPartialMatch(to: "say foo")
+    #expect(streamed == "say")
+    #expect(overlapping.apply(to: "say foo baz").hasPrefix(streamed))
+    #expect(overlapping.apply(to: "say foo baz") == "say qux")
+
+    let apostrophes = CorrectionList(entries: [.init(heard: "can", meant: "Ken")])
+    #expect(apostrophes.apply(to: "I can't, you can’t, but can") == "I can't, you can’t, but Ken")
+
+    let casing = CorrectionList(entries: [.init(heard: "Mac OS", meant: "macOS"), .init(heard: "Apple", meant: "apple"),
+                                          .init(heard: "bull request", meant: "pull request")])
+    #expect(casing.apply(to: "Mac OS and Apple") == "macOS and apple")
+    #expect(casing.apply(to: "Bull request") == "Pull request")
+}
+
+@Test func declinesDictionaryWordRulesWithoutContext() {
+    #expect(CorrectionList.learn(original: "Bull.", corrected: "Pull.", isDictionaryWord: { _ in true }).isEmpty)
+    #expect(CorrectionList.learn(original: "Holus.", corrected: "Holos.", isDictionaryWord: { _ in false })
+        == [.init(heard: "Holus", meant: "Holos")])
+}

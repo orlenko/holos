@@ -5,9 +5,10 @@ import HolosCore
 @MainActor
 final class CorrectionsWindow: NSObject, NSWindowDelegate {
     private let window: NSWindow
-    private let onLearn: (String) -> [Correction]
-    private let onAdd: (Correction) -> Void
-    private let onRemove: (Correction) -> Void
+    /// Returns the learned pairs, or nil when the change could not be saved.
+    private let onLearn: (String) -> [Correction]?
+    private let onAdd: (Correction) -> Bool
+    private let onRemove: (Correction) -> Bool
     private let transcriptView: NSTextView
     private let learnButton = NSButton(title: "Learn Corrections", target: nil, action: nil)
     private let copyButton = NSButton(title: "Copy Text", target: nil, action: nil)
@@ -18,8 +19,8 @@ final class CorrectionsWindow: NSObject, NSWindowDelegate {
     private var positioned = false
     private var shown: [Correction] = []
 
-    init(onLearn: @escaping (String) -> [Correction], onAdd: @escaping (Correction) -> Void,
-         onRemove: @escaping (Correction) -> Void) {
+    init(onLearn: @escaping (String) -> [Correction]?, onAdd: @escaping (Correction) -> Bool,
+         onRemove: @escaping (Correction) -> Bool) {
         window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 560, height: 600),
                           styleMask: [.titled, .closable, .miniaturizable, .resizable],
                           backing: .buffered, defer: true)
@@ -150,6 +151,8 @@ final class CorrectionsWindow: NSObject, NSWindowDelegate {
         }
     }
 
+    private static let saveFailure = "Corrections could not be saved; see the Holos status in the menu."
+
     private func heading(_ text: String) -> NSTextField {
         let label = NSTextField(labelWithString: text)
         label.font = .systemFont(ofSize: 13, weight: .semibold)
@@ -157,7 +160,10 @@ final class CorrectionsWindow: NSObject, NSWindowDelegate {
     }
 
     @objc private func learn() {
-        let learned = onLearn(transcriptView.string)
+        guard let learned = onLearn(transcriptView.string) else {
+            feedbackLabel.stringValue = Self.saveFailure
+            return
+        }
         feedbackLabel.stringValue = learned.isEmpty
             ? "No changed words found. Edit a misheard word above, then Learn."
             : "Learned: " + learned.map { "\($0.heard) → \($0.meant)" }.joined(separator: "; ")
@@ -176,7 +182,10 @@ final class CorrectionsWindow: NSObject, NSWindowDelegate {
             feedbackLabel.stringValue = "Enter both the misheard phrase and the intended one."
             return
         }
-        onAdd(correction)
+        guard onAdd(correction) else {
+            feedbackLabel.stringValue = Self.saveFailure
+            return
+        }
         heardField.stringValue = ""
         meantField.stringValue = ""
         feedbackLabel.stringValue = "Added: \(correction.heard) → \(correction.meant)"
@@ -185,7 +194,10 @@ final class CorrectionsWindow: NSObject, NSWindowDelegate {
     @objc private func removeEntry(_ sender: NSButton) {
         guard shown.indices.contains(sender.tag) else { return }
         let correction = shown[sender.tag]
-        onRemove(correction)
+        guard onRemove(correction) else {
+            feedbackLabel.stringValue = Self.saveFailure
+            return
+        }
         feedbackLabel.stringValue = "Removed: \(correction.heard) → \(correction.meant)"
     }
 }

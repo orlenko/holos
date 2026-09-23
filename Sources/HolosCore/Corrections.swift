@@ -45,15 +45,19 @@ public struct CorrectionList: Codable, Sendable, Equatable {
 
     public func apply(to text: String) -> String {
         guard !entries.isEmpty, let pattern = matcher() else { return text }
-        let replacements = Dictionary(entries.map { (Self.normalized($0.heard), $0.meant) },
+        let replacements = Dictionary(entries.map { (Self.normalized($0.heard), $0) },
                                       uniquingKeysWith: { _, last in last })
         let source = text as NSString
         var output = ""
         var cursor = 0
         for match in pattern.matches(in: text, range: NSRange(location: 0, length: source.length)) {
             let found = source.substring(with: match.range)
-            guard var meant = replacements[Self.normalized(found)] else { continue }
-            if let first = found.first, first.isUppercase, let head = meant.first, head.isLowercase {
+            guard let entry = replacements[Self.normalized(found)] else { continue }
+            var meant = entry.meant
+            // A capital the saved phrase lacks came from sentence position, so carry it over; a saved
+            // capital ("Mac OS" → "macOS") means the lowercase replacement is deliberate.
+            if let first = found.first, first.isUppercase, entry.heard.first?.isLowercase == true,
+               let head = meant.first, head.isLowercase {
                 meant = head.uppercased() + meant.dropFirst()
             }
             output += source.substring(with: NSRange(location: cursor, length: match.range.location - cursor))
@@ -63,24 +67,23 @@ public struct CorrectionList: Codable, Sendable, Equatable {
         return output + source.substring(from: cursor)
     }
 
-    /// For text still growing while the user speaks: applies corrections, then withholds trailing words
-    /// that could become the start of a multi-word phrase once more words arrive.
+    /// For text still growing while the user speaks: withholds trailing words that could become the start
+    /// of a multi-word phrase once more words arrive, then applies corrections to the rest. Withholding is
+    /// decided on the uncorrected text, so a shorter rule cannot consume the start of a longer one.
     public func applyWithholdingPartialMatch(to text: String) -> String {
-        let corrected = apply(to: text)
-        let words = Self.words(in: corrected)
-        guard !words.isEmpty else { return corrected }
+        let words = Self.words(in: text)
         var withheld = 0
         for entry in entries {
             let heard = Self.normalized(entry.heard).split(separator: " ").map(String.init)
             guard heard.count > 1 else { continue }
             for length in stride(from: min(heard.count - 1, words.count), to: withheld, by: -1) {
-                let tail = words.suffix(length).map { corrected[$0].lowercased() }
+                let tail = words.suffix(length).map { text[$0].lowercased() }
                 if tail == Array(heard.prefix(length)) { withheld = length; break }
             }
         }
-        guard withheld > 0 else { return corrected }
+        guard withheld > 0 else { return apply(to: text) }
         let cut = words[words.count - withheld].lowerBound
-        return String(corrected[..<cut]).trimmingCharacters(in: .whitespaces)
+        return apply(to: String(text[..<cut]).trimmingCharacters(in: .whitespaces))
     }
 
     /// Word-level substitutions between a transcript and the user's fixed version. Pure insertions,
@@ -130,6 +133,8 @@ public struct CorrectionList: Codable, Sendable, Equatable {
                 } else if spanA.lowerBound > 0, isWord(aText[spanA.lowerBound - 1]) {
                     spanA = spanA.lowerBound - 1..<spanA.upperBound
                     spanB = spanB.lowerBound - 1..<spanB.upperBound
+                } else {
+                    continue // No neighbouring word: a bare dictionary-word rule would rewrite unrelated text.
                 }
             }
             let heard = String(original[a[spanA.lowerBound].lowerBound..<a[spanA.upperBound - 1].upperBound])
@@ -156,7 +161,7 @@ public struct CorrectionList: Codable, Sendable, Equatable {
             .sorted { $0.count > $1.count }
             .map { $0.split(whereSeparator: \.isWhitespace).map { NSRegularExpression.escapedPattern(for: String($0)) }
                 .joined(separator: "\\s+") }
-        let pattern = "(?<![\\p{L}\\p{N}])(?:\(alternatives.joined(separator: "|")))(?![\\p{L}\\p{N}])"
+        let pattern = "(?<![\\p{L}\\p{N}'’])(?:\(alternatives.joined(separator: "|")))(?![\\p{L}\\p{N}'’])"
         return try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive])
     }
 
