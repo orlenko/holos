@@ -355,9 +355,17 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
                !rest.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 // Keep the leading space so pasting after the inserted prefix does not join words.
                 resultText = insertedText.isEmpty ? rest.trimmingCharacters(in: .whitespaces) : rest
-                message += copyToClipboard(resultText)
-                    ? " The words that were not inserted are on the clipboard — press ⌘V."
-                    : " Copy Result has the words that were not inserted."
+                let copied = copyToClipboard(resultText)
+                if streamUnverified {
+                    // An unconfirmed write may already have landed; pasting blindly could duplicate it.
+                    message += copied
+                        ? " Some text may already be in the field — check it before pasting the clipboard."
+                        : " Some text may already be in the field — check it before using Copy Result."
+                } else {
+                    message += copied
+                        ? " The words that were not inserted are on the clipboard — press ⌘V."
+                        : " Copy Result has the words that were not inserted."
+                }
                 overlay.show(title: message, text: resultText)
                 scheduleExpiry()
                 rebuildMenu()

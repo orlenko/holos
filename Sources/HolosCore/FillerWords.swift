@@ -9,6 +9,8 @@ public enum FillerWords {
         pattern: "(?<![\\p{L}\\p{N}'’-])(?:um+|uhm*|uh+|erm|ah+|hm{2,})(?![\\p{L}\\p{N}'’-])",
         options: [.caseInsensitive])
 
+    private static let openers: Set<Character> = ["“", "‘", "\"", "'", "(", "[", "{", "«"]
+
     public static func remove(from text: String) -> String {
         var output = ""
         var cursor = text.startIndex
@@ -21,8 +23,12 @@ public enum FillerWords {
             while output.last?.isWhitespace == true { output.removeLast() }
             if output.last == "," { output.removeLast() }
             while output.last?.isWhitespace == true { output.removeLast() }
-            // Capitalize what follows only when the filler itself began a sentence.
-            let beganSentence = output.last.map { ".!?…".contains($0) } ?? true
+            // Capitalize what follows only when the filler itself began a sentence, looking past opening
+            // quotes and brackets ("“Um, hello" → "“Hello").
+            var context = output[...]
+            while let last = context.last, openers.contains(last) { context = context.dropLast() }
+            while context.last?.isWhitespace == true { context = context.dropLast() }
+            let beganSentence = context.last.map { ".!?…".contains($0) } ?? true
 
             var rest = found.upperBound
             if rest < text.endIndex {
@@ -39,7 +45,8 @@ public enum FillerWords {
                 }
             }
             while rest < text.endIndex, text[rest].isWhitespace { rest = text.index(after: rest) }
-            if rest < text.endIndex, !output.isEmpty, !",.;:!?…)".contains(text[rest]) { output.append(" ") }
+            if rest < text.endIndex, let last = output.last, !openers.contains(last),
+               !",.;:!?…)”’\"".contains(text[rest]) { output.append(" ") }
             capitalizeNext = beganSentence
             cursor = rest
         }

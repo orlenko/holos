@@ -73,14 +73,22 @@ final class DictationOverlay {
                 options: [.usesLineFragmentOrigin, .usesFontLeading], attributes: [.font: font]).height <= limit
         }
         guard !fits(text) else { return text }
-        let starts = text.indices.filter { $0 > text.startIndex && text[text.index(before: $0)] == " " }
-        var low = 0, high = starts.count - 1, best = starts.last
-        while low <= high {
-            let middle = (low + high) / 2
-            if fits("…" + text[starts[middle]...]) { best = starts[middle]; high = middle - 1 } else { low = middle + 1 }
+        // Earliest start whose suffix fits; later starts give shorter suffixes, so fitting is monotonic.
+        func earliestFitting(_ starts: [String.Index]) -> String.Index? {
+            var low = 0, high = starts.count - 1
+            var best: String.Index?
+            while low <= high {
+                let middle = (low + high) / 2
+                if fits("…" + text[starts[middle]...]) { best = starts[middle]; high = middle - 1 } else { low = middle + 1 }
+            }
+            return best
         }
-        guard let best else { return "…" + String(text.suffix(200)) }
-        return "…" + text[best...]
+        let wordStarts = text.indices.filter { $0 > text.startIndex && text[text.index(before: $0)] == " " }
+        // A single token longer than the preview (a long URL) has no fitting word start; cut mid-token.
+        guard let start = earliestFitting(wordStarts) ?? earliestFitting(Array(text.indices.dropFirst())) else {
+            return "…"
+        }
+        return "…" + text[start...]
     }
 
     func hide() {

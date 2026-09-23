@@ -184,12 +184,23 @@ enum InsertionPolicy {
     /// Chromium browsers and Electron apps build their accessibility tree only when an assistive app
     /// asks for it; until then the system reports no focused element. Safe to call for any app.
     public static func enableAccessibility(for app: NSRunningApplication) {
+        // Only Chromium and Electron apps need this; asking every activated app would put a cross-process
+        // call on the main actor for apps that gain nothing from it.
+        guard chromiumBrowserBundleIDs.contains(app.bundleIdentifier ?? "") || isElectron(app) else { return }
         let element = AXUIElementCreateApplication(app.processIdentifier)
+        // A hung app must not stall Holos's menu and hotkey handling.
+        AXUIElementSetMessagingTimeout(element, 0.25)
         let manual = AXUIElementSetAttributeValue(element, "AXManualAccessibility" as CFString, kCFBooleanTrue)
         guard manual != .success, chromiumBrowserBundleIDs.contains(app.bundleIdentifier ?? "") else { return }
         // Older Chromium builds only respond to the VoiceOver switch.
         let enhanced = AXUIElementSetAttributeValue(element, "AXEnhancedUserInterface" as CFString, kCFBooleanTrue)
         log.notice("Enabled accessibility for \(app.bundleIdentifier ?? "?", privacy: .public) via AXEnhancedUserInterface: \(enhanced.rawValue)")
+    }
+
+    private static func isElectron(_ app: NSRunningApplication) -> Bool {
+        guard let bundle = app.bundleURL else { return false }
+        let framework = bundle.appendingPathComponent("Contents/Frameworks/Electron Framework.framework")
+        return FileManager.default.fileExists(atPath: framework.path)
     }
 
     static let chromiumBrowserBundleIDs: Set<String> = [
