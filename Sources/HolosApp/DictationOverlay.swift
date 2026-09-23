@@ -6,6 +6,8 @@ final class DictationOverlay {
     private let panel: NSPanel
     private let titleLabel = NSTextField(labelWithString: "")
     private let previewLabel = NSTextField(wrappingLabelWithString: "")
+    private static let previewWidth: CGFloat = 520 - 36
+    private static let previewLines: CGFloat = 4
 
     init() {
         panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 520, height: 150),
@@ -29,8 +31,9 @@ final class DictationOverlay {
         titleLabel.font = .systemFont(ofSize: 13, weight: .semibold)
         titleLabel.lineBreakMode = .byTruncatingTail
         previewLabel.font = .systemFont(ofSize: 15)
-        previewLabel.maximumNumberOfLines = 4
-        previewLabel.lineBreakMode = .byTruncatingTail
+        previewLabel.maximumNumberOfLines = Int(Self.previewLines)
+        previewLabel.lineBreakMode = .byWordWrapping
+        previewLabel.preferredMaxLayoutWidth = Self.previewWidth
         let stack = NSStackView(views: [titleLabel, previewLabel])
         stack.orientation = .vertical
         stack.alignment = .leading
@@ -50,13 +53,34 @@ final class DictationOverlay {
 
     func show(title: String, text: String) {
         titleLabel.stringValue = title
-        previewLabel.stringValue = String(text.suffix(500))
+        previewLabel.stringValue = Self.latestWords(of: text, font: previewLabel.font ?? .systemFont(ofSize: 15))
         let pointer = NSEvent.mouseLocation
         let screen = NSScreen.screens.first { $0.frame.contains(pointer) } ?? NSScreen.main
         if let frame = screen?.visibleFrame {
             panel.setFrameOrigin(NSPoint(x: frame.midX - panel.frame.width / 2, y: frame.minY + 70))
         }
         panel.orderFrontRegardless()
+    }
+
+    /// The end of `text` that fits the preview, so the words just spoken stay visible; older words
+    /// are dropped from the front at a word boundary and marked with an ellipsis.
+    static func latestWords(of text: String, font: NSFont) -> String {
+        let lineHeight = NSLayoutManager().defaultLineHeight(for: font)
+        let limit = lineHeight * previewLines + 1
+        func fits(_ candidate: String) -> Bool {
+            (candidate as NSString).boundingRect(
+                with: NSSize(width: previewWidth, height: .greatestFiniteMagnitude),
+                options: [.usesLineFragmentOrigin, .usesFontLeading], attributes: [.font: font]).height <= limit
+        }
+        guard !fits(text) else { return text }
+        let starts = text.indices.filter { $0 > text.startIndex && text[text.index(before: $0)] == " " }
+        var low = 0, high = starts.count - 1, best = starts.last
+        while low <= high {
+            let middle = (low + high) / 2
+            if fits("…" + text[starts[middle]...]) { best = starts[middle]; high = middle - 1 } else { low = middle + 1 }
+        }
+        guard let best else { return "…" + String(text.suffix(200)) }
+        return "…" + text[best...]
     }
 
     func hide() {
