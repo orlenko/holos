@@ -73,6 +73,30 @@ in app memory and the menu's Copy/Discard actions for up to ten minutes (unless
 replaced, discarded, or the app quits). **Copy Result** overwrites the system
 clipboard only at the user's explicit request. No raw dictation audio is saved.
 
+## Corrections
+
+**Correct Last Dictation…** in the menu opens the last transcript as Holos wrote it.
+Fix misheard words there and choose **Learn Corrections**; Holos compares the two
+versions and keeps short word swaps (up to a few words; insertions, deletions, and
+longer rewrites are ignored). A misheard single word that is itself a dictionary
+word is kept with a neighbouring word, so "bull" → "pull" becomes "bull request" →
+"pull request" instead of rewriting every "bull". Pairs can also be added or removed
+by hand in the same window. They are stored in
+`~/Library/Application Support/Holos/corrections.json`.
+
+Corrections are applied, whole-word and case-insensitively, to the preview and to
+every streamed and final chunk. While streaming, trailing words that could start a
+multi-word phrase are held back until the next words arrive. The corrected phrases
+are also passed to the recognizer as contextual strings, which is best effort.
+Learning does not change text already inserted into other apps.
+
+Insertion decisions (target kind, chunk lengths, outcomes, and why streaming
+stopped) are logged without transcript text:
+
+```sh
+/usr/bin/log stream --style compact --predicate 'subsystem == "ca.orlenko.holos.app"'
+```
+
 ## Manual acceptance matrix
 
 Use disposable text and a short utterance; avoid sensitive content while checking
@@ -84,6 +108,7 @@ behavior, and permission owner for each row.
 | TextEdit plain text, empty caret and selected text | One insertion/replacement, with no extra newline or duplicate text. |
 | Browser text field and editor text area | Insert only if direct writable Accessibility text is supported; otherwise preserve Copy. |
 | Terminal input (shell prompt and a TUI such as Claude Code) | Phrases are typed as you pause; never a Return; Secure Keyboard Entry refuses. |
+| Learn "bull request" → "pull request", then dictate it | Corrected in preview and in the field; "bull market" unchanged. |
 | Long utterance with pauses in TextEdit | Finalized phrases appear while speaking, the tail on release, no duplicates or missing spaces. |
 | Password or secure field | Refuse dictation/insertion; no text lands in the field. |
 | Switch app, field, caret, selection, or nearby text during speech | Writing stops; earlier chunks stay, the remainder is kept for Copy. |

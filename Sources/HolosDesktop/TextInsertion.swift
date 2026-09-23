@@ -3,6 +3,7 @@ import ApplicationServices
 import Carbon
 import CryptoKit
 import Foundation
+import os
 
 public enum TextInsertionError: Error, LocalizedError, Sendable {
     case secureInput
@@ -84,6 +85,8 @@ enum InsertionPolicy {
 }
 
 @MainActor public enum TextInsertion {
+    private static let log = Logger(subsystem: "ca.orlenko.holos.app", category: "insertion")
+
     public static func isSecureInputActive() -> Bool {
         if IsSecureEventInputEnabled() { return true }
         guard AXIsProcessTrusted(), let element = try? focusedElement() else { return false }
@@ -115,6 +118,7 @@ enum InsertionPolicy {
         guard let liveElement = try? focusedElement(), CFEqual(liveElement, target.element),
               let live = try? readSnapshot(liveElement),
               InsertionPolicy.matches(target.snapshot, live) else {
+            log.notice("Insert refused: focus or field state differs from the snapshot")
             return .needsCopy("Focus, selection, or nearby text changed; copy the transcript explicitly.")
         }
         var writable: DarwinBoolean = false
@@ -127,6 +131,7 @@ enum InsertionPolicy {
         let status = AXUIElementSetAttributeValue(liveElement, kAXSelectedTextAttribute as CFString,
                                                   text as CFString)
         guard status == .success else {
+            log.notice("Insert unverified: AXSelectedText write returned \(status.rawValue)")
             return .unverified("Accessibility did not confirm insertion; inspect the field before copying.")
         }
         let insertedUnits = text.utf16.count
@@ -142,6 +147,7 @@ enum InsertionPolicy {
               let observed = try? stringForRange(target.element,
                   NSRange(location: target.selectedUTF16Range.location, length: insertedUnits)),
               observed == text else {
+            log.notice("Insert unverified: read-back did not match")
             return .unverified("Could not verify the inserted text; inspect the field before copying.")
         }
         return .inserted
@@ -158,8 +164,18 @@ enum InsertionPolicy {
         let inserted = text.utf16.count
         let expectedSelection = NSRange(location: target.selectedUTF16Range.location + inserted, length: 0)
         let expectedLength = target.snapshot.totalUTF16Length - target.selectedUTF16Range.length + inserted
-        guard let live = try? readSnapshot(target.element), live.pid == target.pid,
-              live.selection == expectedSelection, live.totalUTF16Length == expectedLength else { return nil }
+        guard let live = try? readSnapshot(target.element) else {
+            log.notice("Advance failed: field snapshot unreadable")
+            return nil
+        }
+        guard live.pid == target.pid, live.selection == expectedSelection,
+              live.totalUTF16Length == expectedLength else {
+            log.notice("""
+                Advance failed: selection \(live.selection.location),\(live.selection.length) \
+                expected \(expectedSelection.location),0; length \(live.totalUTF16Length) expected \(expectedLength)
+                """)
+            return nil
+        }
         return InsertionTarget(element: target.element, snapshot: live)
     }
 

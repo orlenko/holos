@@ -133,7 +133,7 @@ public actor AppleSpeechSession {
         self.resultTask = resultTask
     }
 
-    public static func make(locale: String, backend: SpeechBackend,
+    public static func make(locale: String, backend: SpeechBackend, contextualStrings: [String] = [],
                             onUpdate: @escaping @Sendable (TranscriptUpdate) -> Void) async throws -> AppleSpeechSession {
         let module = try await AppleSpeechEngine.installedModule(locale: locale, backend: backend)
         let converter = try await AnalyzerInputConverter.converter(compatibleWith: [module.module])
@@ -142,6 +142,12 @@ public actor AppleSpeechSession {
         let analyzer = SpeechAnalyzer(modules: [module.module])
         let resultTask = consume(module: module, into: collector, analyzer: analyzer, input: input)
         do {
+            if !contextualStrings.isEmpty {
+                let context = AnalysisContext()
+                context.contextualStrings[.general] = contextualStrings
+                // Vocabulary biasing is best effort; corrections are still applied to the text afterwards.
+                try? await analyzer.setContext(context)
+            }
             try await analyzer.start(inputSequence: input)
             return AppleSpeechSession(analyzer: analyzer, converter: converter, input: input,
                                       collector: collector, resultTask: resultTask)
