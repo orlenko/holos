@@ -215,6 +215,9 @@ struct HotkeyReducer {
                                                options: .defaultTap, eventsOfInterest: events,
                                                callback: { _, type, event, userInfo in
             guard let userInfo else { return Unmanaged.passUnretained(event) }
+            if event.getIntegerValueField(.eventSourceUserData) == KeystrokeTarget.syntheticEventMarker {
+                return Unmanaged.passUnretained(event)
+            }
             let monitor = Unmanaged<GlobalHotkeyMonitor>.fromOpaque(userInfo).takeUnretainedValue()
             let code = Int(event.getIntegerValueField(.keyboardEventKeycode))
             let flags = event.flags

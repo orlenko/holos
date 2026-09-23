@@ -38,3 +38,10 @@ import Testing
     #expect(!InsertionPolicy.permits("column\tdata"))
     #expect(!InsertionPolicy.permits("line\u{2028}separator"))
 }
+
+@Test func streamingWritesOnlyTheExtensionOfWrittenText() {
+    #expect(InsertionPolicy.pending("Hello there.", after: "") == "Hello there.")
+    #expect(InsertionPolicy.pending("Hello there. How are you?", after: "Hello there.") == " How are you?")
+    #expect(InsertionPolicy.pending("Hello there.", after: "Hello there.") == "")
+    #expect(InsertionPolicy.pending("Hello, there. How", after: "Hello there.") == nil)
+}

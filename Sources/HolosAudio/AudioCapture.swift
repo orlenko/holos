@@ -57,12 +57,16 @@ public final class AudioCapture {
                 throw HolosError.unavailable("No usable microphone input is available.")
             }
             let receiver = self.receiver
+            let timeline = Mutex(MicrophoneTimeline(sampleRate: format.sampleRate))
             // The macOS 27 throwing tap supports 100–400 ms buffers.
             let bufferSize = AVAudioFrameCount(max(1, ceil(format.sampleRate * 0.1)))
             try input.installAudioTap(onBus: 0, bufferSize: bufferSize, format: format) { buffer, time in
                 do {
-                    guard time.isHostTimeValid else { throw HolosError.incomplete("Microphone buffer has no host timestamp.") }
-                    let timestamp = CMClockMakeHostTimeFromSystemUnits(time.hostTime).seconds
+                    guard time.isHostTimeValid, time.isSampleTimeValid else {
+                        throw HolosError.incomplete("Microphone buffer has no host or sample timestamp.")
+                    }
+                    let hostSeconds = CMClockMakeHostTimeFromSystemUnits(time.hostTime).seconds
+                    let timestamp = timeline.withLock { $0.startTime(hostSeconds: hostSeconds, sampleTime: time.sampleTime) }
                     receiver.emit(track: "mic", frame: try PCMConversion.copy(buffer, startTime: timestamp - receiver.origin))
                 } catch { receiver.fail(error) }
             }
@@ -168,6 +172,23 @@ private final class CaptureReceiver: NSObject, SCStreamOutput, SCStreamDelegate,
             emit(track: type == .microphone ? "mic" : "system",
                  frame: try PCMConversion.copy(sampleBuffer, startTime: timestamp - origin))
         } catch { fail(error) }
+    }
+}
+
+/// Host timestamps on consecutive tap buffers jitter by several microseconds, so adjacent buffers can
+/// appear to overlap. Anchor on the first buffer's host time and advance by sample count instead.
+struct MicrophoneTimeline: Sendable {
+    let sampleRate: Double
+    private var anchor: (hostSeconds: Double, sampleTime: Int64)?
+
+    init(sampleRate: Double) { self.sampleRate = sampleRate }
+
+    mutating func startTime(hostSeconds: Double, sampleTime: Int64) -> Double {
+        guard let anchor else {
+            self.anchor = (hostSeconds, sampleTime)
+            return hostSeconds
+        }
+        return anchor.hostSeconds + Double(sampleTime - anchor.sampleTime) / sampleRate
     }
 }
 

@@ -33,8 +33,9 @@ open build/Holos.app
 ```
 
 The build does not install or launch the app, add a login item, or enable dictation.
-On first launch, dictation is disabled. Use the Holos menu to explicitly grant
-Microphone, Accessibility, and Input Monitoring access and install Apple's `en-CA`
+On first launch, dictation is disabled and the Holos Setup window opens (reopen it
+with **Setup…** in the menu). It shows live status for each step: explicitly grant
+Microphone, Accessibility, and Input Monitoring access, install Apple's `en-CA`
 Speech assets, then enable your chosen hold-to-talk shortcut. The default choice
 is Right Option; Control–Option–Space is available as an alternate. The menu bar
 app shows a live preview, and releasing the shortcut finalizes one utterance.

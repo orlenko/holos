@@ -205,6 +205,24 @@ private func eventually(_ condition: () -> Bool) async -> Bool {
     #expect(controller.status.text.isEmpty)
 }
 
+@Test @MainActor func committedTextCarriesOnlyFinalsAndPrefixesTheResult() async {
+    let harness = Harness()
+    await harness.speech.setSegments([.init(start: 0, end: 1, text: " Hello there. "),
+                                      .init(start: 1, end: 2, text: "How are you?")])
+    let controller = DictationController(dependencies: harness.dependencies) { _ in }
+    #expect(controller.begin())
+    #expect(await eventually { controller.status.phase == .listening })
+    harness.emit(.init(segment: .init(start: 0, end: 1, text: "Hello there."), isFinal: true))
+    harness.emit(.init(segment: .init(start: 1, end: 2, text: "How are"), isFinal: false))
+    #expect(await eventually { controller.status.text == "Hello there. How are" })
+    #expect(controller.status.committedText == "Hello there.")
+    controller.end()
+    #expect(controller.status.committedText == "Hello there.")
+    #expect(await eventually { controller.status.phase == .result })
+    #expect(controller.status.text == "Hello there. How are you?")
+    #expect(controller.status.text.hasPrefix("Hello there."))
+}
+
 @Test @MainActor func captureAndRecognizerFailuresBecomeFailedStatuses() async {
     let captureHarness = Harness()
     captureHarness.capture.startError = HolosError.unavailable("Microphone unavailable")

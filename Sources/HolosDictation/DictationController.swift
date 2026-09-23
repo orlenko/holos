@@ -11,13 +11,26 @@ public struct DictationStatus: Sendable, Equatable {
     public let phase: DictationPhase
     public let utteranceID: UUID?
     public let text: String
+    /// Finalized recognition so far. It only grows within an utterance unless the recognizer reorders
+    /// finals, so a consumer may stream it into a field; volatile words stay out of it.
+    public let committedText: String
     public let message: String?
 
-    public init(phase: DictationPhase, utteranceID: UUID? = nil, text: String = "", message: String? = nil) {
+    public init(phase: DictationPhase, utteranceID: UUID? = nil, text: String = "", committedText: String = "",
+                message: String? = nil) {
         self.phase = phase
         self.utteranceID = utteranceID
         self.text = text
+        self.committedText = committedText
         self.message = message
+    }
+
+    /// One normalization for preview, committed, and final text, so committed text stays a prefix of the result.
+    static func transcript(_ segments: [TranscriptSegment]) -> String {
+        segments.sorted { $0.start < $1.start }
+            .map { $0.text.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+            .joined(separator: " ")
     }
 }
 
@@ -162,7 +175,7 @@ public final class DictationController {
         case .listening:
             watchdogTask?.cancel()
             publish(.init(phase: .finalizing, utteranceID: id, text: status.text,
-                          message: timeoutMessage))
+                          committedText: status.committedText, message: timeoutMessage))
             guard generation == id else { return }
             startFinalizationWatchdog(id)
             finalizationTask = Task { [weak self] in await self?.finalize(id) }
@@ -263,8 +276,7 @@ public final class DictationController {
             updateContinuation?.finish()
             await previewTask?.value
             guard generation == id else { return }
-            let text = segments.sorted { $0.start < $1.start }.map(\.text)
-                .joined(separator: " ").trimmingCharacters(in: .whitespacesAndNewlines)
+            let text = DictationStatus.transcript(segments)
             generation = nil
             releaseRequested = false
             reducer = TranscriptReducer()
@@ -282,9 +294,9 @@ public final class DictationController {
         guard generation == id, status.phase == .listening || status.phase == .finalizing else { return }
         do {
             try reducer.apply(update)
-            let preview = (reducer.finalized + reducer.provisional).sorted { $0.start < $1.start }
-                .map(\.text).joined(separator: " ").trimmingCharacters(in: .whitespacesAndNewlines)
-            publish(.init(phase: status.phase, utteranceID: id, text: preview, message: status.message))
+            publish(.init(phase: status.phase, utteranceID: id,
+                          text: DictationStatus.transcript(reducer.finalized + reducer.provisional),
+                          committedText: DictationStatus.transcript(reducer.finalized), message: status.message))
         } catch {
             // The final segments returned by the engine remain authoritative.
         }
