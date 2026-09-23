@@ -179,7 +179,35 @@ enum InsertionPolicy {
         return InsertionTarget(element: target.element, snapshot: live)
     }
 
-    private static func focusedElement() throws -> AXUIElement {
+    /// Chromium browsers and Electron apps build their accessibility tree only when an assistive app
+    /// asks for it; until then the system reports no focused element. Safe to call for any app.
+    public static func enableAccessibility(for app: NSRunningApplication) {
+        let element = AXUIElementCreateApplication(app.processIdentifier)
+        let manual = AXUIElementSetAttributeValue(element, "AXManualAccessibility" as CFString, kCFBooleanTrue)
+        guard manual != .success, chromiumBrowserBundleIDs.contains(app.bundleIdentifier ?? "") else { return }
+        // Older Chromium builds only respond to the VoiceOver switch.
+        let enhanced = AXUIElementSetAttributeValue(element, "AXEnhancedUserInterface" as CFString, kCFBooleanTrue)
+        log.notice("Enabled accessibility for \(app.bundleIdentifier ?? "?", privacy: .public) via AXEnhancedUserInterface: \(enhanced.rawValue)")
+    }
+
+    static let chromiumBrowserBundleIDs: Set<String> = [
+        "com.google.Chrome", "com.google.Chrome.beta", "com.google.Chrome.canary", "com.brave.Browser",
+        "com.microsoft.edgemac", "company.thebrowser.Browser", "com.vivaldi.Vivaldi", "org.chromium.Chromium",
+    ]
+
+    /// The focused element when it accepts typing (a text field, text area, combo box, or rich-text
+    /// editor such as a web contenteditable), even if it does not support direct Accessibility writes.
+    static func focusedEditableElement() -> AXUIElement? {
+        guard AXIsProcessTrusted(), !IsSecureEventInputEnabled(), let element = try? focusedElement(),
+              !secureSubrole(element) else { return nil }
+        let role = (try? attribute(element, kAXRoleAttribute as CFString)) as? String
+        let editableRoles = [kAXTextFieldRole, kAXTextAreaRole, kAXComboBoxRole].map { $0 as String }
+        if let role, editableRoles.contains(role) { return element }
+        // Web rich-text editors report their editable root through this attribute.
+        return (try? attribute(element, "AXEditableAncestor" as CFString)) != nil ? element : nil
+    }
+
+    static func focusedElement() throws -> AXUIElement {
         guard let frontmost = NSWorkspace.shared.frontmostApplication else {
             throw TextInsertionError.unsupported("No frontmost application is available for insertion.")
         }
@@ -286,10 +314,13 @@ enum InsertionPolicy {
 
     public let pid: pid_t
     public let appName: String
+    /// For a field in a regular app, the element that must still have focus before each chunk.
+    private let element: AXUIElement?
 
-    private init(pid: pid_t, appName: String) {
+    private init(pid: pid_t, appName: String, element: AXUIElement? = nil) {
         self.pid = pid
         self.appName = appName
+        self.element = element
     }
 
     /// A target when the frontmost app is a known terminal; nil otherwise.
@@ -297,6 +328,14 @@ enum InsertionPolicy {
         guard let app = NSWorkspace.shared.frontmostApplication,
               let bundleID = app.bundleIdentifier, terminalBundleIDs.contains(bundleID) else { return nil }
         return KeystrokeTarget(pid: app.processIdentifier, appName: app.localizedName ?? bundleID)
+    }
+
+    /// A target for a focused editable field that cannot take a direct Accessibility write, such as a
+    /// web editor. Typing stops as soon as focus leaves that exact element.
+    public static func captureEditableField() -> KeystrokeTarget? {
+        guard let app = NSWorkspace.shared.frontmostApplication,
+              let element = TextInsertion.focusedEditableElement() else { return nil }
+        return KeystrokeTarget(pid: app.processIdentifier, appName: app.localizedName ?? "the app", element: element)
     }
 
     public func type(_ text: String) -> InsertionOutcome {
@@ -308,6 +347,11 @@ enum InsertionPolicy {
         }
         guard NSWorkspace.shared.frontmostApplication?.processIdentifier == pid else {
             return .needsCopy("\(appName) is no longer frontmost; copy the transcript explicitly.")
+        }
+        if let element {
+            guard let focused = try? TextInsertion.focusedElement(), CFEqual(focused, element) else {
+                return .needsCopy("Focus moved to a different field; copy the transcript explicitly.")
+            }
         }
         // A private source keeps the held shortcut modifier out of the typed characters.
         let source = CGEventSource(stateID: .privateState)

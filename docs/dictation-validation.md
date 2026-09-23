@@ -54,12 +54,23 @@ write is read back. For a known terminal app (Terminal, iTerm2, Ghostty, WezTerm
 kitty, Alacritty, Warp), which has no writable text field, chunks are typed as
 keystrokes posted only to the terminal that was frontmost at key-down, and only
 while it is still frontmost; typed text cannot be read back, and switching tabs or
-panes inside the terminal while speaking redirects it. A password/secure field or
-Secure Keyboard Entry is refused.
+panes inside the terminal while speaking redirects it. A focused editable field that
+has no direct Accessibility write, such as a web rich-text editor, is typed into the
+same way, but only while that exact element keeps focus. Chromium browsers and
+Electron apps are asked to expose accessibility (`AXManualAccessibility`) when they
+become active, since they otherwise report no focused element. A password/secure
+field or Secure Keyboard Entry is refused.
+
+Hesitation sounds ("um", "uh", "ah", "erm", "hmm") and the commas around them are
+removed before corrections are applied, unless **Remove filler words** is turned
+off in the Setup window. "mm", "hm", and "er" are kept because they collide with
+units and abbreviations.
 
 The first refusal stops writing for the rest of that utterance. Text already
-written stays in place, and the unwritten remainder is kept for explicit **Copy
-Result** or **Discard Result**; the app does not paste via the clipboard. If the
+written stays in place, and the unwritten remainder is copied to the clipboard right
+away (the status says to press ⌘V) and also kept for **Copy Result** or **Discard
+Result**; the app never pastes on its own. The same applies to committed words
+left unwritten when an utterance fails. If the
 recognizer's final transcript no longer starts with what was already written,
 nothing more is written and Copy Result holds the full transcript. Direct insertion
 support is target-app dependent and has not been broadly established. If insertion
@@ -68,10 +79,11 @@ text.
 
 The maximum utterance is 120 seconds; finalization after listening has a
 30-second limit. When the maximum duration forces a stop, anything already
-streamed stays and the remainder is retained for Copy rather than auto-inserted. The overlay hides eight seconds after a result, but its text remains
+streamed stays and the remainder goes to the clipboard rather than being auto-inserted. The overlay hides eight seconds after a result, but its text remains
 in app memory and the menu's Copy/Discard actions for up to ten minutes (unless
-replaced, discarded, or the app quits). **Copy Result** overwrites the system
-clipboard only at the user's explicit request. No raw dictation audio is saved.
+replaced, discarded, or the app quits). The system clipboard is overwritten when
+text could not be written or when **Copy Result** is chosen. No raw dictation audio
+is saved.
 
 ## Corrections
 
