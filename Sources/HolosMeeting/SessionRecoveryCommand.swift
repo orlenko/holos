@@ -66,11 +66,33 @@ public enum SessionRecoveryCommand {
     ]
 
     /// Whether recover rebuilds the transcript of a session with manifest `status` without `force`.
-    static func rebuilds(status: String, session: URL) -> Bool {
-        if rebuiltStatuses.contains(status) { return true }
-        guard rebuiltWithoutTranscriptStatuses.contains(status) else { return false }
-        // A pointer that cannot be read shows no transcript either; a rebuild adds a revision and deletes none.
-        return (try? SessionArchive.currentTranscriptID(at: session)) == nil
+    ///
+    /// `stoppedCapturing`: the manifest was `processing` when recovery marked it `interrupted` (the recorder had
+    /// stopped capturing and was transcribing, or had saved the transcript and died before `finish`). Such a session
+    /// is treated like `rebuiltWithoutTranscriptStatuses`: a transcript the stop path saved is kept.
+    static func rebuilds(status: String, stoppedCapturing: Bool = false, session: URL) -> Bool {
+        let keepsSavedTranscript = rebuiltWithoutTranscriptStatuses.contains(status)
+            || (status == ArchiveStatus.interrupted && stoppedCapturing)
+        if !keepsSavedTranscript, rebuiltStatuses.contains(status) { return true }
+        guard keepsSavedTranscript else { return false }
+        return !hasCurrentTranscript(session)
+    }
+
+    /// Whether the session names a current transcript. A pointer that cannot be read shows none either; a rebuild adds
+    /// a revision and deletes none.
+    private static func hasCurrentTranscript(_ session: URL) -> Bool {
+        (try? SessionArchive.currentTranscriptID(at: session)) != nil
+    }
+
+    /// Whether the manifest's `interrupted` status was set by a recovery that found it `processing`: the last
+    /// `archiveRecovered` event that marked a stale status (`previousStatus` `recording` or `processing`) says
+    /// `processing`. Recovery writes that event before it rewrites the status, and no later recovery marks it again.
+    static func stoppedCapturing(_ events: [ArchiveEvent]) -> Bool {
+        let stale: Set<String> = [ArchiveStatus.recording, ArchiveStatus.processing]
+        let marked = events.last { event in
+            event.kind == MeetingEventKind.archiveRecovered && event.details["previousStatus"].map(stale.contains) == true
+        }
+        return marked?.details["previousStatus"] == ArchiveStatus.processing
     }
 
     /// Recovers the archive, rebuilds its transcript, then labels its speakers, all under one lease; `step` is called
@@ -93,6 +115,9 @@ public enum SessionRecoveryCommand {
         defer { lease.release() }
 
         progress("Recovering the saved audio…")
+        // Recovery rewrites `processing` to `interrupted`; the status before it decides whether a transcript saved
+        // at stop is kept.
+        let statusBefore = (try? SessionArchive.readManifest(at: session))?.status
         let recovery = try await SessionArchive.recover(at: session, lease: lease)
         step(.recovered)
         // A maintenance command marks a dead recorder's status exited (§4.1), with the recovered archive status.
@@ -106,12 +131,14 @@ public enum SessionRecoveryCommand {
         var exitCode: Int32 = 0
 
         let status = recovery.manifest?.status ?? ""
+        let stoppedCapturing = status == ArchiveStatus.interrupted
+            && (statusBefore == ArchiveStatus.processing || Self.stoppedCapturing(recovery.events))
         let chunks = recovery.manifest?.chunks.count ?? 0
         var parts = ["Recovered \(chunks) \(chunks == 1 ? "chunk" : "chunks") "
             + "(\(clock(recovery.manifest?.savedSeconds ?? 0)))."]
         var rebuild: RebuildReport?
         var record: PostProcessingRecord?
-        if request.force || rebuilds(status: status, session: session) {
+        if request.force || rebuilds(status: status, stoppedCapturing: stoppedCapturing, session: session) {
             progress("Rebuilding the transcript…")
             do {
                 rebuild = try await TranscriptRebuilder.rebuild(
@@ -126,6 +153,10 @@ public enum SessionRecoveryCommand {
                     + "could not be rebuilt: \(error.localizedDescription)")
             }
             step(.rebuilt)
+        } else if stoppedCapturing {
+            parts.append("Nothing to rebuild: the recorder was interrupted after it stopped capturing and keeps the "
+                + "transcript saved when it stopped. Use --force to rebuild its transcript from the saved phrases "
+                + "anyway.")
         } else if rebuiltWithoutTranscriptStatuses.contains(status) {
             parts.append("Nothing to rebuild: the meeting is \(status) and keeps the transcript saved when it "
                 + "stopped. Use --force to rebuild its transcript from the saved phrases anyway.")
@@ -139,28 +170,31 @@ public enum SessionRecoveryCommand {
                 warnings.append("The transcript was rebuilt, but recording the rebuild failed: \(problem) "
                     + "Run holos session recover again once this is fixed.")
             }
-            if request.postProcess {
-                if rebuild.reused, let current = currentLabels(session, transcriptID: rebuild.transcriptID,
-                                                               canLabel: diarizer != nil) {
-                    // A success without labels repeats why (the setup hint) instead of calling them up to date.
-                    parts.append(current.runID == nil ? (current.message ?? "No speaker labels.")
-                        : "Speaker labels are up to date.")
-                } else {
-                    do {
-                        let processor = MeetingPostProcessor(diarizer: diarizer, options: PostProcessingOptions(),
-                                                             freeSpace: freeSpace)
-                        let result = try await processor.run(session: session, lease: lease) { progress($0.message) }
-                        record = result
-                        step(.postProcessed)
-                        if let sentence = speakerSentence(result, session: session) { parts.append(sentence) }
-                        if result.state == .partial || result.state == .failed {
-                            warnings.append(result.message ?? "Speaker labelling \(result.state.rawValue).")
-                            exitCode = 3
-                        }
-                    } catch let error where !(error is CancellationError) {
-                        warnings.append("Speaker labels were not updated: \(error.localizedDescription)")
+        }
+        // The transcript to label: the rebuilt one, or the one a recorder interrupted before `finish` saved (its
+        // post-processing never ran). Labels already made for the same transcript are kept.
+        let kept = rebuild == nil && stoppedCapturing ? try? SessionArchive.currentTranscriptID(at: session) : nil
+        if request.postProcess, let transcriptID = rebuild?.transcriptID ?? kept {
+            let unchanged = rebuild?.reused ?? true
+            if unchanged, let current = currentLabels(session, transcriptID: transcriptID, canLabel: diarizer != nil) {
+                // A success without labels repeats why (the setup hint) instead of calling them up to date.
+                parts.append(current.runID == nil ? (current.message ?? "No speaker labels.")
+                    : "Speaker labels are up to date.")
+            } else {
+                do {
+                    let processor = MeetingPostProcessor(diarizer: diarizer, options: PostProcessingOptions(),
+                                                         freeSpace: freeSpace)
+                    let result = try await processor.run(session: session, lease: lease) { progress($0.message) }
+                    record = result
+                    step(.postProcessed)
+                    if let sentence = speakerSentence(result, session: session) { parts.append(sentence) }
+                    if result.state == .partial || result.state == .failed {
+                        warnings.append(result.message ?? "Speaker labelling \(result.state.rawValue).")
                         exitCode = 3
                     }
+                } catch let error where !(error is CancellationError) {
+                    warnings.append("Speaker labels were not updated: \(error.localizedDescription)")
+                    exitCode = 3
                 }
             }
         }

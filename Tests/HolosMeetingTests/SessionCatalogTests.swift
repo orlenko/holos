@@ -158,6 +158,24 @@ private func catalogSetCreated(_ session: URL, _ date: Date) throws {
     #expect(SessionCatalog.summary(session: session).hasSpeakerEdits)
 }
 
+@Test func catalogCountsATornOrUnreadableEditJournalAsEdited() throws {
+    let temp = try TemporaryDirectory("catalog")
+    defer { temp.remove() }
+    let session = try catalogDeadRecording(in: temp.url)
+    #expect(!SessionCatalog.hasSpeakerEdits(session), "No journal: no edits.")
+    let journal = SessionPaths.edits(session)
+    try AtomicFile.ensurePrivateDirectory(journal.deletingLastPathComponent())
+    // A crash cut the first edit short: no complete line, only a partial one.
+    try Data(#"{"schemaVersion":1,"id":"E1","#.utf8).write(to: journal)
+    let torn = try SessionSpeakerStore.readEdits(session: session)
+    #expect(torn.edits.isEmpty && torn.unreadableLines == 0 && torn.tornTail)
+    #expect(SessionCatalog.hasSpeakerEdits(session))
+    #expect(SessionCatalog.summary(session: session).hasSpeakerEdits)
+    // A complete line this build cannot read counts too.
+    try Data("not an edit\n".utf8).write(to: journal)
+    #expect(SessionCatalog.hasSpeakerEdits(session))
+}
+
 @Test(.timeLimit(.minutes(1)))
 func catalogReportsNotLabelledWithMessage() async throws {
     let temp = try TemporaryDirectory("catalog")

@@ -185,11 +185,12 @@ public enum SessionCatalog {
         }
     }
 
-    /// Whether the speaker edit journal holds any edit, including lines this build cannot read. A journal that
-    /// cannot be read at all counts as edited, so nothing treats the labels as untouched.
-    private static func hasSpeakerEdits(_ session: URL) -> Bool {
+    /// Whether the speaker edit journal holds any edit, including lines this build cannot read and a partial last
+    /// line (an edit a crash cut short). A journal that cannot be read at all counts as edited, so nothing treats the
+    /// labels as untouched.
+    static func hasSpeakerEdits(_ session: URL) -> Bool {
         guard let journal = try? SessionSpeakerStore.readEdits(session: session) else { return true }
-        return !journal.edits.isEmpty || journal.unreadableLines > 0
+        return !journal.edits.isEmpty || journal.unreadableLines > 0 || journal.tornTail
     }
 
     /// When the folder was created (for a session whose manifest cannot be read).

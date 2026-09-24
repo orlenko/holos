@@ -108,8 +108,8 @@ public enum TranscriptRebuilder {
                 let covered = coverage[track] ?? 0
                 guard let end = chunks.map(\.end).max(), end - covered > uncoveredTolerance else { continue }
                 let from = max(0, covered - replayLeadIn)
-                let seconds = chunks.reduce(0.0) { $0 + max(0, $1.end - max($1.start, from)) }
-                plans.append(ReplayPlan(track: track, from: from, seconds: seconds))
+                // Time that overlapping chunks both hold is fed once (`TrackReplayer`), so it is counted once.
+                plans.append(ReplayPlan(track: track, from: from, seconds: manifest.audioSeconds(track: track, from: from)))
             }
         }
         let strings = plans.isEmpty ? [] : (vocabulary ?? sessionVocabulary(session))

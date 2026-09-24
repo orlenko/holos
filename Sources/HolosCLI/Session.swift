@@ -56,8 +56,9 @@ struct Session: AsyncParsableCommand {
             discussion: """
                 Saved audio is never rewritten, and a torn journal is backed up before it is repaired. The \
                 transcript is rebuilt from the phrases live transcription saved; only the audio they do not cover \
-                is transcribed again. A session that was not interrupted keeps its transcript unless --force is \
-                given. Running recover again changes nothing. Exits 0 when done (also when speaker models are not \
+                is transcribed again. A session that was not interrupted, or was interrupted after it stopped \
+                capturing and saved its transcript, keeps that transcript unless --force is given. Running recover \
+                again changes nothing. Exits 0 when done (also when speaker models are not \
                 installed), 3 when the transcript was rebuilt but speaker labelling failed or was skipped for \
                 another reason (it is printed), and 1 when recovery or the rebuild failed or some saved audio \
                 could not be recovered.

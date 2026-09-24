@@ -20,13 +20,27 @@ public struct AudioDeletedRecord: Codable, Sendable, Equatable {
 }
 
 extension SessionManifest {
-    /// Seconds of audio saved: the longest track's total chunk duration.
+    /// Seconds of audio saved: the longest track's `audioSeconds`.
     public var savedSeconds: Double {
-        var totals: [String: Double] = [:]
-        for chunk in chunks where chunk.end.isFinite && chunk.start.isFinite && chunk.end > chunk.start {
-            totals[chunk.track, default: 0] += chunk.end - chunk.start
+        Set(chunks.map(\.track)).map { audioSeconds(track: $0) }.max() ?? 0
+    }
+
+    /// Seconds of `track`'s audio at or after session time `from`: the union of its chunks' intervals, so time that
+    /// overlapping chunks (an older archive) both hold counts once, as `TrackReplayer` feeds it once. Chunks without
+    /// finite times, or that end before they start, count as nothing.
+    public func audioSeconds(track: String, from: Double = -.infinity) -> Double {
+        let intervals = chunks
+            .filter { $0.track == track && $0.start.isFinite && $0.end.isFinite }
+            .map { (start: max($0.start, from), end: $0.end) }
+            .filter { $0.end > $0.start }
+            .sorted { $0.start < $1.start }
+        var total = 0.0
+        var reached = -Double.infinity
+        for interval in intervals where interval.end > reached {
+            total += interval.end - max(interval.start, reached)
+            reached = interval.end
         }
-        return totals.values.max() ?? 0
+        return total
     }
 }
 
