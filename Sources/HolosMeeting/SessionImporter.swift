@@ -306,11 +306,16 @@ private struct TranscriptionFailure: Error {
 /// The marker is visible only while the lock is held: `create` makes and locks `.import.lock` before it writes the
 /// marker, and `publish` removes the marker before it lets go of the lock, so a sweep never finds a marked folder
 /// whose import is running but not yet (or no longer) holding its lock.
+///
+/// Everything that removes or moves entries of a staging folder goes through a descriptor of that folder, opened and
+/// checked once (the import keeps its own open from `create` on; a sweep opens each candidate and checks its marker
+/// and lock through it), never through its name again. The sessions root may be a folder other programs change, and
+/// a folder renamed in at a staging folder's name after the check is never emptied (`AtomicFile.removeOpenFolder`).
 final class ImportStaging {
     static let prefix = ".import-"
     static let lockName = ".import.lock"
     /// Written into every staging folder after its lock file is locked; removed first when it is published, last when
-    /// it is discarded or swept (`removeStaging`).
+    /// it is discarded or swept (`remove(folder:named:in:root:)`).
     static let markerName = ".holos-import"
     static let markerContents = Array("{\"holos\":\"import-staging\",\"version\":1}\n".utf8)
     /// A marked staging folder whose lock file is missing or unlocked is removed by a sweep only when the folder has
@@ -329,36 +334,55 @@ final class ImportStaging {
     let root: URL
     let name: String
     var url: URL { root.appendingPathComponent(name, isDirectory: true) }
+    /// The sessions root, open since `create` made the staging folder in it.
+    private let rootFD: Int32
+    /// The staging folder, open since `create` made it; every removal and the publishing rename go through it.
+    private let folderFD: Int32
     /// The locked `.import.lock`, or -1 once closed.
     private var lockFD: Int32
 
-    private init(root: URL, name: String, lockFD: Int32) {
-        self.root = root; self.name = name; self.lockFD = lockFD
+    private init(root: URL, name: String, rootFD: Int32, folderFD: Int32, lockFD: Int32) {
+        self.root = root; self.name = name; self.rootFD = rootFD; self.folderFD = folderFD; self.lockFD = lockFD
     }
 
-    deinit { closeLock() }
+    deinit {
+        closeLock()
+        Darwin.close(folderFD)
+        Darwin.close(rootFD)
+    }
 
     /// Creates `root` if needed, removes abandoned staging folders in it (`sweep`), then makes a new one: the folder,
     /// its lock file (locked at once), and last the ownership marker. `after` runs after each step (for tests).
+    ///
+    /// The folder is made and opened relative to the open root, and must be empty when opened: a folder renamed in
+    /// at its name before the open (holding anything) is refused and left as it is. When a later step fails, only
+    /// what this call made (the lock file, the marker, and the folder once empty) is removed.
     static func create(in root: URL, after: (Step) -> Void = { _ in }) throws -> ImportStaging {
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         sweep(root)
         let name = prefix + UUID().uuidString
-        let url = root.appendingPathComponent(name, isDirectory: true)
-        guard mkdir(url.path, 0o700) == 0 else {
-            throw HolosError.io("Cannot create the import folder: \(String(cString: strerror(errno))).")
+        let rootFD = open(root.path, O_RDONLY | O_DIRECTORY | O_CLOEXEC)
+        guard rootFD >= 0 else { throw HolosError.io("Cannot open the sessions folder: \(errnoText()).") }
+        guard mkdirat(rootFD, name, 0o700) == 0 else {
+            let code = errno
+            Darwin.close(rootFD)
+            throw HolosError.io("Cannot create the import folder: \(String(cString: strerror(code))).")
         }
         after(.folderMade)
         var code: Int32 = 0
         var lock: Int32 = -1
-        let folder = open(url.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        var madeLockFile = false
+        let folder = openat(rootFD, name, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
         if folder < 0 {
             code = errno
+        } else if !isEmptyFolder(folder) {
+            code = ENOTEMPTY
         } else {
             lock = openat(folder, lockName, O_CREAT | O_EXCL | O_RDWR | O_NOFOLLOW | O_CLOEXEC, 0o600)
             if lock < 0 {
                 code = errno
             } else {
+                madeLockFile = true
                 after(.lockFileMade)
                 if flock(lock, LOCK_EX | LOCK_NB) != 0 {
                     code = errno
@@ -371,13 +395,20 @@ final class ImportStaging {
                     lock = -1
                 }
             }
-            Darwin.close(folder)
         }
         guard lock >= 0 else {
-            try? removeStaging(name, in: resolved(root))
+            if folder >= 0 {
+                // A folder that was not empty when opened is not this call's to remove at all.
+                if code != ENOTEMPTY {
+                    if madeLockFile { unlinkat(folder, lockName, 0) }
+                    removeIfEmpty(folder, named: name, in: rootFD)
+                }
+                Darwin.close(folder)
+            }
+            Darwin.close(rootFD)
             throw HolosError.io("Cannot lock the import folder: \(String(cString: strerror(code))).")
         }
-        return ImportStaging(root: root, name: name, lockFD: lock)
+        return ImportStaging(root: root, name: name, rootFD: rootFD, folderFD: folder, lockFD: lock)
     }
 
     /// Moves the finished session folder `sessionName` from the staging folder to `root` in one rename (never over
@@ -385,13 +416,11 @@ final class ImportStaging {
     /// nothing, when the rename fails; after the rename it never throws (a staging folder it cannot remove is left
     /// for the next sweep). The marker is removed before the lock file and the lock, so a sweep leaves the emptied
     /// folder alone. `after` runs after each step (for tests).
+    ///
+    /// The rename, the unlinks, and the removal of the emptied folder go through the folder `create` opened, so a
+    /// folder renamed in at the staging name meanwhile is never published from or changed.
     func publish(_ sessionName: String, after: (Step) -> Void = { _ in }) throws -> URL {
-        let rootFD = open(root.path, O_RDONLY | O_DIRECTORY | O_CLOEXEC)
-        guard rootFD >= 0 else { throw HolosError.io("Cannot open the sessions folder: \(Self.errnoText()).") }
-        defer { Darwin.close(rootFD) }
-        let stagingFD = openat(rootFD, name, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
-        guard stagingFD >= 0 else { throw HolosError.io("Cannot open the import folder: \(Self.errnoText()).") }
-        defer { Darwin.close(stagingFD) }
+        let stagingFD = folderFD
         var moved = renameatx_np(stagingFD, sessionName, rootFD, sessionName, UInt32(RENAME_EXCL)) == 0
         if !moved, errno == ENOTSUP || errno == EINVAL {
             // A volume without RENAME_EXCL: the name is a new UUID, and it is checked to be free just before.
@@ -415,11 +444,7 @@ final class ImportStaging {
         after(.lockFileRemoved)
         closeLock()
         after(.unlocked)
-        if unlinkat(rootFD, name, AT_REMOVEDIR) != 0 {
-            Self.log.error("Cannot remove an empty import folder: \(Self.errnoText(), privacy: .public)")
-        } else if fsync(rootFD) != 0 {
-            Self.log.error("Cannot save the sessions folder after an import: \(Self.errnoText(), privacy: .public)")
-        }
+        Self.removeIfEmpty(stagingFD, named: name, in: rootFD)
         return publishedURL(sessionName)
     }
 
@@ -428,13 +453,13 @@ final class ImportStaging {
         root.appendingPathComponent(sessionName, isDirectory: true)
     }
 
-    /// Removes the staging folder and everything in it (`removeStaging`), then lets go of the lock. Returns nil when
-    /// it is gone, else a sentence for the user that says where the partial files are. A folder it could not remove
-    /// keeps its ownership marker, so a later sweep finishes the job.
+    /// Removes the staging folder `create` made, through the descriptor it opened, and everything in it (`remove`),
+    /// then lets go of the lock. Returns nil when it is gone, else a sentence for the user that says where the partial
+    /// files are. A folder it could not remove keeps its ownership marker, so a later sweep finishes the job.
     func discard() -> String? {
         defer { closeLock() }
         do {
-            try Self.removeStaging(name, in: Self.resolved(root))
+            try Self.remove(folder: folderFD, named: name, in: rootFD, root: root)
             return nil
         } catch {
             Self.log.error("Cannot remove an import folder: \(error.localizedDescription, privacy: .private)")
@@ -443,20 +468,54 @@ final class ImportStaging {
         }
     }
 
-    /// Removes the staging folder `name` in `base` (a root with symbolic links resolved) in an order that keeps its
-    /// ownership marker until nothing else is left: every other entry first, then the lock file, then the marker
-    /// with the emptied folder. A removal that fails part-way therefore leaves a folder that still has the marker,
-    /// which a later sweep recognizes and finishes; only a failure on the marker or the empty folder itself can leave
-    /// one without it, and that folder is empty. Nothing is followed through a symbolic link (`AtomicFile.removeTree`).
-    static func removeStaging(_ name: String, in base: URL) throws {
-        let folder = base.appendingPathComponent(name, isDirectory: true)
-        // Unreadable or missing: the final removeTree reports it (or finds nothing to remove).
-        let children = (try? FileManager.default.contentsOfDirectory(atPath: folder.path)) ?? []
-        for child in children.sorted() where child != markerName && child != lockName {
-            try AtomicFile.removeTree([name, child], in: base)
+    /// Removes the staging folder open as `folder` (named `name` in the open root `rootFD`, which `root` names in
+    /// messages) through that descriptor, in an order that keeps its ownership marker until nothing else is left:
+    /// every other entry first, then the lock file, then the marker, then the emptied folder
+    /// (`AtomicFile.removeOpenFolder`). A removal that fails part-way therefore leaves a folder that still has the
+    /// marker, which a later sweep recognizes and finishes; only a failure after the marker can leave one without
+    /// it, and that folder is empty. Nothing is followed through a symbolic link, and a folder renamed in at `name`
+    /// after `folder` was opened is never emptied; the emptied folder is left where it is when it no longer has that
+    /// name.
+    static func remove(folder: Int32, named name: String, in rootFD: Int32, root: URL) throws {
+        let removed = try AtomicFile.removeOpenFolder(folder, named: name, in: rootFD, parentURL: root,
+                                                      removingLast: [lockName, markerName])
+        if !removed { log.notice("An emptied import folder had been moved; it was left where it is") }
+    }
+
+    /// Removes the folder open as `folder` when it is empty and `name` in `rootFD` still names it, then fsyncs the
+    /// root. Failures are logged: an empty folder without a marker is harmless.
+    private static func removeIfEmpty(_ folder: Int32, named name: String, in rootFD: Int32) {
+        var opened = stat()
+        var named = stat()
+        guard fstat(folder, &opened) == 0, fstatat(rootFD, name, &named, AT_SYMLINK_NOFOLLOW) == 0,
+              named.st_dev == opened.st_dev, named.st_ino == opened.st_ino else {
+            log.error("Cannot remove an empty import folder: it is no longer where it was made")
+            return
         }
-        if children.contains(lockName) { try AtomicFile.removeTree([name, lockName], in: base) }
-        try AtomicFile.removeTree([name], in: base)
+        if unlinkat(rootFD, name, AT_REMOVEDIR) != 0 {
+            log.error("Cannot remove an empty import folder: \(errnoText(), privacy: .public)")
+        } else if fsync(rootFD) != 0 {
+            log.error("Cannot save the sessions folder after an import: \(errnoText(), privacy: .public)")
+        }
+    }
+
+    /// Whether the open folder `folder` has no entries ("." and ".." aside). False when it cannot be listed.
+    private static func isEmptyFolder(_ folder: Int32) -> Bool {
+        let copy = dup(folder)
+        guard copy >= 0 else { return false }
+        guard let directory = fdopendir(copy) else {
+            Darwin.close(copy)
+            return false
+        }
+        defer { closedir(directory) }
+        // The copy shares its offset with `folder`; start from the beginning.
+        rewinddir(directory)
+        while let entry = readdir(directory) {
+            let length = Int(entry.pointee.d_namlen)
+            let dots = withUnsafeBytes(of: entry.pointee.d_name) { raw in raw.prefix(length).allSatisfy { $0 == 46 } }
+            if !(dots && (length == 1 || length == 2)) { return false }
+        }
+        return true
     }
 
     /// Removes the staging folders in `root` that no running import holds: those whose lock file is missing or can
@@ -464,7 +523,11 @@ final class ImportStaging {
     /// (`isStagingName`) and the ownership marker (`hasMarker`) is a staging folder; nothing else is touched, and a
     /// folder without the marker (one being made or published) is skipped. Failures are logged; an import never
     /// fails because of an older one's leftovers.
-    static func sweep(_ root: URL, now: Date = Date()) {
+    ///
+    /// Each folder is removed through the descriptor its marker and lock were checked through (`remove`), so a
+    /// folder renamed in at the same name after the check is never emptied. `beforeRemoving` runs with each folder's
+    /// name just before it is removed (for tests).
+    static func sweep(_ root: URL, now: Date = Date(), beforeRemoving: (String) -> Void = { _ in }) {
         let base = resolved(root)
         guard let names = try? FileManager.default.contentsOfDirectory(atPath: base.path) else { return }
         let rootFD = open(base.path, O_RDONLY | O_DIRECTORY | O_CLOEXEC)
@@ -489,8 +552,9 @@ final class ImportStaging {
             guard fstat(folder, &info) == 0, hasMarker(in: folder) else { continue }
             let changed = Date(timeIntervalSince1970: TimeInterval(info.st_mtimespec.tv_sec))
             guard now.timeIntervalSince(changed) > unlockedGrace else { continue }
+            beforeRemoving(name)
             do {
-                try removeStaging(name, in: base)
+                try remove(folder: folder, named: name, in: rootFD, root: base)
                 log.notice("Removed an import that did not finish")
             } catch {
                 log.error("Cannot remove an import that did not finish: \(error.localizedDescription, privacy: .private)")
@@ -520,14 +584,20 @@ final class ImportStaging {
     }
 
     /// Writes the ownership marker into the open, new folder `folder` (never over an existing file) and fsyncs it.
-    /// Returns nil, or the errno of the failure.
+    /// Returns nil, or the errno of the failure, having removed the marker file it made.
     private static func writeMarker(in folder: Int32) -> Int32? {
         let fd = openat(folder, markerName, O_CREAT | O_EXCL | O_WRONLY | O_NOFOLLOW | O_CLOEXEC, 0o600)
         guard fd >= 0 else { return errno }
         defer { Darwin.close(fd) }
         let written = markerContents.withUnsafeBytes { Darwin.write(fd, $0.baseAddress, $0.count) }
-        guard written == markerContents.count else { return written < 0 ? errno : EIO }
-        return fsync(fd) == 0 ? nil : errno
+        var code: Int32?
+        if written != markerContents.count {
+            code = written < 0 ? errno : EIO
+        } else if fsync(fd) != 0 {
+            code = errno
+        }
+        if code != nil { unlinkat(folder, markerName, 0) }
+        return code
     }
 
     private func closeLock() {
@@ -537,8 +607,7 @@ final class ImportStaging {
         lockFD = -1
     }
 
-    /// `root` with symbolic links resolved: `AtomicFile.removeTree` opens its root's last component without
-    /// following a link, and a sessions root may be reached through one.
+    /// `root` with symbolic links resolved (a sessions root may be reached through one), as a sweep names it.
     private static func resolved(_ root: URL) -> URL { root.resolvingSymlinksInPath() }
 
     private static func errnoText() -> String { String(cString: strerror(errno)) }

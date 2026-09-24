@@ -317,6 +317,104 @@ func importPersistsNoStagingPath() async throws {
     #expect(sessionImporterEntries(root).isEmpty)
 }
 
+/// Another program may rename a staging folder away after a sweep checked it (marker, lock) and put a folder of its
+/// own at the same name. The sweep removes the folder it checked, through that folder's descriptor: the replacement,
+/// even one that looks like a staging folder, is left whole. Before, the removal reopened the name and deleted the
+/// replacement.
+@Test func sweepNeverEmptiesAFolderRenamedInAfterItsCheck() throws {
+    let temp = try TemporaryDirectory("import")
+    defer { temp.remove() }
+    let root = temp.url.appendingPathComponent("Sessions", isDirectory: true)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    let name = try sessionImporterAbandonedStaging(in: root)
+    let moved = temp.url.appendingPathComponent("moved", isDirectory: true)
+    var replacement: [String] = []
+    ImportStaging.sweep(root, now: Date(timeIntervalSinceNow: 10 * ImportStaging.unlockedGrace)) { removing in
+        #expect(removing == name)
+        do {
+            try FileManager.default.moveItem(at: root.appendingPathComponent(name), to: moved)
+            _ = try sessionImporterAbandonedStaging(in: root, name: name)
+        } catch {
+            Issue.record("Cannot swap the folder: \(error)")
+        }
+        replacement = sessionImporterTree(root.appendingPathComponent(name))
+    }
+
+    #expect(replacement.contains { $0.hasSuffix("000001.caf") })
+    #expect(sessionImporterTree(root.appendingPathComponent(name)) == replacement)
+    #expect(sessionImporterTree(moved).isEmpty)
+}
+
+/// `discard` and `publish` work through the folder `create` made and opened, so a folder renamed in at the staging
+/// name meanwhile is neither emptied nor published from, and its marker and lock file stay.
+@Test func discardAndPublishNeverTouchAFolderRenamedInAtTheStagingName() throws {
+    let temp = try TemporaryDirectory("import")
+    defer { temp.remove() }
+    let root = temp.url.appendingPathComponent("Sessions", isDirectory: true)
+    let fm = FileManager.default
+
+    let discarded = try ImportStaging.create(in: root)
+    let ours = discarded.url.appendingPathComponent("\(UUID().uuidString).holos/audio/mic", isDirectory: true)
+    try fm.createDirectory(at: ours, withIntermediateDirectories: true)
+    try Data(repeating: 2, count: 64).write(to: ours.appendingPathComponent("000001.caf"))
+    let movedDiscard = temp.url.appendingPathComponent("moved-discard", isDirectory: true)
+    try fm.moveItem(at: discarded.url, to: movedDiscard)
+    _ = try sessionImporterAbandonedStaging(in: root, name: discarded.name)
+    let theirs = sessionImporterTree(discarded.url)
+    #expect(discarded.discard() == nil)
+    #expect(sessionImporterTree(discarded.url) == theirs)
+    #expect(theirs.contains { $0.hasSuffix("000001.caf") })
+    #expect(sessionImporterTree(movedDiscard).isEmpty)
+    try fm.removeItem(at: discarded.url)
+
+    let published = try ImportStaging.create(in: root)
+    let sessionName = "\(UUID().uuidString).holos"
+    let session = published.url.appendingPathComponent("\(sessionName)/audio/mic", isDirectory: true)
+    try fm.createDirectory(at: session, withIntermediateDirectories: true)
+    try Data(repeating: 2, count: 64).write(to: session.appendingPathComponent("000001.caf"))
+    let movedPublish = temp.url.appendingPathComponent("moved-publish", isDirectory: true)
+    try fm.moveItem(at: published.url, to: movedPublish)
+    // The replacement holds a session folder of the same name, a marker, and a lock file.
+    let other = published.url.appendingPathComponent(sessionName, isDirectory: true)
+    try fm.createDirectory(at: other, withIntermediateDirectories: true)
+    try Data("theirs".utf8).write(to: other.appendingPathComponent("theirs.txt"))
+    try Data(ImportStaging.markerContents).write(to: published.url.appendingPathComponent(ImportStaging.markerName))
+    try Data().write(to: published.url.appendingPathComponent(ImportStaging.lockName))
+    let replacement = sessionImporterTree(published.url)
+
+    let result = try published.publish(sessionName)
+    #expect(sessionImporterTree(result) == ["audio", "audio/mic", "audio/mic/000001.caf"])
+    #expect(sessionImporterTree(published.url) == replacement)
+    #expect(sessionImporterTree(movedPublish).isEmpty)
+}
+
+/// A folder renamed in at the new staging name before `create` opens it is refused and left exactly as it was:
+/// `create` neither writes its lock file and marker into it nor removes anything from it.
+@Test func createRefusesAFolderRenamedInBeforeItIsOpened() throws {
+    let temp = try TemporaryDirectory("import")
+    defer { temp.remove() }
+    let root = temp.url.appendingPathComponent("Sessions", isDirectory: true)
+    var swapped: String?
+    var theirs: [String] = []
+    #expect(throws: HolosError.self) {
+        _ = try ImportStaging.create(in: root) { step in
+            guard step == .folderMade, let made = sessionImporterStagingFolders(root).first else { return }
+            do {
+                try FileManager.default.moveItem(at: root.appendingPathComponent(made),
+                                                 to: temp.url.appendingPathComponent("made", isDirectory: true))
+                _ = try sessionImporterAbandonedStaging(in: root, lockFile: false, marker: false, name: made)
+            } catch {
+                Issue.record("Cannot swap the folder: \(error)")
+            }
+            swapped = made
+            theirs = sessionImporterTree(root.appendingPathComponent(made))
+        }
+    }
+    let name = try #require(swapped)
+    #expect(theirs.contains { $0.hasSuffix("000001.caf") })
+    #expect(sessionImporterTree(root.appendingPathComponent(name)) == theirs)
+}
+
 @Test(.timeLimit(.minutes(1)))
 func importWithoutTranscriptionIsAudioOnly() async throws {
     let temp = try TemporaryDirectory("import")
