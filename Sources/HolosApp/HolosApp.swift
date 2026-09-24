@@ -810,7 +810,9 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
             inputMonitoring: CGPreflightListenEventAccess(), assets: assetState, installingAssets: installingAssets,
             dictationEnabled: enabled, enabling: enabling, busy: isBusy, shortcutTitle: shortcutTitle,
             removeFillers: removeFillers, showPreview: showPreview, previewOpacity: previewOpacity,
-            message: message, dictationPausedForMeeting: meeting.dictationPaused,
+            // While a meeting records, its pause takes precedence over every other dictation message (§4.12).
+            message: meeting.dictationPaused ? "Dictation paused during meeting recording" : message,
+            dictationPausedForMeeting: meeting.dictationPaused,
             speakerModels: speakerLabels.status, speakerModelsDetail: speakerLabels.detail,
             speakerModelsBusy: speakerLabels.busy))
     }

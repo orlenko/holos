@@ -81,6 +81,7 @@ extension HolosAppDelegate: NSMenuDelegate {
         meeting.controller = controller
         meeting.maintenance = maintenance
         restoreNamingOffer()
+        Self.sweepCommandOutputs()
         controller.attachOnLaunch()
         refreshSpeakerModels()
         DispatchQueue.main.async { [weak self] in self?.promptAboutInterruptedRecordings() }
@@ -893,6 +894,20 @@ extension HolosAppDelegate: NSMenuDelegate {
     private static func temporaryFile(_ kind: String) -> URL {
         FileManager.default.temporaryDirectory
             .appendingPathComponent("holos-command-\(UUID().uuidString).\(kind)", isDirectory: false)
+    }
+
+    /// Removes command outputs an app that quit or crashed left behind (older than an hour).
+    private static func sweepCommandOutputs() {
+        let folder = FileManager.default.temporaryDirectory
+        guard let names = try? FileManager.default.contentsOfDirectory(atPath: folder.path) else { return }
+        let cutoff = Date().addingTimeInterval(-3_600)
+        for name in names where name.hasPrefix("holos-command-") {
+            let url = folder.appendingPathComponent(name, isDirectory: false)
+            var info = stat()
+            guard lstat(url.path, &info) == 0, (info.st_mode & S_IFMT) == S_IFREG,
+                  Date(timeIntervalSince1970: TimeInterval(info.st_mtimespec.tv_sec)) < cutoff else { continue }
+            removeFile(url)
+        }
     }
 
     private static func removeFile(_ url: URL) {
