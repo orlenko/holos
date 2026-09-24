@@ -30,6 +30,10 @@ public struct InputDevices: Sendable, Equatable {
 /// Finds the built-in microphone and the system default input (decision 9: in-person meetings record the built-in
 /// microphone, calls the system default input).
 public enum BuiltInMicrophone {
+    /// The error text when a capture that must record the built-in microphone cannot find it. The recorder matches it
+    /// to tell the user to open the lid.
+    public static let unavailableMessage = "The built-in microphone is unavailable. Open the lid and try again."
+
     /// The built-in input (transport type built-in, with input streams) and the system default input, looked up now.
     public static func devices() -> InputDevices {
         var builtIn: InputDevice?

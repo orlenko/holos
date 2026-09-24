@@ -237,6 +237,23 @@ private func waitingMachine(at: Double) -> RecorderMachine {
     monitor.stop()
 }
 
+/// Events carry their arrival time: drained late, they still tell how long ago they happened.
+@Test func monitorTimesEventsByArrival() {
+    let monitor = SystemPowerMonitor(acknowledge: { _ in })
+    monitor.attach()
+    monitor.deliver(SystemPowerMonitor.systemWillSleep, argument: 3, nanosecondsAgo: 1_200_000_000_000)
+    monitor.deliver(SystemPowerMonitor.systemHasPoweredOn, argument: 0)
+    let events = monitor.pendingTimedEvents()
+    #expect(events.map(\.event) == [.willSleep(token: 3), .didWake])
+    #expect(events.count == 2)
+    if events.count == 2 {
+        #expect(events[0].secondsAgo >= 1_200 && events[0].secondsAgo < 1_210)
+        #expect(events[1].secondsAgo >= 0 && events[1].secondsAgo < 10)
+    }
+    #expect(monitor.pendingTimedEvents().isEmpty)
+    monitor.stop()
+}
+
 // MARK: - The recorder loop
 
 extension RecorderEnvironmentLoopTests {
@@ -349,6 +366,32 @@ extension RecorderEnvironmentLoopTests {
         #expect(recorderStatus(outcome.directory)?.exit?.reason == .sleepTimeout)
     }
 
+    /// The loop was held up (a slow restart) past macOS's 30 s limit, so the Mac slept without waiting for it, and
+    /// willSleep and didWake are drained together after the wake (review finding): the sleep is timed by their
+    /// arrival, and 20 minutes asleep still ends the recording at the sleep point.
+    @Test(.timeLimit(.minutes(1)))
+    func lateDrainedSleepIsTimedByArrival() async throws {
+        let temp = try TemporaryDirectory()
+        defer { temp.remove() }
+        let power = RecorderFakePower()
+        let clock = ManualSessionClock(0)
+        let captures = FakeCaptureFactory([FakeCaptureScript(frames: FakeFrame.run(count: 10))])
+        var dependencies = recorderDependencies(captures: captures, clock: clock)
+        dependencies.power = power
+        let run = recorderRecordOnly(temp.url, dependencies)
+        #expect(await eventually { (captures.captures.first?.consumedFrames ?? 0) >= 10 && power.attached })
+        clock.set(1_201)
+        power.post([TimedPowerEvent(.willSleep(token: 6), secondsAgo: 1_200), TimedPowerEvent(.didWake)])
+        let outcome = try await run.value
+        #expect(outcome.stopReason == .sleepTimeout)
+        #expect(power.allowed == [6])
+        #expect(captures.captures.count == 1, "No capture after the sleep.")
+        let slept = try #require(try recorderEvents(outcome.directory, MeetingEventKind.systemWillSleep).first)
+        #expect(slept.details["at"] == "1.0")
+        let woke = try #require(try recorderEvents(outcome.directory, MeetingEventKind.didWake).first)
+        #expect(woke.details == ["at": "1201.0", "sleptSeconds": "1200.0", "action": "finalize"])
+    }
+
     /// The idle-sleep assertion is taken at start, let go while paused, and taken again on resume.
     @Test(.timeLimit(.minutes(1)))
     func powerAssertionFollowsPause() async throws {
@@ -410,26 +453,27 @@ extension RecorderEnvironmentLoopTests {
         #expect(try recorderEvents(outcome.directory, MeetingEventKind.captureWaiting).count == 2)
     }
 
-    /// The lid opening while the recorder waits for audio retries at once.
+    /// The lid opening while the recorder waits for audio retries at once. (A call: in person, a closed lid refuses
+    /// the start.)
     @Test(.timeLimit(.minutes(1)))
     func lidOpeningRetriesAWaitingRecorder() async throws {
         let temp = try TemporaryDirectory()
         defer { temp.remove() }
         let power = RecorderFakePower(lidOpen: false)
         let captures = FakeCaptureFactory([
-            FakeCaptureScript(frames: FakeFrame.run(count: 2), failAfterFrames: 2, failure: .io("Gone.")),
+            FakeCaptureScript(frames: recorderCallFrames(count: 2), failAfterFrames: 4, failure: .io("Gone.")),
             FakeCaptureScript(startError: .unavailable("No audio device.")),
-            FakeCaptureScript(frames: FakeFrame.run(count: 2)),
+            FakeCaptureScript(frames: recorderCallFrames(count: 2)),
         ])
         let stop = ManualStopSource()
         var dependencies = recorderDependencies(captures: captures, stop: stop, clock: ManualSessionClock(0))
         dependencies.power = power
-        let run = recorderRecordOnly(temp.url, dependencies)
+        let run = recorderRecordOnly(temp.url, source: .microphoneAndSystem, dependencies)
         let session = try #require(await recorderSession(in: temp.url))
         #expect(await eventually { (try? recorderEvents(session, MeetingEventKind.captureWaiting).count) == 1 })
         #expect(captures.captures.count == 2)
         power.setLid(open: true)
-        #expect(await eventually { captures.captures.count == 3 && captures.captures[2].consumedFrames >= 2 })
+        #expect(await eventually { captures.captures.count == 3 && captures.captures[2].consumedFrames >= 4 })
         stop.requestStop()
         #expect(try await run.value.stopReason == .requested)
     }

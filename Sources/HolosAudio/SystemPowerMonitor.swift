@@ -14,16 +14,35 @@ public enum PowerEvent: Sendable, Equatable {
     case didWake
 }
 
+/// A power event with how long before the drain that returned it the event arrived.
+public struct TimedPowerEvent: Sendable, Equatable {
+    public var event: PowerEvent
+    /// Seconds of continuous time (it keeps counting while the Mac sleeps) from the event's arrival to the drain.
+    public var secondsAgo: Double
+
+    public init(_ event: PowerEvent, secondsAgo: Double = 0) {
+        self.event = event; self.secondsAgo = secondsAgo
+    }
+}
+
 /// System sleep and wake, polled by the recorder loop every 100 ms. The test seam for `SystemPowerMonitor`.
 public protocol SystemPowerEvents: Sendable {
     /// Events buffered since the last call.
     func pendingEvents() -> [PowerEvent]
+    /// Events buffered since the last call, with their age. The loop times sleep and wake by it: when the loop is held
+    /// up (a slow restart) and macOS sleeps without waiting for it, willSleep and didWake are drained together after
+    /// the wake, and only their arrival times tell how long the Mac slept. The default reports every event as new.
+    func pendingTimedEvents() -> [TimedPowerEvent]
     func allowPowerChange(token: Int)
     /// AppleClamshellState from IOPMrootDomain; true when the property is absent.
     func isLidOpen() -> Bool
     /// While detached, the monitor acknowledges willSleep itself.
     func attach()
     func detach()
+}
+
+extension SystemPowerEvents {
+    public func pendingTimedEvents() -> [TimedPowerEvent] { pendingEvents().map { TimedPowerEvent($0) } }
 }
 
 /// `IORegisterForSystemPower` on a private dispatch queue (docs/meeting-design.md §4.4). Events are buffered in a
@@ -64,7 +83,8 @@ public final class SystemPowerMonitor: SystemPowerEvents {
         let root = IORegisterForSystemPower(refcon.toOpaque(), &notifyPort, { refcon, _, message, argument in
             guard let refcon else { return }
             Unmanaged<PowerEventCore>.fromOpaque(refcon).takeUnretainedValue()
-                .receive(message: message, argument: Int(bitPattern: argument))
+                .receive(message: message, argument: Int(bitPattern: argument),
+                         at: PowerEventCore.continuousNanoseconds())
         }, &notifier)
         guard root != IO_OBJECT_NULL, let notifyPort else {
             refcon.release()
@@ -89,10 +109,15 @@ public final class SystemPowerMonitor: SystemPowerEvents {
         lidState = lidOpen
     }
 
-    /// Tests only: handles `message` as if IOKit had sent it.
-    func deliver(_ message: UInt32, argument: Int) { core.receive(message: message, argument: argument) }
+    /// Tests only: handles `message` as if IOKit had sent it, `nanosecondsAgo` before now.
+    func deliver(_ message: UInt32, argument: Int, nanosecondsAgo: UInt64 = 0) {
+        core.receive(message: message, argument: argument, at: PowerEventCore.continuousNanoseconds() - nanosecondsAgo)
+    }
 
-    public func pendingEvents() -> [PowerEvent] { core.pendingEvents() }
+    public func pendingEvents() -> [PowerEvent] { core.pendingTimedEvents().map(\.event) }
+
+    /// Events stamped with `mach_continuous_time` when IOKit delivered them.
+    public func pendingTimedEvents() -> [TimedPowerEvent] { core.pendingTimedEvents() }
 
     public func allowPowerChange(token: Int) { core.allowPowerChange(token: token) }
 
@@ -120,7 +145,8 @@ final class PowerEventCore: Sendable {
     private struct State {
         var attached = false
         var stopped = false
-        var events: [PowerEvent] = []
+        /// Events with their arrival in `mach_continuous_time` nanoseconds.
+        var events: [(event: PowerEvent, at: UInt64)] = []
         /// willSleep tokens handed to the loop and not yet acknowledged.
         var outstanding: Set<Int> = []
     }
@@ -130,7 +156,8 @@ final class PowerEventCore: Sendable {
 
     init(acknowledge: @escaping @Sendable (Int) -> Void) { self.acknowledge = acknowledge }
 
-    func receive(message: UInt32, argument: Int) {
+    /// `at`: when IOKit delivered the message, in `mach_continuous_time` nanoseconds.
+    func receive(message: UInt32, argument: Int, at: UInt64) {
         switch message {
         case SystemPowerMonitor.canSystemSleep:
             // Idle sleep is prevented by the power assertion, not by vetoing here.
@@ -139,25 +166,42 @@ final class PowerEventCore: Sendable {
             let queued = state.withLock { state -> Bool in
                 guard state.attached, !state.stopped else { return false }
                 state.outstanding.insert(argument)
-                state.events.append(.willSleep(token: argument))
+                state.events.append((.willSleep(token: argument), at))
                 return true
             }
             if !queued { acknowledge(argument) }
         case SystemPowerMonitor.systemHasPoweredOn:
             state.withLock { state in
-                if state.attached, !state.stopped { state.events.append(.didWake) }
+                if state.attached, !state.stopped { state.events.append((.didWake, at)) }
             }
         default:
             break
         }
     }
 
-    func pendingEvents() -> [PowerEvent] {
-        state.withLock { state in
+    /// The buffered events, each with its age at this call.
+    func pendingTimedEvents() -> [TimedPowerEvent] {
+        let events = state.withLock { state in
             defer { state.events.removeAll() }
             return state.events
         }
+        let now = Self.continuousNanoseconds()
+        return events.map { TimedPowerEvent($0.event, secondsAgo: Double(now > $0.at ? now - $0.at : 0) / 1e9) }
     }
+
+    /// `mach_continuous_time` in nanoseconds: it keeps counting while the Mac sleeps.
+    static func continuousNanoseconds() -> UInt64 {
+        let ticks = mach_continuous_time()
+        let base = timebase
+        guard base.numer != base.denom, base.denom != 0 else { return ticks }
+        return UInt64(Double(ticks) * Double(base.numer) / Double(base.denom))
+    }
+
+    private static let timebase: mach_timebase_info_data_t = {
+        var info = mach_timebase_info_data_t()
+        mach_timebase_info(&info)
+        return info
+    }()
 
     /// Acknowledges a willSleep handed to the loop, once.
     func allowPowerChange(token: Int) {

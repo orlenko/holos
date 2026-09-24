@@ -94,6 +94,47 @@ private func firstThen(_ first: MicrophoneTestCapture, _ captures: FakeCaptureFa
         == .finish(.startFailed))
 }
 
+/// Device changes that end every new epoch before its first frame (review finding: a change posted on each start)
+/// back off into `waiting` like failures, and give up after 10 minutes without audio.
+@Test func repeatedFramelessDeviceChangesBackOff() {
+    var machine = RecorderMachine(tracks: ["mic"])
+    _ = machine.handle(.captureStarted(epoch: 0, tracks: ["mic"], at: 0))
+    #expect(machine.handle(.captureEnded(epoch: 0, .configurationChanged, at: 0.2)).last == .startCapture(epoch: 1))
+    _ = machine.handle(.captureStarted(epoch: 1, tracks: ["mic"], at: 0.3))
+    let second = machine.handle(.captureEnded(epoch: 1, .configurationChanged, at: 0.4))
+    #expect(!second.contains(.startCapture(epoch: 2)), "The second frameless change does not restart at once.")
+    #expect(second.contains(.stopCapture(reason: .audioUnavailable)))
+    #expect(machine.phase == .waiting)
+    var epoch = 1
+    var at = 0.4
+    // Every retry ends the same way: the waits grow, and the recorder never loops at full speed.
+    while machine.stopReason == nil, at < 700 {
+        at += 0.5
+        let effects = machine.handle(recorderTick(at))
+        guard case .startCapture(let next)? = effects.last else { continue }
+        epoch = next
+        _ = machine.handle(.captureStarted(epoch: epoch, tracks: ["mic"], at: at))
+        _ = machine.handle(.captureEnded(epoch: epoch, .configurationChanged, at: at))
+        #expect(machine.phase == .waiting)
+    }
+    #expect(machine.stopReason == .captureFailed)
+    #expect(at >= 600.2 && at < 601, "Ends 10 minutes after the first frameless end.")
+    #expect(epoch < 40, "Backoff: \(epoch) restarts in 10 minutes.")
+}
+
+/// An epoch that delivered audio before a device change restarts at once every time.
+@Test func deviceChangesAfterAudioRestartAtOnce() {
+    var machine = RecorderMachine(tracks: ["mic"])
+    _ = machine.handle(.captureRunning(epoch: 0, at: 0.1))
+    for epoch in 0..<5 {
+        let at = Double(epoch) + 0.5
+        #expect(machine.handle(.captureEnded(epoch: epoch, .configurationChanged, at: at)).last
+            == .startCapture(epoch: epoch + 1))
+        _ = machine.handle(.captureRunning(epoch: epoch + 1, at: at + 0.1))
+    }
+    #expect(machine.phase == .recording)
+}
+
 @Test func epochPlanFollowsTheDevices() {
     let inPerson = RecordingOptions.testing(root: URL(fileURLWithPath: "/tmp"), source: .microphone)
     let call = RecordingOptions.testing(root: URL(fileURLWithPath: "/tmp"), source: .microphoneAndSystem)
@@ -101,6 +142,10 @@ private func firstThen(_ first: MicrophoneTestCapture, _ captures: FakeCaptureFa
     #expect(EpochPlan.make(inPerson, devices: both)
         == EpochPlan(source: .microphone, tracks: ["mic"], microphoneName: "MacBook Pro Microphone"))
     #expect(EpochPlan.make(inPerson, devices: InputDevices(builtIn: nil, systemDefault: recorderAirPods)) == nil)
+    // Lid closed: the built-in microphone may stay listed while it records silence (review finding).
+    #expect(EpochPlan.make(inPerson, devices: both, lidOpen: false) == nil)
+    #expect(EpochPlan.make(call, devices: both, lidOpen: false)
+        == EpochPlan(source: .microphoneAndSystem, tracks: ["mic", "system"], microphoneName: "AirPods Pro"))
     #expect(EpochPlan.make(call, devices: both)
         == EpochPlan(source: .microphoneAndSystem, tracks: ["mic", "system"], microphoneName: "AirPods Pro"))
     #expect(EpochPlan.make(call, devices: InputDevices(builtIn: recorderBuiltIn, systemDefault: nil))
@@ -162,6 +207,48 @@ extension RecorderEnvironmentLoopTests {
         #expect(message == "The built-in microphone is unavailable. Open the lid and try again.")
         #expect(sessionFolders(in: temp.url).isEmpty, "No session folder.")
         #expect(captures.captures.isEmpty)
+    }
+
+    /// In person with the lid closed: refused even when the built-in microphone is still listed.
+    @Test(.timeLimit(.minutes(1)))
+    func inPersonRefusesWithTheLidClosed() async throws {
+        let temp = try TemporaryDirectory()
+        defer { temp.remove() }
+        let captures = FakeCaptureFactory()
+        var dependencies = recorderDependencies(captures: captures, clock: ManualSessionClock(0))
+        dependencies.findInputDevices = RecorderDevices().lookup
+        dependencies.power = RecorderFakePower(lidOpen: false)
+        var message: String?
+        do {
+            _ = try await RecordingWorkflow.run(.testing(root: temp.url), dependencies: dependencies)
+        } catch HolosError.unavailable(let text) {
+            message = text
+        }
+        #expect(message == BuiltInMicrophone.unavailableMessage)
+        #expect(sessionFolders(in: temp.url).isEmpty, "No session folder.")
+        #expect(captures.captures.isEmpty)
+    }
+
+    /// The capture's own lookup of the built-in microphone fails (the lid closed after the plan was made): the
+    /// recorder still says how to continue.
+    @Test(.timeLimit(.minutes(1)))
+    func captureLookupFailureSaysToOpenTheLid() async throws {
+        let temp = try TemporaryDirectory()
+        defer { temp.remove() }
+        let captures = FakeCaptureFactory([
+            FakeCaptureScript(frames: FakeFrame.run(count: 2), failAfterFrames: 2, failure: .io("Gone.")),
+            FakeCaptureScript(startError: .unavailable(BuiltInMicrophone.unavailableMessage)),
+            FakeCaptureScript(startError: .unavailable(BuiltInMicrophone.unavailableMessage)),
+        ])
+        let stop = ManualStopSource()
+        let dependencies = recorderDependencies(captures: captures, stop: stop, clock: ManualSessionClock(0))
+        let run = recorderRecordOnly(temp.url, dependencies)
+        let session = try #require(await recorderSession(in: temp.url))
+        #expect(await eventually { recorderStatus(session)?.phase == .waiting })
+        let warning = recorderStatus(session)?.warnings.first { $0.code == .audioUnavailable }
+        #expect(warning?.message == RecorderMachine.builtInMicrophoneOff)
+        stop.requestStop()
+        #expect(try await run.value.stopReason == .requested)
     }
 
     /// A call does not need the built-in microphone (review finding P4).

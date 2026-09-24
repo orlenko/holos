@@ -136,7 +136,7 @@ public final class AudioCapture {
         var builtIn: InputDevice?
         if source != .system, microphone == .builtIn {
             guard let device = BuiltInMicrophone.devices().builtIn else {
-                throw HolosError.unavailable("The built-in microphone is unavailable. Open the lid and try again.")
+                throw HolosError.unavailable(BuiltInMicrophone.unavailableMessage)
             }
             builtIn = device
         }

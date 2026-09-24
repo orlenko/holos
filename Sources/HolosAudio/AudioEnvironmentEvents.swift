@@ -5,22 +5,26 @@ import os
 import Synchronization
 
 /// Changes after which a recorder that is waiting for audio retries at once (docs/meeting-design.md §4.2): the
-/// CoreAudio device list changed (`kAudioHardwarePropertyDevices`), or the screen was unlocked (the
+/// CoreAudio device list or default input changed (`kAudioHardwarePropertyDevices`,
+/// `kAudioHardwarePropertyDefaultInputDevice`), or the screen was unlocked (the
 /// `com.apple.screenIsUnlocked` distributed notification). Reasons are buffered in a `Mutex` until the recorder loop
 /// reads them.
 public final class AudioEnvironmentEvents: Sendable {
     private static let log = Logger(subsystem: "ca.orlenko.holos.app", category: "capture")
 
-    /// The CoreAudio device list changed.
+    /// The CoreAudio device list or the default input changed.
     public static let audioDevicesChanged = "audioDevicesChanged"
     /// The screen was unlocked.
     public static let screenUnlocked = "screenUnlocked"
 
     private let buffer: ReasonBuffer
     private let devices: SystemAudioListener?
+    private let defaultInput: SystemAudioListener?
     private let unlock: UnlockObserver?
 
-    /// Starts listening for device-list changes and screen unlocks.
+    /// Starts listening for device-list changes, default-input changes, and screen unlocks. A new default input is
+    /// reported as `audioDevicesChanged` too: CoreAudio may list a device before it becomes the default input, and a
+    /// call recording system audio alone restarts with the microphone only once there is a default input.
     public convenience init() {
         let buffer = ReasonBuffer()
         let devices = SystemAudioListener(selector: kAudioHardwarePropertyDevices, label: "ca.orlenko.holos.devices") {
@@ -29,17 +33,25 @@ public final class AudioEnvironmentEvents: Sendable {
         if !devices.installed {
             AudioEnvironmentEvents.log.error("Cannot watch the audio device list; waiting recordings retry on schedule")
         }
+        let defaultInput = SystemAudioListener(selector: kAudioHardwarePropertyDefaultInputDevice,
+                                               label: "ca.orlenko.holos.default-input-events") {
+            buffer.post(AudioEnvironmentEvents.audioDevicesChanged)
+        }
+        if !defaultInput.installed {
+            AudioEnvironmentEvents.log.error("Cannot watch the default input device")
+        }
         let unlock = UnlockObserver { buffer.post(AudioEnvironmentEvents.screenUnlocked) }
-        self.init(buffer: buffer, devices: devices, unlock: unlock)
+        self.init(buffer: buffer, devices: devices, defaultInput: defaultInput, unlock: unlock)
     }
 
-    private init(buffer: ReasonBuffer, devices: SystemAudioListener?, unlock: UnlockObserver?) {
-        self.buffer = buffer; self.devices = devices; self.unlock = unlock
+    private init(buffer: ReasonBuffer, devices: SystemAudioListener?, defaultInput: SystemAudioListener?,
+                 unlock: UnlockObserver?) {
+        self.buffer = buffer; self.devices = devices; self.defaultInput = defaultInput; self.unlock = unlock
     }
 
     /// Tests only: listens to nothing; `post` stands in for the system.
     static func silent() -> AudioEnvironmentEvents {
-        AudioEnvironmentEvents(buffer: ReasonBuffer(), devices: nil, unlock: nil)
+        AudioEnvironmentEvents(buffer: ReasonBuffer(), devices: nil, defaultInput: nil, unlock: nil)
     }
 
     /// "audioDevicesChanged" or "screenUnlocked", buffered since the last call, each at most once, in first-seen order.
@@ -48,6 +60,7 @@ public final class AudioEnvironmentEvents: Sendable {
     /// Stops listening; buffered reasons are dropped.
     public func stop() {
         devices?.remove()
+        defaultInput?.remove()
         unlock?.remove()
         buffer.close()
     }

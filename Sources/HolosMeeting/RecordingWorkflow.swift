@@ -221,7 +221,8 @@ public enum RecordingWorkflow {
         defer { stop.restoreDefaultHandlers() }
         let options = try validated(options)
         // In person without the built-in microphone: refused before a session exists (§4.12).
-        guard let plan = EpochPlan.make(options, devices: dependencies.findInputDevices()) else {
+        guard let plan = EpochPlan.make(options, devices: dependencies.findInputDevices(),
+                                        lidOpen: dependencies.power?.isLidOpen() ?? true) else {
             throw HolosError.unavailable(EpochPlan.builtInMicrophoneUnavailable)
         }
         try checkDisk(options, dependencies)
@@ -295,7 +296,7 @@ public enum RecordingWorkflow {
 
 /// What one capture epoch records, from the input devices present when it starts (decision 9, §4.12).
 struct EpochPlan: Sendable, Equatable {
-    static let builtInMicrophoneUnavailable = "The built-in microphone is unavailable. Open the lid and try again."
+    static let builtInMicrophoneUnavailable = BuiltInMicrophone.unavailableMessage
 
     /// The epoch's `CaptureRequest.source`: `.system` for a call epoch without the microphone.
     var source: AudioSource
@@ -304,13 +305,15 @@ struct EpochPlan: Sendable, Equatable {
     /// The input device the microphone track records, for status.json.
     var microphoneName: String?
 
-    /// In person: the selected microphone (the built-in one), or nil when the built-in microphone is gone. A call: the
-    /// selected input (the system default), or system audio alone when the Mac has no input device.
-    static func make(_ options: RecordingOptions, devices: InputDevices) -> EpochPlan? {
+    /// In person: the selected microphone (the built-in one), or nil when the built-in microphone is gone or the lid is
+    /// closed (Macs with Apple silicon or a T2 chip disconnect it in hardware then, and the device may stay listed
+    /// while recording silence). A call: the selected input (the system default), or system audio alone when the Mac
+    /// has no input device.
+    static func make(_ options: RecordingOptions, devices: InputDevices, lidOpen: Bool = true) -> EpochPlan? {
         let microphone = options.microphone == .builtIn ? devices.builtIn : devices.systemDefault
         switch options.source {
         case .microphone:
-            if options.microphone == .builtIn, microphone == nil { return nil }
+            if options.microphone == .builtIn, microphone == nil || !lidOpen { return nil }
             return EpochPlan(source: .microphone, tracks: ["mic"], microphoneName: microphone?.name)
         case .microphoneAndSystem:
             guard let microphone else { return EpochPlan(source: .system, tracks: ["system"], microphoneName: nil) }
@@ -351,6 +354,10 @@ private final class Recorder {
     var powerAssertion: PowerAssertion?
     /// willSleep tokens not yet acknowledged.
     var pendingSleepTokens: [Int] = []
+    /// While a willSleep waits for the loop: when the sleep must be allowed (the capture-stop limit plus
+    /// `tuning.sleepMargin` after it was drained). Every step before `allowSleep` ends by then.
+    var sleepDeadline: ContinuousClock.Instant?
+    var sleepBudget: Duration { dependencies.timeouts.captureStop + dependencies.tuning.sleepMargin }
     /// The lid state at the last tick.
     var lidOpen = true
     /// `stop()` was called on the current capture.
@@ -553,16 +560,22 @@ private final class Recorder {
             // Cancelled, or a capture stop ended with CancellationError.
             if cancelled { return }
             if writerFailed.value { return }
-            // Power first: a sleep is acknowledged within seconds, and a capture end it causes is then ignored.
-            for event in power?.pendingEvents() ?? [] {
-                switch event {
+            // Power first: a sleep is acknowledged within seconds, and a capture end it causes is then ignored. Each
+            // event is timed by its arrival, not by this drain: after a restart that held the loop past macOS's 30 s
+            // limit, willSleep and didWake come in together after the wake, and only their arrival tells the length
+            // of the sleep.
+            let drained = clock.now()
+            for timed in power?.pendingTimedEvents() ?? [] {
+                let at = max(0, drained - max(0, timed.secondsAgo))
+                switch timed.event {
                 case .willSleep(let token):
                     pendingSleepTokens.append(token)
-                    await apply(.willSleep(at: clock.now()))
+                    sleepDeadline = ContinuousClock.now.advanced(by: sleepBudget)
+                    await apply(.willSleep(at: at))
                     // The machine allows it after closing chunks; whatever happened, the Mac is never held awake.
                     allowSleep()
                 case .didWake:
-                    await apply(.didWake(at: clock.now(), lidOpen: power?.isLidOpen() ?? true))
+                    await apply(.didWake(at: at, lidOpen: power?.isLidOpen() ?? true))
                 }
             }
             for event in monitor.drain() { await apply(event) }
@@ -647,10 +660,7 @@ private final class Recorder {
             await warn(warning)
         case .clearWarning(let code):
             shownWarnings.remove(code)
-            let session = archive.id
-            do { try await status.update { $0.warnings.removeAll { $0.code == code } } } catch {
-                Self.log.error("Session \(session, privacy: .public): cannot write status.json: \(error.localizedDescription, privacy: .public)")
-            }
+            await updateStatus { $0.warnings.removeAll { $0.code == code } }
         case .allowSleep:
             allowSleep()
         case .holdPowerAssertion(let hold):
@@ -668,8 +678,7 @@ private final class Recorder {
     /// allowed to sleep next, even if the platform stop has not returned or the disk is still behind.
     private func stopCapture(reason: GapReason) async {
         lastGapReason = reason
-        let sleepBudget = dependencies.timeouts.captureStop + dependencies.tuning.sleepMargin
-        let deadline = reason == .sleep ? ContinuousClock.now.advanced(by: sleepBudget) : nil
+        let deadline = reason == .sleep ? sleepDeadline ?? ContinuousClock.now.advanced(by: sleepBudget) : nil
         await stopCurrentCapture(deadline: deadline)
         let pump = self.pump
         if case .timedOut = await awaitWithTimeout(Self.limit(dependencies.timeouts.captureStop, by: deadline), {
@@ -746,7 +755,8 @@ private final class Recorder {
     /// reported as `startFailed`, so the waiting and backoff rules take over.
     private func startCapture(epoch: Int) async -> RecorderInput? {
         if cancelled || Task.isCancelled { return nil }
-        guard let plan = EpochPlan.make(options, devices: dependencies.findInputDevices()) else {
+        guard let plan = EpochPlan.make(options, devices: dependencies.findInputDevices(),
+                                        lidOpen: dependencies.power?.isLidOpen() ?? true) else {
             Self.log.error("Session \(self.archive.id, privacy: .public): no built-in microphone for epoch \(epoch, privacy: .public)")
             let off = RecorderMachine.builtInMicrophoneOff
             return .captureEnded(epoch: epoch, .startFailed(message: off), at: clock.now())
@@ -783,7 +793,11 @@ private final class Recorder {
             startedAt = clock.now()
         case .finished(.failure(let error)):
             Self.log.error("Session \(self.archive.id, privacy: .public): epoch \(epoch, privacy: .public) failed to start")
-            return .captureEnded(epoch: epoch, .startFailed(message: error.localizedDescription), at: clock.now())
+            // The capture's own lookup of the built-in microphone failed (the lid closed since the plan was made):
+            // the recorder says how to continue.
+            let message = error.localizedDescription == BuiltInMicrophone.unavailableMessage
+                ? RecorderMachine.builtInMicrophoneOff : error.localizedDescription
+            return .captureEnded(epoch: epoch, .startFailed(message: message), at: clock.now())
         case .timedOut, .cancelled:
             // Abandoned: whenever the start returns, the capture is stopped so nothing keeps recording unseen.
             starting.cancel()
@@ -821,6 +835,7 @@ private final class Recorder {
 
     /// Lets every pending sleep go ahead (IOAllowPowerChange).
     private func allowSleep() {
+        sleepDeadline = nil
         guard !pendingSleepTokens.isEmpty else { return }
         let tokens = pendingSleepTokens
         pendingSleepTokens.removeAll()
@@ -861,7 +876,10 @@ private final class Recorder {
     // MARK: - Status
 
     private func recordEvent(_ kind: String, _ details: [String: String]) async {
-        do { try await archive.recordEvent(kind: kind, details: details) } catch {
+        let archive = self.archive
+        if let error = await beforeSleepDeadline("the \(kind) event", {
+            try await archive.recordEvent(kind: kind, details: details)
+        }) {
             Self.log.error("Session \(self.archive.id, privacy: .public): cannot journal \(kind, privacy: .public): \(error.localizedDescription, privacy: .public)")
         }
     }
@@ -901,8 +919,29 @@ private final class Recorder {
     }
 
     private func updateStatus(_ change: @escaping @Sendable (inout RecorderStatus) -> Void) async {
-        do { try await status.update(change) } catch {
+        let status = self.status
+        if let error = await beforeSleepDeadline("a status.json write", { try await status.update(change) }) {
             Self.log.error("Session \(self.archive.id, privacy: .public): cannot write status.json: \(error.localizedDescription, privacy: .public)")
+        }
+    }
+
+    /// Runs `write` (a journal or status.json write) and returns its error. While a sleep waits for the loop, the wait
+    /// ends at the sleep deadline: the write goes on behind a slow disk, unreported, and the Mac is allowed to sleep
+    /// on time (§4.4).
+    private func beforeSleepDeadline(_ what: String,
+                                     _ write: @escaping @Sendable () async throws -> Void) async -> Error? {
+        guard let deadline = sleepDeadline, !pendingSleepTokens.isEmpty else {
+            do { try await write() } catch { return error }
+            return nil
+        }
+        switch await awaitWithTimeout(Self.limit(.seconds(3_600), by: deadline), cancellable: false, write) {
+        case .finished(.failure(let error)):
+            return error
+        case .timedOut:
+            Self.log.notice("Session \(self.archive.id, privacy: .public): \(what, privacy: .public) finishes after the sleep is allowed")
+            return nil
+        case .finished(.success), .cancelled:
+            return nil
         }
     }
 

@@ -200,8 +200,15 @@ public struct RecorderMachine: Sendable, Equatable {
                 + finish(.startFailed)
         case .starting, .recording:
             // A device change right after the start (pinning the built-in microphone, a headset connecting) restarts
-            // like one later on: capture did start.
+            // like one later on: capture did start. A frameless epoch counts as unavailable audio, though: the first
+            // restarts at once, and another frameless end before an epoch delivers backs off into `waiting` like a
+            // failure, so the 10-minute limit applies and a change posted on every start cannot loop forever.
             if end == .configurationChanged {
+                if epochRunningSince == nil {
+                    if attempt > 0 { return failure(Self.describe(end), at: at) }
+                    attempt = 1
+                    if unavailableSince == nil { unavailableSince = at }
+                }
                 return [
                     .recordEvent(kind: MeetingEventKind.deviceChanged, details: [
                         "track": "mic", "at": String(at), "reason": "configurationChanged",

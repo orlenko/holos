@@ -16,7 +16,7 @@ import Testing
 /// A scripted `SystemPowerEvents`: the test posts events and moves the lid; the loop's acknowledgements are kept.
 final class RecorderFakePower: SystemPowerEvents {
     private struct State {
-        var events: [PowerEvent] = []
+        var events: [TimedPowerEvent] = []
         var attached = false
         var lidOpen: Bool
         /// Lid reads since the lid last moved.
@@ -33,7 +33,10 @@ final class RecorderFakePower: SystemPowerEvents {
         self.onAllow = onAllow
     }
 
-    func post(_ event: PowerEvent) { state.withLock { $0.events.append(event) } }
+    func post(_ event: PowerEvent) { state.withLock { $0.events.append(TimedPowerEvent(event)) } }
+
+    /// Posts `events` at once, so the loop drains them together, each as old as it says.
+    func post(_ events: [TimedPowerEvent]) { state.withLock { $0.events += events } }
 
     func setLid(open: Bool) {
         state.withLock { state in
@@ -50,7 +53,9 @@ final class RecorderFakePower: SystemPowerEvents {
 
     var attached: Bool { state.withLock { $0.attached } }
 
-    func pendingEvents() -> [PowerEvent] {
+    func pendingEvents() -> [PowerEvent] { pendingTimedEvents().map(\.event) }
+
+    func pendingTimedEvents() -> [TimedPowerEvent] {
         state.withLock { state in
             defer { state.events.removeAll() }
             return state.events
