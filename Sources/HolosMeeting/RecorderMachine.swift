@@ -275,7 +275,9 @@ public struct RecorderMachine: Sendable, Equatable {
         switch phase {
         case .waiting:
             return [retry(at: at)]
-        case .recording where microphoneMissing && watching && reason == AudioEnvironmentEvents.audioDevicesChanged:
+        case .starting, .recording:
+            // `starting` too: a call epoch 0 without the microphone may deliver nothing while nothing plays.
+            guard microphoneMissing, watching, reason == AudioEnvironmentEvents.audioDevicesChanged else { return [] }
             return [
                 .recordEvent(kind: MeetingEventKind.deviceChanged, details: [
                     "track": TrackWatchdog.microphoneTrack, "at": String(at), "reason": reason,
@@ -290,10 +292,14 @@ public struct RecorderMachine: Sendable, Equatable {
 
     // MARK: - Ticks
 
+    /// Capture runs (or is starting) in `starting` and `recording`: the disk check and the stall watchdog run there,
+    /// so an epoch 0 that never delivers its first frame is flagged and restarted like any other stall. `waiting`
+    /// checks the disk before it retries.
     private mutating func tick(at: Double, lidOpen: Bool, freeBytes: Int64?,
                                lastFrameAt: [String: Double]) -> [RecorderEffect] {
         switch phase {
-        case .recording:
+        case .starting, .recording:
+            // In `starting`, no epoch has run and nothing has failed yet, so the restart rules below do nothing.
             var effects: [RecorderEffect] = []
             if let since = epochRunningSince {
                 // A healthy epoch stops a start-then-fail loop from retrying at full speed.
@@ -311,8 +317,10 @@ public struct RecorderMachine: Sendable, Equatable {
             return effects + watchdogCheck(at: at, lastFrameAt: lastFrameAt)
         case .waiting:
             if let since = unavailableSince, at - since >= Self.unavailableLimit { return finish(.captureFailed) }
-            if let retryAt, at >= retryAt { return [retry(at: at)] }
-            return []
+            var effects = diskCheck(freeBytes)
+            if stopReason != nil { return effects }
+            if let retryAt, at >= retryAt { effects.append(retry(at: at)) }
+            return effects
         case .paused:
             if let since = pausedSince, at - since >= Self.pauseLimit { return finish(.pauseTimeout) }
             return []
@@ -341,6 +349,9 @@ public struct RecorderMachine: Sendable, Equatable {
         }
         effects += stallWarning(previously: stalledBefore)
         if !restart.isEmpty {
+            // An epoch that delivered nothing on any track (epoch 0 before its first frame, too) means audio is
+            // unavailable: the 10-minute limit then ends a recording whose restarts never bring audio back.
+            if epochRunningSince == nil, unavailableSince == nil { unavailableSince = at }
             effects += [.stopCapture(reason: .captureRestarted), startNextEpoch()]
         }
         return effects

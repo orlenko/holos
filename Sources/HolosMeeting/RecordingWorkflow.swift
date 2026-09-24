@@ -604,7 +604,7 @@ private final class Recorder {
             for event in monitor.drain() { await apply(event) }
             for reason in dependencies.environmentEvents?.pendingReasons() ?? [] {
                 // A call recording without the microphone restarts only when an input device is back.
-                if machine.phase == .recording, machine.microphoneMissing,
+                if machine.phase == .recording || machine.phase == .starting, machine.microphoneMissing,
                    EpochPlan.make(options, devices: dependencies.findInputDevices())?.tracks.contains("mic") != true {
                     continue
                 }

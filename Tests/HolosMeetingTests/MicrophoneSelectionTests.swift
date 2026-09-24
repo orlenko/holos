@@ -81,6 +81,22 @@ private func firstThen(_ first: MicrophoneTestCapture, _ captures: FakeCaptureFa
             "With the microphone, a device-list change needs no restart.")
 }
 
+/// A call epoch 0 without the microphone may deliver nothing while nothing plays, so the machine is still `starting`:
+/// a device-list change restarts it with the microphone all the same.
+@Test func missingCallMicrophoneReturnsBeforeTheFirstFrame() {
+    var machine = RecorderMachine(tracks: ["mic", "system"])
+    _ = machine.handle(.captureStarted(epoch: 0, tracks: ["system"], at: 0))
+    #expect(machine.phase == .starting)
+    #expect(machine.handle(.retryNow(reason: AudioEnvironmentEvents.screenUnlocked, at: 5)).isEmpty)
+    #expect(machine.handle(.retryNow(reason: AudioEnvironmentEvents.audioDevicesChanged, at: 6)).suffix(2)
+        == [.stopCapture(reason: .deviceChanged), .startCapture(epoch: 1)])
+    #expect(machine.phase == .recording)
+    #expect(machine.stopReason == nil)
+    // Before capture has started, nothing restarts.
+    var unstarted = RecorderMachine(tracks: ["mic", "system"])
+    #expect(unstarted.handle(.retryNow(reason: AudioEnvironmentEvents.audioDevicesChanged, at: 1)).isEmpty)
+}
+
 /// A device change right after the start (before the first frame) restarts capture instead of failing the start.
 @Test func configurationChangeBeforeTheFirstFrameRestarts() {
     var machine = RecorderMachine(tracks: ["mic"])

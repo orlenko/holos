@@ -73,6 +73,58 @@ private func watchedMachine(_ tracks: [String]) -> RecorderMachine {
     #expect(machine.stalledTracks.isEmpty)
 }
 
+/// Review finding (PR14): epoch 0's capture starts but no frame ever arrives, so the machine stays `starting`. The
+/// watchdog still runs there: the microphone is flagged after 3 s and restarted in a new epoch after 10 s.
+@Test func firstFrameStallWarnsThenRestarts() {
+    var machine = RecorderMachine(tracks: ["mic"])
+    #expect(machine.handle(tick(5, [:])).isEmpty, "Nothing is watched before capture has started.")
+    #expect(machine.handle(.captureStarted(epoch: 0, tracks: ["mic"], at: 10)).isEmpty)
+    #expect(machine.phase == .starting)
+    for second in 11...12 {
+        #expect(machine.handle(tick(Double(second), [:])).isEmpty)
+    }
+    #expect(machine.handle(tick(13, [:])) == [
+        .recordEvent(kind: MeetingEventKind.trackStalled, details: ["track": "mic", "silentSeconds": "3.0"]),
+        warning(.trackStalled, "No audio from the microphone for more than 3 s."),
+    ])
+    #expect(machine.phase == .starting)
+    for second in 14...19 {
+        #expect(machine.handle(tick(Double(second), [:])).isEmpty)
+    }
+    #expect(machine.handle(tick(20, [:])) == [.stopCapture(reason: .captureRestarted), .startCapture(epoch: 1)])
+    #expect(machine.phase == .recording)
+    #expect(machine.stopReason == nil)
+    // The new epoch delivers: the stall clears, and the late end of epoch 0 changes nothing.
+    #expect(machine.handle(.captureEnded(epoch: 0, .requested, at: 20.1)).isEmpty)
+    _ = machine.handle(.captureStarted(epoch: 1, tracks: ["mic"], at: 20.5))
+    _ = machine.handle(.captureRunning(epoch: 1, at: 20.6))
+    #expect(machine.handle(tick(21, ["mic": 20.6])) == [
+        .recordEvent(kind: MeetingEventKind.trackResumed, details: ["track": "mic"]),
+        .clearWarning(.trackStalled),
+    ])
+    #expect(machine.handle(tick(31, ["mic": 30.9])) == [.clearWarning(.audioUnavailable)],
+            "Ten seconds of audio: the restart attempts reset.")
+}
+
+/// A microphone that never delivers a frame, in any epoch, is restarted with backoff and the recording ends after
+/// 10 minutes without audio instead of staying stuck.
+@Test func firstFrameNeverArrivingEndsAfterTenMinutes() {
+    var machine = RecorderMachine(tracks: ["mic"])
+    _ = machine.handle(.captureStarted(epoch: 0, tracks: ["mic"], at: 0))
+    var restarts: [Double] = []
+    var at = 0.0
+    while machine.stopReason == nil, at < 2_000 {
+        at += 1
+        if machine.handle(tick(at, [:])).contains(.stopCapture(reason: .captureRestarted)) {
+            restarts.append(at)
+            _ = machine.handle(.captureStarted(epoch: machine.epoch, tracks: ["mic"], at: at))
+        }
+    }
+    #expect(restarts == [10, 30, 70, 150, 310])
+    #expect(machine.stopReason == .captureFailed)
+    #expect(at == 610, "600 s after the first restart of a frameless epoch.")
+}
+
 /// A microphone that stays silent after a restart is restarted after 20 s, then 40 s, not every 10 s.
 @Test func silentMicrophoneRestartsLessOften() {
     var machine = watchedMachine(["mic"])
@@ -199,5 +251,43 @@ extension RecorderEnvironmentLoopTests {
         #expect(resumed.map { $0.details["track"] } == ["mic"])
         let gaps = try recorderEvents(outcome.directory, MeetingEventKind.audioDiscontinuity)
         #expect(gaps.map { $0.details["reason"] } == [GapReason.captureRestarted.rawValue])
+    }
+
+    /// Through the loop (review finding, PR14): epoch 0 starts but never delivers a frame. The recorder stays
+    /// `starting`, warns after 3 s, and restarts the microphone in a new epoch after 10 s.
+    @Test(.timeLimit(.minutes(1)))
+    func firstFrameStallRestartsThroughTheLoop() async throws {
+        let temp = try TemporaryDirectory()
+        defer { temp.remove() }
+        let clock = ManualSessionClock(0)
+        let captures = FakeCaptureFactory([FakeCaptureScript(), FakeCaptureScript(frames: FakeFrame.run(count: 3))])
+        let stop = ManualStopSource()
+        let run = Task {
+            try await RecordingWorkflow.run(.testing(root: temp.url, recordOnly: true),
+                dependencies: recorderDependencies(captures: captures, stop: stop, clock: clock))
+        }
+        #expect(await eventually { captures.captures.count == 1 })
+        let session = try #require(await recorderSession(in: temp.url))
+        // The loop answers requests only once it runs, after epoch 0's stall timers started at session time 0; the
+        // answer also shows the recorder is still starting.
+        let marker = try #require(try await recorderSend(.marker, to: session))
+        #expect(marker.result == .rejected)
+        #expect(marker.message == "The recording is still starting.")
+        clock.set(3.5)
+        #expect(await eventually { recorderStatus(session)?.warnings.contains { $0.code == .trackStalled } == true })
+        #expect(recorderStatus(session)?.phase == .starting)
+        clock.set(10.5)
+        #expect(await eventually { captures.captures.count == 2 && captures.captures[1].consumedFrames >= 3 })
+        clock.set(11)
+        #expect(await eventually { recorderStatus(session)?.phase == .recording })
+        #expect(await eventually { recorderStatus(session)?.warnings.contains { $0.code == .trackStalled } == false })
+        stop.requestStop()
+        let outcome = try await run.value
+        #expect(outcome.stopReason == .requested)
+        let stalls = try recorderEvents(outcome.directory, MeetingEventKind.trackStalled)
+        #expect(stalls.map { $0.details["track"] } == ["mic"])
+        let resumed = try recorderEvents(outcome.directory, MeetingEventKind.trackResumed)
+        #expect(resumed.map { $0.details["track"] } == ["mic"])
+        #expect(try recorderEvents(outcome.directory, MeetingEventKind.startFailed).isEmpty)
     }
 }

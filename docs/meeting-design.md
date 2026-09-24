@@ -2462,13 +2462,17 @@ Rules the reducer encodes:
   `holdPowerAssertion(true)`, `startCapture(epoch+1)` → `recording`. A pause (including
   sleep while paused) lasting 6 h → `finish(pauseTimeout)`.
 - **Disk** (§4.5) and **watchdog** (below) are evaluated on every 1 s `tick` while
-  recording.
+  starting or recording (the watchdog once the epoch's capture has started), so an
+  epoch 0 that never delivers its first frame is flagged and restarted like any other
+  stall. The disk is also checked while waiting.
 - **Watchdog** (`TrackWatchdog`, held in the machine; PR2b). A track's stall timer starts
   at the epoch's start time and is reset by every `lastFrameAt` update. No frame for
   3 s → `recordEvent(trackStalled {track, silentSeconds})`, `warn(trackStalled)`.
   Frames again → `recordEvent(trackResumed)`, `clearWarning` when no track is stalled.
   A **microphone** track stalled for 10 s → `stopCapture(.captureRestarted)`,
-  `startCapture(epoch+1)`. The system track is never restarted for a stall
+  `startCapture(epoch+1)`; if the stalled epoch delivered no frame on any track, audio
+  counts as unavailable from then (`unavailableSince`), so the 600 s limit ends a
+  recording whose restarts never bring audio back. The system track is never restarted for a stall
   (ScreenCaptureKit may deliver nothing during silence, open question Q4). Arrival times
   come from the session clock, which starts at epoch 0's origin, so a slow startup or a
   permission prompt never looks like a stall.
