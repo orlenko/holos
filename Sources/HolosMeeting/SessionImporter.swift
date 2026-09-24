@@ -78,8 +78,7 @@ public enum SessionImporter {
         let staging = try ImportStaging.create(in: root)
         let archive: SessionArchive
         do {
-            archive = try SessionArchive.create(root: staging.url, name: name, source: .microphone, locale: locale,
-                                                backend: backend)
+            archive = try staging.createSession(name: name, locale: locale, backend: backend)
         } catch {
             throw failure(error, leftover: staging.discard())
         }
@@ -120,8 +119,8 @@ public enum SessionImporter {
                 segmentCount = segments.count
             }
             // The lease is taken while the writer lock is still held, as the recorder does. No one else can hold it:
-            // the staging folder is this import's alone.
-            let held = try SessionArchive.acquireProcessingLease(at: directory, retry: .zero)
+            // the staging folder is this import's alone. It is taken in the session folder `createSession` made.
+            let held = try staging.acquireLease()
             lease = held
             try await archive.finish(status: status)
             try Task.checkCancellation()
@@ -311,6 +310,9 @@ private struct TranscriptionFailure: Error {
 /// checked once (the import keeps its own open from `create` on; a sweep opens each candidate and checks its marker
 /// and lock through it), never through its name again. The sessions root may be a folder other programs change, and
 /// a folder renamed in at a staging folder's name after the check is never emptied (`AtomicFile.removeOpenFolder`).
+/// The session is made through that descriptor too (`createSession`), so a folder renamed in at the staging name
+/// never receives the imported audio; later writes name the session by path, and reach nothing once the staging
+/// folder is renamed away.
 final class ImportStaging {
     static let prefix = ".import-"
     static let lockName = ".import.lock"
@@ -330,6 +332,10 @@ final class ImportStaging {
 
     private static let log = Logger(subsystem: "ca.orlenko.holos.app", category: "recorder")
 
+    /// Test hook: while set (a task-local value), `createSession` calls it with the staging folder's URL before it
+    /// makes the session folder, so tests can swap the staging folder on the way.
+    @TaskLocal static var beforeSession: (@Sendable (URL) -> Void)? = nil
+
     /// The sessions root as the caller named it; published sessions are named under it.
     let root: URL
     let name: String
@@ -340,6 +346,10 @@ final class ImportStaging {
     private let folderFD: Int32
     /// The locked `.import.lock`, or -1 once closed.
     private var lockFD: Int32
+    /// The session folder `createSession` made in the staging folder, open since, or -1 before.
+    private var sessionFD: Int32 = -1
+    /// Its name (`<id>.holos`), once made.
+    private(set) var sessionName: String?
 
     private init(root: URL, name: String, rootFD: Int32, folderFD: Int32, lockFD: Int32) {
         self.root = root; self.name = name; self.rootFD = rootFD; self.folderFD = folderFD; self.lockFD = lockFD
@@ -347,8 +357,85 @@ final class ImportStaging {
 
     deinit {
         closeLock()
+        if sessionFD >= 0 { Darwin.close(sessionFD) }
         Darwin.close(folderFD)
         Darwin.close(rootFD)
+    }
+
+    /// Makes the import's session folder `<id>.holos` in the staging folder through the descriptor `create` opened
+    /// (`mkdirat`), keeps it open, and creates the session archive in it (`SessionArchive.create(inEmptyFolder:)`),
+    /// which refuses unless the path every later write takes (`url/<id>.holos`) reaches that same folder. So a
+    /// folder renamed in at the staging name is never given the session: nothing is written into it, and the import
+    /// fails. Once made, the session folder is the one `acquireLease` locks, `publish` moves, and `discard` checks
+    /// for. Call it once. On a throw, `discard` removes whatever was made.
+    func createSession(name sessionTitle: String, locale: String, backend: SpeechBackend) throws -> SessionArchive {
+        precondition(sessionFD < 0, "createSession is called once")
+        Self.beforeSession?(url)
+        let sessionName = "\(UUID().uuidString).holos"
+        guard mkdirat(folderFD, sessionName, 0o700) == 0 else {
+            throw HolosError.io("Cannot create the session folder: \(Self.errnoText()).")
+        }
+        let fd = openat(folderFD, sessionName, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        guard fd >= 0 else {
+            let code = errno
+            unlinkat(folderFD, sessionName, AT_REMOVEDIR)
+            throw HolosError.io("Cannot open the session folder: \(String(cString: strerror(code))).")
+        }
+        self.sessionFD = fd
+        self.sessionName = sessionName
+        guard Self.isEmptyFolder(fd) else {
+            throw HolosError.io("The folder for the new session was replaced while it was being made.")
+        }
+        if fsync(folderFD) != 0 {
+            throw HolosError.io("Cannot save the import folder: \(Self.errnoText()).")
+        }
+        return try SessionArchive.create(inEmptyFolder: fd,
+                                         directory: url.appendingPathComponent(sessionName, isDirectory: true),
+                                         name: sessionTitle, source: .microphone, locale: locale, backend: backend)
+    }
+
+    /// The processing lease of the session `createSession` made, taken in the folder it holds open (so its lock file
+    /// and identity are that folder's, wherever the staging name leads). `lease.session` names the staging path.
+    func acquireLease() throws -> ProcessingLease {
+        guard sessionFD >= 0, let sessionName else {
+            throw HolosError.invalidInput("The import has no session to lock yet.")
+        }
+        return try SessionArchive.acquireProcessingLease(
+            inFolder: sessionFD, session: url.appendingPathComponent(sessionName, isDirectory: true), retry: .zero)
+    }
+
+    /// Whether `name` in the open folder `parent` is the folder open as `folder` (device and inode, no link
+    /// followed).
+    private static func names(_ name: String, in parent: Int32, folder: Int32) -> Bool {
+        var opened = stat()
+        var named = stat()
+        return fstat(folder, &opened) == 0 && fstatat(parent, name, &named, AT_SYMLINK_NOFOLLOW) == 0
+            && named.st_dev == opened.st_dev && named.st_ino == opened.st_ino
+    }
+
+    /// A sentence for the user when the session folder `createSession` made is no longer in the staging folder
+    /// (another program moved it out, so neither `publish` nor `discard` reaches it), naming where it is now when
+    /// that can be found; nil when it is still there, or none was made.
+    private func straySessionNote() -> String? {
+        guard sessionFD >= 0, let sessionName, !Self.names(sessionName, in: folderFD, folder: sessionFD) else {
+            return nil
+        }
+        var buffer = [CChar](repeating: 0, count: Int(MAXPATHLEN))
+        if fcntl(sessionFD, F_GETPATH, &buffer) == 0 {
+            let path = String(decoding: buffer.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) }, as: UTF8.self)
+            // F_GETPATH can report where a folder was before it was removed; the path counts only if it still names
+            // this folder.
+            let parent = open((path as NSString).deletingLastPathComponent, O_RDONLY | O_DIRECTORY | O_CLOEXEC)
+            if parent >= 0 {
+                defer { Darwin.close(parent) }
+                if Self.names((path as NSString).lastPathComponent, in: parent, folder: sessionFD) {
+                    return "Its session folder was moved out of the import folder while it was being imported, to "
+                        + "\(path), and was left there; it is not a finished session, so delete it."
+                }
+            }
+        }
+        return "Its session folder was moved out of the import folder while it was being imported and could not be "
+            + "found to remove."
     }
 
     /// Creates `root` if needed, removes abandoned staging folders in it (`sweep`), then makes a new one: the folder,
@@ -418,9 +505,17 @@ final class ImportStaging {
     /// folder alone. `after` runs after each step (for tests).
     ///
     /// The rename, the unlinks, and the removal of the emptied folder go through the folder `create` opened, so a
-    /// folder renamed in at the staging name meanwhile is never published from or changed.
+    /// folder renamed in at the staging name meanwhile is never published from or changed. Once `createSession` has
+    /// made the session, only that folder is published: `sessionName` must be its name, and the entry of that name
+    /// must still be the folder it made (device and inode), not one another program moved in in its place.
     func publish(_ sessionName: String, after: (Step) -> Void = { _ in }) throws -> URL {
         let stagingFD = folderFD
+        if sessionFD >= 0 {
+            guard sessionName == self.sessionName, Self.names(sessionName, in: stagingFD, folder: sessionFD) else {
+                throw HolosError.io("The imported session was moved or replaced in its import folder, so it was not "
+                                    + "published.")
+            }
+        }
         var moved = renameatx_np(stagingFD, sessionName, rootFD, sessionName, UInt32(RENAME_EXCL)) == 0
         if !moved, errno == ENOTSUP || errno == EINVAL {
             // A volume without RENAME_EXCL: the name is a new UUID, and it is checked to be free just before.
@@ -456,15 +551,20 @@ final class ImportStaging {
     /// Removes the staging folder `create` made, through the descriptor it opened, and everything in it (`remove`),
     /// then lets go of the lock. Returns nil when it is gone, else a sentence for the user that says where the partial
     /// files are. A folder it could not remove keeps its ownership marker, so a later sweep finishes the job.
+    ///
+    /// The session folder `createSession` made is removed with the staging folder. When another program moved it
+    /// out of the staging folder, it is not removed (it is no longer anywhere the import owns), and the sentence says
+    /// so, naming where it is when that can be found.
     func discard() -> String? {
         defer { closeLock() }
+        let stray = straySessionNote()
         do {
             try Self.remove(folder: folderFD, named: name, in: rootFD, root: root)
-            return nil
+            return stray
         } catch {
             Self.log.error("Cannot remove an import folder: \(error.localizedDescription, privacy: .private)")
             return "Its partial files in \(url.path) could not be removed (\(error.localizedDescription)). They are "
-                + "not a session; delete that folder, or the next import removes it."
+                + "not a session; delete that folder, or the next import removes it." + (stray.map { " " + $0 } ?? "")
         }
     }
 

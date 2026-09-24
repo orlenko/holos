@@ -189,6 +189,24 @@ extension SessionArchive {
         return ProcessingLease(session: session, folder: identity, descriptor: fd)
     }
 
+    /// Like `acquireProcessingLease(at:retry:)`, in the session folder open as `folder` (not closed) rather than
+    /// wherever `session` leads: the lock file and the lease's folder identity both come from `folder`. `session` is
+    /// only the name the lease reports. The folder must hold a plain `manifest.json`.
+    public nonisolated static func acquireProcessingLease(inFolder folder: Int32, session: URL,
+                                                          retry: Duration = .seconds(1)) throws -> ProcessingLease {
+        var info = stat()
+        guard fstatat(folder, "manifest.json", &info, AT_SYMLINK_NOFOLLOW) == 0,
+              (info.st_mode & S_IFMT) == S_IFREG else {
+            throw HolosError.invalidInput("\(session.lastPathComponent) is not a Holos session folder.")
+        }
+        let identity = try FileIdentity(descriptor: folder)
+        guard let fd = try SessionLockFile.acquire(SessionLockFile.processing, inFolder: folder,
+                                                   timeout: retry) else {
+            throw HolosError.unavailable("Another Holos process is processing this session.")
+        }
+        return ProcessingLease(session: session, folder: identity, descriptor: fd)
+    }
+
     /// Adopts `descriptor`, inherited from a parent that handed its lease over (`ProcessingLease.handOff`,
     /// `holos session diarize --lease-fd`, docs/meeting-design.md §4.1), as this process's lease, without acquiring
     /// one (the lease is not re-entrant).

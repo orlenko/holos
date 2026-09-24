@@ -415,6 +415,74 @@ func importPersistsNoStagingPath() async throws {
     #expect(sessionImporterTree(root.appendingPathComponent(name)) == theirs)
 }
 
+/// Another program renames the staging folder away after `ImportStaging.create` and puts a folder of its own at the
+/// same name before the session is made. The session is made through the staging folder's descriptor and refused
+/// because its path no longer reaches it, so the import fails having written nothing into the replacement, and the
+/// original staging folder is emptied. Before, `SessionArchive.create(root: staging.url)` made the session inside
+/// the replacement, and every later write (the whole imported audio) went there while the error said nothing was
+/// imported.
+@Test(.timeLimit(.minutes(1)))
+func importNeverWritesIntoAFolderRenamedInAtTheStagingName() async throws {
+    let temp = try TemporaryDirectory("import")
+    defer { temp.remove() }
+    let wav = try sessionImporterStereoWAV(in: temp.url)
+    let root = temp.url.appendingPathComponent("Sessions", isDirectory: true)
+    let moved = temp.url.appendingPathComponent("moved", isDirectory: true)
+    let replacement = SharedValue<[String]>([])
+    let swapped = SharedValue<String?>(nil)
+    let error = await #expect(throws: HolosError.self) {
+        try await ImportStaging.$beforeSession.withValue({ staging in
+            do {
+                try FileManager.default.moveItem(at: staging, to: moved)
+                _ = try sessionImporterAbandonedStaging(in: root, name: staging.lastPathComponent)
+            } catch {
+                Issue.record("Cannot swap the folder: \(error)")
+            }
+            swapped.update { $0 = staging.lastPathComponent }
+            replacement.update { $0 = sessionImporterTree(staging) }
+        }) {
+            _ = try await sessionImporterImport(wav, root: root, speech: FakeSpeechFactory(), transcribe: false)
+        }
+    }
+    #expect(error?.errorDescription?.contains("Nothing was imported.") == true)
+    let name = try #require(swapped.value)
+    #expect(replacement.value.contains { $0.hasSuffix("000001.caf") })
+    #expect(sessionImporterTree(root.appendingPathComponent(name)) == replacement.value)
+    #expect(sessionImporterEntries(root) == [name])
+    #expect(sessionImporterTree(moved).isEmpty)
+}
+
+/// Once the session is made, only that folder is published, and a discard says where it went when another program
+/// moved it out of the staging folder: a folder moved in at its name is not published, and the error does not claim
+/// that nothing was imported while the moved session holds the audio.
+@Test func publishAndDiscardFollowTheSessionFolderCreateSessionMade() async throws {
+    let temp = try TemporaryDirectory("import")
+    defer { temp.remove() }
+    let root = temp.url.appendingPathComponent("Sessions", isDirectory: true)
+    let fm = FileManager.default
+
+    let staging = try ImportStaging.create(in: root)
+    let archive = try staging.createSession(name: "Imported", locale: "en-CA", backend: .speech)
+    #expect(archive.directory == staging.url.appendingPathComponent(try #require(staging.sessionName)))
+    let lease = try staging.acquireLease()
+    try await archive.finish(status: ArchiveStatus.failed)
+    lease.release()
+    let sessionName = try #require(staging.sessionName)
+    let stray = temp.url.appendingPathComponent("stray-\(UUID().uuidString)", isDirectory: true)
+    try fm.moveItem(at: archive.directory, to: stray)
+    let planted = archive.directory.appendingPathComponent("audio/mic", isDirectory: true)
+    try fm.createDirectory(at: planted, withIntermediateDirectories: true)
+    try Data("theirs".utf8).write(to: planted.appendingPathComponent("000001.caf"))
+
+    #expect(throws: HolosError.self) { _ = try staging.publish(sessionName) }
+    #expect(!fm.fileExists(atPath: root.appendingPathComponent(sessionName).path))
+    let note = try #require(staging.discard())
+    #expect(note.contains("moved out of the import folder"))
+    #expect(note.contains(stray.lastPathComponent))
+    #expect(sessionImporterTree(stray).contains("manifest.json"))
+    #expect(sessionImporterEntries(root).isEmpty)
+}
+
 @Test(.timeLimit(.minutes(1)))
 func importWithoutTranscriptionIsAudioOnly() async throws {
     let temp = try TemporaryDirectory("import")

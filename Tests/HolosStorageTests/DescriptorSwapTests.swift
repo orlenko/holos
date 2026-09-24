@@ -244,3 +244,42 @@ private func swapStaleArchive(in root: URL) async throws -> URL {
     #expect(report.unrecoveredChunks == ["audio/mic/000001.caf"])
     #expect(report.manifest?.chunks.isEmpty == true)
 }
+
+/// `create(inEmptyFolder:)` writes the session into the folder it was given only when the path later writes take
+/// reaches that folder. Here the folder was renamed away and another put at its name: nothing is written into
+/// either, and the call throws. Otherwise the session is made in the open folder, and its processing lease can be
+/// taken through that folder's descriptor.
+@Test func createInEmptyFolderRefusesAPathThatNoLongerReachesTheFolder() async throws {
+    let root = try swapTemporaryRoot()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let fm = FileManager.default
+    let rootFD = open(root.path, O_RDONLY | O_DIRECTORY | O_CLOEXEC)
+    #expect(rootFD >= 0)
+    defer { close(rootFD) }
+
+    let name = "\(UUID().uuidString).holos"
+    let directory = root.appendingPathComponent(name, isDirectory: true)
+    #expect(mkdirat(rootFD, name, 0o700) == 0)
+    let folder = openat(rootFD, name, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+    #expect(folder >= 0)
+    defer { close(folder) }
+    let moved = root.appendingPathComponent("moved", isDirectory: true)
+    try fm.moveItem(at: directory, to: moved)
+    try fm.createDirectory(at: directory, withIntermediateDirectories: false)
+    #expect(throws: HolosError.self) {
+        _ = try SessionArchive.create(inEmptyFolder: folder, directory: directory, name: "Swap", source: .microphone,
+                                      locale: "en-CA", backend: .speech)
+    }
+    #expect(try fm.contentsOfDirectory(atPath: directory.path).isEmpty)
+    #expect(try fm.contentsOfDirectory(atPath: moved.path).isEmpty)
+
+    try fm.removeItem(at: directory)
+    try fm.moveItem(at: moved, to: directory)
+    let archive = try SessionArchive.create(inEmptyFolder: folder, directory: directory, name: "Swap",
+                                            source: .microphone, locale: "en-CA", backend: .speech)
+    let lease = try SessionArchive.acquireProcessingLease(inFolder: folder, session: directory, retry: .zero)
+    defer { lease.release() }
+    try lease.require(for: directory)
+    try await archive.finish(status: ArchiveStatus.complete)
+    #expect(try SessionArchive.readManifest(at: directory).name == "Swap")
+}
