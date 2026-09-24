@@ -28,14 +28,15 @@ public struct SpeakerSessionSnapshot: Sendable {
     public let audioDeleted: Bool
     /// meeting.json is damaged or belongs to another session, so `meeting` is `MeetingInfo.inferred`.
     public let meetingInfoDamaged: Bool
-    /// The head run's recognition result could not be read and was left out (no voice matches or suggestions).
+    /// The head run's recognition result is damaged and was left out (no voice matches or suggestions).
     public let recognitionUnreadable: Bool
     /// Event journal lines and events the gaps and markers skipped (`SessionTimelineReader`).
     public let skippedEvents: Int
 
     private static let log = Logger(subsystem: "ca.orlenko.holos.app", category: "speakers")
 
-    /// Throws unavailable when the session has no transcript.
+    /// Throws unavailable when the session has no transcript (`incomplete` when a head exists whose labels cannot be
+    /// used and there is no current transcript to fall back to).
     ///
     /// Details:
     /// - The head run is used with the transcript it was built from (`run.transcriptID`), not necessarily the
@@ -43,10 +44,12 @@ public struct SpeakerSessionSnapshot: Sendable {
     ///   missing or unreadable, or with a turn span outside its transcript (`0 ≤ first < end ≤` the segment's
     ///   effective word count) is not used: `run` and `projection` are nil, `runProblem` says why, and the current
     ///   transcript is used.
-    /// - A head or run written by a newer Holos is refused (`unavailable`), as are a newer meeting.json or
-    ///   transcript, and a file that cannot be read right now (I/O) is an error, never a reason to drop the
-    ///   speakers. An unreadable recognition result is ignored (it only adds voice matches and suggestions). A
-    ///   damaged meeting.json, or one of another session, gives `MeetingInfo.inferred`.
+    /// - A head or run written by a newer Holos is refused (`unavailable`), as are a newer meeting.json,
+    ///   transcript, recognition result, or audio-deleted.json, and a file that cannot be read right now (I/O) is an
+    ///   error, never a reason to drop the speakers. A damaged recognition result is ignored (it only adds voice
+    ///   matches and suggestions). A damaged meeting.json, or one of another session, gives `MeetingInfo.inferred`.
+    ///   A damaged audio-deleted.json, or one of another session, leaves `audioDeleted` false.
+    /// - `transcriptChanged` is set only when the current revision can be read.
     /// - Every such fallback, and every journal line or event skipped, is recorded (`runProblem`,
     ///   `meetingInfoDamaged`, `recognitionUnreadable`, `journal`, `skippedEvents`) and reported by `diagnostics`.
     public static func load(session: URL, profileNames: [String: String] = [:]) throws -> SpeakerSessionSnapshot {
@@ -87,6 +90,11 @@ public struct SpeakerSessionSnapshot: Sendable {
         }
         if transcript == nil {
             guard let currentID else {
+                // Saved labels that cannot be used are damage, never a refusal (`unavailable` is kept for a file
+                // from a newer Holos and for a meeting that was never transcribed).
+                if let runProblem {
+                    throw HolosError.incomplete("\(runProblem) This meeting has no other transcript to show.")
+                }
                 throw HolosError.unavailable("This meeting has no transcript yet. Transcribe it before labelling speakers.")
             }
             transcript = try SessionFiles.transcript(id: currentID, session: session)
@@ -101,9 +109,19 @@ public struct SpeakerSessionSnapshot: Sendable {
         if let run {
             do {
                 recognition = try SessionSpeakerStore.readRecognition(runID: run.id, session: session)
-            } catch {
+            } catch let error where SessionFiles.isDamage(error) {
                 log.error("Session \(manifest.id, privacy: .public): recognition result ignored: \(error.localizedDescription, privacy: .private)")
                 recognitionUnreadable = true
+            }
+        }
+        // A newer current transcript counts only once it was read: a pointer to a damaged revision is not one.
+        var transcriptChanged = false
+        if let run, let currentID, currentID != run.transcriptID {
+            do {
+                _ = try SessionFiles.transcript(id: currentID, session: session)
+                transcriptChanged = true
+            } catch let error where SessionFiles.isDamage(error) {
+                log.error("Session \(manifest.id, privacy: .public): current transcript unusable: \(error.localizedDescription, privacy: .private)")
             }
         }
         let projection = run.map {
@@ -114,9 +132,9 @@ public struct SpeakerSessionSnapshot: Sendable {
         return SpeakerSessionSnapshot(
             session: session, manifest: manifest, meeting: meeting, transcript: transcript, run: run,
             journal: journal, recognition: recognition, projection: projection, gaps: timeline.gaps,
-            markers: timeline.markers,
-            transcriptChanged: run.map { run in currentID.map { $0 != run.transcriptID } ?? false } ?? false,
-            runProblem: runProblem, audioDeleted: SessionFiles.audioDeleted(session: session),
+            markers: timeline.markers, transcriptChanged: transcriptChanged,
+            runProblem: runProblem,
+            audioDeleted: try SessionFiles.audioDeleted(session: session, sessionID: manifest.id),
             meetingInfoDamaged: meetingInfoDamaged, recognitionUnreadable: recognitionUnreadable,
             skippedEvents: timeline.skippedEvents)
     }
@@ -191,13 +209,35 @@ enum SessionFiles {
         }
     }
 
-    /// Refuses (`unavailable`) a file written by a newer Holos (schema rule 3, §1.6).
-    static func checkVersion(_ data: Data, current: Int, name: String) throws {
-        guard let version = (try? HolosJSON.decoder().decode(VersionProbe.self, from: data))?.schemaVersion else {
-            return
+    /// Decodes a versioned session file (schema rules, §1.6): the version is checked before the whole file is
+    /// decoded, so one written by a newer Holos is refused (`unavailable`) even when it uses values this build does
+    /// not know; a version below 1, or data that does not decode, is damage (`invalidInput`).
+    static func decode<T: Decodable>(_ type: T.Type, from data: Data, current: Int, name: String) throws -> T {
+        if let version = (try? HolosJSON.decoder().decode(VersionProbe.self, from: data))?.schemaVersion {
+            if version > current {
+                throw HolosError.unavailable("\(name) was written by a newer Holos; update Holos to read it.")
+            }
+            if version < 1 {
+                throw HolosError.invalidInput("\(name) has an unsupported schema version \(version).")
+            }
         }
-        if version > current {
-            throw HolosError.unavailable("\(name) was written by a newer Holos; update Holos to read it.")
+        do {
+            return try HolosJSON.decoder().decode(type, from: data)
+        } catch {
+            throw HolosError.invalidInput("\(name) is damaged or was not written by Holos.")
+        }
+    }
+
+    /// `error` with `prefix` before its message, keeping its `HolosError` kind.
+    static func prefixed(_ error: any Error, _ prefix: String) -> any Error {
+        let message = prefix + error.localizedDescription
+        switch error as? HolosError {
+        case .invalidInput?: return HolosError.invalidInput(message)
+        case .unavailable?: return HolosError.unavailable(message)
+        case .permissionDenied?: return HolosError.permissionDenied(message)
+        case .incomplete?: return HolosError.incomplete(message)
+        case .io?: return HolosError.io(message)
+        case nil: return error
         }
     }
 
@@ -209,13 +249,7 @@ enum SessionFiles {
                                                       maxBytes: maxTranscriptBytes) else {
             throw HolosError.incomplete("\(name) is missing.")
         }
-        try checkVersion(data, current: 1, name: name)
-        let transcript: Transcript
-        do {
-            transcript = try HolosJSON.decoder().decode(Transcript.self, from: data)
-        } catch {
-            throw HolosError.invalidInput("\(name) is damaged or was not written by Holos.")
-        }
+        let transcript = try decode(Transcript.self, from: data, current: 1, name: name)
         guard transcript.id == id else { throw HolosError.invalidInput("\(name) does not describe transcript \(id).") }
         return transcript
     }
@@ -239,19 +273,20 @@ enum SessionFiles {
         }
     }
 
-    /// postprocess.json; nil when it does not exist. One written by a newer Holos is refused (`unavailable`), a
-    /// damaged one is `invalidInput`.
-    static func postProcessingRecord(session: URL) throws -> PostProcessingRecord? {
+    /// postprocess.json; nil when it does not exist. One written by a newer Holos is refused (`unavailable`); a
+    /// damaged one, or one that belongs to another session than the manifest's (read when `manifest` is nil), is
+    /// `invalidInput`, so a record copied or restored into the wrong session is never trusted.
+    static func postProcessingRecord(session: URL, manifest: SessionManifest? = nil) throws -> PostProcessingRecord? {
         let name = "postprocess.json"
         guard let data = try AtomicFile.readIfPresent(SessionPaths.postprocess(session), maxBytes: 1 << 20) else {
             return nil
         }
-        try checkVersion(data, current: 1, name: name)
-        do {
-            return try HolosJSON.decoder().decode(PostProcessingRecord.self, from: data)
-        } catch {
-            throw HolosError.invalidInput("\(name) is damaged or was not written by Holos.")
+        let record = try decode(PostProcessingRecord.self, from: data, current: 1, name: name)
+        let sessionID = try manifest?.id ?? SessionArchive.readManifest(at: session).id
+        guard record.sessionID == sessionID else {
+            throw HolosError.invalidInput("\(name) belongs to another session.")
         }
+        return record
     }
 
     /// meeting.json, or `MeetingInfo.inferred` for archives from before it existed.
@@ -259,21 +294,17 @@ enum SessionFiles {
         guard let data = try AtomicFile.readIfPresent(SessionPaths.meetingInfo(session), maxBytes: 1 << 20) else {
             return MeetingInfo.inferred(sessionID: manifest.id, source: manifest.source, createdAt: manifest.createdAt)
         }
-        try checkVersion(data, current: 1, name: "meeting.json")
-        let info: MeetingInfo
-        do {
-            info = try HolosJSON.decoder().decode(MeetingInfo.self, from: data)
-        } catch {
-            throw HolosError.invalidInput("meeting.json is damaged or was not written by Holos.")
-        }
+        let info = try decode(MeetingInfo.self, from: data, current: 1, name: "meeting.json")
         guard info.sessionID == manifest.id else {
             throw HolosError.invalidInput("meeting.json belongs to another session.")
         }
         return info
     }
 
-    /// Whether Delete Audio removed this session's audio (`audio-deleted.json` is a regular file).
-    static func audioDeleted(session: URL) -> Bool {
-        ((try? AtomicFile.readIfPresent(SessionPaths.audioDeleted(session), maxBytes: 1 << 20)) ?? nil) != nil
+    /// Whether Delete Audio removed this session's audio: `audio-deleted.json` is a readable record of this session
+    /// (`AudioDeletedRecord.isDeleted`). A missing, damaged, or other session's marker is false; one written by a
+    /// newer Holos throws `unavailable`, and one that cannot be read now throws its error.
+    static func audioDeleted(session: URL, sessionID: String?) throws -> Bool {
+        try AudioDeletedRecord.isDeleted(session: session, sessionID: sessionID)
     }
 }

@@ -97,7 +97,7 @@ private func snapshotSession(in root: URL, mode: MeetingMode? = .inPerson) async
     let run = try SessionFixtures.writeHeadRun(session: session, transcript: transcript,
                                                outputs: ["mic": SessionFixtures.alternatingOutput()])
     try FileManager.default.removeItem(at: SessionPaths.run(run.id, in: session))
-    try AtomicFile.writeJSON(["schemaVersion": 1], to: SessionPaths.audioDeleted(session))
+    try AtomicFile.writeJSON(AudioDeletedRecord(chunkCount: 1, seconds: 1), to: SessionPaths.audioDeleted(session))
     let snapshot = try SpeakerSessionSnapshot.load(session: session)
     #expect(snapshot.run == nil)
     #expect(snapshot.runProblem != nil)

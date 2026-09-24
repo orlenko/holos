@@ -48,12 +48,12 @@ public enum TranscriptRebuilder {
     ///   recorded as `transcribed: false`, while the audio still exists). The current transcript counts only once its
     ///   revision was read and holds its own ID (`SessionFiles.readableCurrentTranscriptID`): a truncated, damaged, or
     ///   mislabelled revision is rebuilt.
-    /// - Refuses (`unavailable`), even with `force`, a current pointer or revision, or a vocabulary.json the replay
-    ///   would use, written by a newer Holos (schema rule 3, §1.6).
+    /// - Refuses (`unavailable`), even with `force`, a current pointer or revision, an audio-deleted.json, or a
+    ///   vocabulary.json the replay would use, written by a newer Holos (schema rule 3, §1.6).
     /// - Journal words are kept per track up to `TranscriptCoverage.coverageEnd` (the last phrase's end, capped at the
     ///   earliest `transcriptionBehind`). With `transcribe`, the audio after it is replayed from 2 s earlier with the
     ///   session vocabulary and joined at word level (`TranscriptCoverage.merge`); without it, or once Delete Audio
-    ///   removed the audio, every journal phrase is kept and nothing is replayed.
+    ///   removed the audio (audio-deleted.json is a readable record of this session), every journal phrase is kept and nothing is replayed.
     /// - Replay calls have the stop path's time limits. A replay that fails or times out publishes nothing and throws
     ///   `HolosError.incomplete`; a cancelled one throws `CancellationError`.
     /// - `transcriptRebuilding` is journaled with the details below, then the new revision becomes current
@@ -91,8 +91,10 @@ public enum TranscriptRebuilder {
                 "This meeting's archive was interrupted and is not recovered yet; run holos session recover first.")
         }
         let events = try SessionArchive.readEvents(at: session).events
-        // Whether audio may be transcribed: asked for, and not deleted.
-        let mayTranscribe = transcribe && !SessionFiles.audioDeleted(session: session)
+        // Whether audio may be transcribed: asked for, and not deleted. The deletion marker is read, not only found:
+        // a damaged one, or another session's, does not stop the replay; one from a newer Holos is refused
+        // (`unavailable`) before anything changes.
+        let mayTranscribe = try transcribe && !SessionFiles.audioDeleted(session: session, sessionID: manifest.id)
         // The current revision is read, not only found: a damaged, truncated, or mislabelled one is not reused but
         // replaced. A pointer or revision from a newer Holos is refused (`unavailable`) before anything changes,
         // even with `force`, so the save never replaces it.
@@ -326,12 +328,10 @@ public enum TranscriptRebuilder {
             log.error("vocabulary.json ignored: \(error.localizedDescription, privacy: .private)")
             return []
         }
-        try SessionFiles.checkVersion(data, current: 1, name: "vocabulary.json")
         do {
-            let vocabulary = try HolosJSON.decoder().decode(MeetingVocabulary.self, from: data)
-            guard vocabulary.schemaVersion >= 1 else { throw HolosError.invalidInput("Unsupported schema version.") }
-            return vocabulary.strings
-        } catch {
+            return try SessionFiles.decode(MeetingVocabulary.self, from: data, current: 1, name: "vocabulary.json")
+                .strings
+        } catch let error where SessionFiles.isDamage(error) {
             log.error("vocabulary.json ignored: \(error.localizedDescription, privacy: .private)")
             return []
         }

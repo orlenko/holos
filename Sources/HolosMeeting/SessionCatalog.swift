@@ -110,7 +110,7 @@ public enum SessionCatalog {
                 id: folder.hasSuffix(".holos") ? String(folder.dropLast(6)) : folder, directory: session,
                 name: folder, createdAt: folderCreationDate(session), source: .microphone, state: .damaged,
                 manifestStatus: "", phase: phase, pid: pid, liveness: liveness, bytes: sizes.bytes,
-                derivedBytes: sizes.derived, audioDeleted: SessionFiles.audioDeleted(session: session))
+                derivedBytes: sizes.derived, audioDeleted: audioDeleted(session, sessionID: nil))
         }
         let origin = (try? SessionFiles.meetingInfo(session: session, manifest: manifest))?.origin ?? .recorded
         let speakers = speakerLabels(session, liveness: liveness)
@@ -132,7 +132,8 @@ public enum SessionCatalog {
             transcriptProblem: transcriptProblem, speakerState: speakers.state, labelMessage: speakers.message,
             runID: speakers.runID,
             hasSpeakerEdits: hasSpeakerEdits(session), phase: phase, pid: pid, liveness: liveness,
-            bytes: sizes.bytes, derivedBytes: sizes.derived, audioDeleted: SessionFiles.audioDeleted(session: session))
+            bytes: sizes.bytes, derivedBytes: sizes.derived,
+            audioDeleted: audioDeleted(session, sessionID: manifest.id))
     }
 
     // MARK: - State mapping
@@ -190,10 +191,12 @@ public enum SessionCatalog {
     }
 
     /// The speaker state from postprocess.json, speakers/head.json and the run the head names (`speakerState`), as
-    /// `SavedSpeakerState` validates them (recovery validates them the same way). When any of them exists but cannot
-    /// be read (damaged, written by a newer Holos, an I/O error), the head names a run that is missing, or the record
-    /// names a run while the head is missing, the state is `unreadable` with why, never the state of a session without
-    /// that file; the run is the head's, else the record's.
+    /// `SavedSpeakerState` validates them (recovery validates them the same way): a head counts as labels only when
+    /// `SpeakerSessionSnapshot.load`, which the exports and speaker commands use, loads its run. When any of them
+    /// exists but cannot be read (damaged, of another session, written by a newer Holos, an I/O error), the head's run
+    /// or its transcript is missing or damaged, a span does not fit that transcript, or the record names a run while
+    /// the head is missing, the state is `unreadable` with why, never the state of a session without that file; the
+    /// run is the head's, else the record's.
     static func speakerLabels(_ session: URL, liveness: RecorderLiveness)
         -> (state: SpeakerLabelState, message: String?, runID: String?) {
         let saved = SavedSpeakerState.read(session: session)
@@ -211,6 +214,18 @@ public enum SessionCatalog {
     static func hasSpeakerEdits(_ session: URL) -> Bool {
         guard let journal = try? SessionSpeakerStore.readEdits(session: session) else { return true }
         return !journal.edits.isEmpty || journal.unreadableLines > 0 || journal.tornTail
+    }
+
+    /// Whether the session's audio was deleted on purpose: audio-deleted.json is a readable record of this session
+    /// (`AudioDeletedRecord.isDeleted`). A marker that is damaged, of another session, written by a newer Holos, or
+    /// cannot be read now is not listed as deleted audio (the error is logged).
+    static func audioDeleted(_ session: URL, sessionID: String?) -> Bool {
+        do {
+            return try SessionFiles.audioDeleted(session: session, sessionID: sessionID)
+        } catch {
+            log.error("Cannot read audio-deleted.json: \(error.localizedDescription, privacy: .private)")
+            return false
+        }
     }
 
     /// When the folder was created (for a session whose manifest cannot be read).

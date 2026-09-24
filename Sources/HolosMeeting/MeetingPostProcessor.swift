@@ -92,10 +92,13 @@ public struct MeetingPostProcessor: Sendable {
         // The record is replaced from the first write on: one written by a newer Holos is refused (schema rule 3,
         // §1.6), never overwritten. A damaged one is replaced.
         do {
-            _ = try SessionFiles.postProcessingRecord(session: session)
+            _ = try SessionFiles.postProcessingRecord(session: session, manifest: manifest)
         } catch let error where SessionFiles.isDamage(error) {
             Self.log.error("Session \(manifest.id, privacy: .public): replacing an unusable postprocess.json: \(error.localizedDescription, privacy: .private)")
         }
+        // Read before anything is written, so an audio-deleted.json from a newer Holos is refused (`unavailable`)
+        // rather than read as audio that is still there; stage 4 reads it again.
+        _ = try SessionFiles.audioDeleted(session: session, sessionID: manifest.id)
         // A recorder that died leaves a status that is not exited; say so before labelling (§4.7 stage 0).
         do { try RecorderChannel.markDeadRecorderExited(session: session) } catch {
             Self.log.error("Session \(manifest.id, privacy: .public): cannot check the recorder status: \(error.localizedDescription, privacy: .public)")
@@ -252,7 +255,17 @@ public struct MeetingPostProcessor: Sendable {
         if diarized.isEmpty {
             recorder.skip([.render, .diarize], SpeakerAnalysis.noTrackToLabel)
         } else if let diarizer {
-            if SessionFiles.audioDeleted(session: session) {
+            let audioDeleted: Bool
+            do {
+                audioDeleted = try SessionFiles.audioDeleted(session: session, sessionID: manifest.id)
+            } catch let error where !(error is CancellationError) {
+                let message = "Cannot read audio-deleted.json: \(error.localizedDescription)"
+                recorder.skip([.render, .diarize, .align], message)
+                result.runID = head?.usableRunID
+                result.problem = message
+                return result
+            }
+            if audioDeleted {
                 recorder.skip([.render, .diarize, .align], SpeakerAnalysis.audioDeleted)
                 result.runID = head?.usableRunID
                 result.problem = SpeakerAnalysis.audioDeleted

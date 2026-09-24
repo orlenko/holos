@@ -767,7 +767,8 @@ public actor SessionArchive {
     }
 
     /// Read-only inspection. It never repairs, deletes, or rewrites archive contents. Looks only at the
-    /// manifest, the journal, and `audio/`; missing chunks are expected once `audio-deleted.json` exists.
+    /// manifest, the journal, and `audio/`; missing chunks are expected once `audio-deleted.json` is a readable record
+    /// of this session (`AudioDeletedRecord.isDeleted`). A marker written by a newer Holos throws `unavailable`.
     public nonisolated static func inspectRecovery(at directory: URL) throws -> RecoveryReport {
         guard directory.isFileURL else { throw HolosError.invalidInput("Archive path must be a file URL.") }
         var manifest: SessionManifest?
@@ -776,7 +777,10 @@ public actor SessionArchive {
         catch { manifestError = String(describing: error) }
 
         let journal = plainDirectory(directory) ? try readEvents(at: directory) : EventJournal()
-        let audioDeleted = plainFile(SessionPaths.audioDeleted(directory))
+        // The marker is read, not only found: a damaged one, or another session's, does not excuse missing audio;
+        // one written by a newer Holos throws `unavailable`.
+        let audioDeleted = plainDirectory(directory)
+            ? try AudioDeletedRecord.isDeleted(session: directory, sessionID: manifest?.id) : false
 
         var missing: [String] = []
         var corrupt: [String] = []

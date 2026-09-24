@@ -7,15 +7,55 @@ import os
 /// manifest still lists are known to be absent on purpose.
 public struct AudioDeletedRecord: Codable, Sendable, Equatable {
     public var schemaVersion: Int
+    /// The session whose audio was deleted; nil in markers written before it was recorded.
+    public var sessionID: String?
     public var deletedAt: Date
     /// Chunks the manifest listed when the audio was deleted.
     public var chunkCount: Int
     /// Seconds of audio deleted: the longest track's total chunk duration.
     public var seconds: Double
 
-    public init(schemaVersion: Int = 1, deletedAt: Date = Date(), chunkCount: Int, seconds: Double) {
-        self.schemaVersion = schemaVersion; self.deletedAt = deletedAt
+    public init(schemaVersion: Int = 1, sessionID: String? = nil, deletedAt: Date = Date(), chunkCount: Int,
+                seconds: Double) {
+        self.schemaVersion = schemaVersion; self.sessionID = sessionID; self.deletedAt = deletedAt
         self.chunkCount = chunkCount; self.seconds = seconds
+    }
+}
+
+extension AudioDeletedRecord {
+    private static let log = Logger(subsystem: "ca.orlenko.holos.app", category: "storage")
+
+    /// `audio-deleted.json` of `session`, decoded; nil when there is none. The marker is never trusted for being
+    /// there: one written by a newer Holos is refused (`unavailable`, schema rule 3, §1.6); one that is damaged, is
+    /// not a regular file, or names another session than `sessionID` (when both name one) is `invalidInput`; a file
+    /// that cannot be read now throws its error.
+    public static func read(session: URL, sessionID: String?) throws -> AudioDeletedRecord? {
+        let name = "audio-deleted.json"
+        guard let data = try AtomicFile.readIfPresent(SessionPaths.audioDeleted(session), maxBytes: 1 << 20) else {
+            return nil
+        }
+        let record = try SchemaVersion.decode(AudioDeletedRecord.self, from: data, current: SchemaVersion.audioDeleted,
+                                              name: name)
+        guard record.chunkCount >= 0, record.seconds.isFinite, record.seconds >= 0 else {
+            throw HolosError.invalidInput("\(name) is damaged or was not written by Holos.")
+        }
+        if let sessionID, let owner = record.sessionID, owner != sessionID {
+            throw HolosError.invalidInput("\(name) belongs to another session.")
+        }
+        return record
+    }
+
+    /// Whether Delete Audio removed the audio of `session`: its marker is a readable record of this session
+    /// (`read(session:sessionID:)`). A missing, damaged, or other session's marker is false (the audio is not known
+    /// to be deleted on purpose). A marker written by a newer Holos throws `unavailable`, and one that cannot be read
+    /// now throws its error.
+    public static func isDeleted(session: URL, sessionID: String?) throws -> Bool {
+        do {
+            return try read(session: session, sessionID: sessionID) != nil
+        } catch HolosError.invalidInput(let message) {
+            log.error("audio-deleted.json is unusable and ignored: \(message, privacy: .private)")
+            return false
+        }
     }
 }
 
@@ -72,10 +112,12 @@ public enum SessionDeletion {
     /// `audio-deleted.json`, then removes `derived/` and `audio/`. The manifest, event journal, transcripts, speaker
     /// runs, edits, recognition results, and exports stay. The marker is written before any audio goes, so a failure
     /// part-way never leaves chunks missing without it; calling again finishes the job and keeps the first marker.
+    /// A marker that is damaged or names another session (`AudioDeletedRecord.read`) is replaced.
     ///
     /// Throws `HolosError.invalidInput` when the lease is released or belongs to another session, or the manifest
-    /// cannot be read, and `HolosError.unavailable` while a recorder holds the writer lock (for more than 1 s) or
-    /// another process holds the speaker lock for more than 2 s.
+    /// cannot be read, and `HolosError.unavailable` while a recorder holds the writer lock (for more than 1 s),
+    /// another process holds the speaker lock for more than 2 s, or the marker was written by a newer Holos (before
+    /// anything is removed).
     public static func deleteAudio(session: URL, lease: ProcessingLease) throws {
         // The lease stays locked, even across a concurrent `release()`, until the deletion ends.
         try lease.beginUse(for: session)
@@ -83,15 +125,24 @@ public enum SessionDeletion {
         let writer = try holdWriterLock(session, action: "deleting its audio")
         defer { SessionLockFile.unlockAndClose(writer) }
         let manifest = try SessionArchive.readManifest(at: session)
+        // Read before anything is removed: a marker written by a newer Holos is refused (`unavailable`), never
+        // replaced; a damaged one, or another session's, is replaced below.
+        let existing: AudioDeletedRecord?
+        do {
+            existing = try AudioDeletedRecord.read(session: session, sessionID: manifest.id)
+        } catch HolosError.invalidInput(let message) {
+            log.error("Session \(manifest.id, privacy: .public): replacing an unusable audio-deleted.json: \(message, privacy: .private)")
+            existing = nil
+        }
 
         // Voice data is only for evaluation sessions; it goes first and is never left behind by a later failure.
         try SessionArchive.withSpeakerLock(at: session) {
             try SessionSpeakerStore.deleteVoiceData(session: session)
         }
-        let marker = SessionPaths.audioDeleted(session)
-        if try AtomicFile.entryType(at: marker) != S_IFREG {
-            try AtomicFile.writeJSON(AudioDeletedRecord(chunkCount: manifest.chunks.count,
-                                                        seconds: manifest.savedSeconds), to: marker)
+        if existing == nil {
+            try AtomicFile.writeJSON(AudioDeletedRecord(sessionID: manifest.id, chunkCount: manifest.chunks.count,
+                                                        seconds: manifest.savedSeconds),
+                                     to: SessionPaths.audioDeleted(session))
         }
         try AtomicFile.removeTree(["derived"], in: session)
         try AtomicFile.removeTree(["audio"], in: session)

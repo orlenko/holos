@@ -3669,7 +3669,11 @@ Nothing expired meetings before; a 3 h call is about 2 GB even with mono system 
 - **Storage (PR3, `Sources/HolosStorage/SessionDeletion.swift`).**
   `SessionDeletion.deleteAudio(session:lease:)` requires the lease and no writer, removes
   `audio/`, `derived/`, and `speakers/voice/`, and writes `audio-deleted.json`
-  `{schemaVersion, deletedAt, chunkCount, seconds}`. Transcript, runs, edits, and exports
+  `{schemaVersion, sessionID, deletedAt, chunkCount, seconds}` (`sessionID` optional:
+  markers written before it are accepted). The marker is decoded wherever it is read
+  (`AudioDeletedRecord.read`/`isDeleted`): one from a newer Holos is refused; a damaged one,
+  or another session's, does not count as deleted audio, and Delete Audio replaces it.
+  Transcript, runs, edits, and exports
   stay. `SessionDeletion.moveToTrash(session:lease:)` moves the folder to the Trash
   (`FileManager.trashItem`) and deletes `~/Library/Logs/Holos/recorder-<id>.log`.
   Both hold the writer lock (retry 1 s; held means a recorder is running, so they refuse)
@@ -5051,12 +5055,27 @@ public enum SessionDeletion {
 Speaker state: `postprocess.json` `running` with liveness `processing` or `maintenance`
 → `running`; `running` otherwise → `interrupted`; `failed` → `failed`; a finished record
 with a run → `labelled`; a finished record without a run → `notLabelled` with the record's
-message; no record → `none`. A postprocess.json, speakers/head.json, or head run that
-exists but cannot be read (damaged, written by a newer Holos, I/O), a head whose run is
-missing, or a record that names a run while the head is missing → `unreadable` with why,
-never the state of a session without it. `recover` validates the same files the same way
-(one shared reader) before it decides to post-process, and refuses (`unavailable`) when
-one was written by a newer Holos.
+message; no record → `none`. A head counts as labels only when
+`SpeakerSessionSnapshot.load` (the loader the exports and speaker commands use) loads its
+run: the run and the transcript revision it was built from exist and decode, and every
+span fits that transcript. A postprocess.json, speakers/head.json, head run, or run
+transcript that exists but cannot be read (damaged, of another session, written by a
+newer Holos, I/O), a head whose run or run transcript is missing, a span outside that
+transcript, or a record that names a run while the head is missing → `unreadable` with
+why, never the state of a session without it. `recover` validates the same files the same
+way (one shared reader, `SavedSpeakerState`, which delegates to the snapshot loader)
+before it decides to post-process, and refuses (`unavailable`) when one was written by a
+newer Holos.
+
+**Saved files are read, never only found.** Every versioned file recover, the catalog,
+delete, relabel, and the exports read (meeting.json, vocabulary.json, postprocess.json,
+`transcripts/current.json` and revisions, `speakers/head.json`, runs, recognition results,
+`audio-deleted.json`, `exports/.generated.json`) is decoded with its version checked
+first: newer → `unavailable`; a version below 1 or data that does not decode → damage,
+never present-and-authoritative. A record that names a session (meeting.json,
+postprocess.json, runs, voice data, and `audio-deleted.json` when it names one) is
+checked against the manifest's ID; another session's is damage.
+`manifest.json` stays strictly version 1 (schema rule 4).
 
 **CLI.**
 

@@ -723,7 +723,7 @@ private func journalInvariantViolation(_ state: SessionArchive.JournalSchedule) 
     defer { try? FileManager.default.removeItem(at: root) }
     let directory = try await abandonedRecording(in: root, events: 1)
     try FileManager.default.removeItem(at: directory.appendingPathComponent("audio"))
-    try AtomicFile.writeJSON(["schemaVersion": 1], to: SessionPaths.audioDeleted(directory))
+    try AtomicFile.writeJSON(AudioDeletedRecord(chunkCount: 1, seconds: 1), to: SessionPaths.audioDeleted(directory))
 
     let report = try await SessionArchive.recover(at: directory)
     #expect(report.manifest?.status == ArchiveStatus.interrupted)
@@ -962,7 +962,17 @@ private func journalInvariantViolation(_ state: SessionArchive.JournalSchedule) 
     #expect(withoutMarker.missingChunks == ["audio/mic/000001.caf"])
     #expect(withoutMarker.needsAttention)
 
-    try AtomicFile.writeJSON(["schemaVersion": 1], to: SessionPaths.audioDeleted(directory))
+    // A marker that is damaged, or of another session, does not excuse the missing audio.
+    let foreign = try HolosJSON.encoder().encode(AudioDeletedRecord(sessionID: UUID().uuidString, chunkCount: 1,
+                                                                    seconds: 1))
+    for data in [Data("{\"schemaVersion\":1}".utf8), foreign] {
+        try? FileManager.default.removeItem(at: SessionPaths.audioDeleted(directory))
+        try data.write(to: SessionPaths.audioDeleted(directory))
+        #expect(try SessionArchive.inspectRecovery(at: directory).missingChunks == ["audio/mic/000001.caf"])
+    }
+    try? FileManager.default.removeItem(at: SessionPaths.audioDeleted(directory))
+
+    try AtomicFile.writeJSON(AudioDeletedRecord(chunkCount: 1, seconds: 1), to: SessionPaths.audioDeleted(directory))
     let report = try SessionArchive.inspectRecovery(at: directory)
     #expect(report.missingChunks.isEmpty)
     #expect(!report.needsAttention)

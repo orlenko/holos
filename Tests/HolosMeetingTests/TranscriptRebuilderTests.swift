@@ -548,6 +548,17 @@ func recoverRelabelsWhenTheSavedLabelsAreUnusable() async throws {
             try FileManager.default.removeItem(at: url)
             try Data("not json".utf8).write(to: url)
         }),
+        ("the head's run has a span outside its transcript", {
+            let runID = try #require(try SessionSpeakerStore.readHead(session: session)?.runID)
+            var bad = try SessionSpeakerStore.readRun(id: runID, session: session)
+            bad.id = UUID().uuidString
+            bad.turns[0].spans[0].end = 999
+            try SessionArchive.withSpeakerLock(at: session) {
+                try SessionSpeakerStore.writeRun(bad, session: session)
+                try SessionSpeakerStore.writeHead(SpeakerHead(runID: bad.id), session: session)
+            }
+            #expect(SessionCatalog.summary(session: session).speakerState == .unreadable)
+        }),
         ("the head's run belongs to another transcript", {
             let runID = try #require(try SessionSpeakerStore.readHead(session: session)?.runID)
             var other = try SessionSpeakerStore.readRun(id: runID, session: session)
@@ -1193,4 +1204,114 @@ func recoverRebuildsAnUnreadableTranscriptSavedBeforeFinish() async throws {
     #expect(try Data(contentsOf: revision) == newer)
     #expect(try Data(contentsOf: SessionPaths.transcriptPointer(other)) == pointer)
     #expect(try SessionArchive.readManifest(at: other).status == ArchiveStatus.interrupted)
+}
+
+// MARK: - Records of another session, and the audio-deletion marker
+
+@Test(.timeLimit(.minutes(1)))
+func recoverDoesNotReuseAPostProcessingRecordOfAnotherSession() async throws {
+    let temp = try TemporaryDirectory("rebuild")
+    defer { temp.remove() }
+    let session = try await rebuilderDeadMeeting(in: temp.url)
+    let request = SessionRecoveryCommand.Request(session: session, transcribe: false)
+    let first = try await SessionRecoveryCommand.run(request, diarizer: nil, freeSpace: FixedFreeSpace(.max))
+    let transcriptID = try #require(first.rebuild?.transcriptID)
+    var foreign = try #require(first.postProcessing)
+    #expect(foreign.runID == nil && foreign.transcriptID == transcriptID)
+    // The same no-model success, copied from another session whose transcript has the same ID.
+    foreign.sessionID = UUID().uuidString
+    foreign.message = "Foreign message."
+    try rebuilderReplace(SessionPaths.postprocess(session), with: try HolosJSON.encoder().encode(foreign))
+    #expect(try SessionRecoveryCommand.currentLabels(session, transcriptID: transcriptID, canLabel: false) == nil,
+            "A record of another session is damage, never up to date.")
+    #expect(SessionCatalog.summary(session: session).speakerState == .unreadable)
+
+    let steps = SharedValue<[SessionRecoveryCommand.Step]>([])
+    let again = try await SessionRecoveryCommand.run(request, diarizer: nil, freeSpace: FixedFreeSpace(.max),
+                                                     step: { step in steps.update { $0.append(step) } })
+    #expect(steps.value.contains(.postProcessed), "Post-processing replaces the foreign record.")
+    #expect(!again.summary.contains("Foreign message."))
+    let record = try #require(try SessionFiles.postProcessingRecord(session: session))
+    #expect(record.sessionID == (try SessionArchive.readManifest(at: session).id))
+}
+
+@Test func rebuildReadsTheAudioDeletionMarker() async throws {
+    let temp = try TemporaryDirectory("rebuild")
+    defer { temp.remove() }
+    let journal = [SessionFixtures.segment(["early"], track: "mic", start: 0.5, wordSeconds: 0.3)]
+    let session = try await rebuilderSession(in: temp.url, audio: ["mic": 4], events: try rebuilderFinals(journal))
+    let marker = SessionPaths.audioDeleted(session)
+    let sessionID = try SessionArchive.readManifest(at: session).id
+
+    // A newer marker is refused before anything changes, even with force.
+    try AtomicFile.writeJSON(AudioDeletedRecord(sessionID: sessionID, chunkCount: 1, seconds: 4), to: marker)
+    let newer = try rebuilderMakeNewer(marker)
+    let speech = FakeSpeechFactory()
+    for force in [false, true] {
+        let error = await #expect(throws: HolosError.self) {
+            try await rebuilderRun(session, force: force, transcribe: true, speech: speech)
+        }
+        #expect(isHolosError(error, "unavailable") && error?.localizedDescription.contains("newer Holos") == true)
+    }
+    #expect(speech.calls.isEmpty)
+    #expect(try SessionArchive.currentTranscriptID(at: session) == nil)
+    #expect(try Data(contentsOf: marker) == newer)
+
+    // A damaged marker, or one of another session, does not say the audio (still here) was deleted: it is
+    // transcribed.
+    let foreign = try HolosJSON.encoder().encode(AudioDeletedRecord(sessionID: UUID().uuidString, chunkCount: 1,
+                                                                    seconds: 4))
+    for (damage, data) in [("damaged", Data("not json".utf8)), ("of another session", foreign)] {
+        try rebuilderReplace(marker, with: data)
+        let speech = FakeSpeechFactory()
+        let report = try await rebuilderRun(session, force: true, transcribe: true, speech: speech)
+        #expect(speech.calls.count == 1, "A \(damage) marker does not stop the replay.")
+        #expect((report.replayedSeconds["mic"] ?? 0) > 2, "\(damage)")
+    }
+}
+
+@Test(.timeLimit(.minutes(1)))
+func postProcessingRefusesANewerAudioDeletionMarker() async throws {
+    let temp = try TemporaryDirectory("rebuild")
+    defer { temp.remove() }
+    let transcript = SessionFixtures.transcript(SessionFixtures.alternatingSegments(track: "mic"))
+    let session = try await SessionFixtures.makeSession(in: temp.url, mode: .inPerson, transcript: transcript)
+    let marker = SessionPaths.audioDeleted(session)
+    try AtomicFile.writeJSON(AudioDeletedRecord(sessionID: try SessionArchive.readManifest(at: session).id,
+                                                chunkCount: 1, seconds: 20), to: marker)
+    let newer = try rebuilderMakeNewer(marker)
+    let processor = MeetingPostProcessor(diarizer: rebuilderDiarizer(), freeSpace: FixedFreeSpace(.max))
+    #expect(isHolosError(await #expect(throws: HolosError.self) {
+        try await processor.run(session: session, lease: nil)
+    }, "unavailable"))
+    #expect(try Data(contentsOf: marker) == newer)
+    #expect(try SessionFiles.postProcessingRecord(session: session) == nil, "Nothing was written.")
+
+    // A damaged marker is not deleted audio: the speakers are labelled from the audio that is there.
+    try rebuilderReplace(marker, with: Data("not json".utf8))
+    let record = try await processor.run(session: session, lease: nil)
+    #expect(record.state == .succeeded && record.runID != nil)
+}
+
+@Test func versionedSessionFilesRefuseNewerAndRejectDamage() throws {
+    struct Probe: Codable { var schemaVersion: Int; var value: String }
+    let current = Data(#"{"schemaVersion":1,"value":"a"}"#.utf8)
+    #expect(try SessionFiles.decode(Probe.self, from: current, current: 1, name: "x.json").value == "a")
+    #expect(isHolosError(#expect(throws: HolosError.self) {
+        try SessionFiles.decode(Probe.self, from: Data(#"{"schemaVersion":2,"value":7}"#.utf8), current: 1,
+                                name: "x.json")
+    }, "unavailable"), "Newer, even with a value this build cannot decode.")
+    for damaged in [#"{"schemaVersion":0,"value":"a"}"#, #"{"value":"a"}"#, "not json"] {
+        #expect(isHolosError(#expect(throws: HolosError.self) {
+            try SessionFiles.decode(Probe.self, from: Data(damaged.utf8), current: 1, name: "x.json")
+        }, "invalidInput"), "\(damaged)")
+    }
+}
+
+@Test func vocabularyOfVersionZeroIsIgnoredAsDamage() async throws {
+    let temp = try TemporaryDirectory("rebuild")
+    defer { temp.remove() }
+    let session = try await rebuilderSession(in: temp.url)
+    try rebuilderReplace(SessionPaths.vocabulary(session), with: Data(#"{"schemaVersion":0,"strings":["x"]}"#.utf8))
+    #expect(try TranscriptRebuilder.sessionVocabulary(session).isEmpty)
 }
