@@ -41,9 +41,11 @@ struct TemporaryDirectory: Sendable {
     func remove() { try? FileManager.default.removeItem(at: url) }
 }
 
-/// Polls `condition` every 5 ms until it holds or `timeout` passes, and returns its last value.
+/// Polls `condition` every 5 ms until it holds or `timeout` passes, and returns its last value. The default is
+/// generous so a heavily loaded machine (many test runs in parallel) still passes; a condition that holds returns at
+/// once, so only a failing test waits that long.
 @MainActor
-func eventually(timeout: Duration = .seconds(5), _ condition: () -> Bool) async -> Bool {
+func eventually(timeout: Duration = .seconds(30), _ condition: () -> Bool) async -> Bool {
     let clock = ContinuousClock()
     let deadline = clock.now.advanced(by: timeout)
     while clock.now < deadline {
@@ -112,16 +114,18 @@ struct FakeCaptureScript: Sendable {
     var failure: HolosError
     /// `start` throws this.
     var startError: HolosError?
+    /// `start` throws `CancellationError` (without the calling task being cancelled).
+    var startCancels: Bool
     /// `stop()` takes this long before the stream finishes, like a platform stop that hangs.
     var stopDelay: Duration?
     var hostTimeOrigin: Double
 
     init(frames: [FakeFrame] = [], continuous: FakeFrame? = nil, failAfterFrames: Int? = nil,
          failure: HolosError = .incomplete("The fake capture failed."), startError: HolosError? = nil,
-         stopDelay: Duration? = nil, hostTimeOrigin: Double = 1_000) {
+         stopDelay: Duration? = nil, hostTimeOrigin: Double = 1_000, startCancels: Bool = false) {
         self.frames = frames; self.continuous = continuous; self.failAfterFrames = failAfterFrames
         self.failure = failure; self.startError = startError; self.stopDelay = stopDelay
-        self.hostTimeOrigin = hostTimeOrigin
+        self.hostTimeOrigin = hostTimeOrigin; self.startCancels = startCancels
     }
 }
 
@@ -155,6 +159,7 @@ final class FakeCapture: MeetingCapture {
     func start(_ request: CaptureRequest) async throws {
         requests.append(request)
         if let error = script.startError { throw error }
+        if script.startCancels { throw CancellationError() }
         state.start(offset: request.timelineOffset)
     }
 
@@ -267,17 +272,23 @@ struct FakeSpeechScript: Sendable {
     var segments: [TranscriptSegment]
     /// The factory throws this instead of creating the session.
     var makeError: HolosError?
-    /// `append` throws this.
+    /// `append` throws this…
     var appendError: HolosError?
+    /// …once this many seconds of audio were fed (nil: from the first frame).
+    var appendErrorAfter: Double?
     /// `finish()` waits this long first.
     var finishDelay: Duration?
     /// `finish()` does not return until `cancel()`; it then throws `CancellationError`.
     var finishHangs: Bool
+    /// `finish()` throws this, without reporting the segments not yet reported.
+    var finishError: HolosError?
 
     init(segments: [TranscriptSegment] = [], makeError: HolosError? = nil, appendError: HolosError? = nil,
-         finishDelay: Duration? = nil, finishHangs: Bool = false) {
+         finishDelay: Duration? = nil, finishHangs: Bool = false, appendErrorAfter: Double? = nil,
+         finishError: HolosError? = nil) {
         self.segments = segments; self.makeError = makeError; self.appendError = appendError
         self.finishDelay = finishDelay; self.finishHangs = finishHangs
+        self.appendErrorAfter = appendErrorAfter; self.finishError = finishError
     }
 }
 
@@ -305,7 +316,7 @@ actor FakeSpeech: LiveSpeechSession {
 
     func append(_ frame: PCMFrame) async throws {
         if cancelled { throw CancellationError() }
-        if let error = script.appendError { throw error }
+        if let error = script.appendError, fedSeconds >= (script.appendErrorAfter ?? 0) - 1e-9 { throw error }
         frameStarts.append(frame.startTime)
         fedSeconds += frame.duration
         let base = firstStart ?? frame.startTime
@@ -320,6 +331,7 @@ actor FakeSpeech: LiveSpeechSession {
             while !cancelled { try await Task.sleep(for: .milliseconds(5)) }
         }
         if cancelled { throw CancellationError() }
+        if let error = script.finishError { throw error }
         report(through: .infinity)
         return script.segments
     }

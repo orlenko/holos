@@ -88,7 +88,10 @@ public struct MeetingPostProcessor: Sendable {
     private func start(session: URL, startedAt: Date,
                        progress: @escaping @Sendable (PostProcessingProgress) -> Void) async throws -> PostProcessingRecord {
         let manifest = try SessionArchive.readManifest(at: session)
-        // PR2a adds `RecorderChannel.markDeadRecorderExited(session:)` here (no status.json exists before it).
+        // A recorder that died leaves a status that is not exited; say so before labelling (§4.7 stage 0).
+        do { try RecorderChannel.markDeadRecorderExited(session: session) } catch {
+            Self.log.error("Session \(manifest.id, privacy: .public): cannot check the recorder status: \(error.localizedDescription, privacy: .public)")
+        }
         try clearDerived(session)
         let journal = ProcessingJournal(
             session: session,

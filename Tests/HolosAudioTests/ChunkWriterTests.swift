@@ -5,12 +5,14 @@ import HolosStorage
 import Testing
 @testable import HolosAudio
 
-@Test func chunkRolloverPreservesSamplesAndSmallGaps() async throws {
+/// Chunks roll over without losing samples, and a gap of 50 ms or more (docs/meeting-design.md §2.3) starts a new
+/// chunk at its own time with an `audioDiscontinuity`. The Int16 chunks read back these values exactly.
+@Test func chunkRolloverPreservesSamplesAndGaps() async throws {
     let root = FileManager.default.temporaryDirectory.appendingPathComponent("holos-audio-\(UUID().uuidString)")
     defer { try? FileManager.default.removeItem(at: root) }
     let archive = try SessionArchive.create(root: root, name: "Test", source: .microphoneAndSystem, locale: "en-CA", backend: .speech)
     let writer = AudioChunkWriter(archive: archive, chunkDuration: 0.015)
-    for (start, value) in [(0.0, Float(0.25)), (0.01, Float(-0.25)), (0.025, Float(0.5))] {
+    for (start, value) in [(0.0, Float(0.25)), (0.01, Float(-0.25)), (0.075, Float(0.5))] {
         let frame = try PCMFrame(samples: [Float](repeating: value, count: 480), sampleRate: 48000, channels: 1, startTime: start)
         try await writer.append(CapturedAudio(track: "mic", frame: frame))
     }
@@ -23,7 +25,7 @@ import Testing
     #expect(mic.count == 2)
     #expect(mic.map(\.frameCount) == [960, 480])
     #expect(abs(mic[0].end - 0.02) < 0.000_001)
-    #expect(abs(mic[1].start - 0.025) < 0.000_001)
+    #expect(abs(mic[1].start - 0.075) < 0.000_001)
     let file = try AVAudioFile(forReading: archive.directory.appendingPathComponent(mic[0].relativePath))
     let buffer = try #require(AVAudioPCMBuffer(pcmFormat: file.processingFormat, frameCapacity: 960))
     try file.read(into: buffer)
@@ -31,7 +33,9 @@ import Testing
     #expect(read.samples == [Float](repeating: 0.25, count: 480) + [Float](repeating: -0.25, count: 480))
     let report = try SessionArchive.inspectRecovery(at: archive.directory)
     #expect(!report.needsAttention)
-    #expect(report.events.contains { $0.kind == "audioDiscontinuity" && $0.details["nextStart"] == "0.025" })
+    #expect(report.events.contains {
+        $0.kind == "audioDiscontinuity" && $0.details["nextStart"] == "0.075" && $0.details["reason"] == "timestampGap"
+    })
     #expect(manifest.chunks.first { $0.track == "system" }?.start == 0.003)
 }
 

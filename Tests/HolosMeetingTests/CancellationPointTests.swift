@@ -1,13 +1,15 @@
 import Foundation
 import HolosAudio
 import HolosCore
-import HolosMeeting
+@testable import HolosMeeting
 import HolosStorage
 import Testing
 
 // Table-driven: every await point of `RecordingWorkflow.run`, with a fake that, at that point, (a) cancels the
 // run and throws `CancellationError`, (b) throws `CancellationError` without the run being cancelled, or (c)
 // fails with an ordinary error. (a) and (b) must follow the cancellation contract; (c) the failure statuses.
+// One exception since PR2a (docs/meeting-design.md §4.2): a frame stream that ends with an error of its own,
+// `CancellationError` included, is a capture failure, and capture restarts in a new epoch.
 
 // MARK: - Table
 
@@ -180,17 +182,17 @@ private actor FaultySpeech: LiveSpeechSession {
     func cancel() async { cancelled = true }
 }
 
-/// Stops once the consumer has finished with every frame and `gate` is open.
+/// Stops once the consumer has finished with every frame, `enabled` holds, and `gate` is open.
 private final class AfterFramesStop: RecorderStopSource {
     let source: FaultyFrames
-    let enabled: Bool
+    let enabled: @Sendable () -> Bool
     let gate: SharedValue<Bool>
 
-    init(source: FaultyFrames, enabled: Bool, gate: SharedValue<Bool>) {
+    init(source: FaultyFrames, enabled: @escaping @Sendable () -> Bool, gate: SharedValue<Bool>) {
         self.source = source; self.enabled = enabled; self.gate = gate
     }
 
-    var shouldStop: Bool { enabled && gate.value && source.consumed >= FaultyFrames.frames.count }
+    var shouldStop: Bool { enabled() && gate.value && source.consumed >= FaultyFrames.frames.count }
     func restoreDefaultHandlers() {}
 }
 
@@ -201,7 +203,7 @@ private func isIncomplete(_ error: Error) -> Bool {
 
 // MARK: - Test
 
-@Test(.timeLimit(.minutes(1)), arguments: PointCase.all) @MainActor
+@Test(.timeLimit(.minutes(3)), arguments: PointCase.all) @MainActor
 private func cancellationAtEachAwaitPoint(_ c: PointCase) async throws {
     let temp = try TemporaryDirectory()
     defer { temp.remove() }
@@ -233,23 +235,34 @@ private func cancellationAtEachAwaitPoint(_ c: PointCase) async throws {
     let usesHook = point == .lease || point == .hook
     // The lease rows open the gate once another holder has the processing lease.
     let gate = SharedValue(point != .lease)
-    let stop = AfterFramesStop(source: frames, enabled: point != .frames, gate: gate)
-    let dependencies = RecordingDependencies(
-        makeCapture: { FaultyCapture(source: frames, point: point, fault: fault) }, makeSpeech: speech,
+    let captures = SharedValue(0)
+    // A failed frame stream restarts capture: those rows stop once the next epoch's capture exists. A cancelled
+    // run needs no stop.
+    let stop = AfterFramesStop(source: frames, enabled: {
+        point != .frames || (mode != .cancelled && captures.value >= 2)
+    }, gate: gate)
+    var dependencies = RecordingDependencies(
+        makeCapture: {
+            captures.update { $0 += 1 }
+            return FaultyCapture(source: frames, point: point, fault: fault)
+        }, makeSpeech: speech,
         stop: stop, reporter: CollectingReporter(), postProcess: usesHook ? hook : nil)
+    // Cancelled while taking the lease: the run keeps retrying until the test lets the lease go, after the cancel,
+    // so the cancellation lands while it waits however slowly the machine runs. The failure row gives up at 1 s.
+    if point == .lease, c.mode == .cancelled { dependencies.tuning.leaseRetry = .seconds(120) }
     let options = RecordingOptions.testing(root: temp.url, recordOnly: c.recordOnly)
     let run = Task { try await RecordingWorkflow.run(options, dependencies: dependencies) }
     fault.run.set(run)
 
     var other: ProcessingLease?
     if point == .lease {
-        #expect(await eventually { frames.consumed >= 1 })
+        #expect(await eventually(timeout: .seconds(60)) { frames.consumed >= 1 })
         let folder = try #require(sessionFolders(in: temp.url).first)
         other = try SessionArchive.acquireProcessingLease(at: folder)
         gate.set(true)
         if c.mode == .cancelled {
-            // The run records captureStopped, then waits for the lease (1 s): cancel it there.
-            let waiting = await eventually {
+            // The run records captureStopped, then waits for the lease: cancel it there.
+            let waiting = await eventually(timeout: .seconds(60)) {
                 let events = (try? SessionArchive.readEvents(at: folder).events) ?? []
                 return events.contains { $0.kind == MeetingEventKind.captureStopped }
             }
@@ -280,7 +293,16 @@ private func cancellationAtEachAwaitPoint(_ c: PointCase) async throws {
         #expect(manifest.status == ArchiveStatus.failed)
         #expect(events.first { $0.kind == MeetingEventKind.startFailed }?.details["cancelled"] == "true")
         #expect(!events.contains { $0.kind == MeetingEventKind.captureStarted })
-    case (.captureStop, .failure), (.frames, .failure):
+    case (.frames, .failure), (.frames, .cancellationError):
+        // §4.2: the failed stream is a capture failure; capture restarts in epoch 1 and the recording goes on.
+        let outcome = try result.get()
+        #expect(outcome.archiveStatus == finished)
+        #expect(manifest.status == finished)
+        #expect(captureFailed)
+        #expect(events.contains { $0.kind == MeetingEventKind.captureStarted && $0.details["epoch"] == "1" })
+        #expect(!manifest.chunks.isEmpty, "Audio saved before the failure is kept.")
+        #expect(stopped != nil && stopped?.details["cancelled"] == nil)
+    case (.captureStop, .failure):
         do {
             _ = try result.get()
             Issue.record("A capture failure must throw.")
@@ -295,7 +317,8 @@ private func cancellationAtEachAwaitPoint(_ c: PointCase) async throws {
         #expect(outcome.archiveStatus == finished)
         #expect(manifest.status == finished)
         if point == .lease {
-            #expect(outcome.postProcessing == nil, "A lease held elsewhere skips post-processing.")
+            #expect(outcome.postProcessing?.state == .failed,
+                    "A lease held elsewhere skips the hook and reports post-processing failed.")
             #expect(hookCalls.value == 0)
         } else {
             #expect(outcome.postProcessing?.state == .failed)

@@ -8,7 +8,47 @@ import Synchronization
 public struct CapturedAudio: Sendable {
     public let track: String
     public let frame: PCMFrame
-    public init(track: String, frame: PCMFrame) { self.track = track; self.frame = frame }
+    /// Buffers of this track were dropped just before this frame because the frame stream was full
+    /// (`CaptureOverflow.dropAndCount`): audio is missing between the previous frame and this one.
+    public let followsDrop: Bool
+    public init(track: String, frame: PCMFrame, followsDrop: Bool = false) {
+        self.track = track; self.frame = frame; self.followsDrop = followsDrop
+    }
+}
+
+/// What `AudioCapture` does when its frame stream is full.
+public enum CaptureOverflow: Sendable, Equatable {
+    /// End the stream with an error, so a short capture (dictation) never has a silent hole.
+    case fail
+    /// Drop the buffer, count it (`droppedBuffers`), mark the next delivered frame of the track `followsDrop`, and
+    /// keep capturing (meeting recordings, docs/meeting-design.md §4.3).
+    case dropAndCount
+}
+
+/// Which input device a meeting's microphone track records (docs/meeting-design.md §4.12). PR2a declares it and
+/// passes it through; PR2b pins the built-in microphone for `.builtIn`.
+public enum MicrophoneSelection: Sendable, Equatable {
+    /// The system default input (online calls; dictation).
+    case systemDefault
+    /// The built-in microphone, whatever the default input is (in-person meetings).
+    case builtIn
+}
+
+/// Why a capture's frame stream ended with something other than a failure.
+public enum CaptureInterruption: Error, Equatable, Sendable {
+    /// AVAudioEngineConfigurationChange (reported from PR2b).
+    case configurationChanged
+    /// The user stopped sharing (`SCStreamError.Code.userStopped` only).
+    case userStoppedSharing
+}
+
+extension CaptureInterruption: LocalizedError {
+    public var errorDescription: String? {
+        switch self {
+        case .configurationChanged: "The audio device configuration changed."
+        case .userStoppedSharing: "Screen and system audio sharing was stopped."
+        }
+    }
 }
 
 /// Desktop interaction stays on the main actor; callbacks only copy samples into a bounded queue.
@@ -21,12 +61,23 @@ public final class AudioCapture {
     private var stream: SCStream?
     private var started = false
 
-    public init(bufferCapacity: Int = 256) {
+    /// `bufferCapacity` buffers wait for the consumer. When the queue is full, `.fail` (dictation's default) ends the
+    /// stream with an error; `.dropAndCount` drops the buffer, counts it (`droppedBuffers`), and continues.
+    public init(bufferCapacity: Int = 256, overflow: CaptureOverflow = .fail) {
         let pair = AsyncThrowingStream<CapturedAudio, Error>.makeStream(bufferingPolicy: .bufferingOldest(bufferCapacity))
         frames = pair.stream
         hostTimeOrigin = CMClockGetTime(CMClockGetHostTimeClock()).seconds
-        receiver = CaptureReceiver(origin: hostTimeOrigin, continuation: pair.continuation)
+        receiver = CaptureReceiver(origin: hostTimeOrigin, continuation: pair.continuation, overflow: overflow)
     }
+
+    /// Buffers dropped because the frame stream was full.
+    public nonisolated var droppedBuffers: Int { receiver.droppedBuffers(track: nil) }
+
+    /// Buffers of `track` ("mic" or "system") dropped because the frame stream was full. Readable from any thread.
+    public nonisolated func droppedBuffers(track: String) -> Int { receiver.droppedBuffers(track: track) }
+
+    /// Tests only: delivers `frame` as a capture callback would.
+    nonisolated func emitForTesting(track: String, frame: PCMFrame) { receiver.emit(track: track, frame: frame) }
 
     public static var microphonePermission: String {
         switch AVCaptureDevice.authorizationStatus(for: .audio) {
@@ -38,9 +89,39 @@ public final class AudioCapture {
         }
     }
 
+    /// Starts capture on a timeline that begins now (offset 0) with the system default input. Dictation uses this.
     public func start(source: AudioSource, applicationBundleID: String? = nil) async throws {
+        try await start(source: source, applicationBundleID: applicationBundleID, timelineOffset: 0,
+                        microphone: .systemDefault)
+    }
+
+    /// Host-clock seconds now: the clock capture timestamps and `hostTimeOrigin` are on.
+    public nonisolated static func hostSeconds() -> Double { CMClockGetTime(CMClockGetHostTimeClock()).seconds }
+
+    /// The host-time origin of a capture whose frames continue a session timeline at `timelineOffset`
+    /// (docs/meeting-design.md §2.3). `offsetHostTime` is the host time at which the session clock read
+    /// `timelineOffset`; the origin is anchored there, so the time the capture then takes to set up is part of the
+    /// timeline (and of the gap before its first frame). Nil anchors it at `now` (epoch 0, and dictation). An anchor
+    /// after `now` is taken as `now`, so no frame is stamped before the offset.
+    public nonisolated static func timelineOrigin(timelineOffset: Double, offsetHostTime: Double?,
+                                                  now: Double) -> Double {
+        min(offsetHostTime ?? now, now) - timelineOffset
+    }
+
+    /// Starts capture. Frame times are `timelineOffset` plus the host seconds since `timelineOffsetHostTime` (since
+    /// the origin is set, when nil): the host-time origin is `timelineOrigin(...)`, so a restarted capture continues a
+    /// meeting's session timeline, setup time included (docs/meeting-design.md §2.3). System audio is captured mono.
+    /// `microphone` is honoured from PR2b; until then the microphone is always the system default input.
+    public func start(source: AudioSource, applicationBundleID: String?, timelineOffset: Double,
+                      microphone: MicrophoneSelection, timelineOffsetHostTime: Double? = nil) async throws {
         try Task.checkCancellation()
         guard !started else { throw HolosError.invalidInput("Capture is already running.") }
+        guard timelineOffset.isFinite, timelineOffset >= 0 else {
+            throw HolosError.invalidInput("The capture timeline offset must be a finite, non-negative number.")
+        }
+        if let timelineOffsetHostTime, !timelineOffsetHostTime.isFinite {
+            throw HolosError.invalidInput("The capture timeline offset's host time must be a finite number.")
+        }
         if source != .system {
             let granted = await AVCaptureDevice.requestAccess(for: .audio)
             try Task.checkCancellation()
@@ -67,10 +148,12 @@ public final class AudioCapture {
                     }
                     let hostSeconds = CMClockMakeHostTimeFromSystemUnits(time.hostTime).seconds
                     let timestamp = timeline.withLock { $0.startTime(hostSeconds: hostSeconds, sampleTime: time.sampleTime) }
-                    receiver.emit(track: "mic", frame: try PCMConversion.copy(buffer, startTime: timestamp - receiver.origin))
+                    receiver.emit(track: "mic", frame: try PCMConversion.copy(buffer,
+                        startTime: max(0, timestamp - receiver.origin)))
                 } catch { receiver.fail(error) }
             }
-            hostTimeOrigin = CMClockGetTime(CMClockGetHostTimeClock()).seconds
+            hostTimeOrigin = Self.timelineOrigin(timelineOffset: timelineOffset, offsetHostTime: timelineOffsetHostTime,
+                                                 now: Self.hostSeconds())
             receiver.setOrigin(hostTimeOrigin)
             do { try audioEngine.start() }
             catch { input.removeTap(onBus: 0); throw error }
@@ -98,7 +181,8 @@ public final class AudioCapture {
             config.queueDepth = 3
             config.capturesAudio = true
             config.sampleRate = 48_000
-            config.channelCount = 2
+            // Mono system audio: half the disk of stereo, and diarization mixes to mono anyway (§4.5).
+            config.channelCount = 1
             config.excludesCurrentProcessAudio = true
             config.captureMicrophone = source == .microphoneAndSystem
             let captureStream = SCStream(filter: filter, configuration: config, delegate: receiver)
@@ -107,7 +191,8 @@ public final class AudioCapture {
             if config.captureMicrophone {
                 try captureStream.addStreamOutput(receiver, type: .microphone, sampleHandlerQueue: queue)
             }
-            hostTimeOrigin = CMClockGetTime(CMClockGetHostTimeClock()).seconds
+            hostTimeOrigin = Self.timelineOrigin(timelineOffset: timelineOffset, offsetHostTime: timelineOffsetHostTime,
+                                                 now: Self.hostSeconds())
             receiver.setOrigin(hostTimeOrigin)
             try await captureStream.startCapture()
             stream = captureStream
@@ -129,17 +214,50 @@ private final class CaptureReceiver: NSObject, SCStreamOutput, SCStreamDelegate,
     var origin: Double { originValue.withLock { $0 } }
     let continuation: AsyncThrowingStream<CapturedAudio, Error>.Continuation
     private let ended = Mutex(false)
+    private let overflow: CaptureOverflow
+    private struct Drops {
+        /// Buffers dropped because the stream was full, per track.
+        var counts: [String: Int] = [:]
+        /// Tracks whose next delivered frame follows a drop.
+        var pending: Set<String> = []
+    }
+    private let drops = Mutex(Drops())
 
-    init(origin: Double, continuation: AsyncThrowingStream<CapturedAudio, Error>.Continuation) {
-        self.originValue = Mutex(origin); self.continuation = continuation
+    init(origin: Double, continuation: AsyncThrowingStream<CapturedAudio, Error>.Continuation,
+         overflow: CaptureOverflow) {
+        self.originValue = Mutex(origin); self.continuation = continuation; self.overflow = overflow
     }
 
     func setOrigin(_ value: Double) { originValue.withLock { $0 = value } }
 
+    /// Dropped buffers of `track`, or of every track when nil.
+    func droppedBuffers(track: String?) -> Int {
+        drops.withLock { drops in track.map { drops.counts[$0] ?? 0 } ?? drops.counts.values.reduce(0, +) }
+    }
+
+    /// On a full queue, `.fail` ends the stream; `.dropAndCount` drops and counts the buffer, and the next frame of the
+    /// track that is delivered carries `followsDrop`, so the consumer marks the gap right before it
+    /// (docs/meeting-design.md §4.3). Callbacks of one track arrive in order, never concurrently.
     func emit(track: String, frame: PCMFrame) {
         guard !ended.withLock({ $0 }) else { return }
-        if case .dropped = continuation.yield(CapturedAudio(track: track, frame: frame)) {
-            fail(HolosError.incomplete("The audio recording queue overflowed. Capture stopped to avoid an unreported gap."))
+        let followsDrop = drops.withLock { $0.pending.contains(track) }
+        switch continuation.yield(CapturedAudio(track: track, frame: frame, followsDrop: followsDrop)) {
+        case .dropped:
+            switch overflow {
+            case .fail:
+                fail(HolosError.incomplete("The audio recording queue overflowed. Capture stopped to avoid an unreported gap."))
+            case .dropAndCount:
+                drops.withLock { drops in
+                    drops.counts[track, default: 0] += 1
+                    drops.pending.insert(track)
+                }
+            }
+        case .enqueued:
+            if followsDrop { drops.withLock { _ = $0.pending.remove(track) } }
+        case .terminated:
+            break
+        @unknown default:
+            break
         }
     }
 
@@ -155,7 +273,16 @@ private final class CaptureReceiver: NSObject, SCStreamOutput, SCStreamDelegate,
         continuation.finish()
     }
 
-    func stream(_ stream: SCStream, didStopWithError error: Error) { fail(error) }
+    /// Only `SCStreamError.Code.userStopped` means the user stopped sharing; every other stop is a failure, so
+    /// ScreenCaptureKit stopping by itself (for example under screen lock) is retried (§4.2).
+    func stream(_ stream: SCStream, didStopWithError error: Error) {
+        let code = error as NSError
+        if code.domain == SCStreamErrorDomain, code.code == SCStreamError.Code.userStopped.rawValue {
+            fail(CaptureInterruption.userStoppedSharing)
+        } else {
+            fail(error)
+        }
+    }
 
     func stream(_ stream: SCStream, didOutputSampleBuffer sampleBuffer: CMSampleBuffer, of type: SCStreamOutputType) {
         guard type == .audio || type == .microphone else { return }
@@ -170,7 +297,7 @@ private final class CaptureReceiver: NSObject, SCStreamOutput, SCStreamDelegate,
                                                to: CMClockGetHostTimeClock()).seconds
             guard timestamp.isFinite else { throw HolosError.incomplete("Capture returned an invalid audio timestamp.") }
             emit(track: type == .microphone ? "mic" : "system",
-                 frame: try PCMConversion.copy(sampleBuffer, startTime: timestamp - origin))
+                 frame: try PCMConversion.copy(sampleBuffer, startTime: max(0, timestamp - origin)))
         } catch { fail(error) }
     }
 }

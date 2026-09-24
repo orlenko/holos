@@ -1,7 +1,7 @@
 import Foundation
 import HolosAudio
 import HolosCore
-import HolosMeeting
+@testable import HolosMeeting
 import HolosStorage
 import Testing
 
@@ -10,6 +10,16 @@ import Testing
 
 // MARK: - Helpers
 
+/// Waits for conditions under load: far longer than any of them takes, well inside the tests' time limits.
+private let patience: Duration = .seconds(60)
+
+/// How long the fakes below hang when nothing cancels them, and the speech time limit of the tests that use them:
+/// longer than `promptly`, so a run that waited for either instead of cancelling fails that bound.
+private let hang: Duration = .seconds(120)
+
+/// A cancelled run returns within this, however loaded the machine (10x what an idle one needs).
+private let promptly: Duration = .seconds(50)
+
 /// A speech session whose `finish()` ignores task cancellation: it returns only after `cancel()` (then throws
 /// `CancellationError`), or after `limit` with no segments.
 private actor HangingFinishSpeech: LiveSpeechSession {
@@ -17,7 +27,7 @@ private actor HangingFinishSpeech: LiveSpeechSession {
     private let cancelledFlag: SharedValue<Bool>
     private let limit: Duration
 
-    init(finishStarted: SharedValue<Bool>, cancelled: SharedValue<Bool>, limit: Duration = .seconds(20)) {
+    init(finishStarted: SharedValue<Bool>, cancelled: SharedValue<Bool>, limit: Duration = hang) {
         self.finishStarted = finishStarted; self.cancelledFlag = cancelled; self.limit = limit
     }
 
@@ -88,11 +98,31 @@ private func threeFrames() -> FakeCaptureFactory {
     FakeCaptureFactory([FakeCaptureScript(frames: FakeFrame.run(count: 3))])
 }
 
+/// A fake capture whose `stop()` does not return (or end the stream) until the test opens `gate`.
+@MainActor
+private final class GatedStopCapture: MeetingCapture {
+    let inner: FakeCapture
+    let stopStarted = SharedValue(false)
+    let gate = SharedValue(false)
+
+    init(_ inner: FakeCapture) { self.inner = inner }
+
+    nonisolated var frames: AsyncThrowingStream<CapturedAudio, Error> { inner.frames }
+    var hostTimeOrigin: Double { inner.hostTimeOrigin }
+    func start(_ request: CaptureRequest) async throws { try await inner.start(request) }
+
+    func stop() async throws {
+        stopStarted.set(true)
+        while !gate.value { try? await Task.sleep(for: .milliseconds(2)) }
+        try await inner.stop()
+    }
+}
+
 // MARK: - Before capture starts
 
 /// Cancelled while a live speech session is being created: the factory either ignores the cancellation and
 /// returns a session, or throws `CancellationError`. Either way capture never starts.
-@Test(.timeLimit(.minutes(1)), arguments: [false, true]) @MainActor
+@Test(.timeLimit(.minutes(3)), arguments: [false, true]) @MainActor
 func cancelWhileCreatingLiveSpeechNeverStartsCapture(factoryThrows: Bool) async throws {
     let temp = try TemporaryDirectory()
     defer { temp.remove() }
@@ -101,7 +131,7 @@ func cancelWhileCreatingLiveSpeechNeverStartsCapture(factoryThrows: Bool) async 
     let speech: LiveSpeechFactory = { _, _, _, _ in
         makeStarted.set(true)
         let clock = ContinuousClock()
-        let deadline = clock.now.advanced(by: .seconds(10))
+        let deadline = clock.now.advanced(by: hang)
         while !Task.isCancelled, clock.now < deadline { try? await Task.sleep(for: .milliseconds(2)) }
         if factoryThrows { throw CancellationError() }
         return QuietSpeech(cancelled: sessionCancelled)
@@ -111,7 +141,7 @@ func cancelWhileCreatingLiveSpeechNeverStartsCapture(factoryThrows: Bool) async 
     let dependencies = RecordingDependencies(makeCapture: { captures.make() }, makeSpeech: speech,
                                              stop: ManualStopSource(), reporter: reporter, postProcess: nil)
     let run = Task { try await RecordingWorkflow.run(.testing(root: temp.url), dependencies: dependencies) }
-    #expect(await eventually { makeStarted.value })
+    #expect(await eventually(timeout: patience) { makeStarted.value })
     run.cancel()
     await expectCancellation(run)
     #expect(captures.requests.isEmpty, "A cancelled run must not open the microphone.")
@@ -126,21 +156,29 @@ func cancelWhileCreatingLiveSpeechNeverStartsCapture(factoryThrows: Bool) async 
 
 // MARK: - While stopping
 
-/// A stop was requested, then the run was cancelled while capture was stopping.
-@Test(.timeLimit(.minutes(1))) @MainActor
+/// A stop was requested, then the run was cancelled while capture was stopping: the capture's stop returns only
+/// once the run is cancelled, so the cancellation always lands inside it.
+@Test(.timeLimit(.minutes(3))) @MainActor
 func cancelWhileCaptureStopsPublishesNoTranscript() async throws {
     let temp = try TemporaryDirectory()
     defer { temp.remove() }
-    let captures = FakeCaptureFactory([FakeCaptureScript(frames: FakeFrame.run(count: 3), stopDelay: .seconds(10))])
+    let captures = FakeCaptureFactory([FakeCaptureScript(frames: FakeFrame.run(count: 3))])
+    let gated = SharedValue<GatedStopCapture?>(nil)
     let stop = ManualStopSource()
-    let run = Task {
-        try await RecordingWorkflow.run(.testing(root: temp.url),
-                                        dependencies: .testing(captures: captures, stop: stop))
-    }
-    #expect(await eventually { (captures.captures.first?.consumedFrames ?? 0) >= 3 })
+    // The capture-stop limit is longer than the test waits, so the stop is never abandoned for taking too long.
+    let dependencies = RecordingDependencies(
+        makeCapture: {
+            let capture = GatedStopCapture(captures.make() as! FakeCapture)
+            gated.set(capture)
+            return capture
+        }, makeSpeech: FakeSpeechFactory().factory, stop: stop, reporter: CollectingReporter(), postProcess: nil,
+        timeouts: StopTimeouts(captureStop: hang))
+    let run = Task { try await RecordingWorkflow.run(.testing(root: temp.url), dependencies: dependencies) }
+    #expect(await eventually(timeout: patience) { (captures.captures.first?.consumedFrames ?? 0) >= 3 })
     stop.requestStop()
-    #expect(await eventually { (captures.captures.first?.stopCalls ?? 0) >= 1 })
+    #expect(await eventually(timeout: patience) { gated.value?.stopStarted.value == true })
     run.cancel()
+    gated.value?.gate.set(true)
     await expectCancellation(run)
     let directory = try #require(sessionFolders(in: temp.url).first)
     let manifest = try SessionArchive.readManifest(at: directory)
@@ -151,10 +189,46 @@ func cancelWhileCaptureStopsPublishesNoTranscript() async throws {
     try expectReleased(directory)
 }
 
+// MARK: - While restarting capture
+
+/// A capture restart's `start` throws `CancellationError` while the run's own task is not cancelled: the run stops
+/// as a cancellation and keeps the saved audio, instead of taking it for an audio outage and waiting to retry.
+@Test(.timeLimit(.minutes(3))) @MainActor
+func cancelledRestartStopsTheRunAsCancelled() async throws {
+    let temp = try TemporaryDirectory()
+    defer { temp.remove() }
+    let captures = FakeCaptureFactory([
+        FakeCaptureScript(frames: FakeFrame.run(count: 3), failAfterFrames: 3, failure: .io("Device lost.")),
+        FakeCaptureScript(startCancels: true),
+    ])
+    let stop = ManualStopSource()
+    let run = Task {
+        try await RecordingWorkflow.run(.testing(root: temp.url, recordOnly: true),
+                                        dependencies: recorderDependencies(captures: captures, stop: stop))
+    }
+    let directory = try #require(await recorderSession(in: temp.url))
+    let ended = await eventually(timeout: patience) {
+        (try? RecorderChannel.readStatus(session: directory))?.phase == .exited
+    }
+    #expect(ended, "The run ends by itself, without a stop request.")
+    if !ended { stop.requestStop() }
+    await expectCancellation(run)
+    #expect(captures.captures.count == 2, "Capture is not restarted again after the cancelled start.")
+    #expect(captures.captures.last?.stopCalls == 1, "The capture whose start was cancelled is released.")
+    let manifest = try SessionArchive.readManifest(at: directory)
+    #expect(manifest.status == ArchiveStatus.audioOnly)
+    #expect(manifest.chunks.count == 1, "The saved audio is kept.")
+    let journal = try events(directory)
+    #expect(!journal.contains { $0.kind == MeetingEventKind.captureWaiting }, "Not an audio outage.")
+    #expect(journal.first { $0.kind == MeetingEventKind.captureStopped }?.details["cancelled"] == "true")
+    try expectReleased(directory)
+}
+
 // MARK: - While transcribing
 
-/// Cancelled while the live speech session finishes, with a session that ignores task cancellation.
-@Test(.timeLimit(.minutes(1))) @MainActor
+/// Cancelled while the live speech session finishes, with a session that ignores task cancellation. Neither the
+/// session nor the speech time limit ends the wait before `promptly`: only the cancellation can.
+@Test(.timeLimit(.minutes(3))) @MainActor
 func cancelWhileLiveSpeechFinishesCancelsTheSession() async throws {
     let temp = try TemporaryDirectory()
     defer { temp.remove() }
@@ -168,16 +242,17 @@ func cancelWhileLiveSpeechFinishesCancelsTheSession() async throws {
     let captures = threeFrames()
     let stop = ManualStopSource()
     let dependencies = RecordingDependencies(makeCapture: { captures.make() }, makeSpeech: speech, stop: stop,
-                                             reporter: CollectingReporter(), postProcess: nil)
+                                             reporter: CollectingReporter(), postProcess: nil,
+                                             timeouts: StopTimeouts(speechFinishBase: hang))
     let run = Task { try await RecordingWorkflow.run(.testing(root: temp.url), dependencies: dependencies) }
-    #expect(await eventually { (captures.captures.first?.consumedFrames ?? 0) >= 3 })
+    #expect(await eventually(timeout: patience) { (captures.captures.first?.consumedFrames ?? 0) >= 3 })
     stop.requestStop()
-    #expect(await eventually { finishStarted.value })
+    #expect(await eventually(timeout: patience) { finishStarted.value })
     let clock = ContinuousClock()
     let cancelledAt = clock.now
     run.cancel()
     await expectCancellation(run)
-    #expect(cancelledAt.duration(to: clock.now) < .seconds(5), "The cancel must not wait for the speech session.")
+    #expect(cancelledAt.duration(to: clock.now) < promptly, "The cancel must not wait for the speech session.")
     #expect(sessionCancelled.value)
     #expect(calls.value == 1, "A cancelled run replays nothing.")
     let directory = try #require(sessionFolders(in: temp.url).first)
@@ -187,8 +262,8 @@ func cancelWhileLiveSpeechFinishesCancelsTheSession() async throws {
 }
 
 /// Cancelled while replaying saved audio (live speech was unavailable), with a session that ignores task
-/// cancellation.
-@Test(.timeLimit(.minutes(1))) @MainActor
+/// cancellation. Neither the session nor the speech time limit ends the wait before `promptly`.
+@Test(.timeLimit(.minutes(3))) @MainActor
 func cancelWhileReplayFinishesCancelsTheSession() async throws {
     let temp = try TemporaryDirectory()
     defer { temp.remove() }
@@ -203,16 +278,17 @@ func cancelWhileReplayFinishesCancelsTheSession() async throws {
     let captures = threeFrames()
     let stop = ManualStopSource()
     let dependencies = RecordingDependencies(makeCapture: { captures.make() }, makeSpeech: speech, stop: stop,
-                                             reporter: CollectingReporter(), postProcess: nil)
+                                             reporter: CollectingReporter(), postProcess: nil,
+                                             timeouts: StopTimeouts(speechFinishBase: hang))
     let run = Task { try await RecordingWorkflow.run(.testing(root: temp.url), dependencies: dependencies) }
-    #expect(await eventually { (captures.captures.first?.consumedFrames ?? 0) >= 3 })
+    #expect(await eventually(timeout: patience) { (captures.captures.first?.consumedFrames ?? 0) >= 3 })
     stop.requestStop()
-    #expect(await eventually { finishStarted.value })
+    #expect(await eventually(timeout: patience) { finishStarted.value })
     let clock = ContinuousClock()
     let cancelledAt = clock.now
     run.cancel()
     await expectCancellation(run)
-    #expect(cancelledAt.duration(to: clock.now) < .seconds(5), "The cancel must not wait for the replay session.")
+    #expect(cancelledAt.duration(to: clock.now) < promptly, "The cancel must not wait for the replay session.")
     #expect(sessionCancelled.value)
     let directory = try #require(sessionFolders(in: temp.url).first)
     #expect(try SessionArchive.readManifest(at: directory).status == ArchiveStatus.transcriptionIncomplete)
@@ -243,7 +319,7 @@ func cancelledReplayThrowsCancellation() async throws {
 // MARK: - Post-processing
 
 /// Cancelled while waiting for the processing lease: the hook never runs and the lease is released.
-@Test(.timeLimit(.minutes(1))) @MainActor
+@Test(.timeLimit(.minutes(3))) @MainActor
 func cancelWhileTakingTheLeaseSkipsTheHook() async throws {
     let temp = try TemporaryDirectory()
     defer { temp.remove() }
@@ -254,17 +330,22 @@ func cancelWhileTakingTheLeaseSkipsTheHook() async throws {
     }
     let captures = threeFrames()
     let stop = ManualStopSource()
-    let reporter = CollectingReporter()
+    var dependencies = RecordingDependencies.testing(captures: captures, postProcess: hook, stop: stop)
+    // The run keeps retrying the lease until the test lets it go, so the cancellation lands while it waits.
+    dependencies.tuning.leaseRetry = hang
     let run = Task {
-        try await RecordingWorkflow.run(.testing(root: temp.url, recordOnly: true),
-            dependencies: .testing(captures: captures, postProcess: hook, stop: stop, reporter: reporter))
+        try await RecordingWorkflow.run(.testing(root: temp.url, recordOnly: true), dependencies: dependencies)
     }
-    #expect(await eventually { (captures.captures.first?.consumedFrames ?? 0) >= 3 })
+    #expect(await eventually(timeout: patience) { (captures.captures.first?.consumedFrames ?? 0) >= 3 })
     let directory = try #require(sessionFolders(in: temp.url).first)
-    // Held here so the run waits for it (it retries for 1 s), then released once the run is cancelled.
+    // Held here so the run waits for it, then released once the run is cancelled.
     let other = try SessionArchive.acquireProcessingLease(at: directory)
     stop.requestStop()
-    #expect(await eventually { reporter.messages.contains { $0.hasPrefix("Audio saved.") } })
+    // The run journals captureStopped right before it asks for the lease, then waits for it until `hang`: the pause
+    // only makes it likelier that the cancellation finds it waiting rather than about to ask, and cannot be too long.
+    #expect(await eventually(timeout: patience) {
+        ((try? events(directory)) ?? []).contains { $0.kind == MeetingEventKind.captureStopped }
+    })
     try await Task.sleep(for: .milliseconds(300))
     run.cancel()
     other.release()
@@ -275,7 +356,7 @@ func cancelWhileTakingTheLeaseSkipsTheHook() async throws {
 }
 
 /// Cancelled while the hook runs: the hook ends on its own terms, and the run still rethrows the cancellation.
-@Test(.timeLimit(.minutes(1))) @MainActor
+@Test(.timeLimit(.minutes(3))) @MainActor
 func cancelDuringTheHookRethrowsCancellation() async throws {
     let temp = try TemporaryDirectory()
     defer { temp.remove() }
@@ -284,7 +365,7 @@ func cancelDuringTheHookRethrowsCancellation() async throws {
     let hook: PostProcessHook = { session, _, _ in
         hookStarted.set(true)
         let clock = ContinuousClock()
-        let deadline = clock.now.advanced(by: .seconds(10))
+        let deadline = clock.now.advanced(by: hang)
         while !Task.isCancelled, clock.now < deadline { try? await Task.sleep(for: .milliseconds(2)) }
         hookSawCancel.set(Task.isCancelled)
         return cancellationRecord(session)
@@ -295,9 +376,9 @@ func cancelDuringTheHookRethrowsCancellation() async throws {
         try await RecordingWorkflow.run(.testing(root: temp.url),
                                         dependencies: .testing(captures: captures, postProcess: hook, stop: stop))
     }
-    #expect(await eventually { (captures.captures.first?.consumedFrames ?? 0) >= 3 })
+    #expect(await eventually(timeout: patience) { (captures.captures.first?.consumedFrames ?? 0) >= 3 })
     stop.requestStop()
-    #expect(await eventually { hookStarted.value })
+    #expect(await eventually(timeout: patience) { hookStarted.value })
     run.cancel()
     await expectCancellation(run)
     #expect(hookSawCancel.value, "The hook runs in the cancelled task.")

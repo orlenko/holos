@@ -11,8 +11,8 @@ import HolosCore
 /// Appends to one file must be serialized by the caller (the writer or speaker lock).
 ///
 /// No operation here follows a symbolic link in place of a folder Holos owns: `write`, `create`, `writeStream`,
-/// `append`, `truncate`, `sync`, `readIfPresent`/`readJSON`, `openForReading`, `ensurePrivateDirectory`, and
-/// `removeTree` all open folders
+/// `append`, `truncate`, `sync`, `readIfPresent`/`readJSON`, `readAndRemove`, `openForReading`,
+/// `ensurePrivateDirectory`, and `removeTree` all open folders
 /// with `openFolder` (FolderChain.swift): the folder holding the file is opened with O_NOFOLLOW, and inside a
 /// session folder (`<id>.holos`) so is every folder from the session folder down (an `openat` chain). A symbolic
 /// link or file in their place is refused with `HolosError.invalidInput`. Folders above those may be reached
@@ -189,11 +189,61 @@ public enum AtomicFile {
         guard fstat(fd, &info) == 0, (info.st_mode & S_IFMT) == S_IFREG else {
             throw HolosError.invalidInput("\(url.lastPathComponent) is not a regular file.")
         }
-        guard info.st_size <= off_t(maxBytes) else {
+        return try readAll(fd, size: info.st_size, url: url, maxBytes: maxBytes)
+    }
+
+    /// Reads a regular file like `readIfPresent` and then unlinks it: for a hand-off file that must not outlive the
+    /// read (it may hold private text). Nil when it or its folder does not exist.
+    ///
+    /// The file is opened with O_NOFOLLOW (through its folder opened like `readIfPresent` opens it) and checked with
+    /// fstat to be a regular file before anything is removed. A folder, symbolic link, FIFO, or other entry in its
+    /// place is refused (`invalidInput`) and left untouched. The unlink is `unlinkat` without AT_REMOVEDIR, so it can
+    /// never remove a folder, and only when the name still refers to the file that was opened (same device and
+    /// inode, not followed). Once the file is verified it is removed even if it is too large or cannot be read.
+    public static func readAndRemove(_ url: URL, maxBytes: Int) throws -> Data? {
+        guard url.isFileURL else { throw HolosError.invalidInput("File path must be a file URL.") }
+        guard let (parent, name) = try openParentIfPresent(of: url) else { return nil }
+        defer { Darwin.close(parent) }
+        let fd = openat(parent, name, O_RDONLY | O_NONBLOCK | O_CLOEXEC | O_NOFOLLOW)
+        if fd < 0 {
+            let code = errno
+            if code == ENOENT { return nil }
+            if code == ELOOP {
+                throw HolosError.invalidInput("\(url.lastPathComponent) is a symbolic link; Holos reads only regular files.")
+            }
+            throw HolosError.io("Cannot open \(url.lastPathComponent): \(errnoText(code)).")
+        }
+        defer { Darwin.close(fd) }
+        var info = stat()
+        guard fstat(fd, &info) == 0, (info.st_mode & S_IFMT) == S_IFREG else {
+            throw HolosError.invalidInput("\(url.lastPathComponent) is not a regular file.")
+        }
+        defer { unlinkIfSame(name, in: parent, as: info) }
+        return try readAll(fd, size: info.st_size, url: url, maxBytes: maxBytes)
+    }
+
+    /// Unlinks the non-folder entry `name` of `parent` only while it is the file `opened` (device and inode), so an
+    /// entry swapped in after the file was verified is left alone.
+    private static func unlinkIfSame(_ name: String, in parent: Int32, as opened: stat) {
+        var current = stat()
+        guard fstatat(parent, name, &current, AT_SYMLINK_NOFOLLOW) == 0,
+              (current.st_mode & S_IFMT) == S_IFREG,
+              current.st_dev == opened.st_dev, current.st_ino == opened.st_ino else {
+            log.error("A hand-off file was replaced before it could be deleted; it was left in place")
+            return
+        }
+        if unlinkat(parent, name, 0) != 0 {
+            log.error("Cannot delete a hand-off file: \(errnoText(), privacy: .public)")
+        }
+    }
+
+    /// Reads the open regular file `fd` of `size` bytes, refusing more than `maxBytes`.
+    private static func readAll(_ fd: Int32, size: off_t, url: URL, maxBytes: Int) throws -> Data {
+        guard size <= off_t(maxBytes) else {
             throw HolosError.invalidInput("\(url.lastPathComponent) is larger than Holos expects.")
         }
         var data = Data()
-        data.reserveCapacity(Int(info.st_size))
+        data.reserveCapacity(Int(size))
         var buffer = [UInt8](repeating: 0, count: 64 * 1024)
         while true {
             let count = buffer.withUnsafeMutableBytes { Darwin.read(fd, $0.baseAddress, $0.count) }
