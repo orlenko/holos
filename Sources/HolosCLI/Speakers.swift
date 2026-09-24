@@ -262,14 +262,15 @@ enum SpeakerCommand {
     }
 
     /// Saves one change on the loaded view, prints what it did, and rewrites the exports. A change that would leave
-    /// the labels as they are is not saved (it would only use up an undo step).
+    /// the labels as they are is not saved (it would only use up an undo step); the editor decides that on the
+    /// current labels under the speaker lock, after refusing a change whose labels moved on since the load.
     static func save(_ actions: [SpeakerEditAction], _ loaded: LoadedSpeakers) throws {
-        if SpeakerEditor.changesNothing(actions, on: loaded.view) {
+        guard let result = try SpeakerEditor.applyUnlessUnchanged(actions, view: loaded.view,
+                                                                  session: loaded.session, source: source,
+                                                                  regenerateExports: false) else {
             Console.output("Nothing to change; the speaker labels already look like that.")
             return
         }
-        let result = try SpeakerEditor.apply(actions, view: loaded.view, session: loaded.session, source: source,
-                                             regenerateExports: false)
         for action in actions {
             Console.output(describe(action, before: loaded.view, after: result.snapshot.projection))
         }
