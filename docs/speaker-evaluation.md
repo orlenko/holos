@@ -284,3 +284,120 @@ English locale. FluidAudio's `totalProcessingSeconds`, which includes the model
 load time, was 1.1 s per run. It adds that load time on every call, even when the
 models are cached, so `FluidDiarizer` records its own wall time as
 `processingSeconds` instead (the load counts only on the call that loads).
+
+## PR7c results
+
+Measured 2026-09-24 on the same machine (Apple M4 Pro, 48 GB) with a release build
+of `holos` (PR7c branch). Each Otter recording was imported once with
+`holos session import` (en-CA, Speech backend), then labelled with
+`holos session diarize --force` in each configuration and scored with
+`holos session score`. The session's rendered 16 kHz Int16 track goes through
+`FluidDiarizer` (§4.8), not `process(url)` on the MP3 as in S1. Everything else is
+the default configuration.
+
+All numbers are **agreement with Otter**, as in S1: confusion is the share of the
+time where both Otter and Holos have a speaker whose speaker differs after the best
+one-to-one mapping, with a 0.25 s collar around Otter turn boundaries. "Segments"
+scores the diarizer's segments (S1's measure, "confusion on joint speech"); "turns"
+scores the labelled transcript's turns, one speaker per word. Otter's last turn runs
+to the end of the audio. Speaker counts in parentheses have at least 30 s (Otter:
+turn time; Holos: speech).
+
+### Imports
+
+| Pair | Audio | Import (copy + transcription) |
+| --- | ---: | ---: |
+| 002 | 411.8 s | 5.2 s |
+| 001 | 1,211.4 s | 12.8 s |
+| 003 | 5,333.0 s | 64.5 s |
+
+### Speaker labels per configuration
+
+| Pair | Configuration | Otter speakers | Holos speakers | Confusion, segments | Compared | Confusion, turns | Compared | Diarize | Whole command | Peak RSS | Peak footprint | Mic offset |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 002 | default (`exclusiveSegments` false) | 3 (2) | 2 (2) | 1.9 % | 277.8 s | 3.0 % | 298.5 s | 1.4 s | 1.7 s | 376 MB | 851 MB | 0.00 s |
+| 002 | `exclusiveSegments` true | 3 (2) | 2 (2) | 2.6 % | 277.6 s | 3.3 % | 299.1 s | 1.5 s | 1.8 s | 367 MB | 842 MB | 0.00 s |
+| 002 | hint 1–3 (n − 1 to n + 1) | 3 (2) | 2 (2) | 1.9 % | 277.8 s | 3.0 % | 298.5 s | 1.4 s | 1.7 s | 347 MB | 815 MB | 0.00 s |
+| 002 | exactly 2 | 3 (2) | 2 (2) | 1.9 % | 277.8 s | 3.0 % | 298.5 s | 1.3 s | 1.6 s | 370 MB | 843 MB | 0.00 s |
+| 002 | at least 2 | 3 (2) | 2 (2) | 1.9 % | 277.8 s | 3.0 % | 298.5 s | 1.4 s | 1.6 s | 346 MB | 815 MB | 0.00 s |
+| 001 | default (`exclusiveSegments` false) | 8 (7) | 7 (7) | 1.4 % | 919.5 s | 1.7 % | 1,004.7 s | 3.8 s | 4.2 s | 427 MB | 846 MB | 0.00 s |
+| 001 | `exclusiveSegments` true | 8 (7) | 7 (7) | 1.4 % | 919.5 s | 1.7 % | 1,004.7 s | 3.7 s | 4.1 s | 427 MB | 827 MB | 0.00 s |
+| 001 | hint 6–8 | 8 (7) | 7 (7) | 1.4 % | 919.5 s | 1.7 % | 1,004.7 s | 3.7 s | 4.1 s | 427 MB | 823 MB | 0.00 s |
+| 001 | exactly 7 | 8 (7) | 7 (7) | 1.4 % | 919.5 s | 1.7 % | 1,004.7 s | 3.8 s | 4.2 s | 428 MB | 845 MB | 0.00 s |
+| 001 | at least 7 | 8 (7) | 7 (7) | 1.4 % | 919.5 s | 1.7 % | 1,004.7 s | 4.5 s | 5.0 s | 439 MB | 861 MB | 0.00 s |
+| 003 | default (`exclusiveSegments` false) | 11 (8) | 7 (6) | 5.1 % | 3,688.5 s | 5.0 % | 3,987.2 s | 15.8 s | 17.1 s | 783 MB | 1,052 MB | 0.00 s |
+| 003 | `exclusiveSegments` true | 11 (8) | 7 (6) | 5.2 % | 3,684.3 s | 5.1 % | 3,988.1 s | 15.2 s | 16.6 s | 783 MB | 1,054 MB | 0.00 s |
+| 003 | hint 7–9 | 11 (8) | 7 (6) | 5.1 % | 3,688.5 s | 5.0 % | 3,987.2 s | 15.3 s | 16.5 s | 784 MB | 1,058 MB | 0.00 s |
+| 003 | exactly 8 | 11 (8) | 8 (8) | 17.1 % | 3,663.9 s | 17.3 % | 3,977.5 s | 16.6 s | 17.8 s | 736 MB | 1,056 MB | 0.00 s |
+| 003 | at least 8 | 11 (8) | 8 (8) | 17.1 % | 3,663.9 s | 17.3 % | 3,977.5 s | 16.9 s | 18.3 s | 741 MB | 1,057 MB | 0.00 s |
+
+"Diarize" is the post-processor's diarize stage; "whole command" is the
+`holos session diarize` process (render, diarize, align, exports), and peak RSS and
+footprint are that process's `/usr/bin/time -l` "maximum resident set size" and
+"peak memory footprint". An earlier full run gave the same confusion values and
+speaker counts, with diarize times within 0.8 s.
+
+What these settle:
+
+- **`exclusiveSegments` stays false.** With overlapping segments kept, confusion is
+  equal (001) or lower (002: 1.9 % against 2.6 %; 003: 5.1 % against 5.2 %), on
+  segments and on turns alike. The §4.8 rule switches the default only when false
+  raises joint-speech confusion by more than one percentage point on any recording.
+  The `exclusiveSegments` true row reproduces S1's joint-speech confusion (2.6 %,
+  1.4 %, 5.2 %).
+- **The speaker-count hint does not recover merged speakers.** The design's
+  n − 1 to n + 1 hint (n = Otter labels with at least 30 s) changed nothing: the
+  diarizer's own count was already inside the range on all three recordings.
+  Forcing the count up (exactly 8, or at least 8, on 003) gave 8 clusters but
+  raised confusion from 5.1 % to 17.1 %: the extra cluster splits people rather than
+  separating the merged ones. On 001 and 002 the stronger hints changed nothing.
+- **Track offsets are 0.** `AlignmentInfo.trackOffsets["mic"]` was 0.00 s in every
+  run: no shift within ±0.5 s covered 1 % more word time than none.
+- **Time and memory.** The 89-minute recording diarizes in 15–17 s at 736–784 MB
+  peak RSS (S1: 17.0 s and 947 MB with `process(url)`), and the whole command takes
+  under 19 s. Importing it (copying the audio and transcribing it once) took 65 s.
+- Not measured here: a real 3 h meeting (H20); S1's synthetic 3 h file rose from
+  5.2 % to 11.2 % confusion.
+
+### Calibration: cross-recording centroid distances
+
+`--calibrate` labelled 001 and 003 with the hidden `--voice-data` (default
+configuration) and compared each Holos cluster mapped to a named Otter label in 001
+with each one in 003: cosine distance (1 − cosine similarity) between the cluster
+centroids (raw 256-d WeSpeaker space). Same person means the same named label in
+both files. No mapped cluster had a generic Otter label ("Speaker N"). Only 5 of the
+six shared participants were mapped to a cluster in both files.
+
+| Pairs | Count | Min | 5th pct | Median | 95th pct | Max |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Same person | 5 | 0.076 | 0.077 | 0.197 | 0.235 | 0.244 |
+| Different people | 37 | 0.421 | 0.514 | 0.846 | 0.992 | 1.044 |
+
+§4.10 accepts a suggestion when `distance ≤ possibleMaxDistance`. The largest
+threshold that admits at most 5 % of the 37 different-person pairs (1 pair) lies
+between the smallest different-person distance (0.421) and the next (0.444):
+halfway is **about 0.43**, which admits 1 of 37 (2.7 %). All 5 same-person pairs
+(at most 0.244) are below it. This is the measurement §4.10 asks PR10 to use for
+`defaultThresholds.possibleMaxDistance`; the sample is small (42 pairs from two
+recordings of one team). The run printed 0.444, the second-smallest distance
+itself, which a `≤` comparison would meet for 2 of 37 pairs (5.4 %); the script now
+prints the midpoint, and 0.43 here is computed from the two distances above, not
+from a new run.
+
+### Reproduce
+
+```sh
+swift build -c release --product holos
+holos=.build/release/holos
+"$holos" setup --locale en-CA            # the CLI needs its own speech assets
+"$holos" setup --speakers
+swift scripts/evaluate-references.swift \
+  --input .local/diarization-probe/data --reference-format otter \
+  --cli "$holos" --speakers --calibrate
+```
+
+The script prints and writes (`summary.json`, `summary.md` under
+`.local/evaluation/`) counts, seconds, ratios, and distances only. Otter labels
+appear only as hashed keys inside `holos session score --json`, which the script
+reads but does not keep. The temporary sessions are deleted unless
+`--keep-sessions`.

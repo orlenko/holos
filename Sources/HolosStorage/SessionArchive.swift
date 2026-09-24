@@ -160,10 +160,52 @@ public actor SessionArchive {
             if code == EEXIST { throw HolosError.invalidInput("A session with ID \(id) already exists.") }
             throw HolosError.io("Cannot create the session folder: \(AtomicFile.errnoText(code)).")
         }
-        // The folders inside are made relative to the session folder's descriptor (`mkdirat`, O_NOFOLLOW, 0700),
-        // never by path. A failed creation leaves its distinct directory for inspection; never delete user data.
+        // A failed creation leaves its distinct directory for inspection; never delete user data.
         let sessionFD = try SessionLockFile.openSessionFolder(directory)
         defer { Darwin.close(sessionFD) }
+        return try populate(sessionFD, directory: directory, id: id, name: name, source: source, locale: locale,
+                            backend: backend) { try AtomicFile.syncDirectory(root) }
+    }
+
+    /// Creates a session in the folder open as `folder`, which the caller has just made empty (0700) and named
+    /// `<id>.holos` (`id` an uppercase UUID string), and takes its writer lock, so a session can be made inside a
+    /// folder the caller holds open (an import's staging folder) rather than wherever a path leads at the time.
+    ///
+    /// The folders, the writer lock, and the identity check all go through `folder`. Every later write names the
+    /// session by `directory`, so `directory` must reach `folder` (checked by device and inode through the same
+    /// folder chain those writes take); otherwise nothing is written and this throws `HolosError.io`. For that to
+    /// hold after this call too, whatever other programs do to the path, the caller pins `directory` to `folder`
+    /// first (`AtomicFile.pinSessionFolder`), as an import does. The caller fsyncs the folder holding `folder`.
+    public static func create(inEmptyFolder folder: Int32, directory: URL, name: String, source: AudioSource,
+                              locale: String, backend: SpeechBackend) throws -> SessionArchive {
+        let id = directory.deletingPathExtension().lastPathComponent
+        guard directory.isFileURL, directory.pathExtension == "holos",
+              UUID(uuidString: id)?.uuidString == id,
+              !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, !locale.isEmpty else {
+            throw HolosError.invalidInput("Invalid archive folder, name, or locale.")
+        }
+        let reached: Int32
+        do {
+            reached = try SessionLockFile.openSessionFolder(directory)
+        } catch {
+            throw movedFolderError
+        }
+        defer { Darwin.close(reached) }
+        guard try FileIdentity(descriptor: reached) == FileIdentity(descriptor: folder) else { throw movedFolderError }
+        return try populate(folder, directory: directory, id: id, name: name, source: source, locale: locale,
+                            backend: backend, syncParent: {})
+    }
+
+    private static let movedFolderError = HolosError.io(
+        "The folder for the new session was moved or replaced while it was being made.")
+
+    /// The rest of `create`: the folders inside, the writer lock, the manifest, and the empty journal of the new
+    /// session folder open as `sessionFD` (named `directory`). `syncParent` fsyncs the folder holding it.
+    private static func populate(_ sessionFD: Int32, directory: URL, id: String, name: String, source: AudioSource,
+                                 locale: String, backend: SpeechBackend,
+                                 syncParent: () throws -> Void) throws -> SessionArchive {
+        // The folders inside are made relative to the session folder's descriptor (`mkdirat`, O_NOFOLLOW, 0700),
+        // never by path.
         guard fchmod(sessionFD, 0o700) == 0 else {
             throw HolosError.io("Cannot make session directory private.")
         }
@@ -176,16 +218,24 @@ public actor SessionArchive {
         }
         // Publish the new folders durably: audio/ holds mic/ and system/, and the root holds the session folder.
         // The session folder itself is fsync'd once its files exist.
-        try AtomicFile.syncDirectory(directory.appendingPathComponent("audio", isDirectory: true))
-        try AtomicFile.syncDirectory(root)
-        let fd = try acquireLock(directory)
+        let audioURL = directory.appendingPathComponent("audio", isDirectory: true)
+        guard let audioFD = try AtomicFile.openFolder(["audio"], in: sessionFD, baseURL: directory) else {
+            throw HolosError.io("Cannot open folder audio: \(AtomicFile.errnoText(ENOENT)).")
+        }
+        defer { Darwin.close(audioFD) }
+        try AtomicFile.syncFolder(audioFD, audioURL)
+        try syncParent()
+        guard let fd = try SessionLockFile.acquire(SessionLockFile.writer, inFolder: sessionFD,
+                                                   timeout: .seconds(1)) else {
+            throw HolosError.unavailable("Session archive already has an active writer.")
+        }
         do {
             let manifest = SessionManifest(id: id, name: name, createdAt: Date(),
                                            source: source, locale: locale, backend: backend,
                                            status: ArchiveStatus.recording)
             try writeManifest(manifest, in: directory)
             try AtomicFile.append(Data(), to: SessionPaths.events(directory))
-            try AtomicFile.syncDirectory(directory)
+            try AtomicFile.syncFolder(sessionFD, directory)
             return SessionArchive(directory: directory, manifest: manifest, nextSequence: 1, lockFD: fd)
         } catch {
             SessionLockFile.unlockAndClose(fd)
