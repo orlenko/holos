@@ -84,6 +84,9 @@ public enum SessionImporter {
             throw failure(error, leftover: staging.discard())
         }
         let directory = archive.directory
+        // Where the session appears once published. Anything persisted that names the session names this path,
+        // never the staging folder, which is gone once the import finishes.
+        let publishedDirectory = staging.publishedURL(directory.lastPathComponent)
         log.notice("Session \(archive.id, privacy: .public): importing \(audio.length, privacy: .public) frames at \(audio.processingFormat.sampleRate, privacy: .public) Hz")
         var lease: ProcessingLease?
         do {
@@ -110,7 +113,7 @@ public enum SessionImporter {
                     meter.report(audioShare + (1 - audioShare) * fraction)
                 }
                 try Task.checkCancellation()
-                let transcript = Transcript(source: directory.path, locale: locale, backend: backend,
+                let transcript = Transcript(source: publishedDirectory.path, locale: locale, backend: backend,
                                             segments: segments.sorted { ($0.start, $0.id) < ($1.start, $1.id) })
                 try await archive.saveTranscript(transcript, writeLegacyExports: false)
                 status = ArchiveStatus.complete
@@ -306,7 +309,8 @@ private struct TranscriptionFailure: Error {
 final class ImportStaging {
     static let prefix = ".import-"
     static let lockName = ".import.lock"
-    /// Written into every staging folder after its lock file is locked; removed first when it is published.
+    /// Written into every staging folder after its lock file is locked; removed first when it is published, last when
+    /// it is discarded or swept (`removeStaging`).
     static let markerName = ".holos-import"
     static let markerContents = Array("{\"holos\":\"import-staging\",\"version\":1}\n".utf8)
     /// A marked staging folder whose lock file is missing or unlocked is removed by a sweep only when the folder has
@@ -370,7 +374,7 @@ final class ImportStaging {
             Darwin.close(folder)
         }
         guard lock >= 0 else {
-            _ = try? AtomicFile.removeTree([name], in: resolved(root))
+            try? removeStaging(name, in: resolved(root))
             throw HolosError.io("Cannot lock the import folder: \(String(cString: strerror(code))).")
         }
         return ImportStaging(root: root, name: name, lockFD: lock)
@@ -416,21 +420,43 @@ final class ImportStaging {
         } else if fsync(rootFD) != 0 {
             Self.log.error("Cannot save the sessions folder after an import: \(Self.errnoText(), privacy: .public)")
         }
-        return root.appendingPathComponent(sessionName, isDirectory: true)
+        return publishedURL(sessionName)
     }
 
-    /// Removes the staging folder and everything in it, then lets go of the lock. Returns nil when it is gone, else
-    /// a sentence for the user that says where the partial files are.
+    /// Where `publish(sessionName)` puts the session: `<root>/<sessionName>`.
+    func publishedURL(_ sessionName: String) -> URL {
+        root.appendingPathComponent(sessionName, isDirectory: true)
+    }
+
+    /// Removes the staging folder and everything in it (`removeStaging`), then lets go of the lock. Returns nil when
+    /// it is gone, else a sentence for the user that says where the partial files are. A folder it could not remove
+    /// keeps its ownership marker, so a later sweep finishes the job.
     func discard() -> String? {
         defer { closeLock() }
         do {
-            try AtomicFile.removeTree([name], in: Self.resolved(root))
+            try Self.removeStaging(name, in: Self.resolved(root))
             return nil
         } catch {
             Self.log.error("Cannot remove an import folder: \(error.localizedDescription, privacy: .private)")
             return "Its partial files in \(url.path) could not be removed (\(error.localizedDescription)). They are "
                 + "not a session; delete that folder, or the next import removes it."
         }
+    }
+
+    /// Removes the staging folder `name` in `base` (a root with symbolic links resolved) in an order that keeps its
+    /// ownership marker until nothing else is left: every other entry first, then the lock file, then the marker
+    /// with the emptied folder. A removal that fails part-way therefore leaves a folder that still has the marker,
+    /// which a later sweep recognizes and finishes; only a failure on the marker or the empty folder itself can leave
+    /// one without it, and that folder is empty. Nothing is followed through a symbolic link (`AtomicFile.removeTree`).
+    static func removeStaging(_ name: String, in base: URL) throws {
+        let folder = base.appendingPathComponent(name, isDirectory: true)
+        // Unreadable or missing: the final removeTree reports it (or finds nothing to remove).
+        let children = (try? FileManager.default.contentsOfDirectory(atPath: folder.path)) ?? []
+        for child in children.sorted() where child != markerName && child != lockName {
+            try AtomicFile.removeTree([name, child], in: base)
+        }
+        if children.contains(lockName) { try AtomicFile.removeTree([name, lockName], in: base) }
+        try AtomicFile.removeTree([name], in: base)
     }
 
     /// Removes the staging folders in `root` that no running import holds: those whose lock file is missing or can
@@ -464,7 +490,7 @@ final class ImportStaging {
             let changed = Date(timeIntervalSince1970: TimeInterval(info.st_mtimespec.tv_sec))
             guard now.timeIntervalSince(changed) > unlockedGrace else { continue }
             do {
-                try AtomicFile.removeTree([name], in: base)
+                try removeStaging(name, in: base)
                 log.notice("Removed an import that did not finish")
             } catch {
                 log.error("Cannot remove an import that did not finish: \(error.localizedDescription, privacy: .private)")

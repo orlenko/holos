@@ -5,7 +5,7 @@ import HolosAudio
 import HolosCore
 @testable import HolosMeeting
 import HolosSpeakers
-import HolosStorage
+@testable import HolosStorage
 import Testing
 
 // `holos session import` and `holos session score` (docs/meeting-design.md §5.5 PR7c), with generated audio and
@@ -225,6 +225,96 @@ func importPassesVocabulary() async throws {
     let long = String(repeating: "x", count: 101)
     #expect(SessionImporter.cleaned(["  Maria Chen ", "", "   ", long, "Strata"]) == ["Maria Chen", "Strata"])
     #expect(SessionImporter.cleaned((0..<1_200).map { "term \($0)" }).count == 1_000)
+}
+
+/// The session is built in `.import-<UUID>/` and then moved, so nothing it persists may name the staging folder:
+/// `Transcript.source` and every other file name the published `<root>/<id>.holos`.
+@Test(.timeLimit(.minutes(1)))
+func importPersistsNoStagingPath() async throws {
+    let temp = try TemporaryDirectory("import")
+    defer { temp.remove() }
+    let wav = try sessionImporterStereoWAV(in: temp.url)
+    let root = temp.url.appendingPathComponent("Sessions", isDirectory: true)
+    let speech = FakeSpeechFactory([FakeSpeechScript(segments: [sessionImporterSegment()])])
+    let session = try await sessionImporterImport(wav, root: root, speech: speech, vocabulary: ["Maria Chen"])
+
+    let transcriptID = try #require(try SessionArchive.currentTranscriptID(at: session))
+    let transcript = try AtomicFile.readJSON(Transcript.self, from: SessionPaths.transcript(transcriptID, in: session))
+    #expect(transcript.source == session.path)
+    #expect(transcript.source == root.appendingPathComponent(session.lastPathComponent).path)
+    let files = sessionImporterTree(session)
+    #expect(files.contains { $0.hasSuffix(".json") })
+    for relative in files {
+        let url = session.appendingPathComponent(relative)
+        guard (try? url.resourceValues(forKeys: [.isRegularFileKey]))?.isRegularFile == true else { continue }
+        let data = try Data(contentsOf: url)
+        #expect(data.range(of: Data(ImportStaging.prefix.utf8)) == nil, "\(relative) names the staging folder")
+    }
+}
+
+/// A discard that fails part-way (any removal or fsync it makes, injected with `AtomicFile.faultPlan`) must leave
+/// the ownership marker on a folder that still holds anything, so the next sweep recognizes the folder and removes
+/// it. Before, the tree was removed in directory order, and a failure after the marker went left partial audio that
+/// no sweep would ever touch.
+@Test func discardThatFailsPartWayLeavesTheMarkerForTheNextSweep() throws {
+    let temp = try TemporaryDirectory("import")
+    defer { temp.remove() }
+    let root = temp.url.appendingPathComponent("Sessions", isDirectory: true)
+    func staged() throws -> ImportStaging {
+        let staging = try ImportStaging.create(in: root)
+        let session = staging.url.appendingPathComponent("\(UUID().uuidString).holos", isDirectory: true)
+        let audio = session.appendingPathComponent("audio/mic", isDirectory: true)
+        try FileManager.default.createDirectory(at: audio, withIntermediateDirectories: true)
+        for index in 1...3 {
+            try Data(repeating: 1, count: 64).write(to: audio.appendingPathComponent("00000\(index).caf"))
+        }
+        try Data("{}".utf8).write(to: session.appendingPathComponent("manifest.json"))
+        return staging
+    }
+    let far = Date(timeIntervalSinceNow: 10 * ImportStaging.unlockedGrace)
+
+    let twin = FaultPlan()
+    let clean = try staged()
+    #expect(AtomicFile.$faultPlan.withValue(twin) { clean.discard() } == nil)
+    #expect(sessionImporterEntries(root).isEmpty)
+    let steps = twin.steps.count
+    #expect(steps > 8)
+
+    var keptWithMarker = 0
+    for failAt in 0..<steps {
+        let staging = try staged()
+        let folder = staging.url
+        let leftover = AtomicFile.$faultPlan.withValue(FaultPlan(failAt: failAt)) { staging.discard() }
+        #expect(leftover != nil, "the fault at step \(failAt) (\(twin.steps[failAt])) was not reported")
+        guard FileManager.default.fileExists(atPath: folder.path) else { continue }
+        let left = sessionImporterTree(folder)
+        if left.contains(ImportStaging.markerName) {
+            keptWithMarker += 1
+            // The next sweep, once the folder is old enough, finishes the removal.
+            ImportStaging.sweep(root, now: far)
+            #expect(!FileManager.default.fileExists(atPath: folder.path),
+                    "the sweep left the folder of the fault at step \(failAt) (\(twin.steps[failAt]))")
+        } else {
+            // Only a failure on the marker's own folder can lose the marker, and then nothing else is left.
+            #expect(left.isEmpty, "the fault at step \(failAt) (\(twin.steps[failAt])) left \(left) unmarked")
+            try FileManager.default.removeItem(at: folder)
+        }
+        #expect(sessionImporterEntries(root).isEmpty)
+    }
+    #expect(keptWithMarker > 0)
+
+    // The case the review named: the first delete inside the session fails. The marker stays, and the sweep removes
+    // the folder.
+    let first = try #require(twin.steps.first)
+    #expect(first.hasPrefix("unlink ") && !first.contains(ImportStaging.markerName)
+            && !first.contains(ImportStaging.lockName))
+    let staging = try staged()
+    let leftover = AtomicFile.$faultPlan.withValue(FaultPlan(failAt: 0)) { staging.discard() }
+    #expect(leftover?.contains("the next import removes it") == true)
+    #expect(sessionImporterTree(staging.url).contains(ImportStaging.markerName))
+    #expect(sessionImporterTree(staging.url).contains { $0.hasSuffix(".caf") })
+    ImportStaging.sweep(root, now: far)
+    #expect(sessionImporterEntries(root).isEmpty)
 }
 
 @Test(.timeLimit(.minutes(1)))
