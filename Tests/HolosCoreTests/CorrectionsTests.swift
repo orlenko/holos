@@ -84,3 +84,40 @@ import Testing
     #expect(namesAreNotCommon.learned == [.init(heard: "Gwen", meant: "Gwyn")])
     #expect(namesAreNotCommon.declined.isEmpty)
 }
+
+@Test func declinedMeantTextKeepsTheCorrectedPunctuation() {
+    let result = CorrectionList.learnReportingDeclined(original: "Bull.", corrected: "Pull-request.") { _ in true }
+    #expect(result.learned.isEmpty)
+    #expect(result.declined == [.init(heard: "Bull", meant: "Pull-request")])
+}
+
+@Test func declinedQueueKeepsEveryPairUntilAddedOrSkipped() {
+    var queue = DeclinedCorrectionQueue()
+    queue.receive([.init(heard: "Bull", meant: "Pull"), .init(heard: "Male", meant: "Mail")])
+    // A later Learn adds behind the waiting pairs; a repeated phrase is replaced in place.
+    queue.receive([.init(heard: "bull", meant: "Poll"), .init(heard: "Tail", meant: "Tale")])
+    #expect(queue.pending == [.init(heard: "bull", meant: "Poll"), .init(heard: "Male", meant: "Mail"),
+                              .init(heard: "Tail", meant: "Tale")])
+
+    // Pre-fill only when both fields are blank, so a half-typed manual correction survives.
+    #expect(queue.prefill(heard: "", meant: " ") == .init(heard: "bull", meant: "Poll"))
+    #expect(queue.prefill(heard: "clod", meant: "") == nil)
+    #expect(queue.prefill(heard: "", meant: "cloud") == nil)
+
+    // Adding any rule for a waiting phrase resolves it, even with an edited meant text.
+    let resolvedEdited = queue.resolve(added: .init(heard: "BULL", meant: "pole"))
+    let resolvedUnrelated = queue.resolve(added: .init(heard: "clod", meant: "cloud"))
+    #expect(resolvedEdited)
+    #expect(!resolvedUnrelated)
+    #expect(queue.prefill(heard: "", meant: "") == .init(heard: "Male", meant: "Mail"))
+
+    let skipped = queue.skip()
+    #expect(skipped == .init(heard: "Male", meant: "Mail"))
+    #expect(queue.pending == [.init(heard: "Tail", meant: "Tale")])
+    let resolvedLast = queue.resolve(added: .init(heard: "Tail", meant: "Tale"))
+    #expect(resolvedLast)
+    #expect(queue.isEmpty)
+    let skippedEmpty = queue.skip()
+    #expect(skippedEmpty == nil)
+    #expect(queue.prefill(heard: "", meant: "") == nil)
+}

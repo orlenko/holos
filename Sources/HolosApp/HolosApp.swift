@@ -85,6 +85,9 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
     private var lastTranscript = ""
     /// The same transcript before corrections, so edits are learned against what the recognizer heard.
     private var lastRecognized = ""
+    /// An edited transcript whose only changes were declined swaps: it becomes the last transcript once
+    /// the user adds one of those swaps, provided no newer dictation replaced the one it was edited from.
+    private var pendingEdit: (recognized: String, edited: String)?
     /// The recognizer's latest committed text, kept so a failure can still offer what was not written.
     private var latestCommitted = ""
     private let log = Logger(subsystem: "ca.orlenko.holos.app", category: "insertion")
@@ -557,7 +560,9 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
         if correctionsWindow == nil {
             correctionsWindow = CorrectionsWindow(
                 onLearn: { [weak self] edited in self?.learnCorrections(from: edited) },
-                onAdd: { [weak self] correction in self?.changeCorrections { $0.add(correction) } ?? false },
+                onAdd: { [weak self] correction, resolvesDeclined in
+                    self?.addCorrection(correction, resolvesDeclined: resolvesDeclined) ?? false
+                },
                 onRemove: { [weak self] correction in self?.changeCorrections { $0.remove(correction) } ?? false })
         }
         correctionsWindow?.show(lastTranscript: lastTranscript, corrections: corrections.entries)
@@ -572,11 +577,29 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
         }
         let learned = result.learned.filter { corrections.apply(to: $0.heard) != $0.meant }
         let declined = result.declined.filter { corrections.apply(to: $0.heard) != $0.meant }
-        guard !learned.isEmpty else { return CorrectionsWindow.LearnResult(learned: [], declined: declined) }
+        guard !learned.isEmpty else {
+            // Nothing is saved yet; keep the edit until the user adds one of the declined swaps.
+            if !declined.isEmpty { pendingEdit = (recognized: lastRecognized, edited: edited) }
+            return CorrectionsWindow.LearnResult(learned: [], declined: declined)
+        }
         guard changeCorrections({ list in for correction in learned { list.add(correction) } }) else { return nil }
         lastTranscript = edited
         lastRecognized = edited
+        pendingEdit = nil
         return CorrectionsWindow.LearnResult(learned: learned, declined: declined)
+    }
+
+    /// A manual Add; one that resolves a declined swap also keeps the edited transcript, as Learn does.
+    private func addCorrection(_ correction: Correction, resolvesDeclined: Bool) -> Bool {
+        guard changeCorrections({ $0.add(correction) }) else { return false }
+        if resolvesDeclined, let pending = pendingEdit {
+            if pending.recognized == lastRecognized {
+                lastTranscript = pending.edited
+                lastRecognized = pending.edited
+            }
+            pendingEdit = nil
+        }
+        return true
     }
 
     /// Returns false when the change was rejected or could not be saved.

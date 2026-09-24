@@ -144,8 +144,8 @@ public struct CorrectionList: Codable, Sendable, Equatable {
                     spanB = spanB.lowerBound - 1..<spanB.upperBound
                 } else {
                     // No neighbouring word: a bare dictionary-word rule would rewrite unrelated text.
-                    declined.append(Correction(heard: aText[rangeA.lowerBound],
-                                               meant: rangeB.map { bText[$0] }.joined(separator: " ")))
+                    let meant = corrected[b[rangeB.lowerBound].lowerBound..<b[rangeB.upperBound - 1].upperBound]
+                    declined.append(Correction(heard: aText[rangeA.lowerBound], meant: String(meant)))
                     continue
                 }
             }
@@ -177,7 +177,7 @@ public struct CorrectionList: Codable, Sendable, Equatable {
         return try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive])
     }
 
-    private static func normalized(_ text: String) -> String {
+    static func normalized(_ text: String) -> String {
         text.lowercased().split(whereSeparator: \.isWhitespace).joined(separator: " ")
     }
 
