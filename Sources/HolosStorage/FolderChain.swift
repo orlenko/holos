@@ -1,5 +1,6 @@
 import Foundation
 import Darwin
+import Synchronization
 import HolosCore
 
 /// The one way Holos opens a folder inside a session (`<id>.holos`) without following a symbolic link
@@ -23,8 +24,9 @@ extension AtomicFile {
     /// its place is refused with `HolosError.invalidInput`.
     ///
     /// With `create`, each missing folder below the base (never the session folder above `url`) is made with
-    /// `mkdirat`, set to 0700 with `fchmod` on its own descriptor, and its parent is fsync'd; if that fails, the
-    /// new folder is removed again, so a retry creates it and fsyncs its parent.
+    /// `mkdirat`, reopened with O_NOFOLLOW, set to 0700 with `fchmod` on its own descriptor, and its parent is
+    /// fsync'd; if a step after `mkdirat` fails, the new folder is removed again, so a retry creates it and fsyncs
+    /// its parent (a folder that cannot be removed has its parent fsync'd then, or on the next open).
     static func openFolder(_ url: URL, create: Bool = false) throws -> Int32? {
         guard url.isFileURL else { throw HolosError.invalidInput("Folder path must be a file URL.") }
         let components = url.standardizedFileURL.pathComponents
@@ -89,6 +91,13 @@ extension AtomicFile {
                 Darwin.close(parent)
                 if code == ENOENT { return nil }
                 throw folderOpenError(name, code)
+            }
+            do {
+                try syncParentIfUnsynced(next, in: parent, parentURL: parentURL)
+            } catch {
+                Darwin.close(next)
+                Darwin.close(parent)
+                throw error
             }
             Darwin.close(parent)
             parent = next
@@ -183,8 +192,12 @@ extension AtomicFile {
             throw HolosError.io("Cannot create folder \(name): \(errnoText(code)).")
         }
         faultPlan?.changed(parentURL, name)
-        let fd = openat(parent, name, folderFlags)
-        guard fd >= 0 else { throw folderOpenError(name, errno) }
+        let fd = injectFault("open \(name)/") ? -1 : openat(parent, name, folderFlags)
+        guard fd >= 0 else {
+            let code = errno
+            discardMadeFolder(name, in: parent, parentURL: parentURL)
+            throw folderOpenError(name, code)
+        }
         do {
             // The creation mode is filtered by the umask; set it exactly, on the folder this call made.
             guard fchmod(fd, 0o700) == 0 else {
@@ -193,17 +206,38 @@ extension AtomicFile {
             if syncParent { try syncFolder(parent, parentURL) }
             return fd
         } catch {
-            // Remove the folder this call made, so a retry makes it again and fsyncs its parent. A later open would
-            // otherwise find it and return without making it durable.
             Darwin.close(fd)
-            if !injectFault("unlink \(name)"), unlinkat(parent, name, AT_REMOVEDIR) == 0 {
-                faultPlan?.changed(parentURL, name)
-                _ = fsyncFolder(parent, parentURL)
-            } else {
-                log.error("Cannot remove folder \(name, privacy: .public) after a failed create: \(errnoText(), privacy: .public)")
-            }
+            discardMadeFolder(name, in: parent, parentURL: parentURL)
             throw error
         }
+    }
+
+    /// Folders `makeFolder` made that it could neither remove nor make durable after a failure (the parent fsync
+    /// failed too); the next `openFolder` that reaches one fsyncs its parent first.
+    private static let unsyncedFolders = Mutex<Set<FileIdentity>>([])
+
+    /// After a failure that followed `mkdirat` of `name` in `parent`, removes that folder and fsyncs `parent`, so
+    /// a retry makes it again and fsyncs its parent (a later open would otherwise find it and return without
+    /// making it durable). A folder that cannot be removed is made durable instead: `parent` is fsync'd now or,
+    /// if that fails, by the next open that reaches the folder (`unsyncedFolders`).
+    private static func discardMadeFolder(_ name: String, in parent: Int32, parentURL: URL) {
+        if !injectFault("unlink \(name)"), unlinkat(parent, name, AT_REMOVEDIR) == 0 {
+            faultPlan?.changed(parentURL, name)
+            _ = fsyncFolder(parent, parentURL)
+            return
+        }
+        log.error("Cannot remove folder \(name, privacy: .public) after a failed create: \(errnoText(), privacy: .public)")
+        guard !fsyncFolder(parent, parentURL), let identity = try? identity(of: name, in: parent) else { return }
+        unsyncedFolders.withLock { _ = $0.insert(identity) }
+    }
+
+    /// Fsyncs `parent` if the open folder `folder` inside it is in `unsyncedFolders`, then forgets it.
+    private static func syncParentIfUnsynced(_ folder: Int32, in parent: Int32, parentURL: URL) throws {
+        guard unsyncedFolders.withLock({ !$0.isEmpty }) else { return }
+        let identity = try FileIdentity(descriptor: folder)
+        guard unsyncedFolders.withLock({ $0.contains(identity) }) else { return }
+        try syncFolder(parent, parentURL)
+        unsyncedFolders.withLock { _ = $0.remove(identity) }
     }
 
     private static func path(_ components: ArraySlice<String>) -> String {
@@ -217,7 +251,7 @@ extension AtomicFile {
 }
 
 /// Which file an open descriptor or a folder entry is: its device and inode, whatever path reached it.
-struct FileIdentity: Equatable, Sendable {
+struct FileIdentity: Hashable, Sendable {
     let device: dev_t
     let inode: ino_t
 

@@ -3446,8 +3446,8 @@ Timestamps are `HH:MM:SS` in Markdown.
 - **Text** (`transcript.txt`): one block per `ExportBlock`: `"<label>  <time>"` (two
   spaces; `mm:ss` below one hour, e.g. `01:05`, and `h:mm:ss` from one hour, e.g.
   `1:02:05`), the text on one line, a blank line. No gap or marker lines and no footer,
-  so `OtterTranscriptParser` and the evaluator's header regex
-  `^\s*\S.*\s{2,}\d{1,2}:\d{2}(?::\d{2})?\s*$` read it. It replaces the speaker-less
+  so `OtterTranscriptParser` and the evaluator's header regex (hours may have any number of digits)
+  `^\s*\S.*\s{2,}(?:\d+:\d{2}:\d{2}|\d{1,2}:\d{2})\s*$` read it. It replaces the speaker-less
   text `saveTranscript` wrote before (R23).
 - **JSON** (`transcript.json`, format `holos-transcript`, `schemaVersion` 1), per turn,
   with no vectors of any kind:

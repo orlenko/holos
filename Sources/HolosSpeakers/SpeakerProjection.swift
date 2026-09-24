@@ -825,10 +825,7 @@ extension SpeakerProjection {
         private func turnPrecedes(_ left: Int, _ right: Int) -> Bool {
             let a = turns[left]
             let b = turns[right]
-            let aStart = a.start.isNaN ? Double.infinity : a.start
-            let bStart = b.start.isNaN ? Double.infinity : b.start
-            if aStart != bStart { return aStart < bStart }
-            if a.track != b.track { return a.track < b.track }
+            if let order = TurnOrder.precedes(a.start, a.track, b.start, b.track) { return order }
             if a.id != b.id {
                 switch a.id.compare(b.id, options: [.numeric]) {
                 case .orderedAscending: return true
@@ -902,7 +899,7 @@ extension SpeakerProjection {
             guard count > 0 else { return nil }
             self.start = start
             self.end = end
-            timing = estimated == 0 ? .measured : estimated == count ? .estimated : .mixed
+            timing = WordTimingQuality(estimated: estimated, of: count)
         }
     }
 }

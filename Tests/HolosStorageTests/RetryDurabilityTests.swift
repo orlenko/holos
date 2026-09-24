@@ -3,7 +3,8 @@ import Testing
 import HolosCore
 @testable import HolosStorage
 
-// Multi-step writes whose retry must finish a failed attempt: every fsync, rename, and unlink step fails in turn
+// Multi-step writes whose retry must finish a failed attempt: every fsync, rename, unlink, and new-folder reopen
+// step fails in turn
 // (`AtomicFile.faultPlan`), a retry with the same inputs must succeed, and every entry the two attempts added,
 // replaced, or removed must be covered by a later fsync of its folder.
 
@@ -114,13 +115,14 @@ private func makeFixture(_ write: RetryWrite, root: URL) async throws -> RetryFi
 
 /// Runs `write` on a fresh session with step `failAt` failing, retries with no fault when the attempt failed
 /// (or left work behind), and checks the final state and that every change is covered by a folder fsync.
-/// Returns the steps the first attempt took.
+/// `alsoFailAt` names more steps that fail in the same attempt. Returns the steps the first attempt took.
 @discardableResult
-private func runWithFault(_ write: RetryWrite, failAt: Int?, label: String = "") async throws -> [String] {
+private func runWithFault(_ write: RetryWrite, failAt: Int?, alsoFailAt: Set<Int> = [],
+                          label: String = "") async throws -> [String] {
     let root = try retryTemporaryRoot()
     defer { try? FileManager.default.removeItem(at: root) }
     let fixture = try await makeFixture(write, root: root)
-    let plan = FaultPlan(failAt: failAt)
+    let plan = FaultPlan(failAt: alsoFailAt.union(failAt.map { [$0] } ?? []))
     var failure: (any Error)?
     do {
         try await AtomicFile.$faultPlan.withValue(plan) { try await fixture.perform() }
@@ -148,12 +150,25 @@ private func runWithFault(_ write: RetryWrite, failAt: Int?, label: String = "")
 func aRetryAfterAnyFailedStepFinishesTheWriteDurably(_ write: RetryWrite) async throws {
     let steps = try await runWithFault(write, failAt: nil, label: "without a fault")
     // saveTranscript: marker, revision, two exports, pointer (fsync temp, rename, fsync folder each), then the
-    // marker's unlink and folder fsync. writeRun + writeHead: speakers/ and runs/ (folder fsync each), the run,
-    // and the head.
-    #expect(steps.count == (write == .saveTranscript ? 17 : 8), "\(steps)")
+    // marker's unlink and folder fsync. writeRun + writeHead: speakers/ and runs/ (reopen after mkdirat and
+    // parent fsync each), the run, and the head.
+    #expect(steps.count == (write == .saveTranscript ? 17 : 10), "\(steps)")
+    if write == .runAndHead { #expect(steps.first == "open speakers/", "\(steps)") }
     for index in steps.indices {
         try await runWithFault(write, failAt: index, label: "failing step \(index) (\(steps[index]))")
     }
+}
+
+@Test func aFolderThatCannotBeRemovedAfterAFailedReopenIsStillMadeDurable() async throws {
+    let steps = try await runWithFault(.runAndHead, failAt: nil)
+    let open = try #require(steps.firstIndex(of: "open speakers/"))
+    // The reopen after mkdirat fails, then the cleanup's unlink and the session folder fsync fail too, so the
+    // folder stays unsynced; the retry finds it and must fsync its parent.
+    let failing = try await runWithFault(.runAndHead, failAt: open, alsoFailAt: [open + 1, open + 2],
+                                         label: "reopen, unlink, and parent fsync")
+    #expect(failing.count == open + 3, "\(failing)")
+    #expect(failing[open + 1] == "unlink speakers", "\(failing)")
+    #expect(failing[open + 2].hasPrefix("fsync ") && failing[open + 2].hasSuffix(".holos/"), "\(failing)")
 }
 
 @Test func saveTranscriptCanBeRetriedAfterThePointerFolderSyncFails() async throws {

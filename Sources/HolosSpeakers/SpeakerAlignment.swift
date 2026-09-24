@@ -321,7 +321,7 @@ public enum SpeakerAlignment {
                 score = min(max(covered / duration, 0), 1)
             }
             let estimated = group.filter(\.estimated).count
-            let timing: WordTimingQuality = estimated == 0 ? .measured : estimated == group.count ? .estimated : .mixed
+            let timing = WordTimingQuality(estimated: estimated, of: group.count)
             turns.append(SpeakerTurn(
                 id: "T\(turns.count + 1)", track: first.track,
                 start: group.map(\.start).min() ?? first.start, end: group.map(\.end).max() ?? first.end,
