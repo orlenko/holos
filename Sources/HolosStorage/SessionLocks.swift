@@ -12,41 +12,91 @@ public final class ProcessingLease: Sendable {
     public let session: URL
     /// The session folder the lease was taken in, from `fstat` of the descriptor its lock file was opened in.
     let folder: FileIdentity
-    /// The locked descriptor, or -1 once released.
-    private let descriptor: Mutex<Int32>
+    /// Every read or change of the descriptor, the released flag, and the use count goes through this one mutex,
+    /// so `release()` and `beginUse(for:)` are serialized: a use either starts before the release (and keeps the
+    /// lock until it ends) or fails.
+    private let state: Mutex<State>
+
+    private struct State {
+        /// The locked descriptor, or -1 once unlocked and closed.
+        var descriptor: Int32
+        /// Set by `release()`; no use can start after it.
+        var released = false
+        /// Operations running under the lease (`beginUse`/`endUse`).
+        var users = 0
+
+        /// Hands over the descriptor to unlock when the lease is released and unused, and forgets it.
+        mutating func takeIfIdle() -> Int32 {
+            guard released, users == 0 else { return -1 }
+            let fd = descriptor
+            descriptor = -1
+            return fd
+        }
+    }
 
     init(session: URL, folder: FileIdentity, descriptor: Int32) {
         self.session = session
         self.folder = folder
-        self.descriptor = Mutex(descriptor)
+        self.state = Mutex(State(descriptor: descriptor))
     }
 
     deinit { release() }
 
-    /// Releases the lease. Later calls do nothing.
+    /// Releases the lease: no operation can start under it afterwards. The lock is let go at once, or, while an
+    /// operation under the lease is still running (`openForMaintenance(at:lease:)`, `recover(at:lease:)`), when
+    /// that operation ends, so the lock is never dropped in the middle of one. Later calls do nothing.
     public func release() {
-        let fd = descriptor.withLock { value -> Int32 in
-            let current = value
-            value = -1
-            return current
+        let fd = state.withLock { value -> Int32 in
+            value.released = true
+            return value.takeIfIdle()
         }
         if fd >= 0 { SessionLockFile.unlockAndClose(fd) }
     }
 
-    var isHeld: Bool { descriptor.withLock { $0 >= 0 } }
+    /// False once `release()` was called.
+    var isHeld: Bool { state.withLock { !$0.released } }
 
-    /// Throws `HolosError.invalidInput` unless this lease is held and was taken for `directory`: the folder
-    /// `directory` opens to through `AtomicFile.openFolder` (never through a symbolic link in its place) must
-    /// have the device and inode (`fstat`) of the folder the lease was taken in.
-    func require(for directory: URL) throws {
-        guard isHeld else {
+    /// Starts an operation under the lease, which keeps the lock held until the matching `endUse()` even if
+    /// `release()` is called meanwhile. Throws `HolosError.invalidInput` (and starts nothing) unless this lease is
+    /// not released and was taken for `directory`: the folder `directory` opens to through
+    /// `AtomicFile.openFolder` (never through a symbolic link in its place) must have the device and inode
+    /// (`fstat`) of the folder the lease was taken in.
+    func beginUse(for directory: URL) throws {
+        let started = state.withLock { value -> Bool in
+            guard !value.released else { return false }
+            value.users += 1
+            return true
+        }
+        guard started else {
             throw HolosError.invalidInput("The processing lease was already released; acquire a new one.")
         }
-        let fd = try SessionLockFile.openSessionFolder(directory)
-        defer { Darwin.close(fd) }
-        guard try FileIdentity(descriptor: fd) == folder else {
-            throw HolosError.invalidInput("The processing lease belongs to another session.")
+        do {
+            let fd = try SessionLockFile.openSessionFolder(directory)
+            defer { Darwin.close(fd) }
+            guard try FileIdentity(descriptor: fd) == folder else {
+                throw HolosError.invalidInput("The processing lease belongs to another session.")
+            }
+        } catch {
+            endUse()
+            throw error
         }
+    }
+
+    /// Ends an operation started by `beginUse(for:)`; the last one to end after `release()` unlocks.
+    func endUse() {
+        let fd = state.withLock { value -> Int32 in
+            precondition(value.users > 0, "ProcessingLease.endUse without beginUse")
+            value.users -= 1
+            return value.takeIfIdle()
+        }
+        if fd >= 0 { SessionLockFile.unlockAndClose(fd) }
+    }
+
+    /// A check only, for tests: `beginUse(for:)` then `endUse()`. Work that relies on the lease runs between
+    /// `beginUse` and `endUse` instead, so a concurrent `release()` cannot unlock under it.
+    func require(for directory: URL) throws {
+        try beginUse(for: directory)
+        endUse()
     }
 }
 

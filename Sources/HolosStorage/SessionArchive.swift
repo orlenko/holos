@@ -222,7 +222,9 @@ public actor SessionArchive {
     /// (truncates to the last newline, keeping a backup) before the first append.
     public static func openForMaintenance(at directory: URL, lease: ProcessingLease) throws -> SessionArchive {
         try requireMaintenanceLayout(directory)
-        try lease.require(for: directory)
+        // The lease stays locked, even across a concurrent `release()`, until the writer lock is held or refused.
+        try lease.beginUse(for: directory)
+        defer { lease.endUse() }
         let fd = try acquireLock(directory)
         do {
             let manifest = try readManifest(at: directory)
@@ -583,7 +585,9 @@ public actor SessionArchive {
     /// of that are expected once `audio-deleted.json` exists.
     public nonisolated static func recover(at directory: URL, lease: ProcessingLease) async throws -> RecoveryReport {
         try requireMaintenanceLayout(directory)
-        try lease.require(for: directory)
+        // The lease stays locked, even across a concurrent `release()`, until the recovery ends.
+        try lease.beginUse(for: directory)
+        defer { lease.endUse() }
         let fd = try acquireLock(directory)
         defer { SessionLockFile.unlockAndClose(fd) }
         let before = try inspectRecovery(at: directory)

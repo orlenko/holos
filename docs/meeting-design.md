@@ -362,6 +362,9 @@ Rules:
 /// Exclusive, long-lived claim on post-stop work for one session. Released by `release()` or deinit.
 public final class ProcessingLease: Sendable {
     public let session: URL
+    /// No operation can start under the lease afterwards. The lock is let go at once, or, while
+    /// `openForMaintenance(at:lease:)` or `recover(at:lease:)` is running under it, when that call ends
+    /// (release and every use are serialized on one mutex).
     public func release()
 }
 extension SessionArchive {
