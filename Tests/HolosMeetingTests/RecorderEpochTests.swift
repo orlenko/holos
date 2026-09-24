@@ -89,7 +89,7 @@ func discontinuityReasonsUseGapReasonStrings() async throws {
     #expect(reasons.allSatisfy { known.contains($0) })
 }
 
-@Test(.timeLimit(.minutes(1))) @MainActor
+@Test(.timeLimit(.minutes(3))) @MainActor
 func epochOffsetNeverOverlaps() async throws {
     let temp = try TemporaryDirectory()
     defer { temp.remove() }
@@ -100,11 +100,17 @@ func epochOffsetNeverOverlaps() async throws {
         FakeCaptureScript(frames: FakeFrame.run(count: 3)),
     ])
     let stop = ManualStopSource()
+    // Nothing here is about timeouts: a loaded machine gets ample time to restart, stop, and close chunks.
+    var tuning = recorderFastTuning()
+    tuning.restartLimit = .seconds(100)
     let run = Task {
         try await RecordingWorkflow.run(.testing(root: temp.url, recordOnly: true),
-            dependencies: recorderDependencies(captures: captures, stop: stop, clock: clock))
+            dependencies: recorderDependencies(captures: captures, stop: stop, clock: clock,
+                                               timeouts: StopTimeouts(captureStop: .seconds(50)), tuning: tuning))
     }
-    #expect(await eventually { captures.captures.count == 2 && captures.captures[1].consumedFrames >= 3 })
+    #expect(await eventually(timeout: .seconds(100)) {
+        captures.captures.count == 2 && captures.captures[1].consumedFrames >= 3
+    })
     stop.requestStop()
     let outcome = try await run.value
     let offsets = captures.requests.map(\.timelineOffset)
@@ -255,7 +261,7 @@ func captureDropIsMarkedWhereItHappened() async throws {
 
 /// A capture restart whose start never returns does not hold up the loop: after the restart limit it counts as a
 /// failed start, the recorder waits and retries, and the abandoned capture is stopped once its start returns.
-@Test(.timeLimit(.minutes(1))) @MainActor
+@Test(.timeLimit(.minutes(2))) @MainActor
 func hungRestartIsAbandoned() async throws {
     let temp = try TemporaryDirectory()
     defer { temp.remove() }
@@ -273,7 +279,7 @@ func hungRestartIsAbandoned() async throws {
         return index == 1 ? hung : captures.make()
     })
     let run = Task { try await RecordingWorkflow.run(.testing(root: temp.url, recordOnly: true), dependencies: dependencies) }
-    #expect(await eventually(timeout: .seconds(10)) { captures.captures.count == 2 && captures.captures[1].consumedFrames >= 2 })
+    #expect(await eventually(timeout: .seconds(40)) { captures.captures.count == 2 && captures.captures[1].consumedFrames >= 2 })
     #expect(await eventually { hung.stopCalls == 1 }, "The abandoned capture is stopped.")
     stop.requestStop()
     let outcome = try await run.value

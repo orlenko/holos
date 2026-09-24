@@ -94,6 +94,8 @@ struct RecorderTuning: Sendable {
     var stoppedPoll: Duration = .seconds(1)
     /// A restart's speech sessions and capture start may take this long before the loop moves on (§4.2).
     var restartLimit: Duration = .seconds(10)
+    /// How long the stop path retries the processing lease before post-processing is skipped (§4.6).
+    var leaseRetry: Duration = .seconds(1)
     var pumpCapacitySeconds = 60.0
     var liveQueueSeconds = LiveTrack.queueSeconds
     var journalCapacity = LiveTrack.journalCapacity
@@ -147,7 +149,9 @@ public enum RecordingWorkflow {
     /// `failed` (a `startFailed` event with `cancelled`). Cancelled once the transcript is saved: the archive keeps
     /// its final status, the processing lease is released, and a hook that has not started is skipped. Cancelled
     /// during the hook: the hook's run ends as it chooses, and `CancellationError` is rethrown instead of an outcome.
-    /// In every case `status.json` ends `exited` and no lock is left held.
+    /// In every case `status.json` ends `exited` and no lock is left held; it says `exited` before the session's last
+    /// lock (the writer lock, or the processing lease) is released, so `RecorderChannel.liveness` never reads `dead`
+    /// on the way out.
     ///
     /// A `CancellationError` from an awaited dependency (starting or stopping capture, replaying saved audio, the
     /// processing lease) is handled as a cancellation, never as a capture or transcription failure; so is any error
@@ -313,13 +317,15 @@ private final class Recorder {
             // Whatever failed after the audio was saved (a transcript that could not be written, say), the archive is
             // finished, the status ends exited, and no control request is left behind.
             if archiveOpen {
-                try? await archive.finish(status: ArchiveStatus.transcriptionIncomplete)
+                try? await archive.finish(status: ArchiveStatus.transcriptionIncomplete, keepingLock: true)
                 archiveOpen = false
             }
             if !exited {
                 let saved = (try? SessionArchive.readManifest(at: archive.directory).status) ?? ArchiveStatus.incomplete
                 await exitStatus(RecorderExit(archiveStatus: saved, reason: machine.stopReason ?? .requested,
                                               message: error is CancellationError ? "Cancelled." : error.localizedDescription))
+            } else {
+                await archive.releaseLock()
             }
             throw error
         }
@@ -360,7 +366,7 @@ private final class Recorder {
             let details = cancelledAtStart ? ["error": "Cancelled before capture started.", "cancelled": "true"]
                 : ["error": error.localizedDescription]
             try? await archive.recordEvent(kind: MeetingEventKind.startFailed, details: details)
-            try? await archive.finish(status: ArchiveStatus.failed)
+            try? await archive.finish(status: ArchiveStatus.failed, keepingLock: true)
             archiveOpen = false
             await exitStatus(RecorderExit(archiveStatus: ArchiveStatus.failed, reason: .startFailed,
                                     message: details["error"]))
@@ -809,7 +815,7 @@ private final class Recorder {
         if let recordingError {
             for feed in live.values { await feed.cancel() }
             await recordEvent(MeetingEventKind.captureFailed, ["error": recordingError.localizedDescription])
-            try? await archive.finish(status: ArchiveStatus.incomplete)
+            try? await archive.finish(status: ArchiveStatus.incomplete, keepingLock: true)
             archiveOpen = false
             await exitStatus(RecorderExit(archiveStatus: ArchiveStatus.incomplete, reason: stopReason,
                                     message: recordingError.localizedDescription))
@@ -881,7 +887,7 @@ private final class Recorder {
         let finalStatus = options.recordOnly ? ArchiveStatus.audioOnly
             : (transcriptErrors.isEmpty ? ArchiveStatus.complete : ArchiveStatus.transcriptionIncomplete)
         if Task.isCancelled {
-            try await archive.finish(status: finalStatus)
+            try await archive.finish(status: finalStatus, keepingLock: true)
             archiveOpen = false
             await exitStatus(RecorderExit(archiveStatus: finalStatus, reason: stopReason, message: "Cancelled."))
             throw CancellationError()
@@ -906,7 +912,10 @@ private final class Recorder {
             } catch { leaseCancelled = true }
         }
         defer { lease?.release() }
-        try await archive.finish(status: finalStatus)
+        // With the lease, the writer lock goes now (the hook opens the archive for maintenance under the lease).
+        // Without it (no hook, or the lease could not be taken), the writer lock is the session's only lock: it is
+        // kept until status.json says exited, so liveness never reads a dead recorder in between.
+        try await archive.finish(status: finalStatus, keepingLock: lease == nil)
         archiveOpen = false
         // Cancelled while the lease was being taken: the archive is finished; skip the hook, release the lease.
         if leaseCancelled || Task.isCancelled {
@@ -946,7 +955,7 @@ private final class Recorder {
         let journal = try? SessionArchive.readEvents(at: archive.directory)
         let message = journal?.events.last { $0.kind == MeetingEventKind.startFailed }?.details["error"]
             ?? "Audio capture stopped before any audio arrived."
-        try? await archive.finish(status: ArchiveStatus.failed)
+        try? await archive.finish(status: ArchiveStatus.failed, keepingLock: true)
         archiveOpen = false
         await exitStatus(RecorderExit(archiveStatus: ArchiveStatus.failed, reason: .startFailed, message: message))
         Self.log.error("Session \(self.archive.id, privacy: .public): capture ended before any audio")
@@ -957,7 +966,7 @@ private final class Recorder {
     private func finishCancelled(status archiveStatus: String) async throws -> Never {
         for feed in live.values { await feed.cancel() }
         try? await archive.recordEvent(kind: MeetingEventKind.captureStopped, details: ["cancelled": "true"])
-        try? await archive.finish(status: archiveStatus)
+        try? await archive.finish(status: archiveStatus, keepingLock: true)
         archiveOpen = false
         await exitStatus(RecorderExit(archiveStatus: archiveStatus, reason: machine.stopReason ?? .requested,
                                 message: "Cancelled."))
@@ -979,13 +988,16 @@ private final class Recorder {
             + "Run holos session diarize on this session later."
     }
 
-    /// Takes the processing lease (retry 1 s) off the main actor. On failure, post-processing is skipped and the
-    /// caller records it as failed. Throws only `CancellationError`.
+    /// Takes the processing lease (retrying for `tuning.leaseRetry`, 1 s) off the main actor. On failure,
+    /// post-processing is skipped and the caller records it as failed. Throws only `CancellationError`.
     private func acquireLease() async throws -> LeaseAttempt {
         let directory = archive.directory
         let sessionID = archive.id
+        let retry = dependencies.tuning.leaseRetry
         do {
-            return .acquired(try await Task.detached { try SessionArchive.acquireProcessingLease(at: directory) }.value)
+            return .acquired(try await Task.detached {
+                try SessionArchive.acquireProcessingLease(at: directory, retry: retry)
+            }.value)
         } catch is CancellationError {
             throw CancellationError()
         } catch HolosError.unavailable {
@@ -1040,20 +1052,25 @@ private final class Recorder {
         }
     }
 
-    /// Stops answering requests (after a last answer), writes phase `exited`, and deletes leftover requests.
+    /// Stops answering requests (after a last answer), writes phase `exited`, deletes leftover requests, and only then
+    /// releases the writer lock (every exit path finishes the archive keeping it), so `RecorderChannel.liveness` never
+    /// sees the session unlocked before it says exited. A processing lease is released by the caller, after this.
+    /// Called again, it only makes sure the writer lock is released.
     private func exitStatus(_ exit: RecorderExit) async {
-        guard !exited else { return }
-        exited = true
-        if let stoppedInbox {
-            stoppedInbox.cancel()
-            await stoppedInbox.value
-            self.stoppedInbox = nil
+        if !exited {
+            exited = true
+            if let stoppedInbox {
+                stoppedInbox.cancel()
+                await stoppedInbox.value
+                self.stoppedInbox = nil
+            }
+            await answerStoppedRequests()
+            do { try await status.finish(exit: exit) } catch {
+                Self.log.error("Session \(self.archive.id, privacy: .public): cannot write the final status: \(error.localizedDescription, privacy: .public)")
+            }
+            ControlInbox.removeLeftovers(session: archive.directory)
         }
-        await answerStoppedRequests()
-        do { try await status.finish(exit: exit) } catch {
-            Self.log.error("Session \(self.archive.id, privacy: .public): cannot write the final status: \(error.localizedDescription, privacy: .public)")
-        }
-        ControlInbox.removeLeftovers(session: archive.directory)
+        await archive.releaseLock()
     }
 }
 

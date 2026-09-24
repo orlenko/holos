@@ -29,8 +29,11 @@ private func statusSession() throws -> (TemporaryDirectory, URL, String) {
     #expect(first.sequence == 1)
     try await Task.sleep(for: .milliseconds(2_500))
     var later = try #require(try RecorderChannel.readStatus(session: session))
-    // Beats are due at 1 s and 2 s; allow a loaded machine a moment for the second write to land.
-    for _ in 0..<50 where later.sequence < 3 {
+    // Beats are due at 1 s and 2 s, with nothing else writing; a loaded machine may run them late, so wait for the
+    // second one for up to 30 s.
+    let clock = ContinuousClock()
+    let deadline = clock.now.advanced(by: .seconds(30))
+    while later.sequence < 3, clock.now < deadline {
         try await Task.sleep(for: .milliseconds(10))
         later = try #require(try RecorderChannel.readStatus(session: session))
     }

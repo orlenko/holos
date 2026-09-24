@@ -87,13 +87,14 @@ func recorderTick(_ at: Double, freeBytes: Int64? = nil) -> RecorderInput {
 }
 
 /// A speech session that finalizes one segment per `segmentSeconds` of audio fed, each with a word at every whole
-/// second (`<prefix><n>`, n counted from its first frame). Its `append` blocks once for `blockFor` when fed audio
-/// at or after `blockAt`.
+/// second (`<prefix><n>`, n counted from its first frame). Its `append` blocks once when fed audio at or after
+/// `blockAt`: for `blockFor`, or, with `blockUntil`, until that condition holds (polled every millisecond).
 actor RecorderWordSpeech: LiveSpeechSession {
     let prefix: String
     let segmentSeconds: Double
     let blockAt: Double?
     let blockFor: Duration
+    private let blockUntil: (@Sendable () -> Bool)?
     private let onUpdate: @Sendable (TranscriptUpdate) -> Void
     private(set) var fedSeconds = 0.0
     private(set) var firstFrameStart: Double?
@@ -103,9 +104,9 @@ actor RecorderWordSpeech: LiveSpeechSession {
     private(set) var cancelled = false
 
     init(prefix: String, segmentSeconds: Double = 5, blockAt: Double? = nil, blockFor: Duration = .zero,
-         onUpdate: @escaping @Sendable (TranscriptUpdate) -> Void) {
+         blockUntil: (@Sendable () -> Bool)? = nil, onUpdate: @escaping @Sendable (TranscriptUpdate) -> Void) {
         self.prefix = prefix; self.segmentSeconds = segmentSeconds; self.blockAt = blockAt
-        self.blockFor = blockFor; self.onUpdate = onUpdate
+        self.blockFor = blockFor; self.blockUntil = blockUntil; self.onUpdate = onUpdate
     }
 
     func append(_ frame: PCMFrame) async throws {
@@ -113,7 +114,11 @@ actor RecorderWordSpeech: LiveSpeechSession {
         if firstFrameStart == nil { firstFrameStart = frame.startTime }
         if let blockAt, !blocked, frame.startTime >= blockAt {
             blocked = true
-            try? await Task.sleep(for: blockFor)
+            if let blockUntil {
+                while !blockUntil(), !Task.isCancelled { try? await Task.sleep(for: .milliseconds(1)) }
+            } else {
+                try? await Task.sleep(for: blockFor)
+            }
         }
         fedSeconds += frame.duration
         fedEnd = max(fedEnd, frame.startTime + frame.duration)

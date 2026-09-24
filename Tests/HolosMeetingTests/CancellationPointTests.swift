@@ -1,7 +1,7 @@
 import Foundation
 import HolosAudio
 import HolosCore
-import HolosMeeting
+@testable import HolosMeeting
 import HolosStorage
 import Testing
 
@@ -203,7 +203,7 @@ private func isIncomplete(_ error: Error) -> Bool {
 
 // MARK: - Test
 
-@Test(.timeLimit(.minutes(1)), arguments: PointCase.all) @MainActor
+@Test(.timeLimit(.minutes(3)), arguments: PointCase.all) @MainActor
 private func cancellationAtEachAwaitPoint(_ c: PointCase) async throws {
     let temp = try TemporaryDirectory()
     defer { temp.remove() }
@@ -241,25 +241,28 @@ private func cancellationAtEachAwaitPoint(_ c: PointCase) async throws {
     let stop = AfterFramesStop(source: frames, enabled: {
         point != .frames || (mode != .cancelled && captures.value >= 2)
     }, gate: gate)
-    let dependencies = RecordingDependencies(
+    var dependencies = RecordingDependencies(
         makeCapture: {
             captures.update { $0 += 1 }
             return FaultyCapture(source: frames, point: point, fault: fault)
         }, makeSpeech: speech,
         stop: stop, reporter: CollectingReporter(), postProcess: usesHook ? hook : nil)
+    // Cancelled while taking the lease: the run keeps retrying until the test lets the lease go, after the cancel,
+    // so the cancellation lands while it waits however slowly the machine runs. The failure row gives up at 1 s.
+    if point == .lease, c.mode == .cancelled { dependencies.tuning.leaseRetry = .seconds(120) }
     let options = RecordingOptions.testing(root: temp.url, recordOnly: c.recordOnly)
     let run = Task { try await RecordingWorkflow.run(options, dependencies: dependencies) }
     fault.run.set(run)
 
     var other: ProcessingLease?
     if point == .lease {
-        #expect(await eventually { frames.consumed >= 1 })
+        #expect(await eventually(timeout: .seconds(60)) { frames.consumed >= 1 })
         let folder = try #require(sessionFolders(in: temp.url).first)
         other = try SessionArchive.acquireProcessingLease(at: folder)
         gate.set(true)
         if c.mode == .cancelled {
-            // The run records captureStopped, then waits for the lease (1 s): cancel it there.
-            let waiting = await eventually {
+            // The run records captureStopped, then waits for the lease: cancel it there.
+            let waiting = await eventually(timeout: .seconds(60)) {
                 let events = (try? SessionArchive.readEvents(at: folder).events) ?? []
                 return events.contains { $0.kind == MeetingEventKind.captureStopped }
             }

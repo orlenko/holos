@@ -253,11 +253,26 @@ func durationStopsRecording() async throws {
     let temp = try TemporaryDirectory()
     defer { temp.remove() }
     let captures = FakeCaptureFactory([FakeCaptureScript(continuous: FakeFrame(start: 0))])
+    // Session time is the test's: the recording must not stop before 0.3 s, and must stop once it passes.
+    let session = ManualSessionClock(0)
+    let run = Task {
+        try await RecordingWorkflow.run(.testing(root: temp.url, duration: 0.3),
+                                        dependencies: recorderDependencies(captures: captures, clock: session))
+    }
+    #expect(await eventually(timeout: .seconds(60)) { (captures.captures.first?.consumedFrames ?? 0) >= 2 })
+    let directory = try #require(await recorderSession(in: temp.url))
+    session.set(0.29)
+    // A status refresh that saw 0.29 s comes from a loop pass that checked the duration at 0.29 s and went on.
+    #expect(await eventually(timeout: .seconds(60)) {
+        (try? RecorderChannel.readStatus(session: directory))?.elapsedSeconds == 0.29
+    })
+    #expect(try RecorderChannel.readStatus(session: directory)?.phase == .recording, "Not stopped before 0.3 s.")
     let clock = ContinuousClock()
-    let started = clock.now
-    let outcome = try await RecordingWorkflow.run(.testing(root: temp.url, duration: 0.3),
-                                                  dependencies: .testing(captures: captures))
-    #expect(started.duration(to: clock.now) < .seconds(2))
+    let elapsed = clock.now
+    session.set(0.3)
+    let outcome = try await run.value
+    // Generous: the loop checks the duration every 10 ms here; the bound only catches a stop that never comes.
+    #expect(elapsed.duration(to: clock.now) < .seconds(20))
     #expect(outcome.stopReason == .duration)
     #expect(outcome.archiveStatus == ArchiveStatus.complete)
     let manifest = try SessionArchive.readManifest(at: outcome.directory)

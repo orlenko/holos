@@ -273,10 +273,10 @@ private final class CensusSpeech: LiveSpeechSession {
     #expect(census.count == 0)
 }
 
-/// Polls `condition` every 5 ms for up to 10 s (outside the main actor).
+/// Polls `condition` every 5 ms for up to 30 s (outside the main actor).
 private func eventuallyAsync(_ condition: @Sendable () -> Bool) async -> Bool {
     let clock = ContinuousClock()
-    let deadline = clock.now.advanced(by: .seconds(10))
+    let deadline = clock.now.advanced(by: .seconds(30))
     while clock.now < deadline {
         if condition() { return true }
         try? await Task.sleep(for: .milliseconds(5))
@@ -326,11 +326,12 @@ private final class PacedCapture: MeetingCapture {
     let hostTimeOrigin = 0.0
     let droppedBuffers = 0
     private let stopped = SharedValue(false)
-    let delivered = SharedValue(0)
+    let delivered: SharedValue<Int>
 
-    init(count: Int, freeFrom: Double, speechFed: @escaping @Sendable () async -> Double) {
+    init(count: Int, freeFrom: Double, delivered: SharedValue<Int> = SharedValue(0),
+         speechFed: @escaping @Sendable () async -> Double) {
+        self.delivered = delivered
         let stopped = stopped
-        let delivered = delivered
         frames = AsyncThrowingStream(unfolding: {
             let index = delivered.value
             guard index < count, !stopped.value, !Task.isCancelled else { return nil }
@@ -348,17 +349,20 @@ private final class PacedCapture: MeetingCapture {
     func stop() async throws { stopped.set(true) }
 }
 
-/// Live speech blocks for 3 s at 40 s of a 60 s recording with a 1 s live queue: the words before the point where
-/// live transcription fell behind are kept, and only the rest is transcribed from disk.
-@Test(.timeLimit(.minutes(1))) @MainActor
+/// Live speech blocks at 40 s of a 60 s recording with a 1 s live queue, until capture has delivered all 60 s: the
+/// words before the point where live transcription fell behind are kept, and only the rest is transcribed from disk.
+/// The block ends on that signal, not after a fixed time, so the overflow happens however slowly the machine runs.
+@Test(.timeLimit(.minutes(6))) @MainActor
 func liveOverflowKeepsLiveWordsAndReplaysOnlyTheRest() async throws {
     let temp = try TemporaryDirectory()
     defer { temp.remove() }
+    let delivered = SharedValue(0)
     let speech = RecorderSpeechFactory { call, onUpdate in
-        call == 0 ? RecorderWordSpeech(prefix: "live", blockAt: 40, blockFor: .seconds(3), onUpdate: onUpdate)
+        call == 0 ? RecorderWordSpeech(prefix: "live", blockAt: 40, blockUntil: { delivered.value >= 600 },
+                                       onUpdate: onUpdate)
             : RecorderWordSpeech(prefix: "replay", onUpdate: onUpdate)
     }
-    let capture = PacedCapture(count: 600, freeFrom: 40) {
+    let capture = PacedCapture(count: 600, freeFrom: 40, delivered: delivered) {
         guard let live = speech.made.first as? RecorderWordSpeech else { return 0 }
         return await live.fedSeconds
     }
@@ -368,7 +372,7 @@ func liveOverflowKeepsLiveWordsAndReplaysOnlyTheRest() async throws {
             captures: FakeCaptureFactory(), speech: speech.factory, stop: stop,
             tuning: recorderFastTuning(liveQueueSeconds: 1), makeCapture: { capture }))
     }
-    #expect(await eventually(timeout: .seconds(30)) { capture.delivered.value >= 600 })
+    #expect(await eventually(timeout: .seconds(300)) { capture.delivered.value >= 600 })
     // The consumer finishes with the frame it holds before the stream ends, so nothing is lost by stopping now.
     stop.requestStop()
     let outcome = try await run.value

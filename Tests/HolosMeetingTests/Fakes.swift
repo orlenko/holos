@@ -41,9 +41,11 @@ struct TemporaryDirectory: Sendable {
     func remove() { try? FileManager.default.removeItem(at: url) }
 }
 
-/// Polls `condition` every 5 ms until it holds or `timeout` passes, and returns its last value.
+/// Polls `condition` every 5 ms until it holds or `timeout` passes, and returns its last value. The default is
+/// generous so a heavily loaded machine (many test runs in parallel) still passes; a condition that holds returns at
+/// once, so only a failing test waits that long.
 @MainActor
-func eventually(timeout: Duration = .seconds(5), _ condition: () -> Bool) async -> Bool {
+func eventually(timeout: Duration = .seconds(30), _ condition: () -> Bool) async -> Bool {
     let clock = ContinuousClock()
     let deadline = clock.now.advanced(by: timeout)
     while clock.now < deadline {

@@ -2633,15 +2633,18 @@ After `finish(reason)` the loop exits and `RecordingWorkflow.run` does, in order
    outcome and `RecorderExit` still carry a `.failed` post-processing record ("Speaker
    labelling was skipped: … Run holos session diarize on this session later."), so
    `Record.Start` exits 3 and the app shows it; only a `nil` hook gives no record.
-6. `archive.finish(status)` releases the writer lock. There is no moment in which the
-   session holds neither lock, so liveness never reads `dead` between capture and
-   post-processing.
+6. `archive.finish(status)` releases the writer lock when the lease is held. There is no
+   moment in which the session holds neither lock, so liveness never reads `dead` between
+   capture and post-processing. Without the lease (no hook, or it could not be taken),
+   and on every failure or cancellation path, `archive.finish(status, keepingLock: true)`
+   keeps the writer lock until `phase: exited` is written (step 8).
 7. Phase `postprocessing`; call the hook with the lease. Progress goes into one
    `AsyncStream` read by one task that updates `status.json` in order; after the hook
    returns, finish the stream and await that task.
-8. Release the lease; write `phase: exited` with `RecorderExit` (archive status, stop
-   reason, post-processing state and message). `StatusWriter` then stops its heartbeat
-   and ignores later updates.
+8. Write `phase: exited` with `RecorderExit` (archive status, stop reason,
+   post-processing state and message), then release the last lock (the writer lock or the
+   lease), so liveness goes to `exited` without reading `dead` on the way. `StatusWriter`
+   then stops its heartbeat and ignores later updates.
 9. Release the power assertion; delete leftover `control/*.json`; return the outcome.
 
 While steps 1–9 run, `ControlInbox` keeps polling once a second and acknowledges every
