@@ -315,10 +315,13 @@ public enum AtomicFile {
 }
 ```
 
-`write`, `create`, and `append` never follow a symbolic link in place of a folder Holos owns:
-the folder holding the file is opened with `O_NOFOLLOW`, and inside a session folder so is
-every folder from the session folder down (an `openat` chain, as `removeTree` does); a link
-there is refused with `invalidInput`. A `create` whose folder fsync fails removes the new
+No session-local file operation follows a symbolic link in place of a folder Holos owns. One
+helper, `AtomicFile.openFolder` (`Sources/HolosStorage/FolderChain.swift`), opens every folder
+from the session folder down relative to the one above it (`openat` with `O_NOFOLLOW`), and
+`write`, `create`, `append`, reads (`readJSON`), listings, `removeTree`, the lock files
+(`openat` on the session folder's descriptor), and `ensurePrivateDirectory` (each missing
+folder made with `mkdirat`, `fchmod` on its descriptor, parent fsync'd) all start from it; a
+link there, even one swapped in during the call, is refused with `invalidInput`. A `create` whose folder fsync fails removes the new
 file, so a retry is not refused as "already exists".
 
 Locks are `flock` on files in the session folder, one open file description per holder.

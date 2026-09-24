@@ -10,13 +10,14 @@ import HolosCore
 /// old or the new contents. Journal appends never leave a partial line: a failed append truncates back.
 /// Appends to one file must be serialized by the caller (the writer or speaker lock).
 ///
-/// `write`, `create`, `append`, and `truncate` never follow a symbolic link in place of a folder Holos owns:
-/// the folder holding the file is opened with O_NOFOLLOW, and inside a session folder (`<id>.holos`) so is
-/// every folder from the session folder down (an `openat` chain, as `removeTree` does). A symbolic link or
-/// file in their place is refused with `HolosError.invalidInput`. Folders above those may be reached through
-/// a symbolic link (as `/var` is on macOS).
+/// No operation here follows a symbolic link in place of a folder Holos owns: `write`, `create`, `append`,
+/// `truncate`, `sync`, `readIfPresent`/`readJSON`, `ensurePrivateDirectory`, and `removeTree` all open folders
+/// with `openFolder` (FolderChain.swift): the folder holding the file is opened with O_NOFOLLOW, and inside a
+/// session folder (`<id>.holos`) so is every folder from the session folder down (an `openat` chain). A symbolic
+/// link or file in their place is refused with `HolosError.invalidInput`. Folders above those may be reached
+/// through a symbolic link (as `/var` is on macOS).
 public enum AtomicFile {
-    private static let log = Logger(subsystem: "ca.orlenko.holos.app", category: "storage")
+    static let log = Logger(subsystem: "ca.orlenko.holos.app", category: "storage")
 
     /// Test hook: while set (a task-local value), an append writes at most this many bytes and then fails
     /// as a full disk would, so tests can check that a failed append leaves no partial line.
@@ -83,49 +84,18 @@ public enum AtomicFile {
     }
 
     /// Creates `url` and missing parents as 0700 directories; refuses symlinks and non-directories.
-    /// Ancestors that already exist are only required to be directories (they may be reached through
+    ///
+    /// Inside a session, every folder from the session folder down is opened or made relative to the one above
+    /// it (`openat`/`mkdirat` with O_NOFOLLOW, `fchmod` on the new folder's descriptor, then an fsync of its
+    /// parent), so a symbolic link in place of any of them, even one swapped in during the call, is refused
+    /// and nothing is created or changed outside the session. The session folder itself must exist. Outside a
+    /// session, ancestors that already exist are only required to be directories (they may be reached through
     /// a symlink, as `/var` is on macOS).
     public static func ensurePrivateDirectory(_ url: URL) throws {
-        guard url.isFileURL else { throw HolosError.invalidInput("Folder path must be a file URL.") }
-        let path = url.path
-        var info = stat()
-        if lstat(path, &info) == 0 {
-            guard (info.st_mode & S_IFMT) == S_IFDIR else {
-                throw HolosError.invalidInput("\(url.lastPathComponent) must be a folder, not a file or a symbolic link.")
-            }
-            return
+        guard let fd = try openFolder(url, create: true) else {
+            throw HolosError.invalidInput("The session folder holding \(url.lastPathComponent) is missing.")
         }
-        guard errno == ENOENT else {
-            throw HolosError.io("Cannot inspect folder \(url.lastPathComponent): \(errnoText()).")
-        }
-        let parent = url.deletingLastPathComponent()
-        try ensureExistingOrPrivateParent(parent)
-        if mkdir(path, 0o700) != 0 {
-            let code = errno
-            guard code == EEXIST else {
-                throw HolosError.io("Cannot create folder \(url.lastPathComponent): \(errnoText(code)).")
-            }
-            // Created concurrently by another process; accept it only if it is a real folder.
-            guard lstat(path, &info) == 0, (info.st_mode & S_IFMT) == S_IFDIR else {
-                throw HolosError.invalidInput("\(url.lastPathComponent) must be a folder, not a file or a symbolic link.")
-            }
-            return
-        }
-        do {
-            guard chmod(path, 0o700) == 0 else {
-                throw HolosError.io("Cannot make folder \(url.lastPathComponent) private: \(errnoText()).")
-            }
-            try syncDirectory(parent)
-        } catch {
-            // Remove the folder this call created, so a retry creates it again and fsyncs its parent. A later
-            // lstat would otherwise find it and return without making it durable.
-            if rmdir(path) == 0 {
-                try? syncDirectory(parent)
-            } else {
-                log.error("Cannot remove folder \(url.lastPathComponent, privacy: .public) after a failed create: \(errnoText(), privacy: .public)")
-            }
-            throw error
-        }
+        Darwin.close(fd)
     }
 
     /// `write(HolosJSON.encoder().encode(value), to: url)`.
@@ -154,11 +124,15 @@ public enum AtomicFile {
         }
     }
 
-    /// Reads a regular file without following a symlink; nil when it does not exist.
+    /// Reads a regular file without following a symlink; nil when it or its folder does not exist. The folder
+    /// holding it is opened like `write` opens it (`openFolder`), so inside a session a symbolic link in place of
+    /// the session folder or any folder below it is refused (`invalidInput`) instead of redirecting the read.
     static func readIfPresent(_ url: URL, maxBytes: Int) throws -> Data? {
         guard url.isFileURL else { throw HolosError.invalidInput("File path must be a file URL.") }
+        guard let (parent, name) = try openParentIfPresent(of: url) else { return nil }
+        defer { Darwin.close(parent) }
         // O_NONBLOCK keeps a FIFO planted in place of the file from blocking the open.
-        let fd = Darwin.open(url.path, O_RDONLY | O_NONBLOCK | O_CLOEXEC | O_NOFOLLOW)
+        let fd = openat(parent, name, O_RDONLY | O_NONBLOCK | O_CLOEXEC | O_NOFOLLOW)
         if fd < 0 {
             let code = errno
             if code == ENOENT { return nil }
@@ -212,7 +186,9 @@ public enum AtomicFile {
 
     /// Fsyncs an existing regular file, e.g. a journal appended to with `sync: false`.
     static func sync(_ url: URL) throws {
-        let fd = Darwin.open(url.path, O_WRONLY | O_APPEND | O_CLOEXEC | O_NOFOLLOW)
+        let (parent, name) = try openParent(of: url)
+        defer { Darwin.close(parent) }
+        let fd = openat(parent, name, O_WRONLY | O_APPEND | O_NONBLOCK | O_CLOEXEC | O_NOFOLLOW)
         guard fd >= 0 else { throw HolosError.io("Cannot open \(url.lastPathComponent): \(errnoText()).") }
         defer { Darwin.close(fd) }
         guard fsync(fd) == 0 else { throw HolosError.io("Cannot save \(url.lastPathComponent): \(errnoText()).") }
@@ -233,20 +209,12 @@ public enum AtomicFile {
               components.allSatisfy({ !$0.isEmpty && $0 != "." && $0 != ".." && !$0.contains("/") }) else {
             throw HolosError.invalidInput("Invalid path to delete.")
         }
-        let folderFlags = O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC
-        var parent = Darwin.open(root.path, folderFlags)
-        guard parent >= 0 else { throw folderOpenError(root.lastPathComponent, errno) }
-        defer { Darwin.close(parent) }
-        for name in components.dropLast() {
-            let next = openat(parent, name, folderFlags)
-            guard next >= 0 else {
-                let code = errno
-                if code == ENOENT { return false }
-                throw folderOpenError(name, code)
-            }
-            Darwin.close(parent)
-            parent = next
+        guard let rootFD = try openFolder(root) else { throw folderOpenError(root.lastPathComponent, ENOENT) }
+        defer { Darwin.close(rootFD) }
+        guard let parent = try openFolder(Array(components.dropLast()), in: rootFD, baseURL: root) else {
+            return false
         }
+        defer { Darwin.close(parent) }
         guard try removeEntry(Array(last.utf8CString), in: parent) else { return false }
         guard fsync(parent) == 0 else {
             throw HolosError.io("Cannot save the folder holding \(last): \(errnoText()).")
@@ -294,60 +262,37 @@ public enum AtomicFile {
         return true
     }
 
-    private static func folderOpenError(_ name: String, _ code: Int32) -> HolosError {
+    static func folderOpenError(_ name: String, _ code: Int32) -> HolosError {
         if code == ELOOP || code == ENOTDIR {
             return .invalidInput("\(name) must be a folder, not a file or a symbolic link.")
         }
         return .io("Cannot open folder \(name): \(errnoText(code)).")
     }
 
+    /// Fsyncs the folder `url`. A folder in a session (or a session folder) is opened with `openFolder`; any other
+    /// folder by path, so a sessions root reached through a symbolic link still works.
     static func syncDirectory(_ url: URL) throws {
-        let fd = Darwin.open(url.path, O_RDONLY | O_CLOEXEC)
-        guard fd >= 0 else { throw HolosError.io("Cannot open folder \(url.lastPathComponent): \(errnoText()).") }
+        let fd: Int32
+        if url.standardizedFileURL.pathComponents.contains(where: isSessionFolderName) {
+            guard let opened = try openFolder(url) else {
+                throw HolosError.io("Cannot open folder \(url.lastPathComponent): \(errnoText(ENOENT)).")
+            }
+            fd = opened
+        } else {
+            fd = Darwin.open(url.path, O_RDONLY | O_CLOEXEC)
+            guard fd >= 0 else { throw HolosError.io("Cannot open folder \(url.lastPathComponent): \(errnoText()).") }
+        }
         defer { Darwin.close(fd) }
         try syncFolder(fd, url)
     }
 
     /// Fsyncs the open folder `fd` (named `url` in messages and the test counter).
-    private static func syncFolder(_ fd: Int32, _ url: URL) throws {
+    static func syncFolder(_ fd: Int32, _ url: URL) throws {
         guard !failFolderSync, fsync(fd) == 0 else {
             let reason = failFolderSync ? "simulated failure" : errnoText()
             throw HolosError.io("Cannot save folder \(url.lastPathComponent): \(reason).")
         }
         fileSyncCounter?.recordFolder(url)
-    }
-
-    /// Opens the folder holding `url` without following a symbolic link in place of a folder Holos owns (see the
-    /// type's documentation) and returns it with the file name. The anchor, the nearest `<id>.holos` ancestor or
-    /// else the folder itself, is opened by path with O_NOFOLLOW; each folder below it with `openat` and
-    /// O_NOFOLLOW. The caller closes the descriptor.
-    static func openParent(of url: URL) throws -> (fd: Int32, name: String) {
-        let components = url.standardizedFileURL.pathComponents
-        guard components.count >= 2, let name = components.last,
-              !name.isEmpty, name != "/", name != ".", name != ".." else {
-            throw HolosError.invalidInput("Invalid file path.")
-        }
-        let folders = Array(components.dropLast())
-        let anchor = folders.lastIndex(where: { $0.count > 6 && $0.hasSuffix(".holos") }) ?? folders.count - 1
-        let folderFlags = O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC
-        let anchorPath = NSString.path(withComponents: Array(folders[...anchor]))
-        var parent = Darwin.open(anchorPath, folderFlags)
-        guard parent >= 0 else { throw folderOpenError(folders[anchor], errno) }
-        for folder in folders[(anchor + 1)...] {
-            guard folder != ".", folder != ".." else {
-                Darwin.close(parent)
-                throw HolosError.invalidInput("Invalid file path.")
-            }
-            let next = openat(parent, folder, folderFlags)
-            guard next >= 0 else {
-                let code = errno
-                Darwin.close(parent)
-                throw folderOpenError(folder, code)
-            }
-            Darwin.close(parent)
-            parent = next
-        }
-        return (parent, name)
     }
 
     /// Unlinks `name`, which the failed call created in `parent`, and fsyncs `parent`, so a retry creates it again.
@@ -471,20 +416,6 @@ public enum AtomicFile {
             throw HolosError.io("Cannot open \(url.lastPathComponent) for appending: \(errnoText(code)).")
         }
         return (fd, created)
-    }
-
-    private static func ensureExistingOrPrivateParent(_ url: URL) throws {
-        var info = stat()
-        if stat(url.path, &info) == 0 {
-            guard (info.st_mode & S_IFMT) == S_IFDIR else {
-                throw HolosError.invalidInput("\(url.lastPathComponent) must be a folder.")
-            }
-            return
-        }
-        guard errno == ENOENT else {
-            throw HolosError.io("Cannot inspect folder \(url.lastPathComponent): \(errnoText()).")
-        }
-        try ensurePrivateDirectory(url)
     }
 
     private static func describe(_ error: DecodingError) -> String {

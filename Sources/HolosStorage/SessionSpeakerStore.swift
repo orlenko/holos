@@ -58,14 +58,11 @@ public enum SessionSpeakerStore {
     /// IDs of every run file, sorted.
     public static func runIDs(session: URL) throws -> [String] {
         try SessionLockFile.requireSessionFolder(session)
-        let folder = SessionPaths.runs(session)
-        guard try folderExists(folder) else { return [] }
-        let names = try FileManager.default.contentsOfDirectory(atPath: folder.path)
-        return names.compactMap { name -> String? in
-            guard name.hasSuffix(".json") else { return nil }
-            let id = String(name.dropLast(5))
-            guard SessionArchive.validToken(id), isRegularFile(folder.appendingPathComponent(name)) else { return nil }
-            return id
+        guard let entries = try AtomicFile.listFolder(SessionPaths.runs(session)) else { return [] }
+        return entries.compactMap { entry -> String? in
+            guard entry.type == S_IFREG, entry.name.hasSuffix(".json") else { return nil }
+            let id = String(entry.name.dropLast(5))
+            return SessionArchive.validToken(id) ? id : nil
         }.sorted()
     }
 
@@ -86,7 +83,7 @@ public enum SessionSpeakerStore {
         try requireToken(head.runID, "run ID")
         try requireWritableSchema(head.schemaVersion, SchemaVersion.speakerHead, "The speaker head")
         try SessionLockFile.requireSessionFolder(session)
-        guard isRegularFile(SessionPaths.run(head.runID, in: session)) else {
+        guard try AtomicFile.entryType(at: SessionPaths.run(head.runID, in: session)) == S_IFREG else {
             throw HolosError.invalidInput("Speaker run \(head.runID) does not exist in this session.")
         }
         try ensureSpeakerFolder(SessionPaths.speakers(session), session: session)
@@ -213,14 +210,23 @@ public enum SessionSpeakerStore {
         }
     }
 
-    /// Creates `folder` (a folder under speakers/) and speakers/ itself as 0700, refusing symlinks at each level.
+    /// Creates `folder` (speakers/ or a folder under it) and speakers/ itself as 0700 in one `openat`/`mkdirat`
+    /// chain from the session folder's descriptor, refusing a symbolic link or file at each level, even one
+    /// swapped in during the call. Nothing is checked by path first.
     private static func ensureSpeakerFolder(_ folder: URL, session: URL) throws {
-        try SessionLockFile.requireSessionFolder(session)
-        let speakers = SessionPaths.speakers(session)
-        try AtomicFile.ensurePrivateDirectory(speakers)
-        if folder.standardizedFileURL.path != speakers.standardizedFileURL.path {
-            try AtomicFile.ensurePrivateDirectory(folder)
+        let sessionComponents = session.standardizedFileURL.pathComponents
+        let folderComponents = folder.standardizedFileURL.pathComponents
+        guard folderComponents.count > sessionComponents.count,
+              Array(folderComponents.prefix(sessionComponents.count)) == sessionComponents else {
+            throw HolosError.invalidInput("\(folder.lastPathComponent) is not a folder of this session.")
         }
+        let sessionFD = try SessionLockFile.openSessionFolder(session)
+        defer { Darwin.close(sessionFD) }
+        guard let fd = try AtomicFile.openFolder(Array(folderComponents.dropFirst(sessionComponents.count)),
+                                                 in: sessionFD, baseURL: session, create: true) else {
+            throw HolosError.io("Cannot create folder \(folder.lastPathComponent).")
+        }
+        Darwin.close(fd)
     }
 
     private static func repairTornTail(_ journal: URL, session: URL) throws {
@@ -241,23 +247,6 @@ public enum SessionSpeakerStore {
         } catch {
             throw HolosError.io("Cannot exclude voice data from backups: \(error.localizedDescription)")
         }
-    }
-
-    private static func folderExists(_ url: URL) throws -> Bool {
-        var info = stat()
-        guard lstat(url.path, &info) == 0 else {
-            if errno == ENOENT { return false }
-            throw HolosError.io("Cannot inspect \(url.lastPathComponent): \(AtomicFile.errnoText()).")
-        }
-        guard (info.st_mode & S_IFMT) == S_IFDIR else {
-            throw HolosError.invalidInput("\(url.lastPathComponent) must be a folder, not a file or a symbolic link.")
-        }
-        return true
-    }
-
-    private static func isRegularFile(_ url: URL) -> Bool {
-        var info = stat()
-        return lstat(url.path, &info) == 0 && (info.st_mode & S_IFMT) == S_IFREG
     }
 }
 

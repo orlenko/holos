@@ -112,6 +112,7 @@ public actor SessionArchive {
     /// The longest group-commit interval; also keeps `Duration.seconds` from overflowing.
     static let maxJournalSyncInterval: Double = 3_600
     private static let maxTranscriptBytes = 256 << 20
+    private static let maxManifestBytes = 256 << 20
 
     private var manifest: SessionManifest
     private var nextSequence: Int
@@ -153,19 +154,19 @@ public actor SessionArchive {
             if code == EEXIST { throw HolosError.invalidInput("A session with ID \(id) already exists.") }
             throw HolosError.io("Cannot create the session folder: \(AtomicFile.errnoText(code)).")
         }
-        guard chmod(directory.path, 0o700) == 0 else {
+        // The folders inside are made relative to the session folder's descriptor (`mkdirat`, O_NOFOLLOW, 0700),
+        // never by path. A failed creation leaves its distinct directory for inspection; never delete user data.
+        let sessionFD = try SessionLockFile.openSessionFolder(directory)
+        defer { Darwin.close(sessionFD) }
+        guard fchmod(sessionFD, 0o700) == 0 else {
             throw HolosError.io("Cannot make session directory private.")
         }
-        // A failed creation leaves its distinct directory for inspection; never delete user data.
-        for path in ["audio/mic", "audio/system", "transcripts", "exports"] {
-            let child = directory.appendingPathComponent(path, isDirectory: true)
-            try FileManager.default.createDirectory(at: child, withIntermediateDirectories: true)
-            guard chmod(child.path, 0o700) == 0 else {
-                throw HolosError.io("Cannot make archive directory private.")
+        for path in [["audio", "mic"], ["audio", "system"], ["transcripts"], ["exports"]] {
+            guard let fd = try AtomicFile.openFolder(path, in: sessionFD, baseURL: directory, create: true,
+                                                     syncParents: false) else {
+                throw HolosError.io("Cannot create archive directory \(path.joined(separator: "/")).")
             }
-        }
-        guard chmod(directory.appendingPathComponent("audio").path, 0o700) == 0 else {
-            throw HolosError.io("Cannot make audio directory private.")
+            Darwin.close(fd)
         }
         // Publish the new folders durably: audio/ holds mic/ and system/, and the root holds the session folder.
         // The session folder itself is fsync'd once its files exist.
@@ -443,10 +444,10 @@ public actor SessionArchive {
 
     public nonisolated static func readManifest(at directory: URL) throws -> SessionManifest {
         guard directory.isFileURL, plainDirectory(directory),
-              plainFile(SessionPaths.manifest(directory)) else {
+              plainFile(SessionPaths.manifest(directory)),
+              let data = try AtomicFile.readIfPresent(SessionPaths.manifest(directory), maxBytes: maxManifestBytes) else {
             throw HolosError.invalidInput("Archive or manifest is not a regular path.")
         }
-        let data = try Data(contentsOf: SessionPaths.manifest(directory))
         let manifest = try HolosJSON.decoder().decode(SessionManifest.self, from: data)
         guard manifest.schemaVersion == 1, validToken(manifest.id),
               directory.lastPathComponent == "\(manifest.id).holos",
@@ -646,7 +647,9 @@ public actor SessionArchive {
                 corrupt.append(chunk.relativePath); continue
             }
             let url = directory.appendingPathComponent(chunk.relativePath)
-            if !FileManager.default.fileExists(atPath: url.path) {
+            let type: mode_t?
+            do { type = try AtomicFile.entryType(at: url) } catch { corrupt.append(chunk.relativePath); continue }
+            if type == nil {
                 if !audioDeleted { missing.append(chunk.relativePath) }
                 continue
             }
@@ -658,9 +661,8 @@ public actor SessionArchive {
         var unindexed: [String] = []
         for track in ["mic", "system"] {
             let trackURL = directory.appendingPathComponent("audio/\(track)")
-            guard plainDirectory(trackURL) else { continue }
-            for url in (try? FileManager.default.contentsOfDirectory(at: trackURL, includingPropertiesForKeys: nil)) ?? [] {
-                let path = "audio/\(track)/\(url.lastPathComponent)"
+            for entry in (try? AtomicFile.listFolder(trackURL)) ?? [] {
+                let path = "audio/\(track)/\(entry.name)"
                 if validChunkPath(path, track: track), !indexed.contains(path) { unindexed.append(path) }
             }
         }
@@ -682,11 +684,11 @@ public actor SessionArchive {
 
     private nonisolated static func legacyCurrentTranscriptID(at directory: URL) throws -> String? {
         let folder = SessionPaths.transcripts(directory)
-        guard plainDirectory(folder) else { return nil }
+        guard plainDirectory(folder), let entries = try AtomicFile.listFolder(folder) else { return nil }
         struct Header: Decodable { var id: String; var createdAt: Date }
         var newest: Header?
         var count = 0
-        for name in try FileManager.default.contentsOfDirectory(atPath: folder.path) where name.hasSuffix(".json") {
+        for (name, _) in entries where name.hasSuffix(".json") {
             let id = String(name.dropLast(5))
             guard TranscriptPointer.validTranscriptID(id),
                   let header = try? AtomicFile.readJSON(Header.self, from: folder.appendingPathComponent(name)),
@@ -712,14 +714,14 @@ public actor SessionArchive {
         return String(format: "%02d:%02d:%02d.%03d", hours, minutes, remainder, milliseconds % 1_000)
     }
 
+    /// Whether `url` is a real folder, reached without following a symbolic link (`AtomicFile.entryType`).
     private nonisolated static func plainDirectory(_ url: URL) -> Bool {
-        var info = stat()
-        return lstat(url.path, &info) == 0 && (info.st_mode & S_IFMT) == S_IFDIR
+        (try? AtomicFile.entryType(at: url)) == S_IFDIR
     }
 
+    /// Whether `url` is a regular file, reached without following a symbolic link (`AtomicFile.entryType`).
     private nonisolated static func plainFile(_ url: URL) -> Bool {
-        var info = stat()
-        return lstat(url.path, &info) == 0 && (info.st_mode & S_IFMT) == S_IFREG
+        (try? AtomicFile.entryType(at: url)) == S_IFREG
     }
 
     private nonisolated static func requireSafeLayout(_ directory: URL) throws {
@@ -737,9 +739,13 @@ public actor SessionArchive {
         guard directory.isFileURL, plainDirectory(directory),
               ["transcripts", "exports"].allSatisfy({ plainDirectory(directory.appendingPathComponent($0)) }),
               ["audio", "audio/mic", "audio/system"].allSatisfy({ path in
-                  var info = stat()
-                  guard lstat(directory.appendingPathComponent(path).path, &info) == 0 else { return errno == ENOENT }
-                  return (info.st_mode & S_IFMT) == S_IFDIR
+                  // Missing is fine; a symbolic link or file here, or on the way, is not.
+                  do {
+                      let type = try AtomicFile.entryType(at: directory.appendingPathComponent(path))
+                      return type == nil || type == S_IFDIR
+                  } catch {
+                      return false
+                  }
               }) else {
             throw HolosError.invalidInput("Archive contains an unsafe or incomplete directory layout.")
         }
@@ -768,17 +774,20 @@ public actor SessionArchive {
     }
 
     private nonisolated static func hashChunk(at url: URL, sync: Bool = false) throws -> String {
-        var info = stat()
-        guard lstat(url.path, &info) == 0, (info.st_mode & S_IFMT) == S_IFREG, info.st_size > 0 else {
-            throw HolosError.invalidInput("Audio chunk is missing, empty, or not a regular file.")
+        let notAChunk = HolosError.invalidInput("Audio chunk is missing, empty, or not a regular file.")
+        // Opened relative to its folder, which is opened without following a link (`AtomicFile.openFolder`).
+        guard let (folder, name) = try AtomicFile.openParentIfPresent(of: url) else { throw notAChunk }
+        defer { Darwin.close(folder) }
+        let fd = openat(folder, name, O_RDONLY | O_NONBLOCK | O_CLOEXEC | O_NOFOLLOW)
+        guard fd >= 0 else {
+            let code = errno
+            if code == ENOENT || code == ELOOP { throw notAChunk }
+            throw HolosError.io("Cannot open audio chunk.")
         }
-        let fd = Darwin.open(url.path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW)
-        guard fd >= 0 else { throw HolosError.io("Cannot open audio chunk.") }
         defer { Darwin.close(fd) }
         var opened = stat()
-        guard fstat(fd, &opened) == 0, (opened.st_mode & S_IFMT) == S_IFREG,
-              opened.st_ino == info.st_ino else {
-            throw HolosError.invalidInput("Audio chunk changed while opening.")
+        guard fstat(fd, &opened) == 0, (opened.st_mode & S_IFMT) == S_IFREG, opened.st_size > 0 else {
+            throw notAChunk
         }
         var hasher = SHA256()
         var buffer = [UInt8](repeating: 0, count: 64 * 1024)

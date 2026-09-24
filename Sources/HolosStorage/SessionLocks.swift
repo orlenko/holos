@@ -91,11 +91,8 @@ enum SessionLockFile {
     /// 20 ms until `timeout`. Returns the locked descriptor (O_CLOEXEC), or nil when another holder kept the lock
     /// for the whole timeout. Always makes at least one attempt.
     static func acquire(_ name: String, in session: URL, timeout: Duration) throws -> Int32? {
-        try requireSessionFolder(session)
-        let path = session.appendingPathComponent(name, isDirectory: false).path
-        let fd = Darwin.open(path, O_CREAT | O_RDWR | O_CLOEXEC | O_NOFOLLOW, 0o600)
-        guard fd >= 0 else {
-            throw HolosError.io("Cannot open the session lock: \(AtomicFile.errnoText()).")
+        guard let fd = try openLockFile(name, in: session, create: true) else {
+            throw HolosError.io("Cannot open the session lock: \(AtomicFile.errnoText(ENOENT)).")
         }
         let clock = ContinuousClock()
         let deadline = clock.now.advanced(by: max(timeout, .zero))
@@ -123,13 +120,7 @@ enum SessionLockFile {
 
     /// True when another open file description holds the lock. Missing lock file → false.
     static func isHeld(_ name: String, in session: URL) throws -> Bool {
-        try requireSessionFolder(session)
-        let path = session.appendingPathComponent(name, isDirectory: false).path
-        let fd = Darwin.open(path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW)
-        if fd < 0 {
-            if errno == ENOENT { return false }
-            throw HolosError.io("Cannot inspect the session lock: \(AtomicFile.errnoText()).")
-        }
+        guard let fd = try openLockFile(name, in: session, create: false) else { return false }
         defer { Darwin.close(fd) }
         while true {
             if flock(fd, LOCK_EX | LOCK_NB) == 0 {
@@ -150,20 +141,55 @@ enum SessionLockFile {
         Darwin.close(fd)
     }
 
+    /// Opens the lock file `name` in the session folder, which is opened with `AtomicFile.openFolder` (O_NOFOLLOW),
+    /// relative to it with `openat` and O_NOFOLLOW; with `create`, makes it 0600 if missing. Nil when it does not
+    /// exist and `create` is false. Refuses anything but a regular file (O_NONBLOCK keeps a FIFO from blocking).
+    private static func openLockFile(_ name: String, in session: URL, create: Bool) throws -> Int32? {
+        let folder = try openSessionFolder(session)
+        defer { Darwin.close(folder) }
+        let flags = create ? O_CREAT | O_RDWR : O_RDONLY
+        let fd = openat(folder, name, flags | O_NONBLOCK | O_CLOEXEC | O_NOFOLLOW, 0o600)
+        guard fd >= 0 else {
+            let code = errno
+            if code == ENOENT, !create { return nil }
+            throw HolosError.io("Cannot open the session lock: \(AtomicFile.errnoText(code)).")
+        }
+        var info = stat()
+        guard fstat(fd, &info) == 0, (info.st_mode & S_IFMT) == S_IFREG else {
+            Darwin.close(fd)
+            throw HolosError.invalidInput("The session lock \(name) is not a regular file.")
+        }
+        return fd
+    }
+
+    /// Opens the session folder with `AtomicFile.openFolder` (never through a symbolic link in its place).
+    /// The caller closes the descriptor.
+    static func openSessionFolder(_ session: URL) throws -> Int32 {
+        let notAFolder = HolosError.invalidInput("The session folder is missing or is not a regular folder.")
+        guard session.isFileURL else { throw notAFolder }
+        let fd: Int32?
+        do {
+            fd = try AtomicFile.openFolder(session)
+        } catch HolosError.invalidInput {
+            throw notAFolder
+        }
+        guard let fd else { throw notAFolder }
+        return fd
+    }
+
     /// The session folder must exist and be a real folder (not a symlink).
     static func requireSessionFolder(_ session: URL) throws {
-        var info = stat()
-        guard session.isFileURL, lstat(session.path, &info) == 0, (info.st_mode & S_IFMT) == S_IFDIR else {
-            throw HolosError.invalidInput("The session folder is missing or is not a regular folder.")
-        }
+        Darwin.close(try openSessionFolder(session))
     }
 
     /// Like `requireSessionFolder`, and the folder must hold a plain `manifest.json`, so taking a lease or the
     /// speaker lock never leaves a lock file in a folder that is not a session.
     static func requireSession(_ session: URL) throws {
-        try requireSessionFolder(session)
+        let folder = try openSessionFolder(session)
+        defer { Darwin.close(folder) }
         var info = stat()
-        guard lstat(SessionPaths.manifest(session).path, &info) == 0, (info.st_mode & S_IFMT) == S_IFREG else {
+        guard fstatat(folder, "manifest.json", &info, AT_SYMLINK_NOFOLLOW) == 0,
+              (info.st_mode & S_IFMT) == S_IFREG else {
             throw HolosError.invalidInput("\(session.lastPathComponent) is not a Holos session folder.")
         }
     }
