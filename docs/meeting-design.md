@@ -3413,6 +3413,23 @@ public struct SpeakerProfileDatabase: Codable, Sendable, Equatable {
   `forgetStaysPendingUntilTheExportsAreRewritten`,
   `forgetDeletesVoiceDataWhoseCentroidStillHoldsAReassignedTurn`,
   `leftoverTemporaryFilesArePurgedFromTheStore`.
+- **A merge takes the meetings with it.** Merging person A into B removes A from the
+  store, and a projection drops a recognition match whose person is not in the store, so
+  the meetings A's voice was recognised in would lose their automatic name (or
+  suggestion) rather than showing B. `VoiceProfileService.merge` therefore journals a
+  `.merge` record (`{id, kind: "merge", profileID, targetProfileID, state: "pending"}`) in
+  the forget journal before its store write, then points every meeting's recognition
+  results at B under that meeting's speaker lock (`RecognitionResult.retargetProfiles`:
+  matches, merge suggestions and `skippedProfiles`, joining what the merge made one
+  person; the nearer match wins where a speaker then names B twice) and rewrites the
+  generated exports of the meetings that changed. A meeting that cannot be written now
+  leaves the record pending and `merge` throws `incomplete`; `resumePendingForgets`
+  finishes it, which is why the record carries the two IDs the store no longer holds
+  together. Unlike a forget, this never deletes what it cannot read: a meeting whose
+  manifest or recognition result is unreadable is left as it is. Tests (PR10):
+  `mergePointsMeetingsAtThePersonTheyWereMergedInto`,
+  `aMergeThatCouldNotReachAMeetingIsFinishedLater`,
+  `retargetingProfilesJoinsWhatTheMergeMadeTheSamePerson`.
 - **A link is saved against the people and the labels as they are at the write.** The
   batch's people are checked and marked used under `profiles.lock`, inside the meeting's
   speaker lock, immediately before the lines are appended

@@ -39,3 +39,37 @@ import Testing
     #expect(result.skippedProfiles == ["SAM"])
     #expect(!result.removeProfiles { $0 == "JIM" }, "Nothing left to remove.")
 }
+
+@Test func retargetingProfilesJoinsWhatTheMergeMadeTheSamePerson() throws {
+    let model = EmbeddingModelID(id: "fake", revision: "1")
+    let thresholds = RecognitionThresholds(likelyMaxDistance: 0.2, likelyMinMargin: 0.1, possibleMaxDistance: 0.4,
+                                           minSampleSeconds: 20)
+    var result = RecognitionResult(
+        runID: "R1", embeddingModel: model, thresholds: thresholds,
+        matches: [SpeakerMatch(speakerID: "mic:S1", profileID: "A", profileName: "Al", distance: 0.30,
+                               tier: .possible),
+                  SpeakerMatch(speakerID: "mic:S1", profileID: "B", profileName: "Bea", distance: 0.10,
+                               tier: .likely),
+                  SpeakerMatch(speakerID: "mic:S2", profileID: "A", profileName: "Al", distance: 0.25,
+                               tier: .possible),
+                  SpeakerMatch(speakerID: "mic:S2", profileID: "C", profileName: "Cy", distance: 0.35,
+                               tier: .possible)],
+        mergeSuggestions: [MergeSuggestion(speakerIDs: ["mic:S1"], profileID: "A"),
+                           MergeSuggestion(speakerIDs: ["mic:S1", "mic:S3"], profileID: "B")],
+        skippedProfiles: ["A", "D", "B"])
+
+    let changed = result.retargetProfiles(["A": "B"])
+    #expect(changed)
+
+    // One person per speaker: the nearer match wins where both named the same person after the merge.
+    #expect(result.matches.map { "\($0.speakerID)/\($0.profileID)/\($0.distance)" }
+            == ["mic:S1/B/0.1", "mic:S2/B/0.25", "mic:S2/C/0.35"])
+    #expect(result.mergeSuggestions.count == 1)
+    #expect(result.mergeSuggestions.first?.profileID == "B")
+    #expect(result.mergeSuggestions.first?.speakerIDs == ["mic:S1", "mic:S3"])
+    #expect(result.skippedProfiles == ["B", "D"])
+    let again = result.retargetProfiles(["A": "B"])
+    #expect(!again, "Nothing left to point anywhere: repeating it changes nothing.")
+    let empty = result.retargetProfiles([:])
+    #expect(!empty)
+}

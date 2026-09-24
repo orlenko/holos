@@ -1930,3 +1930,50 @@ func aRefusedNewPersonIsStillRemoved() async throws {
     #expect(!SessionFixtures.exists(left), "The rendered copy of the meeting's audio is gone.")
     #expect(SessionFixtures.exists(unrelated), "Only `holos-voice-<token>` folders are swept.")
 }
+
+// MARK: - Merging: the meetings follow the person
+
+@Test(.timeLimit(.minutes(1)))
+func mergePointsMeetingsAtThePersonTheyWereMergedInto() async throws {
+    let temp = try TemporaryDirectory("profiles")
+    defer { temp.remove() }
+    let store = profileStore(temp)
+    let (session, runID, jim) = try await profileForgetFixture(temp, store: store)
+    // The meeting's recognition suggests Jim for mic:S2 (the fixture's match).
+    try store.update { $0.profiles.append(SpeakerProfile(id: "MARIA", displayName: "Maria")) }
+
+    try VoiceProfileService.merge(profileID: jim, into: "MARIA", store: store, sessionsRoot: temp.url)
+
+    let recognition = try #require(try SessionSpeakerStore.readRecognition(runID: runID, session: session))
+    #expect(recognition.matches.map(\.profileID) == ["MARIA"],
+            "The suggestion is the person they were merged into, not a profile ID that is gone.")
+    let speaker = try #require(try profileView(session, store: store).speakers.first { $0.id == "mic:S2" })
+    #expect(speaker.suggestion?.profileID == "MARIA", "So the meeting still offers a name to confirm.")
+    #expect(speaker.suggestion?.profileName == "Maria")
+    #expect(try store.pendingForgets().isEmpty)
+}
+
+@Test(.timeLimit(.minutes(1)))
+func aMergeThatCouldNotReachAMeetingIsFinishedLater() async throws {
+    let temp = try TemporaryDirectory("profiles")
+    defer { temp.remove() }
+    let store = profileStore(temp)
+    let (session, runID, jim) = try await profileForgetFixture(temp, store: store)
+    try store.update { $0.profiles.append(SpeakerProfile(id: "MARIA", displayName: "Maria")) }
+    let recognition = session.appendingPathComponent("speakers/recognition", isDirectory: true)
+    try FileManager.default.setAttributes([.posixPermissions: 0o500], ofItemAtPath: recognition.path)
+
+    #expect(throws: HolosError.self) {
+        try VoiceProfileService.merge(profileID: jim, into: "MARIA", store: store, sessionsRoot: temp.url)
+    }
+    #expect(try store.load().profiles.map(\.id) == ["MARIA"], "The merge itself stands.")
+    #expect(try store.pendingForgets().first?.kind == .merge, "The meetings are unfinished business.")
+    #expect(try SessionSpeakerStore.readRecognition(runID: runID, session: session)?.matches.first?.profileID == jim)
+
+    try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: recognition.path)
+    try VoiceProfileService.resumePendingForgets(store: store, sessionsRoot: temp.url)
+
+    #expect(try SessionSpeakerStore.readRecognition(runID: runID, session: session)?.matches.first?.profileID
+            == "MARIA")
+    #expect(try store.pendingForgets().isEmpty)
+}

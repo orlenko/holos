@@ -36,4 +36,45 @@ extension RecognitionResult {
         skippedProfiles.removeAll(where: drop)
         return before != (matches.count, mergeSuggestions.count, skippedProfiles.count)
     }
+
+    /// Points every reference to a person in `to` at the person they were merged into (their `to` value): their
+    /// matches, their merge suggestions, and their `skippedProfiles` entries. A speaker that then has two matches of
+    /// one person keeps the nearer one (the nearer distance, then the stronger tier), a merge suggestion keeps the
+    /// speakers of both, and `skippedProfiles` keeps one entry per person; the order of what was there is otherwise
+    /// kept. The names are left as they were: the projection shows the person's current one. Returns whether
+    /// anything changed.
+    @discardableResult
+    public mutating func retargetProfiles(_ to: [String: String]) -> Bool {
+        guard !to.isEmpty else { return false }
+        let before = self
+        var kept: [SpeakerMatch] = []
+        for var match in matches {
+            match.profileID = to[match.profileID] ?? match.profileID
+            if let at = kept.firstIndex(where: { $0.speakerID == match.speakerID && $0.profileID == match.profileID }) {
+                if (match.distance, match.tier == .likely ? 1 : 0)
+                    < (kept[at].distance, kept[at].tier == .likely ? 1 : 0) {
+                    kept[at] = match
+                }
+            } else {
+                kept.append(match)
+            }
+        }
+        matches = kept
+        var suggestions: [MergeSuggestion] = []
+        for var suggestion in mergeSuggestions {
+            suggestion.profileID = to[suggestion.profileID] ?? suggestion.profileID
+            if let at = suggestions.firstIndex(where: { $0.profileID == suggestion.profileID }) {
+                var speakers = suggestions[at].speakerIDs
+                speakers += suggestion.speakerIDs.filter { !speakers.contains($0) }
+                suggestions[at].speakerIDs = speakers
+            } else {
+                suggestions.append(suggestion)
+            }
+        }
+        mergeSuggestions = suggestions
+        var skipped: [String] = []
+        for id in skippedProfiles.map({ to[$0] ?? $0 }) where !skipped.contains(id) { skipped.append(id) }
+        skippedProfiles = skipped
+        return self != before
+    }
 }

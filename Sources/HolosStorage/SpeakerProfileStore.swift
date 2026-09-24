@@ -38,6 +38,10 @@ public struct ForgetRecord: Codable, Sendable, Equatable {
         case session
         /// Every sample and every session's voice data; names stay.
         case all
+        /// Not a forget: `profileID` was merged into `targetProfileID`, and the meetings that still name the person
+        /// merged away are to name the one they were merged into. It rides in this journal because it needs the
+        /// same thing a forget does: a record of unfinished work across the meetings, finished at the next launch.
+        case merge
     }
 
     public var schemaVersion: Int
@@ -51,14 +55,17 @@ public struct ForgetRecord: Codable, Sendable, Equatable {
     /// The store write of this tombstone's first run also turns "Remember voices" off. Absent (nil) in tombstones
     /// written by an earlier Holos, which is read as false, as those forgets did not ask for it either.
     public var turnRememberOff: Bool?
+    /// `.merge` only: the person `profileID` was merged into.
+    public var targetProfileID: String?
     public var state: String
 
     public init(schemaVersion: Int = ForgetRecord.currentSchemaVersion, id: String = UUID().uuidString, kind: Kind?,
                 profileID: String? = nil, sampleIDs: [String]? = nil, sessionIDs: [String]? = nil,
-                turnRememberOff: Bool? = nil, state: String = ForgetRecord.pending) {
+                turnRememberOff: Bool? = nil, targetProfileID: String? = nil,
+                state: String = ForgetRecord.pending) {
         self.schemaVersion = schemaVersion; self.id = id; self.kind = kind; self.profileID = profileID
         self.sampleIDs = sampleIDs; self.sessionIDs = sessionIDs; self.turnRememberOff = turnRememberOff
-        self.state = state
+        self.targetProfileID = targetProfileID; self.state = state
     }
 
     /// The `stored` line for the tombstone `id`: its store write is done, and `profileID` is the person the

@@ -193,8 +193,18 @@ public enum VoiceProfileService {
     /// sample from one meeting, the one with more speech is kept), `target` keeps its name, and `profileID` is
     /// removed. Refused (`invalidInput`) when both have samples from different embedding models. Meetings keep
     /// their names; a sample that moved stays in step with its meeting as the speakers it was built from.
-    public static func merge(profileID: String, into target: String, store: SpeakerProfileStore) throws {
+    ///
+    /// A meeting whose recognition result named the person merged away is made to name the person they were merged
+    /// into, so the merge does not take the automatic name (or the suggestion) out of that meeting: the projection
+    /// drops a match whose person is not in the store, which is what the removal here would otherwise leave behind.
+    /// The work across the meetings is journalled first (a `.merge` record in the forget journal, which carries the
+    /// two IDs the store no longer holds together), so a crash or a meeting that cannot be written now is finished by
+    /// `resumePendingForgets`; this throws `incomplete` when some meeting is left, and the merge itself stands.
+    public static func merge(profileID: String, into target: String, store: SpeakerProfileStore,
+                             sessionsRoot: URL = HolosPaths.sessions) throws {
         guard profileID != target else { throw HolosError.invalidInput("Choose two different people to merge.") }
+        let record = ForgetRecord(kind: .merge, profileID: profileID, targetProfileID: target)
+        try store.appendForgetRecord(record)
         try store.update { database in
             let fromIndex = try profileIndex(profileID, in: database)
             let intoIndex = try profileIndex(target, in: database)
@@ -220,6 +230,55 @@ public enum VoiceProfileService {
             database.profiles.remove(at: fromIndex)
         }
         log.notice("Merged two people")
+        try retargetMeetings(record, store: store, sessionsRoot: sessionsRoot)
+    }
+
+    /// Points every meeting's recognition results at the person `record` was merged into, under each meeting's
+    /// speaker lock, and rewrites the exports of those that changed (they show the names recognition gave). Each
+    /// step is idempotent: a meeting that already names the target is left untouched. A meeting that cannot be
+    /// written now leaves the record pending, and this throws `incomplete`.
+    private static func retargetMeetings(_ record: ForgetRecord, store: SpeakerProfileStore,
+                                         sessionsRoot: URL) throws {
+        guard let from = record.profileID, let to = record.targetProfileID else { return }
+        var failed = 0
+        for session in try sessionFolders(sessionsRoot) {
+            do {
+                try retarget([from: to], session: session, store: store)
+            } catch {
+                failed += 1
+                log.error("Cannot point a meeting at the person two people were merged into yet: \(ProcessSpawner.logCategory(error), privacy: .public)")
+            }
+        }
+        guard failed == 0 else {
+            throw HolosError.incomplete("The people were merged, but \(failed) \(failed == 1 ? "meeting" : "meetings") "
+                                        + "could not be updated yet; Holos finishes this next time. Until then they "
+                                        + "show no automatic name for that person.")
+        }
+        try store.appendForgetRecord(.done(record.id))
+    }
+
+    /// One meeting's recognition results, retargeted under its speaker lock; its generated exports are rewritten
+    /// when something changed. A meeting whose manifest or recognition results cannot be read is left alone: a
+    /// merge is not a forget, so nothing here may delete what it cannot interpret.
+    private static func retarget(_ map: [String: String], session: URL, store: SpeakerProfileStore) throws {
+        guard (try? SessionArchive.readManifest(at: session)) != nil else { return }
+        let changed = try SessionArchive.withSpeakerLock(at: session) { () throws -> Bool in
+            let files = try SessionSpeakerStore.recognitionFiles(session: session)
+            var changed = false
+            for runID in files.runIDs {
+                guard var result = try? SessionSpeakerStore.readRecognition(runID: runID, session: session) else {
+                    continue
+                }
+                guard result.retargetProfiles(map) else { continue }
+                try SessionSpeakerStore.writeRecognition(result, session: session)
+                changed = true
+            }
+            return changed
+        }
+        var generated = stat()
+        guard changed, lstat(SessionPaths.generatedExports(session).path, &generated) == 0,
+              (generated.st_mode & S_IFMT) == S_IFREG else { return }
+        try SessionExports.regenerate(session: session, profileNames: profileNames(store: store))
     }
 
     /// `holos people calibrate --apply`: computes the thresholds inside the store's locked update, from the samples
@@ -331,7 +390,11 @@ public enum VoiceProfileService {
         var failed = 0
         for record in pending {
             do {
-                try perform(record, store: store, sessionsRoot: sessionsRoot)
+                if record.kind == .merge {
+                    try retargetMeetings(record, store: store, sessionsRoot: sessionsRoot)
+                } else {
+                    try perform(record, store: store, sessionsRoot: sessionsRoot)
+                }
                 log.notice("Finished a pending forget (\(record.kind?.rawValue ?? "?", privacy: .public))")
             } catch {
                 failed += 1
@@ -847,7 +910,7 @@ public enum VoiceProfileService {
     /// Returns how many samples the store write removed.
     @discardableResult
     static func perform(_ record: ForgetRecord, store: SpeakerProfileStore, sessionsRoot: URL) throws -> Int {
-        guard let kind = record.kind else { return 0 }
+        guard let kind = record.kind, kind != .merge else { return 0 }
         let sampleIDs = Set(record.sampleIDs ?? [])
         let sessionIDs = Set(record.sessionIDs ?? [])
         let stored = try store.storedForget(record.id)
@@ -870,7 +933,7 @@ public enum VoiceProfileService {
                     switch kind {
                     case .all: return true
                     case .session: return sessionIDs.contains(sample.sessionID)
-                    case .profile, .sample: return false
+                    case .profile, .sample, .merge: return false
                     }
                 }
                 for index in database.profiles.indices {
@@ -893,7 +956,7 @@ public enum VoiceProfileService {
             sessions = try sessionFolders(sessionsRoot)
         case .sample:
             sessions = try (record.sessionIDs ?? []).compactMap { try sessionFolder($0, root: sessionsRoot) }
-        case .session:
+        case .session, .merge:
             sessions = []
         }
         var failed = 0
