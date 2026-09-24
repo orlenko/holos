@@ -19,6 +19,17 @@ public enum TrackReplayer {
         let manifest = try SessionArchive.readManifest(at: directory)
         let chunks = manifest.chunks.filter { $0.track == track && $0.end > from }.sorted { $0.start < $1.start }
         let session = try await (makeSpeech ?? appleSpeechFactory)(locale, backend, contextualStrings) { _ in }
+        // Cancelling the task cancels the session too: a speech framework's `append` or `finish` may not
+        // observe task cancellation, and a cancelled replay returns no segments.
+        return try await withTaskCancellationHandler {
+            try await feed(session, chunks: chunks, directory: directory, track: track, from: from)
+        } onCancel: {
+            Task { await session.cancel() }
+        }
+    }
+
+    private static func feed(_ session: any LiveSpeechSession, chunks: [AudioChunkRecord], directory: URL,
+                             track: String, from: Double) async throws -> [TranscriptSegment] {
         do {
             for chunk in chunks {
                 // TODO(PR2a): open chunks through HolosStorage (ChunkFile on main) instead of by path, so a
@@ -44,7 +55,10 @@ public enum TrackReplayer {
                     offset += AVAudioFramePosition(buffer.frameLength)
                 }
             }
-            return try await session.finish().map { var segment = $0; segment.track = track; return segment }
+            try Task.checkCancellation()
+            let segments = try await session.finish()
+            try Task.checkCancellation()
+            return segments.map { var segment = $0; segment.track = track; return segment }
         } catch { await session.cancel(); throw error }
     }
 }

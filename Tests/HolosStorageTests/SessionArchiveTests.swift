@@ -361,6 +361,67 @@ private func abandonedRecording(in root: URL, events: Int) async throws -> URL {
     #expect(try SessionArchive.readEvents(at: directory).events.map(\.sequence) == [1, 1, 2])
 }
 
+/// A journal whose only line is one event with `sequence`, in an archive left `recording`.
+private func abandonedRecording(in root: URL, onlySequence sequence: Int) throws -> URL {
+    let directory = try archive(in: root).directory
+    let line = try HolosJSON.line(ArchiveEvent(sequence: sequence, at: Date(timeIntervalSince1970: 0),
+                                               kind: "tick", details: [:]))
+    try AtomicFile.write(line, to: SessionPaths.events(directory))
+    return directory
+}
+
+@Test func exhaustedSequenceIsUnreadableAndDoesNotTrap() async throws {
+    // A damaged journal starting at Int.max used to be readable, and every opener trapped on `last + 1`.
+    for opener in ["open", "maintenance", "recover"] {
+        let root = try temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let directory = try abandonedRecording(in: root, onlySequence: Int.max)
+        let read = try SessionArchive.readEvents(at: directory)
+        #expect(read.events.isEmpty)
+        #expect(read.unreadableLines == 1)
+        switch opener {
+        case "open":
+            let reopened = try SessionArchive.open(at: directory)
+            try await reopened.recordEvent(kind: "after", details: [:])
+            try await reopened.finish(status: ArchiveStatus.complete)
+        case "maintenance":
+            _ = try await SessionArchive.recover(at: directory)
+            let lease = try SessionArchive.acquireProcessingLease(at: directory)
+            let maintenance = try SessionArchive.openForMaintenance(at: directory, lease: lease)
+            try await maintenance.recordEvent(kind: "after", details: [:])
+            try await maintenance.finish(status: ArchiveStatus.recovered)
+            lease.release()
+        default:
+            let report = try await SessionArchive.recover(at: directory)
+            #expect(report.manifest?.status == ArchiveStatus.interrupted)
+            #expect(report.events.map(\.kind) == [MeetingEventKind.archiveRecovered])
+        }
+        #expect(try SessionArchive.readEvents(at: directory).events.last?.sequence ?? 0 < 10)
+    }
+}
+
+@Test func lastSequenceNumberIsNeverAssigned() async throws {
+    let root = try temporaryRoot()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let directory = try abandonedRecording(in: root, onlySequence: Int.max - 1)
+    #expect(try SessionArchive.readEvents(at: directory).events.map(\.sequence) == [Int.max - 1])
+
+    let reopened = try SessionArchive.open(at: directory)
+    await #expect(throws: HolosError.self) { try await reopened.recordEvent(kind: "after", details: [:]) }
+    try await reopened.finish(status: ArchiveStatus.complete)
+    #expect(try SessionArchive.readEvents(at: directory).events.map(\.sequence) == [Int.max - 1])
+}
+
+@Test func recoveryOfAnExhaustedJournalSkipsItsEvent() async throws {
+    let root = try temporaryRoot()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let directory = try abandonedRecording(in: root, onlySequence: Int.max - 1)
+    let report = try await SessionArchive.recover(at: directory)
+    #expect(report.manifest?.status == ArchiveStatus.interrupted)
+    #expect(report.events.map(\.sequence) == [Int.max - 1])
+    #expect(report.unreadableEventLines == 0)
+}
+
 /// Journal fsyncs (`events.jsonl`) counted by the AtomicFile test hook.
 private func journalSyncs(_ counter: FileSyncCounter) -> Int { counter.count("events.jsonl") }
 
@@ -422,6 +483,47 @@ private func journalSyncs(_ counter: FileSyncCounter) -> Int { counter.count("ev
     }
 }
 
+@Test func shorterGroupCommitIntervalReschedulesThePendingFlush() async throws {
+    let root = try temporaryRoot()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let writer = try archive(in: root)
+    let counter = FileSyncCounter()
+    try await AtomicFile.$fileSyncCounter.withValue(counter) {
+        await writer.setJournalSync(.interval(seconds: 3_600))
+        try await writer.recordEvent(kind: "first", details: [:])
+        try await writer.recordEvent(kind: "second", details: [:])
+        #expect(journalSyncs(counter) == 1)
+        // The flush pending for the old interval does not hold back the new, shorter one.
+        await writer.setJournalSync(.interval(seconds: 0.2))
+        try await writer.recordEvent(kind: "third", details: [:])
+        let deadline = ContinuousClock.now + .seconds(5)
+        while journalSyncs(counter) < 2, ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        #expect(journalSyncs(counter) == 2)
+        try await writer.finish(status: ArchiveStatus.complete)
+        #expect(journalSyncs(counter) == 2)
+    }
+}
+
+@Test func longerGroupCommitIntervalDropsTheEarlierFlush() async throws {
+    let root = try temporaryRoot()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let writer = try archive(in: root)
+    let counter = FileSyncCounter()
+    try await AtomicFile.$fileSyncCounter.withValue(counter) {
+        await writer.setJournalSync(.interval(seconds: 0.2))
+        try await writer.recordEvent(kind: "first", details: [:])
+        try await writer.recordEvent(kind: "second", details: [:])
+        #expect(journalSyncs(counter) == 1)
+        await writer.setJournalSync(.interval(seconds: 3_600))
+        try await Task.sleep(for: .milliseconds(600))
+        #expect(journalSyncs(counter) == 1)
+        try await writer.finish(status: ArchiveStatus.complete)
+        #expect(journalSyncs(counter) == 2)
+    }
+}
+
 @Test func hugeGroupCommitIntervalIsClamped() async throws {
     let root = try temporaryRoot()
     defer { try? FileManager.default.removeItem(at: root) }
@@ -436,6 +538,106 @@ private func journalSyncs(_ counter: FileSyncCounter) -> Int { counter.count("ev
         #expect(journalSyncs(counter) == 2)
     }
     #expect(try SessionArchive.readEvents(at: writer.directory).events.count == 2)
+}
+
+/// One step of `groupCommitSchedulerKeepsItsInvariant`.
+private enum JournalStep {
+    case interval(Double), everyEvent, everyEventFailing
+    case append(String), appendFailing(String)
+    case flush, flushFailing
+    case wait(milliseconds: Int)
+    case finish
+}
+
+/// The group-commit invariant: a dirty, open, interval-mode journal has exactly one pending flush, due one
+/// interval after the last sync (or after the last failed flush since); any other journal has none.
+private func journalInvariantViolation(_ state: SessionArchive.JournalSchedule) -> String? {
+    guard state.dirty, !state.closed, let interval = state.interval else {
+        return state.pending || state.pendingDeadline != nil ? "a flush is pending for a clean, closed, or every-event journal" : nil
+    }
+    guard state.pending, let deadline = state.pendingDeadline else { return "a dirty journal has no pending flush" }
+    guard let base = state.failedAt ?? state.lastSync else { return "a dirty journal was never synced" }
+    return deadline == base + interval ? nil : "the pending flush is not due one interval after the last sync"
+}
+
+@Test func groupCommitSchedulerKeepsItsInvariant() async throws {
+    let root = try temporaryRoot()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let writer = try archive(in: root)
+    let journal = SessionPaths.events(writer.directory)
+    let moved = journal.appendingPathExtension("moved")
+    // Hides the journal from `AtomicFile.sync` (it opens the file by name), so a sync fails as an I/O error would.
+    func withoutJournal<T>(_ body: () async throws -> T) async throws -> T {
+        try FileManager.default.moveItem(at: journal, to: moved)
+        defer { try? FileManager.default.moveItem(at: moved, to: journal) }
+        return try await body()
+    }
+    // (step, dirty after, flush pending after). The invariant is checked after every step as well.
+    let steps: [(JournalStep, Bool, Bool)] = [
+        (.interval(3_600), false, false),
+        (.append("first"), false, false),            // never synced: due at once
+        (.append("tick"), true, true),               // deferred: flush due one interval after "first"
+        (.append("tick"), true, true),               // keeps the same deadline
+        (.appendFailing("tick"), true, true),        // a failed append changes nothing
+        (.append(MeetingEventKind.captureStopped), false, false), // immediate sync drops the pending flush
+        (.append("tick"), true, true),               // new deadline: one interval after captureStopped
+        (.appendFailing(MeetingEventKind.captureStopped), true, true),
+        (.interval(3_600), true, true),              // unchanged mode: nothing moves
+        (.interval(1_800), true, true),              // shorter interval: rescheduled from the last sync
+        (.interval(7_200), true, true),              // longer interval: rescheduled from the last sync
+        (.flush, false, false),
+        (.flush, false, false),                      // nothing pending: no-op
+        (.append("tick"), true, true),
+        (.flushFailing, true, true),                 // retry one interval after the failure
+        (.append("tick"), true, true),               // keeps the retry deadline
+        (.flush, false, false),                      // the retry succeeds and clears the failure
+        (.append("tick"), true, true),
+        (.everyEventFailing, true, false),           // every-event mode never schedules a flush
+        (.interval(3_600), true, true),
+        (.everyEvent, false, false),                 // syncs the dirty journal
+        (.append("tick"), false, false),
+        (.interval(0.05), false, false),
+        (.wait(milliseconds: 100), false, false),
+        (.append("tick"), false, false),             // an interval has passed since the last sync: due
+        (.interval(3_600), false, false),
+        (.append("tick"), true, true),
+        (.finish, false, false),                     // syncs and drops the pending flush
+        (.interval(60), false, false),               // closed: never schedules
+    ]
+    for (index, (step, dirty, pending)) in steps.enumerated() {
+        let before = await writer.journalScheduleForTesting()
+        switch step {
+        case .interval(let seconds): await writer.setJournalSync(.interval(seconds: seconds))
+        case .everyEvent: await writer.setJournalSync(.everyEvent)
+        case .everyEventFailing: try await withoutJournal { await writer.setJournalSync(.everyEvent) }
+        case .append(let kind): try await writer.recordEvent(kind: kind, details: [:])
+        case .appendFailing(let kind):
+            await #expect(throws: (any Error).self) {
+                try await AtomicFile.$appendFailureAfterBytes.withValue(0) {
+                    try await writer.recordEvent(kind: kind, details: [:])
+                }
+            }
+        case .flush: await writer.runPendingJournalFlushForTesting()
+        case .flushFailing: try await withoutJournal { await writer.runPendingJournalFlushForTesting() }
+        case .wait(let milliseconds): try await Task.sleep(for: .milliseconds(milliseconds))
+        case .finish: try await writer.finish(status: ArchiveStatus.complete)
+        }
+        let after = await writer.journalScheduleForTesting()
+        let label = "step \(index): \(step)"
+        #expect(after.dirty == dirty, "\(label)")
+        #expect(after.pending == pending, "\(label)")
+        #expect(journalInvariantViolation(after) == nil, "\(label)")
+        switch step {
+        case .append, .appendFailing, .interval, .flushFailing, .everyEventFailing, .wait:
+            // Only a successful sync moves the last sync.
+            if after.dirty { #expect(after.lastSync == before.lastSync, "\(label)") }
+        default: break
+        }
+        if case .flushFailing = step { #expect(after.failedAt != nil, "\(label)") }
+        if case .flush = step, before.pending { #expect(after.failedAt == nil && after.lastSync != before.lastSync, "\(label)") }
+    }
+    // Eleven appends succeeded; the two failed ones left nothing behind.
+    #expect(try SessionArchive.readEvents(at: writer.directory).events.map(\.sequence) == Array(1...11))
 }
 
 @Test func saveTranscriptCanBeRetriedAfterThePointerFails() async throws {
@@ -459,6 +661,33 @@ private func journalSyncs(_ counter: FileSyncCounter) -> Int { counter.count("ev
     var changed = second
     changed.segments = []
     await #expect(throws: HolosError.self) { try await writer.saveTranscript(changed, writeLegacyExports: false) }
+    try await writer.finish(status: ArchiveStatus.complete)
+}
+
+@Test func saveTranscriptCanBeRetriedAfterALegacyExportFails() async throws {
+    let root = try temporaryRoot()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let writer = try archive(in: root)
+    let first = Transcript(source: "mic", locale: "en-CA", backend: .speech,
+                           segments: [.init(start: 0, end: 1, text: "First")])
+    try await writer.saveTranscript(first)
+    let markdown = SessionPaths.export("md", in: writer.directory)
+    try FileManager.default.removeItem(at: markdown)
+    try FileManager.default.createDirectory(at: markdown, withIntermediateDirectories: false)
+
+    let second = Transcript(source: "mic", locale: "en-CA", backend: .speech,
+                            segments: [.init(start: 0, end: 1, text: "Second")])
+    await #expect(throws: (any Error).self) { try await writer.saveTranscript(second) }
+    // The pointer does not advance past exports that were not written.
+    #expect(try SessionArchive.currentTranscriptID(at: writer.directory) == first.id)
+
+    try FileManager.default.removeItem(at: markdown)
+    try await writer.saveTranscript(second)
+    #expect(try SessionArchive.currentTranscriptID(at: writer.directory) == second.id)
+    let text = try String(contentsOf: SessionPaths.export("txt", in: writer.directory), encoding: .utf8)
+    #expect(text.contains("Second"))
+    let rendered = try String(contentsOf: markdown, encoding: .utf8)
+    #expect(rendered.contains("Second"))
     try await writer.finish(status: ArchiveStatus.complete)
 }
 
@@ -763,6 +992,60 @@ private func journalSyncs(_ counter: FileSyncCounter) -> Int { counter.count("ev
     #expect(journal.events.map(\.kind) == [MeetingEventKind.chunkOpened, MeetingEventKind.captureStopped])
     #expect(!journal.tornTail)
     #expect(journal.unreadableLines == 0)
+}
+
+@Test func openReadsTheManifestOnlyAfterTheWriterLockIsFree() async throws {
+    let root = try temporaryRoot()
+    defer { try? FileManager.default.removeItem(at: root) }
+    var first: SessionArchive? = try archive(in: root)
+    let directory = try #require(first).directory
+    let path = "audio/mic/000001.caf"
+    try Data([1, 2, 3]).write(to: directory.appendingPathComponent(path))
+
+    // A second opener starts while the first writer is active and waits for its lock.
+    let (contended, signal) = AsyncStream.makeStream(of: Void.self)
+    let opener = Task.detached {
+        try SessionLockFile.$onContention.withValue({ signal.yield() }) { try SessionArchive.open(at: directory) }
+    }
+    for await _ in contended { break }
+    // The first writer registers a chunk and exits before the opener's retry runs out.
+    try await first?.registerChunk(.init(track: "mic", relativePath: path, start: 0, end: 1,
+                                         sampleRate: 1, channels: 1, frameCount: 1))
+    first = nil
+    let second = try await opener.value
+
+    // The reopened writer must not write back the manifest it would have read before the chunk existed.
+    try await second.finish(status: ArchiveStatus.complete)
+    #expect(try SessionArchive.readManifest(at: directory).chunks.map(\.relativePath) == [path])
+}
+
+@Test func createPublishesTheSessionFolderDurably() throws {
+    let root = try temporaryRoot()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let counter = FileSyncCounter()
+    let writer = try AtomicFile.$fileSyncCounter.withValue(counter) { try archive(in: root) }
+    #expect(counter.count(root.lastPathComponent + "/") == 1)
+    #expect(counter.count("audio/") == 1)
+    #expect(counter.count(writer.directory.lastPathComponent + "/") >= 1)
+}
+
+@Test func saveTranscriptRefusesExportsSwappedForASymbolicLink() async throws {
+    let root = try temporaryRoot()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let writer = try archive(in: root)
+    let outside = root.appendingPathComponent("outside", isDirectory: true)
+    try FileManager.default.createDirectory(at: outside, withIntermediateDirectories: false)
+    let exports = SessionPaths.exports(writer.directory)
+    try FileManager.default.removeItem(at: exports)
+    try FileManager.default.createSymbolicLink(at: exports, withDestinationURL: outside)
+
+    let transcript = Transcript(id: "revision1", source: "mic", locale: "en-CA", backend: .speech,
+                                segments: [.init(start: 0, end: 1, text: "Hello")])
+    let error = await #expect(throws: HolosError.self) { try await writer.saveTranscript(transcript) }
+    guard case .invalidInput? = error else { Issue.record("Expected invalidInput, got \(String(describing: error))"); return }
+    #expect(try FileManager.default.contentsOfDirectory(atPath: outside.path).isEmpty)
+    #expect(!FileManager.default.fileExists(atPath: SessionPaths.transcriptPointer(writer.directory).path))
+    try await writer.finish(status: ArchiveStatus.complete)
 }
 
 private extension JSONDecoder {
