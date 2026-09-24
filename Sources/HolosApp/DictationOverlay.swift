@@ -1,11 +1,15 @@
 import AppKit
 
-/// A non-activating preview. It must not steal the insertion target: the panel never becomes key or
-/// main, and clicking it does not activate Holos. Only its close button reacts to the mouse.
+/// A non-activating preview. It must not steal the insertion target, and clicks on it pass through to
+/// whatever is underneath. The close button lives in a separate tiny child panel over the top-right
+/// corner, because a window cannot be click-through in only part of its area. Neither panel ever
+/// becomes key or main, and clicking does not activate Holos.
 @MainActor
 final class DictationOverlay {
     private let panel: NSPanel
     private let closeButton = FirstMouseButton()
+    private let closePanel: NSPanel
+    private static let closeSize: CGFloat = 22
     /// Set by the close button; `show` stays quiet until the next dictation calls `allowShowing()`.
     private var dismissed = false
     private let titleLabel = NSTextField(labelWithString: "")
@@ -22,8 +26,18 @@ final class DictationOverlay {
         panel.backgroundColor = .clear
         panel.hasShadow = true
         panel.hidesOnDeactivate = false
-        panel.ignoresMouseEvents = false
-        panel.becomesKeyOnlyIfNeeded = true
+        panel.ignoresMouseEvents = true
+
+        closePanel = OverlayPanel(contentRect: NSRect(x: 0, y: 0, width: Self.closeSize, height: Self.closeSize),
+                                  styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: true)
+        closePanel.level = .floating
+        closePanel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .ignoresCycle]
+        closePanel.isOpaque = false
+        closePanel.backgroundColor = .clear
+        closePanel.hasShadow = false
+        closePanel.hidesOnDeactivate = false
+        closePanel.isReleasedWhenClosed = false
+        closePanel.becomesKeyOnlyIfNeeded = true
         panel.isReleasedWhenClosed = false
 
         let material = NSVisualEffectView(frame: panel.contentView!.bounds)
@@ -55,12 +69,12 @@ final class DictationOverlay {
         closeButton.refusesFirstResponder = true
         closeButton.target = self
         closeButton.action = #selector(dismiss)
-        closeButton.translatesAutoresizingMaskIntoConstraints = false
-        material.addSubview(closeButton)
+        closeButton.frame = NSRect(x: 0, y: 0, width: Self.closeSize, height: Self.closeSize)
+        closePanel.contentView = closeButton
         NSLayoutConstraint.activate([
-            closeButton.topAnchor.constraint(equalTo: material.topAnchor, constant: 10),
-            closeButton.trailingAnchor.constraint(equalTo: material.trailingAnchor, constant: -10),
-            titleLabel.trailingAnchor.constraint(lessThanOrEqualTo: closeButton.leadingAnchor, constant: -8),
+            // Leave room for the close panel that sits over the top-right corner.
+            titleLabel.trailingAnchor.constraint(lessThanOrEqualTo: material.trailingAnchor,
+                                                 constant: -(18 + Self.closeSize + 8)),
             stack.leadingAnchor.constraint(equalTo: material.leadingAnchor, constant: 18),
             stack.trailingAnchor.constraint(equalTo: material.trailingAnchor, constant: -18),
             stack.topAnchor.constraint(equalTo: material.topAnchor, constant: 16),
@@ -84,6 +98,10 @@ final class DictationOverlay {
             panel.setFrameOrigin(NSPoint(x: frame.midX - panel.frame.width / 2, y: frame.minY + 70))
         }
         panel.orderFrontRegardless()
+        let frame = panel.frame
+        closePanel.setFrameOrigin(NSPoint(x: frame.maxX - 10 - Self.closeSize, y: frame.maxY - 10 - Self.closeSize))
+        if closePanel.parent == nil { panel.addChildWindow(closePanel, ordered: .above) }
+        closePanel.orderFrontRegardless()
     }
 
     /// The end of `text` that fits the preview, so the words just spoken stay visible; older words
@@ -124,6 +142,8 @@ final class DictationOverlay {
     }
 
     func hide() {
+        if closePanel.parent != nil { panel.removeChildWindow(closePanel) }
+        closePanel.orderOut(nil)
         panel.orderOut(nil)
         titleLabel.stringValue = ""
         previewLabel.stringValue = ""
