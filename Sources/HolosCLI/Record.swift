@@ -103,20 +103,16 @@ struct Record: AsyncParsableCommand {
             }
         }
 
-        /// The vocabulary the app hands over (docs/meeting-design.md §4.12). The file holds private names, so it is
-        /// deleted once read, whether or not it could be used.
+        /// The vocabulary the app hands over (docs/meeting-design.md §4.12). The file holds private names, so once it
+        /// is opened and verified as a regular file it is unlinked, whether or not it could be used; a folder,
+        /// symbolic link, or other entry at the path is refused and left untouched (`VocabularyFile.consume`).
         private func readVocabulary() throws -> [String] {
             guard let vocabularyFile else { return [] }
-            let url = fileURL(vocabularyFile)
-            defer { try? FileManager.default.removeItem(at: url) }
-            guard let data = try AtomicFile.readIfPresent(url, maxBytes: 1 << 20) else {
-                throw ValidationError("The vocabulary file \(url.path) does not exist.")
+            do {
+                return try VocabularyFile.consume(fileURL(vocabularyFile))
+            } catch HolosError.invalidInput(let message) {
+                throw ValidationError(message)
             }
-            guard let vocabulary = try? HolosJSON.decoder().decode(MeetingVocabulary.self, from: data),
-                  vocabulary.schemaVersion == 1 else {
-                throw ValidationError("The vocabulary file is not a Holos vocabulary (schemaVersion 1 with strings).")
-            }
-            return vocabulary.strings
         }
 
         /// Post-processing after the recording, told how the recording stopped so a `diskLow` stop skips rendering.

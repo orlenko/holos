@@ -204,6 +204,125 @@ func leaseTakenBeforeFinish() async throws {
     #expect(RecorderChannel.liveness(session: session) == .exited)
 }
 
+/// The ways a recording ends without a processing lease of its own.
+enum RecorderExitPath: String, CaseIterable, Sendable, CustomTestStringConvertible {
+    /// A stop with no hook configured.
+    case noHook
+    /// A hook is configured, but another process holds the processing lease.
+    case leaseUnavailable
+    /// Capture cannot start.
+    case startFailure
+    /// Epoch 0's stream ends before its first frame.
+    case endedBeforeAudio
+    /// A stop before any audio arrived: the recording fails with `incomplete`.
+    case noAudio
+    /// The run's task is cancelled while recording.
+    case cancelled
+
+    var testDescription: String { rawValue }
+}
+
+private struct LocksAtExit: Sendable {
+    var writer: Bool
+    var lease: Bool
+}
+
+/// On every exit path without a lease, status.json says exited while the recorder still holds its writer lock, so
+/// `RecorderChannel.liveness` goes from capturing (or maintenance) to exited and never reads dead in between.
+@Test(.timeLimit(.minutes(2)), arguments: RecorderExitPath.allCases) @MainActor
+func exitIsPublishedBeforeTheLastLockIsReleased(_ path: RecorderExitPath) async throws {
+    let temp = try TemporaryDirectory()
+    defer { temp.remove() }
+    let root = temp.url
+    // The locks at the moment the exited status was written, seen from the status writer itself: deterministic.
+    let atExit = SharedValue<LocksAtExit?>(nil)
+    let observer: @Sendable (RecorderStatus) -> Void = { status in
+        guard status.phase == .exited, let session = sessionFolders(in: root).first else { return }
+        atExit.set(LocksAtExit(writer: (try? SessionArchive.isActive(at: session)) ?? false,
+                               lease: (try? SessionArchive.isProcessing(at: session)) ?? false))
+    }
+    let script: FakeCaptureScript
+    switch path {
+    case .startFailure: script = FakeCaptureScript(startError: .permissionDenied("Microphone access is required."))
+    case .endedBeforeAudio: script = FakeCaptureScript(failAfterFrames: 0)
+    case .noAudio: script = FakeCaptureScript()
+    case .noHook, .leaseUnavailable, .cancelled: script = FakeCaptureScript(frames: FakeFrame.run(count: 3))
+    }
+    let captures = FakeCaptureFactory([script])
+    let stop = ManualStopSource()
+    let hookCalls = SharedValue(0)
+    let hook: PostProcessHook = { session, _, _ in
+        hookCalls.update { $0 += 1 }
+        return stopRecord(session, state: .succeeded)
+    }
+    var tuning = recorderFastTuning()
+    tuning.leaseRetry = .milliseconds(100)
+    let dependencies = recorderDependencies(captures: captures, postProcess: path == .leaseUnavailable ? hook : nil,
+                                            stop: stop, tuning: tuning, statusObserver: observer)
+    // Samples liveness from the recorder's first status.json until it reads exited (or once more after the run).
+    let done = SharedValue(false)
+    let probe = Task.detached { () -> (samples: Int, dead: Int, seen: [RecorderLiveness]) in
+        var samples = 0, dead = 0
+        var seen: [RecorderLiveness] = []
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: .seconds(100))
+        while clock.now < deadline {
+            let finishing = done.value
+            if let session = sessionFolders(in: root).first, (try? RecorderChannel.readStatus(session: session)) != nil {
+                let liveness = RecorderChannel.liveness(session: session)
+                samples += 1
+                if seen.last != liveness { seen.append(liveness) }
+                if liveness == .dead { dead += 1 }
+                if liveness == .exited { break }
+            }
+            if finishing { break }
+            try? await Task.sleep(for: .milliseconds(1))
+        }
+        return (samples, dead, seen)
+    }
+    let run = Task {
+        try await RecordingWorkflow.run(.testing(root: root, recordOnly: true), dependencies: dependencies)
+    }
+    var other: ProcessingLease?
+    switch path {
+    case .noHook, .leaseUnavailable, .cancelled:
+        #expect(await eventually(timeout: .seconds(60)) { (captures.captures.first?.consumedFrames ?? 0) >= 3 })
+        if path == .leaseUnavailable {
+            other = try SessionArchive.acquireProcessingLease(at: try #require(sessionFolders(in: root).first))
+        }
+        if path == .cancelled { run.cancel() } else { stop.requestStop() }
+    case .noAudio:
+        #expect(await eventually(timeout: .seconds(60)) { captures.requests.count == 1 })
+        stop.requestStop()
+    case .startFailure, .endedBeforeAudio:
+        break
+    }
+    let result = await run.result
+    done.set(true)
+    let sampled = await probe.value
+    other?.release()
+
+    switch path {
+    case .noHook:
+        #expect(try result.get().postProcessing == nil)
+    case .leaseUnavailable:
+        #expect(try result.get().postProcessing?.state == .failed)
+        #expect(hookCalls.value == 0)
+    case .startFailure, .endedBeforeAudio, .noAudio:
+        #expect(throws: HolosError.self) { try result.get() }
+    case .cancelled:
+        #expect(throws: CancellationError.self) { try result.get() }
+    }
+    let locks = try #require(atExit.value, "The recorder wrote an exited status.")
+    #expect(locks.writer, "The writer lock is still held when status.json says exited.")
+    #expect(sampled.samples > 0)
+    #expect(sampled.dead == 0, "Liveness never reads dead on the way out (saw \(sampled.seen)).")
+    let session = try #require(sessionFolders(in: root).first)
+    #expect(RecorderChannel.liveness(session: session) == .exited)
+    #expect(try !SessionArchive.isActive(at: session))
+    #expect(try !SessionArchive.isProcessing(at: session))
+}
+
 @Test(.timeLimit(.minutes(1))) @MainActor
 func statusEndsExitedAfterFakePostProcessor() async throws {
     let temp = try TemporaryDirectory()

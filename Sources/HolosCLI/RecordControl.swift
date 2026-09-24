@@ -76,21 +76,22 @@ enum RecorderControl {
             // gets it. Both `--no-wait` and the waiting form go through `send` first.
             break
         }
-        let request = try RecorderChannel.send(command, label: label, session: session, sessionID: id, sender: "cli")
+        let request: ControlRequest
+        do {
+            // `send` reads status.json again after publishing and withdraws a request the recorder exited without
+            // reading, so `--no-wait` never reports a request that nothing will answer.
+            request = try RecorderChannel.send(command, label: label, session: session, sessionID: id, sender: "cli")
+        } catch {
+            if try reportExited(command, session: session) { return }
+            throw error
+        }
         if noWait {
             Console.output("Sent \(command.rawValue) to \(id).")
             return
         }
         guard let ack = await RecorderChannel.waitForAck(request, session: session, timeout: ackTimeout) else {
-            // A recorder that exited meanwhile deleted the request unanswered.
-            if let status = try? RecorderChannel.readStatus(session: session), status.phase == .exited {
-                let reason = status.exit?.reason.rawValue ?? "unknown"
-                if command == .stop {
-                    Console.output("The recorder has already exited (\(reason)).")
-                    return
-                }
-                throw HolosError.unavailable("The recorder has already exited (\(reason)).")
-            }
+            // A recorder that exited meanwhile never answers; `waitForAck` has withdrawn the request.
+            if try reportExited(command, session: session) { return }
             Console.error("Recorder did not respond within 3 s; the request stays queued.")
             throw ExitCode(1)
         }
@@ -102,6 +103,16 @@ enum RecorderControl {
         case .rejected:
             throw HolosError.unavailable("Rejected: \(sentence(ack.message ?? "the recorder refused the request."))")
         }
+    }
+
+    /// When status.json says the recorder exited, a stop is reported as done (true: the command is finished) and any
+    /// other command throws. False when the recorder has not exited.
+    private static func reportExited(_ command: ControlCommand, session: URL) throws -> Bool {
+        guard let status = try? RecorderChannel.readStatus(session: session), status.phase == .exited else { return false }
+        let reason = status.exit?.reason.rawValue ?? "unknown"
+        guard command == .stop else { throw HolosError.unavailable("The recorder has already exited (\(reason)).") }
+        Console.output("The recorder has already exited (\(reason)).")
+        return true
     }
 
     private static func appliedText(_ command: ControlCommand, request: ControlRequest, session: URL) -> String {
