@@ -242,3 +242,43 @@ Probe flags: `--models DIR`, `--out PATH`, `--threshold`, `--step-ratio`,
 `--min-segment`, `--fa`, `--fb`, `--num-speakers`, `--max-speakers`,
 `--skip-mask`, `--zero-vote`, `--chunk-embeddings`, `--compute cpu|gpu|ane|all`.
 The 3 h WAV was deleted after the run (345 MB).
+
+## PR7a results
+
+Measured 2026-09-24 on the same machine with `HolosDiarization` (`FluidDiarizer`,
+default configuration with `exclusiveSegments` false).
+
+### Pinned model files
+
+`HOLOS_RECORD_MODEL_MANIFEST=1 holos setup --speakers` listed 24 files
+(21,786,966 bytes) at revision `df2625ac…`; tree digest
+`9540dc3b91e348d28110db4caf560d7c2d5bdd6d54e3658ad8e7ae0a7d809da6`.
+
+- The 22 model artifacts match the SHA-256 and size in the repo's
+  `provenance.json`. It lists 17 more (`PLDA.mlmodelc`, `mlpackages/`) that the
+  offline variant does not download.
+- All 24 files, including `config.json` and `provenance.json`, match the Hugging
+  Face tree API at the pinned revision (`lfs.oid` for LFS files, the git blob
+  SHA-1 for the others).
+- `holos setup --speakers`: download 8.4 s, then SHA-256 verification and the
+  first Core ML load (1.16 s) before the folder is renamed into place.
+
+### Three-voice fixture
+
+`HOLOS_DIARIZATION_FIXTURE=1` (`threeVoiceFixtureMeetsDER`): 12 alternating
+turns of 5–8 s from three system voices, 0.6 s of silence between turns, 85.8 s
+rendered to a 16 kHz Int16 CAF and read through `Int16CAFSampleSource`. The
+reference marks where each turn is audible (10 ms frames above −40 dBFS, pauses
+under 0.25 s bridged); DER uses a 0.25 s collar. Debug test build.
+
+| Voices | Clusters | DER | Miss | False alarm | Confusion | Scored | Diarize wall |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| Moira (en-IE), Evan (en-US), Daniel (en-GB): the fixture's choice | 3 | 1.63 % | 0.00 s | 0.20 s | 0.91 s | 68.2 s | 0.79 s |
+| Samantha (en-US), Evan, Daniel | 3 | 1.48 % | 0.00 s | 0.11 s | 0.91 s | 69.0 s | 0.79 s |
+| Samantha, Evan, Rishi (en-IN) | 3 | 0.65 % | 0.35 s | 0.10 s | 0.00 s | 69.7 s | 0.76 s |
+| Samantha, Evan, Karen (en-AU, super-compact) | 2 | 34.1 % | 0.00 s | 0.30 s | 23.21 s | 68.9 s | 0.76 s |
+
+The two female compact voices (Samantha, Karen) merged into one cluster, so the
+fixture picks a female voice, a male voice, and a second male voice from another
+English locale. FluidAudio's `totalProcessingSeconds`, which includes the model
+load time, was 1.1 s per run.

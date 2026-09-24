@@ -1,12 +1,28 @@
 import Darwin
 import Foundation
 import HolosCore
+import HolosDiarization
 import HolosMeeting
 import HolosStorage
 
 /// The post-processor the CLI runs, after a recording and (from PR7b) for `holos session diarize`.
+///
+/// The diarizer is `FluidDiarizer` with `options.engineOverrides` applied when the speaker models are verified
+/// (`FluidModels.status() == .verified`), else nil (speaker-less exports and the setup hint). Invalid engine
+/// overrides give a diarizer that fails with the reason, so the diarize stage records it.
 func makeMeetingPostProcessor(options: PostProcessingOptions = .init()) -> MeetingPostProcessor {
-    MeetingPostProcessor(options: options)
+    MeetingPostProcessor(diarizer: makeDiarizer(engineOverrides: options.engineOverrides), options: options)
+}
+
+/// `FluidDiarizer` over the installed models, or nil when they are not verified.
+func makeDiarizer(engineOverrides: [String: String]) -> (any SpeakerDiarizer)? {
+    guard FluidModels.status() == .verified else { return nil }
+    do {
+        let configuration = try FluidDiarizerConfiguration.default.overridden(by: engineOverrides)
+        return FluidDiarizer(configuration: configuration)
+    } catch {
+        return RejectedSettingsDiarizer(error: error as? HolosError ?? .invalidInput(error.localizedDescription))
+    }
 }
 
 /// The hook `holos record start` runs under the processing lease after the archive is finished.
@@ -24,5 +40,18 @@ func makePostProcessHook(options: PostProcessingOptions) -> PostProcessHook {
             return PostProcessingRecord(sessionID: sessionID, state: .failed, pid: getpid(), startedAt: startedAt,
                                         updatedAt: Date(), message: message)
         }
+    }
+}
+
+/// A diarizer for engine settings that did not parse: every call fails with why, so the post-processor records the
+/// diarize stage as failed instead of running with settings nobody asked for.
+private struct RejectedSettingsDiarizer: SpeakerDiarizer {
+    let error: HolosError
+
+    func engineInfo() async throws -> DiarizationEngineInfo { throw error }
+
+    func diarize(_ request: DiarizationRequest,
+                 progress: @escaping @Sendable (Double) -> Void) async throws -> DiarizerOutput {
+        throw error
     }
 }
