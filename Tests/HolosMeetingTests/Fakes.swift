@@ -427,6 +427,59 @@ extension RecordingDependencies {
     }
 }
 
+// MARK: - Meeting controller (PR4)
+
+/// A `RecorderLauncher` that starts nothing: it records each launch and ends a launch when the test says so.
+@MainActor
+final class FakeRecorderLauncher: RecorderLauncher {
+    struct Launch: Equatable {
+        var settings: MeetingStartSettings
+        var sessionID: String
+        var root: URL
+        var vocabularyFile: URL?
+    }
+
+    var onExit: ((Int32, String?) -> Void)?
+    /// `launch` throws this (and records nothing).
+    var launchError: HolosError?
+    /// The pid `launch` returns.
+    var pid: Int32? = 4_242
+    private(set) var launches: [Launch] = []
+    private(set) var terminated: [String] = []
+    /// The exit handler of each launch, by session ID (read at launch, as the real launchers do).
+    private var exits: [String: (Int32, String?) -> Void] = [:]
+
+    func launch(_ settings: MeetingStartSettings, sessionID: String, root: URL, vocabularyFile: URL?) throws -> Int32? {
+        if let launchError { throw launchError }
+        launches.append(Launch(settings: settings, sessionID: sessionID, root: root, vocabularyFile: vocabularyFile))
+        if let onExit { exits[sessionID] = onExit }
+        return pid
+    }
+
+    /// Records the request; delivered only to a recorder this launcher started.
+    @discardableResult
+    func terminate(sessionID: String) -> Bool {
+        terminated.append(sessionID)
+        return launches.contains { $0.sessionID == sessionID }
+    }
+
+    /// Ends the recorder launched for `sessionID` (the last launch when nil), as its process exiting would.
+    func exit(_ sessionID: String? = nil, code: Int32, logTail: String?) {
+        guard let id = sessionID ?? launches.last?.sessionID, let handler = exits.removeValue(forKey: id) else { return }
+        handler(code, logTail)
+    }
+}
+
+/// A `RecorderStatus` for controller and reducer tests: phase `phase`, rewritten at `updatedAt`, by this process.
+func meetingStatus(_ sessionID: String, phase: RecorderPhase, name: String = "Council meeting",
+                   updatedAt: Date = Date(), elapsed: Double = 60, exit: RecorderExit? = nil,
+                   source: AudioSource = .microphone) -> RecorderStatus {
+    RecorderStatus(sessionID: sessionID, name: name, pid: getpid(), phase: phase, sequence: 3,
+                   startedAt: updatedAt.addingTimeInterval(-elapsed), updatedAt: updatedAt, source: source,
+                   microphoneName: "Built-in Microphone", elapsedSeconds: elapsed, recordedSeconds: elapsed,
+                   exit: exit)
+}
+
 extension RecordingOptions {
     /// An en-CA Speech recording named "Test meeting" into `root`.
     static func testing(root: URL, source: AudioSource = .microphone, duration: Double? = nil,

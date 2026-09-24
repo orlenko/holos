@@ -13,9 +13,12 @@ import Testing
 func recorderFastTuning(liveQueueSeconds: Double = LiveTrack.queueSeconds,
                         journalCapacity: Int = LiveTrack.journalCapacity,
                         pumpCapacitySeconds: Double = 60) -> RecorderTuning {
-    RecorderTuning(poll: .milliseconds(10), tick: .milliseconds(50), stoppedPoll: .milliseconds(50),
-                   pumpCapacitySeconds: pumpCapacitySeconds, liveQueueSeconds: liveQueueSeconds,
-                   journalCapacity: journalCapacity)
+    var tuning = RecorderTuning(poll: .milliseconds(10), tick: .milliseconds(50), stoppedPoll: .milliseconds(50),
+                                pumpCapacitySeconds: pumpCapacitySeconds, liveQueueSeconds: liveQueueSeconds,
+                                journalCapacity: journalCapacity)
+    tuning.exitRetry = .milliseconds(50)
+    tuning.exitRetryLimit = .milliseconds(400)
+    return tuning
 }
 
 /// Fake capture and speech with a fast loop, the given clock (a `ManualSessionClock` gives tests the time), and

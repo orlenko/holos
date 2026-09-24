@@ -17,10 +17,20 @@ struct SetupState {
     /// Opacity of the dictation preview, 0.3–1.0.
     var previewOpacity: Double
     var message: String
+    /// A meeting is recording, so dictation is paused (docs/meeting-design.md §4.12).
+    var dictationPausedForMeeting = false
+    /// `holos doctor --json` speakerModels: "verified", "notInstalled", "damaged"; "installing" while
+    /// `holos setup --speakers` runs; "unavailable" when the holos tool cannot run; "unknown" when it ran but did not
+    /// report them; nil before the first check.
+    var speakerModels: String?
+    /// Install progress, or the last install's error.
+    var speakerModelsDetail: String?
+    /// The status is being checked.
+    var speakerModelsBusy = false
 }
 
 enum SetupAction: Int, CaseIterable {
-    case microphone, accessibility, inputMonitoring, assets, dictation, toggleFillers, togglePreview
+    case microphone, accessibility, inputMonitoring, assets, dictation, toggleFillers, togglePreview, speakerModels
 }
 
 /// A regular titled window, so setup status stays visible while the user works in System Settings.
@@ -68,6 +78,7 @@ final class SetupWindow: NSObject, NSWindowDelegate {
         let titles: [(SetupAction, String)] = [
             (.microphone, "Microphone"), (.accessibility, "Accessibility"),
             (.inputMonitoring, "Input Monitoring"), (.assets, "English speech assets"), (.dictation, "Dictation"),
+            (.speakerModels, "Speaker labels"),
         ]
         for (action, title) in titles {
             let icon = NSImageView()
@@ -189,7 +200,10 @@ final class SetupWindow: NSObject, NSWindowDelegate {
             }
         }
 
-        if state.enabling {
+        if state.dictationPausedForMeeting {
+            set(.dictation, .pending, "Paused during meeting recording — resumes when the recording stops",
+                button: "Enable", enabled: false)
+        } else if state.enabling {
             set(.dictation, .pending, "Starting…", button: "Enable", enabled: false)
         } else if state.dictationEnabled {
             set(.dictation, .done, "On — hold \(state.shortcutTitle), wait for Listening, speak, release",
@@ -197,6 +211,30 @@ final class SetupWindow: NSObject, NSWindowDelegate {
         } else {
             set(.dictation, .pending, "Off — enable once the steps above are done", button: "Enable",
                 enabled: !state.installingAssets)
+        }
+
+        let install = "Install (21 MB download)"
+        switch state.speakerModels {
+        case "installing":
+            set(.speakerModels, .pending, state.speakerModelsDetail ?? "Downloading…", button: install, enabled: false)
+        case "verified":
+            set(.speakerModels, .done, "Installed — meetings get speaker labels after they are saved", button: nil)
+        case "notInstalled":
+            set(.speakerModels, state.speakerModelsDetail == nil ? .pending : .problem,
+                state.speakerModelsDetail.map { "Install failed: \($0)" }
+                    ?? "Not installed — meetings are saved without speaker labels", button: install)
+        case "damaged":
+            set(.speakerModels, .problem, state.speakerModelsDetail.map { "Install failed: \($0)" }
+                ?? "Damaged — install them again", button: install)
+        case "unavailable":
+            set(.speakerModels, .problem, "The holos tool is missing from Holos.app; rebuild Holos with scripts/build-app.sh",
+                button: nil)
+        case "unknown":
+            set(.speakerModels, .problem, "Could not check the speaker models; `holos doctor` shows why", button: install)
+        case let other?:
+            set(.speakerModels, .problem, "Status unknown (\(other))", button: install)
+        case nil:
+            set(.speakerModels, .pending, "Checking…", button: install, enabled: false)
         }
     }
 

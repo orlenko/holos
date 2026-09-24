@@ -57,6 +57,11 @@ struct SavedSpeakerState {
         return state
     }
 
+    /// The session has speaker labels the exports and the review window can use: the head's run loads as the labels
+    /// and every file that exists or is named can be read. The one test for "labels are ready" (the naming offer, a
+    /// finished meeting's `speakersReady`, the app's Label Speakers result).
+    var labelsReady: Bool { problems.isEmpty && headRun != nil }
+
     /// The problem that forbids replacing the files: one written by a newer Holos (`unavailable`, schema rule 3,
     /// §1.6) first, else one that cannot be read now (not `SessionFiles.isDamage`). Nil when every problem is damage
     /// or a missing file, which post-processing may replace.

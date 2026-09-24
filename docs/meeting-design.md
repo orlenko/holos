@@ -3658,9 +3658,17 @@ replay, rebuild, and import read `vocabulary.json`. Because the temporary file h
 names and correction terms, the app side owns cleanup too: `MeetingController` deletes it
 on `launchFailed`, when the child exits for any reason, and as soon as the first
 `status.json` for that session appears (the recorder has copied it by then). On launch the
-app also removes any `$TMPDIR/holos-vocabulary-*.json` older than one hour. Tests (PR4):
+app also removes any `$TMPDIR/holos-vocabulary-*.json` older than one hour. A hand-off
+file is removed by moving it into a new 0700 folder `.holos-remove-<device>.<inode>.<UUID>`
+beside it and unlinking it there (`AtomicFile.readAndRemove`, `removeRegularFile`), so a
+file renamed onto its name meanwhile is never deleted. If the process ends, or the unlink
+fails, after the move, the same launch sweep finishes it: in each such folder older than
+five minutes that is a real folder owned by this user with mode 0700, it removes `file`
+only if it is the regular file the folder's name records (same device and inode), then the
+folder if empty; anything else stays. Tests (PR4):
 `vocabularyFileRemovedOnLaunchFailure` (spawn fails), `vocabularyFileRemovedOnEarlyExit`
-(child exits before any status), `staleVocabularyFilesSwept`.
+(child exits before any status), `staleVocabularyFilesSwept`,
+`strandedRemovalFolderIsFinishedBySweep`, `strandedRemovalSweepRemovesOnlyTheRecordedFile`.
 
 ### 4.13 Retention and deletion
 
@@ -5408,7 +5416,8 @@ public enum AutoRelabelPolicy {
 - `statusRead` phase `transcribing`/`postprocessing` → `finishing`,
   `setDictationPaused(false)`.
 - `statusRead` phase `exited` → `idle`, `finished(id, summary, speakersReady)`, and
-  `offerNaming` when speakers are ready. Summary: "Saved Council meeting (2:58:12).
+  `offerNaming` when speakers are ready (post-processing `succeeded` or `partial`, then
+  checked against the saved labels by `MeetingController`). Summary: "Saved Council meeting (2:58:12).
   Speakers labelled." or the exit's post-processing message ("… No speaker labels:
   speaker models are not installed.").
 - `active` + (liveness `dead`, or `childExited` without an `exited` status) →
@@ -5496,7 +5505,14 @@ failed, interrupted; runs `holos session diarize <path>`), `Show in Finder`,
 `Save Transcript As…` (NSSavePanel: md or txt), `Delete Audio…`, `Delete Meeting…`, and
 `Clean Up` when `derivedBytes > 0`. Footer: "Meetings use 12.4 GB · 21.3 GB free".
 Double-click opens the Quick Look preview (PR9 changes it to Review). Refreshes every
-2 s while visible.
+2 s while visible. Button enablement is `MeetingActionPolicy.enabled`, the rules of the
+commands behind the buttons: Recover when `SessionRecoveryCommand.rebuilds` would rebuild
+(asked with the catalog's readable transcript, so a `transcriptionIncomplete` or `incomplete`
+meeting whose transcript cannot be read qualifies) or the meeting is interrupted, never for a
+damaged manifest or a transcript from a newer Holos; Label Speakers for speaker state none,
+notLabelled, failed, or interrupted with a readable transcript and audio, not interrupted. No
+lease-taking action while the app uses the meeting or another process holds it (liveness
+capturing, processing, maintenance).
 
 Live transcript window: read-only text view with the last 500 `transcriptFinalized`
 events from `events.jsonl`, `[01:02:03] Mic: …`, refreshed every second, scrolled to the
@@ -5512,12 +5528,54 @@ picks at most one session and `MaintenanceLauncher` runs `holos session diarize 
 --json`; attempts are counted in `UserDefaults "meeting.relabelAttempts"`. This covers a
 Mac shut down or put to sleep while labelling.
 
+Naming offer: derived from saved state, never emitted per path
+(`MeetingController.refreshNamingOffer`, rule `NamingOfferPolicy.offer`). Among recorded
+meetings with liveness exited or dead whose labels are ready and were made in the last 7 days
+(`SessionSummary.labelsReadyAt`, the head run's `createdAt`), the one labelled last is offered,
+unless its speakers were edited or the user opened the offer for that run (UserDefaults
+`meeting.namingOffersDismissed`, session ID → run ID; another run of the meeting is offered
+again). It is derived on launch, when a followed recording finishes, and whenever the app's use
+of a meeting ends (`endUsing`: a Meetings command, the interrupted prompt's Recover, Clean Up,
+Save Transcript As…, the automatic relabel), so a meeting labelled after Holos quit, by a
+command in a terminal, or by any of those paths is offered, also after a relaunch. Each change
+is reported once, as `offerNaming` or `clearNamingOffer`; `reviewOpened` dismisses it.
+
+Meetings in use: `MeetingController.sessionsInUse` (session ID → what the app is doing) is the
+one set of meetings the app works on. Every operation of the app that takes a meeting's
+processing lease, or reads it for the user, holds an entry while it runs (`beginUsing` refuses a
+second one): Recover, Label Speakers, Delete Audio, Delete Meeting, the interrupted prompt's
+Recover, Clean Up, Save Transcript As…, and the automatic relabel. The relabel skips these
+meetings, every Meetings action refuses them, and the State column shows what is running.
+
+Labels are ready (a finished meeting's `speakersReady`, the naming offer, the Label Speakers
+result) only when `SavedSpeakerState` finds them usable, the validation the catalog, recovery,
+and the exports share (`MeetingController.speakerLabelsReady`, run off the main actor);
+`speakers/head.json` alone is not enough.
+
+Launched recorders: the pid and start time of each recorder child are kept in
+`UserDefaults "meeting.launchedRecorders"` until its exit is seen. A start timed out while a
+permission prompt is open leaves a child with no session folder; after a quit or crash the
+relaunched app refuses a new start ("The last recording is still stopping…") while that pid
+still names a process with the saved start time.
+
 Quit (`applicationShouldTerminate`) while `active`: alert "A meeting is recording."
 Child mode: `[Stop and Save]` (send stop; `.terminateLater`; reply once the status phase
 is `transcribing` or later, at most 10 s; the recorder finishes labelling on its own),
 `[Keep Recording]` (quit the app only), `[Cancel]`. In-process mode: `[Stop and Save]`
-shows progress and replies once the phase is `postprocessing` or later (the transcript
-is saved; labelling continues in its child), at most 10 minutes; `[Cancel]`.
+shows progress and replies once the recording in the app has ended, at most 10 minutes;
+`[Cancel]`. Labelling continues in its child: once the recording's post-process hook has
+handed the lease over, the quit calls `InProcessLauncher.leaveLabellingToItsChild()`,
+which cancels the recording task; the hook stops mirroring the child and returns a
+`running` record, and the recording writes `exited` (post-processing `running`) before it
+ends. Replying at phase `postprocessing` alone would kill the app while the recording
+still waits for the child, leaving `status.json` stuck in `postprocessing`. The readiness
+rule is `QuitReadiness.ready`; any quit while a recording still runs in the app waits.
+Test `quitLeavesLabellingToTheChildAndEndsTheRecording`. An in-process
+recording whose exited status could not be written yet (`ExitRetry` still retrying it and
+holding the locks) has not ended: `InProcessLauncher` keeps it running, reports its exit
+only once `status.json` says exited (or the retry stops because the folder is gone, as a
+failure), and a quit waits for it the same way (`isRecording` stays true, `isWritingExit`).
+Test `inProcessRecordingEndsOnlyOnceItsExitedStatusIsWritten`.
 
 About Holos: `NSApp.orderFrontStandardAboutPanel(options: [.credits: …])` with the
 credits text of §4.8 embedded as a string constant (the app has no resource bundle).

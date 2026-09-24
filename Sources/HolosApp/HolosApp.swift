@@ -6,6 +6,7 @@ import HolosAudio
 import HolosCore
 import HolosDesktop
 import HolosDictation
+import HolosMeeting
 import HolosSpeech
 import os
 import Security
@@ -43,10 +44,12 @@ enum HolosAppMain {
 
 @MainActor
 final class HolosAppDelegate: NSObject, NSApplicationDelegate {
-    private var statusItem: NSStatusItem!
+    var statusItem: NSStatusItem!
     private let overlay = DictationOverlay()
     private var monitor: GlobalHotkeyMonitor?
     private var controller: DictationController!
+    /// Meeting recording controls (HolosApp+Meeting.swift, docs/meeting-design.md §5.8).
+    let meeting = MeetingAppState()
     private var enabled = false
     private var enabling = false
     private var installingAssets = false
@@ -95,7 +98,7 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
         get { UserDefaults.standard.object(forKey: "removeFillers") as? Bool ?? true }
         set { UserDefaults.standard.set(newValue, forKey: "removeFillers") }
     }
-    private var corrections = CorrectionList()
+    var corrections = CorrectionList()
     /// False when an existing corrections file could not be read, so it is never overwritten.
     private var correctionsWritable = true
     private var correctionsWindow: CorrectionsWindow?
@@ -148,7 +151,18 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
                 self.insertionBlockReason = "The active application changed; use Copy Result."
             }
         })
-        if UserDefaults.standard.bool(forKey: "dictationEnabled") { enable() } else { showSetup() }
+        // Before dictation starts: a meeting already recording (the app relaunched, or one started in a terminal)
+        // keeps dictation paused.
+        setUpMeetings()
+        if UserDefaults.standard.bool(forKey: "dictationEnabled") {
+            if !meeting.dictationPaused { enable() }
+        } else {
+            showSetup()
+        }
+    }
+
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        meetingShouldTerminate()
     }
 
     func applicationWillTerminate(_ notification: Notification) {
@@ -165,50 +179,60 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
 
     private var shortcutTitle: String { shortcut == .rightOption ? "Right Option" : "Control–Option–Space" }
 
-    private func rebuildMenu() {
+    func rebuildMenu() {
         guard statusItem != nil else { return }
         let menu = NSMenu()
         menu.autoenablesItems = false
-        let status = NSMenuItem(title: message, action: nil, keyEquivalent: "")
-        status.isEnabled = false
-        menu.addItem(status)
-        menu.addItem(.separator())
-        let toggle = item("\(enabled ? "Disable" : "Enable") \(shortcutTitle) Dictation", #selector(toggleEnabled))
-        toggle.state = enabled ? .on : .off
-        toggle.isEnabled = !enabling && !installingAssets
-        menu.addItem(toggle)
-        let shortcuts = NSMenuItem(title: "Hold-to-talk shortcut", action: nil, keyEquivalent: "")
-        let choices = NSMenu()
-        choices.autoenablesItems = false
-        for (choice, title) in [(HotkeyChoice.rightOption, "Right Option"), (.controlOptionSpace, "Control–Option–Space")] {
-            let entry = item(title, #selector(changeShortcut(_:)))
-            entry.representedObject = choice.rawValue
-            entry.state = shortcut == choice ? .on : .off
-            entry.isEnabled = !isBusy && !enabling
-            choices.addItem(entry)
+        menu.delegate = self
+        addMeetingItems(to: menu)
+        if meeting.dictationPaused {
+            // A meeting is recording: this line replaces the whole dictation block (§4.12).
+            addDictationPausedLine(to: menu)
+        } else {
+            let status = NSMenuItem(title: message, action: nil, keyEquivalent: "")
+            status.isEnabled = false
+            menu.addItem(status)
+            menu.addItem(.separator())
+            let toggle = item("\(enabled ? "Disable" : "Enable") \(shortcutTitle) Dictation", #selector(toggleEnabled))
+            toggle.state = enabled ? .on : .off
+            toggle.isEnabled = !enabling && !installingAssets
+            menu.addItem(toggle)
+            let shortcuts = NSMenuItem(title: "Hold-to-talk shortcut", action: nil, keyEquivalent: "")
+            let choices = NSMenu()
+            choices.autoenablesItems = false
+            for (choice, title) in [(HotkeyChoice.rightOption, "Right Option"), (.controlOptionSpace, "Control–Option–Space")] {
+                let entry = item(title, #selector(changeShortcut(_:)))
+                entry.representedObject = choice.rawValue
+                entry.state = shortcut == choice ? .on : .off
+                entry.isEnabled = !isBusy && !enabling
+                choices.addItem(entry)
+            }
+            shortcuts.submenu = choices
+            menu.addItem(shortcuts)
+            let cancel = item("Cancel Dictation", #selector(cancelDictation))
+            cancel.isEnabled = isBusy
+            menu.addItem(cancel)
+            let copy = item("Copy Result", #selector(copyResult))
+            copy.isEnabled = !resultText.isEmpty
+            menu.addItem(copy)
+            let discard = item("Discard Result", #selector(discardResult))
+            discard.isEnabled = !resultText.isEmpty && !isBusy
+            menu.addItem(discard)
+            menu.addItem(item("Correct Last Dictation…", #selector(showCorrections)))
         }
-        shortcuts.submenu = choices
-        menu.addItem(shortcuts)
-        let cancel = item("Cancel Dictation", #selector(cancelDictation))
-        cancel.isEnabled = isBusy
-        menu.addItem(cancel)
-        let copy = item("Copy Result", #selector(copyResult))
-        copy.isEnabled = !resultText.isEmpty
-        menu.addItem(copy)
-        let discard = item("Discard Result", #selector(discardResult))
-        discard.isEnabled = !resultText.isEmpty && !isBusy
-        menu.addItem(discard)
-        menu.addItem(item("Correct Last Dictation…", #selector(showCorrections)))
         menu.addItem(.separator())
+        addMeetingsItem(to: menu)
         menu.addItem(item("Setup…", #selector(showSetup)))
+        addAboutItem(to: menu)
         menu.addItem(.separator())
         menu.addItem(item("Quit Holos", #selector(quit)))
         statusItem.menu = menu
-        statusItem.button?.toolTip = "Holos — \(message)"
+        statusItem.button?.toolTip = meetingToolTip() ?? "Holos — \(message)"
+        updateStatusItemAppearance()
         updateSetupWindow()
     }
 
-    private func item(_ title: String, _ action: Selector) -> NSMenuItem {
+    func item(_ title: String, _ action: Selector) -> NSMenuItem {
         let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
         item.target = self
         return item
@@ -235,8 +259,9 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
         return true
     }
 
-    private func enable() {
-        guard !enabled, !enabling, !installingAssets else { return }
+    func enable() {
+        // A recording meeting keeps dictation paused; it resumes when capture stops (§4.12).
+        guard !enabled, !enabling, !installingAssets, !meeting.dictationPaused else { return }
         guard !refuseIfReplaced() else { return }
         guard AudioCapture.microphonePermission == "authorized", AXIsProcessTrusted() else {
             show("Grant Microphone and Accessibility access in Holos Setup, then enable dictation.")
@@ -264,6 +289,7 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
                 self.monitor = monitor
                 self.enabled = true
                 self.enabling = false
+                self.meeting.suspendedBySleep = false
                 UserDefaults.standard.set(true, forKey: "dictationEnabled")
                 if let app = NSWorkspace.shared.frontmostApplication { TextInsertion.enableAccessibility(for: app) }
                 self.show("Ready — hold \(self.shortcutTitle); wait for Listening")
@@ -276,7 +302,7 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    private func disable(persist: Bool = true) {
+    func disable(persist: Bool = true) {
         enableGeneration += 1
         enableTask?.cancel(); enableTask = nil
         enabling = false
@@ -290,7 +316,7 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func changeShortcut(_ sender: NSMenuItem) {
-        guard !isBusy, let raw = sender.representedObject as? String, let choice = HotkeyChoice(rawValue: raw) else { return }
+        guard !isBusy, !meeting.dictationPaused, let raw = sender.representedObject as? String, let choice = HotkeyChoice(rawValue: raw) else { return }
         let wasEnabled = enabled
         disable()
         shortcut = choice
@@ -302,7 +328,9 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
         guard enabled else { return }
         switch action {
         case .began:
-            guard !isBusy, !refuseIfReplaced(), !TextInsertion.isSecureInputActive() else { return }
+            guard !meeting.dictationPaused, !isBusy, !refuseIfReplaced(), !TextInsertion.isSecureInputActive() else {
+                return
+            }
             overlay.allowShowing()
             resultNeedsAttention = false
             forcedStopMessage = nil
@@ -698,7 +726,7 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    private func show(_ value: String) {
+    func show(_ value: String) {
         message = value
         rebuildMenu()
     }
@@ -751,13 +779,14 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
             setupWindow = SetupWindow(perform: { [weak self] action in self?.performSetup(action) },
                                       onClose: { [weak self] in
                                           self?.setupRefreshTask?.cancel(); self?.setupRefreshTask = nil
-                                          self?.setDockPresence(false)
+                                          self?.setDockPresence(false, for: "setup")
                                       },
                                       onOpacityChange: { [weak self] value in self?.changePreviewOpacity(value) })
         }
-        setDockPresence(true)
+        setDockPresence(true, for: "setup")
         setupWindow?.show()
         refreshAssetState()
+        refreshSpeakerModels()
         // TCC has no change notification, so poll while the window is open.
         setupRefreshTask?.cancel()
         setupRefreshTask = Task { [weak self] in
@@ -790,22 +819,19 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    /// Holos is a menu bar app with no Dock icon. While the Setup window is open it becomes a regular app,
-    /// so the window shows in the Dock and Command-Tab and can be found when other windows cover it.
-    private func setDockPresence(_ visible: Bool) {
-        let policy: NSApplication.ActivationPolicy = visible ? .regular : .accessory
-        guard NSApplication.shared.activationPolicy() != policy else { return }
-        NSApplication.shared.setActivationPolicy(policy)
-    }
-
-    private func updateSetupWindow() {
+    func updateSetupWindow() {
         guard let setupWindow, setupWindow.isVisible else { return }
+        let speakerLabels = speakerLabelsSetupState()
         setupWindow.update(SetupState(
             microphone: AudioCapture.microphonePermission, accessibility: AXIsProcessTrusted(),
             inputMonitoring: CGPreflightListenEventAccess(), assets: assetState, installingAssets: installingAssets,
             dictationEnabled: enabled, enabling: enabling, busy: isBusy, shortcutTitle: shortcutTitle,
             removeFillers: removeFillers, showPreview: showPreview, previewOpacity: previewOpacity,
-            message: message))
+            // While a meeting records, its pause takes precedence over every other dictation message (§4.12).
+            message: meeting.dictationPaused ? "Dictation paused during meeting recording" : message,
+            dictationPausedForMeeting: meeting.dictationPaused,
+            speakerModels: speakerLabels.status, speakerModelsDetail: speakerLabels.detail,
+            speakerModelsBusy: speakerLabels.busy))
     }
 
     private func refreshAssetState() {
@@ -841,6 +867,8 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
             // Anything that does not need the user goes away at once, during or after a dictation.
             if !showPreview && !overlay.showingAttention { overlay.hide() }
             updateSetupWindow()
+        case .speakerModels:
+            installSpeakerModels()
         }
     }
 
@@ -869,6 +897,8 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func suspendForSessionChange() {
+        // Remembered so the end of a meeting does not turn dictation back on after a sleep (§4.12).
+        meeting.suspendedBySleep = true
         disable(persist: false)
         discardResult()
         show("Paused after sleep/session change — enable from the menu to resume")
