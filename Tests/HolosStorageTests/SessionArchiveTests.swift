@@ -894,6 +894,60 @@ private func journalSyncs(_ counter: FileSyncCounter) -> Int { counter.count("ev
     #expect(journal.unreadableLines == 0)
 }
 
+@Test func openReadsTheManifestOnlyAfterTheWriterLockIsFree() async throws {
+    let root = try temporaryRoot()
+    defer { try? FileManager.default.removeItem(at: root) }
+    var first: SessionArchive? = try archive(in: root)
+    let directory = try #require(first).directory
+    let path = "audio/mic/000001.caf"
+    try Data([1, 2, 3]).write(to: directory.appendingPathComponent(path))
+
+    // A second opener starts while the first writer is active and waits for its lock.
+    let (contended, signal) = AsyncStream.makeStream(of: Void.self)
+    let opener = Task.detached {
+        try SessionLockFile.$onContention.withValue({ signal.yield() }) { try SessionArchive.open(at: directory) }
+    }
+    for await _ in contended { break }
+    // The first writer registers a chunk and exits before the opener's retry runs out.
+    try await first?.registerChunk(.init(track: "mic", relativePath: path, start: 0, end: 1,
+                                         sampleRate: 1, channels: 1, frameCount: 1))
+    first = nil
+    let second = try await opener.value
+
+    // The reopened writer must not write back the manifest it would have read before the chunk existed.
+    try await second.finish(status: ArchiveStatus.complete)
+    #expect(try SessionArchive.readManifest(at: directory).chunks.map(\.relativePath) == [path])
+}
+
+@Test func createPublishesTheSessionFolderDurably() throws {
+    let root = try temporaryRoot()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let counter = FileSyncCounter()
+    let writer = try AtomicFile.$fileSyncCounter.withValue(counter) { try archive(in: root) }
+    #expect(counter.count(root.lastPathComponent + "/") == 1)
+    #expect(counter.count("audio/") == 1)
+    #expect(counter.count(writer.directory.lastPathComponent + "/") >= 1)
+}
+
+@Test func saveTranscriptRefusesExportsSwappedForASymbolicLink() async throws {
+    let root = try temporaryRoot()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let writer = try archive(in: root)
+    let outside = root.appendingPathComponent("outside", isDirectory: true)
+    try FileManager.default.createDirectory(at: outside, withIntermediateDirectories: false)
+    let exports = SessionPaths.exports(writer.directory)
+    try FileManager.default.removeItem(at: exports)
+    try FileManager.default.createSymbolicLink(at: exports, withDestinationURL: outside)
+
+    let transcript = Transcript(id: "revision1", source: "mic", locale: "en-CA", backend: .speech,
+                                segments: [.init(start: 0, end: 1, text: "Hello")])
+    let error = await #expect(throws: HolosError.self) { try await writer.saveTranscript(transcript) }
+    guard case .invalidInput? = error else { Issue.record("Expected invalidInput, got \(String(describing: error))"); return }
+    #expect(try FileManager.default.contentsOfDirectory(atPath: outside.path).isEmpty)
+    #expect(!FileManager.default.fileExists(atPath: SessionPaths.transcriptPointer(writer.directory).path))
+    try await writer.finish(status: ArchiveStatus.complete)
+}
+
 private extension JSONDecoder {
     static var holos: JSONDecoder {
         let decoder = JSONDecoder()

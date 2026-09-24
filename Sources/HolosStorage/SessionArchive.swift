@@ -167,6 +167,10 @@ public actor SessionArchive {
         guard chmod(directory.appendingPathComponent("audio").path, 0o700) == 0 else {
             throw HolosError.io("Cannot make audio directory private.")
         }
+        // Publish the new folders durably: audio/ holds mic/ and system/, and the root holds the session folder.
+        // The session folder itself is fsync'd once its files exist.
+        try AtomicFile.syncDirectory(directory.appendingPathComponent("audio", isDirectory: true))
+        try AtomicFile.syncDirectory(root)
         let fd = try acquireLock(directory)
         do {
             let manifest = SessionManifest(id: id, name: name, createdAt: Date(),
@@ -183,14 +187,16 @@ public actor SessionArchive {
     }
 
     /// Reopens an unfinished archive after a process exits; refuses a second active writer.
+    /// The manifest and journal are read only once the writer lock is held (retry 1 s), so a writer that
+    /// registered chunks or finished while this call waited is never overwritten with an older manifest.
     public static func open(at directory: URL) throws -> SessionArchive {
         try requireSafeLayout(directory)
-        let manifest = try readManifest(at: directory)
-        guard manifest.status == ArchiveStatus.recording else {
-            throw HolosError.invalidInput("Only a recording archive can be reopened.")
-        }
         let fd = try acquireLock(directory)
         do {
+            let manifest = try readManifest(at: directory)
+            guard manifest.status == ArchiveStatus.recording else {
+                throw HolosError.invalidInput("Only a recording archive can be reopened.")
+            }
             let report = try inspectRecovery(at: directory)
             guard report.manifestError == nil, !report.tornFinalJournalLine else {
                 throw HolosError.incomplete("Repair the journal before reopening this archive.")

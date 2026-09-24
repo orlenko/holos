@@ -83,6 +83,10 @@ enum SessionLockFile {
     private static let pollInterval: Duration = .milliseconds(20)
     private static let log = Logger(subsystem: "ca.orlenko.holos.app", category: "storage")
 
+    /// Test hook: while set (a task-local value), `acquire` calls it once when its first attempt finds the lock
+    /// held, before it starts waiting.
+    @TaskLocal static var onContention: (@Sendable () -> Void)? = nil
+
     /// Opens (creating it 0600 if needed) the lock file `name` in `session` and takes `LOCK_EX`, polling every
     /// 20 ms until `timeout`. Returns the locked descriptor (O_CLOEXEC), or nil when another holder kept the lock
     /// for the whole timeout. Always makes at least one attempt.
@@ -95,6 +99,7 @@ enum SessionLockFile {
         }
         let clock = ContinuousClock()
         let deadline = clock.now.advanced(by: max(timeout, .zero))
+        var contended = false
         while true {
             if flock(fd, LOCK_EX | LOCK_NB) == 0 { return fd }
             let code = errno
@@ -102,6 +107,10 @@ enum SessionLockFile {
             guard code == EWOULDBLOCK else {
                 Darwin.close(fd)
                 throw HolosError.io("Cannot lock the session: \(AtomicFile.errnoText(code)).")
+            }
+            if !contended {
+                contended = true
+                onContention?()
             }
             let now = clock.now
             guard now < deadline else {

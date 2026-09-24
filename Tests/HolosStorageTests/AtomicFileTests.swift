@@ -173,3 +173,128 @@ private func atomicContents(_ folder: URL) throws -> [String] {
     #expect(!fm.fileExists(atPath: root.appendingPathComponent("a").path))
     #expect(fm.fileExists(atPath: kept.path))
 }
+
+private func expectInvalidInput(_ body: () throws -> Void) {
+    let error = #expect(throws: HolosError.self) { try body() }
+    guard case .invalidInput? = error else { Issue.record("Expected invalidInput, got \(String(describing: error))"); return }
+}
+
+@Test func failedAppendRemovesTheFileItCreatedSoARetryPublishesIt() throws {
+    let folder = try atomicTemporaryFolder()
+    defer { try? FileManager.default.removeItem(at: folder) }
+    let url = folder.appendingPathComponent("edits.jsonl")
+    let folderKey = folder.lastPathComponent + "/"
+
+    // A short write on the first append of a new journal leaves no file behind.
+    #expect(throws: HolosError.self) {
+        try AtomicFile.$appendFailureAfterBytes.withValue(2) { try AtomicFile.append(Data("one\n".utf8), to: url) }
+    }
+    #expect(try atomicContents(folder).isEmpty)
+
+    // So does a folder fsync that fails after the contents were saved.
+    #expect(throws: HolosError.self) {
+        try AtomicFile.$failFolderSync.withValue(true) { try AtomicFile.append(Data("one\n".utf8), to: url) }
+    }
+    #expect(try atomicContents(folder).isEmpty)
+
+    // The retry creates the file again, so it fsyncs the folder too.
+    let counter = FileSyncCounter()
+    try AtomicFile.$fileSyncCounter.withValue(counter) { try AtomicFile.append(Data("one\n".utf8), to: url) }
+    #expect(counter.count(folderKey) == 1)
+    #expect(try Data(contentsOf: url) == Data("one\n".utf8))
+
+    // A later append to the existing file does not.
+    try AtomicFile.$fileSyncCounter.withValue(counter) { try AtomicFile.append(Data("two\n".utf8), to: url) }
+    #expect(counter.count(folderKey) == 1)
+}
+
+@Test func unsyncedAppendStillPublishesANewFile() throws {
+    let folder = try atomicTemporaryFolder()
+    defer { try? FileManager.default.removeItem(at: folder) }
+    let url = folder.appendingPathComponent("events.jsonl")
+    let counter = FileSyncCounter()
+    try AtomicFile.$fileSyncCounter.withValue(counter) {
+        try AtomicFile.append(Data("one\n".utf8), to: url, sync: false)
+        try AtomicFile.append(Data("two\n".utf8), to: url, sync: false)
+    }
+    #expect(counter.count(folder.lastPathComponent + "/") == 1)
+    #expect(counter.count("events.jsonl") == 0)
+}
+
+@Test func createCanBeRetriedAfterAFailedFolderSync() throws {
+    let folder = try atomicTemporaryFolder()
+    defer { try? FileManager.default.removeItem(at: folder) }
+    let url = folder.appendingPathComponent("run.json")
+    #expect(throws: HolosError.self) {
+        try AtomicFile.$failFolderSync.withValue(true) { try AtomicFile.create(Data("run".utf8), at: url) }
+    }
+    #expect(try atomicContents(folder).isEmpty)
+    let counter = FileSyncCounter()
+    try AtomicFile.$fileSyncCounter.withValue(counter) { try AtomicFile.create(Data("run".utf8), at: url) }
+    #expect(counter.count(folder.lastPathComponent + "/") == 1)
+    #expect(try Data(contentsOf: url) == Data("run".utf8))
+}
+
+@Test func ensurePrivateDirectoryCanBeRetriedAfterAFailedParentSync() throws {
+    let folder = try atomicTemporaryFolder()
+    defer { try? FileManager.default.removeItem(at: folder) }
+    let child = folder.appendingPathComponent("speakers", isDirectory: true)
+    #expect(throws: HolosError.self) {
+        try AtomicFile.$failFolderSync.withValue(true) { try AtomicFile.ensurePrivateDirectory(child) }
+    }
+    #expect(try atomicContents(folder).isEmpty)
+    let counter = FileSyncCounter()
+    try AtomicFile.$fileSyncCounter.withValue(counter) { try AtomicFile.ensurePrivateDirectory(child) }
+    #expect(counter.count(folder.lastPathComponent + "/") == 1)
+    #expect(try atomicMode(child) == 0o700)
+}
+
+@Test func writesRefuseASymbolicLinkInPlaceOfTheirFolder() throws {
+    let folder = try atomicTemporaryFolder()
+    defer { try? FileManager.default.removeItem(at: folder) }
+    let fm = FileManager.default
+    let outside = folder.appendingPathComponent("outside", isDirectory: true)
+    try fm.createDirectory(at: outside.appendingPathComponent("voice"), withIntermediateDirectories: true)
+    let journal = outside.appendingPathComponent("edits.jsonl")
+    try Data("kept\n".utf8).write(to: journal)
+
+    // Outside a session: the folder holding the file must not be a symbolic link.
+    let link = folder.appendingPathComponent("link")
+    try fm.createSymbolicLink(at: link, withDestinationURL: outside)
+    expectInvalidInput { try AtomicFile.write(Data("x".utf8), to: link.appendingPathComponent("status.json")) }
+    expectInvalidInput { try AtomicFile.create(Data("x".utf8), at: link.appendingPathComponent("run.json")) }
+    expectInvalidInput { try AtomicFile.append(Data("x\n".utf8), to: link.appendingPathComponent("edits.jsonl")) }
+    expectInvalidInput { try AtomicFile.truncate(link.appendingPathComponent("edits.jsonl"), to: 0) }
+
+    // Inside a session: no folder from the session folder down may be one (speakers/ here, above speakers/voice).
+    let session = folder.appendingPathComponent("\(UUID().uuidString).holos", isDirectory: true)
+    try fm.createDirectory(at: session, withIntermediateDirectories: false)
+    try fm.createSymbolicLink(at: session.appendingPathComponent("speakers"), withDestinationURL: outside)
+    let voice = session.appendingPathComponent("speakers/voice/run.json")
+    expectInvalidInput { try AtomicFile.write(Data("x".utf8), to: voice) }
+    expectInvalidInput { try AtomicFile.create(Data("x".utf8), at: voice) }
+    expectInvalidInput { try AtomicFile.append(Data("x\n".utf8), to: voice) }
+    expectInvalidInput { try AtomicFile.append(Data("x\n".utf8), to: session.appendingPathComponent("speakers/edits.jsonl")) }
+    expectInvalidInput { try AtomicFile.truncate(session.appendingPathComponent("speakers/edits.jsonl"), to: 0) }
+
+    // A session folder that is itself a symbolic link is refused as well.
+    let sessionLink = folder.appendingPathComponent("\(UUID().uuidString).holos")
+    try fm.createSymbolicLink(at: sessionLink, withDestinationURL: outside)
+    expectInvalidInput { try AtomicFile.write(Data("x".utf8), to: sessionLink.appendingPathComponent("voice/run.json")) }
+
+    #expect(try atomicContents(outside) == ["edits.jsonl", "voice"])
+    #expect(try atomicContents(outside.appendingPathComponent("voice")).isEmpty)
+    #expect(try Data(contentsOf: journal) == Data("kept\n".utf8))
+
+    // Real folders still work, including one reached through a symbolic link above the session folder.
+    try fm.removeItem(at: session.appendingPathComponent("speakers"))
+    try AtomicFile.ensurePrivateDirectory(session.appendingPathComponent("speakers/voice", isDirectory: true))
+    try AtomicFile.write(Data("x".utf8), to: voice)
+    try AtomicFile.append(Data("x\n".utf8), to: session.appendingPathComponent("speakers/edits.jsonl"))
+    #expect(try Data(contentsOf: voice) == Data("x".utf8))
+    let alias = folder.appendingPathComponent("alias")
+    try fm.createSymbolicLink(at: alias, withDestinationURL: folder)
+    let aliased = alias.appendingPathComponent(session.lastPathComponent).appendingPathComponent("speakers/voice/run.json")
+    try AtomicFile.write(Data("y".utf8), to: aliased)
+    #expect(try Data(contentsOf: voice) == Data("y".utf8))
+}

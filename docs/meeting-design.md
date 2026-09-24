@@ -304,6 +304,7 @@ public enum AtomicFile {
     /// Appends with O_APPEND|O_NOFOLLOW|O_CLOEXEC. Records the size first; on any failure (short write,
     /// ENOSPC, fsync error) truncates back to that size before throwing, so a failed append never
     /// leaves a partial line. Creates the file (0600) if missing. `sync: false` skips the fsync.
+    /// An append that creates the file always fsyncs the folder; if it fails, it removes the file it created.
     public static func append(_ data: Data, to url: URL, permissions: mode_t = 0o600, sync: Bool = true) throws
     /// Creates `url` and missing parents as 0700 directories; refuses symlinks and non-directories.
     public static func ensurePrivateDirectory(_ url: URL) throws
@@ -313,6 +314,12 @@ public enum AtomicFile {
     public static func readJSON<T: Decodable>(_ type: T.Type, from url: URL, maxBytes: Int = 64 << 20) throws -> T
 }
 ```
+
+`write`, `create`, and `append` never follow a symbolic link in place of a folder Holos owns:
+the folder holding the file is opened with `O_NOFOLLOW`, and inside a session folder so is
+every folder from the session folder down (an `openat` chain, as `removeTree` does); a link
+there is refused with `invalidInput`. A `create` whose folder fsync fails removes the new
+file, so a retry is not refused as "already exists".
 
 Locks are `flock` on files in the session folder, one open file description per holder.
 
