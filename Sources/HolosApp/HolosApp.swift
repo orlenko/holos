@@ -73,6 +73,12 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
     /// Where the user was at key-down, to check before telling them to paste.
     private var originPID: pid_t?
     private var originFocus: AXUIElement?
+    private var previewOpacity: Double {
+        get { min(1, max(0.3, UserDefaults.standard.object(forKey: "previewOpacity") as? Double ?? 0.85)) }
+        set { UserDefaults.standard.set(min(1, max(0.3, newValue)), forKey: "previewOpacity") }
+    }
+    private var opacitySampleTask: Task<Void, Never>?
+
     private var removeFillers: Bool {
         get { UserDefaults.standard.object(forKey: "removeFillers") as? Bool ?? true }
         set { UserDefaults.standard.set(newValue, forKey: "removeFillers") }
@@ -101,6 +107,7 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
             shortcut = saved
         }
         controller = DictationController(locale: locale) { [weak self] update in self?.receive(update) }
+        overlay.setOpacity(previewOpacity)
         do { corrections = try CorrectionList.load(from: CorrectionList.defaultURL) }
         catch {
             correctionsWritable = false
@@ -664,7 +671,8 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
                                       onClose: { [weak self] in
                                           self?.setupRefreshTask?.cancel(); self?.setupRefreshTask = nil
                                           self?.setDockPresence(false)
-                                      })
+                                      },
+                                      onOpacityChange: { [weak self] value in self?.changePreviewOpacity(value) })
         }
         setDockPresence(true)
         setupWindow?.show()
@@ -676,6 +684,22 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
                 self?.updateSetupWindow()
                 try? await Task.sleep(for: .seconds(1))
             }
+        }
+    }
+
+    /// Applies the new opacity and shows a sample preview for a moment so the user can see the effect,
+    /// unless a dictation is in progress (its own preview already shows it).
+    private func changePreviewOpacity(_ value: Double) {
+        previewOpacity = value
+        overlay.setOpacity(previewOpacity)
+        guard !isBusy else { return }
+        overlay.show(title: "Preview opacity \(Int((previewOpacity * 100).rounded())) %",
+                     text: "This is how the dictation preview looks over your windows.", force: true)
+        opacitySampleTask?.cancel()
+        opacitySampleTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(2))
+            guard !Task.isCancelled, let self, !self.isBusy else { return }
+            self.overlay.hide()
         }
     }
 
@@ -693,7 +717,7 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
             microphone: AudioCapture.microphonePermission, accessibility: AXIsProcessTrusted(),
             inputMonitoring: CGPreflightListenEventAccess(), assets: assetState, installingAssets: installingAssets,
             dictationEnabled: enabled, enabling: enabling, busy: isBusy, shortcutTitle: shortcutTitle,
-            removeFillers: removeFillers, message: message))
+            removeFillers: removeFillers, previewOpacity: previewOpacity, message: message))
     }
 
     private func refreshAssetState() {

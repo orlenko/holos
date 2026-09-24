@@ -133,6 +133,11 @@ final class DictationOverlay {
         return "…" + text[start...]
     }
 
+    /// Opacity of the preview (not of its close button, which stays fully visible).
+    func setOpacity(_ value: Double) {
+        panel.alphaValue = CGFloat(min(1, max(0.3, value)))
+    }
+
     /// Called when a new dictation starts, so its preview appears again.
     func allowShowing() { dismissed = false }
 

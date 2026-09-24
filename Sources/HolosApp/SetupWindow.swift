@@ -12,6 +12,8 @@ struct SetupState {
     var busy: Bool
     var shortcutTitle: String
     var removeFillers: Bool
+    /// Opacity of the dictation preview, 0.3–1.0.
+    var previewOpacity: Double
     var message: String
 }
 
@@ -31,12 +33,17 @@ final class SetupWindow: NSObject, NSWindowDelegate {
     private let messageLabel = NSTextField(wrappingLabelWithString: "")
     private let fillerToggle = NSButton(checkboxWithTitle: "Remove filler words (um, uh, ah, erm, hmm)",
                                         target: nil, action: nil)
+    private let opacitySlider = NSSlider(value: 0.85, minValue: 0.3, maxValue: 1.0, target: nil, action: nil)
+    private let opacityValue = NSTextField(labelWithString: "")
+    private var onOpacityChange: ((Double) -> Void)?
     private var rows: [SetupAction: Row] = [:]
     private var positioned = false
 
     var isVisible: Bool { window.isVisible }
 
-    init(perform: @escaping (SetupAction) -> Void, onClose: @escaping () -> Void) {
+    init(perform: @escaping (SetupAction) -> Void, onClose: @escaping () -> Void,
+         onOpacityChange: ((Double) -> Void)? = nil) {
+        self.onOpacityChange = onOpacityChange
         window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 560, height: 400),
                           styleMask: [.titled, .closable, .miniaturizable], backing: .buffered, defer: true)
         self.perform = perform
@@ -97,7 +104,17 @@ final class SetupWindow: NSObject, NSWindowDelegate {
         fillerToggle.action = #selector(buttonPressed(_:))
         fillerToggle.tag = SetupAction.toggleFillers.rawValue
 
-        let stack = NSStackView(views: [messageLabel, grid, fillerToggle, note])
+        opacitySlider.target = self
+        opacitySlider.action = #selector(opacityChanged(_:))
+        opacitySlider.isContinuous = true
+        opacitySlider.widthAnchor.constraint(equalToConstant: 200).isActive = true
+        opacityValue.font = .monospacedDigitSystemFont(ofSize: 12, weight: .regular)
+        opacityValue.textColor = .secondaryLabelColor
+        let opacityRow = NSStackView(views: [NSTextField(labelWithString: "Dictation preview opacity"),
+                                             opacitySlider, opacityValue])
+        opacityRow.spacing = 10
+
+        let stack = NSStackView(views: [messageLabel, grid, fillerToggle, opacityRow, note])
         stack.orientation = .vertical
         stack.alignment = .leading
         stack.spacing = 20
@@ -127,6 +144,9 @@ final class SetupWindow: NSObject, NSWindowDelegate {
     func update(_ state: SetupState) {
         messageLabel.stringValue = "Status: \(state.message)"
         fillerToggle.state = state.removeFillers ? .on : .off
+        // Leave the slider alone while the user drags it.
+        if NSEvent.pressedMouseButtons == 0 { opacitySlider.doubleValue = state.previewOpacity }
+        opacityValue.stringValue = "\(Int((opacitySlider.doubleValue * 100).rounded())) %"
 
         switch state.microphone {
         case "authorized":
@@ -182,6 +202,11 @@ final class SetupWindow: NSObject, NSWindowDelegate {
         row.button.isHidden = title == nil
         row.button.title = title ?? ""
         row.button.isEnabled = enabled
+    }
+
+    @objc private func opacityChanged(_ sender: NSSlider) {
+        opacityValue.stringValue = "\(Int((sender.doubleValue * 100).rounded())) %"
+        onOpacityChange?(sender.doubleValue)
     }
 
     @objc private func buttonPressed(_ sender: NSButton) {
