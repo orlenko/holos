@@ -51,9 +51,12 @@ struct MeetingControllerTuning: Sendable {
     public private(set) var relabelling = false
     /// The meeting the automatic relabel is labelling, while it runs.
     public private(set) var relabellingSessionID: String?
-    /// Meetings the app is running a maintenance command for (Meetings window, interrupted prompt); the automatic
-    /// relabel skips them.
+    /// Meetings the app is running a maintenance command for (Meetings window, interrupted prompt) or has a review
+    /// window of (`ReviewMaintenance.sessionsInUse`); the automatic relabel skips them.
     public var sessionsInUse: @MainActor () -> Set<String> = { [] }
+    /// Called with the meeting's ID and true when the automatic relabel starts on it, and false when it ends, so an
+    /// open review of the meeting can follow `ReviewMaintenance`.
+    public var onAutoRelabel: (@MainActor (_ sessionID: String, _ running: Bool) -> Void)?
 
     public let root: URL
     private let launcher: any RecorderLauncher
@@ -469,8 +472,10 @@ struct MeetingControllerTuning: Sendable {
                     Self.log.notice("Session \(pick.id, privacy: .public): automatic relabel ended with \(code, privacy: .public)")
                     self?.relabelling = false
                     self?.relabellingSessionID = nil
+                    self?.onAutoRelabel?(pick.id, false)
                 }
                 self.relabellingSessionID = pick.id
+                self.onAutoRelabel?(pick.id, true)
                 Self.log.notice("Session \(pick.id, privacy: .public): relabelling automatically (attempt \(attempts[pick.id] ?? 0, privacy: .public))")
             } catch {
                 Self.log.error("Session \(pick.id, privacy: .public): automatic relabel could not start (\(ProcessSpawner.logCategory(error), privacy: .public)): \(error.localizedDescription, privacy: .private)")

@@ -104,6 +104,8 @@ public struct ReviewWord: Sendable, Equatable {
     private var optimisticOwner: [String: ObjectIdentifier] = [:]
     private var exportTimer: Task<Void, Never>?
     private var closed = false
+    /// Maintenance commands holding the review read-only, by `pause` key, oldest first.
+    private var pauses: [(key: String, reason: String)] = []
 
     // MARK: - Opening
 
@@ -145,8 +147,12 @@ public struct ReviewWord: Sendable, Equatable {
         max(snapshot.manifest.chunks.map(\.end).max() ?? 0, projection.turns.map(\.end).max() ?? 0)
     }
 
-    /// Edits can be made: the labels are usable, no relabel is queued or running, and the window is open.
-    public var isEditable: Bool { !closed && snapshot.projection != nil && !isRelabelling }
+    /// Edits can be made: the labels are usable, no relabel is queued or running, no maintenance command holds the
+    /// review (`pause`), and the window is open.
+    public var isEditable: Bool { !closed && snapshot.projection != nil && !isRelabelling && pauses.isEmpty }
+
+    /// Why the review is read-only while a maintenance command works on the meeting (`pause`), nil otherwise.
+    public var pauseReason: String? { pauses.last?.reason }
 
     /// Find More Speakers, Label Speakers on My Microphone, or Label Again is queued or running.
     public var isRelabelling: Bool {
@@ -372,8 +378,8 @@ public struct ReviewWord: Sendable, Equatable {
                           optimistic: optimistic)
     }
 
-    /// The name field's Return: an empty name clears the speaker's name (and unlinks the person it is linked to, whose
-    /// name it would otherwise keep showing); a known person's name (ignoring case) links the speaker to them (the
+    /// The name field's Return: an empty name clears the speaker's name (and unlinks the person it is linked to, or
+    /// rejects the person its automatic name comes from, in this meeting); a known person's name (ignoring case) links the speaker to them (the
     /// most recently used one when two share it); any other name creates that person and links the speaker. A name
     /// whose person is still being created by an earlier change links that person once it is saved. Without a people
     /// store the name is only set on the speaker.
@@ -382,7 +388,9 @@ public struct ReviewWord: Sendable, Equatable {
         guard let speaker = speaker(speakerID) else { throw Self.noSpeaker(speakerID) }
         guard let name = SpeakerEditor.cleanName(text) else {
             var actions: [SpeakerEditAction] = [.rename(speakerID: speakerID, name: nil)]
-            if let profileID = speaker.profileID {
+            // A linked person, or the person an automatic name ("Jim (auto)") comes from, as "Not Jim" does: either
+            // would otherwise keep showing its name.
+            if let profileID = speaker.profileID ?? automaticProfileID(for: speakerID) {
                 actions.append(.rejectProfile(speakerID: speakerID, profileID: profileID))
             }
             try await apply(actions)
@@ -549,7 +557,43 @@ public struct ReviewWord: Sendable, Equatable {
         try? await enqueue(.reload, optimistic: [])
     }
 
-    /// Regenerates exports now if an edit is pending. Call when the window closes.
+    /// A maintenance command is about to work on the meeting (`ReviewMaintenance`): the review turns read-only at
+    /// once (`pauseReason` says why; changes are refused), and this returns once every change made before is saved
+    /// and the transcript files are written, so the command starts from them. `key` names the command; pausing again
+    /// with a key already held only waits for those saves.
+    public func pause(_ key: String, reason: String) async {
+        guard !closed else { return }
+        if !pauses.contains(where: { $0.key == key }) {
+            pauses.append((key, reason))
+            exportTimer?.cancel()
+            exportTimer = nil
+            notify()
+            Self.log.info("Session \(self.sessionID, privacy: .public): review paused for a maintenance command")
+        }
+        try? await enqueue(.exports, optimistic: [])
+    }
+
+    /// The command `key` paused for has ended: the review rereads the transcript, the labels, and the people, then is
+    /// editable again (when nothing else holds it). Transcript files still waiting are written `exportDelay` later.
+    public func resume(_ key: String) async {
+        guard pauses.contains(where: { $0.key == key }) else { return }
+        if !closed { try? await enqueue(.reload, optimistic: []) }
+        pauses.removeAll { $0.key == key }
+        if exportsPending, pauses.isEmpty { scheduleExports() }
+        notify()
+        Self.log.info("Session \(self.sessionID, privacy: .public): review resumed after a maintenance command")
+    }
+
+    /// The transcript files are known to be older than the saved labels (rewriting them failed when an earlier
+    /// review closed, `PendingExports`): they are rewritten `exportDelay` from now, or at `close`.
+    public func markExportsPending() {
+        guard !closed else { return }
+        exportsPending = true
+        scheduleExports()
+    }
+
+    /// Regenerates exports now if an edit is pending. Call when the window closes. When that fails, `exportsPending`
+    /// stays true and `exportProblem` says why, so the caller can tell the user and try again later.
     ///
     /// Waits for queued changes to be saved first; later edits are refused.
     public func close() async {
@@ -1055,7 +1099,9 @@ public struct ReviewWord: Sendable, Equatable {
     private func scheduleExports() {
         exportsPending = true
         exportTimer?.cancel()
-        guard !closed else { return }
+        exportTimer = nil
+        // Paused: `resume` schedules them once the command ended.
+        guard !closed, pauses.isEmpty else { return }
         let delay = exportDelay
         exportTimer = Task { [weak self] in
             try? await Task.sleep(for: delay)
@@ -1224,7 +1270,13 @@ public struct ReviewWord: Sendable, Equatable {
         guard !isRelabelling else {
             throw HolosError.unavailable("Holos is labelling this meeting's speakers again; wait until it finishes.")
         }
+        if let reason = pauseReason {
+            throw HolosError.unavailable(reason + " " + Self.pausedSuffix)
+        }
     }
+
+    /// Follows `pauseReason` wherever the review says it is read-only.
+    public nonisolated static let pausedSuffix = "The review is read-only until it finishes."
 
     private func requirePeople() throws {
         guard profiles != nil else { throw Self.noPeople }

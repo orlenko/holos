@@ -620,12 +620,17 @@ private final class ControllerHeartbeat {
                                     maintenance: MaintenanceLauncher(executable: script), modelsInstalled: true)
     defer { controller.stopMonitoring() }
     defer { try? Data().write(to: gate) }
+    // An open review of the meeting follows the relabel's start and end (ReviewMaintenance).
+    var events: [String] = []
+    controller.onAutoRelabel = { sessionID, running in events.append("\(sessionID) \(running)") }
     #expect(controller.relabellingSessionID == nil)
     controller.runAutoRelabel()
     // While it runs, the app turns down Meetings commands for this meeting (they would contend for its lease).
     #expect(await eventually(timeout: .seconds(10)) { controller.relabellingSessionID == manifest.id })
     #expect(controller.relabelling)
+    #expect(events == ["\(manifest.id) true"])
     try Data().write(to: gate)
     #expect(await eventually(timeout: .seconds(10)) { !controller.relabelling })
     #expect(controller.relabellingSessionID == nil)
+    #expect(events == ["\(manifest.id) true", "\(manifest.id) false"])
 }

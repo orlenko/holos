@@ -28,15 +28,16 @@ final class ReviewPlayer {
 
     private var player: AVPlayer?
     private var timeObserver: Any?
-    private var loadTask: Task<Void, Never>?
+    /// Builds the composition; done (and empty) once it delivered, failed or not, so `load` can try again.
+    private let loader = LatestLoad<AVMutableComposition>()
     /// Clips still to play after the current one, and where the current one stops.
     private var pendingClips: [ClosedRange<Double>] = []
     private var stopAt: Double?
 
     var isReady: Bool { state == .ready }
 
-    /// Playing, ready, or building the audio (not stopped by `invalidate`, not off).
-    var hasAudio: Bool { player != nil || loadTask != nil }
+    /// Playing, ready, or building the audio (not stopped by `invalidate`, not off, not failed to build).
+    var hasAudio: Bool { player != nil || loader.isLoading }
 
     /// Builds the composition for `manifest`'s chunks (none when the audio was deleted).
     func load(session: URL, manifest: SessionManifest, audioDeleted: Bool) {
@@ -48,15 +49,16 @@ final class ReviewPlayer {
         }
         state = .loading
         onChange?()
-        loadTask = Task { [weak self] in
-            do {
-                let composition = try await SessionAudioComposition.make(session: session, manifest: manifest)
-                guard !Task.isCancelled, let self else { return }
+        let make: @Sendable () async throws -> sending AVMutableComposition = {
+            try await SessionAudioComposition.make(session: session, manifest: manifest)
+        }
+        loader.start(make) { [weak self] result in
+            guard let self else { return }
+            switch result {
+            case .success(let composition):
                 self.install(composition)
-            } catch is CancellationError {
-                return
-            } catch {
-                guard let self else { return }
+            case .failure(let error):
+                if error is CancellationError { return }
                 Self.log.error("Playback unavailable: \(ProcessSpawner.logCategory(error), privacy: .public)")
                 self.state = .unavailable("Playback is off: \(error.localizedDescription)")
                 self.onChange?()
@@ -106,8 +108,7 @@ final class ReviewPlayer {
     /// Stops playback and lets go of the audio (the window closed, or the audio is about to be deleted); `load`
     /// makes it playable again.
     func invalidate() {
-        loadTask?.cancel()
-        loadTask = nil
+        loader.cancel()
         player?.pause()
         if let timeObserver, let player { player.removeTimeObserver(timeObserver) }
         timeObserver = nil

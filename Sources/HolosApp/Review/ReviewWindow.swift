@@ -49,6 +49,8 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate {
     private var assignSignature: [String] = []
     private var refreshScheduled = false
     private var shownNotices: [Notice] = []
+    /// The manifest chunks playback was last built from.
+    private var loadedChunks: [AudioChunkRecord] = []
     private lazy var confirmAllItem = menuItem("Confirm All Suggestions", #selector(confirmAll))
     private lazy var findMoreItem = menuItem("Find More Speakers…", #selector(findMoreSpeakers))
     private lazy var microphoneItem = menuItem("Label Speakers on My Microphone…", #selector(labelMicrophoneSpeakers))
@@ -83,7 +85,7 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate {
         review.onChange = { [weak self] in self?.scheduleRefresh() }
         review.onRelabelChange = { [weak self] running in self?.onRelabel?(running) }
         player.onChange = { [weak self] in self?.refreshPlayback() }
-        player.load(session: review.session, manifest: review.snapshot.manifest, audioDeleted: review.snapshot.audioDeleted)
+        reloadPlayback()
         refresh()
     }
 
@@ -100,28 +102,52 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate {
         window.makeFirstResponder(turnList.table)
     }
 
-    /// Stops playback before the meeting's audio is deleted.
-    func stopPlayback() {
+    /// A maintenance command is about to work on the meeting (`ReviewMaintenance`): the window turns read-only with
+    /// `banner`, playback stops and lets go of the audio, and this returns once the window's changes are saved.
+    func pauseForMaintenance(key: String, banner: String) async {
         player.invalidate()
-        refreshPlayback()
+        refresh()
+        await review.pause(key, reason: banner)
     }
 
-    /// Rereads the labels after a command from Meetings changed them, and the audio when it was deleted or playback
-    /// was stopped for the command.
-    func reloadFromDisk() { reloadLabels(reloadStoppedPlayback: true) }
+    /// The command ended: the transcript, the labels, and playback are read again from disk, and the window is
+    /// editable again.
+    func resumeAfterMaintenance(key: String) async {
+        await review.resume(key)
+        guard !isClosing, review.pauseReason == nil else { return }
+        reloadPlayback()
+        refresh()
+    }
 
-    /// Rereads the labels; turns playback off when the audio was deleted meanwhile (by Meetings or by a command in
-    /// Terminal). `reloadStoppedPlayback`: also reloads the audio when playback was stopped for a Meetings command.
-    private func reloadLabels(reloadStoppedPlayback: Bool) {
+    /// Rereads everything a command may have changed while the window was opening (it opened on older files).
+    func reloadAll() {
         Task { [weak self] in
             guard let self, !self.isClosing else { return }
             await self.review.reload()
-            guard !self.isClosing else { return }
+            guard !self.isClosing, self.review.pauseReason == nil else { return }
+            self.reloadPlayback()
+        }
+    }
+
+    /// Rebuilds playback from the manifest as saved now (off when the audio was deleted).
+    private func reloadPlayback() {
+        loadedChunks = review.snapshot.manifest.chunks
+        player.load(session: review.session, manifest: review.snapshot.manifest,
+                    audioDeleted: review.snapshot.audioDeleted)
+    }
+
+    /// Rereads the labels after changes made elsewhere (a command in Terminal); rebuilds playback when the audio was
+    /// deleted or its chunks changed meanwhile, or when building it failed before.
+    private func reloadLabels() {
+        Task { [weak self] in
+            guard let self, !self.isClosing, self.review.pauseReason == nil else { return }
+            await self.review.reload()
+            guard !self.isClosing, self.review.pauseReason == nil else { return }
             let deleted = self.review.snapshot.audioDeleted
             let playerSaysDeleted = self.player.state == .unavailable(ReviewPlayer.audioDeletedText)
-            if deleted != playerSaysDeleted || (reloadStoppedPlayback && !self.player.hasAudio) {
-                self.player.load(session: self.review.session, manifest: self.review.snapshot.manifest,
-                                 audioDeleted: deleted)
+            if deleted != playerSaysDeleted || self.review.snapshot.manifest.chunks != self.loadedChunks
+                || (!deleted && !self.player.hasAudio) {
+                self.reloadPlayback()
             }
         }
     }
@@ -384,6 +410,9 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate {
         statusLabel.stringValue = parts.joined(separator: " · ")
 
         var lines: [Notice] = []
+        if let reason = review.pauseReason {
+            lines.append(Notice(text: reason + " " + ReviewSession.pausedSuffix, color: .systemOrange))
+        }
         if let problem { lines.append(Notice(text: "⚠ " + problem, color: .systemRed)) }
         if let runProblem = review.snapshot.runProblem { lines.append(Notice(text: "⚠ " + runProblem, color: .systemRed)) }
         if review.snapshot.transcriptChanged {
@@ -698,7 +727,7 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate {
     func windowDidBecomeKey(_ notification: Notification) {
         // Back from elsewhere (a terminal, Meetings): pick up changes made meanwhile.
         if let resigned = resignedKeyAt, Date().timeIntervalSince(resigned) > 2, window.attachedSheet == nil {
-            reloadLabels(reloadStoppedPlayback: false)
+            reloadLabels()
         }
         resignedKeyAt = nil
     }

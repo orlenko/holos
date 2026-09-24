@@ -678,6 +678,139 @@ func invalidChangeIsRefusedBeforeItIsQueued() async throws {
 }
 
 @Test(.timeLimit(.minutes(1))) @MainActor
+func clearingAnAutomaticNameRejectsItsPerson() async throws {
+    let temp = try TemporaryDirectory("review")
+    defer { temp.remove() }
+    let store = reviewStore(temp)
+    try store.update { $0.profiles = [SpeakerProfile(id: "JIM", displayName: "Jim")] }
+    let fixture = try await SessionFixtures.labelledSession(in: temp.url)
+    try SessionArchive.withSpeakerLock(at: fixture.session) {
+        try SessionSpeakerStore.writeRecognition(
+            RecognitionResult(runID: fixture.run.id, embeddingModel: DiarizationEngineInfo.fake.embeddingModel,
+                              thresholds: SpeakerRecognizer.defaultThresholds,
+                              matches: [SpeakerMatch(speakerID: "system:S1", profileID: "JIM", profileName: "Jim",
+                                                     distance: 0.1, tier: .likely)]),
+            session: fixture.session)
+    }
+    let review = try await reviewOpen(fixture.session, store: store)
+    #expect(review.speaker("system:S1")?.isAutomatic == true)
+    #expect(review.automaticProfileID(for: "system:S1") == "JIM")
+
+    // An empty name on "Jim (auto)" is "Not Jim": the automatic name goes, in one change.
+    try await review.setName("", speakerID: "system:S1")
+    let speaker = try #require(review.speaker("system:S1"))
+    #expect(!speaker.isAutomatic)
+    #expect(speaker.name == "Speaker 1")
+    #expect(speaker.rejectedProfileIDs == ["JIM"])
+    #expect(review.snapshot.projection == review.projection)
+    let edits = try reviewJournal(fixture.session)
+    #expect(edits.map(\.action) == [.rename(speakerID: "system:S1", name: nil),
+                                    .rejectProfile(speakerID: "system:S1", profileID: "JIM")])
+    #expect(Set(edits.map { $0.batchID ?? $0.id }).count == 1)
+    try await review.undo()
+    #expect(review.speaker("system:S1")?.isAutomatic == true)
+}
+
+@Test(.timeLimit(.minutes(1))) @MainActor
+func maintenancePauseSavesEarlierChangesAndRefusesNewOnes() async throws {
+    let temp = try TemporaryDirectory("review")
+    defer { temp.remove() }
+    let fixture = try await SessionFixtures.labelledSession(in: temp.url)
+    let markdown = SessionPaths.export("md", in: fixture.session)
+    let review = try await reviewOpen(fixture.session, exportDelay: .seconds(60))
+    let gate = reviewGate()
+    review.beforeEdit = gate.hook
+
+    // A change is saving when Label Speakers starts from Meetings.
+    let edit = Task { @MainActor in try await review.apply([.rename(speakerID: "system:S1", name: "Jim")]) }
+    #expect(await eventually { gate.entered.value == 1 })
+    let paused = SharedValue(false)
+    let pause = Task { @MainActor in
+        await review.pause(ReviewMaintenance.commandKey, reason: "Holos is labelling this meeting's speakers.")
+        paused.update { $0 = true }
+    }
+    // Read-only at once: a new change is refused, whatever the timing.
+    #expect(await eventually { review.pauseReason != nil })
+    #expect(!review.isEditable)
+    let refusal = await #expect(throws: HolosError.self) {
+        try await review.apply([.rename(speakerID: "system:S2", name: "Bob")])
+    }
+    #expect(refusal?.errorDescription?.hasSuffix(ReviewSession.pausedSuffix) == true)
+    await #expect(throws: HolosError.self) { try await review.undo() }
+    // The command waits until the earlier change is saved and the transcript files show it.
+    try await Task.sleep(for: .milliseconds(200))
+    #expect(!paused.value)
+    gate.release.finish()
+    try await edit.value
+    await pause.value
+    #expect(try reviewJournal(fixture.session).map(\.action) == [.rename(speakerID: "system:S1", name: "Jim")])
+    #expect(SessionFixtures.text(markdown).contains("**Jim**"))
+    #expect(!review.exportsPending)
+
+    // Pausing again for the same command changes nothing; its end makes the review editable.
+    await review.pause(ReviewMaintenance.commandKey, reason: "again")
+    await review.resume(ReviewMaintenance.commandKey)
+    #expect(review.pauseReason == nil)
+    #expect(review.isEditable)
+    try await review.apply([.rename(speakerID: "system:S2", name: "Bob")])
+    #expect(reviewName(review, "system:S2") == "Bob")
+}
+
+@Test(.timeLimit(.minutes(1))) @MainActor
+func resumeRereadsTranscriptAndLabels() async throws {
+    let temp = try TemporaryDirectory("review")
+    defer { temp.remove() }
+    let fixture = try await SessionFixtures.labelledSession(in: temp.url)
+    let review = try await reviewOpen(fixture.session)
+    try await review.apply([.rename(speakerID: "system:S1", name: "Ann")])
+    #expect(review.canUndo)
+    #expect(review.words(of: "T1").count == 6)
+
+    await review.pause(ReviewMaintenance.commandKey, reason: "Holos is recovering this meeting.")
+    // Recover rebuilds the transcript and labels the speakers again, as `holos session recover` would.
+    let rebuilt = SessionFixtures.transcript(SessionFixtures.alternatingSegments(track: "system", wordsPerTurn: 4))
+    try await SessionFixtures.saveTranscript(rebuilt, in: fixture.session)
+    let newer = try SessionFixtures.writeHeadRun(session: fixture.session, transcript: rebuilt,
+                                                 outputs: ["system": SessionFixtures.alternatingOutput()])
+    // Nothing is reread while the command runs.
+    #expect(review.projection.runID == fixture.run.id)
+
+    await review.resume(ReviewMaintenance.commandKey)
+    #expect(review.projection.runID == newer.id)
+    #expect(review.snapshot.transcript.id == rebuilt.id)
+    #expect(review.words(of: "T1").count == 4)
+    #expect(!review.canUndo, "Undo does not reach past a new labelling.")
+    #expect(review.isEditable)
+}
+
+@Test(.timeLimit(.minutes(1))) @MainActor
+func exportsNotWrittenAtCloseStayPendingForTheNextReview() async throws {
+    let temp = try TemporaryDirectory("review")
+    defer { temp.remove() }
+    let fixture = try await SessionFixtures.labelledSession(in: temp.url)
+    let markdown = SessionPaths.export("md", in: fixture.session)
+    // Something in the way of transcript.md (a full disk would fail the same way).
+    try FileManager.default.createDirectory(at: markdown, withIntermediateDirectories: true)
+
+    let first = try await reviewOpen(fixture.session)
+    try await first.apply([.rename(speakerID: "system:S1", name: "Jim")])
+    await first.close()
+    #expect(first.exportsPending, "The caller learns that the files were not rewritten.")
+    #expect(first.exportProblem != nil)
+
+    // The next review of the meeting is told (PendingExports) and rewrites them without any new change.
+    try FileManager.default.removeItem(at: markdown)
+    let second = try await reviewOpen(fixture.session, exportDelay: .milliseconds(100))
+    #expect(!second.exportsPending)
+    second.markExportsPending()
+    #expect(second.exportsPending)
+    #expect(await eventually { SessionFixtures.text(markdown).contains("**Jim**") })
+    await second.close()
+    #expect(!second.exportsPending)
+    #expect(second.exportProblem == nil)
+}
+
+@Test(.timeLimit(.minutes(1))) @MainActor
 func sessionWithoutLabelsDoesNotOpen() async throws {
     let temp = try TemporaryDirectory("review")
     defer { temp.remove() }

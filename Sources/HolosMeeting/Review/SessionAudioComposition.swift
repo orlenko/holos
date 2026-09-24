@@ -116,8 +116,11 @@ public enum SessionAudioComposition {
             log.error("Audio chunk \(chunk.id, privacy: .public) has a path outside its session; left out of playback")
             return nil
         }
-        // Opened once through the session's folders without following links, so a link planted in place of the
-        // chunk or a folder above it is refused rather than played (docs/meeting-design.md §1.7).
+        // Opened once through the session's folders without following links, so a link found in place of the chunk
+        // or a folder above it is refused rather than played (docs/meeting-design.md §1.7). AVFoundation then opens
+        // the path itself; it cannot be given this descriptor. The window between the check and that open is one of
+        // the check-then-act windows the §1.7 threat model accepts: only a hostile process of the same user could
+        // swap a link in there, and such a process can already read every session directly.
         do {
             guard try AtomicFile.openForReading(url) != nil else {
                 log.error("Audio chunk \(chunk.id, privacy: .public) is missing; left out of playback")

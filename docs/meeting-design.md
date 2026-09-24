@@ -5799,6 +5799,31 @@ public enum SessionAudioComposition {
   speakers were labelled. [Label Again]", and "Audio deleted; playback is off."
 - Heavy work (snapshot load, edits, export regeneration) runs off the main actor (§1.3).
 
+**Reviews and maintenance** (`ReviewMaintenance`, one rule for every command on a meeting
+whose review is open or still opening):
+
+- A meeting with a review open, opening, or still saving is in use: the automatic relabel
+  skips it (`MeetingController.sessionsInUse`), as it skips a meeting a Meetings command
+  runs for.
+- When a command starts, a review still opening is waited for. Delete Meeting closes the
+  review (its changes saved) before the meeting moves; a review that finishes opening
+  during the deletion is closed unseen. Recover, Label Speakers, Delete Audio, and the
+  automatic relabel make the review read-only with a banner ("Holos is recovering this
+  meeting. The review is read-only until it finishes."): `ReviewSession.pause` returns
+  once every earlier change is saved and the transcript files are written, playback stops,
+  and the audio composition is dropped. A review that opens during the command opens
+  read-only; one that opened on files a command changed meanwhile rereads them.
+- When the command ends, however it ends, the review rereads the transcript, labels, and
+  people (`ReviewSession.resume`), rebuilds playback from the manifest as it now is (off
+  when the audio is gone), and is editable again. A playback build that failed can be
+  retried: the window rebuilds it when it becomes key again.
+- Clean Up removes only `derived/` renders, which the review never reads: no effect.
+- Closing: when the transcript files cannot be rewritten (`exportProblem`), the labels
+  stay saved, an alert says so (not while quitting or deleting), the meeting is marked in
+  `PendingExports` (UserDefaults), Meetings says the files are older than the labels, and
+  the next review of the meeting rewrites them. Quitting waits at most 10 s for reviews
+  to close (`waitAtMost`) and never awaits a save that runs longer.
+
 **Tests.**
 
 | Test | Input | Expected |
@@ -5815,6 +5840,11 @@ public enum SessionAudioComposition {
 | `exportsRegenerateAfterDelayAndOnClose` | edit with 0.1 s delay; then edit and close | exports updated after the delay; close flushes |
 | `compositionPlacesChunksAtSessionTimes` | chunks 0–30, 30–60, 65–95 (mic) | composition segments at those times; total 95 s |
 | `compositionTrimsOverlappingChunks` | legacy chunks 0–30 and 29.8–60 | second inserted from 30.0; no overlap; total 60 s |
+| `maintenancePauseSavesEarlierChangesAndRefusesNewOnes` | edit saving; pause | refused at once; pause returns after the save and the exports |
+| `resumeRereadsTranscriptAndLabels` | pause; new transcript and head; resume | new run, new transcript's words, editable |
+| `exportsNotWrittenAtCloseStayPendingForTheNextReview` | exports blocked at close | `exportsPending` after close; the next review rewrites them |
+| `clearingAnAutomaticNameRejectsItsPerson` | empty name on "Jim (auto)" | rename nil + rejectProfile Jim, one batch |
+| `waitAtMostReturnsWithoutAwaitingWorkThatHangs` | work that never ends, 0.1 s | returns false; work not cancelled |
 
 **Manual.** H14 and H20 in §7.
 

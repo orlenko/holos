@@ -298,6 +298,9 @@ final class MeetingsWindow: NSObject, NSWindowDelegate, NSTableViewDataSource, N
             var parts: [String] = []
             if let doing = running[summary.id] { parts.append(doing) }
             if let message = summary.labelMessage, summary.speakerState != .labelled { parts.append(message) }
+            if PendingExports().contains(summary.id) {
+                parts.append("The transcript files are older than the speaker labels; open Review to update them.")
+            }
             statusLabel.stringValue = parts.joined(separator: " ")
         } else {
             statusLabel.stringValue = ""
