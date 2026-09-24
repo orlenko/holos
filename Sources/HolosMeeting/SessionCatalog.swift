@@ -189,9 +189,10 @@ public enum SessionCatalog {
         }
     }
 
-    /// The speaker state from postprocess.json and speakers/head.json (`speakerState`). When either exists but cannot
-    /// be read (damaged, written by a newer Holos, an I/O error), the state is `unreadable` with why, never the state
-    /// of a session without that file; the run is the other file's, if it can be read.
+    /// The speaker state from postprocess.json, speakers/head.json and the run the head names (`speakerState`). When
+    /// any of them exists but cannot be read (damaged, written by a newer Holos, an I/O error), or the head names a run
+    /// that is missing, the state is `unreadable` with why, never the state of a session without that file; the run is
+    /// the other file's, if it can be read.
     static func speakerLabels(_ session: URL, liveness: RecorderLiveness)
         -> (state: SpeakerLabelState, message: String?, runID: String?) {
         var problems: [String] = []
@@ -202,6 +203,12 @@ public enum SessionCatalog {
         }
         do { head = try SessionSpeakerStore.readHead(session: session) } catch {
             problems.append(error.localizedDescription)
+        }
+        // The head names a run; labels load from that run, so a missing, damaged or newer run is unreadable too.
+        if let head {
+            do { _ = try SessionSpeakerStore.readRun(id: head.runID, session: session) } catch {
+                problems.append("The labels' speaker run cannot be read: \(error.localizedDescription)")
+            }
         }
         guard problems.isEmpty else {
             log.error("Cannot read the speaker state: \(problems.joined(separator: " "), privacy: .private)")

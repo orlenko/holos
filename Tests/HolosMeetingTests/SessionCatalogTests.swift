@@ -285,6 +285,20 @@ func catalogReportsUnreadableSpeakerFilesAndTranscripts() async throws {
         #expect(SessionCatalog.summary(session: session).speakerState == .labelled)
     }
 
+    // The run the head names is read: missing, damaged, or newer is unreadable, never "labelled".
+    let runURL = SessionPaths.run(run.id, in: session)
+    let savedRun = try Data(contentsOf: runURL)
+    for (damage, data) in [("damaged", Data("not json".utf8)), ("newer", try catalogNewer(savedRun))] {
+        try catalogReplace(runURL, with: data)
+        let summary = SessionCatalog.summary(session: session)
+        #expect(summary.speakerState == .unreadable, "head run \(damage)")
+        #expect(summary.labelMessage?.contains("speaker run") == true, "head run \(damage)")
+    }
+    try FileManager.default.removeItem(at: runURL)
+    #expect(SessionCatalog.summary(session: session).speakerState == .unreadable, "head run missing")
+    try catalogReplace(runURL, with: savedRun)
+    #expect(SessionCatalog.summary(session: session).speakerState == .labelled)
+
     // The current revision is read: truncated, mislabelled, or newer is not listed as the transcript.
     let revision = SessionPaths.transcript(transcript.id, in: session)
     let saved = try Data(contentsOf: revision)
