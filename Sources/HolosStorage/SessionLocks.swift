@@ -34,23 +34,96 @@ public final class ProcessingLease: Sendable {
         }
     }
 
-    init(session: URL, folder: FileIdentity, descriptor: Int32) {
+    /// False for a lease adopted from a parent process (`adoptProcessingLease`): its descriptor shares the parent's
+    /// open file description, so letting go only closes it (an explicit unlock would drop the lock for every
+    /// process sharing it).
+    private let unlocksOnRelease: Bool
+
+    init(session: URL, folder: FileIdentity, descriptor: Int32, unlocksOnRelease: Bool = true) {
         self.session = session
         self.folder = folder
+        self.unlocksOnRelease = unlocksOnRelease
         self.state = Mutex(State(descriptor: descriptor))
     }
 
     deinit { release() }
 
     /// Releases the lease: no operation can start under it afterwards. The lock is let go at once, or, while an
-    /// operation under the lease is still running (`openForMaintenance(at:lease:)`, `recover(at:lease:)`), when
-    /// that operation ends, so the lock is never dropped in the middle of one. Later calls do nothing.
+    /// operation under the lease is still running (`openForMaintenance(at:lease:)`, `recover(at:lease:)`,
+    /// `withUse(for:_:)`), when that operation ends, so the lock is never dropped in the middle of one. Later calls
+    /// do nothing.
     public func release() {
         let fd = state.withLock { value -> Int32 in
             value.released = true
             return value.takeIfIdle()
         }
-        if fd >= 0 { SessionLockFile.unlockAndClose(fd) }
+        letGo(fd)
+    }
+
+    /// Runs `body` under the lease: the lock stays held until `body` returns, even if `release()` is called
+    /// meanwhile. Throws `HolosError.invalidInput` (and runs nothing) when the lease was released or was not taken
+    /// for `directory` (the same check as `openForMaintenance(at:lease:)`).
+    public func withUse<T>(for directory: URL, _ body: () async throws -> T) async throws -> T {
+        try beginUse(for: directory)
+        defer { endUse() }
+        return try await body()
+    }
+
+    /// Hands the lease to a child process without a moment in which the lock is free (the in-process recorder's
+    /// hand-off to `holos session diarize --lease-fd 3`, docs/meeting-design.md §4.1). Calls `spawn` with a locked
+    /// descriptor that shares the lease's open file description; `spawn` must make the child inherit it (for example
+    /// with `posix_spawn_file_actions_adddup2(&actions, descriptor, 3)`). The descriptor is a close-on-exec duplicate
+    /// numbered 10 or higher, so it never already has the child's number: `dup2` onto the same number would keep
+    /// close-on-exec, and the child would lose the lock at exec. When `spawn` returns, this process closes its
+    /// descriptors without unlocking, so the child's copy keeps the lock until the child closes it, and the lease
+    /// counts as released here. When `spawn` throws, the lease stays held and the error is rethrown. Throws
+    /// `HolosError.invalidInput` (and calls nothing) when the lease was already released.
+    public func handOff<T>(_ spawn: (Int32) throws -> T) throws -> T {
+        let fd = state.withLock { value -> Int32 in
+            guard !value.released, value.descriptor >= 0 else { return -1 }
+            // Counted as a use, so a concurrent `release()` cannot unlock or close the descriptor under `spawn`.
+            value.users += 1
+            return value.descriptor
+        }
+        guard fd >= 0 else {
+            throw HolosError.invalidInput("The processing lease was already released; acquire a new one.")
+        }
+        let result: T
+        do {
+            let spare = fcntl(fd, F_DUPFD_CLOEXEC, Self.handOffMinimumDescriptor)
+            guard spare >= 0 else {
+                throw HolosError.io("Cannot hand the processing lease over: \(AtomicFile.errnoText()).")
+            }
+            // Closing the duplicate never unlocks: the lease's own descriptor still refers to the description.
+            defer { Darwin.close(spare) }
+            result = try spawn(spare)
+        } catch {
+            endUse()
+            throw error
+        }
+        let handed = state.withLock { value -> Int32 in
+            value.users -= 1
+            value.released = true
+            // The child owns the lock now; this descriptor is only closed, never unlocked.
+            let descriptor = value.descriptor
+            value.descriptor = -1
+            return descriptor
+        }
+        if handed >= 0 { Darwin.close(handed) }
+        return result
+    }
+
+    /// The lowest number `handOff` gives its descriptor: above the standard streams and the conventional fd 3.
+    static let handOffMinimumDescriptor: Int32 = 10
+
+    /// Unlocks (unless adopted) and closes `fd`; nothing for -1.
+    private func letGo(_ fd: Int32) {
+        guard fd >= 0 else { return }
+        if unlocksOnRelease {
+            SessionLockFile.unlockAndClose(fd)
+        } else {
+            Darwin.close(fd)
+        }
     }
 
     /// False once `release()` was called.
@@ -89,7 +162,7 @@ public final class ProcessingLease: Sendable {
             value.users -= 1
             return value.takeIfIdle()
         }
-        if fd >= 0 { SessionLockFile.unlockAndClose(fd) }
+        letGo(fd)
     }
 
     /// A check only, for tests: `beginUse(for:)` then `endUse()`. Work that relies on the lease runs between
@@ -114,6 +187,40 @@ extension SessionArchive {
             throw HolosError.unavailable("Another Holos process is processing this session.")
         }
         return ProcessingLease(session: session, folder: identity, descriptor: fd)
+    }
+
+    /// Adopts `descriptor`, inherited from a parent that handed its lease over (`ProcessingLease.handOff`,
+    /// `holos session diarize --lease-fd`, docs/meeting-design.md §4.1), as this process's lease, without acquiring
+    /// one (the lease is not re-entrant).
+    ///
+    /// Refuses with `HolosError.invalidInput("The inherited lock is not this session's processing lease.")` unless
+    /// `fstat(descriptor)` has the device and inode of this session's `.processing.lock` (reached through the folder
+    /// chain) and `flock(descriptor, LOCK_EX | LOCK_NB)` succeeds, which it does at once when the descriptor shares
+    /// the parent's locked open file description. A refused descriptor is left open and unchanged.
+    ///
+    /// The adopted descriptor gets close-on-exec again (inheriting it cleared the flag) and belongs to the lease:
+    /// `release()` closes it without unlocking, so the lock ends when every process sharing the description has
+    /// closed it.
+    public nonisolated static func adoptProcessingLease(at session: URL, descriptor: Int32) throws -> ProcessingLease {
+        let foreign = HolosError.invalidInput("The inherited lock is not this session's processing lease.")
+        try SessionLockFile.requireSession(session)
+        let folder = try SessionLockFile.openSessionFolder(session)
+        defer { Darwin.close(folder) }
+        let identity = try FileIdentity(descriptor: folder)
+        var info = stat()
+        guard descriptor >= 0, fstat(descriptor, &info) == 0, (info.st_mode & S_IFMT) == S_IFREG,
+              let leaseFile = try AtomicFile.identity(of: SessionLockFile.processing, in: folder),
+              FileIdentity(info) == leaseFile else {
+            throw foreign
+        }
+        while flock(descriptor, LOCK_EX | LOCK_NB) != 0 {
+            if errno == EINTR { continue }
+            throw foreign
+        }
+        guard fcntl(descriptor, F_SETFD, FD_CLOEXEC) == 0 else {
+            throw HolosError.io("Cannot protect the inherited lock: \(AtomicFile.errnoText()).")
+        }
+        return ProcessingLease(session: session, folder: identity, descriptor: descriptor, unlocksOnRelease: false)
     }
 
     /// True while some process holds the processing lease. A probe: it takes the lock without waiting and

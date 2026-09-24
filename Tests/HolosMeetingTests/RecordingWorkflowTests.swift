@@ -539,10 +539,10 @@ func replayFromEndOfAudioFeedsNothing() async throws {
     }
 }
 
-// MARK: - MeetingPostProcessor skeleton
+// MARK: - MeetingPostProcessor start checks
 
 @Test(.timeLimit(.minutes(1)))
-func postProcessorSkeletonIsSkipped() async throws {
+func postProcessorWithoutTranscriptIsSkipped() async throws {
     let temp = try TemporaryDirectory()
     defer { temp.remove() }
     let archive = try await finishedArchive(in: temp.url)
@@ -554,20 +554,19 @@ func postProcessorSkeletonIsSkipped() async throws {
     #expect(record.state == .skipped)
     #expect(record.sessionID == archive.id)
     #expect(record.pid == getpid())
-    #expect(record.stages.isEmpty)
+    #expect(record.stages.map(\.stage) == [.transcript])
     #expect(record.runID == nil)
     #expect(record.message != nil)
-    #expect(!FileManager.default.fileExists(atPath: SessionPaths.postprocess(archive.directory).path))
-    // Only the lease's lock file may appear; nothing else is written.
-    #expect(contents(of: archive.directory).subtracting([".processing.lock"]) == before)
+    // Only the lease's lock file and postprocess.json appear; nothing is exported without a transcript.
+    #expect(contents(of: archive.directory).subtracting([".processing.lock", "postprocess.json"]) == before)
     #expect(try !SessionArchive.isProcessing(at: archive.directory), "A lease run acquired is released.")
-    #expect(progressCalls.value == 0)
+    #expect(progressCalls.value >= 1)
 
     let withDiarizer = MeetingPostProcessor(diarizer: FakeDiarizer(outputs: [:]),
                                             options: PostProcessingOptions(speakers: SpeakerCountHint(minimum: 2)),
                                             freeSpace: FixedFreeSpace(.max))
     #expect(try await withDiarizer.run(session: archive.directory, lease: nil).state == .skipped)
-    #expect(contents(of: archive.directory).subtracting([".processing.lock"]) == before)
+    #expect(contents(of: archive.directory).subtracting([".processing.lock", "postprocess.json"]) == before)
 }
 
 @Test(.timeLimit(.minutes(1)))

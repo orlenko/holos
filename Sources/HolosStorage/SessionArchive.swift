@@ -348,18 +348,11 @@ public actor SessionArchive {
         }
         if writeLegacyExports {
             // Before the pointer: a failed export leaves the revision not current, so a retry rewrites both.
-            let text = transcript.text + "\n"
-            try AtomicFile.write(Data(text.utf8), to: SessionPaths.export("txt", in: directory))
-            var markdown = "# \(manifest.name)\n\n"
-            for segment in transcript.segments {
-                let source = segment.track ?? "unknown source"
-                markdown += "### [\(Self.timestamp(segment.start))–\(Self.timestamp(segment.end))] Source: \(source)\n\n"
-                if let speakerID = segment.speakerID {
-                    markdown += "Speaker label (not verified identity): \(speakerID)\n\n"
-                }
-                markdown += "\(segment.text)\n\n"
+            let exports = Self.legacyExports(for: transcript, name: manifest.name)
+            for fileExtension in ["txt", "md"] {
+                guard let data = exports[fileExtension] else { continue }
+                try AtomicFile.write(data, to: SessionPaths.export(fileExtension, in: directory))
             }
-            try AtomicFile.write(Data(markdown.utf8), to: SessionPaths.export("md", in: directory))
         }
         try AtomicFile.writeJSON(TranscriptPointer(transcriptID: transcript.id),
                                  to: SessionPaths.transcriptPointer(directory))
@@ -370,6 +363,23 @@ public actor SessionArchive {
         } catch {
             Self.log.error("Cannot remove transcripts/current.pending: \(error.localizedDescription, privacy: .public)")
         }
+    }
+
+    /// The speaker-less exports `saveTranscript(_:writeLegacyExports: true)` writes for `transcript` in a session
+    /// named `name`, by file extension: "txt" (exports/transcript.txt) and "md" (exports/transcript.md). Speaker
+    /// exports (PR7b `SessionExports`) replace them, and use this to tell them from files someone edited.
+    public nonisolated static func legacyExports(for transcript: Transcript, name: String) -> [String: Data] {
+        let text = transcript.text + "\n"
+        var markdown = "# \(name)\n\n"
+        for segment in transcript.segments {
+            let source = segment.track ?? "unknown source"
+            markdown += "### [\(timestamp(segment.start))–\(timestamp(segment.end))] Source: \(source)\n\n"
+            if let speakerID = segment.speakerID {
+                markdown += "Speaker label (not verified identity): \(speakerID)\n\n"
+            }
+            markdown += "\(segment.text)\n\n"
+        }
+        return ["txt": Data(text.utf8), "md": Data(markdown.utf8)]
     }
 
     public func finish(status: String) throws {

@@ -10,6 +10,7 @@ struct Session: AsyncParsableCommand {
             Inspect.self,
             Recover.self,
             Retranscribe.self,
+            Diarize.self,
         ])
 
     struct Inspect: ParsableCommand {
