@@ -72,13 +72,11 @@ public enum SpeakerRunBuilder {
                 trackDiarizations.append(TrackDiarization(track: input.track, policy: input.policy))
             case .channel(let speakerID, let displayName):
                 let diarization = TrackDiarization(track: input.track, policy: input.policy)
-                var words = SpeakerAlignment.assignWords(segments: transcript.segments, track: input.track,
+                let words = SpeakerAlignment.assignWords(segments: transcript.segments, track: input.track,
                                                          includeUntracked: includeUntracked,
                                                          diarization: diarization, parameters: parameters)
-                if input.track == EchoFilter.microphoneTrack {
-                    words = withoutEcho(words, echo: echoWords, hidingEchoClusters: false)
-                }
-                turns += SpeakerAlignment.buildTurns(words, parameters: parameters, policy: input.policy)
+                turns += turnsWithoutEcho(words, track: input.track, echo: echoWords, hidingEchoClusters: false,
+                                          parameters: parameters, policy: input.policy)
                 trackDiarizations.append(diarization)
                 if !channelSpeakers.contains(where: { $0.id == speakerID }) {
                     channelSpeakers.append((speakerID, displayName))
@@ -93,13 +91,11 @@ public enum SpeakerRunBuilder {
                 offsets[input.track] = offset
                 let shifted = shift(output, by: offset)
                 let diarization = DiarizationNormalizer.normalize(shifted, track: input.track)
-                var words = SpeakerAlignment.assignWords(segments: transcript.segments, track: input.track,
+                let words = SpeakerAlignment.assignWords(segments: transcript.segments, track: input.track,
                                                          includeUntracked: includeUntracked,
                                                          diarization: diarization, parameters: parameters)
-                if input.track == EchoFilter.microphoneTrack {
-                    words = withoutEcho(words, echo: echoWords, hidingEchoClusters: true)
-                }
-                turns += SpeakerAlignment.buildTurns(words, parameters: parameters, policy: input.policy)
+                turns += turnsWithoutEcho(words, track: input.track, echo: echoWords, hidingEchoClusters: true,
+                                          parameters: parameters, policy: input.policy)
                 trackDiarizations.append(diarization)
                 for window in shifted.windows {
                     let clusterID = DiarizationNormalizer.clusterID(track: input.track, speaker: window.speaker)
@@ -139,12 +135,27 @@ public enum SpeakerRunBuilder {
         return Result(run: run, voiceData: voiceData)
     }
 
-    /// `words` of the microphone track without the `echo` words. With `hidingEchoClusters` (a diarized track), a
-    /// cluster with at least `EchoFilter.echoClusterShare` of its labelled words in `echo` is echo itself: its other
-    /// words become unknown speaker, like words no segment covers.
+    /// The turns of `track`'s aligned `words`. On the microphone track the `echo` words are in no turn, and a turn
+    /// never spans a place where echo was removed: the kept words on either side go to separate turns, so a reply
+    /// cannot move ahead of the remote sentence it answers, and a turn's time range (and so its embedding) does not
+    /// cover the echo.
+    private static func turnsWithoutEcho(_ words: [AlignedWord], track: String, echo: Set<WordRef>,
+                                         hidingEchoClusters: Bool, parameters: AlignmentParameters,
+                                         policy: TrackPolicy) -> [SpeakerTurn] {
+        guard track == EchoFilter.microphoneTrack, !echo.isEmpty else {
+            return SpeakerAlignment.buildTurns(words, parameters: parameters, policy: policy)
+        }
+        return withoutEcho(words, echo: echo, hidingEchoClusters: hidingEchoClusters)
+            .flatMap { SpeakerAlignment.buildTurns($0, parameters: parameters, policy: policy) }
+    }
+
+    /// `words` of the microphone track without the `echo` words, as runs of kept words: a new run starts wherever
+    /// one or more echo words were removed. With `hidingEchoClusters` (a diarized track), a cluster with at least
+    /// `EchoFilter.echoClusterShare` of its labelled words in `echo` is echo itself: its other words become unknown
+    /// speaker, like words no segment covers.
     private static func withoutEcho(_ words: [AlignedWord], echo: Set<WordRef>,
-                                    hidingEchoClusters: Bool) -> [AlignedWord] {
-        guard !echo.isEmpty else { return words }
+                                    hidingEchoClusters: Bool) -> [[AlignedWord]] {
+        guard !echo.isEmpty else { return [words] }
         var hidden = Set<String>()
         if hidingEchoClusters {
             var labelled: [String: Int] = [:]
@@ -160,15 +171,26 @@ public enum SpeakerRunBuilder {
                 hidden.insert(label)
             }
         }
-        return words.compactMap { word in
-            guard !echo.contains(word.ref) else { return nil }
-            guard let label = word.label, hidden.contains(label) else { return word }
+        var runs: [[AlignedWord]] = []
+        var run: [AlignedWord] = []
+        for word in words {
+            if echo.contains(word.ref) {
+                if !run.isEmpty { runs.append(run) }
+                run = []
+                continue
+            }
+            guard let label = word.label, hidden.contains(label) else {
+                run.append(word)
+                continue
+            }
             var unknown = word
             unknown.label = nil
             unknown.coveredSeconds = 0
             unknown.overlapClusters = []
-            return unknown
+            run.append(unknown)
         }
+        if !run.isEmpty { runs.append(run) }
+        return runs
     }
 
     /// The input whose alignment counts transcript segments without a track, or nil.

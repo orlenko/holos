@@ -136,7 +136,9 @@ In a call, Holos records the system default input and the call audio. When the l
 play the call, the microphone hears the other people too: the start panel, the menu, and
 `holos record start` warn about it, and speaker labelling leaves the microphone's copy of their
 words (echo) out of the transcript. Only runs of 3 or more consecutive words that repeat the call
-audio within 1 second are removed, so a short "yes" said over someone stays. The removed words are
+audio up to 1 second later are removed, so a short "yes" said over someone stays. Words the
+microphone heard more than a quarter second before the call audio stay: that is your own voice
+coming back from the other end, not echo. The removed words are
 listed in `speakers/runs/<RUN-UUID>.json` under `droppedWords` with reason `echo`. For a call
 with others in the room, a microphone speaker whose words are at least 60 % echo is not a person
 in the room: it is not listed, and its remaining words show as "Unknown speaker".

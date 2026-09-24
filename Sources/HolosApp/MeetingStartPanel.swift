@@ -12,8 +12,6 @@ final class MeetingStartPanel: NSObject, NSWindowDelegate {
     /// What the panel shows besides the user's choices; read every 2 s while it is open.
     struct Environment {
         var devices: InputDevices
-        /// The system default output (PR11); nil when unknown.
-        var outputRoute: OutputRoute? = nil
         var freeBytes: Int64?
         /// `holos doctor --json` speakerModels, "unavailable" when the holos tool cannot run, "unknown" when it ran
         /// but did not report them, or nil before the first check.
@@ -29,6 +27,8 @@ final class MeetingStartPanel: NSObject, NSWindowDelegate {
 
     private let window: NSWindow
     private let environment: () -> Environment
+    /// The system default output (PR11), looked up with the environment; nil when unknown.
+    private let findOutputRoute: () -> OutputRoute?
     /// Returns the error to show, or nil once the recording is starting.
     private let onStart: (MeetingStartSettings, Bool) -> String?
     private let onInstallSpeakerModels: () -> Void
@@ -63,8 +63,10 @@ final class MeetingStartPanel: NSObject, NSWindowDelegate {
     var isVisible: Bool { window.isVisible }
 
     init(environment: @escaping () -> Environment, onStart: @escaping (MeetingStartSettings, Bool) -> String?,
-         onInstallSpeakerModels: @escaping () -> Void, onClose: @escaping () -> Void) {
+         onInstallSpeakerModels: @escaping () -> Void, onClose: @escaping () -> Void,
+         findOutputRoute: @escaping () -> OutputRoute? = OutputRoute.current) {
         self.environment = environment
+        self.findOutputRoute = findOutputRoute
         self.onStart = onStart
         self.onInstallSpeakerModels = onInstallSpeakerModels
         self.onClose = onClose
@@ -220,7 +222,7 @@ final class MeetingStartPanel: NSObject, NSWindowDelegate {
             allowed = false
         }
         // A call recording the microphone while the laptop speakers play: other people's words reach it too (PR11).
-        let echoRisk = call && current.devices.systemDefault != nil && current.outputRoute?.isBuiltInSpeakers == true
+        let echoRisk = call && current.devices.systemDefault != nil && findOutputRoute()?.isBuiltInSpeakers == true
         if let echoRow, echoRow.isHidden == echoRisk {
             echoRow.isHidden = !echoRisk
             if positioned, window.isVisible {

@@ -15,10 +15,19 @@ public enum EchoFilter {
     /// A diarized microphone cluster with at least this share of its words dropped as echo is echo itself: it is not
     /// listed as a speaker, and its remaining words become unknown speaker.
     public static let echoClusterShare = 0.6
+    /// How far a microphone word may start before its system counterpart and still be echo: timing jitter between
+    /// the two tracks' recognized words. Echo itself can only follow the system audio.
+    public static let echoLeadToleranceSeconds = 0.25
 
     /// Microphone spans to drop: runs of at least `echoMinRunWords` consecutive mic words whose normalized
     /// text (lowercased, letters and digits only) equals, in order, consecutive system words, each mic word
-    /// within ±echoWindowSeconds of its system counterpart.
+    /// starting at most echoWindowSeconds after its system counterpart and at most `echoLeadToleranceSeconds`
+    /// before it.
+    ///
+    /// The window is one-sided (a deviation from the "±echoWindowSeconds" of docs/meeting-design.md §5.11): echo
+    /// reaches the microphone after the system audio plays. A microphone phrase clearly ahead of the same words in
+    /// the system audio is the user speaking while the far end sends their voice back into the call, and it stays
+    /// with the user.
     ///
     /// Details:
     /// - No spans when `echoWindowSeconds` is nil, negative, or not finite. A run needs at least
@@ -51,7 +60,7 @@ public enum EchoFilter {
             let word = mic[index]
             guard let list = byText[word.key] else { return [] }
             let low = word.start - window - timeEpsilon
-            let high = word.start + window + timeEpsilon
+            let high = word.start + min(window, echoLeadToleranceSeconds) + timeEpsilon
             var first = 0
             var last = list.count
             while first < last {

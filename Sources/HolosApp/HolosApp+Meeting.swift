@@ -441,8 +441,7 @@ extension HolosAppDelegate: NSMenuDelegate {
     private func startPanelEnvironment() -> MeetingStartPanel.Environment {
         let root = meeting.controller?.root ?? HolosPaths.sessions
         return MeetingStartPanel.Environment(
-            devices: BuiltInMicrophone.devices(), outputRoute: OutputRoute.current(),
-            freeBytes: try? VolumeFreeSpace().availableBytes(at: root),
+            devices: BuiltInMicrophone.devices(), freeBytes: try? VolumeFreeSpace().availableBytes(at: root),
             speakerModels: meeting.speakerModels, checking: meeting.checkingSpeakerModels,
             installProgress: meeting.speakerModelInstall, installError: meeting.speakerModelError)
     }

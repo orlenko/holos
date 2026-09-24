@@ -80,15 +80,34 @@ private func wordsInTurns(_ run: DiarizationRun) -> Set<WordRef> {
         echoSegment("SYS", ["we", "should", "vote", "now"], track: "system", start: 10.0),
         echoSegment("MIC", ["we", "should", "vote", "now"], track: "mic", start: 11.5),
     ]).isEmpty)
-    // Earlier by as much is outside the window too; exactly 1 s is inside.
+    // Exactly 1 s later is inside.
     #expect(echoSpans([
         echoSegment("SYS", ["we", "should", "vote", "now"], track: "system", start: 10.0),
-        echoSegment("MIC", ["we", "should", "vote", "now"], track: "mic", start: 8.5),
+        echoSegment("MIC", ["we", "should", "vote", "now"], track: "mic", start: 11.0),
+    ]) == [WordSpan(segmentID: "MIC", first: 0, end: 4)])
+}
+
+/// Echo follows the system audio. A microphone phrase ahead of the same words in the system audio is the user,
+/// whose voice the far end sends back into the call (a speakerphone or a room system with weak echo cancellation):
+/// it stays with the user. Up to `echoLeadToleranceSeconds` ahead still counts as echo, for timing jitter.
+@Test func microphoneAheadOfSystemIsKept() {
+    let phrase = ["i", "will", "send", "the", "report"]
+    #expect(echoSpans([
+        echoSegment("MIC", phrase, track: "mic", start: 5.0),
+        echoSegment("SYS", phrase, track: "system", start: 5.4),
     ]).isEmpty)
     #expect(echoSpans([
-        echoSegment("SYS", ["we", "should", "vote", "now"], track: "system", start: 10.0),
-        echoSegment("MIC", ["we", "should", "vote", "now"], track: "mic", start: 9.0),
-    ]) == [WordSpan(segmentID: "MIC", first: 0, end: 4)])
+        echoSegment("MIC", phrase, track: "mic", start: 9.0),
+        echoSegment("SYS", phrase, track: "system", start: 10.0),
+    ]).isEmpty)
+    #expect(echoSpans([
+        echoSegment("MIC", phrase, track: "mic", start: 9.75),
+        echoSegment("SYS", phrase, track: "system", start: 10.0),
+    ]) == [WordSpan(segmentID: "MIC", first: 0, end: 5)])
+    #expect(echoSpans([
+        echoSegment("MIC", phrase, track: "mic", start: 9.7),
+        echoSegment("SYS", phrase, track: "system", start: 10.0),
+    ]).isEmpty)
 }
 
 /// No window (in-person settings, `AlignmentParameters.v1`) means no filter.
@@ -185,10 +204,11 @@ func longCallIsFilteredQuickly() {
 
 @Test func droppedWordsExcludedFromTurnsAndExports() throws {
     let transcript = echoTranscript([
-        echoSegment("SYS", ["we", "should", "vote", "now"], track: "system", start: 10.0),
+        echoSegment("SYS", ["we", "should", "vote", "now"], track: "system", start: 9.6),
         echoSegment("MIC", ["okay", "we", "should", "vote", "now", "sounds", "good"], track: "mic", start: 9.0,
                     wordSeconds: 0.5),
     ])
+    // System words: we 9.6, should 9.9, vote 10.2, now 10.5.
     // Microphone words: okay 9.0, we 9.5, should 10.0, vote 10.5, now 11.0, sounds 11.5, good 12.0.
     let result = SpeakerRunBuilder.build(
         sessionID: "SESSION", transcript: transcript,
@@ -300,6 +320,42 @@ func longCallIsFilteredQuickly() {
     #expect(mine.map(\.speakerID) == ["mic:me"])
     #expect(mine.flatMap(\.spans) == [WordSpan(segmentID: "MINE", first: 0, end: 2)])
     #expect(run.speakers.map(\.id) == ["system:S1", "mic:me"])
+}
+
+/// Removed echo splits the turn around it, even when the kept words on either side are closer than the pause
+/// threshold: the user's reply stays after the remote sentence it answers, and no microphone turn covers the echo.
+@Test func removedEchoSplitsTheTurn() {
+    // System: yes 10.0, lets 10.3, do 10.6, it 10.9. Microphone: okay 9.9, then the echo 10.2–11.4, great 11.4.
+    let transcript = echoTranscript([
+        echoSegment("SYS", ["yes", "lets", "do", "it"], track: "system", start: 10.0),
+        echoSegment("MIC", ["okay", "yes", "lets", "do", "it", "great"], track: "mic", start: 9.9),
+    ])
+    let system = SpeakerRunBuilder.TrackInput(track: "system", policy: .diarized, output: echoOutput(("S1", 9.5, 12)))
+
+    let channel = SpeakerRunBuilder.build(sessionID: "SESSION", transcript: transcript,
+                                          tracks: [.init(track: "mic", policy: echoMe), system],
+                                          engine: .fake, parameters: callParameters).run
+    #expect(channel.droppedWords == [DroppedWords(spans: [WordSpan(segmentID: "MIC", first: 1, end: 5)],
+                                                  reason: "echo")])
+    #expect(channel.turns.map(\.track) == ["mic", "system", "mic"])
+    #expect(channel.turns.map(\.speakerID) == ["mic:me", "system:S1", "mic:me"])
+    #expect(channel.turns.filter { $0.track == "mic" }.map(\.spans)
+        == [[WordSpan(segmentID: "MIC", first: 0, end: 1)], [WordSpan(segmentID: "MIC", first: 5, end: 6)]])
+
+    // Hybrid: the room speaker's cluster covers the echo too but is mostly not echo, so it stays listed.
+    let hybrid = echoTranscript([
+        echoSegment("ROOM", ["good", "afternoon", "everyone", "shall", "we", "begin"], track: "mic", start: 8.0),
+        echoSegment("SYS", ["yes", "lets", "do", "it"], track: "system", start: 10.0),
+        echoSegment("MIC", ["okay", "yes", "lets", "do", "it", "great"], track: "mic", start: 9.9),
+    ])
+    let diarized = SpeakerRunBuilder.build(
+        sessionID: "SESSION", transcript: hybrid,
+        tracks: [.init(track: "mic", policy: .diarized, output: echoOutput(("S1", 7.9, 12))), system],
+        engine: .fake, parameters: callParameters).run
+    let room = diarized.turns.filter { $0.track == "mic" }
+    #expect(room.map(\.speakerID) == ["mic:S1", "mic:S1"])
+    #expect(room.last?.spans == [WordSpan(segmentID: "MIC", first: 5, end: 6)])
+    #expect(room.allSatisfy { $0.end <= 10.2 + 1e-9 || $0.start >= 11.4 - 1e-9 }, "No microphone turn covers the echo.")
 }
 
 /// Without echo the run is exactly what it was before PR11.
