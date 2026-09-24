@@ -7,13 +7,13 @@
     <key>CFBundleDisplayName</key><string>Holos</string>
     <key>CFBundleExecutable</key><string>HolosApp</string>
     <key>CFBundlePackageType</key><string>APPL</string>
-    <key>CFBundleVersion</key><string>2</string>
+    <key>CFBundleVersion</key><string>3</string>
     <key>CFBundleShortVersionString</key><string>0.1.0</string>
     <key>LSMinimumSystemVersion</key><string>27.0</string>
     <key>LSUIElement</key><true/>
     <key>NSPrincipalClass</key><string>NSApplication</string>
     <key>NSHighResolutionCapable</key><true/>
-    <key>NSMicrophoneUsageDescription</key><string>Holos uses your microphone only during explicitly started push-to-talk dictation.</string>
+    <key>NSMicrophoneUsageDescription</key><string>Holos uses your microphone for push-to-talk dictation and for meeting recordings you start.</string>
     <key>NSSpeechRecognitionUsageDescription</key><string>Holos transcribes your dictation locally on your Mac.</string>
 </dict>
 </plist>
