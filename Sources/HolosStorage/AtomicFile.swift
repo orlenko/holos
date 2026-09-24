@@ -187,6 +187,88 @@ public enum AtomicFile {
         fileSyncCounter?.record(url)
     }
 
+    /// Removes `root/<components joined by "/">` and everything in it without following a symbolic link
+    /// anywhere, and fsyncs its parent folder. Every delete inside a session goes through here (speakers/voice
+    /// now; audio/, derived/, exports/ later).
+    ///
+    /// `root` and each component before the last are opened relative to the previous one with O_NOFOLLOW, so a
+    /// symbolic link or file in their place is refused (`invalidInput`) instead of leading the delete outside
+    /// `root`, even if it is swapped in during the call. A symbolic link at the last component or anywhere in
+    /// the tree is removed itself, never its target. Returns false when there is nothing to remove.
+    @discardableResult
+    static func removeTree(_ components: [String], in root: URL) throws -> Bool {
+        guard root.isFileURL, let last = components.last,
+              components.allSatisfy({ !$0.isEmpty && $0 != "." && $0 != ".." && !$0.contains("/") }) else {
+            throw HolosError.invalidInput("Invalid path to delete.")
+        }
+        let folderFlags = O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC
+        var parent = Darwin.open(root.path, folderFlags)
+        guard parent >= 0 else { throw folderOpenError(root.lastPathComponent, errno) }
+        defer { Darwin.close(parent) }
+        for name in components.dropLast() {
+            let next = openat(parent, name, folderFlags)
+            guard next >= 0 else {
+                let code = errno
+                if code == ENOENT { return false }
+                throw folderOpenError(name, code)
+            }
+            Darwin.close(parent)
+            parent = next
+        }
+        guard try removeEntry(Array(last.utf8CString), in: parent) else { return false }
+        guard fsync(parent) == 0 else {
+            throw HolosError.io("Cannot save the folder holding \(last): \(errnoText()).")
+        }
+        return true
+    }
+
+    /// Removes the entry `name` (a NUL-terminated C string) of the folder `parent`, recursively for a folder.
+    private static func removeEntry(_ name: [CChar], in parent: Int32) throws -> Bool {
+        let display = String(decoding: name.dropLast().map { UInt8(bitPattern: $0) }, as: UTF8.self)
+        var info = stat()
+        guard fstatat(parent, name, &info, AT_SYMLINK_NOFOLLOW) == 0 else {
+            let code = errno
+            if code == ENOENT { return false }
+            throw HolosError.io("Cannot inspect \(display): \(errnoText(code)).")
+        }
+        if (info.st_mode & S_IFMT) == S_IFDIR {
+            let fd = openat(parent, name, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+            guard fd >= 0 else { throw folderOpenError(display, errno) }
+            guard let folder = fdopendir(fd) else {
+                let code = errno
+                Darwin.close(fd)
+                throw HolosError.io("Cannot list \(display): \(errnoText(code)).")
+            }
+            do {
+                defer { closedir(folder) }
+                var children: [[CChar]] = []
+                while let entry = readdir(folder) {
+                    let child: [CChar] = withUnsafeBytes(of: entry.pointee.d_name) { raw in
+                        raw.prefix(Int(entry.pointee.d_namlen)).map { CChar(bitPattern: $0) } + [0]
+                    }
+                    if child == [46, 0] || child == [46, 46, 0] { continue }  // "." and ".."
+                    children.append(child)
+                }
+                for child in children { _ = try removeEntry(child, in: dirfd(folder)) }
+            }
+            guard unlinkat(parent, name, AT_REMOVEDIR) == 0 else {
+                throw HolosError.io("Cannot delete \(display): \(errnoText()).")
+            }
+        } else if unlinkat(parent, name, 0) != 0 {
+            let code = errno
+            if code == ENOENT { return false }
+            throw HolosError.io("Cannot delete \(display): \(errnoText(code)).")
+        }
+        return true
+    }
+
+    private static func folderOpenError(_ name: String, _ code: Int32) -> HolosError {
+        if code == ELOOP || code == ENOTDIR {
+            return .invalidInput("\(name) must be a folder, not a file or a symbolic link.")
+        }
+        return .io("Cannot open folder \(name): \(errnoText(code)).")
+    }
+
     static func syncDirectory(_ url: URL) throws {
         let fd = Darwin.open(url.path, O_RDONLY | O_CLOEXEC)
         guard fd >= 0 else { throw HolosError.io("Cannot open folder \(url.lastPathComponent): \(errnoText()).") }

@@ -138,3 +138,38 @@ private func atomicContents(_ folder: URL) throws -> [String] {
     try Data().write(to: file)
     #expect(throws: HolosError.self) { try AtomicFile.ensurePrivateDirectory(file) }
 }
+
+@Test func removeTreeStaysInsideItsRoot() throws {
+    let folder = try atomicTemporaryFolder()
+    defer { try? FileManager.default.removeItem(at: folder) }
+    let fm = FileManager.default
+    let root = folder.appendingPathComponent("root", isDirectory: true)
+    let outside = folder.appendingPathComponent("outside", isDirectory: true)
+    try fm.createDirectory(at: root.appendingPathComponent("a/b"), withIntermediateDirectories: true)
+    try fm.createDirectory(at: outside.appendingPathComponent("b"), withIntermediateDirectories: true)
+    let kept = outside.appendingPathComponent("b/kept.txt")
+    try Data("keep".utf8).write(to: kept)
+
+    for bad in [[], [""], ["."], [".."], ["a/b"], ["a", ".."]] {
+        #expect(throws: HolosError.self) { try AtomicFile.removeTree(bad, in: root) }
+    }
+    #expect(try AtomicFile.removeTree(["missing", "b"], in: root) == false)
+    #expect(try AtomicFile.removeTree(["a", "missing"], in: root) == false)
+
+    // A symbolic link as the root or as an intermediate folder is refused; the target is untouched.
+    let rootLink = folder.appendingPathComponent("root-link")
+    try fm.createSymbolicLink(at: rootLink, withDestinationURL: outside)
+    #expect(throws: HolosError.self) { try AtomicFile.removeTree(["b"], in: rootLink) }
+    try fm.createSymbolicLink(at: root.appendingPathComponent("via"), withDestinationURL: outside)
+    #expect(throws: HolosError.self) { try AtomicFile.removeTree(["via", "b"], in: root) }
+    #expect(fm.fileExists(atPath: kept.path))
+
+    // A single file and a whole folder.
+    let file = root.appendingPathComponent("a/b/file.txt")
+    try Data("x".utf8).write(to: file)
+    #expect(try AtomicFile.removeTree(["a", "b", "file.txt"], in: root))
+    #expect(!fm.fileExists(atPath: file.path))
+    #expect(try AtomicFile.removeTree(["a"], in: root))
+    #expect(!fm.fileExists(atPath: root.appendingPathComponent("a").path))
+    #expect(fm.fileExists(atPath: kept.path))
+}

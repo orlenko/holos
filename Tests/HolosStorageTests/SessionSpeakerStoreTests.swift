@@ -399,3 +399,49 @@ private func storeWriteEdited<T: Encodable>(_ value: T, to url: URL,
     }))
     #expect(try FileManager.default.contentsOfDirectory(atPath: root.path).isEmpty)
 }
+
+@Test func deleteVoiceDataNeverFollowsSymbolicLinks() async throws {
+    let root = try storeTemporaryRoot()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let (session, _) = try await storeMakeSession(in: root)
+    let fm = FileManager.default
+    // Outside the session: a folder that looks like speakers/, with its own voice/ and a file in it.
+    let outside = root.appendingPathComponent("outside", isDirectory: true)
+    let outsideVoice = outside.appendingPathComponent("voice", isDirectory: true)
+    try fm.createDirectory(at: outsideVoice, withIntermediateDirectories: true)
+    let precious = outsideVoice.appendingPathComponent("precious.txt")
+    try Data("keep".utf8).write(to: precious)
+
+    // speakers/ is a symbolic link: refused, the target untouched.
+    let speakers = session.appendingPathComponent("speakers")
+    try fm.createSymbolicLink(at: speakers, withDestinationURL: outside)
+    #expect(isInvalidInput(#expect(throws: HolosError.self) { try SessionSpeakerStore.deleteVoiceData(session: session) }))
+    #expect(fm.fileExists(atPath: precious.path))
+
+    // speakers/ is a file: refused.
+    try fm.removeItem(at: speakers)
+    try Data("x".utf8).write(to: speakers)
+    #expect(isInvalidInput(#expect(throws: HolosError.self) { try SessionSpeakerStore.deleteVoiceData(session: session) }))
+    try fm.removeItem(at: speakers)
+
+    // speakers/voice is a symbolic link: the link goes, the target stays.
+    try AtomicFile.ensurePrivateDirectory(speakers)
+    let voice = SessionPaths.voiceDirectory(session)
+    try fm.createSymbolicLink(at: voice, withDestinationURL: outsideVoice)
+    try SessionSpeakerStore.deleteVoiceData(session: session)
+    #expect((try? fm.destinationOfSymbolicLink(atPath: voice.path)) == nil)
+    #expect(fm.fileExists(atPath: precious.path))
+
+    // Links nested inside a real speakers/voice (to a file and to a folder) are removed, not followed.
+    try AtomicFile.ensurePrivateDirectory(voice)
+    let nested = voice.appendingPathComponent("nested", isDirectory: true)
+    try fm.createDirectory(at: nested, withIntermediateDirectories: true)
+    try fm.createSymbolicLink(at: nested.appendingPathComponent("folder-link"), withDestinationURL: outside)
+    try fm.createSymbolicLink(at: voice.appendingPathComponent("file-link"), withDestinationURL: precious)
+    try Data("{}".utf8).write(to: voice.appendingPathComponent("run.json"))
+    try SessionSpeakerStore.deleteVoiceData(session: session)
+    #expect(!fm.fileExists(atPath: voice.path))
+    #expect(fm.fileExists(atPath: speakers.path))
+    #expect(fm.fileExists(atPath: precious.path))
+    #expect(try Data(contentsOf: precious) == Data("keep".utf8))
+}

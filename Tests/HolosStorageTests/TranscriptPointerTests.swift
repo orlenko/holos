@@ -176,3 +176,20 @@ private func pointerTranscript(createdAt seconds: TimeInterval, text: String = "
     }
     try await writer.finish(status: ArchiveStatus.complete)
 }
+
+@Test func pointerNamingThePointerFileIsRefused() async throws {
+    let root = try pointerTemporaryRoot()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let writer = try pointerArchive(in: root)
+    try await writer.saveTranscript(pointerTranscript(createdAt: 1_790_000_000), writeLegacyExports: false)
+    try await writer.finish(status: ArchiveStatus.complete)
+    // A hand-edited pointer naming itself: transcripts/current.json is a regular file, so only the ID check
+    // stops it from being returned as the current revision.
+    for id in ["current", "CURRENT"] {
+        try AtomicFile.writeJSON(TranscriptPointer(transcriptID: id), to: SessionPaths.transcriptPointer(writer.directory))
+        let error = #expect(throws: HolosError.self) { try SessionArchive.currentTranscriptID(at: writer.directory) }
+        guard case .invalidInput? = error else { Issue.record("Expected invalidInput, got \(String(describing: error))"); return }
+        try AtomicFile.writeJSON(TranscriptPointer(transcriptID: id), to: SessionPaths.pendingTranscript(writer.directory))
+        #expect(throws: HolosError.self) { try TranscriptPointer.readPending(session: writer.directory) }
+    }
+}

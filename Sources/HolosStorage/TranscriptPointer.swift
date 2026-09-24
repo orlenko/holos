@@ -28,10 +28,16 @@ extension TranscriptPointer {
         guard let data = try AtomicFile.readIfPresent(url, maxBytes: 64 << 10) else { return nil }
         let pointer = try SchemaVersion.decode(TranscriptPointer.self, from: data,
                                                current: SchemaVersion.transcriptPointer, name: name)
-        guard SessionArchive.validToken(pointer.transcriptID) else {
+        guard validTranscriptID(pointer.transcriptID) else {
             throw HolosError.invalidInput("\(name) names an invalid transcript ID.")
         }
         return pointer
+    }
+
+    /// A token that is not "current" in any case: transcripts/current.json is the pointer, never a revision
+    /// (and the volume may be case-insensitive).
+    static func validTranscriptID(_ id: String) -> Bool {
+        SessionArchive.validToken(id) && id.lowercased() != "current"
     }
 }
 

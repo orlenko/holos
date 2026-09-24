@@ -311,7 +311,7 @@ public actor SessionArchive {
     /// false).
     public func saveTranscript(_ transcript: Transcript, writeLegacyExports: Bool = true) throws {
         try ensureOpen()
-        guard Self.validToken(transcript.id), transcript.id.lowercased() != "current" else {
+        guard TranscriptPointer.validTranscriptID(transcript.id) else {
             throw HolosError.invalidInput("Invalid transcript ID.")
         }
         let snapshot = SessionPaths.transcript(transcript.id, in: directory)
@@ -352,9 +352,10 @@ public actor SessionArchive {
                                  to: SessionPaths.transcriptPointer(directory))
         // The save is finished. A marker left behind names the current revision, which is refused anyway, and
         // the next save replaces it.
-        if unlink(pending.path) != 0, errno != ENOENT {
-            let reason = AtomicFile.errnoText()
-            Self.log.error("Cannot remove transcripts/current.pending: \(reason, privacy: .public)")
+        do {
+            try AtomicFile.removeTree(["transcripts", "current.pending"], in: directory)
+        } catch {
+            Self.log.error("Cannot remove transcripts/current.pending: \(error.localizedDescription, privacy: .public)")
         }
     }
 
@@ -681,7 +682,7 @@ public actor SessionArchive {
         var count = 0
         for name in try FileManager.default.contentsOfDirectory(atPath: folder.path) where name.hasSuffix(".json") {
             let id = String(name.dropLast(5))
-            guard validToken(id), id.lowercased() != "current",
+            guard TranscriptPointer.validTranscriptID(id),
                   let header = try? AtomicFile.readJSON(Header.self, from: folder.appendingPathComponent(name)),
                   header.id == id else { continue }
             count += 1

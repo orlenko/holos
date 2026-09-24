@@ -3452,6 +3452,12 @@ Nothing expired meetings before; a 3 h call is about 2 GB even with mono system 
   `{schemaVersion, deletedAt, chunkCount, seconds}`. Transcript, runs, edits, and exports
   stay. `SessionDeletion.moveToTrash(session:lease:)` moves the folder to the Trash
   (`FileManager.trashItem`) and deletes `~/Library/Logs/Holos/recorder-<id>.log`.
+  Every delete inside a session folder (these, PR7b's `derived/`, `current.pending`,
+  `deleteVoiceData`) goes through `AtomicFile.removeTree(_:in:)` (PR6), never
+  `FileManager.removeItem`: it opens each folder on the way with `O_NOFOLLOW`, so a
+  symbolic link in place of `speakers/`, `audio/`, `derived/`, or `exports/` is refused
+  instead of leading the delete outside the session, and links inside the tree are removed,
+  not followed.
 - **CLI (PR3).** `holos session delete <path> [--audio-only] --yes`.
 - **Catalog (PR3).** `SessionSummary` reports `bytes`, `derivedBytes`, `audioDeleted`.
 - **UI (PR4).** Meetings window buttons "Delete Audio (Keep Transcript)…" and "Delete

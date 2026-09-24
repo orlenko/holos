@@ -184,22 +184,11 @@ public enum SessionSpeakerStore {
         try AtomicFile.writeJSON(data, to: SessionPaths.voiceData(data.runID, in: session))
     }
 
-    /// Removes speakers/voice/ and everything in it. Nothing to remove is not an error.
+    /// Removes speakers/voice/ and everything in it. Nothing to remove is not an error. Refuses
+    /// (`invalidInput`) when speakers/ is a symbolic link or a file, so the delete never leaves the session.
     public static func deleteVoiceData(session: URL) throws {
         try SessionLockFile.requireSessionFolder(session)
-        let folder = SessionPaths.voiceDirectory(session)
-        var info = stat()
-        guard lstat(folder.path, &info) == 0 else {
-            if errno == ENOENT { return }
-            throw HolosError.io("Cannot inspect speakers/voice: \(AtomicFile.errnoText()).")
-        }
-        do {
-            // Removes a symlink itself, never its target.
-            try FileManager.default.removeItem(at: folder)
-        } catch {
-            throw HolosError.io("Cannot delete voice data: \(error.localizedDescription)")
-        }
-        try AtomicFile.syncDirectory(SessionPaths.speakers(session))
+        guard try AtomicFile.removeTree(["speakers", "voice"], in: session) else { return }
         log.info("Deleted session voice data")
     }
 
