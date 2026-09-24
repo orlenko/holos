@@ -141,8 +141,10 @@ private func launcherMode(_ url: URL) -> mode_t? {
 @Test @MainActor func childLauncherTerminateIsAGracefulSignal() async throws {
     let temp = try TemporaryDirectory("launcher")
     defer { temp.remove() }
+    let ready = temp.url.appendingPathComponent("ready")
     let script = try launcherScript("""
         trap 'echo "Stopped by SIGTERM."; exit 0' TERM
+        touch '\(ready.path)'
         while :; do sleep 0.05; done
         """, in: temp.url)
     let launcher = ChildProcessLauncher(executable: script, logDirectory: temp.url)
@@ -151,7 +153,8 @@ private func launcherMode(_ url: URL) -> mode_t? {
     let id = UUID().uuidString
     _ = try launcher.launch(MeetingStartSettings(name: "Board", source: .microphone), sessionID: id, root: temp.url,
                             vocabularyFile: nil)
-    try await Task.sleep(for: .milliseconds(200))
+    // Signal only once the script has installed its handler.
+    #expect(await eventually { FileManager.default.fileExists(atPath: ready.path) })
     launcher.terminate(sessionID: id)
     #expect(await eventually { exit.value != nil })
     #expect(exit.value?.code == 0)
