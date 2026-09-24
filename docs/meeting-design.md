@@ -3070,27 +3070,43 @@ Application order in `make`:
    → `userConfirmed`; automatic likely match not rejected → `recognized`; channel →
    `channelAssumption`; else `diarizer`.
 
-Fingerprints use only state derived from the run and the journal (never recognition):
+Fingerprints use only state derived from the run and the journal (never recognition).
+This is the format implemented in PR5b (`SpeakerProjection.State.fingerprint(for:)`); the
+encoding is injective per action and self-describing, so a stale edit can never compare
+equal to the current state:
 
 | Action | Fingerprint |
 |---|---|
-| `rename(s, _)` | current explicit name of `s`, or `""` |
-| `linkProfile(s, _)` | profile `s` is linked to by edits, or `""` |
-| `reassignTurns(ids, _)` | current speaker of each id joined by `,`, `?` for unknown |
-| `rejectProfile(s, p)` | `link=<profile s is linked to, or "">;rejected=<1 if p already rejected for s, else 0>` |
-| `merge(from, into)` | for `from` then `into`: `<speaker>:<linked profile or "">:<sorted IDs of its current turns>` joined by `|` |
-| `splitTurn(t, at)` | `<current speaker of t>:<t's segment ID>[<first word>..<last word>]` |
-| `newSpeaker(_, _, ids)` | for each id: `<current speaker>:<segment ID>[<first>..<last>]:<excluded 0/1>`, joined by `,` |
-| `excludeFromEnrollment(ids)` | same as `newSpeaker` for `ids` |
+| `rename(s, _)` | `fp1:rename:speaker=` S(s, `name=`O(explicit name)) |
+| `linkProfile(s, p)` | `fp1:linkProfile:profile=`L(p)`;speaker=` S(s, `link=`O(linked profile)`;rejected=<1 if p is rejected, else 0>`) |
+| `rejectProfile(s, p)` | `fp1:rejectProfile:` and the rest as `linkProfile` |
+| `reassignTurns(ids, to)` | `fp1:reassignTurns:to=<none for unknown, else S(to)>;turns=` N(T(id) for each id) |
+| `merge(from, into)` | `fp1:merge:from=` S(from, M) `;into=` S(into, M), where M = `name=`O(explicit name)`;link=`O(linked profile)`;rejected=`N(L(p) per rejection, in order)`;clusters=`N(L(c) per cluster, in order)`;turns=`N(sorted `L(turn ID):words=W;excluded=<0/1>` of its turns) |
+| `splitTurn(t, _)` | `fp1:splitTurn:turn=` T(t) |
+| `newSpeaker(s, _, ids)` | `fp1:newSpeaker:speaker=` S(s) `;turns=` N(T(id) for each id) |
+| `excludeFromEnrollment(ids)` | `fp1:excludeFromEnrollment:turns=` N(T(id)`;excluded=<0/1>` for each id) |
 | `revert(editID)` | `nil` (revert staleness is decided in step 3) |
 
-  Fingerprint strings longer than 256 characters are replaced by the first 32 hex digits of
-  their SHA-256. Every action that changes speaker assignment, turn boundaries, or
-  enrollment therefore carries the state it was made against, so a stale window's edit is
-  refused instead of acting on a turn that another window split or reassigned. Tests
-  (PR5b): `staleExcludeAfterSplitIsRefused` (window A splits T5; window B's
-  `excludeFromEnrollment([T5])` made before the split is stale),
-  `staleMergeAfterReassignIsRefused`, `staleRejectAfterRelinkIsRefused`.
+- L(x) = `<Unicode scalar count of x>:<x>`; every string (names and IDs) is written this way.
+- O(x) = `none` when x is nil, else L(x).
+- N(items) = `<count>[<items joined by ,>]`.
+- S(id, fields) = L(id)`=absent`, or L(id)`=present;ordinal=<n>` then `;fields` when there
+  are any. The ordinal separates a speaker from a later one re-created with the same
+  `user:` ID after a merge removed the first.
+- T(id) = L(id)`=absent`, or L(id)`=present;speaker=`O(speaker, none = unknown)`;words=`W.
+- W = N(L(segment ID)`@<first>..<end>` per span, `end` exclusive). Word ranges are included
+  so a reassignment or merge made before another window split a turn is refused.
+- A fingerprint longer than 256 Unicode scalars is replaced by
+  `fp1:sha256:<64 hex digits of the SHA-256 of its UTF-8 bytes>`, which can never equal an
+  unhashed fingerprint.
+
+Every action that changes speaker assignment, turn boundaries, names, links, rejections,
+or enrollment therefore carries all the state it reads or discards. Tests (PR5b):
+`staleExcludeAfterSplitIsRefused`, `staleMergeAfterReassignIsRefused`,
+`staleMergeAfterChangeToEitherSpeakerIsRefused`, `staleRejectAfterRelinkIsRefused`,
+`staleLinkAfterRejectionIsRefused`, `staleReassignAfterSplitIsRefused`,
+`deletedSpeakerFingerprintDiffersFromAnUnnamedOne`, `hashedFingerprintNeverEqualsARawOne`,
+and the property test `fingerprintsAreInjectiveOverTheStateEachActionReads`.
 
 Action semantics:
 
