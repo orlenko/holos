@@ -20,7 +20,7 @@ stops and reports it; it does not edit a file owned by another PR.
 | # | Decision | Where it shows up |
 |---|---|---|
 | 1 | FluidAudio 0.17.1, pinned, checksummed, credited | §4.8, PR7a, `THIRD_PARTY_NOTICES.md`, About panel (PR4) |
-| 2 | Remember voices: opt-in, only from confirmed labels, with forget and export | §4.10, PR10. Voice embeddings are stored only while the setting is on (§2.1 `speakers/voice/`); names are not voiceprints and are always kept |
+| 2 | Remember voices: opt-in, only from confirmed labels, with forget and export | §4.10, PR10. Voice embeddings are stored only as profile samples of people the user confirmed with voice learning on, extracted on demand (§4.10); post-processing never persists them; names are not voiceprints and are always kept |
 | 3 | Int16 audio now; AAC compaction later | PR2a (`AudioChunkWriter`); system audio is also recorded mono (§4.5) |
 | 4 | Recorder = bundled `holos` CLI child of the app; in-process fallback allowed | §4.1, §4.6, PR4 (`RecorderLauncher` with both implementations) |
 | 5 | Sleep < 15 min resumes, else finalize at the sleep point | §4.4, PR2b. Refinement to confirm: sleep that starts while *paused* keeps the meeting paused (§9 Q1) |
@@ -56,8 +56,10 @@ if it does.
 
 The review log (§10) lists every finding and its disposition. The larger changes:
 
-- **Privacy.** Diarization runs hold no voice embeddings; per-session voice data lives in
-  `speakers/voice/` only while "Remember voices" is on. Exports never contain vectors by
+- **Privacy.** Diarization runs hold no voice embeddings, and post-processing never
+  persists them; a voiceprint is stored only as a profile sample of a person the user
+  confirmed with voice learning on (§4.10). `speakers/voice/` exists only for hidden
+  evaluation runs. Exports never contain vectors by
   default. Recognition only suggests names until thresholds are calibrated on the user's
   own confirmed meetings. Names are kept whatever the setting.
 - **Recorder robustness.** A `waiting` phase with backoff replaces "three restarts then
@@ -437,7 +439,7 @@ extension SessionArchive {
   speakers/head.json                       PR6 API                      SpeakerHead: current run
   speakers/edits.jsonl                     PR6 API, PR8 writes          SpeakerEdit journal; torn tail tolerated
   speakers/edits.torn-<UUID>.jsonl         PR6                          backup of a repaired torn tail
-  speakers/voice/<RUN-UUID>.json           PR6 API, PR7b writes         SessionVoiceData; only while "Remember voices" is on
+  speakers/voice/<RUN-UUID>.json           PR6 API, PR7b writes         SessionVoiceData; only with hidden forceVoiceData (evaluation)
   speakers/recognition/<RUN-UUID>.json     PR10                         RecognitionResult; distances, no vectors
   exports/transcript.{md,json,txt}         PR7b SessionExports          generated, mode 0400, never contain vectors
   exports/.generated.json                  PR7b                         SHA-256 of each generated file
@@ -2117,7 +2119,7 @@ JSONEncoder's `"key" : value` spacing). Real embeddings are 256-dimensional.
 }
 ```
 
-#### speakers/voice/5C1D….json (only while Remember voices is on; 2-d vectors shown, real ones are 256-d)
+#### speakers/voice/5C1D….json (evaluation sessions only, hidden forceVoiceData; 2-d vectors shown, real ones are 256-d)
 
 ```json
 {
@@ -2710,7 +2712,7 @@ Stages (PR7b):
 | 3 | — | if a head run exists, was built from the current transcript, has applied edits, and `!force`: skip 4–7 with "Speaker labels were edited; relabel with --force (names carry over)". If the head was built from another transcript, relabel. | stages `skipped` |
 | 4 | `render` | skip with "Not enough disk space to label speakers. Free some space, then use Label Speakers." when `stopReason == .diskLow` or `DiskPolicy.renderCheck` fails. Otherwise `TrackRenderer.render` each diarized track to `derived/<track>-16k.caf`, compressing long gaps (below) | failed → skip 5–7 |
 | 5 | `diarize` | `nil` diarizer → `skipped`, "Speaker models are not installed. Install them from Setup, or run holos setup --speakers." Otherwise `diarizer.diarize` each rendered track, **one track at a time**, then map times to the session timeline with the render's time map. Speaker hint: `options.speakers`, else `meeting.json` `expectedSpeakers` n as `minimum: n − 1, maximum: n + 1` (or the form PR7c found best) | failed → skip 6–7 |
-| 6 | `align` | `SpeakerRunBuilder.build` (PR5a, pure) → run (no embeddings) plus in-memory voice data. Under the speaker lock: `writeRun`; `writeHead`; `writeVoiceData` only when "Remember voices" is on or `forceVoiceData`; append carry-over edits (§4.9) when the previous head had names, links, or rejections. Release the lock. | failed → skip 7 |
+| 6 | `align` | `SpeakerRunBuilder.build` (PR5a, pure) → run (no embeddings) plus in-memory voice data. Under the speaker lock: `writeRun`; `writeHead`; `writeVoiceData` only with `forceVoiceData` (evaluation; never for normal meetings); append carry-over edits (§4.9) when the previous head had names, links, or rejections. Release the lock. | failed → skip 7 |
 | 7 | `recognize` | PR10: when "Remember voices" is on and some profile has samples: `SpeakerRecognizer.recognize` on the in-memory centroids → `writeRecognition` (distances only) | failed → continue |
 | 8 | `export` | `SessionExports.regenerate` (takes the speaker lock itself; stage 6 has released it) | failed → state `failed` |
 | 9 | — | delete `derived/` whatever happened (unless `keepDerived`); write the final record; release the lease if `run` acquired it | — |
@@ -3176,14 +3178,44 @@ public struct SpeakerProfileDatabase: Codable, Sendable, Equatable {
   turn pop-up lists them. "This is me" links a speaker to the `isSelf` profile (created
   on first use with `NSFullUserName()`, editable). The People window lists people even
   when "Remember voices" is off.
-- **Voice data (`speakers/voice/<runID>.json`).** Written by stage 6 only while
-  "Remember voices" is on (or `forceVoiceData` for evaluation); holds centroids and
-  turn embeddings for that run. The folder is excluded from backups. Deleted by Forget
-  All Voices, turning Remember off with "Forget", Delete Audio, and Delete Meeting.
-  Forget <person> removes the entries of that person's linked speakers from the voice
-  files of the sessions their samples came from. Meetings processed while the setting
-  was off have no voice data; to learn a voice from one, turn the setting on and use
-  Label Speakers again (names carry over, §4.9).
+- **No stored voice data for unconfirmed people (Codex review of PR #4).** Post-processing
+  never persists embeddings, whatever the setting: centroids and turn embeddings exist
+  only in memory during stages 6–7, and recognition (stage 7) uses them there and stores
+  distances only. `speakers/voice/<runID>.json` is written only with the hidden
+  `forceVoiceData` (evaluation sessions). A voiceprint reaches disk only as a profile
+  sample, and only for a speaker the user confirmed as a person with voice learning on.
+- **Voice sample extraction on demand.** `VoiceSampleExtractor` (protocol in HolosMeeting,
+  PR10) returns turn embeddings for exactly the turns it is asked about:
+
+  ```swift
+  public protocol VoiceSampleExtractor: Sendable {
+      /// Renders the track, extracts embedding windows, and returns one embedding per
+      /// requested turn that has enough clean speech. Every other window is discarded in memory.
+      func turnEmbeddings(session: URL, track: String, turns: [TurnRef]) async throws -> [TurnEmbedding]
+  }
+  ```
+
+  `FluidVoiceSampleExtractor` (HolosDiarization, PR10) renders the track with
+  `TrackRenderer`, runs FluidAudio's embedding extraction (`prepare()` with
+  `exposeChunkEmbeddings`, same model as the run), keeps windows inside the requested
+  turns, averages them per turn, and deletes the render. The app never links FluidAudio:
+  its extractor runs the hidden `holos speakers enroll <session> <speakerID> --profile
+  <id> [--json]` child, which extracts and upserts the sample itself. Extraction needs the
+  session's audio: after Delete Audio, linking keeps the name and says "The recording's
+  audio was deleted, so this voice can't be learned." `refreshSamples` re-extracts the
+  affected `(profile, session)` samples the same way. Meetings processed while Remember
+  voices was off need nothing special: confirming a person later extracts on demand.
+- **Forgetting is resumable.** Every forget operation first appends a tombstone to
+  `Support/Speakers/forget-journal.jsonl` (0600, fsync; `{id, kind, profileID?, sampleIDs,
+  sessionIDs, state: "pending"}`), then updates the profile store, then cleans each
+  affected session under its speaker lock (drops the profile from `recognition.json`,
+  removes any evaluation voice file entries, regenerates exports), then appends
+  `{id, state: "done"}`. `VoiceProfileService.resumePendingForgets(store:sessionsRoot:)`
+  runs at app launch and at the start of every `holos people`, `speakers`, and `session`
+  command and finishes any pending tombstone; each step is idempotent, so a crash at any
+  point leaves nothing behind once the next run completes. Tests (PR10):
+  `forgetResumesAfterCrashBetweenStoreAndSessions` (failure injected after the store
+  update; resume removes every reference), `forgetJournalReplayIsIdempotent`.
 - **Recognition** (`SpeakerRecognizer.recognize`, HolosSpeakers, pure; stage 7, only
   with "Remember voices" on):
   1. Candidates: machine speakers of diarized tracks with a centroid. Condition: `system`
@@ -3220,18 +3252,19 @@ public struct SpeakerProfileDatabase: Codable, Sendable, Equatable {
   confirmed links and at least 2 people with samples from 2 or more meetings.
 - **Enrollment** (`VoiceEnrollment.sample`, HolosSpeakers, pure): qualifying turns are
   the linked speakers' projected turns that are not reassigned, not `modified`, not
-  overlapped, at least 2 s long, not excluded, and have a turn embedding in the voice
-  data. Vector = speech-weighted mean, L2-normalized; then one outlier pass drops turns
+  overlapped, at least 2 s long, not excluded, and get a turn embedding from
+  `VoiceSampleExtractor`. Vector = speech-weighted mean, L2-normalized; then one outlier pass drops turns
   more than 0.5 cosine distance from that mean and recomputes (count reported in
-  `droppedOutlierTurns`). `weak` if total speech < 20 s. No voice data or no qualifying
-  turns → no sample.
+  `droppedOutlierTurns`). `weak` if total speech < 20 s. No audio or no qualifying
+  turns → no sample. Only the confirmed speaker's turns are ever sent to the extractor.
 - **`VoiceProfileService`** (HolosMeeting, PR10) is the only code that writes profiles
   and samples:
   - `link(session:speakerID:to:view:learnVoice:store:)` where `to` is an existing
     profile or a new name: creates or links the profile, appends `linkProfile` and
     `rename(name: profile.displayName)` in one batch (so the session keeps the name if
     the profile is later forgotten), and, if `learnVoice` and "Remember voices" is on
-    and voice data exists, upserts the sample for `(profile, session)`. Samples come only
+    and the session's audio exists, extracts and upserts the sample for
+    `(profile, session)` through `VoiceSampleExtractor`. Samples come only
     from this call, never from automatic matches (decision 2).
   - `confirmAll(session:view:learnVoices:store:)`: links every current suggestion in one
     batch, so one undo reverts it.
@@ -4556,13 +4589,25 @@ holos session diarize <path> [--force] [--speakers N | --min-speakers N --max-sp
                              [--others-in-room | --no-others-in-room] [--keep-derived]
                              [--after-recording] [--json]
                              # hidden: [--exclusive-segments true|false] [--voice-data]
+                             #         [--lease-fd N]
 ```
 
 - Runs `MeetingPostProcessor` and prints `Labelled 11 speakers in 343 turns (run 5C1D…).
   Kept 8 names. Exports: <path>/exports`, or the `PostProcessingRecord` with `--json`.
   Refuses to replace an edited head without `--force`. Exit 0, 3 (partial), or 1.
-- `--after-recording` (in-process hand-off): waits up to 30 s for the writer lock to be
-  released, then takes the lease.
+- `--after-recording`: waits up to 30 s for the writer lock to be released, then takes
+  the lease, unless `--lease-fd` is given.
+- `--lease-fd N` (hidden; in-process hand-off, §4.1): adopts the inherited descriptor as
+  the `ProcessingLease` instead of acquiring one. It validates that `fstat(N)` has the same
+  device and inode as this session's lease file and that `flock(N, LOCK_EX | LOCK_NB)`
+  succeeds (it does, idempotently, because the parent's lock belongs to the same open file
+  description); otherwise exit 1 "The inherited lock is not this session's processing
+  lease." It never re-acquires the non-reentrant lease, and it releases the lock by
+  closing N when it exits. Tests (PR7b): `diarizeAdoptsInheritedLease` (a test process
+  holds the lease, spawns the command with the descriptor at fd 3, closes its copy;
+  post-processing runs and `isProcessing` stays true until exit),
+  `diarizeRefusesForeignLeaseFd` (fd 3 is another session's lease → exit 1, nothing
+  changes).
 - `--voice-data` sets `forceVoiceData` (evaluation sessions only). `--exclusive-segments`
   sets `engineOverrides`.
 - Without verified models: exit 1 with the setup hint; nothing changes.
@@ -4580,6 +4625,7 @@ holos session diarize <path> [--force] [--speakers N | --min-speakers N --max-sp
 | `rendererTrimsOverlappingChunks` | legacy manifest with chunk 2 starting 0.2 s before chunk 1 ends | chunk 2's first 0.2 s skipped; output length equals the timeline span; no sample written twice |
 | `postProcessorWritesRunHeadAndExports` | fixture (manifest, 20 s audio, transcript with 2 speakers' words) + `FakeDiarizer.alternating` | run, `head.json`, `transcript.{md,json,txt}` (0400), `.generated.json`, `postprocess.json` succeeded, `derived/` empty, **no** `speakers/voice/` |
 | `voiceDataOnlyWhenForced` | `forceVoiceData: true` | `speakers/voice/<run>.json` exists, 0600, excluded from backup |
+| `rememberOnStoresNoVoiceData` | "Remember voices" on (PR10 store), no `forceVoiceData` | no `speakers/voice/`; `recognition.json` has distances only |
 | `missingDiarizerSkipsSpeakersButExports` | `diarizer: nil` | state succeeded; diarize stage skipped with the setup hint; exports use track names; no run |
 | `diarizerFailureIsRecorded` | FakeDiarizer with error | diarize stage failed; exports written; state partial |
 | `diskLowStopSkipsRender` | `stopReason: .diskLow` | render skipped with the disk message; exports written; state partial |
@@ -5444,6 +5490,8 @@ setting.
 | `profilesWithoutSamplesAreNotCandidates` | Sam with no samples | never matched; not in `skippedProfiles` |
 | `weakOrOtherConditionCapsAtPossible` | calibrated; only weak samples at 0.2; only call samples for a room speaker | possible |
 | `rememberOffMeansNoVoiceDataAndNoRecognition` | Remember off; post-process | no `speakers/voice/`, no recognition file |
+| `enrollExtractsOnlyTheConfirmedSpeaker` | `FakeVoiceSampleExtractor`; link S2 to Jim with learnVoice | extractor asked only for S2's qualifying turns; one sample for (Jim, session); no other embeddings written |
+| `enrollWithoutAudioKeepsNameOnly` | session after Delete Audio; link with learnVoice | profile linked, no sample, message "…audio was deleted…" |
 | `rememberOnWritesVoiceDataAndRecognition` | Remember on; a profile with samples | voice file and recognition file (no vectors in it) |
 | `sampleUsesOnlyQualifyingTurns` | 8 turns: reassigned, modified, overlapped, 1.5 s, excluded, no embedding, + 2 qualifying | vector from the 2 qualifying turns |
 | `splitThenReassignKeepsOtherVoiceOut` | split T5, reassign the tail to Maria, link T5's speaker to Jim | Jim's sample uses no window from T5 |
@@ -5768,7 +5816,7 @@ the review changed them); R43 onward come from the review (§10).
 | R8 | `withProcessingLock` "for one write" vs long processing | Two locks: `withSpeakerLock` (one write) and `ProcessingLease` (one run, or one recover → rebuild → post-process chain). |
 | R9 | Re-diarization and existing edits | Names, profile links, and rejections carry to the new run by shared speech time; turn-level edits stay in the journal under the old run and are reported as not carried. `--force` is required to replace an edited head. `--use-run` is deferred. |
 | R10 | Are turns persisted or recomputed? | Persisted in the immutable run, so edit targets (turn IDs, word refs) never shift. |
-| R11 | Per-segment embeddings (S1 question) | FluidAudio 0.17.1's segment `embedding` is the cluster centroid; per-window embeddings come from `exposeChunkEmbeddings`; turn embeddings are averaged from those windows. They are persisted only in `speakers/voice/` while "Remember voices" is on. |
+| R11 | Per-segment embeddings (S1 question) | FluidAudio 0.17.1's segment `embedding` is the cluster centroid; per-window embeddings come from `exposeChunkEmbeddings`; turn embeddings are averaged from those windows. They are persisted only in `speakers/voice/` while "Remember voices" is on. Superseded by the Codex review (§10.1): embeddings are never persisted by post-processing; samples are extracted on demand for confirmed people. |
 | R12 | `--portable` and privacy | No session export contains vectors; `--portable` is gone. `holos people export` includes embeddings only with `--include-voiceprints` and a warning. |
 | R13 | "Mic = Me" and condition tags in PR11 | Mic = Me is a track policy in PR5a/PR7b; condition tags ship with samples in PR10; PR11 keeps echo removal and the headphone warning. |
 | R14 | "Notify" after resuming from sleep | Menu and status-item warning only; no user notifications (they need a new permission). |
@@ -5806,7 +5854,7 @@ the review changed them); R43 onward come from the review (§10).
 | R46 | Hand-off from recording to labelling | Lease before `finish`; `status.json` heartbeat; lifecycle in `RecordingWorkflow` for both launchers. |
 | R47 | Liveness during maintenance | `maintenance` liveness; maintenance commands mark a dead recorder's status `exited`. |
 | R48 | Stale edit views | Compare-and-append against the caller's view; refused edits write nothing. |
-| R49 | Voice embeddings of every participant | Stored only in `speakers/voice/` while "Remember voices" is on; never in runs or exports. |
+| R49 | Voice embeddings of every participant | Stored only in `speakers/voice/` while "Remember voices" is on; never in runs or exports. Superseded by the Codex review (§10.1): embeddings are never persisted by post-processing; samples are extracted on demand for confirmed people. |
 | R50 | Names without voiceprints | People exist without samples; names carry across meetings whatever the setting. |
 | R51 | Export formats | Markdown, text, JSON; md and txt merge consecutive turns of one speaker; hand-edited exports are moved aside, never overwritten. |
 | R52 | Retention | Delete Audio and Delete Meeting; system audio recorded mono. No automatic expiry in v1 (Q12). |
@@ -5973,3 +6021,7 @@ reprocessing" in `docs/contracts.md`).
 | In-process mode released the lease before spawning the diarizer, leaving a window with no lock | Accepted. The lease descriptor is inherited by the child at fd 3 (`--lease-fd 3`) and the parent closes its copy only after a successful spawn (§4.1). Test `inProcessLeaseHandoffHasNoGap`. |
 | The vocabulary temp file leaked when launch failed or the child exited early | Accepted. `MeetingController` deletes it on launch failure, child exit, and first status; stale files are swept at launch (§4.12). Three PR4 tests. |
 | `markSelf` had no consent flag for voice learning | Accepted. `learnVoice:` added to `VoiceProfileService.markSelf`; `ReviewSession.markSelf` passes `learnVoices` (§4.10, PR10). Test `markSelfHonoursLearnVoice`. |
+| (second pass) Voice data for every diarized speaker was persisted before anyone was confirmed | Accepted. Post-processing never persists embeddings; recognition uses them in memory. Samples are extracted on demand for the confirmed speaker only (`VoiceSampleExtractor`, hidden `holos speakers enroll`) (§4.10). Tests `rememberOnStoresNoVoiceData`, `enrollExtractsOnlyTheConfirmedSpeaker`, `enrollWithoutAudioKeepsNameOnly`. This also settles open question Q9 (retention of unnamed speakers' voice data): there is none. |
+| (second pass) A crash during Forget could strand voice data with no way to retry | Accepted. Forget writes a tombstone to `forget-journal.jsonl` before touching the store; `resumePendingForgets` finishes pending work at app launch and CLI start (§4.10). Tests `forgetResumesAfterCrashBetweenStoreAndSessions`, `forgetJournalReplayIsIdempotent`. |
+| (second pass) note | The contract file comment on `SessionVoiceData` (§3) still says "written only while Remember voices is on". Contract files are frozen by their §3.0 digests and wave 0 already copied them, so the comment is left as is; the rules in §4.10 govern. |
+| (second pass) The diarize command did not accept the inherited lease | Accepted. Hidden `--lease-fd N` with descriptor validation (§5.5 PR7b CLI). Tests `diarizeAdoptsInheritedLease`, `diarizeRefusesForeignLeaseFd`. |
