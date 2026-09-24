@@ -86,6 +86,8 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
     }
     /// Set when the current result was not written cleanly, so it is shown even with the preview off.
     private var resultNeedsAttention = false
+    /// A forced stop (for example the maximum duration) reported while finalizing; kept for the result message.
+    private var forcedStopMessage: String?
 
     private var removeFillers: Bool {
         get { UserDefaults.standard.object(forKey: "removeFillers") as? Bool ?? true }
@@ -300,6 +302,7 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
             guard !isBusy, !refuseIfReplaced(), !TextInsertion.isSecureInputActive() else { return }
             overlay.allowShowing()
             resultNeedsAttention = false
+            forcedStopMessage = nil
             // A pending opacity sample must not hide this dictation's own preview or result.
             opacitySampleTask?.cancel()
             opacitySampleTask = nil
@@ -385,6 +388,10 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
                 insertionBlockReason = reason + " Use Copy Result."
             }
             message = update.message ?? "Finishing locally…"
+            if let forced = update.message {  // a forced stop must stay visible through the result
+                resultNeedsAttention = true
+                forcedStopMessage = forced
+            }
             if showPreview || update.message != nil { overlay.show(title: message, text: cleaned(update.text)) }
             if !update.committedText.isEmpty { latestCommitted = update.committedText }
             stream(cleanedForStreaming(update.committedText))
@@ -398,6 +405,7 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
                 lastRecognized = recognized
             }
             finish(text, into: destination)
+            if let forced = forcedStopMessage, !message.hasPrefix(forced) { message = forced + " " + message }
             if showPreview || resultNeedsAttention { overlay.show(title: message, text: resultText) }
             scheduleExpiry()
         case .failed:
@@ -717,10 +725,13 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
         guard !isBusy, showPreview, !overlay.isVisible || opacitySampleTask != nil else { return }
         overlay.show(title: "Preview opacity \(Int((previewOpacity * 100).rounded())) %",
                      text: "This is how the dictation preview looks over your windows.", force: true)
+        let sample = overlay.contentToken
         opacitySampleTask?.cancel()
         opacitySampleTask = Task { [weak self] in
             try? await Task.sleep(for: .seconds(2))
-            guard !Task.isCancelled, let self, !self.isBusy else { return }
+            // Hide only if the panel still shows this sample, never a warning or result shown since.
+            guard !Task.isCancelled, let self, self.overlay.contentToken == sample else { return }
+            self.opacitySampleTask = nil
             self.overlay.hide()
         }
     }
@@ -773,7 +784,7 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
             updateSetupWindow()
         case .togglePreview:
             showPreview.toggle()
-            if !showPreview && isBusy { overlay.hide() }
+            if !showPreview && isBusy && !resultNeedsAttention { overlay.hide() }
             updateSetupWindow()
         }
     }

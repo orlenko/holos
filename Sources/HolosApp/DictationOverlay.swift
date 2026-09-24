@@ -90,6 +90,7 @@ final class DictationOverlay {
     func show(title: String, text: String, force: Bool = false) {
         if dismissed && !force { return }
         if force { dismissed = false }
+        contentToken &+= 1
         titleLabel.stringValue = title
         previewLabel.stringValue = Self.latestWords(of: text, font: previewLabel.font ?? .systemFont(ofSize: 15))
         let pointer = NSEvent.mouseLocation
@@ -134,6 +135,8 @@ final class DictationOverlay {
     }
 
     var isVisible: Bool { panel.isVisible }
+    /// Changes every time the panel shows new content, so a timer can tell whether its content is still up.
+    private(set) var contentToken = 0
 
     /// Opacity of the preview (not of its close button, which stays fully visible).
     func setOpacity(_ value: Double) {
