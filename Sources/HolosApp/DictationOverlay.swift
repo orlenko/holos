@@ -133,6 +133,8 @@ final class DictationOverlay {
         return "…" + text[start...]
     }
 
+    var isVisible: Bool { panel.isVisible }
+
     /// Opacity of the preview (not of its close button, which stays fully visible).
     func setOpacity(_ value: Double) {
         panel.alphaValue = CGFloat(min(1, max(0.3, value)))

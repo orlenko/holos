@@ -366,7 +366,11 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
             message = enabled ? "Ready — hold \(shortcutTitle)" : "Disabled"
         case .preparing:
             message = "Preparing — wait before speaking"
-            if showPreview { overlay.show(title: message, text: "Release to stop · Esc to cancel") }
+            if showPreview {
+                overlay.show(title: message, text: "Release to stop · Esc to cancel")
+            } else {
+                overlay.hide()  // an earlier result's message no longer applies
+            }
         case .listening:
             message = "Listening — release \(shortcutTitle) to finish"
             if showPreview {
@@ -709,7 +713,8 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
     private func changePreviewOpacity(_ value: Double) {
         previewOpacity = value
         overlay.setOpacity(previewOpacity)
-        guard !isBusy, showPreview else { return }
+        // A visible preview or result already shows the new opacity; never replace it with the sample.
+        guard !isBusy, showPreview, !overlay.isVisible || opacitySampleTask != nil else { return }
         overlay.show(title: "Preview opacity \(Int((previewOpacity * 100).rounded())) %",
                      text: "This is how the dictation preview looks over your windows.", force: true)
         opacitySampleTask?.cancel()
