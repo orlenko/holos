@@ -28,6 +28,7 @@ let package = Package(
         .target(name: "HolosAudio", dependencies: ["HolosCore", "HolosStorage"]),
         .target(name: "HolosDesktop", dependencies: ["HolosCore"]),
         .target(name: "HolosDictation", dependencies: ["HolosCore", "HolosAudio", "HolosSpeech"]),
+        .target(name: "HolosSpeakers", dependencies: ["HolosCore"]),
         .executableTarget(name: "HolosApp", dependencies: [
             "HolosCore", "HolosAudio", "HolosSpeech", "HolosDesktop", "HolosDictation",
         ]),
@@ -45,6 +46,7 @@ let package = Package(
         .testTarget(name: "HolosContentTests", dependencies: ["HolosContent", "HolosCore"]),
         .testTarget(name: "HolosDesktopTests", dependencies: ["HolosDesktop", "HolosCore"]),
         .testTarget(name: "HolosDictationTests", dependencies: ["HolosDictation", "HolosCore"]),
+        .testTarget(name: "HolosSpeakersTests", dependencies: ["HolosSpeakers", "HolosCore"]),
     ],
     swiftLanguageModes: [.v6]
 )
