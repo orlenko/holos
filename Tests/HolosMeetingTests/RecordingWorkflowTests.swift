@@ -98,27 +98,61 @@ func recordOnlySavesAudioAndFinishesAudioOnly() async throws {
     #expect(!FileManager.default.fileExists(atPath: outcome.directory.appendingPathComponent("control.json").path))
 }
 
+/// PR2a: a capture that fails no longer ends the recording; capture restarts at once in a new epoch, and the gap is
+/// marked (docs/meeting-design.md §4.2).
 @Test(.timeLimit(.minutes(1))) @MainActor
-func captureFailureMarksArchiveIncompleteAndThrows() async throws {
+func captureFailureRestartsInANewEpoch() async throws {
     let temp = try TemporaryDirectory()
     defer { temp.remove() }
-    let captures = FakeCaptureFactory([FakeCaptureScript(frames: FakeFrame.run(count: 1), failAfterFrames: 1,
-                                                         failure: .io("The microphone disappeared."))])
+    let captures = FakeCaptureFactory([
+        FakeCaptureScript(frames: FakeFrame.run(count: 1), failAfterFrames: 1, failure: .io("The microphone disappeared.")),
+        FakeCaptureScript(frames: FakeFrame.run(count: 2)),
+    ])
+    let stop = ManualStopSource()
+    let run = Task {
+        try await RecordingWorkflow.run(.testing(root: temp.url, recordOnly: true),
+                                        dependencies: .testing(captures: captures, stop: stop))
+    }
+    #expect(await eventually { captures.captures.count == 2 && (captures.captures.last?.consumedFrames ?? 0) >= 2 })
+    stop.requestStop()
+    let outcome = try await run.value
+    #expect(outcome.archiveStatus == ArchiveStatus.audioOnly)
+    let manifest = try SessionArchive.readManifest(at: outcome.directory)
+    #expect(manifest.chunks.count == 2, "Audio from before and after the failure is kept, in separate chunks.")
+    let events = try SessionArchive.readEvents(at: outcome.directory).events
+    let failure = try #require(events.first { $0.kind == MeetingEventKind.captureFailed })
+    #expect(failure.details["error"] == "The microphone disappeared.")
+    #expect(failure.details["epoch"] == "0")
+    #expect(events.first { $0.kind == MeetingEventKind.audioDiscontinuity }?.details["reason"] == "captureRestarted")
+    #expect(events.contains { $0.kind == MeetingEventKind.captureRestarted && $0.details["epoch"] == "1" })
+    let offsets = captures.requests.map(\.timelineOffset)
+    #expect(offsets.count == 2 && offsets[0] == 0 && offsets[1] >= 0.11 - 1e-9, "Epoch 1 starts after epoch 0's audio.")
+    #expect(try !SessionArchive.isActive(at: outcome.directory))
+}
+
+/// Audio that cannot be written still ends the recording: the archive is marked incomplete and the run throws.
+@Test(.timeLimit(.minutes(1))) @MainActor
+func writerFailureMarksArchiveIncompleteAndThrows() async throws {
+    let temp = try TemporaryDirectory()
+    defer { temp.remove() }
+    let captures = FakeCaptureFactory([FakeCaptureScript(frames: [FakeFrame(start: 0),
+                                                                  FakeFrame(track: "bogus", start: 0.1)])])
     do {
         _ = try await RecordingWorkflow.run(.testing(root: temp.url), dependencies: .testing(captures: captures))
-        Issue.record("A capture failure must throw.")
+        Issue.record("A writer failure must throw.")
     } catch let HolosError.incomplete(message) {
-        #expect(message.contains("The microphone disappeared."))
+        #expect(message.contains("Invalid capture track."))
     }
     let directory = try #require(sessionFolders(in: temp.url).first)
     let manifest = try SessionArchive.readManifest(at: directory)
     #expect(manifest.status == ArchiveStatus.incomplete)
     #expect(manifest.chunks.count == 1, "Audio captured before the failure is kept.")
     let events = try SessionArchive.readEvents(at: directory).events
-    let failure = try #require(events.first { $0.kind == MeetingEventKind.captureFailed })
-    #expect(failure.details["error"] == "The microphone disappeared.")
+    let failure = try #require(events.last { $0.kind == MeetingEventKind.captureFailed })
+    #expect(failure.details["error"] == "Invalid capture track.")
     #expect(!events.contains { $0.kind == MeetingEventKind.captureStopped })
     #expect(try !SessionArchive.isActive(at: directory))
+    #expect(try RecorderChannel.readStatus(session: directory)?.phase == .exited)
 }
 
 @Test(.timeLimit(.minutes(1))) @MainActor
@@ -222,20 +256,25 @@ func stopRequestFileStopsRecording() async throws {
     #expect(await eventually {
         directory = sessionFolders(in: temp.url).first
         guard let directory else { return false }
-        return FileManager.default.fileExists(atPath: directory.appendingPathComponent("control.json").path)
+        return FileManager.default.fileExists(atPath: SessionPaths.status(directory).path)
     })
     let session = try #require(directory)
-    struct Control: Decodable { var schemaVersion: Int; var sessionID: String; var pid: Int32 }
-    let control = try AtomicFile.readJSON(Control.self, from: session.appendingPathComponent("control.json"))
-    #expect(control.schemaVersion == 1)
-    #expect(control.pid == getpid())
+    // PR2a: status.json carries the pid and start time; control.json is no longer written.
+    let live = try #require(try RecorderChannel.readStatus(session: session))
+    #expect(live.schemaVersion == 1)
+    #expect(live.pid == getpid())
+    #expect(live.phase.isMeetingActive)
     #expect(await eventually { (captures.captures.first?.consumedFrames ?? 0) >= 2 })
     try Data("stop\n".utf8).write(to: session.appendingPathComponent("stop.request"))
     let outcome = try await run.value
-    #expect(control.sessionID == outcome.sessionID)
+    #expect(live.sessionID == outcome.sessionID)
     #expect(outcome.stopReason == .requested)
     #expect(outcome.archiveStatus == ArchiveStatus.audioOnly)
     #expect(!FileManager.default.fileExists(atPath: session.appendingPathComponent("control.json").path))
+    let exited = try #require(try RecorderChannel.readStatus(session: session))
+    #expect(exited.phase == .exited)
+    #expect(exited.exit?.reason == .requested)
+    #expect(exited.exit?.archiveStatus == ArchiveStatus.audioOnly)
 }
 
 @Test(.timeLimit(.minutes(1))) @MainActor
@@ -509,9 +548,10 @@ func replayFromSkipsEarlierAudio() async throws {
     let session = try #require(speech.sessions.first)
     let starts = await session.frameStarts
     let buffer = Double(4096) / sampleRate
-    let first = try #require(starts.first)
-    #expect(abs(first - 40) <= buffer)
-    #expect(starts.allSatisfy { $0 >= 40 - buffer }, "No audio before `from` is fed.")
+    // PR2a: the speech session sees times from 0; the session time of its first frame is added back to results.
+    #expect(starts.first == 0)
+    let first = try #require(segments.first)
+    #expect(abs(first.start - 40.5) <= buffer && abs(first.end - 41) <= buffer, "No audio before `from` is fed.")
     #expect(await abs(session.fedSeconds - 20) <= buffer)
 }
 

@@ -1,104 +1,516 @@
 import Foundation
+import HolosAudio
 import HolosCore
-import HolosStorage
+import os
+import Synchronization
 
-/// Live transcription of one track while it records. Finalized phrases go to the reporter and the event
-/// journal. If transcription falls behind or fails, the track is marked for replay from disk after stop.
+/// Where live transcription records journal events: the archive's `recordEvent` outside tests.
+typealias LiveEventSink = @Sendable (_ kind: String, _ details: [String: String]) async throws -> Void
+
+/// What live transcription of one track produced by the end of a recording.
+struct LiveTrackResult: Sendable, Equatable {
+    /// Finalized segments on the session timeline, with `track` set, ordered by start.
+    var segments: [TranscriptSegment]
+    /// Session time from which live transcription is incomplete (the earliest `transcriptionBehind.from`); nil when
+    /// it covered the whole recording, so the stop path replays nothing.
+    var behindFrom: Double?
+}
+
+/// Live transcription of one track while it records (docs/meeting-design.md §4.6).
+///
+/// Frames and epoch boundaries wait in a queue bounded by duration (30 s of audio); a speech task feeds them to one
+/// `LiveSpeechSession` at a time. Every session sees frame times that start at 0, and its results get the session
+/// time of its first frame added back (§2.3). A new session starts with every capture epoch (made by
+/// `prepareSession` for that epoch before its capture starts, so frames never wait for it) and at every gap over 1 s. A
+/// session is finished in the background, with a timeout of 30 s + 0.05 × the seconds it was fed, while the next one
+/// is fed; the segments of one that fails or hangs are the ones it already finalized.
+///
+/// When the queue overflows, a session cannot be created, or speech fails, the track falls behind: that session
+/// time is recorded as `transcriptionBehind {track, from}`, live speech stops for the rest of the recording, and
+/// every segment already finalized is kept; the stop path transcribes the rest from disk. Each finalized segment is
+/// journaled as `transcriptFinalized` with `segmentID` and `words`, through a queue of 4,096 segments; segments that
+/// do not fit are recorded as `transcriptionBehind` once the queue drains, so recovery knows where the journal has a
+/// hole.
 final class LiveTrack: Sendable {
-    let track: String
-    private let continuation: AsyncStream<PCMFrame>.Continuation
-    private let worker: Task<[TranscriptSegment], Error>
-    private let journalWorker: Task<Void, Error>
-    private let journal: AsyncStream<TranscriptSegment>.Continuation
-    private let needsReplay: LockedValue<Bool>
-    private let reporter: any RecordingReporter
-    /// Cancelled directly as well as through `worker`: a speech framework's `finish()` may not observe task
-    /// cancellation.
-    private let session: any LiveSpeechSession
+    private static let log = Logger(subsystem: "ca.orlenko.holos.app", category: "recorder")
+    static let queueSeconds = 30.0
+    static let journalCapacity = 4_096
+    /// A gap longer than this inside an epoch starts a new speech session.
+    static let sessionGapSeconds = 1.0
 
-    private init(track: String, continuation: AsyncStream<PCMFrame>.Continuation,
-                 worker: Task<[TranscriptSegment], Error>, journalWorker: Task<Void, Error>,
-                 journal: AsyncStream<TranscriptSegment>.Continuation, needsReplay: LockedValue<Bool>,
-                 reporter: any RecordingReporter, session: any LiveSpeechSession) {
-        self.track = track; self.continuation = continuation; self.worker = worker
-        self.journalWorker = journalWorker; self.journal = journal; self.needsReplay = needsReplay
-        self.reporter = reporter; self.session = session
+    let track: String
+    private let locale: String
+    private let backend: SpeechBackend
+    private let contextualStrings: [String]
+    private let makeSpeech: LiveSpeechFactory
+    private let events: LiveEventSink
+    private let reporter: any RecordingReporter
+    private let showPhrases: Bool
+    private let timeouts: StopTimeouts
+    private let input: WorkQueue<LiveInput>
+    private let journal: WorkQueue<JournalItem>
+    private let state = Mutex(State())
+    private let tasks = Mutex(Tasks())
+
+    enum LiveInput: Sendable {
+        /// A frame of capture epoch `epoch`.
+        case frame(PCMFrame, epoch: Int)
+        case boundary
     }
 
-    static func make(track: String, locale: String, backend: SpeechBackend, contextualStrings: [String],
-                     makeSpeech: LiveSpeechFactory, archive: SessionArchive,
-                     reporter: any RecordingReporter) async throws -> LiveTrack {
-        let frames = AsyncStream<PCMFrame>.makeStream(bufferingPolicy: .bufferingOldest(64))
-        let updates = AsyncStream<TranscriptSegment>.makeStream(bufferingPolicy: .bufferingOldest(128))
-        let replay = LockedValue(false)
-        let session = try await makeSpeech(locale, backend, contextualStrings) { update in
-            if update.isFinal {
-                reporter.phrase(update.segment, track: track)
-                if case .dropped = updates.continuation.yield(update.segment) {
-                    replay.withLock { $0 = true }
+    private enum JournalItem: Sendable {
+        case finalized(TranscriptSegment)
+        case behind(from: Double, reason: String)
+    }
+
+    private struct SessionRecord {
+        let session: any LiveSpeechSession
+        /// Session time of its first frame; results are shifted by it.
+        var base: Double?
+        var fed = 0.0
+        /// Final updates so far, on the session timeline.
+        var finals: [TranscriptSegment] = []
+        /// What `finish()` returned, on the session timeline; nil until it returns.
+        var result: [TranscriptSegment]?
+    }
+
+    private struct State {
+        var sessions: [Int: SessionRecord] = [:]
+        var nextSerial = 0
+        /// Sessions made for epochs whose frames have not reached speech yet, by epoch.
+        var prepared: [Int: Int] = [:]
+        /// Epochs that pushed frames: their prepared session is taken by those frames.
+        var pushedEpochs: Set<Int> = []
+        /// The session the speech task feeds.
+        var current: Int?
+        var behindFrom: Double?
+        /// End of the last frame fed to speech.
+        var lastFedEnd: Double?
+        /// The earliest segment the journal queue dropped, recorded once the queue drains.
+        var journalDroppedFrom: Double?
+        var lastFinalized: Double?
+        var lastPhrase: String?
+        var cancelled = false
+    }
+
+    private struct Tasks {
+        var speech: Task<Void, Never>?
+        var journal: Task<Void, Never>?
+        var finishing: [Task<Void, Never>] = []
+    }
+
+    init(track: String, locale: String, backend: SpeechBackend, contextualStrings: [String],
+         makeSpeech: @escaping LiveSpeechFactory, events: @escaping LiveEventSink, reporter: any RecordingReporter,
+         showPhrases: Bool = true, timeouts: StopTimeouts = .standard, queueSeconds: Double = LiveTrack.queueSeconds,
+         journalCapacity: Int = LiveTrack.journalCapacity) {
+        self.track = track; self.locale = locale; self.backend = backend
+        self.contextualStrings = contextualStrings; self.makeSpeech = makeSpeech; self.events = events
+        self.reporter = reporter; self.showPhrases = showPhrases; self.timeouts = timeouts
+        input = WorkQueue(capacity: queueSeconds) { item in
+            if case .frame(let frame, _) = item { return frame.duration }
+            return 0
+        }
+        journal = WorkQueue(capacity: Double(max(1, journalCapacity))) { item in
+            if case .finalized = item { return 1 }
+            return 0
+        }
+        let speech = Task { [weak self] () -> Void in await self?.runSpeech() }
+        let journalTask = Task { [weak self] () -> Void in await self?.runJournal() }
+        tasks.withLock {
+            $0.speech = speech
+            $0.journal = journalTask
+        }
+    }
+
+    // MARK: - Recorder side
+
+    /// Makes the speech session for capture epoch `epoch`, unless one is ready or the track is behind. Runs in the
+    /// caller's task, before the epoch's capture starts. A session made for an earlier epoch that never delivered a
+    /// frame is used instead of a new one. Throws only `CancellationError` (a session made meanwhile is cancelled); a
+    /// failed creation records `transcriptionBehind {track, from: epochStart}`.
+    func prepareSession(epoch: Int, epochStart: Double) async throws {
+        let needed = state.withLock { state -> Bool in
+            guard !state.cancelled, state.behindFrom == nil, state.prepared[epoch] == nil else { return false }
+            if let unused = state.prepared.keys.filter({ $0 < epoch && !state.pushedEpochs.contains($0) }).min() {
+                state.prepared[epoch] = state.prepared.removeValue(forKey: unused)
+                return false
+            }
+            return true
+        }
+        guard needed else { return }
+        do {
+            let serial = try await makeSession()
+            if Task.isCancelled {
+                await discardSession(serial)
+                throw CancellationError()
+            }
+            let unused = state.withLock { state -> Int? in
+                guard state.prepared[epoch] == nil, !state.cancelled else { return serial }
+                state.prepared[epoch] = serial
+                return nil
+            }
+            if let unused { await discardSession(unused) }
+        } catch {
+            if error is CancellationError || Task.isCancelled { throw CancellationError() }
+            if epoch == 0 {
+                reporter.message("Live \(track) transcription unavailable: \(Self.clause(error)). Recording will continue and transcription will be retried after stop.")
+            } else {
+                reporter.message("Live \(track) transcription could not restart: \(Self.clause(error)). The rest is transcribed from the saved audio after stop.")
+            }
+            fallBehind(from: epochStart, reason: "sessionUnavailable")
+        }
+    }
+
+    /// Never blocks. A full queue makes the track fall behind from this frame's start.
+    func push(_ frame: PCMFrame, epoch: Int) {
+        state.withLock { _ = $0.pushedEpochs.insert(epoch) }
+        guard !input.push(.frame(frame, epoch: epoch)), !input.isClosed else { return }
+        let behind = state.withLock { $0.behindFrom != nil || $0.cancelled }
+        if !behind {
+            reporter.message("Transcription is behind on \(track); recording continues and saved audio will be processed after stop.")
+            fallBehind(from: frame.startTime, reason: "queueFull")
+        }
+    }
+
+    /// The current capture epoch ended: the next frame goes to a new speech session.
+    func boundary() { input.push(.boundary, force: true) }
+
+    /// Live, or behind once live speech stopped.
+    var transcription: TranscriptionState {
+        state.withLock { $0.behindFrom == nil ? .live : .behind }
+    }
+
+    var lastFinalizedSeconds: Double? { state.withLock { $0.lastFinalized } }
+
+    var lastPhrase: String? { state.withLock { $0.lastPhrase } }
+
+    /// Stops taking frames, lets queued ones reach speech, and finishes every session (each within its timeout).
+    /// Cancelling the calling task cancels every session and returns what was finalized.
+    func finish() async -> LiveTrackResult {
+        input.close()
+        let (speech, fed) = (tasks.withLock { $0.speech }, currentFed())
+        await withTaskCancellationHandler {
+            if let speech {
+                let limit = timeouts.speechFinish(audioSeconds: fed + input.load)
+                if case .timedOut = await awaitWithTimeout(limit, { await speech.value }) {
+                    Self.log.error("Live \(self.track, privacy: .public) transcription did not drain in time; cancelled")
+                    speech.cancel()
+                    let from = state.withLock { state in
+                        state.lastFedEnd ?? state.current.flatMap { state.sessions[$0]?.base } ?? 0
+                    }
+                    fallBehind(from: from, reason: "speechTimedOut")
+                    // Taken, so the speech task never finishes it a second time if its `append` ever returns.
+                    if let current = takeCurrent() { finishLater(current) }
+                }
+            }
+            await waitForFinishing()
+        } onCancel: {
+            self.cancelEverything()
+        }
+        let unused = state.withLock { state -> [Int] in
+            defer { state.prepared.removeAll() }
+            return Array(state.prepared.values)
+        }
+        for serial in unused { await discardSession(serial) }
+        journal.close()
+        if let journalTask = tasks.withLock({ $0.journal }) { await journalTask.value }
+        return result()
+    }
+
+    /// Stops everything at once: every session is cancelled and nothing more is transcribed. A speech task stuck in a
+    /// framework call that ignores cancellation is waited for at most `speechFinishBase`.
+    func cancel() async {
+        input.close(discardingQueued: true)
+        cancelEverything()
+        if let speech = tasks.withLock({ $0.speech }) {
+            _ = await awaitWithTimeout(timeouts.speechFinishBase, cancellable: false) { await speech.value }
+        }
+        await waitForFinishing()
+        journal.close()
+        await tasks.withLock { $0.journal }?.value
+    }
+
+    // MARK: - Speech task
+
+    private func runSpeech() async {
+        var expected: Double?
+        var currentEpoch: Int?
+        feeding: while let item = await input.next() {
+            if state.withLock({ $0.behindFrom != nil || $0.cancelled }) { break }
+            switch item {
+            case .boundary:
+                if let current = takeCurrent() { finishLater(current) }
+                expected = nil
+            case .frame(var frame, let epoch):
+                if epoch != currentEpoch {
+                    // A new epoch is not sample-continuous with the last one: it gets its own session.
+                    if let current = takeCurrent() { finishLater(current) }
+                    currentEpoch = epoch
+                    expected = nil
+                }
+                if let end = expected {
+                    switch FrameContinuity.classify(frameStart: frame.startTime, frameCount: frame.frameCount,
+                                                    sampleRate: frame.sampleRate, expected: end) {
+                    case .overlap(let dropFrames):
+                        // Speech sessions take ordered, nonoverlapping audio.
+                        guard dropFrames < frame.frameCount,
+                              let rest = try? PCMFrame(samples: Array(frame.samples[(dropFrames * frame.channels)...]),
+                                                       sampleRate: frame.sampleRate, channels: frame.channels,
+                                                       startTime: end) else { continue }
+                        frame = rest
+                    case .contiguous:
+                        if let snapped = try? PCMFrame(samples: frame.samples, sampleRate: frame.sampleRate,
+                                                       channels: frame.channels, startTime: end) { frame = snapped }
+                    case .gap(let seconds):
+                        if seconds > Self.sessionGapSeconds, let current = takeCurrent() { finishLater(current) }
+                    }
+                }
+                let serial: Int
+                if let current = state.withLock({ $0.current }) {
+                    serial = current
+                } else {
+                    guard let started = await startSession(epoch: epoch, at: frame.startTime) else { break feeding }
+                    serial = started
+                }
+                guard let (session, base) = state.withLock({ state -> (any LiveSpeechSession, Double)? in
+                    guard let record = state.sessions[serial] else { return nil }
+                    return (record.session, record.base ?? frame.startTime)
+                }) else { break feeding }
+                do {
+                    let rebased = try PCMFrame(samples: frame.samples, sampleRate: frame.sampleRate,
+                                               channels: frame.channels, startTime: max(0, frame.startTime - base))
+                    try await session.append(rebased)
+                    let end = frame.startTime + frame.duration
+                    state.withLock { state in
+                        state.sessions[serial]?.fed += frame.duration
+                        state.lastFedEnd = end
+                    }
+                    expected = end
+                } catch {
+                    if error is CancellationError || state.withLock({ $0.cancelled }) { break feeding }
+                    reporter.message("Live transcription paused for \(track): \(Self.clause(error)). Audio remains on disk.")
+                    _ = takeCurrent()
+                    await session.cancel()
+                    fallBehind(from: frame.startTime, reason: "speechFailed")
+                    break feeding
                 }
             }
         }
-        let journalWorker = Task {
-            for await segment in updates.stream {
-                try await archive.recordEvent(kind: MeetingEventKind.transcriptFinalized, details: [
-                    "track": track, "text": segment.text, "start": String(segment.start), "end": String(segment.end),
-                ])
-            }
-        }
-        let worker = Task {
+        if let current = takeCurrent() { finishLater(current) }
+    }
+
+    /// Makes the session prepared for `epoch` (or a new one) current for audio starting at `start`; nil when none can
+    /// be made (the track falls behind from `start`).
+    private func startSession(epoch: Int, at start: Double) async -> Int? {
+        var serial = state.withLock { state -> Int? in state.prepared.removeValue(forKey: epoch) }
+        if serial == nil {
             do {
-                for await frame in frames.stream { try await session.append(frame) }
-                return try await session.finish()
+                serial = try await makeSession()
             } catch {
-                replay.withLock { $0 = true }
-                reporter.message("Live transcription paused for \(track): \(error.localizedDescription). Audio remains on disk.")
-                await session.cancel()
-                throw error
+                if !(error is CancellationError) {
+                    reporter.message("Live \(track) transcription could not restart: \(Self.clause(error)). The rest is transcribed from the saved audio after stop.")
+                }
+                fallBehind(from: start, reason: "sessionUnavailable")
+                return nil
             }
         }
-        return LiveTrack(track: track, continuation: frames.continuation, worker: worker,
-                         journalWorker: journalWorker, journal: updates.continuation, needsReplay: replay,
-                         reporter: reporter, session: session)
+        guard let serial else { return nil }
+        state.withLock { state in
+            state.sessions[serial]?.base = start
+            state.current = serial
+        }
+        return serial
     }
 
-    /// Never blocks: a full queue stops live transcription for the rest of the recording.
-    func submit(_ frame: PCMFrame) {
-        guard !needsReplay.value else { return }
-        if case .dropped = continuation.yield(frame) {
-            needsReplay.withLock { $0 = true }
-            reporter.message("Transcription is behind on \(track); recording continues and saved audio will be processed after stop.")
-            continuation.finish()
-            worker.cancel()
+    private func makeSession() async throws -> Int {
+        let serial = state.withLock { state -> Int in
+            defer { state.nextSerial += 1 }
+            return state.nextSerial
+        }
+        let session = try await makeSpeech(locale, backend, contextualStrings) { [weak self] update in
+            guard update.isFinal else { return }
+            self?.finalized(update.segment, session: serial)
+        }
+        state.withLock { $0.sessions[serial] = SessionRecord(session: session) }
+        return serial
+    }
+
+    private func takeCurrent() -> Int? {
+        state.withLock { state in
+            defer { state.current = nil }
+            return state.current
         }
     }
 
-    /// The finalized segments, or nil when the track must be replayed from disk. Cancelling the calling task
-    /// cancels the speech session and returns nil.
-    func finish() async -> [TranscriptSegment]? {
-        continuation.finish()
-        let result = await withTaskCancellationHandler {
-            try? await worker.value
-        } onCancel: {
-            worker.cancel()
-            let session = session
-            Task { await session.cancel() }
-        }
-        journal.finish()
-        do { try await journalWorker.value }
-        catch {
-            reporter.message("Could not persist live text: \(error.localizedDescription).")
-            needsReplay.withLock { $0 = true }
-        }
-        return needsReplay.value ? nil : result
+    private func currentFed() -> Double {
+        state.withLock { state in state.current.flatMap { state.sessions[$0]?.fed } ?? 0 }
     }
 
-    func cancel() async {
-        continuation.finish(); worker.cancel()
-        // The worker may be inside `session.finish()`, which need not observe task cancellation.
+    // MARK: - Finishing sessions
+
+    /// Finishes `serial` in the background, within its timeout.
+    private func finishLater(_ serial: Int) {
+        let task = Task { [weak self] () -> Void in await self?.finishSession(serial) }
+        tasks.withLock { $0.finishing.append(task) }
+    }
+
+    private func finishSession(_ serial: Int) async {
+        guard let (session, fed) = state.withLock({ state -> (any LiveSpeechSession, Double)? in
+            state.sessions[serial].map { ($0.session, $0.fed) }
+        }) else { return }
+        let outcome = await awaitWithTimeout(timeouts.speechFinish(audioSeconds: fed)) {
+            try await session.finish()
+        }
+        switch outcome {
+        case .finished(.success(let segments)):
+            state.withLock { $0.sessions[serial]?.result = segments }
+            return
+        case .finished(.failure(let error)):
+            if !(error is CancellationError) {
+                Self.log.error("Live \(self.track, privacy: .public) transcription failed to finish: \(error.localizedDescription, privacy: .public)")
+            }
+        case .timedOut:
+            Self.log.error("Live \(self.track, privacy: .public) transcription did not finish within its timeout; cancelled")
+        case .cancelled:
+            break
+        }
         await session.cancel()
-        _ = try? await worker.value
-        journal.finish()
-        _ = try? await journalWorker.value
+        // Its finalized segments are kept; the rest of its audio is transcribed from disk.
+        let from = state.withLock { state -> Double? in
+            guard !state.cancelled, let record = state.sessions[serial] else { return nil }
+            return record.finals.map(\.end).max() ?? record.base
+        }
+        if let from { fallBehind(from: from, reason: "speechTimedOut") }
+    }
+
+    private func waitForFinishing() async {
+        while true {
+            let pending = tasks.withLock { tasks -> [Task<Void, Never>] in
+                defer { tasks.finishing.removeAll() }
+                return tasks.finishing
+            }
+            if pending.isEmpty { return }
+            for task in pending { await task.value }
+        }
+    }
+
+    private func discardSession(_ serial: Int) async {
+        let session = state.withLock { state -> (any LiveSpeechSession)? in
+            state.sessions.removeValue(forKey: serial)?.session
+        }
+        await session?.cancel()
+    }
+
+    private func cancelEverything() {
+        let (sessions, running) = state.withLock { state -> ([any LiveSpeechSession], Bool) in
+            let wasCancelled = state.cancelled
+            state.cancelled = true
+            return (state.sessions.values.map(\.session), wasCancelled)
+        }
+        guard !running else { return }
+        input.close(discardingQueued: true)
+        let (speech, finishing) = tasks.withLock { ($0.speech, $0.finishing) }
+        speech?.cancel()
+        for task in finishing { task.cancel() }
+        // A speech framework's `append` or `finish` need not observe task cancellation.
+        for session in sessions { Task { await session.cancel() } }
+    }
+
+    // MARK: - Results and journal
+
+    private func finalized(_ segment: TranscriptSegment, session serial: Int) {
+        let absolute = state.withLock { state -> TranscriptSegment in
+            let shifted = Self.shifted(segment, by: state.sessions[serial]?.base ?? 0, track: track)
+            state.sessions[serial]?.finals.append(shifted)
+            state.lastFinalized = max(state.lastFinalized ?? shifted.end, shifted.end)
+            state.lastPhrase = String(shifted.text.prefix(200))
+            return shifted
+        }
+        if showPhrases { reporter.phrase(absolute, track: track) }
+        if !journal.push(.finalized(absolute)) {
+            state.withLock { $0.journalDroppedFrom = min($0.journalDroppedFrom ?? absolute.start, absolute.start) }
+        }
+    }
+
+    /// Records the first (or an earlier) point from which live transcription is incomplete, and stops live speech.
+    private func fallBehind(from: Double, reason: String) {
+        let record = state.withLock { state -> Bool in
+            guard !state.cancelled else { return false }
+            if let current = state.behindFrom, current <= from { return false }
+            state.behindFrom = from
+            return true
+        }
+        guard record else { return }
+        Self.log.notice("Live \(self.track, privacy: .public) transcription behind from \(from, privacy: .public) s (\(reason, privacy: .public))")
+        journal.push(.behind(from: from, reason: reason), force: true)
+        input.close(discardingQueued: true)
+    }
+
+    private func runJournal() async {
+        var reportedFailure = false
+        while let item = await journal.next() {
+            do {
+                switch item {
+                case .finalized(let segment):
+                    var details = ["track": track, "text": segment.text, "start": String(segment.start),
+                                   "end": String(segment.end), "segmentID": segment.id]
+                    if let words = try? HolosJSON.encoder(pretty: false).encode(segment.words) {
+                        details["words"] = String(decoding: words, as: UTF8.self)
+                    }
+                    try await events(MeetingEventKind.transcriptFinalized, details)
+                case .behind(let from, let reason):
+                    try await events(MeetingEventKind.transcriptionBehind,
+                                     ["track": track, "from": String(from), "reason": reason])
+                }
+            } catch {
+                if !reportedFailure {
+                    reportedFailure = true
+                    reporter.message("Could not persist live text: \(error.localizedDescription).")
+                }
+            }
+            if journal.isEmpty,
+               let from = state.withLock({ state -> Double? in defer { state.journalDroppedFrom = nil }; return state.journalDroppedFrom }) {
+                try? await events(MeetingEventKind.transcriptionBehind,
+                                  ["track": track, "from": String(from), "reason": "journalFull"])
+            }
+        }
+    }
+
+    private func result() -> LiveTrackResult {
+        state.withLock { state in
+            var segments: [TranscriptSegment] = []
+            for serial in state.sessions.keys.sorted() {
+                guard let record = state.sessions[serial] else { continue }
+                if let result = record.result {
+                    segments += result.map { Self.shifted($0, by: record.base ?? 0, track: track) }
+                } else {
+                    segments += record.finals
+                }
+            }
+            segments.sort { $0.start < $1.start }
+            return LiveTrackResult(segments: segments, behindFrom: state.behindFrom)
+        }
+    }
+
+    /// An error's description to use mid-sentence: without its closing period.
+    static func clause(_ error: Error) -> String {
+        var text = error.localizedDescription.trimmingCharacters(in: .whitespacesAndNewlines)
+        while text.hasSuffix(".") { text.removeLast() }
+        return text
+    }
+
+    /// `segment` moved from its speech session's timeline to the session timeline.
+    static func shifted(_ segment: TranscriptSegment, by base: Double, track: String) -> TranscriptSegment {
+        var moved = segment
+        moved.start += base
+        moved.end += base
+        moved.words = segment.words.map { word in
+            var shifted = word
+            shifted.start += base
+            shifted.end += base
+            return shifted
+        }
+        moved.track = track
+        return moved
     }
 }

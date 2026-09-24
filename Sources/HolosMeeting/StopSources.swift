@@ -12,11 +12,14 @@ public protocol RecorderStopSource: Sendable {
 
 /// SIGINT and SIGTERM request a graceful stop: audio is saved and transcription finishes.
 /// After `restoreDefaultHandlers()` a further signal terminates the process, keeping the saved archive.
+/// SIGPIPE is ignored for the life of the process (docs/meeting-design.md §4.1): a recorder whose output went to a
+/// pipe that closed keeps recording instead of dying. SIGHUP keeps its default behaviour.
 public final class SignalStopController: RecorderStopSource {
     private let requested = LockedValue(false)
     private let sources: [any DispatchSourceSignal]
 
     public init() {
+        signal(SIGPIPE, SIG_IGN)
         signal(SIGINT, SIG_IGN)
         signal(SIGTERM, SIG_IGN)
         let state = requested

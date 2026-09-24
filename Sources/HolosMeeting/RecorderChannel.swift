@@ -1,0 +1,160 @@
+import Darwin
+import Foundation
+import HolosCore
+import HolosStorage
+import os
+
+/// Whether a recorder is behind a session folder, judged from its locks and `status.json` (docs/meeting-design.md
+/// §4.1).
+public enum RecorderLiveness: String, Sendable, Equatable {
+    /// Writer lock held, and status.json absent or fresh with phase starting…transcribing.
+    case capturing
+    /// Processing lease held and status.json fresh with phase postprocessing (the recorder's own post-processing).
+    case processing
+    /// A lock is held by something else: recover, rebuild, `session diarize`, delete, or a stale status.
+    case maintenance
+    /// No lock held and status.json phase == exited.
+    case exited
+    /// No lock held and status.json missing or not exited: interrupted if the manifest says recording/processing.
+    case dead
+}
+
+/// The app's and the CLI's side of the recorder protocol: `status.json` to read, `control/` to write
+/// (docs/meeting-design.md §4.1). Stateless file IO.
+public enum RecorderChannel {
+    private static let log = Logger(subsystem: "ca.orlenko.holos.app", category: "recorder")
+    /// A status older than this is stale.
+    static let freshSeconds = 10.0
+    static let maxStatusBytes = 1 << 20
+
+    /// Reads status.json; nil when absent. Throws on a newer schemaVersion.
+    public static func readStatus(session: URL) throws -> RecorderStatus? {
+        guard let data = try AtomicFile.readIfPresent(SessionPaths.status(session), maxBytes: maxStatusBytes) else {
+            return nil
+        }
+        struct Header: Decodable { var schemaVersion: Int }
+        let decoder = HolosJSON.decoder()
+        guard let header = try? decoder.decode(Header.self, from: data) else {
+            throw HolosError.invalidInput("status.json is damaged or was not written by Holos.")
+        }
+        guard header.schemaVersion <= 1 else {
+            throw HolosError.unavailable("status.json was written by a newer Holos; update Holos to read it.")
+        }
+        do {
+            return try decoder.decode(RecorderStatus.self, from: data)
+        } catch {
+            throw HolosError.invalidInput("status.json is damaged or was not written by Holos.")
+        }
+    }
+
+    /// Publishes one request atomically with `sentAtNanos` from mach_continuous_time; creates control/ (0700).
+    /// Refuses (`unavailable`) when the session has no manifest yet (the recorder is still starting; stop it
+    /// with SIGTERM instead) or when status.json says exited.
+    @discardableResult
+    public static func send(_ command: ControlCommand, label: String? = nil, session: URL,
+                            sessionID: String, sender: String) throws -> ControlRequest {
+        guard SessionArchive.validToken(sessionID), UUID(uuidString: sessionID) != nil else {
+            throw HolosError.invalidInput("Expected a session UUID.")
+        }
+        let manifest: SessionManifest
+        do {
+            manifest = try SessionArchive.readManifest(at: session)
+        } catch {
+            throw HolosError.unavailable("The recorder is still starting and cannot take requests yet; stop it with SIGTERM instead.")
+        }
+        guard manifest.id == sessionID else { throw HolosError.invalidInput("Session identity mismatch.") }
+        if let status = try readStatus(session: session), status.phase == .exited {
+            throw HolosError.unavailable("The recorder has already exited.")
+        }
+        let request = ControlRequest(sessionID: sessionID, command: command,
+                                     label: label.map { String($0.prefix(ControlInbox.maxLabelLength)) },
+                                     sentAtNanos: continuousNanoseconds(), sender: sender)
+        let folder = SessionPaths.controlDirectory(session)
+        try AtomicFile.ensurePrivateDirectory(folder)
+        // A same-folder `.<UUID>.tmp`, fsync'd and renamed into place: the recorder never sees a partial request.
+        try AtomicFile.create(try HolosJSON.encoder().encode(request),
+                              at: folder.appendingPathComponent("\(request.id).json", isDirectory: false))
+        return request
+    }
+
+    /// Polls status.json every 50 ms for the request's ack. Nil after `timeout`, or as soon as the recorder has
+    /// exited without acknowledging it.
+    public static func waitForAck(_ request: ControlRequest, session: URL, timeout: Duration) async -> ControlAck? {
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: timeout)
+        while true {
+            if let status = try? readStatus(session: session) {
+                if let ack = status.handledRequests.last(where: { $0.id == request.id }) { return ack }
+                if status.phase == .exited { return nil }
+            }
+            guard clock.now < deadline, !Task.isCancelled else { return nil }
+            try? await Task.sleep(for: .milliseconds(50))
+        }
+    }
+
+    /// "Fresh" means updatedAt less than 10 s before `now` and kill(pid, 0) == 0.
+    public static func liveness(session: URL, now: Date = Date()) -> RecorderLiveness {
+        let status = try? readStatus(session: session)
+        let fresh = status.map { isFresh($0, now: now) } ?? false
+        // An unreadable lock counts as held: never call a recorder dead on an error.
+        let writer = (try? SessionArchive.isActive(at: session)) ?? true
+        if writer {
+            guard let status else { return .capturing }
+            return fresh && (status.phase.isMeetingActive || status.phase == .transcribing) ? .capturing : .maintenance
+        }
+        let lease = (try? SessionArchive.isProcessing(at: session)) ?? true
+        if lease {
+            // Between taking the lease and finishing the archive the recorder still says `transcribing`.
+            if let status, fresh, status.phase == .postprocessing || status.phase == .transcribing { return .processing }
+            return .maintenance
+        }
+        return status?.phase == .exited ? .exited : .dead
+    }
+
+    /// For maintenance commands: when liveness is dead and status.json is not exited, rewrites it as exited
+    /// (reason `interrupted`, archiveStatus from the manifest). Returns true if it rewrote.
+    ///
+    /// A maintenance command calls this while holding the processing lease, so the lease is not part of the check:
+    /// the recorder counts as dead when no writer lock is held and its status is not fresh (a live recorder rewrites
+    /// it every second, including while a child it handed the lease to labels speakers).
+    @discardableResult
+    public static func markDeadRecorderExited(session: URL, now: Date = Date()) throws -> Bool {
+        guard var status = try readStatus(session: session), status.phase != .exited else { return false }
+        guard try !SessionArchive.isActive(at: session), !isFresh(status, now: now) else { return false }
+        let archiveStatus = (try? SessionArchive.readManifest(at: session).status) ?? ArchiveStatus.interrupted
+        status.phase = .exited
+        status.sequence += 1
+        status.updatedAt = now
+        status.progress = nil
+        status.exit = RecorderExit(archiveStatus: archiveStatus, reason: .interrupted,
+                                   message: "The recorder stopped unexpectedly.")
+        try AtomicFile.writeJSON(status, to: SessionPaths.status(session))
+        log.notice("Session \(status.sessionID, privacy: .public): a dead recorder's status was marked exited")
+        return true
+    }
+
+    // MARK: - Helpers
+
+    static func isFresh(_ status: RecorderStatus, now: Date) -> Bool {
+        let age = now.timeIntervalSince(status.updatedAt)
+        return age < freshSeconds && processExists(status.pid)
+    }
+
+    private static func processExists(_ pid: Int32) -> Bool {
+        guard pid > 0 else { return false }
+        if kill(pid, 0) == 0 { return true }
+        // Another user's process exists too.
+        return errno == EPERM
+    }
+
+    /// `mach_continuous_time` in nanoseconds, comparable across processes on one Mac.
+    static func continuousNanoseconds() -> UInt64 {
+        var info = mach_timebase_info_data_t()
+        mach_timebase_info(&info)
+        let ticks = mach_continuous_time()
+        guard info.denom != 0 else { return ticks }
+        let (high, low) = ticks.multipliedFullWidth(by: UInt64(info.numer))
+        let (quotient, _) = UInt64(info.denom).dividingFullWidth((high, low))
+        return quotient
+    }
+}
