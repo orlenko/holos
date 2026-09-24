@@ -394,7 +394,9 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
                 resultNeedsAttention = true
                 forcedStopMessage = forced
             }
-            if showPreview || update.message != nil { overlay.show(title: message, text: cleaned(update.text)) }
+            if showPreview || update.message != nil {
+                overlay.show(title: message, text: cleaned(update.text), attention: update.message != nil)
+            }
             if !update.committedText.isEmpty { latestCommitted = update.committedText }
             stream(cleanedForStreaming(update.committedText))
         case .result:
@@ -408,7 +410,9 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
             }
             finish(text, into: destination)
             if let forced = forcedStopMessage, !message.hasPrefix(forced) { message = forced + " " + message }
-            if showPreview || resultNeedsAttention { overlay.show(title: message, text: resultText) }
+            if showPreview || resultNeedsAttention {
+                overlay.show(title: message, text: resultText, attention: resultNeedsAttention)
+            }
             scheduleExpiry()
         case .failed:
             target = nil
@@ -435,7 +439,7 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
                         ? " The words that were not inserted are on the clipboard — press ⌘V."
                         : " Copy Result has the words that were not inserted."
                 }
-                overlay.show(title: message, text: resultText)
+                overlay.show(title: message, text: resultText, attention: true)
                 scheduleExpiry()
                 rebuildMenu()
                 return
@@ -444,13 +448,13 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
                 // The transcript no longer extends what was inserted, so no tail is safe to paste.
                 resultText = committed
                 message += " The transcript changed after text was inserted; check the field. Copy Result has the full transcript."
-                overlay.show(title: message, text: resultText)
+                overlay.show(title: message, text: resultText, attention: true)
                 scheduleExpiry()
                 rebuildMenu()
                 return
             }
             resultText = update.text
-            overlay.show(title: message, text: resultText)
+            overlay.show(title: message, text: resultText, attention: true)
             scheduleExpiry()
         }
         rebuildMenu()
@@ -789,7 +793,7 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
         case .togglePreview:
             showPreview.toggle()
             // Anything that does not need the user goes away at once, during or after a dictation.
-            if !showPreview && !resultNeedsAttention { overlay.hide() }
+            if !showPreview && !overlay.showingAttention { overlay.hide() }
             updateSetupWindow()
         }
     }
