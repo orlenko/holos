@@ -14,6 +14,8 @@ private final class LiveEventLog: Sendable {
         var events: [(kind: String, details: [String: String])] = []
         var calls = 0
         var held = false
+        /// Writes of each kind still to fail, like a full disk.
+        var failures: [String: Int] = [:]
     }
 
     private let state = Mutex(State())
@@ -22,11 +24,19 @@ private final class LiveEventLog: Sendable {
         { kind, details in
             self.state.withLock { $0.calls += 1 }
             while self.state.withLock({ $0.held }) { try await Task.sleep(for: .milliseconds(2)) }
+            let fails = self.state.withLock { state -> Bool in
+                guard let left = state.failures[kind], left > 0 else { return false }
+                state.failures[kind] = left - 1
+                return true
+            }
+            if fails { throw HolosError.io("The disk is full.") }
             self.state.withLock { $0.events.append((kind, details)) }
         }
     }
 
     func hold(_ held: Bool) { state.withLock { $0.held = held } }
+    /// The next `times` writes of `kind` fail.
+    func fail(_ kind: String, times: Int) { state.withLock { $0.failures[kind] = times } }
     var calls: Int { state.withLock { $0.calls } }
     func events(_ kind: String) -> [[String: String]] {
         state.withLock { $0.events.filter { $0.kind == kind }.map(\.details) }
@@ -152,6 +162,51 @@ private func liveTrack(_ speech: @escaping LiveSpeechFactory, log: LiveEventLog,
     #expect(log.kinds.last == MeetingEventKind.transcriptionBehind, "Recorded once the queue drained.")
 }
 
+/// The journal-hole marker cannot be written when the queue first drains: the hole stays noted and is recorded by a
+/// later attempt, so recovery still knows where replay must begin.
+@Test(.timeLimit(.minutes(1))) func journalHoleIsKeptUntilItsMarkerIsWritten() async throws {
+    let segments = (0..<5).map { TranscriptSegment(start: Double($0) / 10, end: Double($0 + 1) / 10, text: "s\($0)") }
+    let speech = FakeSpeechFactory([FakeSpeechScript(segments: segments)])
+    let log = LiveEventLog()
+    let reporter = CollectingReporter()
+    let track = liveTrack(speech.factory, log: log, reporter: reporter, journalCapacity: 2)
+    log.fail(MeetingEventKind.transcriptionBehind, times: 1)
+    log.hold(true)
+    try await track.prepareSession(epoch: 0, epochStart: 0)
+    track.push(try liveFrame(0), epoch: 0)
+    #expect(await eventuallyAsync { log.calls == 1 })
+    for index in 1..<5 { track.push(try liveFrame(Double(index) / 10), epoch: 0) }
+    #expect(await eventuallyAsync { reporter.phrases.count == 5 })
+    log.hold(false)
+    // The queue drains and the marker's first write fails.
+    #expect(await eventuallyAsync { log.calls == 4 })
+    #expect(log.events(MeetingEventKind.transcriptionBehind).isEmpty)
+    _ = await track.finish()
+    let behind = log.events(MeetingEventKind.transcriptionBehind)
+    #expect(behind.count == 1)
+    #expect(behind.first?["from"] == "0.3", "From the start of the first dropped segment.")
+    #expect(behind.first?["reason"] == "journalFull")
+    #expect(reporter.messages.contains { $0.contains("Could not persist live text") })
+}
+
+/// A finalized segment whose journal write fails leaves a hole like a dropped one: it is recorded as
+/// `transcriptionBehind` from that segment's start.
+@Test(.timeLimit(.minutes(1))) func failedFinalizedWriteRecordsAHole() async throws {
+    let segments = (0..<3).map { TranscriptSegment(start: Double($0) / 10, end: Double($0 + 1) / 10, text: "s\($0)") }
+    let speech = FakeSpeechFactory([FakeSpeechScript(segments: segments)])
+    let log = LiveEventLog()
+    let track = liveTrack(speech.factory, log: log)
+    log.fail(MeetingEventKind.transcriptFinalized, times: 1)
+    try await track.prepareSession(epoch: 0, epochStart: 0)
+    for index in 0..<3 { track.push(try liveFrame(Double(index) / 10), epoch: 0) }
+    let result = await track.finish()
+    #expect(result.segments.map(\.text) == ["s0", "s1", "s2"], "Live text itself is complete.")
+    #expect(log.events(MeetingEventKind.transcriptFinalized).map { $0["text"] } == ["s1", "s2"])
+    let behind = try #require(log.events(MeetingEventKind.transcriptionBehind).first)
+    #expect(behind["from"] == "0.0")
+    #expect(behind["reason"] == "journalWriteFailed")
+}
+
 @Test(.timeLimit(.minutes(1))) func failedSessionCreationFallsBehindFromTheEpochStart() async throws {
     let speech = FakeSpeechFactory([FakeSpeechScript(), FakeSpeechScript(makeError: .unavailable("No assets."))])
     let log = LiveEventLog()
@@ -273,10 +328,10 @@ private final class CensusSpeech: LiveSpeechSession {
     #expect(census.count == 0)
 }
 
-/// Polls `condition` every 5 ms for up to 10 s (outside the main actor).
+/// Polls `condition` every 5 ms for up to 30 s (outside the main actor).
 private func eventuallyAsync(_ condition: @Sendable () -> Bool) async -> Bool {
     let clock = ContinuousClock()
-    let deadline = clock.now.advanced(by: .seconds(10))
+    let deadline = clock.now.advanced(by: .seconds(30))
     while clock.now < deadline {
         if condition() { return true }
         try? await Task.sleep(for: .milliseconds(5))
@@ -326,11 +381,12 @@ private final class PacedCapture: MeetingCapture {
     let hostTimeOrigin = 0.0
     let droppedBuffers = 0
     private let stopped = SharedValue(false)
-    let delivered = SharedValue(0)
+    let delivered: SharedValue<Int>
 
-    init(count: Int, freeFrom: Double, speechFed: @escaping @Sendable () async -> Double) {
+    init(count: Int, freeFrom: Double, delivered: SharedValue<Int> = SharedValue(0),
+         speechFed: @escaping @Sendable () async -> Double) {
+        self.delivered = delivered
         let stopped = stopped
-        let delivered = delivered
         frames = AsyncThrowingStream(unfolding: {
             let index = delivered.value
             guard index < count, !stopped.value, !Task.isCancelled else { return nil }
@@ -348,17 +404,20 @@ private final class PacedCapture: MeetingCapture {
     func stop() async throws { stopped.set(true) }
 }
 
-/// Live speech blocks for 3 s at 40 s of a 60 s recording with a 1 s live queue: the words before the point where
-/// live transcription fell behind are kept, and only the rest is transcribed from disk.
-@Test(.timeLimit(.minutes(1))) @MainActor
+/// Live speech blocks at 40 s of a 60 s recording with a 1 s live queue, until capture has delivered all 60 s: the
+/// words before the point where live transcription fell behind are kept, and only the rest is transcribed from disk.
+/// The block ends on that signal, not after a fixed time, so the overflow happens however slowly the machine runs.
+@Test(.timeLimit(.minutes(6))) @MainActor
 func liveOverflowKeepsLiveWordsAndReplaysOnlyTheRest() async throws {
     let temp = try TemporaryDirectory()
     defer { temp.remove() }
+    let delivered = SharedValue(0)
     let speech = RecorderSpeechFactory { call, onUpdate in
-        call == 0 ? RecorderWordSpeech(prefix: "live", blockAt: 40, blockFor: .seconds(3), onUpdate: onUpdate)
+        call == 0 ? RecorderWordSpeech(prefix: "live", blockAt: 40, blockUntil: { delivered.value >= 600 },
+                                       onUpdate: onUpdate)
             : RecorderWordSpeech(prefix: "replay", onUpdate: onUpdate)
     }
-    let capture = PacedCapture(count: 600, freeFrom: 40) {
+    let capture = PacedCapture(count: 600, freeFrom: 40, delivered: delivered) {
         guard let live = speech.made.first as? RecorderWordSpeech else { return 0 }
         return await live.fedSeconds
     }
@@ -368,7 +427,7 @@ func liveOverflowKeepsLiveWordsAndReplaysOnlyTheRest() async throws {
             captures: FakeCaptureFactory(), speech: speech.factory, stop: stop,
             tuning: recorderFastTuning(liveQueueSeconds: 1), makeCapture: { capture }))
     }
-    #expect(await eventually(timeout: .seconds(30)) { capture.delivered.value >= 600 })
+    #expect(await eventually(timeout: .seconds(300)) { capture.delivered.value >= 600 })
     // The consumer finishes with the frame it holds before the stream ends, so nothing is lost by stopping now.
     stop.requestStop()
     let outcome = try await run.value

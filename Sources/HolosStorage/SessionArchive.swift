@@ -382,7 +382,11 @@ public actor SessionArchive {
         return ["txt": Data(text.utf8), "md": Data(markdown.utf8)]
     }
 
-    public func finish(status: String) throws {
+    /// Syncs the journal, writes the final `status` to the manifest, and closes the writer: no later write is
+    /// accepted. The writer lock is released too, unless `keepingLock`: then it stays held until `releaseLock()`
+    /// (or deinit), so the owner can publish what it does last (a recorder's `exited` status.json) while the session
+    /// still reads as locked. A finish that throws leaves the writer open and the lock held.
+    public func finish(status: String, keepingLock: Bool = false) throws {
         try ensureOpen()
         guard !status.isEmpty, status != ArchiveStatus.recording else {
             throw HolosError.invalidInput("Finish requires a final status.")
@@ -394,6 +398,25 @@ public actor SessionArchive {
         manifest = updated
         closed = true
         cancelJournalFlush()
+        if !keepingLock { unlock() }
+    }
+
+    /// Closes the writer, finished or not, and releases the writer lock. A writer that was not finished keeps its
+    /// manifest status (a reader sees it as interrupted); its journal is synced first when that is possible. Later
+    /// calls do nothing.
+    public func releaseLock() {
+        if !closed, journalDirty {
+            do { try syncJournal() } catch {
+                Self.log.error("Cannot sync the journal before releasing the writer lock: \(error.localizedDescription, privacy: .public)")
+            }
+        }
+        closed = true
+        cancelJournalFlush()
+        unlock()
+    }
+
+    private func unlock() {
+        guard lockFD >= 0 else { return }
         SessionLockFile.unlockAndClose(lockFD)
         lockFD = -1
     }

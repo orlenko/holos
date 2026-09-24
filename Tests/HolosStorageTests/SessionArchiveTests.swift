@@ -256,6 +256,33 @@ private func isInvalidInput(_ error: HolosError?) -> Bool {
     return false
 }
 
+/// `finish(status:keepingLock: true)` writes the final status and refuses later writes, but the writer lock stays held
+/// until `releaseLock()`; releasing twice is harmless.
+@Test func finishCanKeepTheWriterLockUntilReleased() async throws {
+    let root = try temporaryRoot()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let writer = try archive(in: root)
+    let directory = writer.directory
+    try await writer.recordEvent(kind: MeetingEventKind.captureStopped, details: [:])
+    try await writer.finish(status: ArchiveStatus.complete, keepingLock: true)
+    #expect(try SessionArchive.readManifest(at: directory).status == ArchiveStatus.complete)
+    #expect(try SessionArchive.isActive(at: directory), "The writer lock is still held.")
+    await #expect(throws: HolosError.self) {
+        try await writer.recordEvent(kind: MeetingEventKind.chunkOpened, details: [:])
+    }
+    await writer.releaseLock()
+    #expect(try !SessionArchive.isActive(at: directory))
+    await writer.releaseLock()
+    #expect(try SessionArchive.readEvents(at: directory).events.map(\.kind) == [MeetingEventKind.captureStopped])
+
+    // An unfinished writer released this way keeps its manifest status and lets go of the lock.
+    let abandoned = try archive(in: root)
+    await abandoned.releaseLock()
+    #expect(try !SessionArchive.isActive(at: abandoned.directory))
+    #expect(try SessionArchive.readManifest(at: abandoned.directory).status == ArchiveStatus.recording)
+    await #expect(throws: HolosError.self) { try await abandoned.finish(status: ArchiveStatus.complete) }
+}
+
 /// A finished archive with one registered chunk and two events.
 private func finishedArchive(in root: URL) async throws -> URL {
     let writer = try archive(in: root)

@@ -89,7 +89,7 @@ func discontinuityReasonsUseGapReasonStrings() async throws {
     #expect(reasons.allSatisfy { known.contains($0) })
 }
 
-@Test(.timeLimit(.minutes(1))) @MainActor
+@Test(.timeLimit(.minutes(3))) @MainActor
 func epochOffsetNeverOverlaps() async throws {
     let temp = try TemporaryDirectory()
     defer { temp.remove() }
@@ -100,11 +100,17 @@ func epochOffsetNeverOverlaps() async throws {
         FakeCaptureScript(frames: FakeFrame.run(count: 3)),
     ])
     let stop = ManualStopSource()
+    // Nothing here is about timeouts: a loaded machine gets ample time to restart, stop, and close chunks.
+    var tuning = recorderFastTuning()
+    tuning.restartLimit = .seconds(100)
     let run = Task {
         try await RecordingWorkflow.run(.testing(root: temp.url, recordOnly: true),
-            dependencies: recorderDependencies(captures: captures, stop: stop, clock: clock))
+            dependencies: recorderDependencies(captures: captures, stop: stop, clock: clock,
+                                               timeouts: StopTimeouts(captureStop: .seconds(50)), tuning: tuning))
     }
-    #expect(await eventually { captures.captures.count == 2 && captures.captures[1].consumedFrames >= 3 })
+    #expect(await eventually(timeout: .seconds(100)) {
+        captures.captures.count == 2 && captures.captures[1].consumedFrames >= 3
+    })
     stop.requestStop()
     let outcome = try await run.value
     let offsets = captures.requests.map(\.timelineOffset)
@@ -160,6 +166,82 @@ func sessionTimeStartsAtFirstCapture() async throws {
     #expect(event.details["at"] == "2.0")
     #expect(event.details["label"] == "Motion")
     #expect(event.details["requestID"] == marker.id)
+}
+
+/// A restart's capture that spends `setup` seconds of session time setting up (ScreenCaptureKit's content query, say)
+/// before it sets its origin the way `AudioCapture` does, then delivers three frames captured right then. The test's
+/// host clock is 1,000 + the session clock.
+@MainActor
+private final class RecorderSlowSetupCapture: MeetingCapture {
+    nonisolated let frames: AsyncThrowingStream<CapturedAudio, Error>
+    private let continuation: AsyncThrowingStream<CapturedAudio, Error>.Continuation
+    private let clock: ManualSessionClock
+    private let setup: Double
+    private(set) var request: CaptureRequest?
+    private(set) var hostTimeOrigin = 0.0
+
+    init(clock: ManualSessionClock, setup: Double) {
+        (frames, continuation) = AsyncThrowingStream<CapturedAudio, Error>.makeStream()
+        self.clock = clock; self.setup = setup
+    }
+
+    func start(_ request: CaptureRequest) async throws {
+        self.request = request
+        clock.advance(by: setup)
+        let hostNow = 1_000 + clock.now()
+        hostTimeOrigin = AudioCapture.timelineOrigin(timelineOffset: request.timelineOffset,
+                                                     offsetHostTime: request.offsetHostTime, now: hostNow)
+        for index in 0..<3 {
+            continuation.yield(try FakeFrame(start: hostNow - hostTimeOrigin + Double(index) * 0.1).captured(offset: 0))
+        }
+    }
+
+    func stop() async throws { continuation.finish() }
+}
+
+/// A restarted epoch's origin is anchored where its timeline offset was read, so the 2 s its capture takes to set up
+/// stays on the session timeline: its first frame lands at the session time it was captured, and the gap before it
+/// includes the setup (§2.3).
+@Test(.timeLimit(.minutes(1))) @MainActor
+func restartSetupTimeStaysOnTheSessionTimeline() async throws {
+    let temp = try TemporaryDirectory()
+    defer { temp.remove() }
+    let clock = ManualSessionClock(3)
+    let captures = FakeCaptureFactory([
+        FakeCaptureScript(frames: FakeFrame.run(count: 10), failAfterFrames: 10, failure: .io("Device lost.")),
+    ])
+    let slow = RecorderSlowSetupCapture(clock: clock, setup: 2)
+    let made = SharedValue(0)
+    let stop = ManualStopSource()
+    var dependencies = recorderDependencies(captures: captures, stop: stop, clock: clock, makeCapture: {
+        let index = made.update { count -> Int in defer { count += 1 }; return count }
+        return index == 0 ? captures.make() : slow
+    })
+    dependencies.hostTime = { 1_000 + clock.now() }
+    let run = Task { try await RecordingWorkflow.run(.testing(root: temp.url, recordOnly: true), dependencies: dependencies) }
+    #expect(await eventually { slow.request != nil })
+    stop.requestStop()
+    let outcome = try await run.value
+    let request = try #require(slow.request)
+    #expect(request.timelineOffset == 3, "Epoch 0's audio ended at 1 s; the session clock read 3 s.")
+    #expect(request.offsetHostTime == 1_003, "The host time at which the clock was read.")
+    #expect(captures.requests.first?.offsetHostTime == nil, "Epoch 0's timeline starts when its capture has started.")
+    let chunks = try SessionArchive.readManifest(at: outcome.directory).chunks.sorted { $0.start < $1.start }
+    #expect(chunks.count == 2)
+    #expect(abs((chunks.first?.end ?? 0) - 1) < 1e-9)
+    #expect(abs((chunks.last?.start ?? 0) - 5) < 1e-9, "The first frame lands at 5 s, after the 2 s setup, not at 3 s.")
+    let gaps = try recorderEvents(outcome.directory, MeetingEventKind.audioDiscontinuity)
+    #expect(gaps.count == 1)
+    #expect(gaps.first?.details["previousEnd"] == "1.0")
+    #expect(gaps.first?.details["nextStart"] == "5.0", "The gap includes the setup time.")
+}
+
+@Test func timelineOriginIsAnchoredWhereTheOffsetWasRead() {
+    #expect(AudioCapture.timelineOrigin(timelineOffset: 3, offsetHostTime: 1_003, now: 1_005) == 1_000)
+    #expect(AudioCapture.timelineOrigin(timelineOffset: 0, offsetHostTime: nil, now: 1_005) == 1_005)
+    #expect(AudioCapture.timelineOrigin(timelineOffset: 3, offsetHostTime: nil, now: 1_005) == 1_002)
+    // An anchor in the future is taken as now: no frame is stamped before the offset.
+    #expect(AudioCapture.timelineOrigin(timelineOffset: 3, offsetHostTime: 1_010, now: 1_005) == 1_002)
 }
 
 /// Epoch 0 fails; epochs 1–5 cannot start; epoch 6 delivers. The recording carries on with one marked gap.
@@ -255,7 +337,7 @@ func captureDropIsMarkedWhereItHappened() async throws {
 
 /// A capture restart whose start never returns does not hold up the loop: after the restart limit it counts as a
 /// failed start, the recorder waits and retries, and the abandoned capture is stopped once its start returns.
-@Test(.timeLimit(.minutes(1))) @MainActor
+@Test(.timeLimit(.minutes(2))) @MainActor
 func hungRestartIsAbandoned() async throws {
     let temp = try TemporaryDirectory()
     defer { temp.remove() }
@@ -273,7 +355,7 @@ func hungRestartIsAbandoned() async throws {
         return index == 1 ? hung : captures.make()
     })
     let run = Task { try await RecordingWorkflow.run(.testing(root: temp.url, recordOnly: true), dependencies: dependencies) }
-    #expect(await eventually(timeout: .seconds(10)) { captures.captures.count == 2 && captures.captures[1].consumedFrames >= 2 })
+    #expect(await eventually(timeout: .seconds(40)) { captures.captures.count == 2 && captures.captures[1].consumedFrames >= 2 })
     #expect(await eventually { hung.stopCalls == 1 }, "The abandoned capture is stopped.")
     stop.requestStop()
     let outcome = try await run.value

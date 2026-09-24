@@ -12,11 +12,15 @@ struct SetupState {
     var busy: Bool
     var shortcutTitle: String
     var removeFillers: Bool
+    /// Whether the dictation preview is shown while dictating; problems are always shown.
+    var showPreview: Bool
+    /// Opacity of the dictation preview, 0.3–1.0.
+    var previewOpacity: Double
     var message: String
 }
 
 enum SetupAction: Int, CaseIterable {
-    case microphone, accessibility, inputMonitoring, assets, dictation, toggleFillers
+    case microphone, accessibility, inputMonitoring, assets, dictation, toggleFillers, togglePreview
 }
 
 /// A regular titled window, so setup status stays visible while the user works in System Settings.
@@ -31,12 +35,19 @@ final class SetupWindow: NSObject, NSWindowDelegate {
     private let messageLabel = NSTextField(wrappingLabelWithString: "")
     private let fillerToggle = NSButton(checkboxWithTitle: "Remove filler words (um, uh, ah, erm, hmm)",
                                         target: nil, action: nil)
+    private let previewToggle = NSButton(checkboxWithTitle: "Show the dictation preview while dictating",
+                                         target: nil, action: nil)
+    private let opacitySlider = NSSlider(value: 0.85, minValue: 0.3, maxValue: 1.0, target: nil, action: nil)
+    private let opacityValue = NSTextField(labelWithString: "")
+    private var onOpacityChange: ((Double) -> Void)?
     private var rows: [SetupAction: Row] = [:]
     private var positioned = false
 
     var isVisible: Bool { window.isVisible }
 
-    init(perform: @escaping (SetupAction) -> Void, onClose: @escaping () -> Void) {
+    init(perform: @escaping (SetupAction) -> Void, onClose: @escaping () -> Void,
+         onOpacityChange: ((Double) -> Void)? = nil) {
+        self.onOpacityChange = onOpacityChange
         window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 560, height: 400),
                           styleMask: [.titled, .closable, .miniaturizable], backing: .buffered, defer: true)
         self.perform = perform
@@ -44,11 +55,11 @@ final class SetupWindow: NSObject, NSWindowDelegate {
         super.init()
         window.title = "Holos Setup"
         window.isReleasedWhenClosed = false
-        // Holos has no Dock icon, so a window that falls behind System Settings is hard to find again.
-        // Keep setup above other apps until the user closes it.
-        window.level = .floating
+        // An ordinary window: other apps can cover it. It stays open until the user closes it, and while it
+        // is open Holos appears in the Dock and Command-Tab so it can be found again (HolosAppDelegate).
+        window.level = .normal
         window.hidesOnDeactivate = false
-        window.collectionBehavior = [.moveToActiveSpace, .fullScreenAuxiliary]
+        window.collectionBehavior = [.moveToActiveSpace]
         window.delegate = self
 
         let grid = NSGridView()
@@ -97,7 +108,22 @@ final class SetupWindow: NSObject, NSWindowDelegate {
         fillerToggle.action = #selector(buttonPressed(_:))
         fillerToggle.tag = SetupAction.toggleFillers.rawValue
 
-        let stack = NSStackView(views: [messageLabel, grid, fillerToggle, note])
+        opacitySlider.target = self
+        opacitySlider.action = #selector(opacityChanged(_:))
+        opacitySlider.isContinuous = true
+        opacitySlider.widthAnchor.constraint(equalToConstant: 200).isActive = true
+        opacityValue.font = .monospacedDigitSystemFont(ofSize: 12, weight: .regular)
+        opacityValue.textColor = .secondaryLabelColor
+        let opacityRow = NSStackView(views: [NSTextField(labelWithString: "Dictation preview opacity"),
+                                             opacitySlider, opacityValue])
+        opacityRow.spacing = 10
+
+        previewToggle.target = self
+        previewToggle.action = #selector(buttonPressed(_:))
+        previewToggle.tag = SetupAction.togglePreview.rawValue
+        previewToggle.toolTip = "When off, text just streams into the field. Problems that need you (text left on the clipboard, a failed dictation) are always shown."
+
+        let stack = NSStackView(views: [messageLabel, grid, fillerToggle, previewToggle, opacityRow, note])
         stack.orientation = .vertical
         stack.alignment = .leading
         stack.spacing = 20
@@ -127,6 +153,11 @@ final class SetupWindow: NSObject, NSWindowDelegate {
     func update(_ state: SetupState) {
         messageLabel.stringValue = "Status: \(state.message)"
         fillerToggle.state = state.removeFillers ? .on : .off
+        previewToggle.state = state.showPreview ? .on : .off
+        opacitySlider.isEnabled = state.showPreview
+        // Leave the slider alone while the user drags it.
+        if NSEvent.pressedMouseButtons == 0 { opacitySlider.doubleValue = state.previewOpacity }
+        opacityValue.stringValue = "\(Int((opacitySlider.doubleValue * 100).rounded())) %"
 
         switch state.microphone {
         case "authorized":
@@ -182,6 +213,11 @@ final class SetupWindow: NSObject, NSWindowDelegate {
         row.button.isHidden = title == nil
         row.button.title = title ?? ""
         row.button.isEnabled = enabled
+    }
+
+    @objc private func opacityChanged(_ sender: NSSlider) {
+        opacityValue.stringValue = "\(Int((sender.doubleValue * 100).rounded())) %"
+        onOpacityChange?(sender.doubleValue)
     }
 
     @objc private func buttonPressed(_ sender: NSButton) {
