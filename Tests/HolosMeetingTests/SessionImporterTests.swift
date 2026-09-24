@@ -83,9 +83,10 @@ private func sessionImporterStagingFolders(_ root: URL) -> [String] {
 }
 
 /// A staging folder as a killed import leaves it: a session folder inside, the ownership marker (unless `marker` is
-/// false), and (unless `lockFile` is false) an unlocked `.import.lock`. Named `name` when given.
+/// false), and (unless `lockFile` is false) an unlocked `.import.lock`, last changed `age` seconds ago (2 hours,
+/// past `ImportStaging.unlockedGrace`, unless given). Named `name` when given.
 private func sessionImporterAbandonedStaging(in root: URL, lockFile: Bool = true, marker: Bool = true,
-                                             name: String? = nil) throws -> String {
+                                             name: String? = nil, age: TimeInterval = 7_200) throws -> String {
     let name = name ?? ImportStaging.prefix + UUID().uuidString
     let folder = root.appendingPathComponent(name, isDirectory: true)
     let session = folder.appendingPathComponent("\(UUID().uuidString).holos/audio/mic", isDirectory: true)
@@ -95,6 +96,8 @@ private func sessionImporterAbandonedStaging(in root: URL, lockFile: Bool = true
         try Data(ImportStaging.markerContents).write(to: folder.appendingPathComponent(ImportStaging.markerName))
     }
     if lockFile { try Data().write(to: folder.appendingPathComponent(ImportStaging.lockName)) }
+    try FileManager.default.setAttributes([.modificationDate: Date(timeIntervalSinceNow: -age)],
+                                          ofItemAtPath: folder.path)
     return name
 }
 
@@ -346,19 +349,19 @@ func importRemovesAbandonedImportsButNotRunningOnes() async throws {
     let wav = try sessionImporterStereoWAV(in: temp.url)
     let root = temp.url.appendingPathComponent("Sessions", isDirectory: true)
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-    // Killed imports: one with its (unlocked) lock file, one without a lock file that has not changed for 2 hours.
+    // Killed imports, unchanged for 2 hours: one with its (unlocked) lock file, one without a lock file.
     let killed = try sessionImporterAbandonedStaging(in: root)
     let old = try sessionImporterAbandonedStaging(in: root, lockFile: false)
-    try FileManager.default.setAttributes([.modificationDate: Date(timeIntervalSinceNow: -7_200)],
-                                          ofItemAtPath: root.appendingPathComponent(old).path)
-    // Another import that is running (its lock is held), and one that has just made its folder (no lock file yet).
+    // Another import that is running (its lock is held), and recent folders whose lock file is missing or not
+    // locked, as an import making or publishing its folder may leave them for a moment.
     let running = try sessionImporterAbandonedStaging(in: root)
     let lock = open(root.appendingPathComponent(running).appendingPathComponent(ImportStaging.lockName).path,
                     O_RDWR | O_CLOEXEC)
     #expect(lock >= 0)
     defer { close(lock) }
     #expect(flock(lock, LOCK_EX | LOCK_NB) == 0)
-    let starting = try sessionImporterAbandonedStaging(in: root, lockFile: false)
+    let starting = try sessionImporterAbandonedStaging(in: root, lockFile: false, age: 0)
+    let recentUnlocked = try sessionImporterAbandonedStaging(in: root, age: 0)
 
     let session = try await sessionImporterImport(wav, root: root, speech: FakeSpeechFactory(), transcribe: false)
 
@@ -367,6 +370,7 @@ func importRemovesAbandonedImportsButNotRunningOnes() async throws {
     #expect(!entries.contains(old))
     #expect(entries.contains(running))
     #expect(entries.contains(starting))
+    #expect(entries.contains(recentUnlocked))
     #expect(sessionFolders(in: root).map(\.lastPathComponent) == [session.lastPathComponent])
 }
 
@@ -428,6 +432,41 @@ func importSweepLeavesFoldersHolosDidNotMake() async throws {
     #expect(!ImportStaging.isStagingName(ImportStaging.prefix))
     #expect(!ImportStaging.isStagingName(ImportStaging.prefix + id + "x"))
     #expect(!ImportStaging.isStagingName(id))
+}
+
+/// Another import's sweep can run between any two steps of making or publishing a staging folder. At each such point
+/// a sweep, even one whose clock is far past `unlockedGrace` (so only the lock and the marker order protect the
+/// folder), leaves the staging folder and its session alone.
+@Test func sweepAtEveryStepOfCreateAndPublishLeavesTheImportAlone() throws {
+    let temp = try TemporaryDirectory("import")
+    defer { temp.remove() }
+    let root = temp.url.appendingPathComponent("Sessions", isDirectory: true)
+    let sessionName = "\(UUID().uuidString).holos"
+    var staged: String?
+    var seen: [ImportStaging.Step] = []
+    func sweepEverywhen(_ step: ImportStaging.Step) {
+        seen.append(step)
+        let before = sessionImporterEntries(root)
+        let trees = before.map { sessionImporterTree(root.appendingPathComponent($0)) }
+        ImportStaging.sweep(root)
+        ImportStaging.sweep(root, now: Date(timeIntervalSinceNow: 10 * ImportStaging.unlockedGrace))
+        #expect(sessionImporterEntries(root) == before, "a sweep after \(step) removed a folder")
+        #expect(before.map { sessionImporterTree(root.appendingPathComponent($0)) } == trees,
+                "a sweep after \(step) changed a folder")
+        if staged == nil { staged = sessionImporterStagingFolders(root).first }
+    }
+
+    let staging = try ImportStaging.create(in: root, after: sweepEverywhen)
+    #expect(staged == staging.name)
+    let audio = staging.url.appendingPathComponent("\(sessionName)/audio/mic", isDirectory: true)
+    try FileManager.default.createDirectory(at: audio, withIntermediateDirectories: true)
+    try Data(repeating: 1, count: 64).write(to: audio.appendingPathComponent("000001.caf"))
+    sweepEverywhen(.marked)
+    let published = try staging.publish(sessionName, after: sweepEverywhen)
+
+    #expect(Set(seen) == Set(ImportStaging.Step.allCases))
+    #expect(sessionImporterEntries(root) == [sessionName])
+    #expect(sessionImporterTree(published).contains("audio/mic/000001.caf"))
 }
 
 // MARK: - holos session import (import, then labelling)

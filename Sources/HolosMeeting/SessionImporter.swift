@@ -40,8 +40,8 @@ public enum SessionImporter {
     ///   (`.import-<UUID>/<id>.holos`, which no listing, recovery, or catalog takes for a session) and appears as
     ///   `<root>/<id>.holos` in one rename once it is finished. An unreadable file, a failed write, a transcription
     ///   error, or cancellation removes the staging folder (the source file is never changed) and throws;
-    ///   `CancellationError` passes through unchanged. A staging folder left by a killed import is removed by the
-    ///   next import in the same root. Throws before creating anything when the file is not a readable audio file
+    ///   `CancellationError` passes through unchanged. A staging folder left by a killed import is removed by a
+    ///   later import in the same root once it is an hour old. Throws before creating anything when the file is not a readable audio file
     ///   with at least one frame, or the name or locale is empty.
     public static func importAudio(from file: URL, name: String, root: URL, locale: String, backend: SpeechBackend,
                                    vocabulary: [String] = [], transcribe: Bool = true,
@@ -299,15 +299,25 @@ private struct TranscriptionFailure: Error {
 /// made: one named exactly `.import-` + `UUID().uuidString` (upper case) that holds the ownership marker
 /// `.holos-import` with `markerContents`, both reached without following a symbolic link. Any other folder, such
 /// as `.import-notes`, is never touched.
+///
+/// The marker is visible only while the lock is held: `create` makes and locks `.import.lock` before it writes the
+/// marker, and `publish` removes the marker before it lets go of the lock, so a sweep never finds a marked folder
+/// whose import is running but not yet (or no longer) holding its lock.
 final class ImportStaging {
     static let prefix = ".import-"
     static let lockName = ".import.lock"
-    /// Written into every staging folder when it is made, before its lock file; removed last when it is published.
+    /// Written into every staging folder after its lock file is locked; removed first when it is published.
     static let markerName = ".holos-import"
     static let markerContents = Array("{\"holos\":\"import-staging\",\"version\":1}\n".utf8)
-    /// A staging folder without its lock file is removed by a sweep only when it has not changed for this long: it
-    /// may belong to an import that has just made it.
+    /// A marked staging folder whose lock file is missing or unlocked is removed by a sweep only when the folder has
+    /// not changed for this long, so a sweep never races an import that is making or publishing its folder.
     static let unlockedGrace: TimeInterval = 3_600
+
+    /// The points between the steps of `create` and `publish`, for tests that run a sweep at each of them.
+    enum Step: Equatable, CaseIterable {
+        case folderMade, lockFileMade, locked, marked
+        case moved, unmarked, lockFileRemoved, unlocked
+    }
 
     private static let log = Logger(subsystem: "ca.orlenko.holos.app", category: "recorder")
 
@@ -324,8 +334,9 @@ final class ImportStaging {
 
     deinit { closeLock() }
 
-    /// Creates `root` if needed, removes abandoned staging folders in it (`sweep`), then makes and locks a new one.
-    static func create(in root: URL) throws -> ImportStaging {
+    /// Creates `root` if needed, removes abandoned staging folders in it (`sweep`), then makes a new one: the folder,
+    /// its lock file (locked at once), and last the ownership marker. `after` runs after each step (for tests).
+    static func create(in root: URL, after: (Step) -> Void = { _ in }) throws -> ImportStaging {
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         sweep(root)
         let name = prefix + UUID().uuidString
@@ -333,22 +344,28 @@ final class ImportStaging {
         guard mkdir(url.path, 0o700) == 0 else {
             throw HolosError.io("Cannot create the import folder: \(String(cString: strerror(errno))).")
         }
+        after(.folderMade)
         var code: Int32 = 0
         var lock: Int32 = -1
         let folder = open(url.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
         if folder < 0 {
             code = errno
-        } else if let failed = writeMarker(in: folder) {
-            code = failed
-            Darwin.close(folder)
         } else {
             lock = openat(folder, lockName, O_CREAT | O_EXCL | O_RDWR | O_NOFOLLOW | O_CLOEXEC, 0o600)
             if lock < 0 {
                 code = errno
-            } else if flock(lock, LOCK_EX | LOCK_NB) != 0 {
-                code = errno
-                Darwin.close(lock)
-                lock = -1
+            } else {
+                after(.lockFileMade)
+                if flock(lock, LOCK_EX | LOCK_NB) != 0 {
+                    code = errno
+                } else {
+                    after(.locked)
+                    if let failed = writeMarker(in: folder) { code = failed } else { after(.marked) }
+                }
+                if code != 0 {
+                    Darwin.close(lock)
+                    lock = -1
+                }
             }
             Darwin.close(folder)
         }
@@ -362,8 +379,9 @@ final class ImportStaging {
     /// Moves the finished session folder `sessionName` from the staging folder to `root` in one rename (never over
     /// an existing folder), makes the rename durable, and removes the empty staging folder. Throws, having moved
     /// nothing, when the rename fails; after the rename it never throws (a staging folder it cannot remove is left
-    /// for the next sweep).
-    func publish(_ sessionName: String) throws -> URL {
+    /// for the next sweep). The marker is removed before the lock file and the lock, so a sweep leaves the emptied
+    /// folder alone. `after` runs after each step (for tests).
+    func publish(_ sessionName: String, after: (Step) -> Void = { _ in }) throws -> URL {
         let rootFD = open(root.path, O_RDONLY | O_DIRECTORY | O_CLOEXEC)
         guard rootFD >= 0 else { throw HolosError.io("Cannot open the sessions folder: \(Self.errnoText()).") }
         defer { Darwin.close(rootFD) }
@@ -386,9 +404,13 @@ final class ImportStaging {
         if fsync(rootFD) != 0 || fsync(stagingFD) != 0 {
             Self.log.error("Cannot save the sessions folder after an import: \(Self.errnoText(), privacy: .public)")
         }
-        unlinkat(stagingFD, Self.lockName, 0)
+        after(.moved)
         unlinkat(stagingFD, Self.markerName, 0)
+        after(.unmarked)
+        unlinkat(stagingFD, Self.lockName, 0)
+        after(.lockFileRemoved)
         closeLock()
+        after(.unlocked)
         if unlinkat(rootFD, name, AT_REMOVEDIR) != 0 {
             Self.log.error("Cannot remove an empty import folder: \(Self.errnoText(), privacy: .public)")
         } else if fsync(rootFD) != 0 {
@@ -411,10 +433,11 @@ final class ImportStaging {
         }
     }
 
-    /// Removes the staging folders in `root` that no running import holds: those whose lock file can be locked, and
-    /// those without one that have not changed for `unlockedGrace`. Only a folder with a staging name
-    /// (`isStagingName`) and the ownership marker (`hasMarker`) is a staging folder; nothing else is touched.
-    /// Failures are logged; an import never fails because of an older one's leftovers.
+    /// Removes the staging folders in `root` that no running import holds: those whose lock file is missing or can
+    /// be locked, once the folder has not changed for `unlockedGrace`. Only a folder with a staging name
+    /// (`isStagingName`) and the ownership marker (`hasMarker`) is a staging folder; nothing else is touched, and a
+    /// folder without the marker (one being made or published) is skipped. Failures are logged; an import never
+    /// fails because of an older one's leftovers.
     static func sweep(_ root: URL, now: Date = Date()) {
         let base = resolved(root)
         guard let names = try? FileManager.default.contentsOfDirectory(atPath: base.path) else { return }
@@ -429,15 +452,17 @@ final class ImportStaging {
             guard fstat(folder, &info) == 0, (info.st_mode & S_IFMT) == S_IFDIR, hasMarker(in: folder) else { continue }
             let lock = openat(folder, lockName, O_RDWR | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC)
             if lock < 0 {
-                let missing = errno == ENOENT
-                let changed = Date(timeIntervalSince1970: TimeInterval(info.st_mtimespec.tv_sec))
-                guard missing, now.timeIntervalSince(changed) > unlockedGrace else { continue }
+                guard errno == ENOENT else { continue }
             } else if flock(lock, LOCK_EX | LOCK_NB) != 0 {
                 Darwin.close(lock)
                 continue
             }
             // Held (when there is a lock file) until the folder is gone, so no other sweep starts on it meanwhile.
             defer { if lock >= 0 { Darwin.close(lock) } }
+            // Checked again now that the lock is ours: an import that published meanwhile removed the marker first.
+            guard fstat(folder, &info) == 0, hasMarker(in: folder) else { continue }
+            let changed = Date(timeIntervalSince1970: TimeInterval(info.st_mtimespec.tv_sec))
+            guard now.timeIntervalSince(changed) > unlockedGrace else { continue }
             do {
                 try AtomicFile.removeTree([name], in: base)
                 log.notice("Removed an import that did not finish")
