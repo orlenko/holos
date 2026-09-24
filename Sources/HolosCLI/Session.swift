@@ -11,6 +11,8 @@ struct Session: AsyncParsableCommand {
             Recover.self,
             Retranscribe.self,
             Diarize.self,
+            Import.self,
+            Score.self,
         ])
 
     struct Inspect: ParsableCommand {

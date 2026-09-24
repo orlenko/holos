@@ -445,3 +445,19 @@ private func storeWriteEdited<T: Encodable>(_ value: T, to url: URL,
     #expect(fm.fileExists(atPath: precious.path))
     #expect(try Data(contentsOf: precious) == Data("keep".utf8))
 }
+
+/// A session reached through a "/private/…" path whose shorter form also exists (as /private/var/folders and
+/// /var/folders do): its speaker folders are created on first write, which a comparison through
+/// `standardizedFileURL` refused (it drops "/private" only for paths that exist, so only for the session).
+@Test func speakerFoldersAreCreatedUnderAPrivatePrefixedPath() async throws {
+    let root = try storeTemporaryRoot()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let path = root.resolvingSymlinksInPath().path
+    let privateRoot = URL(fileURLWithPath: path.hasPrefix("/private/") ? path : "/private" + path, isDirectory: true)
+    try #require(FileManager.default.fileExists(atPath: privateRoot.path))
+    let (session, id) = try await storeMakeSession(in: privateRoot)
+    #expect(session.path.hasPrefix("/private/"))
+    let run = storeRun(sessionID: id)
+    try SessionSpeakerStore.writeRun(run, session: session)
+    #expect(try SessionSpeakerStore.readRun(id: run.id, session: session) == run)
+}
