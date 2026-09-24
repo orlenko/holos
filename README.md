@@ -65,7 +65,24 @@ open or save the transcript, delete the audio or the whole meeting, and clean up
 leftover renders. Setup has a "Speaker labels" row that installs the speaker models
 (about 21 MB). Holos relabels a meeting automatically when its labelling was
 interrupted (at most twice per meeting, within 7 days). **People…** lists the people
-you have named and their remembered voices (below). See the
+you have named and their remembered voices (below). When a call plays on the laptop
+speakers, the start panel and the menu warn that the microphone also hears the other
+side and suggest headphones.
+
+**Review…** in Meetings (or double-clicking a labelled meeting, or the
+**Name Speakers — <name>…** line the menu shows after a meeting) opens the review window:
+speakers on the left (a name field that suggests known people, talk time, the start of
+their longest turns, Play samples, This is me, Merge into…, and "Maybe Maria" suggestions to
+confirm or reject, or Confirm All at once), turns on the right (a time button that plays
+from there, a speaker pop-up, and ⚠ for uncertain turns). Space plays and pauses, 1–9 give
+the selected turns to that speaker, ⌘' jumps to the next uncertain turn, and ⌘Z undoes the
+window's changes one at a time; Split Turn, search (⌘F), Find More Speakers (a relabel that
+asks for one more speaker and keeps the names), and Export (Save As… Markdown, text, or
+JSON; Copy as Markdown) complete it. Changes save as you make them and the transcript files
+follow a moment later; a change made from an outdated view (another window or a command)
+is refused and the window shows the current labels. The footer box "Learn voices of people
+I name in this meeting" decides whether naming a person also learns their voice. Delete
+Meeting can also forget the voice samples learned from that meeting. See the
 [meeting validation guide](docs/meeting-validation.md) for the manual checks.
 
 ## Quick start
@@ -127,7 +144,12 @@ failed or was skipped for a reason other than missing speaker models.
 
 After a recording is saved, Holos labels its speakers (`--no-postprocess` skips
 this). In a call the microphone is "Me" unless `--others-in-room` is given; the
-system audio is split into speakers. Speaker labels need the models from
+system audio is split into speakers. In a call, labelling also drops the microphone's
+echo of the call audio (a run of 3 or more words that repeats the call up to 1 s later;
+the words are listed in the run's `droppedWords`, reason `echo`, and appear in no
+export), and with others in the room a microphone speaker who is at least 60 % echo is
+hidden. `record start` warns on stderr when a call plays on the laptop speakers. Speaker
+labels need the models from
 `holos setup --speakers` (FluidAudio 0.17.1, run offline; `holos doctor` reports
 them as verified, not installed, or damaged). Without them the recording is saved
 with speaker-less transcript files and a hint to install them. The results are
@@ -164,9 +186,9 @@ that meeting. Names never need a voiceprint. Remembering voices is opt-in and of
 default (`holos people remember on|off|status`, or the People window): with it on,
 `link --learn-voice` learns the person's voice from that speaker's clear turns (only do
 this for people who agreed; voiceprints are biometric data), and later meetings suggest
-them as "Maybe Jim" in `holos speakers list`. Suggestions are never exported, and no
-name is applied automatically unless you calibrate on your own confirmed meetings (hidden
-`holos people calibrate --apply`). Voice samples stay in
+them as "Maybe Jim" in `holos speakers list` and the review window. Suggestions are never
+exported, and no name is applied automatically unless you calibrate on your own confirmed
+meetings (hidden `holos people calibrate --apply`). Voice samples stay in
 `~/Library/Application Support/Holos/Speakers` (private, not in Time Machine backups);
 post-processing never stores voice embeddings. `holos people list`, `rename`, `merge`,
 `forget <person> [--sample ID] | --session <session> | --all` (with `--yes`), and

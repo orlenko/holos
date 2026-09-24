@@ -128,7 +128,93 @@ Result: Pending.
 
 ## Review window (PR9)
 
-Pending.
+The review window names the speakers of a labelled meeting. Open it from **Meetings…** (select
+a meeting whose Speakers column says Labelled, then **Review…**, or double-click it) or from
+the **Name Speakers — <name>…** line at the top of the menu after a meeting. The left side
+lists the speakers (name field, talk time, the start of their two longest turns, **▶ Play
+samples**, **This is me**, **Merge into…**, and "Maybe Maria" suggestions with **Confirm** /
+**Not Maria**); the right side lists the turns (time button that plays from there, speaker
+pop-up, ⚠ for uncertain turns, text). Keys: Space plays or pauses, ↑/↓ move, 1–9 give the
+selected turns to that speaker number, ⌘' goes to the next uncertain turn and plays it, ⌘Z
+undoes, ⌘F searches, ⌘E opens Export. The **Speakers** pull-down holds Confirm All
+Suggestions, Find More Speakers…, Label Speakers on My Microphone… (calls recorded without
+"others in the room"), and Undo.
+
+Every change shows at once and is saved in the background to the meeting's edit journal (there
+is no Save button); the transcript files in `exports/` follow about 2 seconds after the last
+change and when the window closes. Undo takes back this window's changes, newest first, and
+never a change made elsewhere; Find More Speakers and relabelling end the undo history. Naming
+a speaker creates or links a person, whatever the "Remember voices" setting; the footer box
+"Learn voices of people I name in this meeting" decides whether a voice is learned (it starts
+as the Remember voices setting and is off while that is off).
+
+Use an imported recording (`holos session import <audio-file>`) for the first run: naming and
+merging change the meeting's labels (Undo takes them back). The Otter references are private: note
+times and counts only, never transcript text or names, in this file.
+
+### H14: Label the 89-minute Otter meeting from scratch
+
+1. Import the 89-minute reference recording:
+   `holos session import <path to the recording>` (it prints the new session's path once
+   speakers are labelled). Do not commit anything from `reference-data/`.
+2. Open Holos, then **Meetings…**, select the imported meeting, and choose **Review…**.
+3. Start a timer. Name every speaker: play their samples, read their previews, type a name and
+   press Return (or pick a known person). Use **Next Uncertain** (⌘') to check doubtful turns,
+   1–9 or the turn pop-up to move turns, **Merge into…** for a person split over two speakers,
+   **Split Turn** for a turn that holds two people, and **Find More Speakers…** if two people
+   share one speaker.
+4. Stop the timer when every speaker with more than a minute of talk has a name and the
+   uncertain turns you checked are right. Close the window.
+5. In Meetings, choose **Open Transcript**: the names appear in the Markdown, with the changes
+   you made.
+
+Pass: done in under 10 minutes. Record the time, the number of speakers named, and how many
+merges, splits, reassigned turns, and Find More Speakers runs were needed.
+
+Result: Pending.
+
+### H20: A real 3-hour council meeting
+
+1. Record a real council meeting of about 3 hours (tell the room first) and stop it; wait for
+   "Name Speakers — <name>…" in the menu.
+2. Choose it: the review window opens and the menu's naming line and dot go away.
+3. Name all speakers as in H14, timing only your own working time. While names save, keep
+   typing and moving turns: the window must not freeze, and every change must still be there
+   after closing and reopening the window.
+4. Play from several timestamps across the meeting, including after a pause or a sleep: the
+   audio must match the turn's text.
+
+Pass: all speakers named in 10 minutes or less of your time. Record how many Find More
+Speakers, split, and merge actions were needed, and anything that felt slow.
+
+Result: Pending.
+
+### Other review checks
+
+1. **Changes made elsewhere.** With the window open, rename a speaker in Terminal
+   (`holos speakers rename <session> S2 "Someone"`), then rename the same speaker in the window.
+   Pass: the window says the labels changed outside it, saves nothing, and then shows
+   "Someone"; a rename made after that is saved.
+2. **Undo.** Name three speakers, confirm all suggestions (if any), move a turn, then press ⌘Z
+   repeatedly. Pass: the changes come back out newest first, Confirm All as one step, and ⌘Z
+   stops once the window's own changes are undone.
+3. **Edited transcript kept.** In the meeting folder, make `exports/transcript.md` writable
+   (`chmod u+w`), change a word, then rename a speaker in the window and wait 3 seconds. Pass:
+   the footer says "Your edited transcript.md was kept as edited-<date>.md", that file holds
+   your change, and `transcript.md` is regenerated.
+4. **Transcript changed.** On an imported recording whose speakers you named, run
+   `holos session recover <session> --force --no-postprocess` (a new transcript, not
+   labelled), then open its review. Pass: the footer says "The transcript changed after speakers
+   were labelled." with **Label Again**, which relabels it with the names carried over.
+5. **Delete Audio.** With the window open, choose **Delete Audio…** in Meetings. Pass: playback
+   stops, the footer says "Audio deleted; playback is off.", and naming still works.
+6. **Delete Meeting forgets voices on request.** With Remember voices on, name a person in a
+   meeting with voice learning on (People shows a sample from it). Choose **Delete Meeting…**
+   with "Also forget voice samples learned from this meeting" checked. Pass: the review window
+   closes first, the meeting goes to the Trash, and People no longer lists that sample; without
+   the box checked the sample stays.
+
+Result: Pending.
 
 ## Online calls (PR11)
 

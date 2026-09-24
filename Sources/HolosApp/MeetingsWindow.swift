@@ -7,8 +7,9 @@ import Quartz
 import UniformTypeIdentifiers
 
 /// The saved meetings (docs/meeting-design.md §5.8, §4.13): a table of the session catalog and the actions on the
-/// selected meeting. Recover, Label Speakers, and the deletions run `holos` commands through the app delegate; the
-/// rest (Show in Finder, the Quick Look preview, Save Transcript As…, Clean Up) happen here. Refreshes every 2 s
+/// selected meeting. Recover, Label Speakers, and the deletions run `holos` commands through the app delegate, which
+/// also opens Review (PR9, §5.10); the rest (Show in Finder, the Quick Look preview, Save Transcript As…, Clean Up)
+/// happen here. Double-click opens Review for a labelled meeting and the preview otherwise. Refreshes every 2 s
 /// while visible; the listing is read off the main actor.
 @MainActor
 final class MeetingsWindow: NSObject, NSWindowDelegate, NSTableViewDataSource, NSTableViewDelegate,
@@ -32,6 +33,7 @@ final class MeetingsWindow: NSObject, NSWindowDelegate, NSTableViewDataSource, N
 
     private let root: URL
     private let perform: (Action, SessionSummary) -> Void
+    private let openReview: (SessionSummary) -> Void
     private let onClose: () -> Void
     private let window: PreviewingWindow
     private let table = NSTableView()
@@ -55,9 +57,11 @@ final class MeetingsWindow: NSObject, NSWindowDelegate, NSTableViewDataSource, N
 
     var isVisible: Bool { window.isVisible }
 
-    init(root: URL, perform: @escaping (Action, SessionSummary) -> Void, onClose: @escaping () -> Void) {
+    init(root: URL, perform: @escaping (Action, SessionSummary) -> Void,
+         openReview: @escaping (SessionSummary) -> Void, onClose: @escaping () -> Void) {
         self.root = root
         self.perform = perform
+        self.openReview = openReview
         self.onClose = onClose
         window = PreviewingWindow(contentRect: NSRect(x: 0, y: 0, width: 760, height: 460),
                                   styleMask: [.titled, .closable, .miniaturizable, .resizable],
@@ -80,7 +84,7 @@ final class MeetingsWindow: NSObject, NSWindowDelegate, NSTableViewDataSource, N
         table.usesAlternatingRowBackgroundColors = true
         table.allowsMultipleSelection = false
         table.target = self
-        table.doubleAction = #selector(openTranscript)
+        table.doubleAction = #selector(openSelected)
         let scroll = NSScrollView()
         scroll.documentView = table
         scroll.hasVerticalScroller = true
@@ -88,6 +92,7 @@ final class MeetingsWindow: NSObject, NSWindowDelegate, NSTableViewDataSource, N
         scroll.translatesAutoresizingMaskIntoConstraints = false
 
         let row = NSStackView(views: [
+            button("Review…", #selector(review)),
             button("Recover…", #selector(recover)), button("Label Speakers", #selector(labelSpeakers)),
             button("Show in Finder", #selector(showInFinder)), button("Open Transcript", #selector(openTranscript)),
             button("Save Transcript As…", #selector(saveTranscript)),
@@ -274,6 +279,7 @@ final class MeetingsWindow: NSObject, NSWindowDelegate, NSTableViewDataSource, N
         let idle = summary != nil && !busy && !live
         let exports = summary.map { SessionPaths.export("md", in: $0.directory) }
         let hasExport = exports.map { Self.isRegularFile($0) } ?? false
+        buttons["Review…"]?.isEnabled = summary.map(canReview) ?? false
         buttons["Recover…"]?.isEnabled = idle
             && (summary?.state == .interrupted || summary?.state == .incomplete)
         buttons["Label Speakers"]?.isEnabled = idle
@@ -295,6 +301,27 @@ final class MeetingsWindow: NSObject, NSWindowDelegate, NSTableViewDataSource, N
             statusLabel.stringValue = parts.joined(separator: " ")
         } else {
             statusLabel.stringValue = ""
+        }
+    }
+
+    /// Review needs speaker labels and no recording, labelling, or command running on the meeting.
+    private func canReview(_ summary: SessionSummary) -> Bool {
+        summary.runID != nil && running[summary.id] == nil && summary.state != .recording
+            && summary.state != .processing && summary.speakerState != .running
+    }
+
+    @objc private func review() {
+        guard let summary = selectedSession, canReview(summary) else { return }
+        openReview(summary)
+    }
+
+    /// Double-click: Review for a labelled meeting, else the transcript preview.
+    @objc private func openSelected() {
+        guard let summary = selectedSession, table.clickedRow >= 0 else { return }
+        if canReview(summary) {
+            openReview(summary)
+        } else {
+            openTranscript()
         }
     }
 

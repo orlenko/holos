@@ -33,6 +33,9 @@ final class MeetingAppState {
     var namingOffer: (sessionID: String, name: String)?
     var startPanel: MeetingStartPanel?
     var meetingsWindow: MeetingsWindow?
+    /// Open review windows by session ID (one per meeting), and reviews being opened.
+    var reviewWindows: [String: ReviewWindow] = [:]
+    var openingReviews: Set<String> = []
     var liveTranscriptWindow: LiveTranscriptWindow?
     var savingWindow: NSWindow?
     /// `holos doctor --json` speakerModels ("verified", "notInstalled", "damaged"), "unavailable" when the holos tool
@@ -518,10 +521,12 @@ extension HolosAppDelegate: NSMenuDelegate {
         showMeetingsWindow(selecting: nil)
     }
 
+    /// "Name Speakers — <name>…": opens Review for the meeting (Meetings, with the meeting selected, when it cannot
+    /// be reviewed) and reports `reviewOpened`, which ends the offer.
     @objc func nameSpeakers() {
-        guard let offer = meeting.namingOffer else { return }
-        showMeetingsWindow(selecting: offer.sessionID)
-        meeting.controller?.reviewOpened(sessionID: offer.sessionID)
+        guard let offer = meeting.namingOffer, let controller = meeting.controller else { return }
+        openReview(sessionID: offer.sessionID, directory: controller.sessionURL(offer.sessionID), name: offer.name,
+                   fallBackToMeetings: true)
     }
 
     @objc func showLastMeeting() {
@@ -550,6 +555,9 @@ extension HolosAppDelegate: NSMenuDelegate {
             meeting.meetingsWindow = MeetingsWindow(
                 root: controller.root,
                 perform: { [weak self] action, summary in self?.performMeetingAction(action, summary) },
+                openReview: { [weak self] summary in
+                    self?.openReview(sessionID: summary.id, directory: summary.directory, name: summary.name)
+                },
                 onClose: { [weak self] in self?.setDockPresence(false, for: "meetings") })
         }
         setDockPresence(true, for: "meetings")
@@ -557,9 +565,12 @@ extension HolosAppDelegate: NSMenuDelegate {
         meeting.meetingsWindow?.show(selecting: sessionID)
     }
 
-    /// Recover…, Label Speakers, Delete Audio…, and Delete Meeting… run `holos` maintenance commands (§5.8).
+    /// Recover…, Label Speakers, Delete Audio…, and Delete Meeting… run `holos` maintenance commands (§5.8). An open
+    /// review of the meeting lets go of it first: it closes (saving its changes) before a Delete Meeting and stops
+    /// playing before a Delete Audio, and it rereads the meeting when the command ends. Delete Meeting can also forget
+    /// the voice samples learned from the meeting (PR9), before the meeting is moved.
     private func performMeetingAction(_ action: MeetingsWindow.Action, _ summary: SessionSummary) {
-        guard let maintenance = meeting.maintenance, meeting.runningCommands[summary.id] == nil else { return }
+        guard meeting.maintenance != nil, meeting.runningCommands[summary.id] == nil else { return }
         guard meeting.controller?.relabellingSessionID != summary.id else {
             showMeetingAlert("Holos is labelling the speakers of “\(Self.short(summary.name))”.",
                              "Try again when it finishes; the Meetings list shows when it is done.")
@@ -569,6 +580,7 @@ extension HolosAppDelegate: NSMenuDelegate {
         let path = summary.directory.path
         let arguments: [String]
         let doing: String
+        var forgetSamples = false
         switch action {
         case .recover:
             guard confirm("Recover “\(name)”?",
@@ -586,16 +598,67 @@ extension HolosAppDelegate: NSMenuDelegate {
             arguments = ["session", "delete", path, "--audio-only", "--yes", "--json"]
             doing = "Deleting audio…"
         case .deleteMeeting:
-            guard confirm("Move “\(name)” to the Trash?",
-                          "The meeting folder goes to the Trash, where you can restore it. Voice samples learned from this meeting stay until you forget them in People.",
-                          button: "Move to Trash") else { return }
+            guard let forget = confirmDeleteMeeting(name) else { return }
+            forgetSamples = forget
             arguments = ["session", "delete", path, "--yes", "--json"]
             doing = "Moving to the Trash…"
         }
-        let output = Self.temporaryFile("out")
-        let errors = Self.temporaryFile("err")
         meeting.runningCommands[summary.id] = doing
         meeting.meetingsWindow?.update(running: meeting.runningCommands)
+        let review = meeting.reviewWindows[summary.id]
+        Task { [weak self] in
+            switch action {
+            case .deleteMeeting: await review?.closeAndWait()
+            case .deleteAudio: review?.stopPlayback()
+            case .recover, .labelSpeakers: break
+            }
+            if forgetSamples {
+                let failure = await Task.detached { () -> String? in
+                    do {
+                        try VoiceProfileService.forget(sessionID: summary.id, store: SpeakerProfileStore())
+                        return nil
+                    } catch {
+                        return error.localizedDescription
+                    }
+                }.value
+                if let failure {
+                    guard let self else { return }
+                    self.meeting.runningCommands[summary.id] = nil
+                    self.meeting.meetingsWindow?.update(running: self.meeting.runningCommands)
+                    self.showMeetingAlert("Holos could not forget the voice samples learned from “\(name)”.",
+                                          "The meeting was not moved to the Trash. \(failure)")
+                    return
+                }
+            }
+            self?.runMeetingCommand(action, summary, arguments: arguments)
+        }
+    }
+
+    /// "Move to the Trash?" with "Also forget voice samples learned from this meeting"; nil when cancelled, else
+    /// whether the box was checked.
+    private func confirmDeleteMeeting(_ name: String) -> Bool? {
+        let alert = NSAlert()
+        alert.messageText = "Move “\(name)” to the Trash?"
+        alert.informativeText = "The meeting folder goes to the Trash, where you can restore it. Voice samples learned from this meeting stay until you forget them in People, unless you check the box."
+        let box = NSButton(checkboxWithTitle: "Also forget voice samples learned from this meeting", target: nil,
+                           action: nil)
+        alert.accessoryView = box
+        alert.addButton(withTitle: "Move to Trash")
+        alert.addButton(withTitle: "Cancel")
+        NSApplication.shared.activate()
+        guard alert.runModal() == .alertFirstButtonReturn else { return nil }
+        return box.state == .on
+    }
+
+    /// Runs the maintenance command of a Meetings action (its "running" line is already shown).
+    private func runMeetingCommand(_ action: MeetingsWindow.Action, _ summary: SessionSummary, arguments: [String]) {
+        guard let maintenance = meeting.maintenance else {
+            meeting.runningCommands[summary.id] = nil
+            meeting.meetingsWindow?.update(running: meeting.runningCommands)
+            return
+        }
+        let output = Self.temporaryFile("out")
+        let errors = Self.temporaryFile("err")
         do {
             try maintenance.run(arguments, standardOutput: output, standardError: errors) { [weak self] code in
                 self?.meetingCommandEnded(action, summary, code: code, output: output, errors: errors)
@@ -619,6 +682,8 @@ extension HolosAppDelegate: NSMenuDelegate {
         Self.removeFile(errors)
         meeting.meetingsWindow?.update(running: meeting.runningCommands)
         meeting.meetingsWindow?.refresh()
+        // An open review shows the meeting as the command left it (new labels, or no audio).
+        if action != .deleteMeeting { meeting.reviewWindows[summary.id]?.reloadFromDisk() }
         let name = Self.short(summary.name)
         if code == 0, action == .deleteMeeting || action == .deleteAudio {
             if action == .deleteMeeting {
@@ -642,6 +707,99 @@ extension HolosAppDelegate: NSMenuDelegate {
         case (.deleteMeeting, _): "Holos could not move “\(name)” to the Trash."
         }
         showMeetingAlert(title, result ?? (code == 0 ? "" : "The command ended with code \(code)."))
+    }
+
+    // MARK: - Review window (PR9)
+
+    /// Opens the review window of a labelled meeting (or brings it forward) and reports `reviewOpened`, which clears
+    /// a "Name Speakers" offer for it. The labels load off the main actor first. When the meeting cannot be reviewed,
+    /// an alert says why, and with `fallBackToMeetings` Meetings opens with the meeting selected.
+    func openReview(sessionID: String, directory: URL, name: String, fallBackToMeetings: Bool = false) {
+        if let window = meeting.reviewWindows[sessionID], !window.isClosing {
+            window.show()
+            meeting.controller?.reviewOpened(sessionID: sessionID)
+            return
+        }
+        guard meeting.openingReviews.insert(sessionID).inserted else { return }
+        let maintenance = meeting.maintenance
+        // A window of this meeting that was just closed finishes saving before the new one reads the labels.
+        let closing = meeting.reviewWindows[sessionID]
+        Task { [weak self] in
+            if let closing { await closing.closeAndWait() }
+            let opened: Result<ReviewWindow, any Error>
+            do {
+                opened = .success(try await ReviewWindow.open(sessionID: sessionID, session: directory,
+                                                              maintenance: maintenance))
+            } catch {
+                opened = .failure(error)
+            }
+            guard let self else { return }
+            self.meeting.openingReviews.remove(sessionID)
+            switch opened {
+            case .success(let window):
+                // Per window: a closing window of the meeting must not take the new one's Dock presence away.
+                let dockKey = "review-\(ObjectIdentifier(window).hashValue)"
+                window.onClose = { [weak self] in
+                    guard let self else { return }
+                    if self.meeting.reviewWindows[sessionID] === window { self.meeting.reviewWindows[sessionID] = nil }
+                    self.setDockPresence(false, for: dockKey)
+                }
+                window.onRelabel = { [weak self] running in self?.reviewRelabelChanged(sessionID, running: running) }
+                self.meeting.reviewWindows[sessionID] = window
+                self.setDockPresence(true, for: dockKey)
+                window.show()
+                self.meeting.controller?.reviewOpened(sessionID: sessionID)
+            case .failure(let error):
+                Self.meetingLog.notice("Session \(sessionID, privacy: .public): review not opened (\(ProcessSpawner.logCategory(error), privacy: .public))")
+                if fallBackToMeetings {
+                    self.showMeetingsWindow(selecting: sessionID)
+                    self.meeting.controller?.reviewOpened(sessionID: sessionID)
+                }
+                self.showMeetingAlert("Holos could not open the review of “\(Self.short(name))”.",
+                                      error.localizedDescription)
+            }
+        }
+    }
+
+    /// Text Meetings shows while a review window relabels the meeting.
+    private static let reviewRelabelText = "Labelling speakers (Review)…"
+
+    /// A review window started or finished relabelling its meeting: Meetings shows it, and the automatic relabel
+    /// leaves the meeting alone meanwhile.
+    private func reviewRelabelChanged(_ sessionID: String, running: Bool) {
+        if running {
+            if meeting.runningCommands[sessionID] == nil { meeting.runningCommands[sessionID] = Self.reviewRelabelText }
+        } else if meeting.runningCommands[sessionID] == Self.reviewRelabelText {
+            meeting.runningCommands[sessionID] = nil
+        }
+        meeting.meetingsWindow?.update(running: meeting.runningCommands)
+        if !running { meeting.meetingsWindow?.refresh() }
+    }
+
+    /// Quitting with review windows open: they close first, so their last changes reach the transcript files. Waits
+    /// at most `limit`.
+    private static func closeReviews(_ windows: [ReviewWindow], limit: Duration = .seconds(10)) async {
+        guard !windows.isEmpty else { return }
+        let closing = Task { @MainActor in
+            for window in windows { await window.closeAndWait() }
+        }
+        await withTaskGroup(of: Void.self) { group in
+            group.addTask { await closing.value }
+            group.addTask { try? await Task.sleep(for: limit) }
+            await group.next()
+            group.cancelAll()
+        }
+    }
+
+    /// `.terminateNow`, or, with review windows open, `.terminateLater` and the reply once they closed.
+    private func quitAfterClosingReviews() -> NSApplication.TerminateReply {
+        let windows = Array(meeting.reviewWindows.values)
+        guard !windows.isEmpty else { return .terminateNow }
+        Task {
+            await Self.closeReviews(windows)
+            NSApplication.shared.reply(toApplicationShouldTerminate: true)
+        }
+        return .terminateLater
     }
 
     /// The result line a command printed: `summary` or `message` of its JSON output, else its last stderr line.
@@ -800,8 +958,9 @@ extension HolosAppDelegate: NSMenuDelegate {
     /// While a meeting records: in child mode offers Stop and Save (waits up to 10 s for the recorder to stop
     /// capturing), Keep Recording (quits the app only), or Cancel; in-process mode offers Stop and Save (waits up to 10
     /// minutes for the transcript) or Cancel. An in-process meeting that is still saving its transcript is waited for.
+    /// Open review windows close first in every case, so their last changes reach the transcript files.
     func meetingShouldTerminate() -> NSApplication.TerminateReply {
-        guard let controller = meeting.controller else { return .terminateNow }
+        guard let controller = meeting.controller else { return quitAfterClosingReviews() }
         // Whether this process runs the recording, not which launcher is configured: in in-process mode Holos can
         // still follow a meeting started in a terminal, which quitting does not end.
         let inProcess = meeting.inProcess?.isRecording == true
@@ -824,12 +983,12 @@ extension HolosAppDelegate: NSMenuDelegate {
                 waitBeforeQuitting(inProcess: inProcess)
                 return .terminateLater
             }
-            if !inProcess, response == .alertSecondButtonReturn { return .terminateNow }
+            if !inProcess, response == .alertSecondButtonReturn { return quitAfterClosingReviews() }
             return .terminateCancel
         case .idle, .finishing, .failed:
             // An in-process recording still saving its transcript (also one whose start timed out in the menu but
             // that did start) is waited for; quitting would cut the save short.
-            guard inProcess, !Self.transcriptSaved(controller.status?.phase) else { return .terminateNow }
+            guard inProcess, !Self.transcriptSaved(controller.status?.phase) else { return quitAfterClosingReviews() }
             waitBeforeQuitting(inProcess: true)
             return .terminateLater
         }
@@ -861,6 +1020,7 @@ extension HolosAppDelegate: NSMenuDelegate {
                 try? await Task.sleep(for: .milliseconds(200))
             }
             self?.meeting.savingWindow?.close()
+            if !undelivered, let self { await Self.closeReviews(Array(self.meeting.reviewWindows.values)) }
             NSApplication.shared.reply(toApplicationShouldTerminate: !undelivered)
             if undelivered, let self {
                 let reason = self.meeting.notice.map { "\n\n\($0)" } ?? ""

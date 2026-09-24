@@ -293,6 +293,9 @@ public struct ReviewWord: Sendable, Equatable {
     /// asked of two tracks at once).
     public var canFindMoreSpeakers: Bool { diarizedTrack != nil && maintenance != nil }
 
+    /// The speaker count Find More Speakers asks for at least: one more than the diarizer found on its track.
+    public var findMoreSpeakersMinimum: Int? { diarizedTrack.map { $0.clusters.count + 1 } }
+
     /// Label Speakers on My Microphone is possible: a call whose microphone was taken as one speaker ("Me").
     public var canLabelMicrophoneSpeakers: Bool {
         maintenance != nil && snapshot.meeting.mode == .call
@@ -472,12 +475,11 @@ public struct ReviewWord: Sendable, Equatable {
     /// a warning (`incomplete`, with its message); the labels are reloaded either way.
     public func findMoreSpeakers() async throws {
         try requireEditable()
-        guard let track = diarizedTrack, maintenance != nil else {
+        guard let minimum = findMoreSpeakersMinimum, maintenance != nil else {
             throw HolosError.invalidInput("Find More Speakers works when one track of the meeting was split into "
                                           + "speakers.")
         }
-        try await relabel(Self.relabelArguments(session: session, force: true,
-                                                minimumSpeakers: track.clusters.count + 1,
+        try await relabel(Self.relabelArguments(session: session, force: true, minimumSpeakers: minimum,
                                                 othersInRoom: othersInRoomFlag))
     }
 
@@ -498,6 +500,16 @@ public struct ReviewWord: Sendable, Equatable {
         guard maintenance != nil else { throw HolosError.unavailable("Speakers cannot be labelled from here.") }
         try await relabel(Self.relabelArguments(session: session, force: false, minimumSpeakers: nil,
                                                 othersInRoom: othersInRoomFlag))
+    }
+
+    /// One export format of the labels as saved once every queued change is saved (Save As…, Copy as Markdown).
+    /// Written nowhere; `exports/` is brought up to date on the way when it is behind.
+    public func render(_ format: ExportFormat) async throws -> Data {
+        guard !closed else { throw Self.closedError }
+        try? await enqueue(.exports, optimistic: [])
+        let session = self.session
+        let names = profileNames
+        return try await Self.detached { try SessionExports.render(format, session: session, profileNames: names) }
     }
 
     /// Rereads the labels from disk (after a change made elsewhere, such as Delete Audio or a relabel from
