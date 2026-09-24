@@ -210,7 +210,7 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
         log.error("Code signature no longer matches the app on disk; dictation paused")
         if enabled || enabling { disable(persist: false) }
         show("Holos was rebuilt while running. Quit and reopen Holos to dictate again.")
-        overlay.show(title: "Holos was rebuilt while running", text: "Quit and reopen Holos to dictate again.")
+        overlay.show(title: "Holos was rebuilt while running", text: "Quit and reopen Holos to dictate again.", force: true)
         scheduleExpiry()
         return true
     }
@@ -283,6 +283,7 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
         switch action {
         case .began:
             guard !isBusy, !refuseIfReplaced(), !TextInsertion.isSecureInputActive() else { return }
+            overlay.allowShowing()
             insertionBlockReason = nil
             insertedText = ""
             latestCommitted = ""
