@@ -27,6 +27,20 @@ Hardware-facing and cross-app acceptance remain pending.
   process holds it. The value types and storage for meeting recording and speaker
   labels (runs, edit journal, opt-in voice data, locks) exist as internal APIs;
   no command writes speaker data yet.
+- Meeting recording (wave 1): recording moved out of the CLI into the `HolosMeeting`
+  library, which the menu bar app can also use. Capture, speech recognition, stop
+  requests, and progress output are injectable, so the recording lifecycle is tested
+  without a microphone. Recording output is unchanged. After saving, `record start`
+  takes the session's processing lease before it releases the archive and runs a
+  post-processing step under the lease. That step does nothing yet; `--no-postprocess`
+  skips it. Fallback and `session retranscribe` transcription share one replay of saved
+  audio, which can start at a given session time and pass recognition vocabulary.
+- Speaker labelling algorithms (wave 1): the `HolosSpeakers` library holds them as pure
+  code with no file access: aligning transcript words to diarization output, building
+  speaker turns, applying speaker edits and carrying names over to a new labelling,
+  Markdown/text/JSON transcript exports, an Otter transcript parser, and diarization
+  scoring (DER and agreement with Otter). No command or app feature uses them yet, and
+  no diarization engine is integrated.
 - `voices list` and `say` provide native voice discovery, playback, and `.m4a`,
   `.wav`, or `.caf` export. Text comes from arguments or UTF-8 stdin.
 - `read` renders a local UTF-8 text/Markdown file or stdin as an ordered AAC
@@ -67,7 +81,11 @@ transcription events, archive recovery, synthesis, content processing, hotkey
 state transitions, insertion policy, and dictation lifecycle races, plus the
 meeting-recording storage foundations (atomic writes, failed and torn appends,
 locks and the processing lease, close-on-exec descriptors, the transcript pointer,
-speaker storage, and JSON round trips of the shared file formats); run them with
+speaker storage, and JSON round trips of the shared file formats), the recording
+lifecycle with fake capture and speech (audio-only and transcribed recordings, capture
+and start failures, stop by duration, `stop.request`, or task cancellation, fallback
+replay, vocabulary, and the processing-lease hand-off), and the speaker algorithms (alignment, edit
+projection, carry-over, exporters, scoring) on synthetic data; run them with
 `./scripts/test.sh`, which keeps `HOLOS_DATA_DIR` and `HOLOS_SUPPORT_DIR` in a
 temporary folder. The opt-in native fixture was exercised separately for both
 recognizers. WAV, CAF, and M4A synthesis/export were exercised without audible
@@ -116,7 +134,8 @@ Still requiring real-machine or user-data validation:
 - Correction memory, correction management, or Foundation Models-assisted
   correction. No correction or speaker database workflow is present.
 - Automatic speaker diarization, speaker rename/edit UI, or individual speaker
-  attribution. Track labels alone do not separate participants.
+  attribution. Track labels alone do not separate participants; the speaker
+  algorithms in `HolosSpeakers` have no diarization engine or command behind them yet.
 - URL/article extraction, PDF text extraction, and OCR. `read` supports local
   UTF-8 text/Markdown and stdin only.
 - Broader install/update/uninstall packaging and the T14 acceptance run.

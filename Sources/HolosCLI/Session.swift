@@ -1,11 +1,16 @@
 import ArgumentParser
 import Foundation
 import HolosCore
+import HolosMeeting
 import HolosStorage
 
 struct Session: AsyncParsableCommand {
     static let configuration = CommandConfiguration(abstract: "Inspect and reprocess a portable .holos audio archive.",
-        subcommands: [Inspect.self, Recover.self, Retranscribe.self])
+        subcommands: [
+            Inspect.self,
+            Recover.self,
+            Retranscribe.self,
+        ])
 
     struct Inspect: ParsableCommand {
         static let configuration = CommandConfiguration(abstract: "Validate an archive and report interrupted or damaged files without changing it.")
@@ -60,7 +65,7 @@ struct Session: AsyncParsableCommand {
             var segments: [TranscriptSegment] = []
             for track in Set(manifest.chunks.map(\.track)).sorted() {
                 Console.error("Transcribing \(track)…")
-                segments += try await RecordingWorkflow.replay(directory: directory, track: track,
+                segments += try await TrackReplayer.replay(directory: directory, track: track,
                     locale: recognition.locale, backend: recognition.backend)
             }
             segments.sort { $0.start < $1.start }
