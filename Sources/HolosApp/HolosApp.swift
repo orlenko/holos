@@ -300,6 +300,9 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
             guard !isBusy, !refuseIfReplaced(), !TextInsertion.isSecureInputActive() else { return }
             overlay.allowShowing()
             resultNeedsAttention = false
+            // A pending opacity sample must not hide this dictation's own preview or result.
+            opacitySampleTask?.cancel()
+            opacitySampleTask = nil
             insertionBlockReason = nil
             insertedText = ""
             latestCommitted = ""
@@ -495,6 +498,7 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
         guard !insertedText.isEmpty else {
             guard !text.isEmpty else {
                 message = "No speech recognized"
+                resultNeedsAttention = true  // shown even with the preview off, so it is not mistaken for success
                 return
             }
             let outcome: InsertionOutcome = if enabled, insertionBlockReason == nil, let destination {
