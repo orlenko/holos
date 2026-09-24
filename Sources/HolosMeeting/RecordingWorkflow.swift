@@ -73,6 +73,10 @@ public struct RecordingDependencies: Sendable {
     public var findInputDevices: @Sendable () -> InputDevices
     /// Device-list changes and screen unlocks, after which a waiting recorder retries at once (§4.2); nil: none.
     public var environmentEvents: AudioEnvironmentEvents?
+    /// The system default output, looked up at start, after device changes, and every `tuning.outputRouteInterval`: a
+    /// call that records the microphone while the laptop speakers play warns `echoRisk` (PR11). nil from it: unknown,
+    /// no warning.
+    public var findOutputRoute: @Sendable () -> OutputRoute?
     /// Loop cadence and queue sizes; tests shorten them.
     var tuning = RecorderTuning()
     /// Tests only: sees every status.json written, in order.
@@ -85,7 +89,8 @@ public struct RecordingDependencies: Sendable {
 
     /// No hardware defaults: tests use `.testing(...)` (Fakes.swift). The defaults of the later parameters are
     /// inert: a clock that starts when epoch 0 starts, unlimited free space, the standard timeouts, no power events
-    /// or assertion, a placeholder built-in microphone that is also the default input, and no environment events.
+    /// or assertion, a placeholder built-in microphone that is also the default input, no environment events, and an
+    /// unknown output route.
     public init(makeCapture: @escaping @MainActor @Sendable () -> any MeetingCapture,
                 makeSpeech: @escaping LiveSpeechFactory, stop: any RecorderStopSource,
                 reporter: any RecordingReporter, postProcess: PostProcessHook?,
@@ -94,17 +99,19 @@ public struct RecordingDependencies: Sendable {
                 power: (any SystemPowerEvents)? = nil,
                 makePowerAssertion: @escaping @Sendable (String) -> PowerAssertion? = { _ in nil },
                 findInputDevices: @escaping @Sendable () -> InputDevices = { RecordingDependencies.placeholderDevices },
-                environmentEvents: AudioEnvironmentEvents? = nil) {
+                environmentEvents: AudioEnvironmentEvents? = nil,
+                findOutputRoute: @escaping @Sendable () -> OutputRoute? = { nil }) {
         self.makeCapture = makeCapture; self.makeSpeech = makeSpeech; self.stop = stop
         self.reporter = reporter; self.postProcess = postProcess
         self.makeClock = makeClock ?? { _ in ElapsedSessionClock() }
         self.freeSpace = freeSpace; self.timeouts = timeouts
         self.power = power; self.makePowerAssertion = makePowerAssertion
         self.findInputDevices = findInputDevices; self.environmentEvents = environmentEvents
+        self.findOutputRoute = findOutputRoute
     }
 
     /// LiveMeetingCapture + AppleSpeechSession.make, `ContinuousSessionClock`, `VolumeFreeSpace`, `SystemPowerMonitor`,
-    /// `PowerAssertion`, `BuiltInMicrophone.devices`, and `AudioEnvironmentEvents`.
+    /// `PowerAssertion`, `BuiltInMicrophone.devices`, `AudioEnvironmentEvents`, and `OutputRoute.current`.
     public static func live(stop: any RecorderStopSource, reporter: any RecordingReporter,
                             postProcess: PostProcessHook?) -> RecordingDependencies {
         RecordingDependencies(makeCapture: { LiveMeetingCapture() }, makeSpeech: appleSpeechFactory,
@@ -112,7 +119,8 @@ public struct RecordingDependencies: Sendable {
                               makeClock: { ContinuousSessionClock(hostTimeOrigin: $0) }, freeSpace: VolumeFreeSpace(),
                               power: livePowerMonitor(), makePowerAssertion: livePowerAssertion,
                               findInputDevices: { BuiltInMicrophone.devices() },
-                              environmentEvents: AudioEnvironmentEvents())
+                              environmentEvents: AudioEnvironmentEvents(),
+                              findOutputRoute: { OutputRoute.current() })
     }
 
     /// The inert default of `findInputDevices`: a built-in microphone that is also the default input.
@@ -159,6 +167,10 @@ struct RecorderTuning: Sendable {
     /// Everything done for a sleep before it is allowed (stop capture, close chunks) beyond the capture-stop limit;
     /// macOS waits at most 30 s (§4.4).
     var sleepMargin: Duration = .seconds(2)
+    /// How often a call looks at the output route again for the echo-risk warning (PR11), besides at start and after
+    /// device changes: headphones on the built-in jack, or another output picked in Control Center, change no device
+    /// list.
+    var outputRouteInterval: Duration = .seconds(2)
 }
 
 /// How a recording that saved its audio ended.
@@ -202,7 +214,9 @@ public enum RecordingWorkflow {
     /// system sleep capture stops and the chunks are closed, then the sleep is allowed; a wake within 15 minutes with
     /// the lid open resumes in a new epoch. A track that delivers nothing for 3 s is reported stalled, and a silent
     /// microphone is restarted. The microphone (§4.12): in person the built-in one, a call the system default input;
-    /// a call without any input device records system audio alone until one appears.
+    /// a call without any input device records system audio alone until one appears. A call that records the
+    /// microphone while the laptop speakers are the output warns `echoRisk` (PR11), at start, after device changes, and
+    /// when a periodic look finds the output changed.
     ///
     /// Throws before creating a session for invalid options, when the disk has too little space, and in person when
     /// the built-in microphone is missing. Capture never started: the archive is finished `failed` and the error is
@@ -372,6 +386,8 @@ private final class Recorder {
     var sleepBudget: Duration { dependencies.timeouts.captureStop + dependencies.tuning.sleepMargin }
     /// The lid state at the last tick.
     var lidOpen = true
+    /// When a call looks at the output route again for the echo-risk warning.
+    var nextOutputRouteCheck: ContinuousClock.Instant?
     /// `stop()` was called on the current capture.
     var captureStopped = false
     /// The current capture's dropped-buffer count at the last status refresh.
@@ -596,6 +612,7 @@ private final class Recorder {
         lidOpen = power?.isLidOpen() ?? true
         // Epoch 0's capture started just before the loop: its stall timers start now, at session time ~0.
         await apply(.captureStarted(epoch: 0, tracks: plan.tracks, at: clock.now()))
+        await refreshEchoRisk()
         while machine.stopReason == nil {
             if Task.isCancelled { cancelled = true }
             // Cancelled, or a capture stop ended with CancellationError.
@@ -621,7 +638,8 @@ private final class Recorder {
                 }
             }
             for event in monitor.drain() { await apply(event) }
-            for reason in dependencies.environmentEvents?.pendingReasons() ?? [] {
+            let environmentReasons = dependencies.environmentEvents?.pendingReasons() ?? []
+            for reason in environmentReasons {
                 // A call recording without the microphone restarts only when an input device is back.
                 if machine.phase == .recording || machine.phase == .starting, machine.microphoneMissing,
                    EpochPlan.make(options, devices: dependencies.findInputDevices())?.tracks.contains("mic") != true {
@@ -629,6 +647,8 @@ private final class Recorder {
                 }
                 await apply(.retryNow(reason: reason, at: clock.now()))
             }
+            // Connecting or removing headphones changes the device list; the warning follows at once.
+            if !environmentReasons.isEmpty { await refreshEchoRisk() }
             for item in inbox.poll() {
                 switch item {
                 case .request(let request):
@@ -660,6 +680,7 @@ private final class Recorder {
                 lidOpen = lid
                 let free = try? dependencies.freeSpace.availableBytes(at: archive.directory)
                 await apply(.tick(at: clock.now(), lidOpen: lid, freeBytes: free, lastFrameAt: monitor.lastFrameAt()))
+                if let due = nextOutputRouteCheck, ContinuousClock.now >= due { await refreshEchoRisk() }
                 await refreshStatus()
             } else if machine.phase != lastStatusPhase {
                 await refreshStatus()
@@ -893,6 +914,8 @@ private final class Recorder {
             await updateStatus { $0.microphoneName = name }
         }
         self.plan = plan
+        // A restart follows a device change, and may have gained or lost the microphone.
+        await refreshEchoRisk()
         return .captureStarted(epoch: epoch, tracks: plan.tracks, at: startedAt)
     }
 
@@ -980,6 +1003,31 @@ private final class Recorder {
             } else {
                 status.warnings.append(RecorderWarning(code: code, message: message, since: Date()))
             }
+        }
+    }
+
+    /// The `echoRisk` warning (PR11): shown while a call records the microphone and the laptop speakers are the
+    /// output, so other people's voices reach the microphone too; cleared with headphones or another output, or when
+    /// the epoch records no microphone. An unknown route changes nothing. The first time it shows, the reporter says it
+    /// too (stderr in `holos record start`). Schedules the next periodic look.
+    private func refreshEchoRisk() async {
+        nextOutputRouteCheck = ContinuousClock.now.advanced(by: dependencies.tuning.outputRouteInterval)
+        guard options.source == .microphoneAndSystem else { return }
+        let risky: Bool
+        if plan.tracks.contains("mic") {
+            guard let route = dependencies.findOutputRoute() else { return }
+            risky = route.isBuiltInSpeakers
+        } else {
+            risky = false
+        }
+        let shown = shownWarnings.contains(.echoRisk)
+        if risky, !shown {
+            Self.log.notice("Session \(self.archive.id, privacy: .public): the call plays on the laptop speakers")
+            await warn(RecorderWarning(code: .echoRisk, message: OutputRoute.echoRiskMessage))
+        } else if !risky, shown {
+            Self.log.notice("Session \(self.archive.id, privacy: .public): the call no longer plays on the laptop speakers")
+            shownWarnings.remove(.echoRisk)
+            await updateStatus { $0.warnings.removeAll { $0.code == .echoRisk } }
         }
     }
 
