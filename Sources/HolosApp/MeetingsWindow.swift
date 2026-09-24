@@ -261,6 +261,7 @@ final class MeetingsWindow: NSObject, NSWindowDelegate, NSTableViewDataSource, N
         case .notLabelled: "Not labelled"
         case .failed: "Failed"
         case .interrupted: "Interrupted"
+        case .unreadable: "Unreadable"
         }
     }
 
