@@ -457,6 +457,7 @@ func recoverRebuildAndPostProcessUnderOneLease() async throws {
     #expect(outcome.exitCode == 0)
     #expect(outcome.warnings.isEmpty)
     #expect(outcome.recovery.manifest?.status == ArchiveStatus.interrupted)
+    #expect(outcome.status == ArchiveStatus.recovered, "The outcome reports the status at the end of the chain.")
     let rebuild = try #require(outcome.rebuild)
     #expect(rebuild.journalSegments == 4)
     let record = try #require(outcome.postProcessing)
@@ -528,6 +529,121 @@ func recoverWithoutSpeakerModelsStillSucceeds() async throws {
     #expect(outcome.rebuild?.replayedSeconds == ["mic": 0])
     #expect(outcome.summary.contains("Transcript rebuilt from 4 saved phrases. No speaker labels: speaker models are not installed."))
     #expect(outcome.postProcessing?.runID == nil)
+}
+
+@Test(.timeLimit(.minutes(1)))
+func recoverTwiceWithoutSpeakerModelsChangesNothing() async throws {
+    let temp = try TemporaryDirectory("rebuild")
+    defer { temp.remove() }
+    let session = try await rebuilderDeadMeeting(in: temp.url)
+    let request = SessionRecoveryCommand.Request(session: session, transcribe: false)
+    let first = try await SessionRecoveryCommand.run(request, diarizer: nil, freeSpace: FixedFreeSpace(.max))
+    #expect(first.postProcessing?.runID == nil)
+    let files = SessionFixtures.files(in: session).filter { !$0.key.hasPrefix(".") && $0.key != "status.json" }
+    let second = try await SessionRecoveryCommand.run(request, diarizer: nil, freeSpace: FixedFreeSpace(.max))
+    #expect(second.exitCode == 0)
+    #expect(second.postProcessing == nil, "Post-processing does not run again while nothing can label.")
+    let message = try #require(first.postProcessing?.message)
+    #expect(message.hasPrefix("No speaker labels: speaker models are not installed."))
+    #expect(second.summary.hasSuffix(message), "The reason (with the setup hint) is repeated.")
+    #expect(SessionFixtures.files(in: session).filter { !$0.key.hasPrefix(".") && $0.key != "status.json" } == files,
+            "postprocess.json is not rewritten.")
+    // With a diarizer the same meeting is labelled after all.
+    let third = try await SessionRecoveryCommand.run(request, diarizer: rebuilderDiarizer(),
+                                                     freeSpace: FixedFreeSpace(.max))
+    #expect(third.postProcessing?.runID != nil)
+}
+
+/// A recording that stopped with transcription unfinished: the recorder saved a transcript of `saved` and journaled
+/// `journal`, with live transcription behind from 6 s.
+private func rebuilderTranscriptionIncomplete(in root: URL, saved: [TranscriptSegment]?,
+                                              journal: [TranscriptSegment]) async throws -> URL {
+    let archive = try SessionArchive.create(root: root, name: "Council", source: .microphone, locale: "en-CA",
+                                            backend: .speech)
+    let writer = AudioChunkWriter(archive: archive)
+    let frame = try PCMFrame(samples: [Float](repeating: 0.01, count: 16_000 * 20), sampleRate: 16_000, channels: 1,
+                             startTime: 0)
+    try await writer.append(CapturedAudio(track: "mic", frame: frame))
+    try await writer.finish()
+    for (kind, details) in try rebuilderFinals(journal) { try await archive.recordEvent(kind: kind, details: details) }
+    try await archive.recordEvent(kind: MeetingEventKind.transcriptionBehind,
+                                  details: ["track": "mic", "from": "6.0", "reason": "overflow"])
+    if let saved {
+        try await archive.saveTranscript(Transcript(source: archive.directory.path, locale: "en-CA", backend: .speech,
+                                                    segments: saved), writeLegacyExports: false)
+    }
+    try await archive.finish(status: ArchiveStatus.transcriptionIncomplete)
+    return archive.directory
+}
+
+@Test(.timeLimit(.minutes(1)))
+func recoverKeepsTheTranscriptSavedAtStop() async throws {
+    let temp = try TemporaryDirectory("rebuild")
+    defer { temp.remove() }
+    let journal = [SessionFixtures.segment(["one", "two"], track: "mic", start: 1),
+                   SessionFixtures.segment(["three"], track: "mic", start: 4)]
+    let saved = journal + [SessionFixtures.segment(["partially", "replayed"], track: "mic", start: 8)]
+    let session = try await rebuilderTranscriptionIncomplete(in: temp.url, saved: saved, journal: journal)
+    let before = try rebuilderCurrent(session)
+
+    let outcome = try await SessionRecoveryCommand.run(
+        SessionRecoveryCommand.Request(session: session, transcribe: false, postProcess: false), diarizer: nil)
+    #expect(outcome.exitCode == 0)
+    #expect(outcome.rebuild == nil)
+    #expect(outcome.summary.contains("Nothing to rebuild: the meeting is transcriptionIncomplete and keeps the "
+        + "transcript saved when it stopped."))
+    #expect(try rebuilderCurrent(session) == before)
+    #expect(try rebuilderCurrent(session).segments.map(\.text) == ["one two", "three", "partially replayed"])
+    #expect(try SessionArchive.readManifest(at: session).status == ArchiveStatus.transcriptionIncomplete)
+    #expect(outcome.status == ArchiveStatus.transcriptionIncomplete)
+
+    // --force still rebuilds it from the saved phrases.
+    let forced = try await SessionRecoveryCommand.run(
+        SessionRecoveryCommand.Request(session: session, transcribe: false, postProcess: false, force: true),
+        diarizer: nil)
+    #expect(forced.rebuild?.journalSegments == 2)
+    #expect(try rebuilderCurrent(session).segments.map(\.text) == ["one two", "three"])
+}
+
+@Test(.timeLimit(.minutes(1)))
+func recoverRebuildsATranscriptionIncompleteSessionWithoutATranscript() async throws {
+    let temp = try TemporaryDirectory("rebuild")
+    defer { temp.remove() }
+    let journal = [SessionFixtures.segment(["one", "two"], track: "mic", start: 1)]
+    let session = try await rebuilderTranscriptionIncomplete(in: temp.url, saved: nil, journal: journal)
+    let outcome = try await SessionRecoveryCommand.run(
+        SessionRecoveryCommand.Request(session: session, transcribe: false, postProcess: false), diarizer: nil)
+    #expect(outcome.rebuild?.journalSegments == 1)
+    #expect(try rebuilderCurrent(session).segments.map(\.text) == ["one two"])
+    #expect(outcome.status == ArchiveStatus.recovered)
+}
+
+@Test func rebuildThatCannotBeRecordedKeepsTheTranscript() async throws {
+    let temp = try TemporaryDirectory("rebuild")
+    defer { temp.remove() }
+    let journal = [SessionFixtures.segment(["kept"], track: "mic", start: 1)]
+    let session = try await rebuilderSession(in: temp.url, events: try rebuilderFinals(journal))
+    // The manifest is replaced through a new file in the session folder; a read-only folder makes that fail, while
+    // transcripts/ and the existing journal stay writable.
+    // The lease is taken first: its lock file is new.
+    let lease = try SessionArchive.acquireProcessingLease(at: session)
+    #expect(chmod(session.path, 0o500) == 0)
+    let report: RebuildReport
+    do {
+        defer {
+            chmod(session.path, 0o700)
+            lease.release()
+        }
+        report = try await TranscriptRebuilder.rebuild(session: session, lease: lease, transcribe: false)
+    }
+    #expect(report.recordingError != nil)
+    #expect(try SessionArchive.currentTranscriptID(at: session) == report.transcriptID, "The transcript is current.")
+    #expect(try SessionArchive.readManifest(at: session).status == ArchiveStatus.interrupted)
+    #expect(try !SessionArchive.isActive(at: session), "The writer lock is let go.")
+    // Nothing recorded the rebuild, so the next one is done again.
+    let again = try await rebuilderRun(session)
+    #expect(!again.reused && again.recordingError == nil)
+    #expect(try SessionArchive.readManifest(at: session).status == ArchiveStatus.recovered)
 }
 
 @Test(.timeLimit(.minutes(1)))

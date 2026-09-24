@@ -243,6 +243,57 @@ private final class SharedURLs: Sendable {
     #expect(trashed.urls == [session, second])
 }
 
+@Test func moveToTrashWithoutManifestDeletesAFolderThatCannotTakeALease() async throws {
+    let root = try deletionRoot()
+    defer { try? FileManager.default.removeItem(at: root) }
+    // A crash between SessionArchive.create's mkdir and its manifest write: a <UUID>.holos with only audio/mic.
+    let id = UUID().uuidString
+    let session = root.appendingPathComponent("\(id).holos", isDirectory: true)
+    try FileManager.default.createDirectory(at: session.appendingPathComponent("audio/mic"),
+                                            withIntermediateDirectories: true)
+    #expect(isInvalidInput(#expect(throws: HolosError.self) {
+        try SessionArchive.acquireProcessingLease(at: session)
+    }), "The lease path refuses it.")
+    #expect(try SessionDeletion.lacksManifest(session: session))
+    let logs = root.appendingPathComponent("Logs", isDirectory: true)
+    try FileManager.default.createDirectory(at: logs, withIntermediateDirectories: true)
+    let log = logs.appendingPathComponent("recorder-\(id).log")
+    try Data("x".utf8).write(to: log)
+
+    let trashed = SharedURLs()
+    try SessionDeletion.moveToTrashWithoutManifest(session: session, logDirectory: logs) { trashed.append($0) }
+    #expect(trashed.urls == [session])
+    #expect(!exists(log))
+    #expect(try !SessionArchive.isProcessing(at: session), "Its locks are released.")
+    #expect(try !SessionArchive.isActive(at: session))
+}
+
+@Test func moveToTrashWithoutManifestRefusesASessionOrABusyFolder() async throws {
+    let root = try deletionRoot()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let logs = root.appendingPathComponent("Logs", isDirectory: true)
+    let trashed = SharedURLs()
+    // A session with a manifest goes through the lease path.
+    let session = try await deletionSession(in: root).session
+    #expect(try !SessionDeletion.lacksManifest(session: session))
+    #expect(isInvalidInput(#expect(throws: HolosError.self) {
+        try SessionDeletion.moveToTrashWithoutManifest(session: session, logDirectory: logs) { trashed.append($0) }
+    }))
+    // A recorder that holds the writer lock of a folder whose manifest is not written yet.
+    let recorder = try SessionArchive.create(root: root, name: "Live", source: .microphone, locale: "en-CA",
+                                             backend: .speech)
+    try FileManager.default.removeItem(at: SessionPaths.manifest(recorder.directory))
+    #expect(isUnavailable(#expect(throws: HolosError.self) {
+        try SessionDeletion.moveToTrashWithoutManifest(session: recorder.directory, logDirectory: logs) {
+            trashed.append($0)
+        }
+    }))
+    #expect(trashed.urls.isEmpty)
+    #expect(exists(recorder.directory))
+    #expect(try !SessionArchive.isProcessing(at: recorder.directory), "The lease it took is released.")
+    withExtendedLifetime(recorder) {}
+}
+
 @Test func moveToTrashKeepsTheFolderWhenTrashFails() async throws {
     let root = try deletionRoot()
     defer { try? FileManager.default.removeItem(at: root) }

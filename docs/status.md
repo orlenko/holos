@@ -100,13 +100,15 @@ Hardware-facing and cross-app acceptance remain pending.
   (a second `recover` changes nothing; `--force` rebuilds again); a failed or
   timed-out transcription publishes nothing and leaves the recovered archive, and
   `--no-transcribe` rebuilds from the saved phrases only. A session that was not
-  interrupted keeps its transcript. `recover` exits 3 when speaker labelling failed
+  interrupted keeps its transcript (one whose transcription did not finish keeps the
+  transcript saved at stop, and is rebuilt only when it has none). `recover` exits 3 when speaker labelling failed
   or was skipped for a reason other than missing speaker models, and 1 when recovery
   or the rebuild failed or some saved audio could not be recovered. `session list`
   (also used by `record status`) shows each session's state (`recording`,
   `processing`, `interrupted` for a dead recorder, the saved status, or `damaged`
   for an unreadable manifest), saved audio, size, and speaker-label state. `session delete --yes` moves a session to
-  the Trash and deletes its recorder log; `--audio-only` deletes the audio, renders,
+  the Trash and deletes its recorder log (a `damaged` folder too, even one left
+  without a manifest); `--audio-only` deletes the audio, renders,
   and any voice data for good and writes `audio-deleted.json`, keeping the
   transcript, speaker labels, and exports (the session still inspects clean, and
   labelling it again says the audio was deleted). Deletes never follow a symbolic

@@ -80,6 +80,7 @@ struct Session: AsyncParsableCommand {
             }
 
             var sessionID: String?
+            /// The manifest status once recover ended (for example "recovered").
             var status: String?
             var chunks: Int
             var savedSeconds: Double
@@ -103,7 +104,7 @@ struct Session: AsyncParsableCommand {
             if json {
                 let recovery = outcome.recovery
                 try Console.json(Result(
-                    sessionID: recovery.manifest?.id, status: recovery.manifest?.status,
+                    sessionID: recovery.manifest?.id, status: outcome.status ?? recovery.manifest?.status,
                     chunks: recovery.manifest?.chunks.count ?? 0, savedSeconds: recovery.manifest?.savedSeconds ?? 0,
                     unindexedChunks: recovery.unindexedChunks, unrecoveredChunks: recovery.unrecoveredChunks,
                     unreadableEventLines: recovery.unreadableEventLines,

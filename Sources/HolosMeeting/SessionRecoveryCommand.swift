@@ -36,7 +36,11 @@ public enum SessionRecoveryCommand {
     }
 
     public struct Outcome: Sendable {
+        /// Read before the rebuild, so its manifest has the status recovery left (for example `interrupted`); see
+        /// `status` for the status at the end.
         public var recovery: RecoveryReport
+        /// The manifest status once the whole chain ended (for example `recovered`); nil when it cannot be read.
+        public var status: String?
         /// Nil when the transcript did not need rebuilding.
         public var rebuild: RebuildReport?
         /// Nil when post-processing did not run.
@@ -46,16 +50,28 @@ public enum SessionRecoveryCommand {
         public var summary: String
         /// For stderr: audio that could not be recovered, skipped journal lines, speaker-labelling problems.
         public var warnings: [String]
-        /// 0 done; 3 done, but speaker labelling was partial or failed; 1 some saved audio could not be recovered.
+        /// 0 done; 3 done, but speaker labelling was partial or failed; 1 some saved audio could not be recovered, or
+        /// the rebuilt transcript is current but the rebuild could not be recorded.
         public var exitCode: Int32
     }
 
-    /// Manifest statuses whose transcript is rebuilt without `force`: an interrupted recording (and one recovered
-    /// before, which the rebuild's idempotence answers), and recordings whose transcription did not finish.
-    static let rebuiltStatuses: Set<String> = [
-        ArchiveStatus.interrupted, ArchiveStatus.recovered, ArchiveStatus.incomplete,
-        ArchiveStatus.transcriptionIncomplete,
+    /// Manifest statuses whose transcript is rebuilt without `force`: an interrupted recording, and one recovered
+    /// before (which the rebuild's idempotence answers).
+    static let rebuiltStatuses: Set<String> = [ArchiveStatus.interrupted, ArchiveStatus.recovered]
+    /// Manifest statuses whose transcript is rebuilt without `force` only when the recorder saved none: a recorder
+    /// that stopped with transcription unfinished saved a transcript that can hold more than the journal (text
+    /// transcribed from saved audio at stop, phrases whose journal write failed), so it is kept.
+    static let rebuiltWithoutTranscriptStatuses: Set<String> = [
+        ArchiveStatus.incomplete, ArchiveStatus.transcriptionIncomplete,
     ]
+
+    /// Whether recover rebuilds the transcript of a session with manifest `status` without `force`.
+    static func rebuilds(status: String, session: URL) -> Bool {
+        if rebuiltStatuses.contains(status) { return true }
+        guard rebuiltWithoutTranscriptStatuses.contains(status) else { return false }
+        // A pointer that cannot be read shows no transcript either; a rebuild adds a revision and deletes none.
+        return (try? SessionArchive.currentTranscriptID(at: session)) == nil
+    }
 
     /// Recovers the archive, rebuilds its transcript, then labels its speakers, all under one lease; `step` is called
     /// after each step while the lease is still held, `progress` with short messages (never transcript text).
@@ -81,7 +97,7 @@ public enum SessionRecoveryCommand {
         step(.recovered)
         // A maintenance command marks a dead recorder's status exited (§4.1), with the recovered archive status.
         do { try RecorderChannel.markDeadRecorderExited(session: session) } catch {
-            log.error("Session \(TranscriptRebuilder.manifestID(session), privacy: .public): cannot check the recorder status during recovery: \(error.localizedDescription, privacy: .private)")
+            log.error("Session \(recovery.manifest?.id ?? "unknown", privacy: .public): cannot check the recorder status during recovery: \(error.localizedDescription, privacy: .private)")
         }
         var warnings: [String] = []
         for path in recovery.unindexedChunks { warnings.append("Unindexed audio: \(path)") }
@@ -95,7 +111,7 @@ public enum SessionRecoveryCommand {
             + "(\(clock(recovery.manifest?.savedSeconds ?? 0)))."]
         var rebuild: RebuildReport?
         var record: PostProcessingRecord?
-        if request.force || rebuiltStatuses.contains(status) {
+        if request.force || rebuilds(status: status, session: session) {
             progress("Rebuilding the transcript…")
             do {
                 rebuild = try await TranscriptRebuilder.rebuild(
@@ -110,15 +126,25 @@ public enum SessionRecoveryCommand {
                     + "could not be rebuilt: \(error.localizedDescription)")
             }
             step(.rebuilt)
+        } else if rebuiltWithoutTranscriptStatuses.contains(status) {
+            parts.append("Nothing to rebuild: the meeting is \(status) and keeps the transcript saved when it "
+                + "stopped. Use --force to rebuild its transcript from the saved phrases anyway.")
         } else {
             parts.append("Nothing to rebuild: the meeting is \(status.isEmpty ? "unknown" : status). "
                 + "Use --force to rebuild its transcript anyway.")
         }
         if let rebuild {
             parts.append(rebuildSentence(rebuild))
+            if let problem = rebuild.recordingError {
+                warnings.append("The transcript was rebuilt, but recording the rebuild failed: \(problem) "
+                    + "Run holos session recover again once this is fixed.")
+            }
             if request.postProcess {
-                if rebuild.reused, labelsAreCurrent(session, transcriptID: rebuild.transcriptID) {
-                    parts.append("Speaker labels are up to date.")
+                if rebuild.reused, let current = currentLabels(session, transcriptID: rebuild.transcriptID,
+                                                               canLabel: diarizer != nil) {
+                    // A success without labels repeats why (the setup hint) instead of calling them up to date.
+                    parts.append(current.runID == nil ? (current.message ?? "No speaker labels.")
+                        : "Speaker labels are up to date.")
                 } else {
                     do {
                         let processor = MeetingPostProcessor(diarizer: diarizer, options: PostProcessingOptions(),
@@ -142,7 +168,9 @@ public enum SessionRecoveryCommand {
             warnings.append("Some saved audio still needs attention; see holos session inspect.")
             exitCode = 1
         }
-        return Outcome(recovery: recovery, rebuild: rebuild, postProcessing: record,
+        if rebuild?.recordingError != nil { exitCode = 1 }
+        let finalStatus = (try? SessionArchive.readManifest(at: session))?.status
+        return Outcome(recovery: recovery, status: finalStatus, rebuild: rebuild, postProcessing: record,
                        summary: parts.joined(separator: " "), warnings: warnings, exitCode: exitCode)
     }
 
@@ -182,12 +210,15 @@ public enum SessionRecoveryCommand {
         return record.state == .partial || record.state == .failed ? nil : record.message
     }
 
-    /// Whether the last post-processing labelled `transcriptID` and succeeded, so a rebuild that changed nothing does
-    /// not diarize the meeting again. Anything else (no record, a run that was interrupted or failed, no labels yet)
-    /// runs post-processing again.
-    private static func labelsAreCurrent(_ session: URL, transcriptID: String) -> Bool {
+    /// The last post-processing record when it succeeded for `transcriptID`, so a rebuild that changed nothing does
+    /// not diarize the meeting again (and recover run twice changes nothing). A success without labels (speaker
+    /// models were not installed) counts only while nothing can label (`canLabel` false). Anything else (no record,
+    /// a run that was interrupted or failed, labels possible now) gives nil: post-processing runs again.
+    private static func currentLabels(_ session: URL, transcriptID: String, canLabel: Bool) -> PostProcessingRecord? {
         guard let record = try? AtomicFile.readJSON(PostProcessingRecord.self, from: SessionPaths.postprocess(session),
-                                                    maxBytes: 1 << 20) else { return false }
-        return record.state == .succeeded && record.transcriptID == transcriptID && record.runID != nil
+                                                    maxBytes: 1 << 20),
+              record.state == .succeeded, record.transcriptID == transcriptID,
+              record.runID != nil || !canLabel else { return nil }
+        return record
     }
 }

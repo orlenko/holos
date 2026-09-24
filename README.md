@@ -142,7 +142,7 @@ when the recorder stopped unexpectedly, `damaged` when its manifest cannot be
 read), saved audio, size on disk, and speaker labels; `--interrupted` lists only
 the sessions to recover, `--json` prints everything. `holos record status` uses the
 same states. `holos session delete <session> --yes` moves a session to the Trash
-and deletes its recorder log; with `--audio-only` it deletes only the audio (for
+(a damaged one too) and deletes its recorder log; with `--audio-only` it deletes only the audio (for
 good), keeping the transcript, speaker labels, and exports. Both refuse while the
 session is recording or another Holos command is working on it.
 
@@ -167,8 +167,9 @@ start in between. It prints what it did, for example `Recovered 212 chunks
 (1:46:10). Transcript rebuilt from 1812 saved phrases; transcribed 0:31 of uncovered
 audio. Speaker labels: 9 speakers.` `--no-transcribe` keeps only the saved phrases,
 `--no-postprocess` skips speaker labels, and `--force` rebuilds a transcript that
-was already rebuilt or a session that was not interrupted. Running it again changes
-nothing. It exits 0 when done, 3 when speaker labelling failed or was skipped for a
+was already rebuilt or a session that was not interrupted (a session whose
+transcription did not finish otherwise keeps the transcript saved when it stopped).
+Running it again changes nothing. It exits 0 when done, 3 when speaker labelling failed or was skipped for a
 reason other than missing speaker models, and 1 when recovery or the rebuild failed
 or some saved audio could not be recovered. It refuses while another Holos process
 is working on the same session. A damaged line in a session's event journal is

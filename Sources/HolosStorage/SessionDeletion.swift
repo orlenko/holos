@@ -105,7 +105,63 @@ public enum SessionDeletion {
         if let sessionID { removeRecorderLog(sessionID: sessionID, in: logDirectory) }
     }
 
+    /// Whether `session` is a folder with no `manifest.json` file, which cannot take a processing lease: a crash
+    /// between `SessionArchive.create`'s mkdir and its manifest write leaves one. The catalog lists it as damaged;
+    /// `moveToTrashWithoutManifest` deletes it.
+    public static func lacksManifest(session: URL) throws -> Bool {
+        let folder = try SessionLockFile.openSessionFolder(session)
+        defer { Darwin.close(folder) }
+        return try !hasManifest(inFolder: folder)
+    }
+
+    /// Delete Meeting for a `.holos` folder with no `manifest.json` file (`lacksManifest`), which
+    /// `acquireProcessingLease` refuses. Takes `.processing.lock` and then `.writer.lock` itself (each retried for up
+    /// to 1 s, the order maintenance uses), so no Holos command or recorder works in the folder meanwhile; checks
+    /// again that it has no manifest, removes `speakers/voice/`, hands the folder to `trash`, and deletes the
+    /// recorder log of the `<UUID>` the folder is named after.
+    ///
+    /// Throws `HolosError.invalidInput` for a folder not named `<something>.holos` or one that has a manifest (delete
+    /// it with `moveToTrash(session:lease:)`), and `HolosError.unavailable` when either lock stays held.
+    public static func moveToTrashWithoutManifest(session: URL,
+                                                  logDirectory: URL = SessionDeletion.defaultLogDirectory,
+                                                  trash: (URL) throws -> Void = SessionDeletion.systemTrash) throws {
+        guard session.standardizedFileURL.pathExtension == "holos" else {
+            throw HolosError.invalidInput("\(session.lastPathComponent) is not a .holos folder.")
+        }
+        let folder = try SessionLockFile.openSessionFolder(session)
+        defer { Darwin.close(folder) }
+        guard let processing = try SessionLockFile.acquire(SessionLockFile.processing, inFolder: folder,
+                                                           timeout: .seconds(1)) else {
+            throw HolosError.unavailable("Another Holos process is processing this session.")
+        }
+        defer { SessionLockFile.unlockAndClose(processing) }
+        guard let writer = try SessionLockFile.acquire(SessionLockFile.writer, inFolder: folder,
+                                                       timeout: .seconds(1)) else {
+            throw HolosError.unavailable("This meeting is still recording. Stop it before deleting it.")
+        }
+        defer { SessionLockFile.unlockAndClose(writer) }
+        guard try !hasManifest(inFolder: folder) else {
+            throw HolosError.invalidInput("\(session.lastPathComponent) has a manifest; delete it as a session.")
+        }
+        let sessionID = self.sessionID(of: session)
+        try SessionSpeakerStore.deleteVoiceData(session: session)
+        try trash(session)
+        log.notice("Session \(sessionID ?? "unknown", privacy: .public): folder without a manifest moved to the Trash")
+        if let sessionID { removeRecorderLog(sessionID: sessionID, in: logDirectory) }
+    }
+
     // MARK: - Private
+
+    /// Whether the open session folder holds a regular `manifest.json` (what `acquireProcessingLease` requires).
+    private static func hasManifest(inFolder folder: Int32) throws -> Bool {
+        var info = stat()
+        guard fstatat(folder, "manifest.json", &info, AT_SYMLINK_NOFOLLOW) == 0 else {
+            let code = errno
+            if code == ENOENT { return false }
+            throw HolosError.io("Cannot inspect manifest.json: \(AtomicFile.errnoText(code)).")
+        }
+        return (info.st_mode & S_IFMT) == S_IFREG
+    }
 
     private static func requireNoWriter(_ session: URL, action: String) throws {
         guard try !SessionArchive.isActive(at: session) else {

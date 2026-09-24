@@ -44,6 +44,13 @@ extension Session {
                 throw HolosError.invalidInput("The session's manifest cannot be read, so its audio cannot be deleted "
                     + "on its own. Delete the whole session instead (without --audio-only).")
             }
+            if manifest == nil, try SessionDeletion.lacksManifest(session: session) {
+                // A folder left without a manifest cannot take a processing lease; it is locked and trashed as is.
+                try SessionDeletion.moveToTrashWithoutManifest(session: session)
+                try report(sessionID: session.deletingPathExtension().lastPathComponent, name: name, manifest: nil,
+                           session: session)
+                return
+            }
             let lease = try SessionArchive.acquireProcessingLease(at: session)
             defer { lease.release() }
             let sessionID = manifest?.id ?? session.deletingPathExtension().lastPathComponent
@@ -62,12 +69,17 @@ extension Session {
                 }
             } else {
                 try SessionDeletion.moveToTrash(session: session, lease: lease)
-                if json {
-                    try Console.json(Result(sessionID: sessionID, name: manifest?.name ?? "", deleted: "meeting",
-                                            path: session.path))
-                } else {
-                    Console.output("Moved \(name) to the Trash.")
-                }
+                try report(sessionID: sessionID, name: name, manifest: manifest, session: session)
+            }
+        }
+
+        /// Prints that the meeting was moved to the Trash.
+        private func report(sessionID: String, name: String, manifest: SessionManifest?, session: URL) throws {
+            if json {
+                try Console.json(Result(sessionID: sessionID, name: manifest?.name ?? "", deleted: "meeting",
+                                        path: session.path))
+            } else {
+                Console.output("Moved \(name) to the Trash.")
             }
         }
     }

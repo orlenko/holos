@@ -13,11 +13,15 @@ public struct RebuildReport: Sendable, Equatable {
     public var replayedSeconds: [String: Double]
     /// True when an earlier rebuild was reused (idempotent path).
     public var reused: Bool
+    /// Set when the rebuilt transcript was saved and made current, but marking the manifest `recovered` or
+    /// journaling `transcriptRebuilt` then failed (for example, the disk is full). The transcript stands; the next
+    /// recover rebuilds it again, because no event records this rebuild.
+    public var recordingError: String?
 
     public init(transcriptID: String, journalSegments: Int, coverageEnd: [String: Double],
-                replayedSeconds: [String: Double], reused: Bool) {
+                replayedSeconds: [String: Double], reused: Bool, recordingError: String? = nil) {
         self.transcriptID = transcriptID; self.journalSegments = journalSegments; self.coverageEnd = coverageEnd
-        self.replayedSeconds = replayedSeconds; self.reused = reused
+        self.replayedSeconds = replayedSeconds; self.reused = reused; self.recordingError = recordingError
     }
 }
 
@@ -49,7 +53,9 @@ public enum TranscriptRebuilder {
     ///   `HolosError.incomplete`; a cancelled one throws `CancellationError`.
     /// - The new revision becomes current (`saveTranscript(_:writeLegacyExports: false)`), the manifest status becomes
     ///   `recovered`, and `transcriptRebuilt {transcriptID, journalSegments, replayedSeconds}` is journaled (with
-    ///   `transcribed`, and `coverageEnd.<track>` and `replayedSeconds.<track>` for each track).
+    ///   `transcribed`, and `coverageEnd.<track>` and `replayedSeconds.<track>` for each track). Once the new revision
+    ///   is current, a failure to set the status or journal the event does not throw: it is returned as
+    ///   `recordingError`.
     /// - `progress` reports 0...1 over the audio to replay.
     public static func rebuild(session: URL, lease: ProcessingLease, force: Bool = false, transcribe: Bool = true,
                                vocabulary: [String]? = nil, makeSpeech: LiveSpeechFactory? = nil,
@@ -68,7 +74,7 @@ public enum TranscriptRebuilder {
             throw HolosError.unavailable("This meeting is still recording. Stop it before rebuilding its transcript.")
         }
         do { try RecorderChannel.markDeadRecorderExited(session: session) } catch {
-            log.error("Session \(manifestID(session), privacy: .public): cannot check the recorder status before a rebuild: \(error.localizedDescription, privacy: .private)")
+            log.error("Session \(logID(session), privacy: .public): cannot check the recorder status before a rebuild: \(error.localizedDescription, privacy: .private)")
         }
         let manifest = try SessionArchive.readManifest(at: session)
         guard manifest.status != ArchiveStatus.recording, manifest.status != ArchiveStatus.processing else {
@@ -156,13 +162,21 @@ public enum TranscriptRebuilder {
         // The only moment the writer lock is held: the save.
         let archive = try SessionArchive.openForMaintenance(at: session, lease: lease)
         try await archive.saveTranscript(transcript, writeLegacyExports: false)
+        // The rebuilt transcript is current from here on, so a later failure is reported with it, not thrown.
         // Status before the event: a rebuild whose event is missing is simply done again next time.
-        try await archive.setStatus(ArchiveStatus.recovered)
-        try await archive.recordEvent(kind: MeetingEventKind.transcriptRebuilt, details: details)
-        try await archive.finish(status: ArchiveStatus.recovered)
+        var recordingError: String?
+        do {
+            try await archive.setStatus(ArchiveStatus.recovered)
+            try await archive.recordEvent(kind: MeetingEventKind.transcriptRebuilt, details: details)
+            try await archive.finish(status: ArchiveStatus.recovered)
+        } catch {
+            // An unfinished archive lets go of the writer lock when it is released, as this function returns.
+            recordingError = error.localizedDescription
+            log.error("Session \(manifest.id, privacy: .public): transcript rebuilt, but recording the rebuild failed: \(error.localizedDescription, privacy: .private)")
+        }
         log.notice("Session \(manifest.id, privacy: .public): transcript rebuilt from \(journal.count, privacy: .public) journal segments, \(total, privacy: .public) s replayed")
         return RebuildReport(transcriptID: transcript.id, journalSegments: journal.count, coverageEnd: coverage,
-                             replayedSeconds: replayedSeconds, reused: false)
+                             replayedSeconds: replayedSeconds, reused: false, recordingError: recordingError)
     }
 
     // MARK: - Idempotence
@@ -197,9 +211,10 @@ public enum TranscriptRebuilder {
         var seconds: Double
     }
 
-    /// The session ID for log lines: the folder's `<UUID>` (IDs are public in logs, paths are not).
-    static func manifestID(_ session: URL) -> String {
-        session.standardizedFileURL.deletingPathExtension().lastPathComponent
+    /// The session ID for log lines: the manifest's ID, or "unknown" when the manifest cannot be read. IDs are
+    /// public in logs; folder names are user paths (a folder may have been renamed), so they are never used here.
+    static func logID(_ session: URL) -> String {
+        (try? SessionArchive.readManifest(at: session))?.id ?? "unknown"
     }
 
     /// The tracks a session of `source` records.
