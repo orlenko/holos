@@ -227,6 +227,18 @@ private func isFailed(_ state: MeetingState) -> String? {
     #expect(effects == [.setDictationPaused(false)])
 }
 
+@Test func deadRecorderMarkedExitedByMaintenanceIsNotASave() {
+    // `holos session recover` marks a dead recorder's status exited (reason interrupted) before the menu noticed.
+    var reducer = activeReducer()
+    let exit = RecorderExit(archiveStatus: ArchiveStatus.recording, reason: .interrupted,
+                            message: "The recorder stopped unexpectedly.")
+    let effects = reducer.reduce(read(.exited, after: 30, exit: exit, liveness: .maintenance))
+    #expect(isFailed(reducer.state)?.contains("Recover") == true)
+    #expect(!effects.contains { if case .finished = $0 { true } else { false } })
+    // Once failed, the same status changes nothing.
+    #expect(reducer.reduce(read(.exited, after: 31, exit: exit, liveness: .exited)).isEmpty)
+}
+
 @Test func childExitWhileRecordingFails() {
     var reducer = activeReducer()
     _ = reducer.reduce(.childExited(code: 137, logTail: nil, at: reducerStart.addingTimeInterval(20)))

@@ -246,6 +246,14 @@ public struct MeetingReducer: Sendable, Equatable {
 
     private mutating func exited(_ status: RecorderStatus) -> [MeetingEffect] {
         let sessionID = status.sessionID
+        if status.exit?.reason == .interrupted {
+            // Not the recorder's own exit: a maintenance command marked a recorder that died (§4.1).
+            switch state {
+            case .starting, .active: return fail(sessionID, Self.stoppedUnexpectedly)
+            case .finishing(_, let last): return labellingStopped(sessionID, lastPhase: last?.phase)
+            case .idle, .failed: return []
+            }
+        }
         if savedNothing(status) {
             switch state {
             case .starting, .active, .finishing:

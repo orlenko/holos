@@ -151,6 +151,8 @@ final class MeetingsWindow: NSObject, NSWindowDelegate, NSTableViewDataSource, N
     /// The commands the app is running for meetings in this window.
     func update(running: [String: String]) {
         self.running = running
+        // The State column shows what a running command is doing; reloading keeps the selection.
+        table.reloadData()
         updateButtons()
     }
 
@@ -170,13 +172,19 @@ final class MeetingsWindow: NSObject, NSWindowDelegate, NSTableViewDataSource, N
     }
 
     private func show(_ listed: [SessionSummary], freeBytes: Int64?) {
-        let selected = pendingSelection ?? selectedSession?.id
+        let requested = pendingSelection
+        let selected = requested ?? selectedSession?.id
         pendingSelection = nil
         sessions = listed
         table.reloadData()
+        // Rows move when meetings are added or removed: keep the same meeting selected, not the same row.
         if let selected, let index = sessions.firstIndex(where: { $0.id == selected }) {
-            table.selectRowIndexes(IndexSet(integer: index), byExtendingSelection: false)
-            table.scrollRowToVisible(index)
+            if table.selectedRow != index {
+                table.selectRowIndexes(IndexSet(integer: index), byExtendingSelection: false)
+            }
+            if requested != nil { table.scrollRowToVisible(index) }
+        } else {
+            table.deselectAll(nil)
         }
         let used = sessions.reduce(Int64(0)) { $0 + $1.bytes }
         footer.stringValue = "Meetings use \(MeetingFormat.gigabytes(used))"
