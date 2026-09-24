@@ -306,6 +306,7 @@ public enum AtomicFile {
     /// Appends with O_APPEND|O_NOFOLLOW|O_CLOEXEC. Records the size first; on any failure (short write,
     /// ENOSPC, fsync error) truncates back to that size before throwing, so a failed append never
     /// leaves a partial line. Creates the file (0600) if missing. `sync: false` skips the fsync.
+    /// An append that creates the file always fsyncs the folder; if it fails, it removes the file it created.
     public static func append(_ data: Data, to url: URL, permissions: mode_t = 0o600, sync: Bool = true) throws
     /// Creates `url` and missing parents as 0700 directories; refuses symlinks and non-directories.
     public static func ensurePrivateDirectory(_ url: URL) throws
@@ -315,6 +316,19 @@ public enum AtomicFile {
     public static func readJSON<T: Decodable>(_ type: T.Type, from url: URL, maxBytes: Int = 64 << 20) throws -> T
 }
 ```
+
+No session-local file operation follows a symbolic link in place of a folder Holos owns. One
+helper, `AtomicFile.openFolder` (`Sources/HolosStorage/FolderChain.swift`), opens every folder
+from the session folder down relative to the one above it (`openat` with `O_NOFOLLOW`), and
+`write`, `create`, `append`, reads (`readJSON`), listings, `removeTree`, the lock files
+(`openat` on the session folder's descriptor), and `ensurePrivateDirectory` (each missing
+folder made with `mkdirat`, `fchmod` on its descriptor, parent fsync'd) all start from it; a
+link there, even one swapped in during the call, is refused with `invalidInput`. Nothing inside a
+session is then touched by path: the speakers/voice backup exclusion is `fsetxattr` on the chain's
+descriptor, `ProcessingLease` compares the device and inode (`fstat`) of the folder the chain opens,
+and recovery reads a chunk's format and hash from one descriptor opened through the chain
+(`ChunkFile`, `AudioFileOpenWithCallbacks`), refusing it when the path no longer leads to that file. A `create` whose folder fsync fails removes the new
+file, so a retry is not refused as "already exists".
 
 Locks are `flock` on files in the session folder, one open file description per holder.
 
@@ -350,6 +364,9 @@ Rules:
 /// Exclusive, long-lived claim on post-stop work for one session. Released by `release()` or deinit.
 public final class ProcessingLease: Sendable {
     public let session: URL
+    /// No operation can start under the lease afterwards. The lock is let go at once, or, while
+    /// `openForMaintenance(at:lease:)` or `recover(at:lease:)` is running under it, when that call ends
+    /// (release and every use are serialized on one mutex).
     public func release()
 }
 extension SessionArchive {
@@ -435,6 +452,7 @@ extension SessionArchive {
   audio-deleted.json                       PR3                          written by Delete Audio; chunks are intentionally absent
   transcripts/<TRANSCRIPT-UUID>.json       SessionArchive               immutable revisions
   transcripts/current.json                 PR6 (saveTranscript)         TranscriptPointer: which revision is current
+  transcripts/current.pending              PR6 (saveTranscript)         TranscriptPointer: the revision a save is publishing; removed when done
   speakers/runs/<RUN-UUID>.json            PR6 API, PR7b writes         immutable DiarizationRun; no voice embeddings
   speakers/head.json                       PR6 API                      SpeakerHead: current run
   speakers/edits.jsonl                     PR6 API, PR8 writes          SpeakerEdit journal; torn tail tolerated
@@ -553,7 +571,9 @@ diarization times (after the render time map, §4.7), markers, and gaps. An expo
 - The current transcript is named by `transcripts/current.json`
   (`TranscriptPointer {schemaVersion, transcriptID, updatedAt}`, PR6), which
   `SessionArchive.saveTranscript` rewrites atomically after writing each revision.
-  `SessionArchive.currentTranscriptID(at:)` reads it. Archives from before PR6 have at
+  `SessionArchive.currentTranscriptID(at:)` reads it. Saving an existing revision again is
+  refused unless `transcripts/current.pending` names it (a save that failed after creating
+  it); a later save replaces that marker, so an older revision is never republished. Archives from before PR6 have at
   most one transcript (`holos session retranscribe` writes outside the archive); if a
   legacy archive has several and no pointer, the newest `createdAt` wins and a warning
   is logged.
@@ -3558,6 +3578,12 @@ Nothing expired meetings before; a 3 h call is about 2 GB even with mono system 
   `{schemaVersion, deletedAt, chunkCount, seconds}`. Transcript, runs, edits, and exports
   stay. `SessionDeletion.moveToTrash(session:lease:)` moves the folder to the Trash
   (`FileManager.trashItem`) and deletes `~/Library/Logs/Holos/recorder-<id>.log`.
+  Every delete inside a session folder (these, PR7b's `derived/`, `current.pending`,
+  `deleteVoiceData`) goes through `AtomicFile.removeTree(_:in:)` (PR6), never
+  `FileManager.removeItem`: it opens each folder on the way with `O_NOFOLLOW`, so a
+  symbolic link in place of `speakers/`, `audio/`, `derived/`, or `exports/` is refused
+  instead of leading the delete outside the session, and links inside the tree are removed,
+  not followed.
 - **CLI (PR3).** `holos session delete <path> [--audio-only] --yes`.
 - **Catalog (PR3).** `SessionSummary` reports `bytes`, `derivedBytes`, `audioDeleted`.
 - **UI (PR4).** Meetings window buttons "Delete Audio (Keep Transcript)…" and "Delete
