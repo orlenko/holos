@@ -30,9 +30,10 @@ public enum SessionExports {
 
     /// Takes the speaker lock, loads the snapshot, writes exports/transcript.{md,json,txt}, releases the lock.
     @discardableResult
-    public static func regenerate(session: URL, profileNames: [String: String] = [:]) throws -> ExportWriteResult {
+    public static func regenerate(session: URL, profileNames: [String: String] = [:],
+                                  applyRecognition: Bool = true) throws -> ExportWriteResult {
         try SessionArchive.withSpeakerLock(at: session) {
-            try regenerateLocked(session: session, profileNames: profileNames)
+            try regenerateLocked(session: session, profileNames: profileNames, applyRecognition: applyRecognition)
         }
     }
 
@@ -48,8 +49,10 @@ public enum SessionExports {
     /// is moved aside. A `.generated.json` from a newer Holos is refused (`unavailable`); a damaged one records
     /// nothing, so every existing file that differs is moved aside.
     @discardableResult
-    public static func regenerateLocked(session: URL, profileNames: [String: String] = [:]) throws -> ExportWriteResult {
-        let snapshot = try SpeakerSessionSnapshot.load(session: session, profileNames: profileNames)
+    public static func regenerateLocked(session: URL, profileNames: [String: String] = [:],
+                                        applyRecognition: Bool = true) throws -> ExportWriteResult {
+        let snapshot = try SpeakerSessionSnapshot.load(session: session, profileNames: profileNames,
+                                                       applyRecognition: applyRecognition)
         let rendered = try renderAll(exportDocument(snapshot))
         let result = try write(rendered, session: session, snapshot: snapshot)
         log.info("Session \(snapshot.manifest.id, privacy: .public): wrote \(result.written.count, privacy: .public) exports; moved \(result.movedAside.count, privacy: .public) edited exports aside")
@@ -57,9 +60,10 @@ public enum SessionExports {
     }
 
     /// One format, not written anywhere.
-    public static func render(_ format: ExportFormat, session: URL,
-                              profileNames: [String: String] = [:]) throws -> Data {
-        let snapshot = try SpeakerSessionSnapshot.load(session: session, profileNames: profileNames)
+    public static func render(_ format: ExportFormat, session: URL, profileNames: [String: String] = [:],
+                              applyRecognition: Bool = true) throws -> Data {
+        let snapshot = try SpeakerSessionSnapshot.load(session: session, profileNames: profileNames,
+                                                       applyRecognition: applyRecognition)
         return try TranscriptExporter.render(exportDocument(snapshot), format: format)
     }
 

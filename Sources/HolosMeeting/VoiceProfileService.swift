@@ -93,7 +93,7 @@ public enum VoiceProfileService {
                                 store: SpeakerProfileStore) async throws -> SpeakerSessionSnapshot {
         let (profile, created) = try store.update { database -> (SpeakerProfile, Bool) in
             if let me = database.profiles.first(where: \.isSelf) { return (me, false) }
-            let me = SpeakerProfile(displayName: selfName, isSelf: true)
+            let me = SpeakerProfile(displayName: selfName, isSelf: true, provisional: true)
             database.profiles.append(me)
             return (me, true)
         }
@@ -200,6 +200,10 @@ public enum VoiceProfileService {
     /// The work across the meetings is journalled first (a `.merge` record in the forget journal, which carries the
     /// two IDs the store no longer holds together), so a crash or a meeting that cannot be written now is finished by
     /// `resumePendingForgets`; this throws `incomplete` when some meeting is left, and the merge itself stands.
+    /// A `stored` line is appended only once the store write has committed, and nothing is retargeted without it:
+    /// the record is written before that write, so a merge refused there (two people whose samples come from
+    /// different speaker models) or lost to a crash must not have the meetings pointed anywhere. A resume that
+    /// finds no `stored` line therefore drops the record, and those meetings keep naming whoever they named.
     public static func merge(profileID: String, into target: String, store: SpeakerProfileStore,
                              sessionsRoot: URL = HolosPaths.sessions) throws {
         guard profileID != target else { throw HolosError.invalidInput("Choose two different people to merge.") }
@@ -229,6 +233,7 @@ public enum VoiceProfileService {
             database.profiles[intoIndex] = into
             database.profiles.remove(at: fromIndex)
         }
+        try store.appendForgetRecord(.stored(record.id))
         log.notice("Merged two people")
         try retargetMeetings(record, store: store, sessionsRoot: sessionsRoot)
     }
@@ -240,6 +245,13 @@ public enum VoiceProfileService {
     private static func retargetMeetings(_ record: ForgetRecord, store: SpeakerProfileStore,
                                          sessionsRoot: URL) throws {
         guard let from = record.profileID, let to = record.targetProfileID else { return }
+        guard try store.storedForget(record.id) != nil else {
+            // The store write never committed (refused, or lost to a crash), so these two are still two people and
+            // nothing may be pointed from one to the other.
+            log.notice("Dropped a merge whose store write never happened")
+            try store.appendForgetRecord(.done(record.id))
+            return
+        }
         var failed = 0
         for session in try sessionFolders(sessionsRoot) {
             do {
@@ -257,28 +269,33 @@ public enum VoiceProfileService {
         try store.appendForgetRecord(.done(record.id))
     }
 
-    /// One meeting's recognition results, retargeted under its speaker lock; its generated exports are rewritten
-    /// when something changed. A meeting whose manifest or recognition results cannot be read is left alone: a
-    /// merge is not a forget, so nothing here may delete what it cannot interpret.
+    /// One meeting's recognition results, retargeted under its speaker lock, and then its generated exports.
+    ///
+    /// A merge is not a forget, so nothing here deletes what it cannot interpret: a recognition result that cannot
+    /// be read (damaged, or written by a newer Holos) is thrown, which keeps the merge record pending instead of
+    /// leaving that result naming a person who no longer exists. The Holos that can read it finishes the record.
+    /// A meeting with no manifest is not a meeting and is skipped.
+    ///
+    /// The exports are rewritten for every meeting that has recognition results and generated exports, not only
+    /// for the ones this run changed: a retry finds them already retargeted, and `changed` would then say the
+    /// rewrite is not owed although it never happened. `SessionExports.regenerate` writes only the files that
+    /// differ from what it renders, so repeating it costs a render and no writes.
     private static func retarget(_ map: [String: String], session: URL, store: SpeakerProfileStore) throws {
         guard (try? SessionArchive.readManifest(at: session)) != nil else { return }
-        let changed = try SessionArchive.withSpeakerLock(at: session) { () throws -> Bool in
+        let hadRecognition = try SessionArchive.withSpeakerLock(at: session) { () throws -> Bool in
             let files = try SessionSpeakerStore.recognitionFiles(session: session)
-            var changed = false
             for runID in files.runIDs {
-                guard var result = try? SessionSpeakerStore.readRecognition(runID: runID, session: session) else {
-                    continue
-                }
-                guard result.retargetProfiles(map) else { continue }
+                guard var result = try SessionSpeakerStore.readRecognition(runID: runID, session: session),
+                      result.retargetProfiles(map) else { continue }
                 try SessionSpeakerStore.writeRecognition(result, session: session)
-                changed = true
             }
-            return changed
+            return !files.runIDs.isEmpty
         }
         var generated = stat()
-        guard changed, lstat(SessionPaths.generatedExports(session).path, &generated) == 0,
+        guard hadRecognition, lstat(SessionPaths.generatedExports(session).path, &generated) == 0,
               (generated.st_mode & S_IFMT) == S_IFREG else { return }
-        try SessionExports.regenerate(session: session, profileNames: profileNames(store: store))
+        try SessionExports.regenerate(session: session, profileNames: profileNames(store: store),
+                                      applyRecognition: recognitionAllowed(store: store))
     }
 
     /// `holos people calibrate --apply`: computes the thresholds inside the store's locked update, from the samples
@@ -421,6 +438,20 @@ public enum VoiceProfileService {
         }
     }
 
+    /// Whether a meeting's stored recognition result may be applied: "Remember voices" is on. Off means kept
+    /// samples are not used, which is what the People window promises when the setting is turned off without
+    /// forgetting them, so no suggestion or automatic name is shown or exported until it is turned back on
+    /// (nothing is deleted). False when the store cannot be read, like the empty `profileNames` there: with the
+    /// people unreadable, a name recognition chose earlier is not shown either.
+    public static func recognitionAllowed(store: SpeakerProfileStore = SpeakerProfileStore()) -> Bool {
+        do {
+            return try store.load().rememberVoices
+        } catch {
+            log.error("Cannot read whether voices are remembered: \(ProcessSpawner.logCategory(error), privacy: .public)")
+            return false
+        }
+    }
+
     /// Most recently used first; for the review window's name combo box. Empty (and logged) when the store cannot
     /// be read.
     public static func knownPeople(store: SpeakerProfileStore = SpeakerProfileStore()) -> [SpeakerProfile] {
@@ -486,7 +517,7 @@ public enum VoiceProfileService {
             guard let clean = SpeakerEditor.cleanName(name) else {
                 throw HolosError.invalidInput("A new person needs a name.")
             }
-            let profile = SpeakerProfile(displayName: clean)
+            let profile = SpeakerProfile(displayName: clean, provisional: true)
             try store.update { $0.profiles.append(profile) }
             return (profile, true)
         }
@@ -507,14 +538,16 @@ public enum VoiceProfileService {
             [.linkProfile(speakerID: link.speakerID, profileID: link.profile.id),
              .rename(speakerID: link.speakerID, name: link.profile.displayName)]
         }
-        let linked = Set(links.map(\.profile.id))
+        let linked = Dictionary(links.map { ($0.profile.id, $0.profile.displayName) },
+                                uniquingKeysWith: { first, _ in first })
         var snapshot: SpeakerSessionSnapshot
         var needsRefresh = false
         do {
             if SpeakerEditor.changesNothing(actions, on: view) {
                 snapshot = try SessionArchive.withSpeakerLock(at: session) { () throws -> SpeakerSessionSnapshot in
-                    let current = try SpeakerSessionSnapshot.load(session: session,
-                                                                  profileNames: profileNames(store: store))
+                    let current = try SpeakerSessionSnapshot.load(
+                        session: session, profileNames: profileNames(store: store),
+                        applyRecognition: recognitionAllowed(store: store))
                     guard let projection = current.projection, projection.runID == view.runID,
                           SpeakerEditor.changesNothing(actions, on: projection) else {
                         throw HolosError.unavailable(SpeakerEditor.changedMessage)
@@ -553,19 +586,19 @@ public enum VoiceProfileService {
 
     /// Takes back the people this call created, after the link they were created for was refused.
     ///
-    /// A person is removed only while nobody has taken them up: no samples, and never marked used. Marking used is
-    /// the first thing a saved link does, under `profiles.lock`, before its lines are appended
-    /// (`SpeakerEditor.claimPeople`), so a person another window has linked in another meeting between this call
-    /// creating them and its own link being refused is kept here: removing them would leave that meeting pointing at
-    /// nobody. A refusal after the claim (the lines could not be appended) leaves the person in the list, where the
-    /// user can forget them; that is the harmless direction.
+    /// A person is removed only while nobody has taken them up: no samples, and still `provisional`, the state a
+    /// person is created with here and that the locked step of a saved link clears (`SpeakerEditor.claimPeople`)
+    /// before its lines are appended. So a person another window has linked in another meeting between this call
+    /// creating them and its own link being refused is kept: removing them would leave that meeting pointing at
+    /// nobody. An explicit state is what makes that sound; `lastUsedAt` cannot, since `HolosJSON` stores dates to
+    /// the second and both windows can be inside one. A refusal after the claim (the lines could not be appended)
+    /// leaves the person in the list, where the user can forget them; that is the harmless direction.
     static func rollBack(_ created: Set<String>, store: SpeakerProfileStore) {
         guard !created.isEmpty else { return }
         do {
             try store.update { database in
                 database.profiles.removeAll { profile in
-                    created.contains(profile.id) && profile.samples.isEmpty
-                        && profile.lastUsedAt == profile.createdAt
+                    created.contains(profile.id) && profile.samples.isEmpty && profile.provisional == true
                 }
             }
         } catch {
@@ -1038,7 +1071,8 @@ public enum VoiceProfileService {
         var generated = stat()
         guard owesExports, lstat(SessionPaths.generatedExports(session).path, &generated) == 0,
               (generated.st_mode & S_IFMT) == S_IFREG else { return }
-        try SessionExports.regenerate(session: session, profileNames: profileNames(store: store))
+        try SessionExports.regenerate(session: session, profileNames: profileNames(store: store),
+                                      applyRecognition: recognitionAllowed(store: store))
     }
 
     /// Removes every reference to the person (`isThePerson`: matches, merge suggestions, skipped people; one helper,

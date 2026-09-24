@@ -429,7 +429,9 @@ enum SpeakerCommand {
         let store = SpeakerProfileStore()
         let peopleBefore = try? store.load()
         let people = VoiceProfileService.profileNames(store: store)
-        let snapshot = try SpeakerSessionSnapshot.load(session: session, profileNames: people)
+        let snapshot = try SpeakerSessionSnapshot.load(
+            session: session, profileNames: people,
+            applyRecognition: peopleBefore?.rememberVoices ?? VoiceProfileService.recognitionAllowed(store: store))
         guard let view = snapshot.projection else {
             throw HolosError.unavailable(snapshot.runProblem
                 ?? "This meeting has no speaker labels yet. Label them with holos session diarize \(session.path).")
@@ -558,8 +560,9 @@ enum SpeakerCommand {
         let session = loaded.session
         let written: ExportWriteResult
         do {
-            written = try SessionExports.regenerate(session: session,
-                                                    profileNames: VoiceProfileService.profileNames(store: loaded.store))
+            written = try SessionExports.regenerate(
+                session: session, profileNames: VoiceProfileService.profileNames(store: loaded.store),
+                applyRecognition: VoiceProfileService.recognitionAllowed(store: loaded.store))
         } catch {
             throw HolosError.incomplete("The change was saved, but the exports could not be rewritten: "
                                         + "\(error.localizedDescription) Rewrite them with holos session export "

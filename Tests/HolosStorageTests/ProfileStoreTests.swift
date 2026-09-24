@@ -426,3 +426,27 @@ func lockedReadHoldsTheLockUntilItsWriteIsDone() throws {
             "The stored line of a pending forget is kept: it says its store write is done.")
     #expect(try store.pendingForgets().map(\.id) == [crashed.id, stored.id])
 }
+
+@Test func compactionKeepsAStoredLineWhoseTombstoneThisBuildCannotRead() throws {
+    let root = try profileRoot()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let store = SpeakerProfileStore(directory: root.appendingPathComponent("Speakers"))
+    let mine = ForgetRecord(kind: .all, sampleIDs: ["S1"])
+    try store.appendForgetRecord(mine)
+    try store.appendForgetRecord(.stored(mine.id))
+    try store.appendForgetRecord(.done(mine.id))
+    // A forget of a newer Holos: a kind this build cannot decode, at a schema version it can read. Its pending
+    // line is kept byte for byte (§1.6 rule 5); its phase marker must be kept with it, or that Holos would run
+    // its store write a second time and remove samples learned since.
+    let future = UUID().uuidString
+    let pending = Data("{\"schemaVersion\":1,\"id\":\"\(future)\",\"kind\":\"quarantine\",\"state\":\"pending\"}\n".utf8)
+    try AtomicFile.append(pending, to: store.forgetJournalURL)
+    try store.appendForgetRecord(.stored(future, profileID: "JIM"))
+
+    try store.compactForgetJournal()
+
+    let text = String(decoding: try Data(contentsOf: store.forgetJournalURL), as: UTF8.self)
+    #expect(text.contains("quarantine"), "The newer Holos's tombstone is kept.")
+    #expect(try store.storedForget(future)?.profileID == "JIM", "And so is its stored line.")
+    #expect(!text.contains(mine.id), "This build's own finished forget goes, stored line and all.")
+}

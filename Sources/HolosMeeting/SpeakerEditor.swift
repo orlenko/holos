@@ -58,19 +58,21 @@ public enum SpeakerEditor {
     ///   voice sample from this meeting is built from (the speakers linked to them and those speakers' qualifying
     ///   turns); the caller then awaits `VoiceProfileService.refreshSamples(session:extractor:store:)`. Without it,
     ///   `needsSampleRefresh` is false.
-    /// - `requirePeople` (with `profiles`) are the people this batch links to: each must still be in the store when
-    ///   the lines are appended, checked and marked used in one locked step right before the append (§1.7 order:
-    ///   this speaker lock, then `profiles.lock`). A person another window forgot or merged away since the caller
-    ///   read them is refused with `unavailable`, instead of saving a link to nobody; and marking them used there,
-    ///   rather than after the append, is what lets a caller whose own link was refused tell a person nobody has
-    ///   taken up from one another window has linked meanwhile
+    /// - `requirePeople` (with `profiles`) maps each person this batch links to the name it is saving for them.
+    ///   In one locked step right before the append (§1.7 order: this speaker lock, then `profiles.lock`), each
+    ///   must still be in the store under that name; then they are marked used and no longer provisional. A person
+    ///   another window forgot or merged away is refused with `unavailable` instead of being linked to by nobody,
+    ///   and so is one another window renamed, because the batch's lines and the caller's view were both made from
+    ///   the name the caller saw: saving a different one would give the meeting a name the user never chose. The
+    ///   claim happens there, rather than after the append, so that a caller whose own link is refused can tell a
+    ///   person nobody has taken up from one another window has linked meanwhile
     ///   (`VoiceProfileService.rollBack`).
     @discardableResult
     public static func apply(_ actions: [SpeakerEditAction], view: SpeakerProjection, session: URL, source: String,
                              regenerateExports: Bool = true,
                              profileNames: [String: String] = [:],
                              profiles: SpeakerProfileStore? = nil,
-                             requirePeople: Set<String> = []) throws -> SpeakerEditResult {
+                             requirePeople: [String: String] = [:]) throws -> SpeakerEditResult {
         guard !actions.isEmpty else { throw HolosError.invalidInput("There is no speaker change to save.") }
         try requireSource(source)
         let preloaded = readRun(view.runID, session: session)
@@ -323,9 +325,13 @@ public enum SpeakerEditor {
             VoiceProfileService.samplesAffected(before: saved.before, after: saved.after, sessionID: saved.sessionID,
                                                 store: $0)
         } ?? false
+        // With the people store in hand, the reloaded labels and the rewritten exports follow "Remember voices":
+        // off means the kept samples, and so the suggestions made from them, are not used.
+        let applyRecognition = profiles.map { VoiceProfileService.recognitionAllowed(store: $0) } ?? true
         let snapshot: SpeakerSessionSnapshot
         do {
-            snapshot = try SpeakerSessionSnapshot.load(session: session, profileNames: profileNames)
+            snapshot = try SpeakerSessionSnapshot.load(session: session, profileNames: profileNames,
+                                                       applyRecognition: applyRecognition)
         } catch {
             log.error("Saved \(saved.edits.count, privacy: .public) speaker edits, then could not reload the session: \(error.localizedDescription, privacy: .private)")
             throw HolosError.incomplete("The speaker change was saved, but the speaker labels could not be "
@@ -333,7 +339,8 @@ public enum SpeakerEditor {
         }
         if regenerateExports {
             do {
-                try SessionExports.regenerate(session: session, profileNames: profileNames)
+                try SessionExports.regenerate(session: session, profileNames: profileNames,
+                                              applyRecognition: applyRecognition)
             } catch {
                 log.error("Saved \(saved.edits.count, privacy: .public) speaker edits, then could not rewrite the exports: \(error.localizedDescription, privacy: .private)")
                 throw HolosError.incomplete("The speaker change was saved, but the exports could not be rewritten: "
@@ -344,18 +351,24 @@ public enum SpeakerEditor {
     }
 
     /// Under `profiles.lock` (the caller holds this session's speaker lock: the §1.7 order), checks that every
-    /// person in `people` is still in the store and marks them used. Throws `unavailable` when one is gone, so the
-    /// edits are never appended. Called right before the append, so an edit refused for any other reason claims
-    /// nobody.
-    static func claimPeople(_ people: Set<String>, profiles: SpeakerProfileStore?, at: Date) throws {
+    /// person in `people` is still in the store under the name the batch is saving for them, then marks them used
+    /// and no longer provisional. Throws `unavailable` when one is gone or was renamed; the store write is rolled
+    /// back with it, so nothing is claimed and the edits are never appended. Called right before the append, so an
+    /// edit refused for any other reason claims nobody.
+    static func claimPeople(_ people: [String: String], profiles: SpeakerProfileStore?, at: Date) throws {
         guard !people.isEmpty, let profiles else { return }
         try profiles.update { database in
-            for id in people.sorted() {
+            for id in people.keys.sorted() {
                 guard let index = database.profiles.firstIndex(where: { $0.id == id }) else {
                     throw HolosError.unavailable("That person is no longer in Holos (another window forgot or "
                                                  + "merged them); reload and choose a name again.")
                 }
+                guard database.profiles[index].displayName == people[id] else {
+                    throw HolosError.unavailable("That person was renamed in another Holos window; reload and "
+                                                 + "choose the name again.")
+                }
                 database.profiles[index].lastUsedAt = at
+                database.profiles[index].provisional = nil
             }
         }
     }

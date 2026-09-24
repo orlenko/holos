@@ -40,14 +40,19 @@ extension Session {
             // People's current names, as every other writer of the exports passes them, so an automatic name
             // ("Jim (auto)") does not depend on which command wrote the exports last.
             let names = VoiceProfileService.profileNames()
+            // And "Remember voices": off means the kept voice samples, and the suggestions made from them, are
+            // not used, so the exports name nobody automatically until it is turned back on.
+            let recognition = VoiceProfileService.recognitionAllowed()
             if all {
-                let result = try SessionExports.regenerate(session: directory, profileNames: names)
+                let result = try SessionExports.regenerate(session: directory, profileNames: names,
+                                                           applyRecognition: recognition)
                 Console.output(SessionPaths.exports(directory).path)
                 for url in result.movedAside { Console.error(SpeakerCommand.movedAsideNote(url)) }
                 return
             }
             guard let format else { throw ValidationError("Choose --format md, json, or txt, or use --all.") }
-            let data = try SessionExports.render(format, session: directory, profileNames: names)
+            let data = try SessionExports.render(format, session: directory, profileNames: names,
+                                                 applyRecognition: recognition)
             guard let output else {
                 try FileHandle.standardOutput.write(contentsOf: data)
                 return

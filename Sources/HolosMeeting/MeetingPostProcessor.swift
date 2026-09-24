@@ -174,7 +174,10 @@ public struct MeetingPostProcessor: Sendable {
         started = recorder.begin(.export, message: "Writing transcript files…")
         do {
             let names = profiles.map { VoiceProfileService.profileNames(store: $0) } ?? [:]
-            let result = try SessionExports.regenerate(session: session, profileNames: names)
+            let result = try SessionExports.regenerate(session: session, profileNames: names,
+                                                       applyRecognition: profiles.map {
+                                                           VoiceProfileService.recognitionAllowed(store: $0)
+                                                       } ?? true)
             let moved = result.movedAside.count
             recorder.end(.export, .succeeded,
                          moved == 0 ? nil : "Moved \(moved) edited transcript \(moved == 1 ? "file" : "files") aside.",

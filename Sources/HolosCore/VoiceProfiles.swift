@@ -64,13 +64,20 @@ public struct SpeakerProfile: Codable, Sendable, Equatable, Identifiable {
     public var recognitionEnabled: Bool
     /// At most one per sessionID; may be empty.
     public var samples: [VoiceprintSample]
+    /// Set while this person exists only for a link that has not been saved yet, and cleared in the locked step
+    /// that saves one (`SpeakerEditor.claimPeople`). A link that is then refused takes back only a person who is
+    /// still provisional, so one another window has linked meanwhile is never removed. It is an explicit state
+    /// rather than a comparison of `createdAt` and `lastUsedAt`, which `HolosJSON` stores to the second and which
+    /// two windows can therefore share. Absent (nil) in stores written by an earlier Holos, and in every person
+    /// who has been linked: neither is ever taken back.
+    public var provisional: Bool?
 
     public init(id: String = UUID().uuidString, displayName: String, createdAt: Date = Date(), lastUsedAt: Date? = nil,
                 isSelf: Bool = false, embeddingModel: EmbeddingModelID? = nil, recognitionEnabled: Bool = true,
-                samples: [VoiceprintSample] = []) {
+                samples: [VoiceprintSample] = [], provisional: Bool? = nil) {
         self.id = id; self.displayName = displayName; self.createdAt = createdAt
         self.lastUsedAt = lastUsedAt ?? createdAt; self.isSelf = isSelf; self.embeddingModel = embeddingModel
-        self.recognitionEnabled = recognitionEnabled; self.samples = samples
+        self.recognitionEnabled = recognitionEnabled; self.samples = samples; self.provisional = provisional
     }
 }
 

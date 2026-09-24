@@ -283,8 +283,8 @@ public struct SpeakerProfileStore: Sendable {
 
     /// Under `profiles.lock`, rewrites the journal without its finished tombstones (removing it when nothing is
     /// left), so it does not grow without bound. A readable tombstone with its `done` line, its `stored` line, a
-    /// `stored` line whose tombstone is gone, a torn last line, and a damaged line (not a JSON object with a schema
-    /// version) are dropped. A line this build cannot read because it
+    /// `stored` line whose tombstone is gone (unless some line here cannot be read, when that tombstone may be one
+    /// of them), a torn last line, and a damaged line (not a JSON object with a schema version) are dropped. A line this build cannot read because it
     /// comes from a newer Holos (a newer schema version, or a kind this build does not know) is kept byte for byte,
     /// and so is a `done` line that finishes none of the readable tombstones (it may finish one of those lines), so a
     /// newer Holos's pending forget is never destroyed (§1.6 rule 5).
@@ -318,8 +318,11 @@ public struct SpeakerProfileStore: Sendable {
                     } else if record.state == ForgetRecord.pending, record.kind != nil {
                         keep = !finished.contains(record.id) && seen.insert(record.id).inserted
                     } else if record.state == ForgetRecord.stored {
-                        // Kept only while its tombstone is: it says that tombstone's store write is done.
-                        keep = pendingIDs.contains(record.id) && !finished.contains(record.id)
+                        // Kept while its tombstone is, and, like an unmatched `done` line, whenever this build
+                        // cannot read every line: the tombstone it belongs to may be one of those (a newer Holos's
+                        // forget kind), and dropping the marker would have that Holos repeat its store write.
+                        keep = !finished.contains(record.id)
+                            && (pendingIDs.contains(record.id) || unreadable)
                             && seen.insert("stored:" + record.id).inserted
                     } else {
                         keep = true

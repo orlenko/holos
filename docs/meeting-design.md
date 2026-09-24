@@ -3392,6 +3392,10 @@ public struct SpeakerProfileDatabase: Codable, Sendable, Equatable {
   - The `stored` line also records the person the meetings are cleaned of: for a `.sample`
     forget, the person the store write found the sample under, which a merge may have
     changed since the tombstone was written.
+  - Compaction keeps a `stored` line while its tombstone is kept, and, like an unmatched
+    `done` line, whenever some line cannot be read here: that tombstone may be one of them
+    (a newer Holos's forget kind), and dropping its marker would have that Holos run its
+    store write a second time.
   - The exports of a cleaned meeting are rewritten because they show the names recognition
     gave, and a failure there keeps the tombstone pending. Whether the rewrite is owed
     cannot be read back from the recognition file the run has already scrubbed, so
@@ -3412,7 +3416,8 @@ public struct SpeakerProfileDatabase: Codable, Sendable, Equatable {
   `forgettingASampleFollowsItToThePersonItWasMergedInto`,
   `forgetStaysPendingUntilTheExportsAreRewritten`,
   `forgetDeletesVoiceDataWhoseCentroidStillHoldsAReassignedTurn`,
-  `leftoverTemporaryFilesArePurgedFromTheStore`.
+  `leftoverTemporaryFilesArePurgedFromTheStore`,
+  `compactionKeepsAStoredLineWhoseTombstoneThisBuildCannotRead`.
 - **A merge takes the meetings with it.** Merging person A into B removes A from the
   store, and a projection drops a recognition match whose person is not in the store, so
   the meetings A's voice was recognised in would lose their automatic name (or
@@ -3425,23 +3430,49 @@ public struct SpeakerProfileDatabase: Codable, Sendable, Equatable {
   generated exports of the meetings that changed. A meeting that cannot be written now
   leaves the record pending and `merge` throws `incomplete`; `resumePendingForgets`
   finishes it, which is why the record carries the two IDs the store no longer holds
-  together. Unlike a forget, this never deletes what it cannot read: a meeting whose
-  manifest or recognition result is unreadable is left as it is. Tests (PR10):
+  together. A `stored` line is appended only once the store write has committed, and
+  nothing is retargeted without it: the record is written before that write, so a merge
+  refused there (samples of different speaker models) or lost to a crash leaves a record
+  that a resume drops rather than acts on. Unlike a forget, this never deletes what it
+  cannot read: a meeting whose manifest is unreadable is skipped, and a recognition result
+  that cannot be read keeps the record pending for a Holos that can read it. The exports
+  of every meeting that has recognition results and generated exports are rewritten, not
+  only of those a run changed, since a retry finds them already retargeted. Tests (PR10):
   `mergePointsMeetingsAtThePersonTheyWereMergedInto`,
   `aMergeThatCouldNotReachAMeetingIsFinishedLater`,
-  `retargetingProfilesJoinsWhatTheMergeMadeTheSamePerson`.
+  `retargetingProfilesJoinsWhatTheMergeMadeTheSamePerson`,
+  `aMergeWhoseStoreWriteNeverHappenedIsDroppedNotReplayed`,
+  `aMergeStaysPendingWhenAMeetingsRecognitionCannotBeRead`,
+  `aMergeStaysPendingUntilTheExportsAreRewritten`.
 - **A link is saved against the people and the labels as they are at the write.** The
   batch's people are checked and marked used under `profiles.lock`, inside the meeting's
   speaker lock, immediately before the lines are appended
   (`SpeakerEditor.apply(requirePeople:)`), so a person another window forgot or merged
-  away is refused instead of being linked to by a meeting. A batch the caller's view says
+  away is refused instead of being linked to by a meeting, and so is one another window
+  renamed: the batch's lines and the caller's view were both made from the name the user
+  saw, so saving a different one would give the meeting a name they never chose. A batch the caller's view says
   changes nothing appends no line, so it is checked against the meeting's current labels
   under the speaker lock instead of being reported as success. A person created for a link
-  that is then refused is taken back only while nobody has taken them up (no samples,
-  never marked used): another window may have linked them in another meeting between their
-  creation and this refusal. Tests (PR10): `anEditIsRefusedWhenThePersonItLinksIsGone`,
+  that is then refused is taken back only while nobody has taken them up: no samples, and
+  still `provisional`, the state such a person is created with and that the locked step of
+  a saved link clears. The state is explicit because `HolosJSON` stores dates to the
+  second, so `createdAt` and `lastUsedAt` cannot tell a person another window linked
+  inside that second from one nobody has touched. Tests (PR10): `anEditIsRefusedWhenThePersonItLinksIsGone`,
   `aLinkThatChangesNothingIsRefusedWhenAnotherWindowChangedIt`,
-  `aPersonAnotherLinkHasTakenUpIsNotRolledBack`, `aRefusedNewPersonIsStillRemoved`.
+  `aPersonAnotherLinkHasTakenUpIsNotRolledBack`, `aRefusedNewPersonIsStillRemoved`,
+  `aLinkIsRefusedWhenThePersonWasRenamedMeanwhile`.
+- **"Remember voices" governs recognition, not only new voice data.** Turning it off
+  without forgetting the samples keeps them, and the People window promises that "Kept
+  samples are not used while Remember voices is off." `SpeakerSessionSnapshot.load`
+  therefore takes `applyRecognition`, and with it false neither reads nor applies the
+  meeting's stored recognition result, exactly as it does for an incomplete edit journal:
+  no suggestion and no automatic name, in the review window, the CLI, or the exports. The
+  callers that read the people store pass `VoiceProfileService.recognitionAllowed` (the
+  editor's reload and export rewrite, the forget and merge export rewrites,
+  post-processing's export write, `holos speakers`, `holos session export`). Nothing is
+  deleted, so turning the setting back on brings the suggestions back. Names are not
+  governed by the setting, as they never were. Test (PR10):
+  `keptSamplesAreNotUsedWhileRememberVoicesIsOff`.
 - **Enrollment renders are swept.** `DiarizerVoiceSampleExtractor` renders a track to
   `holos-voice-<UUID>` in the temporary directory and deletes it in a `defer`, which a kill
   or a power loss skips; the render is a decoded copy of the meeting's audio, so
