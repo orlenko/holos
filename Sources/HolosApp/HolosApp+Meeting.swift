@@ -739,9 +739,12 @@ extension HolosAppDelegate: NSMenuDelegate {
             case .success(let window):
                 // Per window: a closing window of the meeting must not take the new one's Dock presence away.
                 let dockKey = "review-\(ObjectIdentifier(window).hashValue)"
-                window.onClose = { [weak self] in
+                // Weak: the window holds this closure, so a strong capture would keep every closed window alive.
+                window.onClose = { [weak self, weak window] in
                     guard let self else { return }
-                    if self.meeting.reviewWindows[sessionID] === window { self.meeting.reviewWindows[sessionID] = nil }
+                    if let window, self.meeting.reviewWindows[sessionID] === window {
+                        self.meeting.reviewWindows[sessionID] = nil
+                    }
                     self.setDockPresence(false, for: dockKey)
                 }
                 window.onRelabel = { [weak self] running in self?.reviewRelabelChanged(sessionID, running: running) }

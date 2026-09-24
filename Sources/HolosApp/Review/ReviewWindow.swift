@@ -108,15 +108,20 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate {
 
     /// Rereads the labels after a command from Meetings changed them, and the audio when it was deleted or playback
     /// was stopped for the command.
-    func reloadFromDisk() {
-        let wasDeleted = review.snapshot.audioDeleted
+    func reloadFromDisk() { reloadLabels(reloadStoppedPlayback: true) }
+
+    /// Rereads the labels; turns playback off when the audio was deleted meanwhile (by Meetings or by a command in
+    /// Terminal). `reloadStoppedPlayback`: also reloads the audio when playback was stopped for a Meetings command.
+    private func reloadLabels(reloadStoppedPlayback: Bool) {
         Task { [weak self] in
             guard let self, !self.isClosing else { return }
             await self.review.reload()
             guard !self.isClosing else { return }
-            if self.review.snapshot.audioDeleted != wasDeleted || !self.player.hasAudio {
+            let deleted = self.review.snapshot.audioDeleted
+            let playerSaysDeleted = self.player.state == .unavailable(ReviewPlayer.audioDeletedText)
+            if deleted != playerSaysDeleted || (reloadStoppedPlayback && !self.player.hasAudio) {
                 self.player.load(session: self.review.session, manifest: self.review.snapshot.manifest,
-                                 audioDeleted: self.review.snapshot.audioDeleted)
+                                 audioDeleted: deleted)
             }
         }
     }
@@ -126,7 +131,8 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate {
 
     /// Closes the window and waits until its changes are saved (before the meeting is deleted).
     func closeAndWait() async {
-        if window.isVisible { window.close() }
+        // A minimized window is not visible but must be closed too, or it stays in the Dock.
+        if window.isVisible || window.isMiniaturized { window.close() }
         if closeTask == nil { beginClosing() }
         await closeTask?.value
     }
@@ -692,7 +698,7 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate {
     func windowDidBecomeKey(_ notification: Notification) {
         // Back from elsewhere (a terminal, Meetings): pick up changes made meanwhile.
         if let resigned = resignedKeyAt, Date().timeIntervalSince(resigned) > 2, window.attachedSheet == nil {
-            Task { [review] in await review.reload() }
+            reloadLabels(reloadStoppedPlayback: false)
         }
         resignedKeyAt = nil
     }
@@ -713,7 +719,11 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate {
         let review = self.review
         closeTask = Task { [weak self] in
             await review.close()
-            self?.onClose?()
+            guard let self else { return }
+            let onClose = self.onClose
+            self.onClose = nil
+            self.onRelabel = nil
+            onClose?()
         }
     }
 

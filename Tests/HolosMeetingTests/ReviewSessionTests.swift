@@ -478,12 +478,149 @@ func nameFieldLinksOrCreatesPeople() async throws {
     try await review.setName("Jim", speakerID: "system:S1")
     #expect(try reviewJournal(fixture.session).count == lines)
 
-    // An empty name clears the speaker's own name.
+    // An empty name clears the speaker's name, and unlinks the person it came from.
     try await review.setName("", speakerID: "system:S3")
     try await review.setName("Sam", speakerID: "system:S3")
     #expect(review.speaker("system:S3")?.name == "Sam")
+    #expect(review.speaker("system:S3")?.profileID != nil)
     try await review.setName(" ", speakerID: "system:S3")
     #expect(review.speaker("system:S3")?.explicitName == nil)
+    #expect(review.speaker("system:S3")?.profileID == nil)
+    #expect(review.speaker("system:S3")?.name == "Speaker 3")
+    #expect(review.snapshot.projection == review.projection)
+    // One change: one undo brings Sam back.
+    try await review.undo()
+    #expect(review.speaker("system:S3")?.name == "Sam")
+}
+
+@Test(.timeLimit(.minutes(1))) @MainActor
+func sameNewNameWhileTheFirstIsSavingMakesOnePerson() async throws {
+    let temp = try TemporaryDirectory("review")
+    defer { temp.remove() }
+    let store = reviewStore(temp)
+    let fixture = try await SessionFixtures.labelledSession(in: temp.url, speakers: ["S1", "S2", "S3"], duration: 30)
+    let review = try await reviewOpen(fixture.session, store: store)
+    let gate = reviewGate()
+    review.beforeEdit = gate.hook
+
+    // "Jim" on S1 is held while it saves (a voice being learned); meanwhile "jim" on S2, and Return again on S1.
+    let first = Task { @MainActor in try await review.setName("Jim", speakerID: "system:S1") }
+    #expect(await eventually { gate.entered.value == 1 })
+    let second = Task { @MainActor in try await review.setName("jim", speakerID: "system:S2") }
+    #expect(await eventually { reviewName(review, "system:S2") == "jim" })
+    try await review.setName("Jim", speakerID: "system:S1")
+    gate.release.finish()
+    try await first.value
+    try await second.value
+
+    let people = try store.load().profiles
+    #expect(people.count == 1)
+    let jim = try #require(people.first)
+    #expect(jim.displayName == "Jim")
+    #expect(review.speaker("system:S1")?.profileID == jim.id)
+    #expect(review.speaker("system:S2")?.profileID == jim.id)
+    #expect(review.speaker("system:S2")?.name == "Jim")
+    #expect(review.projection.mergeSuggestions.map(\.speakerIDs) == [["system:S1", "system:S2"]])
+    #expect(try reviewJournal(fixture.session).count == 4, "Two links of two lines each; Return again saved nothing.")
+    #expect(review.snapshot.projection == review.projection)
+}
+
+/// A voice extractor that counts the turns it is asked about and returns one fixed embedding for each.
+private final class ReviewFakeExtractor: VoiceSampleExtractor {
+    private let asked = SharedValue<[String]>([])
+    var turnIDs: [String] { asked.value }
+
+    func turnEmbeddings(session: URL, track: String, turns: [TurnRef]) async throws -> [TurnEmbedding] {
+        asked.update { $0 += turns.map(\.id) }
+        return turns.map { turn in
+            TurnEmbedding(turnID: turn.id, speechSeconds: turn.end - turn.start,
+                          vector: FloatVector([0.6, 0.8, 0, 0, 0, 0, 0, 0]))
+        }
+    }
+}
+
+/// With Remember voices on: names S1 "Jim", marks S2 as you, confirms S3's suggestion (Sam), and gives T8 to Maria,
+/// with the footer box set to `learn`. Returns the turns the extractor was asked about and each person's samples
+/// from this meeting ("Jim", "Me" for the person who is you, "Sam", "Maria"). T8 is reassigned, so it never qualifies
+/// (§4.10); giving it to Maria checks only that assigning to a person asks for nothing it may not.
+@MainActor
+private func reviewLearning(_ learn: Bool) async throws -> (asked: [String], samples: [String: Int]) {
+    let temp = try TemporaryDirectory("review")
+    defer { temp.remove() }
+    let store = reviewStore(temp)
+    try store.update {
+        $0.rememberVoices = true
+        $0.profiles = [SpeakerProfile(id: "SAM", displayName: "Sam"), SpeakerProfile(id: "MARIA", displayName: "Maria")]
+    }
+    let fixture = try await SessionFixtures.labelledSession(in: temp.url, speakers: ["S1", "S2", "S3", "S4"],
+                                                            duration: 40)
+    try SessionArchive.withSpeakerLock(at: fixture.session) {
+        try SessionSpeakerStore.writeRecognition(
+            RecognitionResult(runID: fixture.run.id, embeddingModel: DiarizationEngineInfo.fake.embeddingModel,
+                              thresholds: SpeakerRecognizer.defaultThresholds,
+                              matches: [SpeakerMatch(speakerID: "system:S3", profileID: "SAM", profileName: "Sam",
+                                                     distance: 0.2, tier: .possible)]),
+            session: fixture.session)
+    }
+    let extractor = ReviewFakeExtractor()
+    let review = try await ReviewSession(session: fixture.session, profiles: store, maintenance: nil,
+                                         exportDelay: .seconds(60), extractor: extractor)
+    #expect(review.learnVoices, "Remember voices is on, so the footer box starts on.")
+    review.learnVoices = learn
+
+    try await review.setName("Jim", speakerID: "system:S1")
+    try await review.markSelf(speakerID: "system:S2")
+    try await review.confirmAllSuggestions()
+    try await review.assign(["T8"], to: .person(profileID: "MARIA"))
+    await review.close()
+
+    let sessionID = try SessionArchive.readManifest(at: fixture.session).id
+    var samples: [String: Int] = [:]
+    for person in try store.load().profiles {
+        samples[person.isSelf ? "Me" : person.displayName] = person.samples.filter { $0.sessionID == sessionID }.count
+    }
+    return (extractor.turnIDs, samples)
+}
+
+@Test(.timeLimit(.minutes(1))) @MainActor
+func learnVoicesOffStoresNoSample() async throws {
+    let result = try await reviewLearning(false)
+    #expect(result.asked.isEmpty, "No turn is sent to the extractor when the box is off.")
+    #expect(result.samples == ["Jim": 0, "Me": 0, "Sam": 0, "Maria": 0])
+}
+
+@Test(.timeLimit(.minutes(1))) @MainActor
+func learnVoicesOnStoresASampleForEachPersonNamed() async throws {
+    let result = try await reviewLearning(true)
+    // A reassigned turn never qualifies (§4.10), so Maria's T8 gives no sample either way.
+    #expect(Set(result.asked) == ["T1", "T5", "T2", "T6", "T3", "T7"])
+    #expect(result.samples == ["Jim": 1, "Me": 1, "Sam": 1, "Maria": 0])
+}
+
+@Test(.timeLimit(.minutes(1))) @MainActor
+func failedRelabelKeepsTheExportsPending() async throws {
+    let temp = try TemporaryDirectory("review")
+    defer { temp.remove() }
+    let fixture = try await SessionFixtures.labelledSession(in: temp.url)
+    let markdown = SessionPaths.export("md", in: fixture.session)
+    // `holos session diarize` that could do nothing (exit 1) and wrote no export.
+    let script = temp.url.appendingPathComponent("fake-holos.sh")
+    try Data("#!/bin/sh\necho '{\"message\": \"Nothing could be done.\"}'\nexit 1\n".utf8).write(to: script)
+    try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: script.path)
+    let review = try await ReviewSession(session: fixture.session, profiles: nil,
+                                         maintenance: MaintenanceLauncher(executable: script),
+                                         exportDelay: .seconds(60))
+
+    try await review.apply([.rename(speakerID: "system:S1", name: "Jim")])
+    #expect(review.exportsPending)
+    let failure = await #expect(throws: HolosError.self) { try await review.labelAgain() }
+    #expect(failure?.errorDescription == "Nothing could be done.")
+    #expect(review.exportsPending, "The relabel wrote no export, so the window's change still needs them.")
+    #expect(!review.isRelabelling)
+
+    await review.close()
+    #expect(SessionFixtures.text(markdown).contains("**Jim**"))
+    #expect(!review.exportsPending)
 }
 
 @Test(.timeLimit(.minutes(1))) @MainActor

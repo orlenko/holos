@@ -344,6 +344,13 @@ public struct ReviewWord: Sendable, Equatable {
     /// Links the speaker to a known person or a new one; the person's name becomes the speaker's. Learns the voice
     /// when `learnVoices` is on (and Remember voices).
     public func link(speakerID: String, to target: ProfileTarget) async throws {
+        try await link(speakerID: speakerID, to: target, byName: false)
+    }
+
+    /// `byName`: the name field asked for "the person called this" (`setName`), so a `.new` target that a person of
+    /// that name exists for by the time the change is saved (one created by an earlier change still saving) links
+    /// that person instead of creating a second one.
+    private func link(speakerID: String, to target: ProfileTarget, byName: Bool) async throws {
         try requireEditable()
         try requirePeople()
         guard projection.speakers.contains(where: { $0.id == speakerID }) else { throw Self.noSpeaker(speakerID) }
@@ -361,28 +368,51 @@ public struct ReviewWord: Sendable, Equatable {
             }
             optimistic = [.rename(speakerID: speakerID, name: clean)]
         }
-        try await enqueue(.link(speakerID: speakerID, target: target, learnVoice: learnVoices), optimistic: optimistic)
+        try await enqueue(.link(speakerID: speakerID, target: target, learnVoice: learnVoices, byName: byName),
+                          optimistic: optimistic)
     }
 
-    /// The name field's Return: an empty name clears the speaker's name; a known person's name (ignoring case)
-    /// links the speaker to them (the most recently used one when two share it); any other name creates that person
-    /// and links the speaker. Without a people store the name is only set on the speaker.
+    /// The name field's Return: an empty name clears the speaker's name (and unlinks the person it is linked to, whose
+    /// name it would otherwise keep showing); a known person's name (ignoring case) links the speaker to them (the
+    /// most recently used one when two share it); any other name creates that person and links the speaker. A name
+    /// whose person is still being created by an earlier change links that person once it is saved. Without a people
+    /// store the name is only set on the speaker.
     public func setName(_ text: String, speakerID: String) async throws {
         try requireEditable()
         guard let speaker = speaker(speakerID) else { throw Self.noSpeaker(speakerID) }
         guard let name = SpeakerEditor.cleanName(text) else {
-            try await apply([.rename(speakerID: speakerID, name: nil)])
+            var actions: [SpeakerEditAction] = [.rename(speakerID: speakerID, name: nil)]
+            if let profileID = speaker.profileID {
+                actions.append(.rejectProfile(speakerID: speakerID, profileID: profileID))
+            }
+            try await apply(actions)
             return
         }
         guard profiles != nil else {
             try await apply([.rename(speakerID: speakerID, name: name)])
             return
         }
-        if let person = people.first(where: { $0.displayName.caseInsensitiveCompare(name) == .orderedSame }) {
+        if let person = person(named: name) {
             if speaker.profileID == person.id, speaker.name == person.displayName { return }
-            try await link(speakerID: speakerID, to: .existing(profileID: person.id))
+            try await link(speakerID: speakerID, to: .existing(profileID: person.id), byName: true)
         } else {
-            try await link(speakerID: speakerID, to: .new(name: name))
+            // Return pressed again while this speaker's link to that new name is still waiting or saving.
+            if speaker.name == name, pendingLinkByName(speakerID: speakerID, name: name) { return }
+            try await link(speakerID: speakerID, to: .new(name: name), byName: true)
+        }
+    }
+
+    /// The known person called `name` (cleaned, ignoring case), the most recently used one when two share it.
+    private func person(named name: String) -> SpeakerProfile? {
+        guard let clean = SpeakerEditor.cleanName(name) else { return nil }
+        return people.first { $0.displayName.caseInsensitiveCompare(clean) == .orderedSame }
+    }
+
+    /// A name-field link of `speakerID` to a new person called `name` is queued or saving and not undone.
+    private func pendingLinkByName(speakerID: String, name: String) -> Bool {
+        queue.contains { op in
+            guard !op.undone, case .link(let id, .new(let pending), _, true) = op.kind else { return false }
+            return id == speakerID && pending.caseInsensitiveCompare(name) == .orderedSame
         }
     }
 
@@ -561,7 +591,8 @@ public struct ReviewWord: Sendable, Equatable {
 
         enum Kind {
             case edit([SpeakerEditAction])
-            case link(speakerID: String, target: ProfileTarget, learnVoice: Bool)
+            /// `byName`: from the name field; a `.new` target is linked to a person of that name existing at save time.
+            case link(speakerID: String, target: ProfileTarget, learnVoice: Bool, byName: Bool)
             case assignPerson(create: SpeakerEditAction, speakerID: String, profileID: String, learnVoice: Bool)
             case confirmAll(learnVoices: Bool)
             case markSelf(speakerID: String, learnVoice: Bool)
@@ -656,8 +687,15 @@ public struct ReviewWord: Sendable, Equatable {
             try requireBasis(op)
             let sent = actions.map(resolve)
             try await saveEdit(sent, op: op) { batch in batch.map(\.action) == sent }
-        case .link(let speakerID, let target, let learnVoice):
+        case .link(let speakerID, let asked, let learnVoice, let byName):
             try requireBasis(op)
+            var resolved = asked
+            if byName, case .new(let name) = asked {
+                // An earlier change still saving when this one was made may have created the person since.
+                await reloadPeople()
+                if let person = person(named: name) { resolved = .existing(profileID: person.id) }
+            }
+            let target = resolved
             let view = savedProjection
             try await savePeopleChange(op, matching: Self.linkBatch(speakerID)) { session, store, extractor in
                 try await VoiceProfileService.link(session: session, speakerID: speakerID, to: target, view: view,
@@ -727,7 +765,7 @@ public struct ReviewWord: Sendable, Equatable {
             if adopt(result.snapshot, op: op, matching: matching) { changesSaved(exportsWritten: false) }
             if result.needsSampleRefresh { try await refreshSamples() }
         case .failure(let error):
-            try await handleFailure(error, op: op, matching: matching)
+            try await handleFailure(error, op: op, refreshSamples: true, matching: matching)
         }
     }
 
@@ -761,13 +799,27 @@ public struct ReviewWord: Sendable, Equatable {
     /// exports, or a voice sample): the labels are reloaded, the lines kept as the window's, and the error is
     /// thrown. Anything else refused the change: the labels are reloaded (queued changes made on the older labels are
     /// then refused too) and the error is thrown, with `changedElsewhere` for a stale view.
-    private func handleFailure(_ error: any Error, op: Operation?,
+    ///
+    /// `refreshSamples`: the change was saved by `SpeakerEditor` here (not by `VoiceProfileService`, which brings
+    /// samples in step itself), so on `incomplete` this meeting's voice samples are brought in step before the error
+    /// is thrown (`needsSampleRefresh` was lost with it).
+    private func handleFailure(_ error: any Error, op: Operation?, refreshSamples: Bool = false,
                                matching: @escaping ([SpeakerEdit]) -> Bool) async throws {
         if error is CancellationError { throw error }
         if case .incomplete? = error as? HolosError {
             if let fresh = try? await loadSnapshot() { adopt(fresh, op: op, matching: matching) }
             changesSaved(exportsWritten: false)
             Self.log.error("Session \(self.sessionID, privacy: .public): a change was saved, then failed (\(ProcessSpawner.logCategory(error), privacy: .public))")
+            if refreshSamples, let store = profiles {
+                let session = self.session
+                let extractor = self.extractor
+                activity = "Updating a voice sample…"
+                notify()
+                try await Self.detached { () async throws -> Void in
+                    try await VoiceProfileService.refreshSamples(afterSaving: error, session: session,
+                                                                 extractor: extractor, store: store)
+                }
+            }
             throw error
         }
         Self.log.notice("Session \(self.sessionID, privacy: .public): a change was refused (\(ProcessSpawner.logCategory(error), privacy: .public)); reloading")
@@ -821,7 +873,7 @@ public struct ReviewWord: Sendable, Equatable {
             if adopt(fresh, op: nil, matching: matching) { changesSaved(exportsWritten: false) }
             if result.needsSampleRefresh { try await refreshSamples() }
         case .failure(let error):
-            try await handleFailure(error, op: nil, matching: matching)
+            try await handleFailure(error, op: nil, refreshSamples: true, matching: matching)
         }
     }
 
@@ -956,7 +1008,16 @@ public struct ReviewWord: Sendable, Equatable {
         if let fresh = try? await loadSnapshot() {
             adopt(fresh, op: nil, matching: nil, external: true)
         }
-        exportsPending = false
+        // 0 and 3 rewrote the exports from the labels now saved; any other code wrote none, so a change of this
+        // window still waiting for its exports keeps waiting (they follow `exportDelay` later, or at `close`).
+        if code == 0 || code == 3 {
+            exportsPending = false
+            exportProblem = nil
+            exportTimer?.cancel()
+            exportTimer = nil
+        } else if exportsPending {
+            scheduleExports()
+        }
         switch code {
         case 0: return
         case 3: throw HolosError.incomplete(message ?? "The speakers were not labelled again.")
@@ -1184,7 +1245,7 @@ public struct ReviewWord: Sendable, Equatable {
         case .relabel: "Labelling speakers again…"
         case .exports: exportsPending ? "Updating the transcript files…" : nil
         case .reload: nil
-        case .link(_, _, let learn), .assignPerson(_, _, _, let learn), .markSelf(_, let learn):
+        case .link(_, _, let learn, _), .assignPerson(_, _, _, let learn), .markSelf(_, let learn):
             learn && rememberVoices ? "Saving the name and learning the voice…" : "Saving…"
         case .confirmAll(let learn):
             learn && rememberVoices ? "Saving the names and learning the voices…" : "Saving…"
