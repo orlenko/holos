@@ -614,7 +614,7 @@ extension HolosAppDelegate: NSMenuDelegate {
         meeting.runningCommands[summary.id] = nil
         let result = Self.commandResult(output: output, errors: errors)
         // `session diarize` succeeds without labels when the speaker models are missing; its record then has no run.
-        let labelled = Self.jsonObject(output)?["runID"] is String
+        let madeRun = Self.jsonObject(output)?["runID"] is String
         Self.removeFile(output)
         Self.removeFile(errors)
         meeting.meetingsWindow?.update(running: meeting.runningCommands)
@@ -631,17 +631,25 @@ extension HolosAppDelegate: NSMenuDelegate {
             }
             return
         }
-        let title: String = switch (action, code) {
-        case (.recover, 0): "Recovered “\(name)”."
-        case (.recover, 3): "Recovered “\(name)”, with a warning."
-        case (.recover, _): "Holos could not recover “\(name)”."
-        case (.labelSpeakers, 0) where labelled: "Labelled the speakers of “\(name)”."
-        case (.labelSpeakers, 0), (.labelSpeakers, 3): "The speakers of “\(name)” were not labelled."
-        case (.labelSpeakers, _): "Holos could not label the speakers of “\(name)”."
-        case (.deleteAudio, _): "Holos could not delete the audio of “\(name)”."
-        case (.deleteMeeting, _): "Holos could not move “\(name)” to the Trash."
+        let session = summary.directory
+        Task { [weak self] in
+            // A run counts as labels only once the saved labels load as the catalog and the exports load them
+            // (`MeetingController.speakerLabelsReady`, off the main actor).
+            let labelled = action == .labelSpeakers && code == 0 && madeRun
+                ? await Task.detached { MeetingController.speakerLabelsReady(session: session) }.value
+                : false
+            let title: String = switch (action, code) {
+            case (.recover, 0): "Recovered “\(name)”."
+            case (.recover, 3): "Recovered “\(name)”, with a warning."
+            case (.recover, _): "Holos could not recover “\(name)”."
+            case (.labelSpeakers, 0) where labelled: "Labelled the speakers of “\(name)”."
+            case (.labelSpeakers, 0), (.labelSpeakers, 3): "The speakers of “\(name)” were not labelled."
+            case (.labelSpeakers, _): "Holos could not label the speakers of “\(name)”."
+            case (.deleteAudio, _): "Holos could not delete the audio of “\(name)”."
+            case (.deleteMeeting, _): "Holos could not move “\(name)” to the Trash."
+            }
+            self?.showMeetingAlert(title, result ?? (code == 0 ? "" : "The command ended with code \(code)."))
         }
-        showMeetingAlert(title, result ?? (code == 0 ? "" : "The command ended with code \(code)."))
     }
 
     /// The result line a command printed: `summary` or `message` of its JSON output, else its last stderr line.
@@ -921,18 +929,29 @@ extension HolosAppDelegate: NSMenuDelegate {
 
     // MARK: - Helpers
 
-    /// The naming offer of the last session, unless that meeting was deleted since.
+    /// The naming offer of the last session, while its speaker labels are still ready
+    /// (`MeetingController.speakerLabelsReady`, checked off the main actor): a meeting deleted since, or whose labels
+    /// were damaged or removed, is no longer offered.
     private func restoreNamingOffer() {
-        guard let saved = UserDefaults.standard.dictionary(forKey: MeetingAppState.namingOfferKey),
-              let id = saved["sessionID"] as? String, let name = saved["name"] as? String,
-              let controller = meeting.controller else { return }
-        var isFolder: ObjCBool = false
-        guard FileManager.default.fileExists(atPath: controller.sessionURL(id).path, isDirectory: &isFolder),
-              isFolder.boolValue else {
-            UserDefaults.standard.removeObject(forKey: MeetingAppState.namingOfferKey)
-            return
+        guard let (id, name) = Self.savedNamingOffer(), let controller = meeting.controller else { return }
+        let session = controller.sessionURL(id)
+        Task { [weak self] in
+            let ready = await Task.detached { MeetingController.speakerLabelsReady(session: session) }.value
+            // A newer offer, or the meeting reviewed meanwhile, wins over the one read at launch.
+            guard let self, self.meeting.namingOffer == nil, Self.savedNamingOffer()?.sessionID == id else { return }
+            guard ready else {
+                UserDefaults.standard.removeObject(forKey: MeetingAppState.namingOfferKey)
+                return
+            }
+            self.meeting.namingOffer = (id, name)
+            self.rebuildMenu()
         }
-        meeting.namingOffer = (id, name)
+    }
+
+    private static func savedNamingOffer() -> (sessionID: String, name: String)? {
+        guard let saved = UserDefaults.standard.dictionary(forKey: MeetingAppState.namingOfferKey),
+              let id = saved["sessionID"] as? String, let name = saved["name"] as? String else { return nil }
+        return (id, name)
     }
 
     private func saveNamingOffer() {

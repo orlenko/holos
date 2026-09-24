@@ -5510,7 +5510,20 @@ recording: Council meeting (1:12:40 saved)." `[Recover]` `[Later]`. Recover runs
 Automatic relabel: on launch and every 30 s while idle, `AutoRelabelPolicy.candidates`
 picks at most one session and `MaintenanceLauncher` runs `holos session diarize <path>
 --json`; attempts are counted in `UserDefaults "meeting.relabelAttempts"`. This covers a
-Mac shut down or put to sleep while labelling.
+Mac shut down or put to sleep while labelling. A relabel that exits 0 and leaves usable
+labels emits the same `offerNaming` as a meeting that just ended, once.
+
+Labels are ready (a finished meeting's `speakersReady`, `offerNaming`, the restored naming
+offer, the Label Speakers result) only when `SavedSpeakerState` finds them usable, the
+validation the catalog, recovery, and the exports share
+(`MeetingController.speakerLabelsReady`, run off the main actor); `speakers/head.json`
+alone is not enough.
+
+Launched recorders: the pid and start time of each recorder child are kept in
+`UserDefaults "meeting.launchedRecorders"` until its exit is seen. A start timed out while a
+permission prompt is open leaves a child with no session folder; after a quit or crash the
+relaunched app refuses a new start ("The last recording is still stopping…") while that pid
+still names a process with the saved start time.
 
 Quit (`applicationShouldTerminate`) while `active`: alert "A meeting is recording."
 Child mode: `[Stop and Save]` (send stop; `.terminateLater`; reply once the status phase

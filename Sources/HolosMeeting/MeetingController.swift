@@ -33,6 +33,9 @@ struct MeetingControllerTuning: Sendable {
     static let maxVocabularyLength = 100
     /// UserDefaults key: attempts of the automatic relabel per session ID.
     static let relabelAttemptsKey = "meeting.relabelAttempts"
+    /// UserDefaults key: recorder children launched by this app, or by an earlier run of it, whose exit was not seen,
+    /// per session ID: [pid, start time in microseconds since 1970].
+    static let launchedRecordersKey = "meeting.launchedRecorders"
 
     public private(set) var reducer = MeetingReducer()
     public var state: MeetingState { reducer.state }
@@ -78,11 +81,21 @@ struct MeetingControllerTuning: Sendable {
     var saveRelabelAttempts: @MainActor ([String: Int]) -> Void = {
         UserDefaults.standard.set($0, forKey: MeetingController.relabelAttemptsKey)
     }
+    /// Where launched recorders are kept: UserDefaults "meeting.launchedRecorders" (tests keep them in memory).
+    var loadLaunchedRecorders: @MainActor () -> [String: [Int]] = {
+        (UserDefaults.standard.dictionary(forKey: MeetingController.launchedRecordersKey) ?? [:])
+            .compactMapValues { $0 as? [Int] }
+    }
+    var saveLaunchedRecorders: @MainActor ([String: [Int]]) -> Void = {
+        UserDefaults.standard.set($0, forKey: MeetingController.launchedRecordersKey)
+    }
 
     private var lastStatus: RecorderStatus?
     /// Recorders this controller launched whose end the launcher has not reported yet. A start the menu gave up on
     /// (the 2-minute timeout) can still have its recorder at a permission prompt, before it created its session
-    /// folder and before it acts on SIGTERM: no new recorder is launched while one of these still runs.
+    /// folder and before it acts on SIGTERM: no new recorder is launched while one of these still runs. A child's pid
+    /// and start time are also saved (`saveLaunchedRecorders`), so an app quit or relaunched meanwhile still waits for
+    /// it (`launchedRecordersStillRun`).
     private var unexitedRecorders: Set<String> = []
     private var vocabularyFiles: [String: URL] = [:]
     private var loop: Task<Void, Never>?
@@ -110,6 +123,8 @@ struct MeetingControllerTuning: Sendable {
     /// the automatic relabel every 30 s.
     public func attachOnLaunch() {
         sweepStaleVocabularyFiles()
+        // Forgets the saved recorders of an earlier run that have ended.
+        _ = launchedRecordersStillRun()
         rescan()
         lastRescan = clock.now
         runAutoRelabel()
@@ -149,8 +164,11 @@ struct MeetingControllerTuning: Sendable {
         }
         // A recorder this app launched and then stopped following (a timed-out start, even after its failure was
         // dismissed) has not exited: it may be waiting at a permission prompt without a session folder, so its
-        // liveness says nothing. It would record alongside a new one once the prompt is answered.
-        if !unexitedRecorders.isEmpty { throw HolosError.unavailable(MeetingReducer.stillStopping) }
+        // liveness says nothing. It would record alongside a new one once the prompt is answered. One an earlier run of
+        // the app launched (the app quit from the failure, or crashed) is found by its saved pid and start time.
+        if !unexitedRecorders.isEmpty || launchedRecordersStillRun() {
+            throw HolosError.unavailable(MeetingReducer.stillStopping)
+        }
         // A meeting started in a terminal since the last rescan (every 3 s) is followed instead: a second recorder
         // must not take the microphone.
         rescan()
@@ -174,6 +192,7 @@ struct MeetingControllerTuning: Sendable {
                     }
                     let pid = try launcher.launch(launchSettings, sessionID: id, root: root, vocabularyFile: file)
                     unexitedRecorders.insert(id)
+                    if let pid { saveLaunchedRecorder(sessionID: id, pid: pid) }
                     _ = reducer.reduce(.launched(pid: pid, at: now()))
                 } catch {
                     launchError = error
@@ -332,7 +351,23 @@ struct MeetingControllerTuning: Sendable {
     private func dispatch(_ event: MeetingEvent, forceChange: Bool = false) {
         let before = reducer.state
         let effects = reducer.reduce(event)
-        for effect in effects { perform(effect) }
+        for effect in effects {
+            switch effect {
+            case .finished(let sessionID, let summary, true):
+                // Its naming offer is sent with it, once the labels were checked.
+                let name = effects.lazy.compactMap { other -> String? in
+                    if case .offerNaming(sessionID, let name) = other { name } else { nil }
+                }.first
+                Self.log.notice("Session \(sessionID, privacy: .public): finished")
+                finishOnceLabelsChecked(sessionID: sessionID, summary: summary, offering: name)
+            case .offerNaming(let sessionID, _) where effects.contains(where: {
+                if case .finished(sessionID, _, true) = $0 { true } else { false }
+            }):
+                continue
+            default:
+                perform(effect)
+            }
+        }
         if forceChange || reducer.state != before { onChange(reducer.state) }
     }
 
@@ -348,19 +383,50 @@ struct MeetingControllerTuning: Sendable {
             launcher.terminate(sessionID: sessionID)
         case .finished(let sessionID, let summary, let ready):
             Self.log.notice("Session \(sessionID, privacy: .public): finished")
-            onEffect(.finished(sessionID: sessionID, summary: summary, speakersReady: ready && hasSpeakerLabels(sessionID)))
-        case .offerNaming(let sessionID, _):
-            // Post-processing can succeed without labels (speaker models not installed).
-            guard hasSpeakerLabels(sessionID) else { return }
-            onEffect(effect)
+            guard ready else {
+                onEffect(effect)
+                return
+            }
+            finishOnceLabelsChecked(sessionID: sessionID, summary: summary, offering: nil)
+        case .offerNaming(let sessionID, let name):
+            offerNamingIfLabelled(sessionID: sessionID, name: name)
         case .announce, .setDictationPaused, .clearNamingOffer:
             onEffect(effect)
         }
     }
 
-    /// The session has a current speaker run.
-    private func hasSpeakerLabels(_ sessionID: String) -> Bool {
-        ((try? SessionSpeakerStore.readHead(session: sessionURL(sessionID))) ?? nil) != nil
+    /// Reports a meeting whose post-processing succeeded, with `speakersReady` from its saved labels, and offers
+    /// naming when a name is given and the labels are ready: post-processing can succeed without labels (speaker
+    /// models not installed), and saved labels can be damaged.
+    private func finishOnceLabelsChecked(sessionID: String, summary: String, offering name: String?) {
+        let session = sessionURL(sessionID)
+        Task { [weak self] in
+            let ready = await Self.speakerLabelsReadyOffMain(session: session)
+            guard let self else { return }
+            self.onEffect(.finished(sessionID: sessionID, summary: summary, speakersReady: ready))
+            if ready, let name { self.onEffect(.offerNaming(sessionID: sessionID, name: name)) }
+        }
+    }
+
+    /// Offers naming the speakers of `sessionID` once its saved labels are checked, if they are ready.
+    private func offerNamingIfLabelled(sessionID: String, name: String) {
+        let session = sessionURL(sessionID)
+        Task { [weak self] in
+            guard await Self.speakerLabelsReadyOffMain(session: session), let self else { return }
+            self.onEffect(.offerNaming(sessionID: sessionID, name: name))
+        }
+    }
+
+    /// `speakerLabelsReady` off the main actor: it loads the session's speaker snapshot (§1.3).
+    private nonisolated static func speakerLabelsReadyOffMain(session: URL) async -> Bool {
+        await Task.detached { speakerLabelsReady(session: session) }.value
+    }
+
+    /// The session's saved speaker labels are usable (`SavedSpeakerState.labelsReady`, the validation the catalog,
+    /// recovery, and the exports share): the head's run, its transcript, and every span load. Reads files; call it off
+    /// the main actor.
+    public nonisolated static func speakerLabelsReady(session: URL) -> Bool {
+        SavedSpeakerState.read(session: session).labelsReady
     }
 
     /// Publishes the next queued request, after the previous one was acknowledged (or 3 s passed).
@@ -406,12 +472,38 @@ struct MeetingControllerTuning: Sendable {
 
     private func recorderExited(sessionID: String, code: Int32, logTail: String?) {
         unexitedRecorders.remove(sessionID)
+        var launched = loadLaunchedRecorders()
+        if launched.removeValue(forKey: sessionID) != nil { saveLaunchedRecorders(launched) }
         removeVocabularyFile(sessionID: sessionID)
         guard state.sessionID == sessionID else { return }
         // A recorder that wrote `exited` first is finished from its status, not from the exit.
         poll()
         guard state.sessionID == sessionID else { return }
         dispatch(.childExited(code: code, logTail: logTail, at: now()))
+    }
+
+    /// Saves the pid and start time of a recorder child just launched, until its exit is seen.
+    private func saveLaunchedRecorder(sessionID: String, pid: Int32) {
+        // A child already gone has no start time; its exit is reported by the launcher.
+        guard let started = ProcessSpawner.startTime(of: pid) else { return }
+        var launched = loadLaunchedRecorders()
+        launched[sessionID] = [Int(pid), Int(started)]
+        saveLaunchedRecorders(launched)
+    }
+
+    /// True while a saved launched recorder still runs: one of this run whose exit was not reported, or one whose
+    /// pid still names a process with the saved start time (a reused pid names a later one). Saved recorders that
+    /// ended are forgotten.
+    private func launchedRecordersStillRun() -> Bool {
+        let saved = loadLaunchedRecorders()
+        let running = saved.filter { sessionID, identity in
+            if unexitedRecorders.contains(sessionID) { return true }
+            guard identity.count == 2, let pid = Int32(exactly: identity[0]),
+                  let started = UInt64(exactly: identity[1]) else { return false }
+            return ProcessSpawner.startTime(of: pid) == started
+        }
+        if running.count != saved.count { saveLaunchedRecorders(running) }
+        return !running.isEmpty
     }
 
     // MARK: - Vocabulary hand-off (§4.12)
@@ -479,6 +571,9 @@ struct MeetingControllerTuning: Sendable {
                     Self.log.notice("Session \(pick.id, privacy: .public): automatic relabel ended with \(code, privacy: .public)")
                     self?.relabelling = false
                     self?.relabellingSessionID = nil
+                    // Labelled in the background: offered for naming as a meeting that just ended is, once its
+                    // labels check out (the controller stays idle, so nothing else would offer it).
+                    if code == 0 { self?.offerNamingIfLabelled(sessionID: pick.id, name: pick.name) }
                 }
                 self.relabellingSessionID = pick.id
                 Self.log.notice("Session \(pick.id, privacy: .public): relabelling automatically (attempt \(attempts[pick.id] ?? 0, privacy: .public))")

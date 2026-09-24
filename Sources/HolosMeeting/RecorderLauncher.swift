@@ -481,6 +481,17 @@ public enum ProcessSpawner {
         }
     }
 
+    /// When process `pid` started, in microseconds since 1970; nil when no such process runs (or it cannot be
+    /// inspected). With the pid it names one process: a pid the system reuses later belongs to a process that started
+    /// later.
+    static func startTime(of pid: pid_t) -> UInt64? {
+        guard pid > 0 else { return nil }
+        var info = proc_bsdinfo()
+        let size = Int32(MemoryLayout<proc_bsdinfo>.size)
+        guard proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &info, size) == size else { return nil }
+        return UInt64(info.pbi_start_tvsec) * 1_000_000 + UInt64(info.pbi_start_tvusec)
+    }
+
     /// A category of `error` that is safe to log publicly ("unavailable", "io", "NSCocoaErrorDomain 4"): error texts
     /// can hold user paths, which are logged only as private (docs/meeting-design.md §1.5).
     public static func logCategory(_ error: any Error) -> String {
