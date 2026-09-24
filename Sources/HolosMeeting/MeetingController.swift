@@ -80,6 +80,10 @@ struct MeetingControllerTuning: Sendable {
     }
 
     private var lastStatus: RecorderStatus?
+    /// Recorders this controller launched whose end the launcher has not reported yet. A start the menu gave up on
+    /// (the 2-minute timeout) can still have its recorder at a permission prompt, before it created its session
+    /// folder and before it acts on SIGTERM: no new recorder is launched while one of these still runs.
+    private var unexitedRecorders: Set<String> = []
     private var vocabularyFiles: [String: URL] = [:]
     private var loop: Task<Void, Never>?
     private let clock = ContinuousClock()
@@ -143,6 +147,10 @@ struct MeetingControllerTuning: Sendable {
         case .starting where reducer.stoppedWhileStarting: throw HolosError.unavailable(MeetingReducer.stillStopping)
         case .starting, .active: throw HolosError.unavailable(MeetingReducer.alreadyRecording)
         }
+        // A recorder this app launched and then stopped following (a timed-out start, even after its failure was
+        // dismissed) has not exited: it may be waiting at a permission prompt without a session folder, so its
+        // liveness says nothing. It would record alongside a new one once the prompt is answered.
+        if !unexitedRecorders.isEmpty { throw HolosError.unavailable(MeetingReducer.stillStopping) }
         // A meeting started in a terminal since the last rescan (every 3 s) is followed instead: a second recorder
         // must not take the microphone.
         rescan()
@@ -165,6 +173,7 @@ struct MeetingControllerTuning: Sendable {
                         self?.recorderExited(sessionID: id, code: code, logTail: tail)
                     }
                     let pid = try launcher.launch(launchSettings, sessionID: id, root: root, vocabularyFile: file)
+                    unexitedRecorders.insert(id)
                     _ = reducer.reduce(.launched(pid: pid, at: now()))
                 } catch {
                     launchError = error
@@ -396,6 +405,7 @@ struct MeetingControllerTuning: Sendable {
     // MARK: - Recorder exit
 
     private func recorderExited(sessionID: String, code: Int32, logTail: String?) {
+        unexitedRecorders.remove(sessionID)
         removeVocabularyFile(sessionID: sessionID)
         guard state.sessionID == sessionID else { return }
         // A recorder that wrote `exited` first is finished from its status, not from the exit.

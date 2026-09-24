@@ -140,7 +140,8 @@ private func exitedWriteFailing(_ failing: SharedValue<Int>, failures: SharedVal
 }
 
 /// A recorder that cannot write `exited` keeps the session's last lock (the writer lock, or the processing lease
-/// with post-processing) until the process exits, so liveness never reads it as dead while it shuts down.
+/// with post-processing) while the exited status is not written, so liveness never reads it as dead while it shuts
+/// down.
 @Test(.timeLimit(.minutes(1)), arguments: [false, true]) @MainActor
 func recorderKeepsItsLastLockWhenExitCannotBeWritten(postProcess: Bool) async throws {
     let temp = try TemporaryDirectory()
@@ -169,6 +170,45 @@ func recorderKeepsItsLastLockWhenExitCannotBeWritten(postProcess: Bool) async th
     #expect(throws: HolosError.self) {
         try RecorderChannel.send(.pause, session: outcome.directory, sessionID: outcome.sessionID, sender: "cli")
     }
+}
+
+/// An in-process recorder runs inside the app, which does not exit after the meeting: once the exited status can be
+/// written again, it is written in the background, requests are cleaned up, and the held locks are released, so the
+/// meeting does not stay busy until Holos quits.
+@Test(.timeLimit(.minutes(1)), arguments: [false, true]) @MainActor
+func recorderReleasesItsLocksOnceALaterExitWriteLands(postProcess: Bool) async throws {
+    let temp = try TemporaryDirectory()
+    defer { temp.remove() }
+    let failing = SharedValue(Int.max)
+    let failures = SharedValue(0)
+    let hook: PostProcessHook = { session, _, _ in
+        PostProcessingRecord(sessionID: session.deletingPathExtension().lastPathComponent, state: .succeeded,
+                             pid: getpid(), startedAt: Date(), updatedAt: Date())
+    }
+    let captures = FakeCaptureFactory([FakeCaptureScript(frames: FakeFrame.run(count: 2))])
+    let stop = ManualStopSource()
+    var dependencies = recorderDependencies(captures: captures, postProcess: postProcess ? hook : nil, stop: stop)
+    dependencies.statusWrite = exitedWriteFailing(failing, failures: failures)
+    let run = Task { try await RecordingWorkflow.run(.testing(root: temp.url, recordOnly: true), dependencies: dependencies) }
+    #expect(await eventually { (captures.captures.first?.consumedFrames ?? 0) >= 2 })
+    stop.requestStop()
+    let outcome = try await run.value
+    let session = outcome.directory
+    func held() throws -> Bool {
+        try postProcess ? SessionArchive.isProcessing(at: session) : SessionArchive.isActive(at: session)
+    }
+    #expect(try held(), "Held while status.json does not say exited.")
+    #expect(ControlInbox.isPublicationClosed(session: session))
+    // The disk has room again.
+    failing.set(0)
+    #expect(await eventually(timeout: .seconds(30)) {
+        (try? RecorderChannel.readStatus(session: session))??.phase == .exited
+    })
+    #expect(await eventually(timeout: .seconds(30)) { (try? held()) == false }, "The last lock is released.")
+    #expect(try !SessionArchive.isActive(at: session))
+    #expect(try !SessionArchive.isProcessing(at: session))
+    #expect(!ControlInbox.isPublicationClosed(session: session), "The closed marker is removed after exited.")
+    #expect(RecorderChannel.liveness(session: session) == .exited)
 }
 
 /// Progress from post-processing reaches status.json in order, and nothing follows `exited` (§4.6 step 7).

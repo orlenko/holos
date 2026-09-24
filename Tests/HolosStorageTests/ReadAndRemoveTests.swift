@@ -86,6 +86,55 @@ private func expectHandOffInvalidInput(_ body: () throws -> Void) {
     #expect(handOffEntries(folder) == ["vocabulary.json"])
 }
 
+/// Another process that can write to the folder renames a different file onto the hand-off file's name after it was
+/// verified: at either moment (before it is moved aside, or after, just before the unlink), the replacement survives
+/// with its contents, the verified file's data is still returned, and no aside folder is left behind.
+@Test(arguments: [AtomicFile.HandOffRemovalStage.beforeMove, .beforeUnlink])
+func readAndRemoveNeverDeletesAFileSwappedInAfterTheCheck(stage: AtomicFile.HandOffRemovalStage) throws {
+    let folder = try handOffFolder()
+    defer { try? FileManager.default.removeItem(at: folder) }
+    let url = folder.appendingPathComponent("vocabulary.json")
+    try Data("names".utf8).write(to: url)
+    let data = try AtomicFile.$handOffRemovalHook.withValue({ current, folder in
+        guard current == stage else { return }
+        let other = folder.appendingPathComponent("other.json")
+        try? Data("someone else's".utf8).write(to: other)
+        #expect(rename(other.path, folder.appendingPathComponent("vocabulary.json").path) == 0)
+    }) {
+        try AtomicFile.readAndRemove(url, maxBytes: 1024)
+    }
+    #expect(data == Data("names".utf8))
+    #expect(handOffEntries(folder) == ["vocabulary.json"], "Only the replacement is left, and no aside folder.")
+    #expect(try Data(contentsOf: url) == Data("someone else's".utf8))
+}
+
+/// `removeRegularFile` (the app's vocabulary and command-output clean-up) removes only the regular file it checked
+/// and accepted: never a file swapped in after the check, a file `accept` refuses, or a link.
+@Test(arguments: [AtomicFile.HandOffRemovalStage.beforeMove, .beforeUnlink])
+func removeRegularFileNeverDeletesAFileSwappedInAfterTheCheck(stage: AtomicFile.HandOffRemovalStage) throws {
+    let folder = try handOffFolder()
+    defer { try? FileManager.default.removeItem(at: folder) }
+    let url = folder.appendingPathComponent("holos-vocabulary-1.json")
+    try Data("names".utf8).write(to: url)
+    let removed = AtomicFile.$handOffRemovalHook.withValue({ current, folder in
+        guard current == stage else { return }
+        let other = folder.appendingPathComponent("other.json")
+        try? Data("someone else's".utf8).write(to: other)
+        #expect(rename(other.path, folder.appendingPathComponent("holos-vocabulary-1.json").path) == 0)
+    }) {
+        AtomicFile.removeRegularFile(url)
+    }
+    #expect(removed == (stage == .beforeUnlink), "Removed only when the checked file was the one moved aside.")
+    #expect(handOffEntries(folder) == ["holos-vocabulary-1.json"])
+    #expect(try Data(contentsOf: url) == Data("someone else's".utf8))
+    #expect(!AtomicFile.removeRegularFile(url) { _ in false }, "A file `accept` refuses stays.")
+    let link = folder.appendingPathComponent("link.json")
+    try FileManager.default.createSymbolicLink(at: link, withDestinationURL: url)
+    #expect(!AtomicFile.removeRegularFile(link))
+    #expect(AtomicFile.removeRegularFile(url))
+    #expect(handOffEntries(folder) == ["link.json"])
+}
+
 /// `holos say` removes its own `holos-say-<UUID>` folder with `removeTree` from the resolved temporary folder: the
 /// folder goes, a link inside it is removed itself, and the link's target survives.
 @Test func removeTreeRemovesAHolosTemporaryFolderWithoutFollowingLinks() throws {

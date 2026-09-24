@@ -313,6 +313,41 @@ private final class ControllerHeartbeat {
     #expect(launcher.launches.count == 1)
     // Once that recorder is gone, a new start goes ahead.
     try await archive.finish(status: ArchiveStatus.failed)
+    launcher.exit(id, code: 1, logTail: nil)
+    try controller.start(MeetingStartSettings(name: "Again", source: .microphone))
+    #expect(launcher.launches.count == 2)
+}
+
+/// A timed-out start whose recorder is still at a permission prompt before creating its session folder (liveness
+/// says dead) blocks a second recorder until the launcher reports that the first one exited, even after the failure
+/// was dismissed.
+@Test @MainActor func startAfterTimedOutStartWithoutAFolderWaitsForItsExit() throws {
+    let temp = try TemporaryDirectory("controller")
+    defer { temp.remove() }
+    let launcher = FakeRecorderLauncher()
+    var clock = Date()
+    let controller = makeController(root: temp.url, launcher: launcher, probe: ControllerProbe(), now: { clock })
+    defer { controller.stopMonitoring() }
+    try controller.start(MeetingStartSettings(name: "Council", source: .microphone))
+    let id = try #require(launcher.launches.first?.sessionID)
+    clock = clock.addingTimeInterval(121)
+    controller.poll()
+    #expect(launcher.terminated == [id])
+    guard case .failed(let failedID, _) = controller.state, failedID == id else {
+        Issue.record("Expected failed, got \(controller.state).")
+        return
+    }
+    #expect(!exists(controller.sessionURL(id)), "The recorder has not created its session yet.")
+    let error = #expect(throws: HolosError.self) {
+        try controller.start(MeetingStartSettings(name: "Again", source: .microphone))
+    }
+    #expect(error?.localizedDescription == MeetingReducer.stillStopping)
+    controller.dismissFailure()
+    #expect(controller.state == .idle)
+    #expect(throws: HolosError.self) { try controller.start(MeetingStartSettings(name: "Again", source: .microphone)) }
+    #expect(launcher.launches.count == 1)
+    // The prompt was answered; the recorder saw SIGTERM and exited.
+    launcher.exit(id, code: 1, logTail: nil)
     try controller.start(MeetingStartSettings(name: "Again", source: .microphone))
     #expect(launcher.launches.count == 2)
 }

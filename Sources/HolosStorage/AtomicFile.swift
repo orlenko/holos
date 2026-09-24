@@ -11,7 +11,7 @@ import HolosCore
 /// Appends to one file must be serialized by the caller (the writer or speaker lock).
 ///
 /// No operation here follows a symbolic link in place of a folder Holos owns: `write`, `create`, `writeStream`,
-/// `append`, `truncate`, `sync`, `readIfPresent`/`readJSON`, `readAndRemove`, `openForReading`,
+/// `append`, `truncate`, `sync`, `readIfPresent`/`readJSON`, `readAndRemove`, `removeRegularFile`, `openForReading`,
 /// `ensurePrivateDirectory`, and `removeTree` all open folders
 /// with `openFolder` (FolderChain.swift): the folder holding the file is opened with O_NOFOLLOW, and inside a
 /// session folder (`<id>.holos`) so is every folder from the session folder down (an `openat` chain). A symbolic
@@ -35,6 +35,14 @@ public enum AtomicFile {
     /// entry, and the reopen of a folder just made, is numbered, and the ones the plan names fail as an I/O error
     /// would (`FaultPlan`).
     @TaskLocal static var faultPlan: FaultPlan? = nil
+
+    /// Test hook: while set (a task-local value), `readAndRemove` calls it with the file's folder URL just before it
+    /// moves the verified file aside (`.beforeMove`) and just before it unlinks it (`.beforeUnlink`), so tests can
+    /// swap another file in at those moments.
+    @TaskLocal static var handOffRemovalHook: (@Sendable (HandOffRemovalStage, URL) -> Void)? = nil
+
+    /// The moments `handOffRemovalHook` is called at.
+    enum HandOffRemovalStage: Sendable { case beforeMove, beforeUnlink }
 
     /// Writes a same-directory temporary file (O_CREAT|O_EXCL|O_CLOEXEC, `permissions`), fsyncs it,
     /// renames it over `url`, and fsyncs the directory. Leaves no temporary file on failure.
@@ -197,9 +205,10 @@ public enum AtomicFile {
     ///
     /// The file is opened with O_NOFOLLOW (through its folder opened like `readIfPresent` opens it) and checked with
     /// fstat to be a regular file before anything is removed. A folder, symbolic link, FIFO, or other entry in its
-    /// place is refused (`invalidInput`) and left untouched. The unlink is `unlinkat` without AT_REMOVEDIR, so it can
-    /// never remove a folder, and only when the name still refers to the file that was opened (same device and
-    /// inode, not followed). Once the file is verified it is removed even if it is too large or cannot be read.
+    /// place is refused (`invalidInput`) and left untouched. Only the file that was opened (same device and inode,
+    /// not followed) is ever removed, even if another process can write to its folder and renames a different file
+    /// onto its name meanwhile (`removeIfSame`); the unlink is `unlinkat` without AT_REMOVEDIR, so it can never
+    /// remove a folder. Once the file is verified it is removed even if it is too large or cannot be read.
     public static func readAndRemove(_ url: URL, maxBytes: Int) throws -> Data? {
         guard url.isFileURL else { throw HolosError.invalidInput("File path must be a file URL.") }
         guard let (parent, name) = try openParentIfPresent(of: url) else { return nil }
@@ -218,23 +227,85 @@ public enum AtomicFile {
         guard fstat(fd, &info) == 0, (info.st_mode & S_IFMT) == S_IFREG else {
             throw HolosError.invalidInput("\(url.lastPathComponent) is not a regular file.")
         }
-        defer { unlinkIfSame(name, in: parent, as: info) }
+        defer { removeIfSame(name, in: parent, as: info, folder: url.deletingLastPathComponent()) }
         return try readAll(fd, size: info.st_size, url: url, maxBytes: maxBytes)
     }
 
-    /// Unlinks the non-folder entry `name` of `parent` only while it is the file `opened` (device and inode), so an
-    /// entry swapped in after the file was verified is left alone.
-    private static func unlinkIfSame(_ name: String, in parent: Int32, as opened: stat) {
+    /// Removes `url` if it is a regular file (a symbolic link in its place is not followed) for which `accept` is
+    /// true, with `readAndRemove`'s guarantee: only the file that was checked is removed, never a different entry
+    /// renamed onto its name meanwhile (`removeIfSame`). A missing file or folder, a link, a folder, or any other
+    /// entry is left alone. Errors are logged; returns true when the file was removed.
+    @discardableResult
+    public static func removeRegularFile(_ url: URL, if accept: (stat) -> Bool = { _ in true }) -> Bool {
+        do {
+            guard url.isFileURL, let (parent, name) = try openParentIfPresent(of: url) else { return false }
+            defer { Darwin.close(parent) }
+            var info = stat()
+            guard fstatat(parent, name, &info, AT_SYMLINK_NOFOLLOW) == 0, (info.st_mode & S_IFMT) == S_IFREG,
+                  accept(info) else { return false }
+            return removeIfSame(name, in: parent, as: info, folder: url.deletingLastPathComponent())
+        } catch {
+            log.error("Cannot delete a file: \(error.localizedDescription, privacy: .public)")
+            return false
+        }
+    }
+
+    /// Removes the entry `name` of `parent` only if it is the file `opened` (device and inode); anything else in its
+    /// place is left alone. Returns true when it was removed.
+    ///
+    /// Checking the name and then unlinking it would race: another process that can write to the folder could
+    /// rename a different file onto the name between the two, and the unlink would delete that file. So the entry
+    /// is first moved (one `renameat`) into a new folder made here for it: 0700, a random name, and checked through
+    /// its own descriptor to be a folder this user owns, so no other user can put anything in it. The check and the
+    /// unlink then look at an entry in that folder, which nothing else can replace. An entry that turns out not to be
+    /// the opened file is moved back (RENAME_EXCL, so it replaces nothing); if its name was taken again meanwhile,
+    /// it is left in the new folder and logged. The new folder is removed once empty.
+    @discardableResult
+    private static func removeIfSame(_ name: String, in parent: Int32, as opened: stat, folder: URL) -> Bool {
+        let asideName = ".holos-remove-\(UUID().uuidString)"
+        guard mkdirat(parent, asideName, 0o700) == 0 else {
+            log.error("Cannot delete a file: cannot make a folder beside it: \(errnoText(), privacy: .public)")
+            return false
+        }
+        let aside = openat(parent, asideName, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        var asideInfo = stat()
+        guard aside >= 0, fstat(aside, &asideInfo) == 0, (asideInfo.st_mode & S_IFMT) == S_IFDIR,
+              asideInfo.st_uid == geteuid(), asideInfo.st_mode & 0o077 == 0 else {
+            if aside >= 0 { Darwin.close(aside) }
+            log.error("Cannot delete a file: the folder made beside it was replaced; the file was left in place")
+            return false
+        }
+        defer {
+            Darwin.close(aside)
+            // Only an empty folder is removed.
+            _ = unlinkat(parent, asideName, AT_REMOVEDIR)
+        }
+        handOffRemovalHook?(.beforeMove, folder)
+        let moved = "file"
+        guard renameat(parent, name, aside, moved) == 0 else {
+            let code = errno
+            if code != ENOENT {
+                log.error("Cannot delete a file: cannot move it aside: \(errnoText(code), privacy: .public)")
+            }
+            return false
+        }
         var current = stat()
-        guard fstatat(parent, name, &current, AT_SYMLINK_NOFOLLOW) == 0,
-              (current.st_mode & S_IFMT) == S_IFREG,
-              current.st_dev == opened.st_dev, current.st_ino == opened.st_ino else {
-            log.error("A hand-off file was replaced before it could be deleted; it was left in place")
-            return
+        let same = fstatat(aside, moved, &current, AT_SYMLINK_NOFOLLOW) == 0
+            && (current.st_mode & S_IFMT) == S_IFREG
+            && current.st_dev == opened.st_dev && current.st_ino == opened.st_ino
+        guard same else {
+            log.error("A file was replaced before it could be deleted; the replacement was left in place")
+            if renameatx_np(aside, moved, parent, name, UInt32(RENAME_EXCL)) != 0 {
+                log.error("Cannot put back the entry that replaced a file being deleted: \(errnoText(), privacy: .public); it is in \(asideName, privacy: .public)")
+            }
+            return false
         }
-        if unlinkat(parent, name, 0) != 0 {
-            log.error("Cannot delete a hand-off file: \(errnoText(), privacy: .public)")
+        handOffRemovalHook?(.beforeUnlink, folder)
+        guard unlinkat(aside, moved, 0) == 0 else {
+            log.error("Cannot delete a file: \(errnoText(), privacy: .public); it is in \(asideName, privacy: .public)")
+            return false
         }
+        return true
     }
 
     /// Reads the open regular file `fd` of `size` bytes, refusing more than `maxBytes`.

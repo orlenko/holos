@@ -526,25 +526,21 @@ public enum ProcessSpawner {
         return String(line.prefix(300))
     }
 
-    /// Removes `url` if it is a regular file (never following a link, never a folder).
+    /// Removes `url` if it is a regular file (never following a link, never a folder), and only the file that was
+    /// checked: a different file renamed onto its name meanwhile is left alone (`AtomicFile.removeRegularFile`).
     public static func removeRegularFile(_ url: URL) {
-        var info = stat()
-        guard lstat(url.path, &info) == 0, (info.st_mode & S_IFMT) == S_IFREG else { return }
-        if unlink(url.path) != 0, errno != ENOENT {
-            log.error("Cannot delete \(url.lastPathComponent, privacy: .private): \(String(cString: strerror(errno)), privacy: .public)")
-        }
+        AtomicFile.removeRegularFile(url)
     }
 
     /// Removes the regular files in `folder` whose names start with `prefix` and that were last modified before
-    /// `cutoff` (left by an app that crashed). Links, folders, and newer files are left alone.
+    /// `cutoff` (left by an app that crashed). Links, folders, newer files, and a file renamed onto a checked name
+    /// after the check are left alone.
     public static func removeStaleFiles(in folder: URL, prefix: String, suffix: String = "", olderThan cutoff: Date) {
         guard let names = try? FileManager.default.contentsOfDirectory(atPath: folder.path) else { return }
         for name in names where name.hasPrefix(prefix) && name.hasSuffix(suffix) {
-            let url = folder.appendingPathComponent(name, isDirectory: false)
-            var info = stat()
-            guard lstat(url.path, &info) == 0, (info.st_mode & S_IFMT) == S_IFREG,
-                  Date(timeIntervalSince1970: TimeInterval(info.st_mtimespec.tv_sec)) < cutoff else { continue }
-            removeRegularFile(url)
+            AtomicFile.removeRegularFile(folder.appendingPathComponent(name, isDirectory: false)) { info in
+                Date(timeIntervalSince1970: TimeInterval(info.st_mtimespec.tv_sec)) < cutoff
+            }
         }
     }
 }
