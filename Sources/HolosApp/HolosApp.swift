@@ -229,7 +229,8 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
         log.error("Code signature no longer matches the app on disk; dictation paused")
         if enabled || enabling { disable(persist: false) }
         show("Holos was rebuilt while running. Quit and reopen Holos to dictate again.")
-        overlay.show(title: "Holos was rebuilt while running", text: "Quit and reopen Holos to dictate again.", force: true)
+        overlay.show(title: "Holos was rebuilt while running", text: "Quit and reopen Holos to dictate again.",
+                     force: true, attention: true)
         scheduleExpiry()
         return true
     }
@@ -661,10 +662,12 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
 
     private func scheduleExpiry() {
         expiryTask?.cancel()
+        let shown = overlay.contentToken
         expiryTask = Task { [weak self] in
             do {
                 try await Task.sleep(for: .seconds(8))
-                self?.overlay.hide()
+                // Hide only the content this timer was scheduled for, never something shown since.
+                if let self, self.overlay.contentToken == shown { self.overlay.hide() }
                 try await Task.sleep(for: .seconds(592))
                 self?.discardResult()
             } catch { }

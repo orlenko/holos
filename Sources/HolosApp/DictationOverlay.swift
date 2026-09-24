@@ -91,7 +91,7 @@ final class DictationOverlay {
         if dismissed && !force { return }
         if force { dismissed = false }
         contentToken &+= 1
-        showingAttention = attention || force
+        showingAttention = attention
         titleLabel.stringValue = title
         previewLabel.stringValue = Self.latestWords(of: text, font: previewLabel.font ?? .systemFont(ofSize: 15))
         let pointer = NSEvent.mouseLocation
