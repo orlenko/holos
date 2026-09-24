@@ -13,7 +13,8 @@ extension Session {
                 STATE is recording, processing, interrupted (the recorder stopped unexpectedly; recover it with \
                 holos session recover), complete, audioOnly, transcriptionIncomplete, incomplete, failed, recovered, \
                 or damaged (the manifest cannot be read). SAVED is the longest track's saved audio (h:mm:ss). \
-                SPEAKERS is none, labelling, labelled, not labelled, failed, or interrupted.
+                SPEAKERS is none, labelling, labelled, not labelled, failed, interrupted, or unreadable (the \
+                speaker files are damaged or were written by a newer Holos; --json gives the reason).
                 """)
 
         @Option(help: "Session folder (default: HOLOS_DATA_DIR or Application Support/Holos/Sessions).")
@@ -55,6 +56,7 @@ extension Session {
             case .notLabelled: "not labelled"
             case .failed: "failed"
             case .interrupted: "interrupted"
+            case .unreadable: "unreadable"
             }
         }
 

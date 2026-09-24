@@ -13,9 +13,12 @@ import Testing
 func recorderFastTuning(liveQueueSeconds: Double = LiveTrack.queueSeconds,
                         journalCapacity: Int = LiveTrack.journalCapacity,
                         pumpCapacitySeconds: Double = 60) -> RecorderTuning {
-    RecorderTuning(poll: .milliseconds(10), tick: .milliseconds(50), stoppedPoll: .milliseconds(50),
-                   pumpCapacitySeconds: pumpCapacitySeconds, liveQueueSeconds: liveQueueSeconds,
-                   journalCapacity: journalCapacity)
+    var tuning = RecorderTuning(poll: .milliseconds(10), tick: .milliseconds(50), stoppedPoll: .milliseconds(50),
+                                pumpCapacitySeconds: pumpCapacitySeconds, liveQueueSeconds: liveQueueSeconds,
+                                journalCapacity: journalCapacity)
+    tuning.exitRetry = .milliseconds(50)
+    tuning.exitRetryLimit = .milliseconds(400)
+    return tuning
 }
 
 /// Fake capture and speech with a fast loop, the given clock (a `ManualSessionClock` gives tests the time), and
@@ -99,7 +102,7 @@ actor RecorderWordSpeech: LiveSpeechSession {
     private(set) var fedSeconds = 0.0
     private(set) var firstFrameStart: Double?
     private var fedEnd = 0.0
-    private var blocked = false
+    private(set) var blocked = false
     private var reported = 0
     private(set) var cancelled = false
 
@@ -138,6 +141,9 @@ actor RecorderWordSpeech: LiveSpeechSession {
     }
 
     func cancel() async { cancelled = true }
+
+    /// Seconds of audio taken so far, and whether `append` is blocked at `blockAt`.
+    var progress: (fed: Double, blocked: Bool) { (fedSeconds, blocked) }
 
     /// Segment `index`: words at each whole second it covers (only those that end by `until`).
     private func segment(_ index: Int, until: Double = .infinity) -> TranscriptSegment {

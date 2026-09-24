@@ -36,12 +36,13 @@ public enum AutoRelabelPolicy {
     }
 
     /// Labelling was interrupted, never ran, or ended without labels for a reason other than missing models (which
-    /// the user fixes from Setup, then uses Label Speakers).
+    /// the user fixes from Setup, then uses Label Speakers). Unreadable speaker files are left to the user: they may
+    /// come from a newer Holos, which relabelling would overwrite.
     static func needsLabels(_ summary: SessionSummary) -> Bool {
         switch summary.speakerState {
         case .interrupted, .none: true
         case .notLabelled: !modelsWereMissing(summary.labelMessage)
-        case .running, .labelled, .failed: false
+        case .running, .labelled, .failed, .unreadable: false
         }
     }
 

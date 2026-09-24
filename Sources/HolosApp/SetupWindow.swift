@@ -4,6 +4,8 @@ struct SetupState {
     var microphone: String
     var accessibility: Bool
     var inputMonitoring: Bool
+    /// Screen & System Audio Recording, which online calls need to record the other side; in-person meetings do not.
+    var systemAudio = false
     /// nil while the asset check is still running.
     var assets: String?
     var installingAssets: Bool
@@ -31,6 +33,7 @@ struct SetupState {
 
 enum SetupAction: Int, CaseIterable {
     case microphone, accessibility, inputMonitoring, assets, dictation, toggleFillers, togglePreview, speakerModels
+    case systemAudio
 }
 
 /// A regular titled window, so setup status stays visible while the user works in System Settings.
@@ -78,7 +81,7 @@ final class SetupWindow: NSObject, NSWindowDelegate {
         let titles: [(SetupAction, String)] = [
             (.microphone, "Microphone"), (.accessibility, "Accessibility"),
             (.inputMonitoring, "Input Monitoring"), (.assets, "English speech assets"), (.dictation, "Dictation"),
-            (.speakerModels, "Speaker labels"),
+            (.speakerModels, "Speaker labels"), (.systemAudio, "System audio (online calls)"),
         ]
         for (action, title) in titles {
             let icon = NSImageView()
@@ -186,6 +189,12 @@ final class SetupWindow: NSObject, NSWindowDelegate {
             state.inputMonitoring ? "Granted — used to detect the hold-to-talk shortcut"
                                   : "Not granted — turn on Holos in System Settings",
             button: "Open Settings")
+        // Optional, so never marked as a problem: only online calls record the computer's audio.
+        set(.systemAudio, state.systemAudio ? .done : .pending,
+            state.systemAudio ? "Granted — records the other side of online calls"
+                              : "Optional — needed only to record online calls. Turn on Holos under Screen & System "
+                                + "Audio Recording, then quit and reopen Holos.",
+            button: state.systemAudio ? nil : "Open Settings")
 
         let canInstall = !state.installingAssets && !state.busy && !state.dictationEnabled && !state.enabling
         if state.installingAssets || state.assets == "downloading" {

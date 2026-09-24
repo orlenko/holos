@@ -174,6 +174,55 @@ private func atomicContents(_ folder: URL) throws -> [String] {
     #expect(fm.fileExists(atPath: kept.path))
 }
 
+/// `removeOpenFolder` works through the descriptors it is given: a folder renamed away after it was opened is the one
+/// emptied (the names in `last` removed after everything else), and a folder put at its old name is left whole.
+@Test func removeOpenFolderEmptiesTheOpenedFolderNeverOneRenamedInAtItsName() throws {
+    let folder = try atomicTemporaryFolder()
+    defer { try? FileManager.default.removeItem(at: folder) }
+    let fm = FileManager.default
+    let root = folder.appendingPathComponent("root", isDirectory: true)
+    let checked = root.appendingPathComponent("checked", isDirectory: true)
+    try fm.createDirectory(at: checked.appendingPathComponent("inner/deeper"), withIntermediateDirectories: true)
+    try Data("x".utf8).write(to: checked.appendingPathComponent("inner/deeper/file.txt"))
+    try Data("m".utf8).write(to: checked.appendingPathComponent("marker"))
+    let outside = folder.appendingPathComponent("outside.txt")
+    try Data("keep".utf8).write(to: outside)
+    try fm.createSymbolicLink(at: checked.appendingPathComponent("link"), withDestinationURL: outside)
+
+    let rootFD = Darwin.open(root.path, O_RDONLY | O_DIRECTORY | O_CLOEXEC)
+    #expect(rootFD >= 0)
+    defer { Darwin.close(rootFD) }
+    let opened = Darwin.open(checked.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+    #expect(opened >= 0)
+    defer { Darwin.close(opened) }
+
+    // Another program renames the folder away and puts its own folder at the same name.
+    let moved = root.appendingPathComponent("moved", isDirectory: true)
+    try fm.moveItem(at: checked, to: moved)
+    try fm.createDirectory(at: checked.appendingPathComponent("theirs"), withIntermediateDirectories: true)
+    try Data("theirs".utf8).write(to: checked.appendingPathComponent("theirs/data.txt"))
+    try Data("m".utf8).write(to: checked.appendingPathComponent("marker"))
+
+    let faults = FaultPlan()
+    let removed = try AtomicFile.$faultPlan.withValue(faults) {
+        try AtomicFile.removeOpenFolder(opened, named: "checked", in: rootFD, parentURL: root, removingLast: ["marker"])
+    }
+    #expect(removed == false)
+    #expect(try atomicContents(moved).isEmpty)
+    #expect(try atomicContents(checked) == ["marker", "theirs"])
+    #expect(try Data(contentsOf: checked.appendingPathComponent("theirs/data.txt")) == Data("theirs".utf8))
+    #expect(fm.fileExists(atPath: outside.path))
+    // The marker went after everything else.
+    #expect(faults.steps.filter { $0.hasPrefix("unlink ") }.last == "unlink marker")
+
+    // Still at its name, the emptied folder is removed too.
+    let again = Darwin.open(checked.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+    #expect(again >= 0)
+    defer { Darwin.close(again) }
+    #expect(try AtomicFile.removeOpenFolder(again, named: "checked", in: rootFD, parentURL: root))
+    #expect(try atomicContents(root) == ["moved"])
+}
+
 private func expectInvalidInput(_ body: () throws -> Void) {
     let error = #expect(throws: HolosError.self) { try body() }
     guard case .invalidInput? = error else { Issue.record("Expected invalidInput, got \(String(describing: error))"); return }

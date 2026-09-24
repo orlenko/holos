@@ -47,11 +47,12 @@ extension Session {
                 root: directory.map(fileURL) ?? HolosPaths.sessions, locale: recognition.locale,
                 backend: recognition.backend, vocabulary: try readVocabulary(), transcribe: !noTranscribe,
                 postprocess: !noTranscribe && !noPostprocess)
-            let work = Task { try await Self.perform(request) }
             // Ctrl-C (or SIGTERM) cancels the work, so a partial import is removed; a second one ends the process.
+            // The handling is installed before the work starts, so a signal in between cancels it too.
+            let work = CancellableStart<Int32>()
             let interrupt = InterruptCancellation { work.cancel() }
             defer { interrupt.restore() }
-            let code = try await work.value
+            let code = try await work.start { try await Self.perform(request) }.value
             if code != 0 { throw ExitCode(code) }
         }
 

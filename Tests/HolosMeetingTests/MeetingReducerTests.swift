@@ -223,16 +223,25 @@ private func isFailed(_ state: MeetingState) -> String? {
     #expect(effects.contains(.offerNaming(sessionID: reducerID, name: "Council meeting")))
 }
 
-@Test func exitWithoutSpeakerModelsSaysSoAndOffersNothing() {
+/// Post-processing that ended partial (without speaker models, or with a warning after saving labels) says why, and
+/// leaves the label check to `MeetingController`: it offers naming only when the saved labels load
+/// (MeetingControllerTests `finishedMeetingWithoutLabelsOffersNothing`, `finishedMeetingWithLabelsOffersNaming`).
+@Test func partialExitSaysWhyAndLeavesTheLabelCheckToTheController() {
     var reducer = activeReducer()
     let message = "No speaker labels: speaker models are not installed. Install them from Setup, or run holos setup --speakers."
     let exit = RecorderExit(archiveStatus: ArchiveStatus.complete, reason: .requested, postprocessing: .partial,
                             postprocessingMessage: message)
     let effects = reducer.reduce(read(.exited, after: 30, exit: exit, liveness: .exited))
     #expect(effects.contains(.finished(sessionID: reducerID, summary: "Saved Council meeting (0:00:30). \(message)",
-                                       speakersReady: false)))
-    #expect(!effects.contains { if case .offerNaming = $0 { true } else { false } })
+                                       speakersReady: true)))
+    #expect(effects.contains(.offerNaming(sessionID: reducerID, name: "Council meeting")))
     #expect(effects.contains(.setDictationPaused(false)))
+    // Post-processing that failed saved no labels to check.
+    var failed = activeReducer()
+    let failure = RecorderExit(archiveStatus: ArchiveStatus.complete, reason: .requested, postprocessing: .failed)
+    let failedEffects = failed.reduce(read(.exited, after: 30, exit: failure, liveness: .exited))
+    #expect(failedEffects.contains { if case .finished(reducerID, _, false) = $0 { true } else { false } })
+    #expect(!failedEffects.contains { if case .offerNaming = $0 { true } else { false } })
 }
 
 @Test func exitedWithoutCaptureFailsWithTheRecordersMessage() {

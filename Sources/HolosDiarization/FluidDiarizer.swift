@@ -137,6 +137,22 @@ public actor FluidDiarizer: SpeakerDiarizer {
         self.pinned = pinned
     }
 
+    /// The diarizer post-processing runs with: nil only when the speaker models are not installed at all, which
+    /// post-processing treats as "not set up" (speaker-less exports and the setup hint, not a failure). Installed
+    /// models, verified or damaged, give a `FluidDiarizer`; with damaged ones its calls throw
+    /// `FluidModels.missingModelsMessage`, so labelling is recorded as failed and a caller that reports exit codes
+    /// (`holos session import`, `holos session diarize`) says labelling failed instead of that models are missing.
+    public static func forInstalledModels(modelsDirectory: URL = FluidModels.defaultDirectory,
+                                          configuration: FluidDiarizerConfiguration = .default) -> FluidDiarizer? {
+        forInstalledModels(modelsDirectory: modelsDirectory, configuration: configuration, pinned: PinnedModels.files)
+    }
+
+    static func forInstalledModels(modelsDirectory: URL, configuration: FluidDiarizerConfiguration,
+                                   pinned: [PinnedFile]) -> FluidDiarizer? {
+        guard FluidModels.status(directory: modelsDirectory, pinned: pinned) != .notInstalled else { return nil }
+        return FluidDiarizer(modelsDirectory: modelsDirectory, configuration: configuration, pinned: pinned)
+    }
+
     /// Engine and model provenance: one `ModelDescriptor` for the repo whose `sha256` is the `ModelTreeDigest` of the
     /// verified files. Throws `HolosError.unavailable` when the models are missing or fail verification.
     public func engineInfo() async throws -> DiarizationEngineInfo {

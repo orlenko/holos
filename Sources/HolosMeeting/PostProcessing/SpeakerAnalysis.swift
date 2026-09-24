@@ -97,8 +97,9 @@ enum SpeakerAnalysis {
 
     /// The current head as the relabel decision and carry-over see it.
     struct HeadState {
-        var runID: String
-        /// Nil when the run file is missing or damaged.
+        /// Nil when speakers/head.json itself is damaged.
+        var runID: String?
+        /// Nil when the run file (or head.json) is missing or damaged.
         var run: DiarizationRun?
         /// The head with its edits, when its run and transcript are readable and match.
         var projection: SpeakerProjection?
@@ -115,10 +116,19 @@ enum SpeakerAnalysis {
         var usableRunID: String? { sameTranscript && projection != nil ? runID : nil }
     }
 
-    /// Nil when there is no head. A head whose run or transcript is missing or damaged still counts (it is
-    /// replaced, without carry-over); a file that cannot be read now, or one from a newer Holos, throws.
+    /// Nil when there is no head. A head that is damaged itself, or whose run or transcript is missing or damaged,
+    /// still counts (it is replaced, without carry-over), as `SpeakerSessionSnapshot.runProblem` tells the user;
+    /// a file that cannot be read now, or one from a newer Holos, throws.
     static func headState(session: URL, transcript: Transcript) throws -> HeadState? {
-        guard let head = try SessionSpeakerStore.readHead(session: session) else { return nil }
+        let found: SpeakerHead?
+        do {
+            found = try SessionSpeakerStore.readHead(session: session)
+        } catch let error where SessionFiles.isDamage(error) {
+            log.error("speakers/head.json is unusable: \(error.localizedDescription, privacy: .private)")
+            let edits = try SessionSpeakerStore.readEdits(session: session).edits
+            return HeadState(runID: nil, run: nil, projection: nil, hasEdits: !edits.isEmpty, sameTranscript: false)
+        }
+        guard let head = found else { return nil }
         let edits = try SessionSpeakerStore.readEdits(session: session).edits
         let run: DiarizationRun
         do {

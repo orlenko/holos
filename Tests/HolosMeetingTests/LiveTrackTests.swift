@@ -373,8 +373,11 @@ func nextSpeechSessionIsReadyBeforeCaptureRestarts() async throws {
             "The next epoch's speech session is ready before its capture is made and started.")
 }
 
-/// A capture of `count` 0.1 s frames at 16 kHz that, before `freeFrom` seconds, never runs more than half a second
-/// ahead of what live speech has taken, so the live queue overflows only once speech blocks.
+/// A capture of `count` 0.1 s frames at 16 kHz that never runs more than half a second ahead of what live speech has
+/// taken, until `speech` reports that speech is blocked on the frame it stops at. Pacing the capture until that frame
+/// has been taken, rather than until a frame time, is what makes the overflow's point deterministic: live speech
+/// always has exactly the audio before its block, however slowly the machine runs, and only the frames behind it
+/// overflow the live queue.
 @MainActor
 private final class PacedCapture: MeetingCapture {
     nonisolated let frames: AsyncThrowingStream<CapturedAudio, Error>
@@ -383,18 +386,20 @@ private final class PacedCapture: MeetingCapture {
     private let stopped = SharedValue(false)
     let delivered: SharedValue<Int>
 
-    init(count: Int, freeFrom: Double, delivered: SharedValue<Int> = SharedValue(0),
-         speechFed: @escaping @Sendable () async -> Double) {
+    init(count: Int, delivered: SharedValue<Int> = SharedValue(0),
+         speech: @escaping @Sendable () async -> (fed: Double, blocked: Bool)) {
         self.delivered = delivered
         let stopped = stopped
         frames = AsyncThrowingStream(unfolding: {
             let index = delivered.value
             guard index < count, !stopped.value, !Task.isCancelled else { return nil }
             let start = Double(index) / 10
-            while start < freeFrom, await speechFed() < start - 0.5 {
-                if stopped.value || Task.isCancelled { return nil }
+            while !stopped.value, !Task.isCancelled {
+                let live = await speech()
+                if live.blocked || live.fed >= start - 0.5 { break }
                 try? await Task.sleep(for: .milliseconds(1))
             }
+            guard !stopped.value, !Task.isCancelled else { return nil }
             delivered.update { $0 += 1 }
             return try FakeFrame(start: start, sampleRate: 16_000).captured(offset: 0)
         })
@@ -407,6 +412,7 @@ private final class PacedCapture: MeetingCapture {
 /// Live speech blocks at 40 s of a 60 s recording with a 1 s live queue, until capture has delivered all 60 s: the
 /// words before the point where live transcription fell behind are kept, and only the rest is transcribed from disk.
 /// The block ends on that signal, not after a fixed time, so the overflow happens however slowly the machine runs.
+/// The capture is paced until speech is blocked, so live always covers whole seconds 0..<40 before it falls behind.
 @Test(.timeLimit(.minutes(6))) @MainActor
 func liveOverflowKeepsLiveWordsAndReplaysOnlyTheRest() async throws {
     let temp = try TemporaryDirectory()
@@ -417,9 +423,9 @@ func liveOverflowKeepsLiveWordsAndReplaysOnlyTheRest() async throws {
                                        onUpdate: onUpdate)
             : RecorderWordSpeech(prefix: "replay", onUpdate: onUpdate)
     }
-    let capture = PacedCapture(count: 600, freeFrom: 40, delivered: delivered) {
-        guard let live = speech.made.first as? RecorderWordSpeech else { return 0 }
-        return await live.fedSeconds
+    let capture = PacedCapture(count: 600, delivered: delivered) {
+        guard let live = speech.made.first as? RecorderWordSpeech else { return (0, false) }
+        return await live.progress
     }
     let stop = ManualStopSource()
     let run = Task {

@@ -330,6 +330,21 @@ and recovery reads a chunk's format and hash from one descriptor opened through 
 (`ChunkFile`, `AudioFileOpenWithCallbacks`), refusing it when the path no longer leads to that file. A `create` whose folder fsync fails removes the new
 file, so a retry is not refused as "already exists".
 
+**Threat model.** Holos protects session data against crashes and kills at any point, against
+concurrent Holos processes (the app, the recorder, CLI commands), and against accidental outside
+changes to the sessions folder (a folder renamed, moved, or replaced by a sync tool, the Finder,
+or a script while Holos works in it). It does not protect against a hostile process running as
+the same user: such a process can already read, change, or delete every session directly, so no
+check inside Holos can keep data from it. The descriptor-based checks (`openat` with
+`O_NOFOLLOW`, device and inode comparisons, verifying an entry after a rename and rolling it
+back when it is not the expected folder) exist so that Holos fails safely when the folder
+changes under it: it writes nothing into a folder it did not make, reports success only for the
+folder it verified, and says where anything it left behind is. The check-then-act windows that
+remain (for example between checking an entry and renaming it by name, which macOS cannot bind
+to a descriptor) are accepted; their consequence is closed by the check afterwards, not the
+window itself. Review findings that need a same-user process racing those windows are out of
+scope.
+
 Locks are `flock` on files in the session folder, one open file description per holder.
 
 | Lock file | Holders | Held for | How it is taken |
@@ -589,6 +604,14 @@ diarization times (after the render time map, §4.7), markers, and gaps. An expo
 - On load, every turn span is validated (the segment exists and
   `0 ≤ first < end ≤ effectiveWords.count`). A run with any invalid span is reported as
   unusable (`runProblem`), exports fall back to speaker-less output, and nothing traps.
+- Every fallback or skipped piece of data in a snapshot (an unusable head, run, or run
+  transcript; stale edits; a changed transcript; unreadable or torn journal lines; an
+  unreadable recognition result; a damaged meeting.json; skipped event log entries) is in
+  `SpeakerSnapshotDiagnostics`, whose notes every command that shows or writes speaker
+  labels prints on stderr. An unusable head says the labels were left out and to run
+  `holos session diarize --force`, which replaces a damaged `head.json` too. After an edit
+  or undo, the diagnostics merge the journal as read before the append, since the append
+  repairs a torn last line (`SpeakerSnapshotDiagnostics.merging`).
 
 ## 3. Contract files (wave 0; copy verbatim)
 
@@ -2767,7 +2790,8 @@ public struct MeetingPostProcessor: Sendable {
                 freeSpace: any FreeSpaceProvider = VolumeFreeSpace())
     /// Runs every stage for one finished session under `lease` (nil: acquire one, retry 1 s) and returns the
     /// final postprocess.json record. Throws only when it cannot start (still recording, lease held elsewhere,
-    /// unreadable manifest); stage failures are recorded in the returned record.
+    /// unreadable manifest, a postprocess.json written by a newer Holos); stage failures are recorded in the
+    /// returned record.
     public func run(session: URL, lease: ProcessingLease?,
                     progress: @escaping @Sendable (PostProcessingProgress) -> Void = { _ in })
         async throws -> PostProcessingRecord
@@ -2782,7 +2806,7 @@ Stages (PR7b):
 
 | # | Stage | Does | On failure or not applicable |
 |---|---|---|---|
-| 0 | — | refuse if `SessionArchive.isActive` ("still recording"); use the given lease or acquire one; `RecorderChannel.markDeadRecorderExited`; delete leftover `derived/`; write `postprocess.json` `{state: running}` | throw |
+| 0 | — | refuse if `SessionArchive.isActive` ("still recording"); use the given lease or acquire one; refuse (`unavailable`) an existing `postprocess.json` written by a newer Holos, never overwriting it (a damaged one is replaced); `RecorderChannel.markDeadRecorderExited`; delete leftover `derived/`; write `postprocess.json` `{state: running}` | throw |
 | 1 | `transcript` | load the current transcript (`transcripts/current.json`, §2.4) | none → `skipped`, no exports; state `skipped` |
 | 2 | — | track policies from `meeting.json` (or `MeetingInfo.inferred`), with `options.othersInRoom` overriding: a track is `diarized` if it is `system`, or the mode is `inPerson`, or others are in the room; otherwise `channel("mic:me", "Me")`; tracks without words are `skipped` | — |
 | 3 | — | if a head run exists, was built from the current transcript, has applied edits, and `!force`: skip 4–7 with "Speaker labels were edited; relabel with --force (names carry over)". If the head was built from another transcript, relabel. | stages `skipped` |
@@ -3776,9 +3800,17 @@ replay, rebuild, and import read `vocabulary.json`. Because the temporary file h
 names and correction terms, the app side owns cleanup too: `MeetingController` deletes it
 on `launchFailed`, when the child exits for any reason, and as soon as the first
 `status.json` for that session appears (the recorder has copied it by then). On launch the
-app also removes any `$TMPDIR/holos-vocabulary-*.json` older than one hour. Tests (PR4):
+app also removes any `$TMPDIR/holos-vocabulary-*.json` older than one hour. A hand-off
+file is removed by moving it into a new 0700 folder `.holos-remove-<device>.<inode>.<UUID>`
+beside it and unlinking it there (`AtomicFile.readAndRemove`, `removeRegularFile`), so a
+file renamed onto its name meanwhile is never deleted. If the process ends, or the unlink
+fails, after the move, the same launch sweep finishes it: in each such folder older than
+five minutes that is a real folder owned by this user with mode 0700, it removes `file`
+only if it is the regular file the folder's name records (same device and inode), then the
+folder if empty; anything else stays. Tests (PR4):
 `vocabularyFileRemovedOnLaunchFailure` (spawn fails), `vocabularyFileRemovedOnEarlyExit`
-(child exits before any status), `staleVocabularyFilesSwept`.
+(child exits before any status), `staleVocabularyFilesSwept`,
+`strandedRemovalFolderIsFinishedBySweep`, `strandedRemovalSweepRemovesOnlyTheRecordedFile`.
 
 ### 4.13 Retention and deletion
 
@@ -3787,7 +3819,11 @@ Nothing expired meetings before; a 3 h call is about 2 GB even with mono system 
 - **Storage (PR3, `Sources/HolosStorage/SessionDeletion.swift`).**
   `SessionDeletion.deleteAudio(session:lease:)` requires the lease and no writer, removes
   `audio/`, `derived/`, and `speakers/voice/`, and writes `audio-deleted.json`
-  `{schemaVersion, deletedAt, chunkCount, seconds}`. Transcript, runs, edits, and exports
+  `{schemaVersion, sessionID, deletedAt, chunkCount, seconds}` (`sessionID` optional:
+  markers written before it are accepted). The marker is decoded wherever it is read
+  (`AudioDeletedRecord.read`/`isDeleted`): one from a newer Holos is refused; a damaged one,
+  or another session's, does not count as deleted audio, and Delete Audio replaces it.
+  Transcript, runs, edits, and exports
   stay. `SessionDeletion.moveToTrash(session:lease:)` moves the folder to the Trash
   (`FileManager.trashItem`) and deletes `~/Library/Logs/Holos/recorder-<id>.log`.
   Both hold the writer lock (retry 1 s; held means a recorder is running, so they refuse)
@@ -4332,9 +4368,12 @@ public enum DiarizationScoring {
     /// (Hungarian up to 20 × 20, greedy by overlap above that).
     public static func der(reference: [LabelledInterval], hypothesis: [LabelledInterval], collar: Double = 0.25) -> DiarizationScore
     /// For Otter references (turns cover silence): over frames where both sides have a speaker, the share whose
-    /// mapped speaker differs. Reported as "agreement with Otter", not DER.
+    /// mapped speaker differs. Reported as "agreement with Otter", not DER. `confusion` is nil (not comparable) when
+    /// no scored frame has both; `referenceSeconds` and `hypothesisSeconds` (scored time per side) say why.
     public static func agreement(reference: [LabelledInterval], hypothesis: [LabelledInterval],
-                                 collar: Double = 0.25) -> (confusion: Double, comparedSeconds: Double, mapping: [String: String])
+                                 collar: Double = 0.25) -> DiarizationAgreement
+    // DiarizationAgreement { confusion: Double?, comparedSeconds, referenceSeconds, hypothesisSeconds: Double,
+    //                        mapping: [String: String] }; prints no labels.
 }
 ```
 
@@ -4868,6 +4907,9 @@ public struct SpeakerSessionSnapshot: Sendable {
     /// Why the head run could not be used (missing transcript, invalid span), if so.
     public let runProblem: String?
     public let audioDeleted: Bool
+    public let meetingInfoDamaged: Bool        // meeting.json damaged or of another session; inferred used
+    public let recognitionUnreadable: Bool     // recognition result left out
+    public let skippedEvents: Int              // event log lines/events the gaps and markers skipped
     /// Throws unavailable when the session has no transcript.
     public static func load(session: URL, profileNames: [String: String] = [:]) throws -> SpeakerSessionSnapshot
     public func exportDocument(timeZone: TimeZone = .current) -> ExportDocument
@@ -4989,7 +5031,11 @@ holos session score <path> --otter <transcript.txt> [--collar 0.25] [--json]    
 - `session score` prints only numbers: reference speakers, Holos speakers, agreement
   confusion, compared seconds, mapping size. With `--json`, the mapping is keyed by
   the first 12 hex characters of the SHA-256 of each Otter label, so scripts can match
-  people across files without printing names. It never prints text.
+  people across files without printing names. It never prints text. It fails rather
+  than print zeros when nothing can be compared: no audio, no speaker segments, Otter
+  times that go backwards or start after the audio ends (another recording), no Otter
+  turn inside the audio, every turn inside the collar, or no overlap. A run without
+  labelled turns reports the turn score as not comparable.
 - `scripts/evaluate-references.swift --speakers` (with `--reference-format otter`): for
   each pair, `holos session import` (transcribed once) into
   `.local/evaluation/<run>/sessions`, then for each configuration `holos session diarize
@@ -5074,6 +5120,8 @@ public enum SpeakerLabelState: String, Codable, Sendable {
     case notLabelled
     case failed
     case interrupted
+    /// postprocess.json or speakers/head.json cannot be read (damaged, newer Holos, I/O); see `labelMessage`.
+    case unreadable
 }
 
 public struct SessionSummary: Codable, Sendable, Equatable, Identifiable {
@@ -5088,7 +5136,10 @@ public struct SessionSummary: Codable, Sendable, Equatable, Identifiable {
     /// Longest track's total chunk duration.
     public var savedSeconds: Double
     public var chunkCount: Int
+    /// Set once the current revision was read and holds this ID.
     public var transcriptID: String?
+    /// Why the current transcript cannot be read (missing, damaged, other ID, newer Holos).
+    public var transcriptProblem: String?
     public var speakerState: SpeakerLabelState
     public var labelMessage: String?
     public var runID: String?
@@ -5132,13 +5183,21 @@ public enum SessionDeletion {
 4. If `transcribe`: `TrackReplayer.replay(from: max(0, coverageEnd − 2))` with the
    session vocabulary; `TranscriptCoverage.merge` keeps journal words before coverage and
    replayed words from it on, cutting segments at word boundaries.
-5. Sort by `(start, track)`; `openForMaintenance(at:lease:)`;
-   `saveTranscript(_:writeLegacyExports: false)` (pointer updated); append
-   `transcriptRebuilt {transcriptID, journalSegments, replayedSeconds}`; set status
-   `recovered`; `finish`.
+5. Sort by `(start, track)`; `openForMaintenance(at:lease:)`; append
+   `transcriptRebuilding` with the details `transcriptRebuilt` will have (so a transcript
+   a rebuild made current is never taken for one the recorder saved at stop);
+   `saveTranscript(_:writeLegacyExports: false)` (pointer updated); set status
+   `recovered`; append `transcriptRebuilt {transcriptID, journalSegments,
+   replayedSeconds}`; `finish`. A failure after the save is reported, not thrown; the next
+   rebuild (and recover, even for a session that keeps its saved transcript) finds the
+   `transcriptRebuilding` naming the current transcript and finishes writing the missing
+   status and event instead of rebuilding again.
 6. Idempotence by sequence numbers, not dates: if a `transcriptRebuilt` event exists with
    a higher `sequence` than the last `archiveRecovered` event, its `transcriptID` is the
-   current pointer, and `!force`, return it with `reused: true` and change nothing.
+   current pointer, that revision decodes and holds its own ID, and `!force`, return it
+   with `reused: true` and change nothing. A truncated, damaged, or mislabelled current
+   revision is rebuilt. A current pointer or revision, or a `vocabulary.json` the replay
+   would use, written by a newer Holos is refused (`unavailable`), even with `force`.
 
 **State mapping (`SessionCatalog`).** Unreadable manifest → `damaged`. Manifest
 `recording`/`processing`: liveness `capturing` → `recording`; `processing` or
@@ -5146,7 +5205,27 @@ public enum SessionDeletion {
 Speaker state: `postprocess.json` `running` with liveness `processing` or `maintenance`
 → `running`; `running` otherwise → `interrupted`; `failed` → `failed`; a finished record
 with a run → `labelled`; a finished record without a run → `notLabelled` with the record's
-message; no record → `none`.
+message; no record → `none`. A head counts as labels only when
+`SpeakerSessionSnapshot.load` (the loader the exports and speaker commands use) loads its
+run: the run and the transcript revision it was built from exist and decode, and every
+span fits that transcript. A postprocess.json, speakers/head.json, head run, or run
+transcript that exists but cannot be read (damaged, of another session, written by a
+newer Holos, I/O), a head whose run or run transcript is missing, a span outside that
+transcript, or a record that names a run while the head is missing → `unreadable` with
+why, never the state of a session without it. `recover` validates the same files the same
+way (one shared reader, `SavedSpeakerState`, which delegates to the snapshot loader)
+before it decides to post-process, and refuses (`unavailable`) when one was written by a
+newer Holos.
+
+**Saved files are read, never only found.** Every versioned file recover, the catalog,
+delete, relabel, and the exports read (meeting.json, vocabulary.json, postprocess.json,
+`transcripts/current.json` and revisions, `speakers/head.json`, runs, recognition results,
+`audio-deleted.json`, `exports/.generated.json`) is decoded with its version checked
+first: newer → `unavailable`; a version below 1 or data that does not decode → damage,
+never present-and-authoritative. A record that names a session (meeting.json,
+postprocess.json, runs, voice data, and `audio-deleted.json` when it names one) is
+checked against the manifest's ID; another session's is damage.
+`manifest.json` stays strictly version 1 (schema rule 4).
 
 **CLI.**
 
@@ -5479,7 +5558,8 @@ public enum AutoRelabelPolicy {
 - `statusRead` phase `transcribing`/`postprocessing` → `finishing`,
   `setDictationPaused(false)`.
 - `statusRead` phase `exited` → `idle`, `finished(id, summary, speakersReady)`, and
-  `offerNaming` when speakers are ready. Summary: "Saved Council meeting (2:58:12).
+  `offerNaming` when speakers are ready (post-processing `succeeded` or `partial`, then
+  checked against the saved labels by `MeetingController`). Summary: "Saved Council meeting (2:58:12).
   Speakers labelled." or the exit's post-processing message ("… No speaker labels:
   speaker models are not installed.").
 - `active` + (liveness `dead`, or `childExited` without an `exited` status) →
@@ -5567,7 +5647,14 @@ failed, interrupted; runs `holos session diarize <path>`), `Show in Finder`,
 `Save Transcript As…` (NSSavePanel: md or txt), `Delete Audio…`, `Delete Meeting…`, and
 `Clean Up` when `derivedBytes > 0`. Footer: "Meetings use 12.4 GB · 21.3 GB free".
 Double-click opens the Quick Look preview (PR9 changes it to Review). Refreshes every
-2 s while visible.
+2 s while visible. Button enablement is `MeetingActionPolicy.enabled`, the rules of the
+commands behind the buttons: Recover when `SessionRecoveryCommand.rebuilds` would rebuild
+(asked with the catalog's readable transcript, so a `transcriptionIncomplete` or `incomplete`
+meeting whose transcript cannot be read qualifies) or the meeting is interrupted, never for a
+damaged manifest or a transcript from a newer Holos; Label Speakers for speaker state none,
+notLabelled, failed, or interrupted with a readable transcript and audio, not interrupted. No
+lease-taking action while the app uses the meeting or another process holds it (liveness
+capturing, processing, maintenance).
 
 Live transcript window: read-only text view with the last 500 `transcriptFinalized`
 events from `events.jsonl`, `[01:02:03] Mic: …`, refreshed every second, scrolled to the
@@ -5583,12 +5670,54 @@ picks at most one session and `MaintenanceLauncher` runs `holos session diarize 
 --json`; attempts are counted in `UserDefaults "meeting.relabelAttempts"`. This covers a
 Mac shut down or put to sleep while labelling.
 
+Naming offer: derived from saved state, never emitted per path
+(`MeetingController.refreshNamingOffer`, rule `NamingOfferPolicy.offer`). Among recorded
+meetings with liveness exited or dead whose labels are ready and were made in the last 7 days
+(`SessionSummary.labelsReadyAt`, the head run's `createdAt`), the one labelled last is offered,
+unless its speakers were edited or the user opened the offer for that run (UserDefaults
+`meeting.namingOffersDismissed`, session ID → run ID; another run of the meeting is offered
+again). It is derived on launch, when a followed recording finishes, and whenever the app's use
+of a meeting ends (`endUsing`: a Meetings command, the interrupted prompt's Recover, Clean Up,
+Save Transcript As…, the automatic relabel), so a meeting labelled after Holos quit, by a
+command in a terminal, or by any of those paths is offered, also after a relaunch. Each change
+is reported once, as `offerNaming` or `clearNamingOffer`; `reviewOpened` dismisses it.
+
+Meetings in use: `MeetingController.sessionsInUse` (session ID → what the app is doing) is the
+one set of meetings the app works on. Every operation of the app that takes a meeting's
+processing lease, or reads it for the user, holds an entry while it runs (`beginUsing` refuses a
+second one): Recover, Label Speakers, Delete Audio, Delete Meeting, the interrupted prompt's
+Recover, Clean Up, Save Transcript As…, and the automatic relabel. The relabel skips these
+meetings, every Meetings action refuses them, and the State column shows what is running.
+
+Labels are ready (a finished meeting's `speakersReady`, the naming offer, the Label Speakers
+result) only when `SavedSpeakerState` finds them usable, the validation the catalog, recovery,
+and the exports share (`MeetingController.speakerLabelsReady`, run off the main actor);
+`speakers/head.json` alone is not enough.
+
+Launched recorders: the pid and start time of each recorder child are kept in
+`UserDefaults "meeting.launchedRecorders"` until its exit is seen. A start timed out while a
+permission prompt is open leaves a child with no session folder; after a quit or crash the
+relaunched app refuses a new start ("The last recording is still stopping…") while that pid
+still names a process with the saved start time.
+
 Quit (`applicationShouldTerminate`) while `active`: alert "A meeting is recording."
 Child mode: `[Stop and Save]` (send stop; `.terminateLater`; reply once the status phase
 is `transcribing` or later, at most 10 s; the recorder finishes labelling on its own),
 `[Keep Recording]` (quit the app only), `[Cancel]`. In-process mode: `[Stop and Save]`
-shows progress and replies once the phase is `postprocessing` or later (the transcript
-is saved; labelling continues in its child), at most 10 minutes; `[Cancel]`.
+shows progress and replies once the recording in the app has ended, at most 10 minutes;
+`[Cancel]`. Labelling continues in its child: once the recording's post-process hook has
+handed the lease over, the quit calls `InProcessLauncher.leaveLabellingToItsChild()`,
+which cancels the recording task; the hook stops mirroring the child and returns a
+`running` record, and the recording writes `exited` (post-processing `running`) before it
+ends. Replying at phase `postprocessing` alone would kill the app while the recording
+still waits for the child, leaving `status.json` stuck in `postprocessing`. The readiness
+rule is `QuitReadiness.ready`; any quit while a recording still runs in the app waits.
+Test `quitLeavesLabellingToTheChildAndEndsTheRecording`. An in-process
+recording whose exited status could not be written yet (`ExitRetry` still retrying it and
+holding the locks) has not ended: `InProcessLauncher` keeps it running, reports its exit
+only once `status.json` says exited (or the retry stops because the folder is gone, as a
+failure), and a quit waits for it the same way (`isRecording` stays true, `isWritingExit`).
+Test `inProcessRecordingEndsOnlyOnceItsExitedStatusIsWritten`.
 
 About Holos: `NSApp.orderFrontStandardAboutPanel(options: [.credits: …])` with the
 credits text of §4.8 embedded as a string constant (the app has no resource bundle).

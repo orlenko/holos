@@ -53,7 +53,7 @@ struct Speakers: AsyncParsableCommand {
             } else {
                 for line in SpeakerCommand.listing(loaded, includeTurns: turns) { Console.output(line) }
             }
-            SpeakerCommand.printNotes(loaded.snapshot)
+            SpeakerCommand.printNotes(loaded.snapshot.diagnostics)
         }
     }
 
@@ -230,9 +230,9 @@ struct Speakers: AsyncParsableCommand {
                               + "applied \(keptOut == 1 ? "stays" : "stay") out of effect; undo does not bring "
                               + "\(keptOut == 1 ? "it" : "them") back.")
             }
-            try await SpeakerCommand.finishChange(needsSampleRefresh: result.needsSampleRefresh,
-                                                  rewritingExports: true, loaded, owners: owners,
-                                                  snapshot: result.snapshot)
+            try await SpeakerCommand.finishChange(
+                needsSampleRefresh: result.needsSampleRefresh, rewritingExports: true, loaded, owners: owners,
+                diagnostics: result.diagnostics.merging(loaded.snapshot.diagnostics))
         }
     }
 
@@ -347,8 +347,9 @@ struct Speakers: AsyncParsableCommand {
             Console.output(SpeakerCommand.describe(action, before: loaded.view, after: snapshot.projection,
                                                    people: loaded.people))
             // A person's sample from this meeting stops using the speaker's turns (a no-op when none is affected).
-            try await SpeakerCommand.finishChange(needsSampleRefresh: true, rewritingExports: false, loaded,
-                                                  owners: owners, snapshot: snapshot)
+            try await SpeakerCommand.finishChange(
+                needsSampleRefresh: true, rewritingExports: false, loaded, owners: owners,
+                diagnostics: snapshot.diagnostics.merging(loaded.snapshot.diagnostics))
         }
     }
 
@@ -457,18 +458,21 @@ enum SpeakerCommand {
 
     /// Saves one change on the loaded view, prints what it did, rewrites the exports, and updates the voice samples
     /// the change affects. A change that would leave the labels as they are is not saved (it would only use up an
-    /// undo step).
+    /// undo step); the editor decides that on the current labels under the speaker lock, after refusing a change
+    /// whose labels moved on since the load.
     static func save(_ actions: [SpeakerEditAction], _ loaded: LoadedSpeakers) async throws {
-        if SpeakerEditor.changesNothing(actions, on: loaded.view) {
-            Console.output("Nothing to change; the speaker labels already look like that.")
-            return
-        }
         let owners = sampleOwners(loaded)
         let result: SpeakerEditResult
         do {
-            result = try SpeakerEditor.apply(actions, view: loaded.view, session: loaded.session, source: source,
-                                             regenerateExports: false, profileNames: loaded.people,
-                                             profiles: loaded.store)
+            guard let saved = try SpeakerEditor.applyUnlessUnchanged(
+                actions, view: loaded.view, session: loaded.session, source: source, regenerateExports: false,
+                profileNames: loaded.people, profiles: loaded.store) else {
+                Console.output("Nothing to change; the speaker labels already look like that.")
+                // The editor found the current labels as loaded, so the loaded snapshot's warnings still hold.
+                printNotes(loaded.snapshot.diagnostics)
+                return
+            }
+            result = saved
         } catch HolosError.incomplete(let message) {
             try await refreshAfterSavedChange(HolosError.incomplete(message), loaded, owners: owners)
         }
@@ -477,7 +481,8 @@ enum SpeakerCommand {
                                     people: loaded.people))
         }
         try await finishChange(needsSampleRefresh: result.needsSampleRefresh, rewritingExports: true, loaded,
-                               owners: owners, snapshot: result.snapshot)
+                               owners: owners,
+                               diagnostics: result.diagnostics.merging(loaded.snapshot.diagnostics))
     }
 
     /// After a saved change: rewrites the exports (when asked), then updates the voice samples the change affects
@@ -485,7 +490,7 @@ enum SpeakerCommand {
     /// else, and no later edit would notice), notes removed samples, and prints the label notes. Every failure is
     /// reported together as `incomplete`.
     static func finishChange(needsSampleRefresh: Bool, rewritingExports: Bool, _ loaded: LoadedSpeakers,
-                             owners: [String: String], snapshot: SpeakerSessionSnapshot) async throws {
+                             owners: [String: String], diagnostics: SpeakerSnapshotDiagnostics) async throws {
         var failures: [String] = []
         if rewritingExports {
             do {
@@ -502,7 +507,7 @@ enum SpeakerCommand {
             failures.append(error.localizedDescription)
         }
         noteRemovedSamples(owners, loaded)
-        printNotes(snapshot)
+        printNotes(diagnostics)
         guard failures.isEmpty else { throw HolosError.incomplete(failures.joined(separator: " ")) }
     }
 
@@ -579,7 +584,7 @@ enum SpeakerCommand {
         guard let profileID = speaker?.profileID,
               let profile = database.profiles.first(where: { $0.id == profileID }) else {
             Console.output("Linked \(speakerID).")
-            printNotes(snapshot)
+            printNotes(snapshot.diagnostics)
             return
         }
         Console.output("Linked \(speakerID) to \(profile.displayName)\(profile.isSelf ? " (you)" : "").")
@@ -587,7 +592,7 @@ enum SpeakerCommand {
             Console.error(voiceNote(profile: profile, database: database, snapshot: snapshot,
                                     extractorAvailable: extractorAvailable))
         }
-        printNotes(snapshot)
+        printNotes(snapshot.diagnostics)
     }
 
     /// What happened to a voice that was asked to be learned.
@@ -616,31 +621,8 @@ enum SpeakerCommand {
     }
 
     /// Warnings about the labels themselves, on stderr.
-    static func printNotes(_ snapshot: SpeakerSessionSnapshot) {
-        if let stale = snapshot.projection?.staleEdits.count, stale > 0 {
-            Console.error("\(stale) earlier speaker \(stale == 1 ? "change" : "changes") could not be applied "
-                          + "because the labels changed after \(stale == 1 ? "it was" : "they were") made.")
-        }
-        if snapshot.transcriptChanged {
-            Console.error("The transcript changed after speakers were labelled, so the exports show it without "
-                          + "speakers. Label speakers again with holos session diarize \(snapshot.session.path).")
-        }
-        // §1.6 rule 3: lines this build cannot read are skipped and reported.
-        let unreadable = snapshot.journal.unreadableLines
-        if unreadable > 0 {
-            let one = unreadable == 1
-            Console.error("\(unreadable) speaker \(one ? "change" : "changes") in this meeting could not be read "
-                          + "(damaged, or saved by a newer version of Holos) and \(one ? "was" : "were") skipped. "
-                          + "If you use a newer Holos elsewhere, update this one before editing speakers.")
-        }
-        if snapshot.journal.tornTail {
-            Console.error("The last speaker change in this meeting was cut off while it was being saved and was "
-                          + "skipped.")
-        }
-        if !snapshot.journal.isComplete {
-            Console.error("Voice suggestions are not shown, and no voice is learned from this meeting, while a "
-                          + "speaker change can't be read.")
-        }
+    static func printNotes(_ diagnostics: SpeakerSnapshotDiagnostics) {
+        for note in diagnostics.notes { Console.error(note) }
     }
 
     /// The applied lines of the view's newest batch, in journal order (what `undoLast` will revert).

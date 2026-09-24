@@ -4,6 +4,7 @@ import Foundation
 import HolosCore
 import HolosStorage
 import os
+import Synchronization
 
 // How the app starts a recorder, and the `holos` maintenance commands it runs (docs/meeting-design.md §4.1, §5.8).
 
@@ -122,7 +123,7 @@ import os
     public var onExit: ((Int32, String?) -> Void)?
     public let executable: URL
     public let logDirectory: URL
-    private var running: [String: (task: Task<Void, Never>, stop: ManualStopSource)] = [:]
+    private var running: [String: (task: Task<Void, Never>, stop: ManualStopSource, labelling: LabellingStarted)] = [:]
 
     public init(executable: URL = ChildProcessLauncher.bundledExecutable,
                 logDirectory: URL = SessionDeletion.defaultLogDirectory) {
@@ -143,11 +144,15 @@ import os
                                        othersInRoom: settings.othersInRoom,
                                        expectedSpeakers: settings.expectedSpeakers, liveText: false)
         let stop = ManualStopSource()
-        let log = logDirectory.appendingPathComponent("recorder-\(sessionID).log", isDirectory: false)
-        try? AtomicFile.ensurePrivateDirectory(logDirectory)
-        let dependencies = RecordingDependencies.live(
-            stop: stop, reporter: LoggingReporter(),
-            postProcess: Self.childPostProcessHook(executable: executable, log: log))
+        let log = Self.labellingLog(in: logDirectory, sessionID: sessionID)
+        let labelling = LabellingStarted()
+        let hook = Self.childPostProcessHook(executable: executable, log: log)
+        var dependencies = makeDependencies(stop) { session, lease, progress in
+            labelling.set()
+            return await hook(session, lease, progress)
+        }
+        let exitWait = ExitStatusWait()
+        dependencies.exitStatusWait = exitWait
         let exit = onExit
         let task = Task { @MainActor [weak self] in
             let activity = ProcessInfo.processInfo.beginActivity(
@@ -162,13 +167,52 @@ import os
                 code = 1
                 message = error.localizedDescription
             }
+            // The exited status could not be written yet (`ExitRetry`): the recording has not ended until it is, so
+            // it stays running here (the controller keeps following it, and a quit waits for it).
+            if exitWait.retrying {
+                self?.exitRetrying.insert(sessionID)
+                Self.log.notice("Session \(sessionID, privacy: .public): waiting for the exited status to be written")
+                let written = await exitWait.finished()
+                self?.exitRetrying.remove(sessionID)
+                if !written, code == 0 {
+                    code = 1
+                    message = "The meeting's folder disappeared before Holos could record that it ended."
+                }
+            }
             self?.running[sessionID] = nil
             Self.log.notice("Session \(sessionID, privacy: .public): in-process recording ended with \(code, privacy: .public)")
             exit?(code, message)
         }
-        running[sessionID] = (task, stop)
+        running[sessionID] = (task, stop, labelling)
         return nil
     }
+
+    /// For a quit once the transcript is saved: every recording here that has reached speaker labelling stops
+    /// following it. Its labelling child keeps the processing lease and finishes on its own; the recording writes its
+    /// exited status (labelling still running) and ends, so `isRecording` turns false. A recording that has not
+    /// reached labelling yet (still saving its transcript) is left alone. Returns true when one was told.
+    @discardableResult
+    public func leaveLabellingToItsChild() -> Bool {
+        var told = false
+        for recording in running.values where recording.labelling.isSet {
+            recording.task.cancel()
+            told = true
+        }
+        return told
+    }
+
+    /// The recording's dependencies from its stop source and post-process hook: the live ones (tests replace them).
+    var makeDependencies: @MainActor (ManualStopSource, @escaping PostProcessHook) -> RecordingDependencies = {
+        stop, hook in
+        RecordingDependencies.live(stop: stop, reporter: LoggingReporter(), postProcess: hook)
+    }
+
+    /// Recordings whose run returned but whose exited status is still being retried (`ExitRetry`).
+    private var exitRetrying: Set<String> = []
+
+    /// True while a recording here ended but could not yet write its exited status: its locks are held and it is
+    /// still retrying, so quitting now would cut that short.
+    public var isWritingExit: Bool { !exitRetrying.isEmpty }
 
     /// Like SIGTERM to a child: a graceful stop.
     @discardableResult
@@ -184,6 +228,18 @@ import os
         if [.diskLow, .sleepTimeout, .pauseTimeout].contains(outcome.stopReason) { return 3 }
         if let state = outcome.postProcessing?.state, state == .failed || state == .partial { return 3 }
         return 0
+    }
+
+    /// `<directory>/recorder-<SESSION-UUID>.log` for the labelling child's stderr, creating the folder; nil when the
+    /// folder cannot be made (the child's stderr is then discarded: an unusable log never stops the labelling).
+    nonisolated static func labellingLog(in directory: URL, sessionID: String) -> URL? {
+        do {
+            try AtomicFile.ensurePrivateDirectory(directory)
+        } catch {
+            log.error("Session \(sessionID, privacy: .public): no log folder for speaker labelling; its output is discarded: \(error.localizedDescription, privacy: .private)")
+            return nil
+        }
+        return directory.appendingPathComponent("recorder-\(sessionID).log", isDirectory: false)
     }
 
     /// The post-process hook of an in-process recording: `holos session diarize <path> --after-recording --json
@@ -210,6 +266,9 @@ import os
         let output = FileManager.default.temporaryDirectory
             .appendingPathComponent("holos-postprocess-\(UUID().uuidString).json", isDirectory: false)
         defer { ProcessSpawner.removeRegularFile(output) }
+        // A log that cannot be opened (its folder gone or unwritable, a link in its place) is dropped: the spawn
+        // would fail on it, and the labelling would be reported as failed only because its log was unavailable.
+        let log = log.flatMap { ProcessSpawner.canAppend(to: $0) ? $0 : nil }
         let pid: pid_t
         do {
             pid = try lease.handOff { descriptor in
@@ -261,6 +320,16 @@ import os
         }
         return try? HolosJSON.decoder().decode(PostProcessingRecord.self, from: data)
     }
+}
+
+/// Set once an in-process recording's post-process hook has started: the lease hand-off to the labelling child follows
+/// at once, and a cancellation from then on only stops the recording from waiting for that child.
+final class LabellingStarted: Sendable {
+    private let value = Mutex(false)
+
+    func set() { value.withLock { $0 = true } }
+
+    var isSet: Bool { value.withLock { $0 } }
 }
 
 /// Logs the recorder's progress lines; never transcript text.
@@ -394,6 +463,14 @@ public enum ProcessSpawner {
         case descriptor(Int32)
     }
 
+    /// True when `url` can be opened as `Output.file(url, append: true)` would open it (creating it, 0600).
+    static func canAppend(to url: URL) -> Bool {
+        let fd = Darwin.open(url.path, O_WRONLY | O_CREAT | O_CLOEXEC | O_NOFOLLOW | O_APPEND, 0o600)
+        guard fd >= 0 else { return false }
+        Darwin.close(fd)
+        return true
+    }
+
     /// Spawns `executable` with `arguments` (argv[0] is the executable's path). stdin is `/dev/null`.
     /// `inheritedDescriptors` are placed at their target numbers with `posix_spawn_file_actions_adddup2` (the copy loses
     /// close-on-exec; the source must not already have the target number). The environment is this process's plus
@@ -484,6 +561,17 @@ public enum ProcessSpawner {
         }
     }
 
+    /// When process `pid` started, in microseconds since 1970; nil when no such process runs (or it cannot be
+    /// inspected). With the pid it names one process: a pid the system reuses later belongs to a process that started
+    /// later.
+    static func startTime(of pid: pid_t) -> UInt64? {
+        guard pid > 0 else { return nil }
+        var info = proc_bsdinfo()
+        let size = Int32(MemoryLayout<proc_bsdinfo>.size)
+        guard proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &info, size) == size else { return nil }
+        return UInt64(info.pbi_start_tvsec) * 1_000_000 + UInt64(info.pbi_start_tvusec)
+    }
+
     /// A category of `error` that is safe to log publicly ("unavailable", "io", "NSCocoaErrorDomain 4"): error texts
     /// can hold user paths, which are logged only as private (docs/meeting-design.md §1.5).
     public static func logCategory(_ error: any Error) -> String {
@@ -529,25 +617,25 @@ public enum ProcessSpawner {
         return String(line.prefix(300))
     }
 
-    /// Removes `url` if it is a regular file (never following a link, never a folder).
+    /// Removes `url` if it is a regular file (never following a link, never a folder), and only the file that was
+    /// checked: a different file renamed onto its name meanwhile is left alone (`AtomicFile.removeRegularFile`).
     public static func removeRegularFile(_ url: URL) {
-        var info = stat()
-        guard lstat(url.path, &info) == 0, (info.st_mode & S_IFMT) == S_IFREG else { return }
-        if unlink(url.path) != 0, errno != ENOENT {
-            log.error("Cannot delete \(url.lastPathComponent, privacy: .private): \(String(cString: strerror(errno)), privacy: .public)")
-        }
+        AtomicFile.removeRegularFile(url)
     }
 
     /// Removes the regular files in `folder` whose names start with `prefix` and that were last modified before
-    /// `cutoff` (left by an app that crashed). Links, folders, and newer files are left alone.
+    /// `cutoff` (left by an app that crashed). Links, folders, newer files, and a file renamed onto a checked name
+    /// after the check are left alone. Also finishes the removals of files in `folder` that a crash interrupted
+    /// (`AtomicFile.removeStrandedRemovalFolders`, for folders older than `AtomicFile.strandedRemovalGrace`): the
+    /// vocabulary and command-output files are removed there, by the app or the recorder.
     public static func removeStaleFiles(in folder: URL, prefix: String, suffix: String = "", olderThan cutoff: Date) {
+        AtomicFile.removeStrandedRemovalFolders(
+            in: folder, olderThan: Date().addingTimeInterval(-AtomicFile.strandedRemovalGrace))
         guard let names = try? FileManager.default.contentsOfDirectory(atPath: folder.path) else { return }
         for name in names where name.hasPrefix(prefix) && name.hasSuffix(suffix) {
-            let url = folder.appendingPathComponent(name, isDirectory: false)
-            var info = stat()
-            guard lstat(url.path, &info) == 0, (info.st_mode & S_IFMT) == S_IFREG,
-                  Date(timeIntervalSince1970: TimeInterval(info.st_mtimespec.tv_sec)) < cutoff else { continue }
-            removeRegularFile(url)
+            AtomicFile.removeRegularFile(folder.appendingPathComponent(name, isDirectory: false)) { info in
+                Date(timeIntervalSince1970: TimeInterval(info.st_mtimespec.tv_sec)) < cutoff
+            }
         }
     }
 }

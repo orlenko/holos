@@ -636,7 +636,10 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
                 onAdd: { [weak self] correction, edit in
                     self?.addCorrection(correction, resolving: edit) ?? false
                 },
-                onRemove: { [weak self] correction in self?.changeCorrections { $0.remove(correction) } ?? false })
+                onRemove: { [weak self] correction in self?.changeCorrections { $0.remove(correction) } ?? false },
+                onReplace: { [weak self] old, new, edit in
+                    self?.replaceCorrection(old, with: new, resolving: edit) ?? false
+                })
         }
         correctionsWindow?.show(lastTranscript: lastTranscript, corrections: corrections.entries)
     }
@@ -667,11 +670,25 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
     private func addCorrection(_ correction: Correction, resolving edit: DeclinedCorrectionQueue.PendingEdit?)
         -> Bool {
         guard changeCorrections({ $0.add(correction) }) else { return false }
+        keep(edit)
+        return true
+    }
+
+    /// An edited rule; like a manual Add, one that resolves a declined swap also keeps that swap's edit.
+    private func replaceCorrection(_ old: Correction, with new: Correction,
+                                   resolving edit: DeclinedCorrectionQueue.PendingEdit?) -> Bool {
+        guard changeCorrections({ $0.replace(old, with: new) }) else { return false }
+        keep(edit)
+        return true
+    }
+
+    /// Keeps a declined swap's edited transcript, unless a newer dictation or kept edit has replaced the text it
+    /// was edited from.
+    private func keep(_ edit: DeclinedCorrectionQueue.PendingEdit?) {
         if let transcript = edit?.transcript(whenLastRecognized: lastRecognized) {
             lastTranscript = transcript
             lastRecognized = transcript
         }
-        return true
     }
 
     /// Returns false when the change was rejected or could not be saved.
@@ -808,7 +825,8 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
         let speakerLabels = speakerLabelsSetupState()
         setupWindow.update(SetupState(
             microphone: AudioCapture.microphonePermission, accessibility: AXIsProcessTrusted(),
-            inputMonitoring: CGPreflightListenEventAccess(), assets: assetState, installingAssets: installingAssets,
+            inputMonitoring: CGPreflightListenEventAccess(), systemAudio: CGPreflightScreenCaptureAccess(),
+            assets: assetState, installingAssets: installingAssets,
             dictationEnabled: enabled, enabling: enabling, busy: isBusy, shortcutTitle: shortcutTitle,
             removeFillers: removeFillers, showPreview: showPreview, previewOpacity: previewOpacity,
             // While a meeting records, its pause takes precedence over every other dictation message (§4.12).
@@ -853,6 +871,11 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
             updateSetupWindow()
         case .speakerModels:
             installSpeakerModels()
+        case .systemAudio:
+            // Asking adds Holos to the Screen & System Audio Recording list; macOS shows its own prompt only once,
+            // and the permission takes effect after Holos is reopened.
+            if !CGPreflightScreenCaptureAccess() { _ = CGRequestScreenCaptureAccess() }
+            openPrivacySettings("Privacy_ScreenCapture")
         }
     }
 

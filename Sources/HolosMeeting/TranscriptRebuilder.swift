@@ -14,8 +14,9 @@ public struct RebuildReport: Sendable, Equatable {
     /// True when an earlier rebuild was reused (idempotent path).
     public var reused: Bool
     /// Set when the rebuilt transcript was saved and made current, but marking the manifest `recovered` or
-    /// journaling `transcriptRebuilt` then failed (for example, the disk is full). The transcript stands; the next
-    /// recover rebuilds it again, because no event records this rebuild.
+    /// journaling `transcriptRebuilt` then failed (for example, the disk is full), or when a later rebuild could not
+    /// finish recording it either. The transcript stands; the next rebuild finishes recording it (its
+    /// `transcriptRebuilding` event names it) instead of rebuilding it again.
     public var recordingError: String?
 
     public init(transcriptID: String, journalSegments: Int, coverageEnd: [String: Double],
@@ -44,18 +45,26 @@ public enum TranscriptRebuilder {
     /// - Idempotent: when the last `transcriptRebuilt` event comes after the last `archiveRecovered` event (by
     ///   sequence) and names the current transcript, it is returned with `reused: true` and nothing changes, unless
     ///   `force`, or unless this call may transcribe audio and that rebuild could not (it ran without `transcribe`,
-    ///   recorded as `transcribed: false`, while the audio still exists).
+    ///   recorded as `transcribed: false`, while the audio still exists). The current transcript counts only once its
+    ///   revision was read and holds its own ID (`SessionFiles.readableCurrentTranscriptID`): a truncated, damaged, or
+    ///   mislabelled revision is rebuilt.
+    /// - Refuses (`unavailable`), even with `force`, a current pointer or revision, an audio-deleted.json, or a
+    ///   vocabulary.json the replay would use, written by a newer Holos (schema rule 3, §1.6).
     /// - Journal words are kept per track up to `TranscriptCoverage.coverageEnd` (the last phrase's end, capped at the
     ///   earliest `transcriptionBehind`). With `transcribe`, the audio after it is replayed from 2 s earlier with the
     ///   session vocabulary and joined at word level (`TranscriptCoverage.merge`); without it, or once Delete Audio
-    ///   removed the audio, every journal phrase is kept and nothing is replayed.
+    ///   removed the audio (audio-deleted.json is a readable record of this session), every journal phrase is kept and nothing is replayed.
     /// - Replay calls have the stop path's time limits. A replay that fails or times out publishes nothing and throws
     ///   `HolosError.incomplete`; a cancelled one throws `CancellationError`.
-    /// - The new revision becomes current (`saveTranscript(_:writeLegacyExports: false)`), the manifest status becomes
-    ///   `recovered`, and `transcriptRebuilt {transcriptID, journalSegments, replayedSeconds}` is journaled (with
-    ///   `transcribed`, and `coverageEnd.<track>` and `replayedSeconds.<track>` for each track). Once the new revision
-    ///   is current, a failure to set the status or journal the event does not throw: it is returned as
-    ///   `recordingError`.
+    /// - `transcriptRebuilding` is journaled with the details below, then the new revision becomes current
+    ///   (`saveTranscript(_:writeLegacyExports: false)`), the manifest status becomes `recovered`, and
+    ///   `transcriptRebuilt {transcriptID, journalSegments, replayedSeconds}` is journaled (with `transcribed`, and
+    ///   `coverageEnd.<track>` and `replayedSeconds.<track>` for each track). Once the new revision is current, a
+    ///   failure to set the status or journal the event does not throw: it is returned as `recordingError`.
+    /// - A rebuild that made the current transcript current after the last recovery but was not recorded
+    ///   (`unrecordedRebuild`), or a recorded one whose status is not `recovered`, is finished instead of done again
+    ///   (without `force`): the missing status and `transcriptRebuilt` are written and it is returned with
+    ///   `reused: true`, with `recordingError` when that fails again.
     /// - `progress` reports 0...1 over the audio to replay.
     public static func rebuild(session: URL, lease: ProcessingLease, force: Bool = false, transcribe: Bool = true,
                                vocabulary: [String]? = nil, makeSpeech: LiveSpeechFactory? = nil,
@@ -82,12 +91,30 @@ public enum TranscriptRebuilder {
                 "This meeting's archive was interrupted and is not recovered yet; run holos session recover first.")
         }
         let events = try SessionArchive.readEvents(at: session).events
-        // Whether audio may be transcribed: asked for, and not deleted.
-        let mayTranscribe = transcribe && !SessionFiles.audioDeleted(session: session)
-        if !force, let reused = reusedReport(events, currentTranscriptID: try? SessionArchive.currentTranscriptID(at: session),
+        // Whether audio may be transcribed: asked for, and not deleted. The deletion marker is read, not only found:
+        // a damaged one, or another session's, does not stop the replay; one from a newer Holos is refused
+        // (`unavailable`) before anything changes.
+        let mayTranscribe = try transcribe && !SessionFiles.audioDeleted(session: session, sessionID: manifest.id)
+        // The current revision is read, not only found: a damaged, truncated, or mislabelled one is not reused but
+        // replaced. A pointer or revision from a newer Holos is refused (`unavailable`) before anything changes,
+        // even with `force`, so the save never replaces it.
+        let currentID = try SessionFiles.readableCurrentTranscriptID(session: session)
+        if !force, let reused = reusedReport(events, currentTranscriptID: currentID,
                                              needsTranscription: mayTranscribe) {
             log.notice("Session \(manifest.id, privacy: .public): transcript already rebuilt; reused")
-            return reused
+            guard manifest.status != ArchiveStatus.recovered else { return reused }
+            // The rebuild was journaled but its status is not `recovered`: finish recording it.
+            return await finishRecording(session: session, lease: lease, report: reused, event: nil,
+                                         setStatus: true)
+        }
+        if !force, let started = unrecordedRebuild(events, currentTranscriptID: currentID,
+                                                   needsTranscription: mayTranscribe) {
+            // An earlier rebuild made this transcript current but could not record it: finish recording it (the
+            // status and `transcriptRebuilt`) instead of rebuilding it again.
+            log.notice("Session \(manifest.id, privacy: .public): recording an earlier rebuild")
+            return await finishRecording(session: session, lease: lease,
+                                         report: report(started.details, transcriptID: currentID ?? "", reused: true),
+                                         event: started.details, setStatus: manifest.status != ArchiveStatus.recovered)
         }
 
         // Journal phrases and coverage, per track.
@@ -112,7 +139,7 @@ public enum TranscriptRebuilder {
                 plans.append(ReplayPlan(track: track, from: from, seconds: manifest.audioSeconds(track: track, from: from)))
             }
         }
-        let strings = plans.isEmpty ? [] : (vocabulary ?? sessionVocabulary(session))
+        let strings = plans.isEmpty ? [] : try (vocabulary ?? sessionVocabulary(session))
         let total = plans.reduce(0.0) { $0 + $1.seconds }
         var done = 0.0
         var replayed: [String: [TranscriptSegment]] = [:]
@@ -161,22 +188,48 @@ public enum TranscriptRebuilder {
         }
         // The only moment the writer lock is held: the save.
         let archive = try SessionArchive.openForMaintenance(at: session, lease: lease)
+        // Journaled before the save, so a transcript this rebuild made current is never taken for one the recorder
+        // saved, even when recording the rebuild below fails; a failure here changes nothing else.
+        try await archive.recordEvent(kind: MeetingEventKind.transcriptRebuilding, details: details)
         try await archive.saveTranscript(transcript, writeLegacyExports: false)
         // The rebuilt transcript is current from here on, so a later failure is reported with it, not thrown.
-        // Status before the event: a rebuild whose event is missing is simply done again next time.
-        var recordingError: String?
-        do {
-            try await archive.setStatus(ArchiveStatus.recovered)
-            try await archive.recordEvent(kind: MeetingEventKind.transcriptRebuilt, details: details)
-            try await archive.finish(status: ArchiveStatus.recovered)
-        } catch {
-            // An unfinished archive lets go of the writer lock when it is released, as this function returns.
-            recordingError = error.localizedDescription
-            log.error("Session \(manifest.id, privacy: .public): transcript rebuilt, but recording the rebuild failed: \(error.localizedDescription, privacy: .private)")
-        }
+        let recordingError = await record(archive, event: details, setStatus: true)
         log.notice("Session \(manifest.id, privacy: .public): transcript rebuilt from \(journal.count, privacy: .public) journal segments, \(total, privacy: .public) s replayed")
         return RebuildReport(transcriptID: transcript.id, journalSegments: journal.count, coverageEnd: coverage,
                              replayedSeconds: replayedSeconds, reused: false, recordingError: recordingError)
+    }
+
+    // MARK: - Recording the rebuild
+
+    /// Records a rebuild whose transcript is current: the status `recovered` (with `setStatus`), then
+    /// `transcriptRebuilt` with `event` (when given), then `finish`. Status before the event, so a journaled rebuild
+    /// always had its status set. Returns why it failed, if it did; an unfinished archive lets go of the writer lock
+    /// when it is released, as the caller returns.
+    private static func record(_ archive: SessionArchive, event: [String: String]?, setStatus: Bool) async -> String? {
+        do {
+            if setStatus { try await archive.setStatus(ArchiveStatus.recovered) }
+            if let event { try await archive.recordEvent(kind: MeetingEventKind.transcriptRebuilt, details: event) }
+            try await archive.finish(status: ArchiveStatus.recovered)
+            return nil
+        } catch {
+            log.error("Session \(archive.id, privacy: .public): transcript rebuilt, but recording the rebuild failed: \(error.localizedDescription, privacy: .private)")
+            return error.localizedDescription
+        }
+    }
+
+    /// Finishes recording an earlier rebuild of the current transcript (`record`): `report` with `recordingError` set
+    /// when that fails too. The transcript stands either way.
+    private static func finishRecording(session: URL, lease: ProcessingLease, report: RebuildReport,
+                                        event: [String: String]?, setStatus: Bool) async -> RebuildReport {
+        var result = report
+        do {
+            let archive = try SessionArchive.openForMaintenance(at: session, lease: lease)
+            result.recordingError = await record(archive, event: event, setStatus: setStatus)
+        } catch {
+            log.error("Session \(logID(session), privacy: .public): cannot record an earlier rebuild: \(error.localizedDescription, privacy: .private)")
+            result.recordingError = error.localizedDescription
+        }
+        return result
     }
 
     // MARK: - Idempotence
@@ -189,18 +242,54 @@ public enum TranscriptRebuilder {
               let transcriptID = rebuilt.details["transcriptID"],
               let current = currentTranscriptID, current == transcriptID,
               !needsTranscription || rebuilt.details["transcribed"] != "false" else { return nil }
-        let recovered = events.last(where: { $0.kind == MeetingEventKind.archiveRecovered })?.sequence ?? 0
-        guard rebuilt.sequence > recovered else { return nil }
+        guard rebuilt.sequence > lastRecovery(events) else { return nil }
+        return report(rebuilt.details, transcriptID: transcriptID, reused: true)
+    }
+
+    /// The `transcriptRebuilding` event of a rebuild that made `currentTranscriptID` current after the last recovery
+    /// but was never recorded: no `transcriptRebuilt` naming that transcript follows it. Nil when there is none, or
+    /// (with `needsTranscription`) that rebuild could not transcribe audio (then it is done again).
+    static func unrecordedRebuild(_ events: [ArchiveEvent], currentTranscriptID: String?,
+                                  needsTranscription: Bool) -> ArchiveEvent? {
+        guard let current = currentTranscriptID,
+              let started = events.last(where: { event in
+                  event.kind == MeetingEventKind.transcriptRebuilding && event.details["transcriptID"] == current
+              }),
+              started.sequence > lastRecovery(events),
+              !needsTranscription || started.details["transcribed"] != "false" else { return nil }
+        let recorded = events.contains { event in
+            event.kind == MeetingEventKind.transcriptRebuilt && event.sequence > started.sequence
+                && event.details["transcriptID"] == current
+        }
+        return recorded ? nil : started
+    }
+
+    /// Whether a rebuild saved transcript `transcriptID` (a `transcriptRebuilding` or `transcriptRebuilt` event names
+    /// it), so it is not a transcript the recorder saved when it stopped.
+    static func rebuildSaved(_ transcriptID: String, events: [ArchiveEvent]) -> Bool {
+        events.contains { event in
+            (event.kind == MeetingEventKind.transcriptRebuilding || event.kind == MeetingEventKind.transcriptRebuilt)
+                && event.details["transcriptID"] == transcriptID
+        }
+    }
+
+    /// The sequence of the last `archiveRecovered` event; 0 when there is none.
+    private static func lastRecovery(_ events: [ArchiveEvent]) -> Int {
+        events.last(where: { $0.kind == MeetingEventKind.archiveRecovered })?.sequence ?? 0
+    }
+
+    /// The report a rebuild event's `details` describe.
+    private static func report(_ details: [String: String], transcriptID: String, reused: Bool) -> RebuildReport {
         var coverage: [String: Double] = [:]
         var replayed: [String: Double] = [:]
-        for (key, value) in rebuilt.details {
+        for (key, value) in details {
             guard let number = Double(value), number.isFinite else { continue }
             if key.hasPrefix("coverageEnd.") { coverage[String(key.dropFirst("coverageEnd.".count))] = number }
             if key.hasPrefix("replayedSeconds.") { replayed[String(key.dropFirst("replayedSeconds.".count))] = number }
         }
         return RebuildReport(transcriptID: transcriptID,
-                             journalSegments: rebuilt.details["journalSegments"].flatMap { Int($0) } ?? 0,
-                             coverageEnd: coverage, replayedSeconds: replayed, reused: true)
+                             journalSegments: details["journalSegments"].flatMap { Int($0) } ?? 0,
+                             coverageEnd: coverage, replayedSeconds: replayed, reused: reused)
     }
 
     // MARK: - Helpers
@@ -226,16 +315,23 @@ public enum TranscriptRebuilder {
         }
     }
 
-    /// vocabulary.json's strings; none when it is missing or cannot be used.
-    private static func sessionVocabulary(_ session: URL) -> [String] {
+    /// vocabulary.json's strings; none when it is missing, cannot be read, or is damaged. One written by a newer
+    /// Holos is refused (`unavailable`, schema rule 3, §1.6), never read as having no strings.
+    static func sessionVocabulary(_ session: URL) throws -> [String] {
+        let data: Data
         do {
-            guard let data = try AtomicFile.readIfPresent(SessionPaths.vocabulary(session), maxBytes: 1 << 20) else {
+            guard let read = try AtomicFile.readIfPresent(SessionPaths.vocabulary(session), maxBytes: 1 << 20) else {
                 return []
             }
-            let vocabulary = try HolosJSON.decoder().decode(MeetingVocabulary.self, from: data)
-            guard vocabulary.schemaVersion == 1 else { return [] }
-            return vocabulary.strings
+            data = read
         } catch {
+            log.error("vocabulary.json ignored: \(error.localizedDescription, privacy: .private)")
+            return []
+        }
+        do {
+            return try SessionFiles.decode(MeetingVocabulary.self, from: data, current: 1, name: "vocabulary.json")
+                .strings
+        } catch let error where SessionFiles.isDamage(error) {
             log.error("vocabulary.json ignored: \(error.localizedDescription, privacy: .private)")
             return []
         }

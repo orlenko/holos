@@ -48,18 +48,20 @@ extension Session {
                                                            applyRecognition: recognition)
                 Console.output(SessionPaths.exports(directory).path)
                 for url in result.movedAside { Console.error(SpeakerCommand.movedAsideNote(url)) }
+                if let diagnostics = result.diagnostics { SpeakerCommand.printNotes(diagnostics) }
                 return
             }
             guard let format else { throw ValidationError("Choose --format md, json, or txt, or use --all.") }
-            let data = try SessionExports.render(format, session: directory, profileNames: names,
-                                                 applyRecognition: recognition)
-            guard let output else {
-                try FileHandle.standardOutput.write(contentsOf: data)
-                return
+            let rendered = try SessionExports.renderChecked(format, session: directory, profileNames: names,
+                                                            applyRecognition: recognition)
+            if let output {
+                let url = fileURL(output)
+                try SessionExports.writeNewFile(rendered.data, at: url)
+                Console.output(url.path)
+            } else {
+                try FileHandle.standardOutput.write(contentsOf: rendered.data)
             }
-            let url = fileURL(output)
-            try SessionExports.writeNewFile(data, at: url)
-            Console.output(url.path)
+            SpeakerCommand.printNotes(rendered.diagnostics)
         }
     }
 }

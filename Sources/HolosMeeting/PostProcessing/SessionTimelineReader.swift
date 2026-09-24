@@ -27,25 +27,48 @@ public enum SessionTimelineReader {
     ///   one gap with track nil, spanning both.
     /// - Gaps are sorted by (start, track, reason); markers by time, in journal order for equal times.
     public static func read(session: URL) throws -> (gaps: [TimelineGap], markers: [TimelineMarker]) {
-        let events = try SessionArchive.readEvents(at: session).events
+        let timeline = try readTimeline(session: session)
+        return (timeline.gaps, timeline.markers)
+    }
+
+    /// `read`, with how much of the event journal it had to skip.
+    struct Timeline {
+        var gaps: [TimelineGap]
+        var markers: [TimelineMarker]
+        /// Journal lines that could not be read (damaged, or a last line cut off) plus gap, pause, sleep, and marker
+        /// events whose times do not parse: the exports may miss the gaps and markers they held.
+        var skippedEvents: Int
+    }
+
+    /// `read`, also counting what it skipped (`Timeline.skippedEvents`).
+    static func readTimeline(session: URL) throws -> Timeline {
+        let journal = try SessionArchive.readEvents(at: session)
+        var skipped = journal.unreadableLines + (journal.tornTail ? 1 : 0)
         var raw: [TimelineGap] = []
         var markers: [TimelineMarker] = []
         var pauses = Stretches()
         var sleeps = Stretches()
-        for event in events {
+        for event in journal.events {
+            let at = time(event.details["at"])
             switch event.kind {
             case MeetingEventKind.audioDiscontinuity:
+                guard time(event.details["previousEnd"]) != nil, time(event.details["nextStart"]) != nil else {
+                    skipped += 1
+                    continue
+                }
                 if let gap = gap(from: event.details) { raw.append(gap) }
-            case MeetingEventKind.paused:
-                if let at = time(event.details["at"]) { pauses.open(at) }
-            case MeetingEventKind.resumed:
-                if let at = time(event.details["at"]) { pauses.close(at) }
-            case MeetingEventKind.systemWillSleep:
-                if let at = time(event.details["at"]) { sleeps.open(at) }
-            case MeetingEventKind.didWake:
-                if let at = time(event.details["at"]) { sleeps.close(at) }
-            case MeetingEventKind.marker:
-                if let at = time(event.details["at"]) {
+            case MeetingEventKind.paused, MeetingEventKind.resumed, MeetingEventKind.systemWillSleep,
+                 MeetingEventKind.didWake, MeetingEventKind.marker:
+                guard let at else {
+                    skipped += 1
+                    continue
+                }
+                switch event.kind {
+                case MeetingEventKind.paused: pauses.open(at)
+                case MeetingEventKind.resumed: pauses.close(at)
+                case MeetingEventKind.systemWillSleep: sleeps.open(at)
+                case MeetingEventKind.didWake: sleeps.close(at)
+                default:
                     let label = event.details["label"].flatMap { $0.isEmpty ? nil : $0 }
                     markers.append(TimelineMarker(at: at, label: label))
                 }
@@ -61,7 +84,7 @@ public enum SessionTimelineReader {
         }
         let orderedMarkers = markers.enumerated().sorted { ($0.element.at, $0.offset) < ($1.element.at, $1.offset) }
             .map(\.element)
-        return (gaps, orderedMarkers)
+        return Timeline(gaps: gaps, markers: orderedMarkers, skippedEvents: skipped)
     }
 
     // MARK: - Private

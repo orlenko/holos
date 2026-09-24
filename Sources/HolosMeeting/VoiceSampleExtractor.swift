@@ -58,10 +58,10 @@ public struct DiarizerVoiceSampleExtractor: VoiceSampleExtractor {
         if try SessionArchive.isActive(at: session) {
             throw HolosError.unavailable("This meeting is still recording. Stop it before learning voices.")
         }
-        if SessionFiles.audioDeleted(session: session) {
+        let manifest = try SessionArchive.readManifest(at: session)
+        if try SessionFiles.audioDeleted(session: session, sessionID: manifest.id) {
             throw HolosError.unavailable(VoiceProfileService.audioDeletedNote)
         }
-        let manifest = try SessionArchive.readManifest(at: session)
         var hint: SpeakerCountHint?
         if let head = try SessionSpeakerStore.readHead(session: session) {
             let run = try SessionSpeakerStore.readRun(id: head.runID, session: session)
