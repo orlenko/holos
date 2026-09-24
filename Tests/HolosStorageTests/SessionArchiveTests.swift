@@ -483,6 +483,47 @@ private func journalSyncs(_ counter: FileSyncCounter) -> Int { counter.count("ev
     }
 }
 
+@Test func shorterGroupCommitIntervalReschedulesThePendingFlush() async throws {
+    let root = try temporaryRoot()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let writer = try archive(in: root)
+    let counter = FileSyncCounter()
+    try await AtomicFile.$fileSyncCounter.withValue(counter) {
+        await writer.setJournalSync(.interval(seconds: 3_600))
+        try await writer.recordEvent(kind: "first", details: [:])
+        try await writer.recordEvent(kind: "second", details: [:])
+        #expect(journalSyncs(counter) == 1)
+        // The flush pending for the old interval does not hold back the new, shorter one.
+        await writer.setJournalSync(.interval(seconds: 0.2))
+        try await writer.recordEvent(kind: "third", details: [:])
+        let deadline = ContinuousClock.now + .seconds(5)
+        while journalSyncs(counter) < 2, ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        #expect(journalSyncs(counter) == 2)
+        try await writer.finish(status: ArchiveStatus.complete)
+        #expect(journalSyncs(counter) == 2)
+    }
+}
+
+@Test func longerGroupCommitIntervalDropsTheEarlierFlush() async throws {
+    let root = try temporaryRoot()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let writer = try archive(in: root)
+    let counter = FileSyncCounter()
+    try await AtomicFile.$fileSyncCounter.withValue(counter) {
+        await writer.setJournalSync(.interval(seconds: 0.2))
+        try await writer.recordEvent(kind: "first", details: [:])
+        try await writer.recordEvent(kind: "second", details: [:])
+        #expect(journalSyncs(counter) == 1)
+        await writer.setJournalSync(.interval(seconds: 3_600))
+        try await Task.sleep(for: .milliseconds(600))
+        #expect(journalSyncs(counter) == 1)
+        try await writer.finish(status: ArchiveStatus.complete)
+        #expect(journalSyncs(counter) == 2)
+    }
+}
+
 @Test func hugeGroupCommitIntervalIsClamped() async throws {
     let root = try temporaryRoot()
     defer { try? FileManager.default.removeItem(at: root) }
