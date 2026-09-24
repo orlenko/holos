@@ -44,11 +44,11 @@ final class SetupWindow: NSObject, NSWindowDelegate {
         super.init()
         window.title = "Holos Setup"
         window.isReleasedWhenClosed = false
-        // Holos has no Dock icon, so a window that falls behind System Settings is hard to find again.
-        // Keep setup above other apps until the user closes it.
-        window.level = .floating
+        // An ordinary window: other apps can cover it. It stays open until the user closes it, and while it
+        // is open Holos appears in the Dock and Command-Tab so it can be found again (HolosAppDelegate).
+        window.level = .normal
         window.hidesOnDeactivate = false
-        window.collectionBehavior = [.moveToActiveSpace, .fullScreenAuxiliary]
+        window.collectionBehavior = [.moveToActiveSpace]
         window.delegate = self
 
         let grid = NSGridView()

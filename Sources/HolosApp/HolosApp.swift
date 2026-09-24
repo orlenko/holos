@@ -661,8 +661,12 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
     @objc private func showSetup() {
         if setupWindow == nil {
             setupWindow = SetupWindow(perform: { [weak self] action in self?.performSetup(action) },
-                                      onClose: { [weak self] in self?.setupRefreshTask?.cancel(); self?.setupRefreshTask = nil })
+                                      onClose: { [weak self] in
+                                          self?.setupRefreshTask?.cancel(); self?.setupRefreshTask = nil
+                                          self?.setDockPresence(false)
+                                      })
         }
+        setDockPresence(true)
         setupWindow?.show()
         refreshAssetState()
         // TCC has no change notification, so poll while the window is open.
@@ -673,6 +677,14 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
                 try? await Task.sleep(for: .seconds(1))
             }
         }
+    }
+
+    /// Holos is a menu bar app with no Dock icon. While the Setup window is open it becomes a regular app,
+    /// so the window shows in the Dock and Command-Tab and can be found when other windows cover it.
+    private func setDockPresence(_ visible: Bool) {
+        let policy: NSApplication.ActivationPolicy = visible ? .regular : .accessory
+        guard NSApplication.shared.activationPolicy() != policy else { return }
+        NSApplication.shared.setActivationPolicy(policy)
     }
 
     private func updateSetupWindow() {
