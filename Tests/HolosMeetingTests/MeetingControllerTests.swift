@@ -831,6 +831,39 @@ func finishedMeetingWithoutLabelsOffersNothing(postprocessing: PostProcessingSta
     #expect(!probe.effects.contains { if case .offerNaming = $0 { true } else { false } })
 }
 
+/// A relabel whose command could not start (here the bundled tool is missing) uses up no attempt: once the tool is
+/// back, the meeting is still relabelled.
+@Test @MainActor func automaticRelabelThatCannotStartUsesNoAttempt() async throws {
+    let temp = try TemporaryDirectory("controller")
+    defer { temp.remove() }
+    let session = try await SessionFixtures.makeSession(
+        in: temp.url, mode: .inPerson,
+        transcript: SessionFixtures.transcript(SessionFixtures.alternatingSegments(track: "mic")))
+    let manifest = try SessionArchive.readManifest(at: session)
+    try AtomicFile.writeJSON(PostProcessingRecord(sessionID: manifest.id, state: .running, pid: Int32.max,
+                                                  startedAt: Date(), updatedAt: Date()),
+                             to: SessionPaths.postprocess(session))
+    let arguments = temp.url.appendingPathComponent("arguments.txt")
+    let script = temp.url.appendingPathComponent("fake-holos.sh")
+    let probe = ControllerProbe()
+    let controller = makeController(root: temp.url, launcher: FakeRecorderLauncher(), probe: probe,
+                                    maintenance: MaintenanceLauncher(executable: script), modelsInstalled: true)
+    defer { controller.stopMonitoring() }
+    // More failed launches than `AutoRelabelPolicy.maxAttempts`.
+    for _ in 0...AutoRelabelPolicy.maxAttempts {
+        controller.runAutoRelabel()
+        #expect(controller.relabelling)
+        #expect(await eventually(timeout: .seconds(10)) { !controller.relabelling })
+        #expect(probe.attempts[manifest.id] == nil, "A command that did not start is not an attempt.")
+    }
+    #expect(controller.relabellingSessionID == nil)
+    try Data("#!/bin/sh\necho \"$*\" >> '\(arguments.path)'\n".utf8).write(to: script)
+    #expect(chmod(script.path, 0o700) == 0)
+    controller.runAutoRelabel()
+    #expect(await eventually(timeout: .seconds(10)) { !controller.relabelling && exists(arguments) })
+    #expect(probe.attempts == [manifest.id: 1])
+}
+
 /// A meeting labelled by the automatic relabel is offered for naming once, as a meeting that just ended is, also when
 /// the labelling ended with a warning (exit code 3); one the relabel did not label is not.
 @Test(arguments: [Int32(0), 3]) @MainActor

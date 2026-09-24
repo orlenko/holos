@@ -4,6 +4,7 @@ import Foundation
 import HolosCore
 import HolosStorage
 import os
+import Synchronization
 
 // How the app starts a recorder, and the `holos` maintenance commands it runs (docs/meeting-design.md §4.1, §5.8).
 
@@ -122,7 +123,7 @@ import os
     public var onExit: ((Int32, String?) -> Void)?
     public let executable: URL
     public let logDirectory: URL
-    private var running: [String: (task: Task<Void, Never>, stop: ManualStopSource)] = [:]
+    private var running: [String: (task: Task<Void, Never>, stop: ManualStopSource, labelling: LabellingStarted)] = [:]
 
     public init(executable: URL = ChildProcessLauncher.bundledExecutable,
                 logDirectory: URL = SessionDeletion.defaultLogDirectory) {
@@ -143,9 +144,13 @@ import os
                                        othersInRoom: settings.othersInRoom,
                                        expectedSpeakers: settings.expectedSpeakers, liveText: false)
         let stop = ManualStopSource()
-        let log = logDirectory.appendingPathComponent("recorder-\(sessionID).log", isDirectory: false)
-        try? AtomicFile.ensurePrivateDirectory(logDirectory)
-        var dependencies = makeDependencies(stop, Self.childPostProcessHook(executable: executable, log: log))
+        let log = Self.labellingLog(in: logDirectory, sessionID: sessionID)
+        let labelling = LabellingStarted()
+        let hook = Self.childPostProcessHook(executable: executable, log: log)
+        var dependencies = makeDependencies(stop) { session, lease, progress in
+            labelling.set()
+            return await hook(session, lease, progress)
+        }
         let exitWait = ExitStatusWait()
         dependencies.exitStatusWait = exitWait
         let exit = onExit
@@ -178,8 +183,22 @@ import os
             Self.log.notice("Session \(sessionID, privacy: .public): in-process recording ended with \(code, privacy: .public)")
             exit?(code, message)
         }
-        running[sessionID] = (task, stop)
+        running[sessionID] = (task, stop, labelling)
         return nil
+    }
+
+    /// For a quit once the transcript is saved: every recording here that has reached speaker labelling stops
+    /// following it. Its labelling child keeps the processing lease and finishes on its own; the recording writes its
+    /// exited status (labelling still running) and ends, so `isRecording` turns false. A recording that has not
+    /// reached labelling yet (still saving its transcript) is left alone. Returns true when one was told.
+    @discardableResult
+    public func leaveLabellingToItsChild() -> Bool {
+        var told = false
+        for recording in running.values where recording.labelling.isSet {
+            recording.task.cancel()
+            told = true
+        }
+        return told
     }
 
     /// The recording's dependencies from its stop source and post-process hook: the live ones (tests replace them).
@@ -211,6 +230,18 @@ import os
         return 0
     }
 
+    /// `<directory>/recorder-<SESSION-UUID>.log` for the labelling child's stderr, creating the folder; nil when the
+    /// folder cannot be made (the child's stderr is then discarded: an unusable log never stops the labelling).
+    nonisolated static func labellingLog(in directory: URL, sessionID: String) -> URL? {
+        do {
+            try AtomicFile.ensurePrivateDirectory(directory)
+        } catch {
+            log.error("Session \(sessionID, privacy: .public): no log folder for speaker labelling; its output is discarded: \(error.localizedDescription, privacy: .private)")
+            return nil
+        }
+        return directory.appendingPathComponent("recorder-\(sessionID).log", isDirectory: false)
+    }
+
     /// The post-process hook of an in-process recording: `holos session diarize <path> --after-recording --json
     /// --lease-fd 3` in a child that inherits the lease; its stderr goes to `log`.
     nonisolated static func childPostProcessHook(executable: URL, log: URL?) -> PostProcessHook {
@@ -235,6 +266,9 @@ import os
         let output = FileManager.default.temporaryDirectory
             .appendingPathComponent("holos-postprocess-\(UUID().uuidString).json", isDirectory: false)
         defer { ProcessSpawner.removeRegularFile(output) }
+        // A log that cannot be opened (its folder gone or unwritable, a link in its place) is dropped: the spawn
+        // would fail on it, and the labelling would be reported as failed only because its log was unavailable.
+        let log = log.flatMap { ProcessSpawner.canAppend(to: $0) ? $0 : nil }
         let pid: pid_t
         do {
             pid = try lease.handOff { descriptor in
@@ -286,6 +320,16 @@ import os
         }
         return try? HolosJSON.decoder().decode(PostProcessingRecord.self, from: data)
     }
+}
+
+/// Set once an in-process recording's post-process hook has started: the lease hand-off to the labelling child follows
+/// at once, and a cancellation from then on only stops the recording from waiting for that child.
+final class LabellingStarted: Sendable {
+    private let value = Mutex(false)
+
+    func set() { value.withLock { $0 = true } }
+
+    var isSet: Bool { value.withLock { $0 } }
 }
 
 /// Logs the recorder's progress lines; never transcript text.
@@ -415,6 +459,14 @@ public enum ProcessSpawner {
         case file(URL, append: Bool)
         /// Only for stderr: the same file as stdout.
         case sameAsOutput
+    }
+
+    /// True when `url` can be opened as `Output.file(url, append: true)` would open it (creating it, 0600).
+    static func canAppend(to url: URL) -> Bool {
+        let fd = Darwin.open(url.path, O_WRONLY | O_CREAT | O_CLOEXEC | O_NOFOLLOW | O_APPEND, 0o600)
+        guard fd >= 0 else { return false }
+        Darwin.close(fd)
+        return true
     }
 
     /// Spawns `executable` with `arguments` (argv[0] is the executable's path). stdin is `/dev/null`.

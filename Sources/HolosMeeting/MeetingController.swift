@@ -576,11 +576,13 @@ struct MeetingControllerTuning: Sendable {
                 self.relabelling = false
                 return
             }
-            attempts[pick.id, default: 0] += 1
             // Forget meetings too old to be picked again.
             let recent = Set(listed.filter { at.timeIntervalSince($0.createdAt) <= AutoRelabelPolicy.maxAge }.map(\.id))
             attempts = attempts.filter { recent.contains($0.key) }
-            self.saveRelabelAttempts(attempts)
+            // An attempt counts only once its command started: a launch failure (a spawn error, the bundled tool
+            // missing for a moment) labelled nothing and must not use up one of `AutoRelabelPolicy.maxAttempts`. The
+            // count is saved before this main-actor task yields, so the command's exit never runs ahead of it.
+            defer { self.saveRelabelAttempts(attempts) }
             do {
                 try maintenance.run(["session", "diarize", pick.directory.path, "--json"]) { [weak self] code in
                     Self.log.notice("Session \(pick.id, privacy: .public): automatic relabel ended with \(code, privacy: .public)")
@@ -590,6 +592,7 @@ struct MeetingControllerTuning: Sendable {
                     // labels check out (the controller stays idle, so nothing else would offer it).
                     if Self.ranToTheEnd(code) { self?.offerNamingIfLabelled(sessionID: pick.id, name: pick.name) }
                 }
+                attempts[pick.id, default: 0] += 1
                 self.relabellingSessionID = pick.id
                 Self.log.notice("Session \(pick.id, privacy: .public): relabelling automatically (attempt \(attempts[pick.id] ?? 0, privacy: .public))")
             } catch {

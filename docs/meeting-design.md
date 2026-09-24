@@ -5541,13 +5541,20 @@ Quit (`applicationShouldTerminate`) while `active`: alert "A meeting is recordin
 Child mode: `[Stop and Save]` (send stop; `.terminateLater`; reply once the status phase
 is `transcribing` or later, at most 10 s; the recorder finishes labelling on its own),
 `[Keep Recording]` (quit the app only), `[Cancel]`. In-process mode: `[Stop and Save]`
-shows progress and replies once the phase is `postprocessing` or later (the transcript
-is saved; labelling continues in its child), at most 10 minutes; `[Cancel]`. An in-process
+shows progress and replies once the recording in the app has ended, at most 10 minutes;
+`[Cancel]`. Labelling continues in its child: once the recording's post-process hook has
+handed the lease over, the quit calls `InProcessLauncher.leaveLabellingToItsChild()`,
+which cancels the recording task; the hook stops mirroring the child and returns a
+`running` record, and the recording writes `exited` (post-processing `running`) before it
+ends. Replying at phase `postprocessing` alone would kill the app while the recording
+still waits for the child, leaving `status.json` stuck in `postprocessing`. The readiness
+rule is `QuitReadiness.ready`; any quit while a recording still runs in the app waits.
+Test `quitLeavesLabellingToTheChildAndEndsTheRecording`. An in-process
 recording whose exited status could not be written yet (`ExitRetry` still retrying it and
 holding the locks) has not ended: `InProcessLauncher` keeps it running, reports its exit
 only once `status.json` says exited (or the retry stops because the folder is gone, as a
-failure), and a quit waits for it the same way (`isWritingExit`). Test
-`inProcessRecordingEndsOnlyOnceItsExitedStatusIsWritten`.
+failure), and a quit waits for it the same way (`isRecording` stays true, `isWritingExit`).
+Test `inProcessRecordingEndsOnlyOnceItsExitedStatusIsWritten`.
 
 About Holos: `NSApp.orderFrontStandardAboutPanel(options: [.credits: …])` with the
 credits text of §4.8 embedded as a string constant (the app has no resource bundle).

@@ -841,22 +841,19 @@ extension HolosAppDelegate: NSMenuDelegate {
             if !inProcess, response == .alertSecondButtonReturn { return .terminateNow }
             return .terminateCancel
         case .idle, .finishing, .failed:
-            // An in-process recording still saving its transcript (also one whose start timed out in the menu but
-            // that did start), or still retrying its exited status (`ExitRetry`), is waited for; quitting would cut
-            // the save short.
-            let writingExit = meeting.inProcess?.isWritingExit == true
-            guard inProcess, writingExit || !Self.transcriptSaved(controller.status?.phase) else { return .terminateNow }
+            // A recording still running in this process is waited for, whatever its phase: saving its transcript
+            // (also one whose start timed out in the menu but that did start), labelling speakers (it is told to
+            // leave that to its child, then writes exited), or retrying its exited status (`ExitRetry`). Quitting
+            // earlier would cut the save short or leave status.json unfinished.
+            guard inProcess else { return .terminateNow }
             waitBeforeQuitting(inProcess: true)
             return .terminateLater
         }
     }
 
-    private static func transcriptSaved(_ phase: RecorderPhase?) -> Bool {
-        phase == .postprocessing || phase == .exited
-    }
-
-    /// Replies to the pending terminate once the recorder has stopped capturing (child: 10 s at most) or saved the
-    /// transcript (in-process: 10 minutes at most).
+    /// Replies to the pending terminate once the recorder has stopped capturing (child: 10 s at most) or, in-process,
+    /// once the recording here has ended (10 minutes at most): after its transcript is saved it stops following the
+    /// labelling child (`InProcessLauncher.leaveLabellingToItsChild`) and writes its exited status.
     private func waitBeforeQuitting(inProcess: Bool) {
         if inProcess { showSavingWindow() }
         let limit: Duration = inProcess ? .seconds(600) : .seconds(10)
@@ -872,10 +869,11 @@ extension HolosAppDelegate: NSMenuDelegate {
                     undelivered = true
                     break
                 }
+                // Labelling continues in its child after the quit (§5.8): a recording here that reached it stops
+                // waiting for it, writes its exited status, and ends.
+                if inProcess { self.meeting.inProcess?.leaveLabellingToItsChild() }
                 let recordingHere = self.meeting.inProcess?.isRecording == true
-                let writingExit = self.meeting.inProcess?.isWritingExit == true
-                if Self.readyToQuit(controller, inProcess: inProcess, recordingHere: recordingHere,
-                                    writingExit: writingExit) { break }
+                if QuitReadiness.ready(controller.state, inProcess: inProcess, recordingHere: recordingHere) { break }
                 try? await Task.sleep(for: .milliseconds(200))
             }
             self?.meeting.savingWindow?.close()
@@ -893,20 +891,6 @@ extension HolosAppDelegate: NSMenuDelegate {
     private static func stopNotDelivered(_ controller: MeetingController) -> Bool {
         guard case .active(_, let status) = controller.state else { return false }
         return status.phase != .stopping && !controller.reducer.stopRequested
-    }
-
-    /// Child mode: once capture stopped. In-process: once the recording in this process ended or saved its transcript,
-    /// and is not retrying its exited status (`writingExit`: quitting would leave the status unfinished).
-    private static func readyToQuit(_ controller: MeetingController, inProcess: Bool, recordingHere: Bool,
-                                    writingExit: Bool) -> Bool {
-        if inProcess && writingExit { return false }
-        if inProcess && !recordingHere { return true }
-        switch controller.state {
-        case .starting, .active:
-            return false
-        case .idle, .failed, .finishing:
-            return inProcess ? transcriptSaved(controller.status?.phase) : true
-        }
     }
 
     private func showSavingWindow() {
