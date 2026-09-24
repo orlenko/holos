@@ -108,7 +108,8 @@ public struct RecordingOutcome: Sendable, Equatable {
     public var stopReason: StopReason
     public var transcriptID: String?
     public var transcriptErrors: [String]
-    /// The hook's record; nil when post-processing did not run.
+    /// The hook's record; nil only when no hook was configured. A configured hook that could not run (the processing
+    /// lease was held elsewhere or could not be taken) gives a `.failed` record whose message says why.
     public var postProcessing: PostProcessingRecord?
 
     public init(sessionID: String, directory: URL, archiveStatus: String, stopReason: StopReason,
@@ -137,7 +138,8 @@ public enum RecordingWorkflow {
     /// Throws before creating a session for invalid options and when the disk has too little space. Capture never
     /// started: the archive is finished `failed` and the error is thrown. Audio could not be saved (the writer failed,
     /// or no audio arrived): marks the archive incomplete and throws `HolosError.incomplete`. Transcription failure:
-    /// does not throw; the outcome carries the errors.
+    /// does not throw; the outcome carries the errors. A hook that cannot get the processing lease does not run: the
+    /// outcome and `status.json` carry a `.failed` post-processing record saying so.
     ///
     /// Task cancellation: stops like a stop request, keeps the saved audio, finishes the archive without a partial
     /// transcript (`transcriptionIncomplete`, or `audioOnly` for record-only), skips post-processing, and rethrows
@@ -889,8 +891,19 @@ private final class Recorder {
         // between capture and post-processing.
         var lease: ProcessingLease?
         var leaseCancelled = false
+        // A configured hook that cannot run is reported as a failed post-processing, never as nil: nil means no
+        // hook was configured (`--no-postprocess`, `--record-only`), and callers map the two differently (§1.4).
+        var postRecord: PostProcessingRecord?
         if dependencies.postProcess != nil {
-            do { lease = try await acquireLease() } catch { leaseCancelled = true }
+            do {
+                switch try await acquireLease() {
+                case .acquired(let acquired): lease = acquired
+                case .unavailable(let message):
+                    let now = Date()
+                    postRecord = PostProcessingRecord(sessionID: archive.id, state: .failed,
+                        transcriptID: transcriptID, pid: getpid(), startedAt: now, updatedAt: now, message: message)
+                }
+            } catch { leaseCancelled = true }
         }
         defer { lease?.release() }
         try await archive.finish(status: finalStatus)
@@ -903,7 +916,6 @@ private final class Recorder {
             throw CancellationError()
         }
         // 7. Post-processing under the lease; its progress is mirrored into status.json in order.
-        var postRecord: PostProcessingRecord?
         if let hook = dependencies.postProcess, let lease {
             await setPhase(.postprocessing)
             let mirror = ProgressMirror(status: status)
@@ -953,24 +965,37 @@ private final class Recorder {
         throw CancellationError()
     }
 
-    /// Takes the processing lease (retry 1 s) off the main actor. On failure, post-processing is skipped. Throws only
-    /// `CancellationError`.
-    private func acquireLease() async throws -> ProcessingLease? {
+    enum LeaseAttempt {
+        case acquired(ProcessingLease)
+        /// Post-processing cannot run; the message says why and what to do.
+        case unavailable(String)
+    }
+
+    static let leaseBusyMessage = "Speaker labelling was skipped: the session is busy (recovery or another command "
+        + "holds it). Run holos session diarize on this session later."
+
+    static func leaseFailedMessage(_ error: any Error) -> String {
+        "Speaker labelling was skipped: the session could not be locked for it (\(error.localizedDescription)). "
+            + "Run holos session diarize on this session later."
+    }
+
+    /// Takes the processing lease (retry 1 s) off the main actor. On failure, post-processing is skipped and the
+    /// caller records it as failed. Throws only `CancellationError`.
+    private func acquireLease() async throws -> LeaseAttempt {
         let directory = archive.directory
         let sessionID = archive.id
         do {
-            return try await Task.detached { try SessionArchive.acquireProcessingLease(at: directory) }.value
+            return .acquired(try await Task.detached { try SessionArchive.acquireProcessingLease(at: directory) }.value)
         } catch is CancellationError {
             throw CancellationError()
         } catch HolosError.unavailable {
             Self.log.error("Session \(sessionID, privacy: .public): processing lease held elsewhere; post-processing skipped")
             reporter.message("Another Holos process is labelling this meeting.")
-            return nil
+            return .unavailable(Self.leaseBusyMessage)
         } catch {
             let code = error as NSError
             Self.log.error("Session \(sessionID, privacy: .public): cannot take the processing lease (\(code.domain, privacy: .public) \(code.code, privacy: .public)): \(error.localizedDescription, privacy: .private); post-processing skipped")
-            reporter.message("Speaker labelling skipped: \(error.localizedDescription)")
-            return nil
+            return .unavailable(Self.leaseFailedMessage(error))
         }
     }
 

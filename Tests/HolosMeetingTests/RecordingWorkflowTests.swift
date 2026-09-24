@@ -500,11 +500,55 @@ func leaseHeldElsewhereSkipsPostProcessing() async throws {
     defer { other.release() }
     stop.requestStop()
     let outcome = try await run.value
-    #expect(outcome.postProcessing == nil)
+    // A configured hook that could not run is a failed post-processing (Record.Start exits 3), not the nil of
+    // `--no-postprocess`; status.json says so too.
+    let record = try #require(outcome.postProcessing)
+    #expect(record.state == .failed)
+    #expect(record.sessionID == outcome.sessionID)
+    #expect(record.message?.hasPrefix("Speaker labelling was skipped: the session is busy") == true)
+    #expect(record.message?.contains("holos session diarize") == true)
+    let status = try #require(try RecorderChannel.readStatus(session: directory))
+    #expect(status.phase == .exited)
+    #expect(status.exit?.postprocessing == .failed)
+    #expect(status.exit?.postprocessingMessage == record.message)
     #expect(calls.value == 0)
     #expect(reporter.messages.contains("Another Holos process is labelling this meeting."))
     #expect(outcome.archiveStatus == ArchiveStatus.audioOnly)
     #expect(try SessionArchive.readManifest(at: directory).status == ArchiveStatus.audioOnly)
+    #expect(try !SessionArchive.isActive(at: directory))
+}
+
+@Test(.timeLimit(.minutes(1))) @MainActor
+func leaseErrorFailsPostProcessing() async throws {
+    let temp = try TemporaryDirectory()
+    defer { temp.remove() }
+    let calls = SharedValue(0)
+    let hook: PostProcessHook = { session, _, _ in
+        calls.update { $0 += 1 }
+        return fakeRecord(session)
+    }
+    let captures = threeMicFrames()
+    let stop = ManualStopSource()
+    let run = Task {
+        try await RecordingWorkflow.run(.testing(root: temp.url),
+            dependencies: .testing(captures: captures, postProcess: hook, stop: stop))
+    }
+    #expect(await eventually { (captures.captures.first?.consumedFrames ?? 0) >= 3 })
+    let directory = try #require(sessionFolders(in: temp.url).first)
+    // A folder where the lease file belongs: taking the lease fails with an error, not contention.
+    try FileManager.default.createDirectory(at: directory.appendingPathComponent(".processing.lock"),
+                                            withIntermediateDirectories: false)
+    stop.requestStop()
+    let outcome = try await run.value
+    let record = try #require(outcome.postProcessing)
+    #expect(record.state == .failed)
+    #expect(record.transcriptID == outcome.transcriptID)
+    #expect(record.message?.hasPrefix("Speaker labelling was skipped: the session could not be locked") == true)
+    let status = try #require(try RecorderChannel.readStatus(session: directory))
+    #expect(status.exit?.postprocessing == .failed)
+    #expect(status.exit?.postprocessingMessage == record.message)
+    #expect(calls.value == 0)
+    #expect(outcome.archiveStatus == ArchiveStatus.complete)
     #expect(try !SessionArchive.isActive(at: directory))
 }
 

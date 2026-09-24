@@ -314,7 +314,8 @@ private func cancellationAtEachAwaitPoint(_ c: PointCase) async throws {
         #expect(outcome.archiveStatus == finished)
         #expect(manifest.status == finished)
         if point == .lease {
-            #expect(outcome.postProcessing == nil, "A lease held elsewhere skips post-processing.")
+            #expect(outcome.postProcessing?.state == .failed,
+                    "A lease held elsewhere skips the hook and reports post-processing failed.")
             #expect(hookCalls.value == 0)
         } else {
             #expect(outcome.postProcessing?.state == .failed)

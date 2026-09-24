@@ -2629,7 +2629,10 @@ After `finish(reason)` the loop exits and `RecordingWorkflow.run` does, in order
    `transcripts/current.json`).
 5. If a post-process hook is set, **acquire the processing lease** (retry 1 s) while
    still holding the writer lock. On failure, skip post-processing with the message
-   "Another Holos process is labelling this meeting."
+   "Another Holos process is labelling this meeting." The hook does not run, but the
+   outcome and `RecorderExit` still carry a `.failed` post-processing record ("Speaker
+   labelling was skipped: … Run holos session diarize on this session later."), so
+   `Record.Start` exits 3 and the app shows it; only a `nil` hook gives no record.
 6. `archive.finish(status)` releases the writer lock. There is no moment in which the
    session holds neither lock, so liveness never reads `dead` between capture and
    post-processing.
@@ -3964,6 +3967,7 @@ hang); `CollectingReporter`; `TemporaryDirectory`; and
 | `durationStopsRecording` | `duration: 0.3`; capture keeps emitting | returns within 2 s; chunks present |
 | `postProcessHookRunsUnderLeaseAfterFinish` | hook records `isActive` and `isProcessing` when called | hook sees `isActive == false`, `isProcessing == true`; outcome carries the hook's record; lease released afterwards |
 | `noHookMeansNoLease` | `postProcess: nil` | outcome `postProcessing == nil`; no lease taken |
+| `leaseHeldElsewhereSkipsPostProcessing`, `leaseErrorFailsPostProcessing` | hook set; the lease is held elsewhere, or taking it fails | hook not called; outcome and `status.json` exit carry `.failed` with a "Speaker labelling was skipped" message |
 | `vocabularyReachesSpeechFactory` | `vocabulary: ["Maria Chen"]` | FakeSpeech saw `["Maria Chen"]` for live and replay sessions |
 | `replayFromSkipsEarlierAudio` | chunks 0–30 s and 30–60 s; `replay(from: 40)` | first frame fed starts at 40.0 (± one buffer); none earlier |
 | `postProcessorSkeletonIsSkipped` | `MeetingPostProcessor().run(session:lease: nil)` on a finished session | state `.skipped`; no `postprocess.json` written |
