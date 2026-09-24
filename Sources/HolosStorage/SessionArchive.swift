@@ -303,15 +303,21 @@ public actor SessionArchive {
         }
         let snapshot = SessionPaths.transcript(transcript.id, in: directory)
         let encoded = try Self.encode(transcript)
+        let pending = SessionPaths.pendingTranscript(directory)
         if let existing = try AtomicFile.readIfPresent(snapshot, maxBytes: Self.maxTranscriptBytes) {
-            // The same bytes, not yet current, mean an earlier save of this transcript failed after creating
-            // the revision (for example while publishing the pointer); retrying finishes it. Only a missing
-            // pointer counts as "not current": a damaged or newer pointer is refused, never overwritten.
+            // A retry finishes only the save that `current.pending` names: the same bytes, not yet current,
+            // left by a save that failed after creating the revision (for example while publishing the
+            // pointer). Any other existing revision is refused, so a finished older revision can never be
+            // republished over a newer one. A damaged or newer pointer is refused, never overwritten.
             let current = try TranscriptPointer.read(session: directory)?.transcriptID
-            guard existing == encoded, current != transcript.id else {
+            guard existing == encoded, current != transcript.id,
+                  try TranscriptPointer.readPending(session: directory)?.transcriptID == transcript.id else {
                 throw HolosError.invalidInput("Transcript revision already exists.")
             }
         } else {
+            // Written first, so a revision is never left without it; a later save replaces it, which abandons
+            // this one.
+            try AtomicFile.writeJSON(TranscriptPointer(transcriptID: transcript.id), to: pending)
             try AtomicFile.create(encoded, at: snapshot)
         }
         if writeLegacyExports {
@@ -331,6 +337,12 @@ public actor SessionArchive {
         }
         try AtomicFile.writeJSON(TranscriptPointer(transcriptID: transcript.id),
                                  to: SessionPaths.transcriptPointer(directory))
+        // The save is finished. A marker left behind names the current revision, which is refused anyway, and
+        // the next save replaces it.
+        if unlink(pending.path) != 0, errno != ENOENT {
+            let reason = AtomicFile.errnoText()
+            Self.log.error("Cannot remove transcripts/current.pending: \(reason, privacy: .public)")
+        }
     }
 
     public func finish(status: String) throws {

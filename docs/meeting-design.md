@@ -433,6 +433,7 @@ extension SessionArchive {
   audio-deleted.json                       PR3                          written by Delete Audio; chunks are intentionally absent
   transcripts/<TRANSCRIPT-UUID>.json       SessionArchive               immutable revisions
   transcripts/current.json                 PR6 (saveTranscript)         TranscriptPointer: which revision is current
+  transcripts/current.pending              PR6 (saveTranscript)         TranscriptPointer: the revision a save is publishing; removed when done
   speakers/runs/<RUN-UUID>.json            PR6 API, PR7b writes         immutable DiarizationRun; no voice embeddings
   speakers/head.json                       PR6 API                      SpeakerHead: current run
   speakers/edits.jsonl                     PR6 API, PR8 writes          SpeakerEdit journal; torn tail tolerated
@@ -551,7 +552,9 @@ diarization times (after the render time map, §4.7), markers, and gaps. An expo
 - The current transcript is named by `transcripts/current.json`
   (`TranscriptPointer {schemaVersion, transcriptID, updatedAt}`, PR6), which
   `SessionArchive.saveTranscript` rewrites atomically after writing each revision.
-  `SessionArchive.currentTranscriptID(at:)` reads it. Archives from before PR6 have at
+  `SessionArchive.currentTranscriptID(at:)` reads it. Saving an existing revision again is
+  refused unless `transcripts/current.pending` names it (a save that failed after creating
+  it); a later save replaces that marker, so an older revision is never republished. Archives from before PR6 have at
   most one transcript (`holos session retranscribe` writes outside the archive); if a
   legacy archive has several and no pointer, the newest `createdAt` wins and a warning
   is logged.

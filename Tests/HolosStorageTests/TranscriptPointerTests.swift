@@ -102,10 +102,56 @@ private func pointerTranscript(createdAt seconds: TimeInterval, text: String = "
     await #expect(throws: HolosError.self) { try await writer.saveTranscript(a, writeLegacyExports: false) }
     #expect(try Data(contentsOf: pointerURL) == damaged)
 
-    // A missing pointer still lets the retry finish.
+    // A missing pointer does not make a finished revision retryable either.
     try FileManager.default.removeItem(at: pointerURL)
+    await #expect(throws: HolosError.self) { try await writer.saveTranscript(a, writeLegacyExports: false) }
+    #expect(!FileManager.default.fileExists(atPath: pointerURL.path))
+    try await writer.finish(status: ArchiveStatus.complete)
+}
+
+@Test func olderRevisionCannotBeRepublished() async throws {
+    let root = try pointerTemporaryRoot()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let writer = try pointerArchive(in: root)
+    let a = pointerTranscript(createdAt: 1_790_000_000, text: "A")
+    let b = pointerTranscript(createdAt: 1_790_000_001, text: "B")
+    try await writer.saveTranscript(a)
+    try await writer.saveTranscript(b)
+    let text = try Data(contentsOf: SessionPaths.export("txt", in: writer.directory))
+    #expect(!FileManager.default.fileExists(atPath: SessionPaths.pendingTranscript(writer.directory).path))
+
+    await #expect(throws: HolosError.self) { try await writer.saveTranscript(a) }
+    #expect(try SessionArchive.currentTranscriptID(at: writer.directory) == b.id)
+    #expect(try Data(contentsOf: SessionPaths.export("txt", in: writer.directory)) == text)
+    try await writer.finish(status: ArchiveStatus.complete)
+}
+
+@Test func onlyThePendingSaveCanBeRetried() async throws {
+    let root = try pointerTemporaryRoot()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let writer = try pointerArchive(in: root)
+    let pointerURL = SessionPaths.transcriptPointer(writer.directory)
+    // The first save fails while publishing the pointer, so no pointer exists yet.
+    try FileManager.default.createDirectory(at: pointerURL, withIntermediateDirectories: false)
+    let a = pointerTranscript(createdAt: 1_790_000_000, text: "A")
+    await #expect(throws: HolosError.self) { try await writer.saveTranscript(a, writeLegacyExports: false) }
+    try FileManager.default.removeItem(at: pointerURL)
+    #expect(try TranscriptPointer.readPending(session: writer.directory)?.transcriptID == a.id)
     try await writer.saveTranscript(a, writeLegacyExports: false)
     #expect(try SessionArchive.currentTranscriptID(at: writer.directory) == a.id)
+    #expect(try TranscriptPointer.readPending(session: writer.directory) == nil)
+
+    // B fails the same way, then C is saved instead: B is abandoned and cannot be published over C.
+    try FileManager.default.removeItem(at: pointerURL)
+    try FileManager.default.createDirectory(at: pointerURL, withIntermediateDirectories: false)
+    let b = pointerTranscript(createdAt: 1_790_000_001, text: "B")
+    await #expect(throws: HolosError.self) { try await writer.saveTranscript(b, writeLegacyExports: false) }
+    try FileManager.default.removeItem(at: pointerURL)
+    let c = pointerTranscript(createdAt: 1_790_000_002, text: "C")
+    try await writer.saveTranscript(c, writeLegacyExports: false)
+    await #expect(throws: HolosError.self) { try await writer.saveTranscript(b, writeLegacyExports: false) }
+    #expect(try SessionArchive.currentTranscriptID(at: writer.directory) == c.id)
+    #expect(try !SessionArchive.inspectRecovery(at: writer.directory).needsAttention)
     try await writer.finish(status: ArchiveStatus.complete)
 }
 
