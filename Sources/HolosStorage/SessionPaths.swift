@@ -17,6 +17,8 @@ public enum SessionPaths {
         file("\(id).json", in: transcripts(session))
     }
     public static func transcriptPointer(_ session: URL) -> URL { file("current.json", in: transcripts(session)) }
+    /// transcripts/current.pending: the revision a save is publishing; only that revision may be saved again.
+    public static func pendingTranscript(_ session: URL) -> URL { file("current.pending", in: transcripts(session)) }
 
     public static func runs(_ session: URL) -> URL { folder("runs", in: speakers(session)) }
     public static func run(_ id: String, in session: URL) -> URL { file("\(id).json", in: runs(session)) }

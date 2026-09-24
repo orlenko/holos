@@ -154,6 +154,17 @@ private func turns(_ segments: [TranscriptSegment], _ diarization: TrackDiarizat
     #expect(align([paused], track).map(\.label) == [a, b, b, a])
 }
 
+@Test func flickerPausesUseAdjacentWordsWhenTimingsOverlap() {
+    // The B segment is too short to count as R's own; R spans 0.3 s at an A/B meeting point.
+    let track = diarization(("A", 0, 5.0), ("B", 5.0, 5.25), ("A", 5.25, 20))
+    // After R: its first word runs to 5.3, but its last word ends at 5.1, 0.3 s before the next A word.
+    let lateEnd = seg(4.6, 5.8, ("a", 4.6, 4.95), ("b", 5.0, 5.3), ("c", 5.05, 5.1), ("d", 5.4, 5.8))
+    #expect(align([lateEnd], track).map(\.label) == [a, b, b, a])
+    // Before R: its second word starts at 4.95, but its first word starts at 5.2, 0.3 s after the A word.
+    let earlyStart = seg(4.6, 5.7, ("a", 4.6, 4.9), ("b", 5.2, 5.25), ("c", 4.95, 5.25), ("d", 5.3, 5.7))
+    #expect(align([earlyStart], track).map(\.label) == [a, b, b, a])
+}
+
 // MARK: - Turns
 
 @Test func longPauseSplitsSameSpeaker() {
@@ -165,6 +176,31 @@ private func turns(_ segments: [TranscriptSegment], _ diarization: TrackDiarizat
                                    [WordSpan(segmentID: segment.id, first: 2, end: 3)]])
     #expect(built.map(\.start) == [1.0, 4.0])
     #expect(built.map(\.end) == [2.0, 4.5])
+}
+
+@Test func turnPauseIsFromPreviousWordWhenTimingsOverlap() {
+    // "uh" runs to 3.0, past "so"; "then" starts 1.7 s after "so" ends, so it starts a new turn.
+    let segment = seg(0, 3, ("uh", 0.0, 3.0), ("so", 0.5, 0.8), ("then", 2.5, 2.8))
+    let built = turns([segment], diarization(("A", 0, 10)))
+    #expect(built.map(\.speakerID) == [a, a])
+    #expect(built.map(\.spans) == [[WordSpan(segmentID: segment.id, first: 0, end: 2)],
+                                   [WordSpan(segmentID: segment.id, first: 2, end: 3)]])
+    #expect(built.map(\.start) == [0.0, 2.5])
+    #expect(built.map(\.end) == [3.0, 2.8])
+
+    // A speaker change is judged against the previous word: the A word after B's word starts a third turn
+    // although it lies inside the first word's time.
+    let change = seg(0, 5.4, ("uh", 0.0, 4.9), ("no", 5.1, 5.4), ("mm", 4.0, 4.6))
+    #expect(turns([change], diarization(("A", 0, 5), ("B", 5, 10))).map(\.speakerID) == [a, b, a])
+
+    // Estimated words overlapping measured ones stay in one turn with mixed timing and the hull's times.
+    let untimed = TranscriptSegment(id: "U", start: 1, end: 3, text: "one two", track: "system")
+    let timed = seg(1.5, 2.5, ("x", 1.5, 2.5))
+    let mixed = turns([untimed, timed], diarization(("A", 0, 10)))
+    #expect(mixed.count == 1)
+    #expect(mixed.first?.timing == .mixed)
+    #expect(mixed.first?.start == 1.0)
+    #expect(mixed.first?.end == 3.0)
 }
 
 @Test func segmentSplitsAtSpeakerChange() {
