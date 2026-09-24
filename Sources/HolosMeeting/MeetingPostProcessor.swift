@@ -59,7 +59,8 @@ public struct MeetingPostProcessor: Sendable {
 
     /// Runs every stage for one finished session under `lease` (nil: acquire one, retry 1 s) and returns the
     /// final postprocess.json record. Throws only when it cannot start (still recording, lease held elsewhere,
-    /// unreadable manifest); stage failures are recorded in the returned record.
+    /// unreadable manifest, a postprocess.json written by a newer Holos or that cannot be read now); stage failures
+    /// are recorded in the returned record.
     ///
     /// A given lease must be this session's and not released; it stays held afterwards (the caller releases it).
     /// The lock is held for the whole run even if the caller releases the lease meanwhile. A cancelled run deletes
@@ -88,6 +89,13 @@ public struct MeetingPostProcessor: Sendable {
     private func start(session: URL, startedAt: Date,
                        progress: @escaping @Sendable (PostProcessingProgress) -> Void) async throws -> PostProcessingRecord {
         let manifest = try SessionArchive.readManifest(at: session)
+        // The record is replaced from the first write on: one written by a newer Holos is refused (schema rule 3,
+        // §1.6), never overwritten. A damaged one is replaced.
+        do {
+            _ = try SessionFiles.postProcessingRecord(session: session)
+        } catch let error where SessionFiles.isDamage(error) {
+            Self.log.error("Session \(manifest.id, privacy: .public): replacing an unusable postprocess.json: \(error.localizedDescription, privacy: .private)")
+        }
         // A recorder that died leaves a status that is not exited; say so before labelling (§4.7 stage 0).
         do { try RecorderChannel.markDeadRecorderExited(session: session) } catch {
             Self.log.error("Session \(manifest.id, privacy: .public): cannot check the recorder status: \(error.localizedDescription, privacy: .public)")

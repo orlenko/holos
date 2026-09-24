@@ -848,3 +848,198 @@ func recoverRefusedWhileAnotherProcessHoldsTheLease() async throws {
     }, "unavailable"))
     #expect(try SessionArchive.readManifest(at: session).status == ArchiveStatus.recording, "Nothing changed.")
 }
+
+// MARK: - Unreadable and newer files
+
+/// Replaces the file at `url` (transcript revisions are read-only) with `data`.
+private func rebuilderReplace(_ url: URL, with data: Data) throws {
+    try? FileManager.default.removeItem(at: url)
+    try data.write(to: url)
+}
+
+/// Rewrites the JSON object at `url` as a newer Holos would: `schemaVersion` 2 and a field this build does not know.
+/// Returns the new bytes.
+@discardableResult
+private func rebuilderMakeNewer(_ url: URL) throws -> Data {
+    var object = try #require(try JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any])
+    object["schemaVersion"] = 2
+    object["newerField"] = "kept"
+    let data = try JSONSerialization.data(withJSONObject: object)
+    try rebuilderReplace(url, with: data)
+    return data
+}
+
+/// Damages the transcript revision `transcriptID`: "truncated" (cut in half), "garbage" (not JSON), or "otherID"
+/// (valid, but it names another revision).
+private func rebuilderDamage(_ session: URL, transcriptID: String, _ damage: String) throws {
+    let url = SessionPaths.transcript(transcriptID, in: session)
+    let data = try Data(contentsOf: url)
+    switch damage {
+    case "truncated":
+        try rebuilderReplace(url, with: data.prefix(data.count / 2))
+    case "garbage":
+        try rebuilderReplace(url, with: Data("not json".utf8))
+    default:
+        var transcript = try HolosJSON.decoder().decode(Transcript.self, from: data)
+        transcript.id = UUID().uuidString
+        try rebuilderReplace(url, with: try HolosJSON.encoder().encode(transcript))
+    }
+}
+
+@Test(arguments: ["truncated", "garbage", "otherID"])
+func rebuildReplacesAnUnreadableCurrentRevision(damage: String) async throws {
+    let temp = try TemporaryDirectory("rebuild")
+    defer { temp.remove() }
+    let session = try await rebuilderSession(in: temp.url, events: try rebuilderFinals(
+        [rebuilderSegment([("a", 1.1)], start: 1, end: 2)]))
+    let first = try await rebuilderRun(session)
+    try rebuilderDamage(session, transcriptID: first.transcriptID, damage)
+    // The pointer and the rebuild event still name the damaged revision.
+    #expect(try SessionArchive.currentTranscriptID(at: session) == first.transcriptID)
+
+    let second = try await rebuilderRun(session)
+    #expect(!second.reused, "A \(damage) current revision is not reused.")
+    #expect(second.transcriptID != first.transcriptID)
+    #expect(try rebuilderCurrent(session).id == second.transcriptID)
+    #expect(try SessionFiles.readableCurrentTranscriptID(session: session) == second.transcriptID)
+    #expect(try rebuilderEvents(session, MeetingEventKind.transcriptRebuilt).count == 2)
+    #expect(try await rebuilderRun(session).reused, "The readable rebuild is reused again.")
+}
+
+@Test(.timeLimit(.minutes(1)))
+func recoverWithoutPostProcessingRepairsAnUnreadableRebuiltTranscript() async throws {
+    let temp = try TemporaryDirectory("rebuild")
+    defer { temp.remove() }
+    let session = try await rebuilderDeadMeeting(in: temp.url)
+    let request = SessionRecoveryCommand.Request(session: session, transcribe: false, postProcess: false)
+    let first = try await SessionRecoveryCommand.run(request, diarizer: nil)
+    let firstID = try #require(first.rebuild?.transcriptID)
+    try rebuilderDamage(session, transcriptID: firstID, "truncated")
+
+    let second = try await SessionRecoveryCommand.run(request, diarizer: nil)
+    #expect(second.exitCode == 0)
+    #expect(second.rebuild?.reused == false)
+    #expect(second.rebuild?.transcriptID != firstID)
+    #expect(try rebuilderCurrent(session).segments.count == 4, "The session has a readable transcript again.")
+}
+
+@Test(arguments: ["pointer", "revision"], [false, true])
+func rebuildRefusesANewerCurrentTranscript(file: String, force: Bool) async throws {
+    let temp = try TemporaryDirectory("rebuild")
+    defer { temp.remove() }
+    let session = try await rebuilderSession(in: temp.url, events: try rebuilderFinals(
+        [rebuilderSegment([("a", 1.1)], start: 1, end: 2)]))
+    let first = try await rebuilderRun(session)
+    let url = file == "pointer" ? SessionPaths.transcriptPointer(session)
+        : SessionPaths.transcript(first.transcriptID, in: session)
+    let newer = try rebuilderMakeNewer(url)
+    let pointer = try Data(contentsOf: SessionPaths.transcriptPointer(session))
+
+    let error = await #expect(throws: HolosError.self) { try await rebuilderRun(session, force: force) }
+    #expect(isHolosError(error, "unavailable"), "A newer \(file) is refused, force \(force).")
+    #expect(error?.localizedDescription.contains("newer Holos") == true)
+    #expect(try Data(contentsOf: url) == newer, "The newer file is not replaced.")
+    #expect(try Data(contentsOf: SessionPaths.transcriptPointer(session)) == pointer, "The pointer is not moved.")
+    #expect(try rebuilderRevisions(session).count == 1)
+    #expect(try rebuilderEvents(session, MeetingEventKind.transcriptRebuilt).count == 1)
+}
+
+@Test func rebuildRefusesANewerVocabulary() async throws {
+    let temp = try TemporaryDirectory("rebuild")
+    defer { temp.remove() }
+    let session = try await rebuilderSession(in: temp.url, audio: ["mic": 5])
+    try AtomicFile.writeJSON(MeetingVocabulary(strings: ["Maria Chen"]), to: SessionPaths.vocabulary(session))
+    let newer = try rebuilderMakeNewer(SessionPaths.vocabulary(session))
+    let speech = FakeSpeechFactory()
+    #expect(isHolosError(await #expect(throws: HolosError.self) {
+        try await rebuilderRun(session, transcribe: true, speech: speech)
+    }, "unavailable"))
+    #expect(speech.calls.isEmpty, "Nothing is transcribed without the vocabulary.")
+    #expect(try SessionArchive.currentTranscriptID(at: session) == nil)
+    #expect(try Data(contentsOf: SessionPaths.vocabulary(session)) == newer)
+    // A damaged vocabulary only loses its hints.
+    try rebuilderReplace(SessionPaths.vocabulary(session), with: Data("not json".utf8))
+    #expect(try TranscriptRebuilder.sessionVocabulary(session).isEmpty)
+    // Without transcription the vocabulary is not read at all.
+    try rebuilderReplace(SessionPaths.vocabulary(session), with: newer)
+    #expect(try await !rebuilderRun(session, transcribe: false).reused)
+}
+
+@Test(.timeLimit(.minutes(1)), arguments: [false, true])
+func recoverRefusesANewerPostProcessingRecord(force: Bool) async throws {
+    let temp = try TemporaryDirectory("rebuild")
+    defer { temp.remove() }
+    let session = try await rebuilderDeadMeeting(in: temp.url)
+    let first = try await SessionRecoveryCommand.run(
+        SessionRecoveryCommand.Request(session: session), diarizer: rebuilderDiarizer(),
+        makeSpeech: FakeSpeechFactory().factory, freeSpace: FixedFreeSpace(.max))
+    #expect(first.postProcessing?.state == .succeeded)
+    let newer = try rebuilderMakeNewer(SessionPaths.postprocess(session))
+    let head = try Data(contentsOf: SessionPaths.head(session))
+
+    // Without force the rebuild is reused and the record read; with force a new transcript would be labelled.
+    let steps = SharedValue<[SessionRecoveryCommand.Step]>([])
+    let error = await #expect(throws: HolosError.self) {
+        try await SessionRecoveryCommand.run(
+            SessionRecoveryCommand.Request(session: session, force: force), diarizer: rebuilderDiarizer(),
+            makeSpeech: FakeSpeechFactory().factory, freeSpace: FixedFreeSpace(.max),
+            step: { step in steps.update { $0.append(step) } })
+    }
+    #expect(isHolosError(error, "unavailable"))
+    #expect(error?.localizedDescription.contains("newer Holos") == true)
+    #expect(error?.localizedDescription.hasPrefix("The archive was recovered") == true)
+    #expect(!steps.value.contains(.postProcessed))
+    #expect(try Data(contentsOf: SessionPaths.postprocess(session)) == newer, "postprocess.json is never overwritten.")
+    #expect(try Data(contentsOf: SessionPaths.head(session)) == head)
+    #expect(try !SessionArchive.isProcessing(at: session), "The lease is released.")
+}
+
+@Test(.timeLimit(.minutes(1)))
+func postProcessingRefusesANewerRecordAndReplacesADamagedOne() async throws {
+    let temp = try TemporaryDirectory("rebuild")
+    defer { temp.remove() }
+    let transcript = SessionFixtures.transcript(SessionFixtures.alternatingSegments(track: "mic"))
+    let session = try await SessionFixtures.makeSession(in: temp.url, mode: .inPerson, transcript: transcript)
+    let url = SessionPaths.postprocess(session)
+    try AtomicFile.writeJSON(PostProcessingRecord(sessionID: try SessionArchive.readManifest(at: session).id,
+                                                  state: .succeeded, pid: 1, startedAt: Date(), updatedAt: Date()),
+                             to: url)
+    let newer = try rebuilderMakeNewer(url)
+    let processor = MeetingPostProcessor(diarizer: rebuilderDiarizer(), freeSpace: FixedFreeSpace(.max))
+    #expect(isHolosError(await #expect(throws: HolosError.self) {
+        try await processor.run(session: session, lease: nil)
+    }, "unavailable"))
+    #expect(try Data(contentsOf: url) == newer)
+    #expect(try SessionSpeakerStore.readHead(session: session) == nil, "Nothing was labelled.")
+
+    try rebuilderReplace(url, with: Data("not json".utf8))
+    let record = try await processor.run(session: session, lease: nil)
+    #expect(record.state == .succeeded)
+    #expect(try SessionFiles.postProcessingRecord(session: session)?.state == .succeeded)
+}
+
+@Test(.timeLimit(.minutes(1)))
+func recoverRebuildsAnUnreadableTranscriptSavedBeforeFinish() async throws {
+    let temp = try TemporaryDirectory("rebuild")
+    defer { temp.remove() }
+    let (session, saved) = try await rebuilderDiedWhileProcessing(in: temp.url)
+    try rebuilderDamage(session, transcriptID: try #require(saved?.id), "garbage")
+    let request = SessionRecoveryCommand.Request(session: session, transcribe: false, postProcess: false)
+    let outcome = try await SessionRecoveryCommand.run(request, diarizer: nil)
+    #expect(outcome.rebuild?.reused == false, "A damaged transcript saved at stop is not kept.")
+    #expect(outcome.rebuild?.journalSegments == 2)
+    #expect(try rebuilderCurrent(session).segments.count == 2)
+
+    // One from a newer Holos is refused and left as it is; the archive recovery stays.
+    let (other, otherSaved) = try await rebuilderDiedWhileProcessing(in: temp.url)
+    let revision = SessionPaths.transcript(try #require(otherSaved?.id), in: other)
+    let newer = try rebuilderMakeNewer(revision)
+    let pointer = try Data(contentsOf: SessionPaths.transcriptPointer(other))
+    #expect(isHolosError(await #expect(throws: HolosError.self) {
+        try await SessionRecoveryCommand.run(
+            SessionRecoveryCommand.Request(session: other, transcribe: false, postProcess: false), diarizer: nil)
+    }, "unavailable"))
+    #expect(try Data(contentsOf: revision) == newer)
+    #expect(try Data(contentsOf: SessionPaths.transcriptPointer(other)) == pointer)
+    #expect(try SessionArchive.readManifest(at: other).status == ArchiveStatus.interrupted)
+}

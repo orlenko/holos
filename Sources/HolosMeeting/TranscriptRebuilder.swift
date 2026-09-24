@@ -44,7 +44,11 @@ public enum TranscriptRebuilder {
     /// - Idempotent: when the last `transcriptRebuilt` event comes after the last `archiveRecovered` event (by
     ///   sequence) and names the current transcript, it is returned with `reused: true` and nothing changes, unless
     ///   `force`, or unless this call may transcribe audio and that rebuild could not (it ran without `transcribe`,
-    ///   recorded as `transcribed: false`, while the audio still exists).
+    ///   recorded as `transcribed: false`, while the audio still exists). The current transcript counts only once its
+    ///   revision was read and holds its own ID (`SessionFiles.readableCurrentTranscriptID`): a truncated, damaged, or
+    ///   mislabelled revision is rebuilt.
+    /// - Refuses (`unavailable`), even with `force`, a current pointer or revision, or a vocabulary.json the replay
+    ///   would use, written by a newer Holos (schema rule 3, §1.6).
     /// - Journal words are kept per track up to `TranscriptCoverage.coverageEnd` (the last phrase's end, capped at the
     ///   earliest `transcriptionBehind`). With `transcribe`, the audio after it is replayed from 2 s earlier with the
     ///   session vocabulary and joined at word level (`TranscriptCoverage.merge`); without it, or once Delete Audio
@@ -84,7 +88,11 @@ public enum TranscriptRebuilder {
         let events = try SessionArchive.readEvents(at: session).events
         // Whether audio may be transcribed: asked for, and not deleted.
         let mayTranscribe = transcribe && !SessionFiles.audioDeleted(session: session)
-        if !force, let reused = reusedReport(events, currentTranscriptID: try? SessionArchive.currentTranscriptID(at: session),
+        // The current revision is read, not only found: a damaged, truncated, or mislabelled one is not reused but
+        // replaced. A pointer or revision from a newer Holos is refused (`unavailable`) before anything changes,
+        // even with `force`, so the save never replaces it.
+        let currentID = try SessionFiles.readableCurrentTranscriptID(session: session)
+        if !force, let reused = reusedReport(events, currentTranscriptID: currentID,
                                              needsTranscription: mayTranscribe) {
             log.notice("Session \(manifest.id, privacy: .public): transcript already rebuilt; reused")
             return reused
@@ -112,7 +120,7 @@ public enum TranscriptRebuilder {
                 plans.append(ReplayPlan(track: track, from: from, seconds: manifest.audioSeconds(track: track, from: from)))
             }
         }
-        let strings = plans.isEmpty ? [] : (vocabulary ?? sessionVocabulary(session))
+        let strings = plans.isEmpty ? [] : try (vocabulary ?? sessionVocabulary(session))
         let total = plans.reduce(0.0) { $0 + $1.seconds }
         var done = 0.0
         var replayed: [String: [TranscriptSegment]] = [:]
@@ -226,14 +234,23 @@ public enum TranscriptRebuilder {
         }
     }
 
-    /// vocabulary.json's strings; none when it is missing or cannot be used.
-    private static func sessionVocabulary(_ session: URL) -> [String] {
+    /// vocabulary.json's strings; none when it is missing, cannot be read, or is damaged. One written by a newer
+    /// Holos is refused (`unavailable`, schema rule 3, §1.6), never read as having no strings.
+    static func sessionVocabulary(_ session: URL) throws -> [String] {
+        let data: Data
         do {
-            guard let data = try AtomicFile.readIfPresent(SessionPaths.vocabulary(session), maxBytes: 1 << 20) else {
+            guard let read = try AtomicFile.readIfPresent(SessionPaths.vocabulary(session), maxBytes: 1 << 20) else {
                 return []
             }
+            data = read
+        } catch {
+            log.error("vocabulary.json ignored: \(error.localizedDescription, privacy: .private)")
+            return []
+        }
+        try SessionFiles.checkVersion(data, current: 1, name: "vocabulary.json")
+        do {
             let vocabulary = try HolosJSON.decoder().decode(MeetingVocabulary.self, from: data)
-            guard vocabulary.schemaVersion == 1 else { return [] }
+            guard vocabulary.schemaVersion >= 1 else { throw HolosError.invalidInput("Unsupported schema version.") }
             return vocabulary.strings
         } catch {
             log.error("vocabulary.json ignored: \(error.localizedDescription, privacy: .private)")

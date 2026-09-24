@@ -2790,7 +2790,8 @@ public struct MeetingPostProcessor: Sendable {
                 freeSpace: any FreeSpaceProvider = VolumeFreeSpace())
     /// Runs every stage for one finished session under `lease` (nil: acquire one, retry 1 s) and returns the
     /// final postprocess.json record. Throws only when it cannot start (still recording, lease held elsewhere,
-    /// unreadable manifest); stage failures are recorded in the returned record.
+    /// unreadable manifest, a postprocess.json written by a newer Holos); stage failures are recorded in the
+    /// returned record.
     public func run(session: URL, lease: ProcessingLease?,
                     progress: @escaping @Sendable (PostProcessingProgress) -> Void = { _ in })
         async throws -> PostProcessingRecord
@@ -2805,7 +2806,7 @@ Stages (PR7b):
 
 | # | Stage | Does | On failure or not applicable |
 |---|---|---|---|
-| 0 | — | refuse if `SessionArchive.isActive` ("still recording"); use the given lease or acquire one; `RecorderChannel.markDeadRecorderExited`; delete leftover `derived/`; write `postprocess.json` `{state: running}` | throw |
+| 0 | — | refuse if `SessionArchive.isActive` ("still recording"); use the given lease or acquire one; refuse (`unavailable`) an existing `postprocess.json` written by a newer Holos, never overwriting it (a damaged one is replaced); `RecorderChannel.markDeadRecorderExited`; delete leftover `derived/`; write `postprocess.json` `{state: running}` | throw |
 | 1 | `transcript` | load the current transcript (`transcripts/current.json`, §2.4) | none → `skipped`, no exports; state `skipped` |
 | 2 | — | track policies from `meeting.json` (or `MeetingInfo.inferred`), with `options.othersInRoom` overriding: a track is `diarized` if it is `system`, or the mode is `inPerson`, or others are in the room; otherwise `channel("mic:me", "Me")`; tracks without words are `skipped` | — |
 | 3 | — | if a head run exists, was built from the current transcript, has applied edits, and `!force`: skip 4–7 with "Speaker labels were edited; relabel with --force (names carry over)". If the head was built from another transcript, relabel. | stages `skipped` |
@@ -4965,6 +4966,8 @@ public enum SpeakerLabelState: String, Codable, Sendable {
     case notLabelled
     case failed
     case interrupted
+    /// postprocess.json or speakers/head.json cannot be read (damaged, newer Holos, I/O); see `labelMessage`.
+    case unreadable
 }
 
 public struct SessionSummary: Codable, Sendable, Equatable, Identifiable {
@@ -4979,7 +4982,10 @@ public struct SessionSummary: Codable, Sendable, Equatable, Identifiable {
     /// Longest track's total chunk duration.
     public var savedSeconds: Double
     public var chunkCount: Int
+    /// Set once the current revision was read and holds this ID.
     public var transcriptID: String?
+    /// Why the current transcript cannot be read (missing, damaged, other ID, newer Holos).
+    public var transcriptProblem: String?
     public var speakerState: SpeakerLabelState
     public var labelMessage: String?
     public var runID: String?
@@ -5029,7 +5035,10 @@ public enum SessionDeletion {
    `recovered`; `finish`.
 6. Idempotence by sequence numbers, not dates: if a `transcriptRebuilt` event exists with
    a higher `sequence` than the last `archiveRecovered` event, its `transcriptID` is the
-   current pointer, and `!force`, return it with `reused: true` and change nothing.
+   current pointer, that revision decodes and holds its own ID, and `!force`, return it
+   with `reused: true` and change nothing. A truncated, damaged, or mislabelled current
+   revision is rebuilt. A current pointer or revision, or a `vocabulary.json` the replay
+   would use, written by a newer Holos is refused (`unavailable`), even with `force`.
 
 **State mapping (`SessionCatalog`).** Unreadable manifest → `damaged`. Manifest
 `recording`/`processing`: liveness `capturing` → `recording`; `processing` or
@@ -5037,7 +5046,9 @@ public enum SessionDeletion {
 Speaker state: `postprocess.json` `running` with liveness `processing` or `maintenance`
 → `running`; `running` otherwise → `interrupted`; `failed` → `failed`; a finished record
 with a run → `labelled`; a finished record without a run → `notLabelled` with the record's
-message; no record → `none`.
+message; no record → `none`. A postprocess.json or speakers/head.json that exists but
+cannot be read (damaged, written by a newer Holos, I/O) → `unreadable` with why, never
+the state of a session without it.
 
 **CLI.**
 

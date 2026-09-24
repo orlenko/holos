@@ -177,6 +177,7 @@ extension SpeakerSessionSnapshot: CustomStringConvertible, CustomDebugStringConv
 
 /// Session files the post-processing code reads besides the speaker store (docs/meeting-design.md §2.1).
 enum SessionFiles {
+    private static let log = Logger(subsystem: "ca.orlenko.holos.app", category: "meeting")
     static let maxTranscriptBytes = 256 << 20
 
     private struct VersionProbe: Decodable { var schemaVersion: Int? }
@@ -223,6 +224,34 @@ enum SessionFiles {
     static func currentTranscript(session: URL) throws -> Transcript? {
         guard let id = try SessionArchive.currentTranscriptID(at: session) else { return nil }
         return try transcript(id: id, session: session)
+    }
+
+    /// The current transcript's ID once that revision was read and names itself (`transcript(id:session:)`), not only
+    /// found on disk. Nil when the session has none, or when the pointer or the revision it names is missing, damaged,
+    /// or holds another ID (`isDamage`): there is no readable current transcript. A pointer or revision written by a
+    /// newer Holos (`unavailable`), or one that cannot be read now, throws.
+    static func readableCurrentTranscriptID(session: URL) throws -> String? {
+        do {
+            return try currentTranscript(session: session)?.id
+        } catch let error where isDamage(error) {
+            log.error("The current transcript is unusable: \(error.localizedDescription, privacy: .private)")
+            return nil
+        }
+    }
+
+    /// postprocess.json; nil when it does not exist. One written by a newer Holos is refused (`unavailable`), a
+    /// damaged one is `invalidInput`.
+    static func postProcessingRecord(session: URL) throws -> PostProcessingRecord? {
+        let name = "postprocess.json"
+        guard let data = try AtomicFile.readIfPresent(SessionPaths.postprocess(session), maxBytes: 1 << 20) else {
+            return nil
+        }
+        try checkVersion(data, current: 1, name: name)
+        do {
+            return try HolosJSON.decoder().decode(PostProcessingRecord.self, from: data)
+        } catch {
+            throw HolosError.invalidInput("\(name) is damaged or was not written by Holos.")
+        }
     }
 
     /// meeting.json, or `MeetingInfo.inferred` for archives from before it existed.
