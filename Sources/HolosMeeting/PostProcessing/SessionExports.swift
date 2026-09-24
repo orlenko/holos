@@ -40,7 +40,8 @@ public enum SessionExports {
     ///
     /// Every format is rendered before anything is written, so a render failure changes nothing. Then, per file:
     /// an existing file that differs from what will be written, and matches neither the digest recorded for it in
-    /// `.generated.json` nor the digest a regeneration recorded just before writing it (a crash in between), is
+    /// `.generated.json` nor the digest a regeneration recorded just before writing it (a crash in between; files
+    /// accepted that way are folded into the recorded digests, so repeated interruptions keep them), is
     /// copied to `exports/edited-<YYYYMMDD-HHMMSS>.<ext>` (0600, local time; `-2`, `-3`, … when taken) and listed
     /// in `movedAside`. Before any export was generated here (no `.generated.json`), the speaker-less exports
     /// `SessionArchive.saveTranscript` writes for the current transcript count as generated; any other existing file
@@ -49,11 +50,7 @@ public enum SessionExports {
     @discardableResult
     public static func regenerateLocked(session: URL, profileNames: [String: String] = [:]) throws -> ExportWriteResult {
         let snapshot = try SpeakerSessionSnapshot.load(session: session, profileNames: profileNames)
-        let document = snapshot.exportDocument()
-        var rendered: [(format: ExportFormat, data: Data)] = []
-        for format in formats {
-            rendered.append((format, try TranscriptExporter.render(document, format: format)))
-        }
+        let rendered = try renderAll(exportDocument(snapshot))
         let result = try write(rendered, session: session, snapshot: snapshot)
         log.info("Session \(snapshot.manifest.id, privacy: .public): wrote \(result.written.count, privacy: .public) exports; moved \(result.movedAside.count, privacy: .public) edited exports aside")
         return result
@@ -63,7 +60,26 @@ public enum SessionExports {
     public static func render(_ format: ExportFormat, session: URL,
                               profileNames: [String: String] = [:]) throws -> Data {
         let snapshot = try SpeakerSessionSnapshot.load(session: session, profileNames: profileNames)
-        return try TranscriptExporter.render(snapshot.exportDocument(), format: format)
+        return try TranscriptExporter.render(exportDocument(snapshot), format: format)
+    }
+
+    /// The document the exports are written from: the snapshot's, except when the transcript changed after speakers
+    /// were labelled (`transcriptChanged`). The head run's labels then name words of the earlier transcript, so the
+    /// exports show the current transcript without speakers until speakers are labelled again; a newer transcript
+    /// never disappears from them.
+    static func exportDocument(_ snapshot: SpeakerSessionSnapshot) throws -> ExportDocument {
+        var document = snapshot.exportDocument()
+        guard snapshot.transcriptChanged,
+              let current = try SessionFiles.currentTranscript(session: snapshot.session) else { return document }
+        document.transcript = current
+        document.run = nil
+        document.projection = nil
+        return document
+    }
+
+    /// Every format, in the order they are written.
+    static func renderAll(_ document: ExportDocument) throws -> [(format: ExportFormat, data: Data)] {
+        try formats.map { ($0, try TranscriptExporter.render(document, format: $0)) }
     }
 
     // MARK: - Private
@@ -88,41 +104,65 @@ public enum SessionExports {
 
     private static func write(_ rendered: [(format: ExportFormat, data: Data)], session: URL,
                               snapshot: SpeakerSessionSnapshot) throws -> ExportWriteResult {
-        try AtomicFile.ensurePrivateDirectory(SessionPaths.exports(session))
-        let record = try readRecord(session: session)
-        var digests: [String: String] = [:]
-        for entry in rendered { digests[fileName(entry.format)] = sha256(entry.data) }
-
-        var result = ExportWriteResult()
-        var legacy: [String: Data]?
-        var legacyLoaded = false
-        for entry in rendered {
-            let name = fileName(entry.format)
-            let url = SessionPaths.export(entry.format.rawValue, in: session)
-            guard let existing = try AtomicFile.readIfPresent(url, maxBytes: maxExportBytes) else { continue }
-            let digest = sha256(existing)
-            if digest == digests[name] { continue }
-            if let record {
-                if record.isGenerated(name, digest: digest) { continue }
-            } else {
-                if !legacyLoaded {
-                    legacy = legacyExports(session: session, snapshot: snapshot)
-                    legacyLoaded = true
-                }
-                if let legacyData = legacy?[entry.format.rawValue], legacyData == existing { continue }
-            }
-            result.movedAside.append(try moveAside(existing, format: entry.format, session: session))
-        }
-
-        let recordURL = SessionPaths.generatedExports(session)
-        try AtomicFile.writeJSON(GeneratedRecord(files: record?.files ?? [:], pending: digests), to: recordURL)
+        var result = ExportWriteResult(movedAside: try beginWrite(rendered, session: session, snapshot: snapshot))
         for entry in rendered {
             let url = SessionPaths.export(entry.format.rawValue, in: session)
             try AtomicFile.write(entry.data, to: url, permissions: generatedPermissions)
             result.written.append(url)
         }
-        try AtomicFile.writeJSON(GeneratedRecord(files: digests), to: recordURL)
+        try AtomicFile.writeJSON(GeneratedRecord(files: digestsByName(rendered)), to: SessionPaths.generatedExports(session))
         return result
+    }
+
+    private static func digestsByName(_ rendered: [(format: ExportFormat, data: Data)]) -> [String: String] {
+        var digests: [String: String] = [:]
+        for entry in rendered { digests[fileName(entry.format)] = sha256(entry.data) }
+        return digests
+    }
+
+    /// The part of a write before the export files are replaced: moves hand-edited files aside and records the
+    /// digests about to be written as `pending`. Returns the files moved aside. (Tests call it alone to stand for
+    /// a regeneration interrupted before it replaced any file.)
+    static func beginWrite(_ rendered: [(format: ExportFormat, data: Data)], session: URL,
+                           snapshot: SpeakerSessionSnapshot) throws -> [URL] {
+        try AtomicFile.ensurePrivateDirectory(SessionPaths.exports(session))
+        let record = try readRecord(session: session)
+        let digests = digestsByName(rendered)
+
+        var movedAside: [URL] = []
+        var legacy: [String: Data]?
+        var legacyLoaded = false
+        // Every file on disk accepted as generated is recorded under `files` before the new `pending` replaces the
+        // old one, so a file an earlier interrupted regeneration wrote still counts after another interruption.
+        var files = record?.files ?? [:]
+        for entry in rendered {
+            let name = fileName(entry.format)
+            let url = SessionPaths.export(entry.format.rawValue, in: session)
+            guard let existing = try AtomicFile.readIfPresent(url, maxBytes: maxExportBytes) else { continue }
+            let digest = sha256(existing)
+            if digest == digests[name] {
+                files[name] = digest
+                continue
+            }
+            if let record {
+                if record.isGenerated(name, digest: digest) {
+                    files[name] = digest
+                    continue
+                }
+            } else {
+                if !legacyLoaded {
+                    legacy = legacyExports(session: session, snapshot: snapshot)
+                    legacyLoaded = true
+                }
+                if let legacyData = legacy?[entry.format.rawValue], legacyData == existing {
+                    files[name] = digest
+                    continue
+                }
+            }
+            movedAside.append(try moveAside(existing, format: entry.format, session: session))
+        }
+        try AtomicFile.writeJSON(GeneratedRecord(files: files, pending: digests), to: SessionPaths.generatedExports(session))
+        return movedAside
     }
 
     private static func fileName(_ format: ExportFormat) -> String { "transcript.\(format.rawValue)" }

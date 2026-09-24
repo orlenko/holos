@@ -109,6 +109,56 @@ private func exportsMakeWritableAndAppend(_ text: String, to url: URL) throws {
     #expect(try SessionExports.regenerate(session: session).movedAside.isEmpty)
 }
 
+@Test func filesFromTwoInterruptedRegenerationsStillCountAsGenerated() async throws {
+    let temp = try TemporaryDirectory("exports")
+    defer { temp.remove() }
+    let session = try await exportsSession(in: temp.url)
+    try SessionExports.regenerate(session: session)
+    // Regeneration 1 recorded its pending digests and replaced transcript.txt, then stopped.
+    let text = SessionPaths.export("txt", in: session)
+    let written = Data("Speaker 1  00:00\nnewer words\n\n".utf8)
+    try AtomicFile.write(written, to: text, permissions: 0o400)
+    var record = try AtomicFile.readJSON(SessionExports.GeneratedRecord.self,
+                                         from: SessionPaths.generatedExports(session))
+    record.pending = ["transcript.txt": SessionExports.sha256(written)]
+    try AtomicFile.writeJSON(record, to: SessionPaths.generatedExports(session))
+    // Regeneration 2 recorded other pending digests, then stopped before replacing any file.
+    let snapshot = try SpeakerSessionSnapshot.load(session: session)
+    let other = try SessionExports.renderAll(SessionExports.exportDocument(snapshot))
+        .map { (format: $0.format, data: $0.data + Data("other".utf8)) }
+    #expect(try SessionExports.beginWrite(other, session: session, snapshot: snapshot).isEmpty)
+    #expect(try Data(contentsOf: text) == written)
+    // Regeneration 3 still recognizes the file regeneration 1 wrote.
+    #expect(try SessionExports.regenerate(session: session).movedAside.isEmpty)
+    #expect(!exportsListing(session).contains { $0.hasPrefix("edited-") })
+}
+
+@Test func legacyExportsSurviveAnInterruptedFirstGeneration() async throws {
+    let temp = try TemporaryDirectory("exports")
+    defer { temp.remove() }
+    let session = try await exportsSession(in: temp.url, legacyExports: true)
+    // The first generation recorded its pending digests, then stopped before replacing the legacy files.
+    let snapshot = try SpeakerSessionSnapshot.load(session: session)
+    let rendered = try SessionExports.renderAll(SessionExports.exportDocument(snapshot))
+    #expect(try SessionExports.beginWrite(rendered, session: session, snapshot: snapshot).isEmpty)
+    #expect(try SessionExports.regenerate(session: session).movedAside.isEmpty)
+}
+
+@Test func exportsShowTheCurrentTranscriptAfterItChanged() async throws {
+    let temp = try TemporaryDirectory("exports")
+    defer { temp.remove() }
+    let session = try await exportsSession(in: temp.url)
+    let revised = SessionFixtures.transcript([SessionFixtures.segment(["revisedword"], track: "mic", start: 1)])
+    try await SessionFixtures.saveTranscript(revised, in: session)
+    let snapshot = try SpeakerSessionSnapshot.load(session: session)
+    #expect(snapshot.transcriptChanged)
+    #expect(snapshot.transcript.id != revised.id, "The snapshot keeps the head run's transcript (§2.4).")
+    try SessionExports.regenerate(session: session)
+    #expect(SessionFixtures.text(SessionPaths.export("txt", in: session)).hasPrefix("Microphone  00:01\nrevisedword"))
+    let text = String(decoding: try SessionExports.render(.txt, session: session), as: UTF8.self)
+    #expect(text.contains("revisedword"))
+}
+
 @Test func generatedRecordFromANewerHolosIsRefused() async throws {
     let temp = try TemporaryDirectory("exports")
     defer { temp.remove() }

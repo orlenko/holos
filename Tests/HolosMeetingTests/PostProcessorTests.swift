@@ -350,6 +350,80 @@ func changedTranscriptRelabels() async throws {
 }
 
 @Test(.timeLimit(.minutes(1)))
+func changedTranscriptWithoutNewLabelsExportsTheCurrentTranscript() async throws {
+    let temp = try TemporaryDirectory("postprocess")
+    defer { temp.remove() }
+    let (session, first) = try await postProcessorSession(in: temp.url)
+    let labelled = try await postProcessor().run(session: session, lease: nil)
+    let headRun = try #require(labelled.runID)
+    try SessionFixtures.appendEdits([.rename(speakerID: "mic:S1", name: "Jim")], session: session)
+    let revised = SessionFixtures.transcript(SessionFixtures.alternatingSegments(track: "mic")
+                                             + [SessionFixtures.segment(["addedword"], track: "mic", start: 19)])
+    try await SessionFixtures.saveTranscript(revised, in: session)
+    let txt = SessionPaths.export("txt", in: session)
+    let json = SessionPaths.export("json", in: session)
+
+    // No speaker models: the exports show the revised transcript without speakers, never the earlier one.
+    let missing = try await postProcessor(nil).run(session: session, lease: nil)
+    #expect(missing.state == .succeeded)
+    #expect(missing.transcriptID == revised.id)
+    #expect(missing.runID == nil)
+    #expect(missing.message == SpeakerAnalysis.modelsMissingRecord)
+    #expect(SessionFixtures.text(txt).hasPrefix("Microphone  00:00\n"))
+    #expect(SessionFixtures.text(txt).contains("addedword"))
+    #expect(!SessionFixtures.text(txt).contains("Jim"))
+    #expect(SessionFixtures.text(json).contains(revised.id))
+    #expect(!SessionFixtures.text(json).contains(first.id))
+    #expect(try SessionSpeakerStore.readHead(session: session)?.runID == headRun,
+            "The earlier labels stay for the review window, which reports the change.")
+    #expect(try SpeakerSessionSnapshot.load(session: session).transcriptChanged)
+
+    // The diarizer fails: the same exports, and the state is partial.
+    let failed = try await postProcessor(postProcessorFake(error: .unavailable("The engine broke.")))
+        .run(session: session, lease: nil)
+    #expect(failed.state == .partial)
+    #expect(failed.runID == nil)
+    #expect(SessionFixtures.text(txt).contains("addedword"))
+    #expect(!SessionFixtures.text(txt).contains("Jim"))
+    #expect(try SessionSpeakerStore.readHead(session: session)?.runID == headRun)
+}
+
+@Test(.timeLimit(.minutes(1)))
+func damagedMeetingInfoStillExports() async throws {
+    let temp = try TemporaryDirectory("postprocess")
+    defer { temp.remove() }
+    let (session, _) = try await postProcessorSession(in: temp.url, legacyExports: true)
+    try AtomicFile.write(Data("{not json".utf8), to: SessionPaths.meetingInfo(session))
+    let record = try await postProcessor().run(session: session, lease: nil)
+    #expect(record.state == .partial)
+    #expect(record.message == "Cannot read meeting.json: meeting.json is damaged or was not written by Holos.")
+    #expect(postProcessorStage(record, .align)?.result == .skipped)
+    #expect(postProcessorStage(record, .export)?.result == .succeeded)
+    #expect(postProcessorExports(session) == ["md", "json", "txt"])
+    #expect(SessionFixtures.exists(SessionPaths.generatedExports(session)))
+    let snapshot = try SpeakerSessionSnapshot.load(session: session)
+    #expect(snapshot.meeting == MeetingInfo.inferred(sessionID: snapshot.manifest.id, source: snapshot.manifest.source,
+                                                     createdAt: snapshot.manifest.createdAt),
+            "A damaged meeting.json reads as the inferred meeting.")
+}
+
+@Test(.timeLimit(.minutes(1)))
+func twoDiarizedTracksGetMaximumOnlyHints() {
+    let meeting = MeetingInfo(sessionID: "S", mode: .call, othersInRoom: true, expectedSpeakers: 4,
+                              createdAt: SessionFixtures.date)
+    func hint(_ speakers: SpeakerCountHint?, tracks: Int) -> SpeakerCountHint? {
+        SpeakerAnalysis.speakerHint(options: PostProcessingOptions(speakers: speakers), meeting: meeting,
+                                    diarizedTracks: tracks)
+    }
+    #expect(hint(SpeakerCountHint(exactly: 5), tracks: 1) == SpeakerCountHint(exactly: 5))
+    #expect(hint(SpeakerCountHint(exactly: 5), tracks: 2) == SpeakerCountHint(maximum: 5))
+    #expect(hint(SpeakerCountHint(minimum: 2, maximum: 6), tracks: 2) == SpeakerCountHint(maximum: 6))
+    #expect(hint(SpeakerCountHint(minimum: 3), tracks: 2) == nil)
+    #expect(hint(nil, tracks: 1) == SpeakerCountHint(minimum: 3, maximum: 5))
+    #expect(hint(nil, tracks: 2) == SpeakerCountHint(maximum: 5))
+}
+
+@Test(.timeLimit(.minutes(1)))
 func derivedClearedAtStartAndEnd() async throws {
     let temp = try TemporaryDirectory("postprocess")
     defer { temp.remove() }

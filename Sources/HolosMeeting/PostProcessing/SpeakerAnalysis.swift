@@ -62,10 +62,14 @@ enum SpeakerAnalysis {
 
     /// `options.speakers`, else meeting.json's `expectedSpeakers` n: `minimum n − 1, maximum n + 1` when one track
     /// is diarized. With two diarized tracks the people are split between them in an unknown way, so each track
-    /// only gets `maximum n + 1`.
+    /// only gets a maximum: `options.speakers`' `exactly` or `maximum` (its `minimum` alone gives no hint), or
+    /// n + 1.
     static func speakerHint(options: PostProcessingOptions, meeting: MeetingInfo,
                             diarizedTracks: Int) -> SpeakerCountHint? {
-        if let hint = options.speakers { return hint }
+        if let hint = options.speakers {
+            guard diarizedTracks > 1 else { return hint }
+            return (hint.exactly ?? hint.maximum).map { SpeakerCountHint(maximum: $0) }
+        }
         guard let expected = meeting.expectedSpeakers, expected > 0 else { return nil }
         if diarizedTracks <= 1 { return SpeakerCountHint(minimum: max(1, expected - 1), maximum: expected + 1) }
         return SpeakerCountHint(maximum: expected + 1)

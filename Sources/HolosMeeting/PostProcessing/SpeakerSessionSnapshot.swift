@@ -38,10 +38,18 @@ public struct SpeakerSessionSnapshot: Sendable {
     ///   transcript is used.
     /// - A head or run written by a newer Holos is refused (`unavailable`), as are a newer meeting.json or
     ///   transcript, and a file that cannot be read right now (I/O) is an error, never a reason to drop the
-    ///   speakers. An unreadable recognition result is ignored (it only adds suggestions).
+    ///   speakers. An unreadable recognition result is ignored (it only adds suggestions). A damaged meeting.json,
+    ///   or one of another session, gives `MeetingInfo.inferred`.
     public static func load(session: URL, profileNames: [String: String] = [:]) throws -> SpeakerSessionSnapshot {
         let manifest = try SessionArchive.readManifest(at: session)
-        let meeting = try SessionFiles.meetingInfo(session: session, manifest: manifest)
+        let meeting: MeetingInfo
+        do {
+            meeting = try SessionFiles.meetingInfo(session: session, manifest: manifest)
+        } catch let error where SessionFiles.isDamage(error) {
+            // The exports and the review window do not depend on meeting.json; the post-processor reports it.
+            log.error("Session \(manifest.id, privacy: .public): meeting.json unusable, inferred instead: \(error.localizedDescription, privacy: .private)")
+            meeting = MeetingInfo.inferred(sessionID: manifest.id, source: manifest.source, createdAt: manifest.createdAt)
+        }
         let currentID = try SessionArchive.currentTranscriptID(at: session)
 
         var run: DiarizationRun?

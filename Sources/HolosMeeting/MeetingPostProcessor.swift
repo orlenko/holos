@@ -64,7 +64,8 @@ public struct MeetingPostProcessor: Sendable {
     /// A given lease must be this session's and not released; it stays held afterwards (the caller releases it).
     /// The lock is held for the whole run even if the caller releases the lease meanwhile. A cancelled run deletes
     /// `derived/` (unless `keepDerived`), records `failed` ("Post-processing was cancelled."), and throws
-    /// `CancellationError`; nothing it had not finished publishing appears.
+    /// `CancellationError`; nothing it had not finished publishing appears. A cancellation that arrives after the new
+    /// head is published is honoured once the exports are written from it; the record then names that run.
     public func run(session: URL, lease: ProcessingLease?,
                     progress: @escaping @Sendable (PostProcessingProgress) -> Void = { _ in })
         async throws -> PostProcessingRecord {
@@ -159,7 +160,9 @@ public struct MeetingPostProcessor: Sendable {
         // Stages 2–7.
         let speakers = try await labelSpeakers(session: session, manifest: manifest, transcript: transcript,
                                                recorder: recorder)
-        try Task.checkCancellation()
+        // Once a new head is published, the exports are written from it before a cancellation is honoured, so the
+        // head and the exports never disagree.
+        if !speakers.published { try Task.checkCancellation() }
 
         // Stage 8: exports (the speaker lock taken in stage 6 was released there).
         started = recorder.begin(.export, message: "Writing transcript files…")
@@ -174,6 +177,7 @@ public struct MeetingPostProcessor: Sendable {
             return recorder.finalRecord(state: .failed, message: "Cannot write the transcript files: \(error.localizedDescription)",
                                         runID: speakers.runID, othersInRoom: speakers.othersInRoom)
         }
+        try Task.checkCancellation()
         if let problem = speakers.problem {
             return recorder.finalRecord(state: .partial, message: problem, runID: speakers.runID,
                                         othersInRoom: speakers.othersInRoom)
@@ -191,6 +195,8 @@ public struct MeetingPostProcessor: Sendable {
         var problem: String?
         /// The message of a `succeeded` record.
         var message: String?
+        /// Stage 6 published a new head (`runID`).
+        var published = false
     }
 
     /// Stages 2–7. Every failure is recorded as a stage outcome; only cancellation throws.
@@ -279,6 +285,8 @@ public struct MeetingPostProcessor: Sendable {
             sessionID: manifest.id, transcript: transcript,
             tracks: plans.map { SpeakerRunBuilder.TrackInput(track: $0.track, policy: $0.policy, output: outputs[$0.track]) },
             engine: engine, parameters: SpeakerAnalysis.alignmentParameters(meeting: meeting))
+        // Building a long meeting's run takes a while; a cancellation meanwhile publishes nothing.
+        try Task.checkCancellation()
         do {
             switch try SpeakerAnalysis.publish(built, session: session, transcript: transcript, force: options.force,
                                                writeVoiceData: options.forceVoiceData) {
@@ -292,6 +300,9 @@ public struct MeetingPostProcessor: Sendable {
                 if publication.previousUnreadable { notes.append(SpeakerAnalysis.previousUnreadable) }
                 recorder.end(.align, .succeeded, notes.isEmpty ? nil : notes.joined(separator: " "), since: started)
                 result.runID = publication.run.id
+                result.published = true
+                // A cancelled run's record (built from the journal) still names the head it published.
+                recorder.journal.update { $0.runID = publication.run.id }
                 result.message = ([SpeakerAnalysis.labelledMessage(publication.run)] + notes).joined(separator: " ")
             }
         } catch let error where !(error is CancellationError) {
