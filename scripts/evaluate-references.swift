@@ -84,6 +84,112 @@ private enum EvaluationError: Error, CustomStringConvertible {
     }
 }
 
+/// Blocks the calling thread for good: another thread is ending the process.
+private func park() -> Never {
+    while true { sleep(3600) }
+}
+
+/// The one way this script exits. It tracks the private temporary paths (sessions holding audio and transcripts,
+/// captured command output) and the process group of the command running now, so SIGINT, SIGTERM, and SIGHUP end
+/// that group and remove those paths before the evaluator exits with 128 + the signal, as a `defer` cannot when a
+/// signal ends the process.
+private final class Termination: @unchecked Sendable {
+    private let lock = NSLock()
+    private var activeGroup: pid_t?
+    private var pending: Int32?
+    private var exiting = false
+    private var privatePaths: [URL] = []
+
+    /// The first termination signal received, if any.
+    var pendingSignal: Int32? {
+        lock.lock()
+        defer { lock.unlock() }
+        return pending
+    }
+
+    /// Runs `create` (which makes `url`) and removes `url` on any exit until `release`. Parks when the process is
+    /// already ending, so nothing private is created after the cleanup ran.
+    func createPrivate(_ url: URL, _ create: () throws -> Void) throws {
+        lock.lock()
+        if exiting || pending != nil { lock.unlock(); park() }
+        defer { lock.unlock() }
+        privatePaths.append(url)
+        do { try create() } catch {
+            privatePaths.removeLast()
+            throw error
+        }
+    }
+
+    /// Stops removing `url` at exit (the caller removed it, or keeps it).
+    func release(_ url: URL) {
+        lock.lock()
+        defer { lock.unlock() }
+        privatePaths.removeAll { $0 == url }
+    }
+
+    /// Spawns (`spawn` returns the new group's leader) and records the group as the one a signal is forwarded to.
+    /// The lock is held across the spawn, so a signal cannot slip between the spawn and the record.
+    func startGroup(_ spawn: () throws -> pid_t) throws -> pid_t {
+        lock.lock()
+        if exiting || pending != nil { lock.unlock(); park() }
+        defer { lock.unlock() }
+        let pid = try spawn()
+        activeGroup = pid
+        return pid
+    }
+
+    /// The group's leader was reaped. Returns the signal received meanwhile, if any: the group stays the one later
+    /// signals go to, as the caller still ends the rest of it and then exits.
+    func groupEnded() -> Int32? {
+        lock.lock()
+        defer { lock.unlock() }
+        if pending == nil { activeGroup = nil }
+        return pending
+    }
+
+    /// A signal handler: forwards the signal to the running group (whose waiter ends it and then exits), or exits
+    /// now when no command runs.
+    func received(_ signal: Int32) {
+        lock.lock()
+        if exiting { lock.unlock(); return }
+        if pending == nil { pending = signal }
+        if let group = activeGroup {
+            _ = kill(-group, signal)
+            lock.unlock()
+            return
+        }
+        lock.unlock()
+        exit(128 + signal, message: "Evaluation stopped by signal \(signal).")
+    }
+
+    /// Removes the private paths and exits. A second caller parks while the first one exits.
+    func exit(_ status: Int32, message: String? = nil) -> Never {
+        lock.lock()
+        if exiting { lock.unlock(); park() }
+        exiting = true
+        for url in privatePaths.reversed() { try? FileManager.default.removeItem(at: url) }
+        privatePaths.removeAll()
+        if let message { fputs(message + "\n", stderr) }
+        // The lock stays held: any other thread that reaches it parks until the process is gone.
+        Darwin.exit(status)
+    }
+}
+
+private let termination = Termination()
+private let signalQueue = DispatchQueue(label: "evaluate-references.signals")
+/// The handlers, installed before anything else runs. The default actions are ignored (a DispatchSourceSignal still
+/// sees the signal), so the evaluator ends only through `Termination.exit`. SIGPIPE too, so printing into a closed
+/// pipe fails quietly instead of ending the process with private data left behind. Commands start with the default
+/// actions again (POSIX_SPAWN_SETSIGDEF).
+private let signalSources: [DispatchSourceSignal] = [SIGINT, SIGTERM, SIGHUP].map { number in
+    signal(number, SIG_IGN)
+    let source = DispatchSource.makeSignalSource(signal: number, queue: signalQueue)
+    source.setEventHandler { termination.received(number) }
+    source.resume()
+    return source
+}
+private let ignoresBrokenPipes: Void = { _ = signal(SIGPIPE, SIG_IGN) }()
+
 private let cwd = URL(fileURLWithPath: FileManager.default.currentDirectoryPath, isDirectory: true)
 private let privateBase = cwd.appendingPathComponent(".local/evaluation", isDirectory: true).standardizedFileURL
 private let wordPattern = try NSRegularExpression(pattern: #"[\p{L}\p{N}]+"#)
@@ -306,9 +412,12 @@ private struct GroupExit {
 /// Runs `executable` in a new process group of its own (posix_spawn with POSIX_SPAWN_SETPGROUP), with stdin from
 /// /dev/null and stdout and stderr on the given descriptors (nil: /dev/null), and waits for it. Past `timeout` the
 /// whole group gets SIGTERM, and whatever of it is still running after `grace` seconds gets SIGKILL, so a wrapper
-/// such as `/usr/bin/time` cannot leave its child running when it is itself ended.
+/// such as `/usr/bin/time` cannot leave its child running when it is itself ended. When the evaluator gets SIGINT,
+/// SIGTERM, or SIGHUP meanwhile, the group gets the same signal (from the handler), the same SIGKILL after `grace`,
+/// and the evaluator then exits through `Termination.exit` (removing the private paths) instead of returning.
+/// `poll` runs every 50 ms while the command runs.
 private func runInProcessGroup(_ executable: URL, _ arguments: [String], stdout: Int32?, stderr: Int32?,
-                               timeout: Double, grace: Double) throws -> GroupExit {
+                               timeout: Double, grace: Double, poll: () -> Void = {}) throws -> GroupExit {
     var actions: posix_spawn_file_actions_t?
     posix_spawn_file_actions_init(&actions)
     defer { posix_spawn_file_actions_destroy(&actions) }
@@ -332,11 +441,14 @@ private func runInProcessGroup(_ executable: URL, _ arguments: [String], stdout:
     posix_spawnattr_setsigmask(&attributes, &none)
     let argv: [UnsafeMutablePointer<CChar>?] = ([executable.path] + arguments).map { strdup($0) } + [nil]
     defer { argv.forEach { free($0) } }
-    var pid: pid_t = 0
     let started = ProcessInfo.processInfo.systemUptime
-    let code = posix_spawn(&pid, executable.path, &actions, &attributes, argv, environ)
-    guard code == 0 else {
-        throw EvaluationError.message("Cannot run \(executable.lastPathComponent): \(String(cString: strerror(code))).")
+    let pid = try termination.startGroup {
+        var pid: pid_t = 0
+        let code = posix_spawn(&pid, executable.path, &actions, &attributes, argv, environ)
+        guard code == 0 else {
+            throw EvaluationError.message("Cannot run \(executable.lastPathComponent): \(String(cString: strerror(code))).")
+        }
+        return pid
     }
     var status: Int32 = 0
     var reaped = false
@@ -353,28 +465,41 @@ private func runInProcessGroup(_ executable: URL, _ arguments: [String], stdout:
     func uptime() -> Double { ProcessInfo.processInfo.systemUptime }
     /// Whether any process of the group is left (the unreaped child counts).
     func groupAlive() -> Bool { kill(-pid, 0) == 0 || errno == EPERM }
+    /// Sends `signal` to the group (nil: the signal handler already did), SIGKILL to whatever of it is left after
+    /// `grace`, and waits for the leader and (briefly) the rest.
+    func endGroup(sending signal: Int32?) {
+        if let signal { _ = kill(-pid, signal) }
+        let graceStarted = uptime()
+        while uptime() - graceStarted < grace {
+            reap(wait: false)
+            if reaped, !groupAlive() { break }
+            Thread.sleep(forTimeInterval: 0.05)
+        }
+        if !reaped || groupAlive() { _ = kill(-pid, SIGKILL) }
+        reap(wait: true)
+        // The rest of the group was reparented; wait (briefly) until it is gone.
+        let killed = uptime()
+        while groupAlive(), uptime() - killed < 5 { Thread.sleep(forTimeInterval: 0.02) }
+    }
+    func exitAfter(_ signal: Int32) -> Never {
+        endGroup(sending: nil)
+        termination.exit(128 + signal, message: "Evaluation stopped by signal \(signal); its command was ended.")
+    }
     var timedOut = false
     while true {
+        if let signal = termination.pendingSignal { exitAfter(signal) }
         reap(wait: false)
         if reaped { break }
         if uptime() - started > timeout {
             timedOut = true
-            _ = kill(-pid, SIGTERM)
-            let graceStarted = uptime()
-            while uptime() - graceStarted < grace {
-                reap(wait: false)
-                if reaped, !groupAlive() { break }
-                Thread.sleep(forTimeInterval: 0.05)
-            }
-            if !reaped || groupAlive() { _ = kill(-pid, SIGKILL) }
-            reap(wait: true)
-            // The rest of the group was reparented; wait (briefly) until it is gone.
-            let killed = uptime()
-            while groupAlive(), uptime() - killed < 5 { Thread.sleep(forTimeInterval: 0.02) }
+            endGroup(sending: SIGTERM)
             break
         }
+        poll()
         Thread.sleep(forTimeInterval: 0.05)
     }
+    // A signal that came after the last check was forwarded to the group; end what is left of it, then exit.
+    if let signal = termination.groupEnded() { exitAfter(signal) }
     let seconds = uptime() - started
     let signal = status & 0x7f
     return GroupExit(status: (status >> 8) & 0xff, signal: signal == 0 ? nil : signal, timedOut: timedOut,
@@ -601,12 +726,17 @@ private func runCommand(_ executable: URL, _ arguments: [String], timeout: Doubl
     let outURL = scratch.appendingPathComponent(".stdout-\(token)")
     let errURL = scratch.appendingPathComponent(".stderr-\(token)")
     defer {
-        try? manager.removeItem(at: outURL)
-        try? manager.removeItem(at: errURL)
+        for url in [outURL, errURL] {
+            try? manager.removeItem(at: url)
+            termination.release(url)
+        }
     }
-    guard manager.createFile(atPath: outURL.path, contents: nil, attributes: [.posixPermissions: 0o600]),
-          manager.createFile(atPath: errURL.path, contents: nil, attributes: [.posixPermissions: 0o600]) else {
-        throw EvaluationError.message("Cannot create the command output files in the run directory.")
+    for url in [outURL, errURL] {
+        try termination.createPrivate(url) {
+            guard manager.createFile(atPath: url.path, contents: nil, attributes: [.posixPermissions: 0o600]) else {
+                throw EvaluationError.message("Cannot create the command output files in the run directory.")
+            }
+        }
     }
     let out = try FileHandle(forWritingTo: outURL)
     let err = try FileHandle(forWritingTo: errURL)
@@ -832,10 +962,17 @@ private func evaluateSpeakers(_ options: Options) throws {
     try manager.createDirectory(at: options.output, withIntermediateDirectories: true,
                                 attributes: [.posixPermissions: 0o700])
     let sessions = options.output.appendingPathComponent("sessions", isDirectory: true)
-    try manager.createDirectory(at: sessions, withIntermediateDirectories: false,
-                                attributes: [.posixPermissions: 0o700])
+    func createSessions() throws {
+        try manager.createDirectory(at: sessions, withIntermediateDirectories: false,
+                                    attributes: [.posixPermissions: 0o700])
+    }
+    // Removed on every exit, a signal included, unless --keep-sessions.
+    if options.keepSessions { try createSessions() } else { try termination.createPrivate(sessions, createSessions) }
     defer {
-        if !options.keepSessions { try? manager.removeItem(at: sessions) }
+        if !options.keepSessions {
+            try? manager.removeItem(at: sessions)
+            termination.release(sessions)
+        }
     }
     let backend = options.backends[0]
     var imports: [ImportRow] = []
@@ -949,6 +1086,7 @@ private func selfTest() throws {
         throw EvaluationError.message("Centroid decoding self-test failed.")
     }
     try processGroupSelfTest()
+    try signalSelfTest()
     print("Evaluation self-tests passed.")
 }
 
@@ -960,33 +1098,133 @@ private func processGroupSelfTest() throws {
     guard !finished.timedOut, finished.signal == nil, finished.status == 3 else {
         throw EvaluationError.message("Process-group exit status self-test failed.")
     }
-    let folder = FileManager.default.temporaryDirectory
-        .appendingPathComponent("holos-evaluate-self-test-\(UUID().uuidString)", isDirectory: true)
-    try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: false,
-                                            attributes: [.posixPermissions: 0o700])
-    defer { try? FileManager.default.removeItem(at: folder) }
+    let folder = try selfTestFolder()
+    defer { removeSelfTestFolder(folder) }
     let pidFile = folder.appendingPathComponent("child.pid")
-    let script = "trap '' TERM; echo $$ > \"$0.tmp\"; mv \"$0.tmp\" \"$0\"; exec /bin/sleep 60"
-    let timed = try runInProcessGroup(URL(fileURLWithPath: "/usr/bin/time"), ["/bin/sh", "-c", script, pidFile.path],
+    let timed = try runInProcessGroup(URL(fileURLWithPath: "/usr/bin/time"),
+                                      ["/bin/sh", "-c", termIgnoringChild, pidFile.path],
                                       stdout: nil, stderr: nil, timeout: 1, grace: 0.5)
-    guard timed.timedOut, let text = try? String(contentsOf: pidFile, encoding: .utf8),
-          let child = pid_t(text.trimmingCharacters(in: .whitespacesAndNewlines)), child > 0 else {
+    guard timed.timedOut, let child = readPID(pidFile) else {
         throw EvaluationError.message("Process-group timeout self-test did not start its child.")
     }
-    let deadline = ProcessInfo.processInfo.systemUptime + 5
-    while kill(child, 0) == 0, ProcessInfo.processInfo.systemUptime < deadline {
-        Thread.sleep(forTimeInterval: 0.02)
-    }
-    guard kill(child, 0) != 0, errno == ESRCH else {
-        _ = kill(child, SIGKILL)
+    guard groupGone(child) else {
+        _ = kill(-child, SIGKILL)
         throw EvaluationError.message("Process-group timeout self-test left the timed child running.")
     }
 }
 
-do {
-    if CommandLine.arguments.dropFirst() == ["--self-test"] { try selfTest() }
-    else { try evaluate() }
-} catch {
-    fputs("Evaluation failed: \(error)\n", stderr)
-    exit(1)
+/// A shell that ignores SIGTERM, writes its pid (atomically) to the file named by `$0`, and becomes a 60 s sleep.
+private let termIgnoringChild = "trap '' TERM; echo $$ > \"$0.tmp\"; mv \"$0.tmp\" \"$0\"; exec /bin/sleep 60"
+/// The hidden mode the signal self-test runs a second evaluator in.
+private let signalSelfTestFlag = "--signal-self-test-child"
+
+/// A new private temporary folder, removed on any exit.
+private func selfTestFolder() throws -> URL {
+    let folder = FileManager.default.temporaryDirectory
+        .appendingPathComponent("holos-evaluate-self-test-\(UUID().uuidString)", isDirectory: true)
+    try termination.createPrivate(folder) {
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: false,
+                                                attributes: [.posixPermissions: 0o700])
+    }
+    return folder
 }
+
+private func removeSelfTestFolder(_ folder: URL) {
+    try? FileManager.default.removeItem(at: folder)
+    termination.release(folder)
+}
+
+private func readPID(_ url: URL) -> pid_t? {
+    guard let text = try? String(contentsOf: url, encoding: .utf8),
+          let pid = pid_t(text.trimmingCharacters(in: .whitespacesAndNewlines)), pid > 0 else { return nil }
+    return pid
+}
+
+/// Whether the process group led by `leader` is gone within 5 s.
+private func groupGone(_ leader: pid_t) -> Bool {
+    let deadline = ProcessInfo.processInfo.systemUptime + 5
+    while kill(-leader, 0) == 0 || errno == EPERM, ProcessInfo.processInfo.systemUptime < deadline {
+        Thread.sleep(forTimeInterval: 0.02)
+    }
+    return kill(-leader, 0) != 0 && errno == ESRCH
+}
+
+/// SIGTERM to an evaluator (a second copy of this script) while its command ignores SIGTERM: the evaluator must
+/// end the command's group (SIGKILL after the grace period), remove its private temporary folder, and exit 143.
+private func signalSelfTest() throws {
+    let folder = try selfTestFolder()
+    defer { removeSelfTestFolder(folder) }
+    let script = CommandLine.arguments[0]
+    let executable: URL
+    let arguments: [String]
+    if script.hasSuffix(".swift") {
+        executable = URL(fileURLWithPath: "/usr/bin/env")
+        arguments = ["swift", script, signalSelfTestFlag, folder.path]
+    } else if let binary = Bundle.main.executableURL {
+        executable = binary
+        arguments = [signalSelfTestFlag, folder.path]
+    } else {
+        throw EvaluationError.message("Signal self-test cannot find this evaluator's executable.")
+    }
+    let log = folder.appendingPathComponent("evaluator.stderr")
+    guard FileManager.default.createFile(atPath: log.path, contents: nil, attributes: [.posixPermissions: 0o600]) else {
+        throw EvaluationError.message("Signal self-test cannot create its log.")
+    }
+    let logHandle = try FileHandle(forWritingTo: log)
+    defer { try? logHandle.close() }
+    var child: pid_t?
+    // Compiling the second copy takes a while; the evaluator is signalled once its command runs.
+    let run = try runInProcessGroup(executable, arguments, stdout: nil, stderr: logHandle.fileDescriptor,
+                                    timeout: 300, grace: 5) {
+        guard child == nil, let evaluator = readPID(folder.appendingPathComponent("evaluator.pid")),
+              let started = readPID(folder.appendingPathComponent("child.pid")) else { return }
+        child = started
+        _ = kill(evaluator, SIGTERM)
+    }
+    func failure(_ text: String) -> EvaluationError {
+        if let child { _ = kill(-child, SIGKILL) }
+        let tail = (try? String(contentsOf: log, encoding: .utf8)).map { String($0.suffix(2000)) } ?? ""
+        return EvaluationError.message("Signal self-test: \(text) \(tail)")
+    }
+    guard let child else { throw failure("the evaluator ended before its command started.") }
+    guard !run.timedOut, run.signal == nil, run.status == 128 + SIGTERM else {
+        throw failure("the evaluator did not exit 143 (status \(run.status), signal \(run.signal ?? 0)).")
+    }
+    guard groupGone(child) else { throw failure("the evaluator left its command's group running.") }
+    guard !FileManager.default.fileExists(atPath: folder.appendingPathComponent("private").path) else {
+        throw failure("the evaluator left its private folder behind.")
+    }
+}
+
+/// The evaluator `signalSelfTest` signals: a private folder with a stand-in transcript, then a command that
+/// ignores SIGTERM. It must never return from the command.
+private func signalSelfTestChild(folder: URL) throws {
+    let manager = FileManager.default
+    let privateFolder = folder.appendingPathComponent("private", isDirectory: true)
+    try termination.createPrivate(privateFolder) {
+        try manager.createDirectory(at: privateFolder, withIntermediateDirectories: false,
+                                    attributes: [.posixPermissions: 0o700])
+    }
+    try Data("stand-in transcript\n".utf8).write(to: privateFolder.appendingPathComponent("transcript.txt"))
+    let pidFile = folder.appendingPathComponent("evaluator.pid")
+    let pidTemporary = folder.appendingPathComponent("evaluator.pid.tmp")
+    try "\(getpid())\n".write(to: pidTemporary, atomically: false, encoding: .utf8)
+    try manager.moveItem(at: pidTemporary, to: pidFile)
+    _ = try runInProcessGroup(URL(fileURLWithPath: "/bin/sh"),
+                              ["-c", termIgnoringChild, folder.appendingPathComponent("child.pid").path],
+                              stdout: nil, stderr: nil, timeout: 120, grace: 0.5)
+    throw EvaluationError.message("The signal self-test's command ended without the evaluator being signalled.")
+}
+
+_ = signalSources
+_ = ignoresBrokenPipes
+do {
+    let arguments = Array(CommandLine.arguments.dropFirst())
+    if arguments == ["--self-test"] { try selfTest() }
+    else if arguments.count == 2, arguments[0] == signalSelfTestFlag {
+        try signalSelfTestChild(folder: URL(fileURLWithPath: arguments[1], isDirectory: true))
+    } else { try evaluate() }
+} catch {
+    termination.exit(1, message: "Evaluation failed: \(error)")
+}
+termination.exit(0)
