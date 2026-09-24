@@ -375,16 +375,24 @@ struct TranscriptText {
         }
 
         /// True when the offsets of words `first...end` (the word after the range included, when there is one) lie
-        /// within the text and never decrease. The raw offsets are checked, not clamped ones: clamping a bad offset
-        /// (-1 → 0, 999 → the text's length) would widen the slice to text other words own.
+        /// within the text, never decrease, and are Unicode scalar boundaries of the text. The raw offsets are
+        /// checked, not clamped ones: clamping a bad offset (-1 → 0, 999 → the text's length) would widen the slice
+        /// to text other words own. An offset between the two halves of a surrogate pair would decode as U+FFFD.
         private func offsetsFit(first: Int, end: Int) -> Bool {
             var previous = 0
             for index in first...min(end, words.count - 1) {
                 let offset = words[index].utf16Offset
-                guard offset >= previous, offset <= utf16.count else { return false }
+                guard offset >= previous, offset <= utf16.count, isScalarBoundary(offset) else { return false }
                 previous = offset
             }
             return true
+        }
+
+        /// True when `offset` (within `0...utf16.count`) does not fall between a lead and a trail surrogate. A Swift
+        /// `String` never holds an unpaired surrogate, so every other offset starts or ends a whole scalar.
+        func isScalarBoundary(_ offset: Int) -> Bool {
+            guard offset > 0, offset < utf16.count else { return true }
+            return !(UTF16.isLeadSurrogate(utf16[offset - 1]) && UTF16.isTrailSurrogate(utf16[offset]))
         }
     }
 

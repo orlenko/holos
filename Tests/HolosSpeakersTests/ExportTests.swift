@@ -308,14 +308,59 @@ private func matchesEvaluatorHeader(_ line: String) throws -> Bool {
     ])
     let markdown = try rendered(document(meeting, projection: projection(meeting)), .md)
     // A link reference definition renders as nothing; escaped, it stays a visible paragraph.
-    #expect(markdown.contains("\n\\[budget]: https://example.com/vote\n"))
-    #expect(markdown.contains("\ntype \\<b>bold\\</b> and \\&amp; or \\&copy; then \\`x\\<y\\` and a\\\\*b\n"))
-    // A bracket that cannot start a definition is left alone.
-    #expect(markdown.contains("\nsee [1]\n"))
-    #expect(MarkdownExport.paragraph("[a]: b") == "\\[a]: b")
-    #expect(MarkdownExport.paragraph("[a] b") == "[a] b")
-    #expect(MarkdownExport.paragraph("<div>") == "\\<div>")
+    #expect(markdown.contains("\n\\[budget\\]: https://example.com/vote\n"))
+    #expect(markdown.contains("\ntype \\<b\\>bold\\</b\\> and \\&amp; or \\&copy; then \\`x\\<y\\` and a\\\\\\*b\n"))
+    #expect(markdown.contains("\nsee \\[1\\]\n"))
+    #expect(MarkdownExport.paragraph("[a]: b") == "\\[a\\]: b")
+    #expect(MarkdownExport.paragraph("<div>") == "\\<div\\>")
     #expect(MarkdownExport.paragraph("```fence") == "\\`\\`\\`fence")
+    // Inline links and images keep their URLs visible; emphasis, strikethrough, and table pipes stay literal.
+    #expect(MarkdownExport.paragraph("see [budget](https://example.com) now")
+        == "see \\[budget\\](https://example.com) now")
+    #expect(MarkdownExport.paragraph("![chart](c.png)") == "\\!\\[chart\\](c.png)")
+    #expect(MarkdownExport.paragraph("*a* _b_ ~~c~~ | d") == "\\*a\\* \\_b\\_ \\~\\~c\\~\\~ \\| d")
+}
+
+/// Reads `markdown` the way CommonMark reads backslash escapes: a backslash before ASCII punctuation is that
+/// character. Returns nil when a character that can start inline syntax appears unescaped.
+private func unescapedLiteral(_ markdown: String) -> String? {
+    var result = ""
+    var characters = markdown.makeIterator()
+    while let character = characters.next() {
+        if character == "\\" {
+            guard let next = characters.next(), next.isASCII, next.isPunctuation || next.isSymbol else { return nil }
+            result.append(next)
+        } else if MarkdownExport.inlineEscapedCharacters.contains(character) {
+            return nil
+        } else {
+            result.append(character)
+        }
+    }
+    return result
+}
+
+@Test func paragraphRendersPunctuationHeavyTextLiterally() throws {
+    let punctuation = Array("!\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~")
+    let alphabet = punctuation + punctuation + Array("ab1 9. \t\né") + ["😀", "e\u{301}"]
+    let prefixes = ["", "# ", "## ", "- ", "+ ", "* ", "1. ", "2) ", "> ", "[x]: ", "***", "---", "```", "~~~", "<", "|"]
+    // Control: the renderer does read Markdown, so unescaped syntax would change the text it shows.
+    #expect(String(try AttributedString(markdown: "- see [a](b) *c* &amp;").characters) == "see a c &")
+    var state: UInt64 = 0x9E37_79B9_7F4A_7C15
+    func next(_ bound: Int) -> Int {
+        state = state &* 6_364_136_223_846_793_005 &+ 1_442_695_040_888_963_407
+        return Int((state >> 33) % UInt64(bound))
+    }
+    for _ in 0..<3000 {
+        var text = prefixes[next(prefixes.count)]
+        for _ in 0..<next(24) { text.append(alphabet[next(alphabet.count)]) }
+        let expected = ExportText.singleLine(text)
+        let markdown = MarkdownExport.paragraph(text)
+        // Every original character survives, in order, and nothing that starts inline syntax is left bare.
+        #expect(unescapedLiteral(markdown) == expected, "\(text.debugDescription) → \(markdown.debugDescription)")
+        // A CommonMark renderer shows exactly the text: no block syntax, markup, links, or entities.
+        let rendered = try AttributedString(markdown: markdown)
+        #expect(String(rendered.characters) == expected, "\(text.debugDescription) → \(markdown.debugDescription)")
+    }
 }
 
 @Test func turnWithoutAStartDoesNotJoinABlockAcrossAMarker() throws {
@@ -743,6 +788,30 @@ private func matchesEvaluatorHeader(_ line: String) throws -> Bool {
     let past = Transcript(id: "T", source: "system", locale: "en-CA", backend: .speech, segments: [segment])
     #expect(TranscriptExporter.text(of: [WordSpan(segmentID: "a", first: 2, end: 3)], in: past) == "gamma")
     #expect(TranscriptExporter.text(of: [WordSpan(segmentID: "a", first: 1, end: 2)], in: past) == "beta")
+}
+
+@Test func offsetInsideASurrogatePairFallsBackToWordTexts() {
+    // "😀" is two UTF-16 code units; an offset of 1 lands between them and would decode as U+FFFD.
+    var segment = measuredSegment("a", start: 0, text: "😀 hi there", track: "system")
+    segment.words[1].utf16Offset = 1
+    let transcript = Transcript(id: "T", source: "system", locale: "en-CA", backend: .speech, segments: [segment])
+    #expect(TranscriptExporter.text(of: [WordSpan(segmentID: "a", first: 0, end: 1)], in: transcript) == "😀")
+    #expect(TranscriptExporter.text(of: [WordSpan(segmentID: "a", first: 1, end: 2)], in: transcript) == "hi")
+    #expect(TranscriptExporter.text(of: [WordSpan(segmentID: "a", first: 0, end: 3)], in: transcript) == "😀 hi there")
+    // Offsets that sit on scalar boundaries still slice the text.
+    let fine = measuredSegment("b", start: 0, text: "😀, hi", track: "system")
+    let good = Transcript(id: "T", source: "system", locale: "en-CA", backend: .speech, segments: [fine])
+    #expect(TranscriptExporter.text(of: [WordSpan(segmentID: "b", first: 0, end: 1)], in: good) == "😀,")
+}
+
+@Test func scalarBoundaryRejectsEveryOffsetInsideASurrogatePair() {
+    let text = "a😀b𝄞"
+    let segment = TranscriptText.Segment(TranscriptSegment(id: "s", start: 0, end: 1, text: text, track: "mic"))
+    for offset in 0...text.utf16.count {
+        let index = String.Index(utf16Offset: offset, in: text)
+        let onScalar = index.samePosition(in: text.unicodeScalars) != nil
+        #expect(segment.isScalarBoundary(offset) == onScalar, "offset \(offset)")
+    }
 }
 
 @Test func timingQualityCountsEstimatedWords() {

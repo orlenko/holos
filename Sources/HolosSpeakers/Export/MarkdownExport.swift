@@ -28,9 +28,10 @@ import HolosCore
 /// Date and start time are `metadata.createdAt` in `metadata.timeZone`. Participants are the projection's speakers
 /// with turns, by talk time descending (ties in speaker order); the line is left out without a projection. A gap or
 /// marker line at the same time as a block comes before it; repeated identical lines print once, adjacent or not.
-/// Names, labels, and the title are kept on one line with Markdown punctuation (and `&`) escaped; a block's text is
-/// one paragraph with backslashes, backticks, `<`, and `&` escaped (so no HTML, code span, or entity changes it) and
-/// its leading block syntax ("# ", "- ", "1. ", ">", "[x]: ", …) escaped so it stays a visible paragraph.
+/// Names, labels, the title, and a block's text are kept on one line with every character that can start inline
+/// Markdown escaped (`\` `` ` `` `*` `_` `[` `]` `!` `<` `>` `&` `~` `|`), so no emphasis, code span, link, image,
+/// HTML, entity, strikethrough, or table changes them; a block's text is one paragraph with its leading block syntax
+/// ("# ", "- ", "1. ", "[x]: ", …) escaped too, so it renders literally as a visible paragraph.
 enum MarkdownExport {
     static func render(_ content: ExportContent) -> Data {
         let metadata = content.document.metadata
@@ -139,18 +140,15 @@ enum MarkdownExport {
 
     // MARK: Escaping
 
-    /// Backslash-escapes the characters that start inline Markdown (emphasis, code, links, HTML, entities), for
-    /// titles, names, and labels.
+    /// Backslash-escapes every character that can start inline Markdown, for titles, names, and labels.
     static func escapeInline(_ text: String) -> String {
         escape(text, inlineEscapedCharacters)
     }
 
-    /// A block's text as one paragraph: on one line, with the characters that would hide or change words escaped
-    /// (a backslash, inline HTML and autolinks, entity references like `&amp;`, and code spans, inside which other
-    /// escapes would show), then leading block syntax escaped. Emphasis marks are left alone: they only style
-    /// words, and recognizers rarely produce them.
+    /// A block's text as one paragraph that renders literally: on one line, with every character that can start
+    /// inline Markdown escaped, then leading block syntax escaped.
     static func paragraph(_ text: String) -> String {
-        escapeParagraphStart(escape(ExportText.singleLine(text), paragraphEscapedCharacters))
+        escapeParagraphStart(escape(ExportText.singleLine(text), inlineEscapedCharacters))
     }
 
     private static func escape(_ text: String, _ characters: Set<Character>) -> String {
@@ -163,8 +161,13 @@ enum MarkdownExport {
         return result
     }
 
-    private static let inlineEscapedCharacters: Set<Character> = ["\\", "`", "*", "_", "[", "]", "<", ">", "&"]
-    private static let paragraphEscapedCharacters: Set<Character> = ["\\", "`", "<", "&"]
+    /// The ASCII punctuation that CommonMark or GFM can read as inline syntax anywhere in a line: escapes (`\`), code
+    /// spans, emphasis, links and images (`[`, `]`, `!`), inline HTML and autolinks (`<`, `>`), entity references
+    /// (`&`), strikethrough (`~`), and table cells (`|`). CommonMark lets a backslash escape any ASCII punctuation, so
+    /// each escaped character renders as itself. Other punctuation only matters at the start of a line, which
+    /// `escapeParagraphStart` handles.
+    static let inlineEscapedCharacters: Set<Character> =
+        ["\\", "`", "*", "_", "[", "]", "!", "<", ">", "&", "~", "|"]
 
     /// Escapes block syntax at the start of a one-line paragraph so it renders as text: an ATX heading, block quote,
     /// list item, thematic break, code fence, HTML block, or link reference definition (`[label]: url`, which
