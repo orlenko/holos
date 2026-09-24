@@ -12,10 +12,19 @@ extension HolosPaths {
 }
 
 /// One line of `forget-journal.jsonl` (docs/meeting-design.md §4.10). A forget first appends a `pending` tombstone
-/// that lists what it removes, then updates the profile store, then cleans each affected session, then appends a
-/// `done` line with the same ID; a crash anywhere leaves the tombstone for the next run to finish.
+/// that lists what it removes, then updates the profile store, then appends a `stored` line for the same ID, then
+/// cleans each affected session, then appends a `done` line; a crash anywhere leaves the tombstone for the next run
+/// to finish.
+///
+/// The `stored` line is what tells a resumed forget which phase it is in. Without it the store write still has to
+/// happen: it turns "Remember voices" off when the tombstone asked for that, and it sweeps every sample the scope
+/// covers at that write, not only the IDs listed before the tombstone was written. With it, only the listed samples
+/// are removed, so a forget that keeps failing on a meeting cannot undo the user turning remembering back on, or
+/// take a sample learned since. The `stored` line also carries the person the store write found the forgotten
+/// sample under (`profileID`), which a merge may have changed since the tombstone was written.
 public struct ForgetRecord: Codable, Sendable, Equatable {
     public static let pending = "pending"
+    public static let stored = "stored"
     public static let done = "done"
     public static let currentSchemaVersion = 1
 
@@ -33,18 +42,29 @@ public struct ForgetRecord: Codable, Sendable, Equatable {
 
     public var schemaVersion: Int
     public var id: String
-    /// Nil on a `done` line.
+    /// Nil on a `stored` or `done` line.
     public var kind: Kind?
+    /// The person to clean the meetings of; on a `stored` line, the one the store write actually found.
     public var profileID: String?
     public var sampleIDs: [String]?
     public var sessionIDs: [String]?
+    /// The store write of this tombstone's first run also turns "Remember voices" off. Absent (nil) in tombstones
+    /// written by an earlier Holos, which is read as false, as those forgets did not ask for it either.
+    public var turnRememberOff: Bool?
     public var state: String
 
     public init(schemaVersion: Int = ForgetRecord.currentSchemaVersion, id: String = UUID().uuidString, kind: Kind?,
                 profileID: String? = nil, sampleIDs: [String]? = nil, sessionIDs: [String]? = nil,
-                state: String = ForgetRecord.pending) {
+                turnRememberOff: Bool? = nil, state: String = ForgetRecord.pending) {
         self.schemaVersion = schemaVersion; self.id = id; self.kind = kind; self.profileID = profileID
-        self.sampleIDs = sampleIDs; self.sessionIDs = sessionIDs; self.state = state
+        self.sampleIDs = sampleIDs; self.sessionIDs = sessionIDs; self.turnRememberOff = turnRememberOff
+        self.state = state
+    }
+
+    /// The `stored` line for the tombstone `id`: its store write is done, and `profileID` is the person the
+    /// meetings are to be cleaned of (for a `.sample` forget, the one the sample was found under).
+    public static func stored(_ id: String, profileID: String? = nil) -> ForgetRecord {
+        ForgetRecord(id: id, kind: nil, profileID: profileID, state: stored)
     }
 
     /// The `done` line for the tombstone `id`.
@@ -138,8 +158,11 @@ public struct SpeakerProfileStore: Sendable {
     /// `RecognitionThresholds.problem` (finite, in range, `likely ≤ possible`, a margin of 0 … 2, a non-negative
     /// minimum sample length), and a calibrated model comes only with thresholds and names its model; profile and
     /// sample IDs are valid tokens and unique; names are not blank; at most one `isSelf` profile; at most one sample
-    /// per session per profile; a profile with samples names its embedding model, and its samples share one non-empty
-    /// dimension with finite values, finite, non-negative speech seconds, and a non-negative count of dropped turns.
+    /// per session per profile; a profile with samples names its embedding model, and its samples have a non-empty
+    /// vector of finite values, finite, non-negative speech seconds, and a non-negative count of dropped turns. Every
+    /// sample of one embedding model has the same dimension, across people as well as within one: two people whose
+    /// samples name one model but hold vectors of different sizes cannot be compared (`VectorMath.cosineDistance`
+    /// answers 2 for them, which would silently exclude the pair instead of reporting the damage).
     /// Throws `invalidInput` saying which rule failed.
     public static func validate(_ database: SpeakerProfileDatabase) throws {
         guard database.schemaVersion == SpeakerProfileDatabase.currentSchemaVersion else {
@@ -156,6 +179,8 @@ public struct SpeakerProfileStore: Sendable {
         var profileIDs = Set<String>()
         var sampleIDs = Set<String>()
         var selfCount = 0
+        /// The vector size every sample of one embedding model has, from the first one seen.
+        var dimensions: [EmbeddingModelID: Int] = [:]
         for profile in database.profiles {
             guard SessionArchive.validToken(profile.id), profileIDs.insert(profile.id).inserted else {
                 throw HolosError.invalidInput("The people store has an invalid or repeated person ID.")
@@ -165,7 +190,6 @@ public struct SpeakerProfileStore: Sendable {
             }
             if profile.isSelf { selfCount += 1 }
             var sessions = Set<String>()
-            var dimension: Int?
             for sample in profile.samples {
                 guard SessionArchive.validToken(sample.id), sampleIDs.insert(sample.id).inserted else {
                     throw HolosError.invalidInput("The people store has an invalid or repeated voice sample ID.")
@@ -177,11 +201,14 @@ public struct SpeakerProfileStore: Sendable {
                     throw HolosError.invalidInput("A person with voice samples needs their embedding model.")
                 }
                 let values = sample.embedding.values
-                guard !values.isEmpty, values.allSatisfy(\.isFinite), dimension == nil || dimension == values.count,
+                guard !values.isEmpty, values.allSatisfy(\.isFinite),
                       sample.speechSeconds.isFinite, sample.speechSeconds >= 0, sample.droppedOutlierTurns >= 0 else {
                     throw HolosError.invalidInput("A voice sample is damaged.")
                 }
-                dimension = values.count
+                guard dimensions[model, default: values.count] == values.count else {
+                    throw HolosError.invalidInput("Voice samples of one speaker model have different sizes.")
+                }
+                dimensions[model] = values.count
             }
         }
         guard selfCount <= 1 else {
@@ -240,9 +267,17 @@ public struct SpeakerProfileStore: Sendable {
         }
     }
 
+    /// The `stored` line of the tombstone `id`, when its store write is already done; nil while that phase is still
+    /// owed (including for a tombstone written by an earlier Holos, which journalled no such line: its store write
+    /// is then made again, which removes at most a little more than it did).
+    public func storedForget(_ id: String) throws -> ForgetRecord? {
+        try forgetRecords().first { $0.id == id && $0.state == ForgetRecord.stored }
+    }
+
     /// Under `profiles.lock`, rewrites the journal without its finished tombstones (removing it when nothing is
-    /// left), so it does not grow without bound. A readable tombstone with its `done` line, a torn last line, and a
-    /// damaged line (not a JSON object with a schema version) are dropped. A line this build cannot read because it
+    /// left), so it does not grow without bound. A readable tombstone with its `done` line, its `stored` line, a
+    /// `stored` line whose tombstone is gone, a torn last line, and a damaged line (not a JSON object with a schema
+    /// version) are dropped. A line this build cannot read because it
     /// comes from a newer Holos (a newer schema version, or a kind this build does not know) is kept byte for byte,
     /// and so is a `done` line that finishes none of the readable tombstones (it may finish one of those lines), so a
     /// newer Holos's pending forget is never destroyed (§1.6 rule 5).
@@ -275,6 +310,10 @@ public struct SpeakerProfileStore: Sendable {
                         keep = unreadable && !pendingIDs.contains(record.id) && seen.insert("done:" + record.id).inserted
                     } else if record.state == ForgetRecord.pending, record.kind != nil {
                         keep = !finished.contains(record.id) && seen.insert(record.id).inserted
+                    } else if record.state == ForgetRecord.stored {
+                        // Kept only while its tombstone is: it says that tombstone's store write is done.
+                        keep = pendingIDs.contains(record.id) && !finished.contains(record.id)
+                            && seen.insert("stored:" + record.id).inserted
                     } else {
                         keep = true
                     }
@@ -291,6 +330,42 @@ public struct SpeakerProfileStore: Sendable {
                 try AtomicFile.write(kept, to: forgetJournalURL)
             }
         }
+    }
+
+    // MARK: - Leftovers
+
+    /// Removes the leftovers of an interrupted atomic write from the store's private folder: regular files named
+    /// `.<token>.tmp`, which `AtomicFile` publishes through and unlinks itself, but which a kill or a power loss
+    /// between their fsync and their rename leaves behind holding a whole copy of the database, voiceprints and
+    /// all. Nothing else in this folder is ever removed (`profiles.json`, `profiles.lock`, the forget journal, and
+    /// anything a newer Holos writes stay). Run under `profiles.lock`, so no write of this store is in flight: a
+    /// `.tmp` file seen here belongs to no live write. A file that cannot be removed is thrown, so the forget that
+    /// called this stays pending. Returns how many were removed.
+    @discardableResult
+    public func purgeTemporaryFiles() throws -> Int {
+        try withLock {
+            let folder = try openDirectory()
+            defer { Darwin.close(folder) }
+            guard let entries = try AtomicFile.listFolder(directory) else { return 0 }
+            var removed = 0
+            for entry in entries where entry.type == S_IFREG && Self.isTemporaryName(entry.name) {
+                guard unlinkat(folder, entry.name, 0) == 0 || errno == ENOENT else {
+                    throw HolosError.io("Cannot remove a leftover temporary file in the people folder: "
+                                        + "\(AtomicFile.errnoText()).")
+                }
+                removed += 1
+            }
+            guard removed > 0 else { return 0 }
+            try AtomicFile.syncFolder(folder, directory)
+            Self.log.notice("Removed \(removed, privacy: .public) leftover temporary files from the people folder")
+            return removed
+        }
+    }
+
+    /// `.<token>.tmp`, the name `AtomicFile.publish` gives the file it writes before renaming it into place.
+    static func isTemporaryName(_ name: String) -> Bool {
+        guard name.hasPrefix("."), name.hasSuffix(".tmp") else { return false }
+        return SessionArchive.validToken(String(name.dropFirst().dropLast(4)))
     }
 
     // MARK: - Private

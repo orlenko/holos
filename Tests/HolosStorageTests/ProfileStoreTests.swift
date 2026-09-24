@@ -129,7 +129,8 @@ func profileStoreIsPrivateLockedAndNotBackedUp() async throws {
     let repeated = profileSample()
     let damaged: [SpeakerProfileDatabase] = [
         // A repeated person ID, two people marked as you, two samples from one meeting, a repeated sample ID,
-        // samples of different dimensions, and a sample without its person's embedding model.
+        // samples of different dimensions (within one person, and between two people of one model), and a sample
+        // without its person's embedding model.
         SpeakerProfileDatabase(profiles: [SpeakerProfile(id: "JIM", displayName: "Jim"),
                                           SpeakerProfile(id: "JIM", displayName: "Jim")]),
         SpeakerProfileDatabase(profiles: [SpeakerProfile(displayName: "Me", isSelf: true),
@@ -147,6 +148,16 @@ func profileStoreIsPrivateLockedAndNotBackedUp() async throws {
                                               weak: false, addedAt: profileDate),
         ])]),
         SpeakerProfileDatabase(profiles: [SpeakerProfile(displayName: "Jim", samples: [profileSample()])]),
+        // One embedding model, two people, vectors of different sizes: cosineDistance answers 2 for that pair,
+        // which would quietly exclude them from every comparison instead of reporting the damage.
+        SpeakerProfileDatabase(profiles: [
+            SpeakerProfile(displayName: "Jim", embeddingModel: profileModel, samples: [profileSample()]),
+            SpeakerProfile(displayName: "Maria", embeddingModel: profileModel, samples: [
+                VoiceprintSample(sessionID: UUID().uuidString, sessionName: "Other", speakerIDs: ["mic:S1"],
+                                 speechSeconds: 30, embedding: FloatVector([1, 0]), condition: .room, weak: false,
+                                 addedAt: profileDate),
+            ]),
+        ]),
     ]
     for database in damaged {
         let data = try HolosJSON.encoder().encode(database)
@@ -368,4 +379,50 @@ func lockedReadHoldsTheLockUntilItsWriteIsDone() throws {
 
 @Test func supportRootHoldsTheSpeakersFolder() {
     #expect(HolosPaths.speakerProfiles == HolosPaths.supportRoot.appendingPathComponent("Speakers", isDirectory: true))
+}
+
+
+@Test func leftoverTemporaryFilesArePurgedFromTheStore() throws {
+    let root = try profileRoot()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let store = SpeakerProfileStore(directory: root.appendingPathComponent("Speakers"))
+    try store.update { $0.profiles = [SpeakerProfile(id: "JIM", displayName: "Jim")] }
+    // What a kill between an atomic write's fsync and its rename leaves: a whole copy of the database beside it.
+    let leftover = store.directory.appendingPathComponent(".\(UUID().uuidString).tmp", isDirectory: false)
+    try AtomicFile.write(Data("an older database, voiceprints and all".utf8), to: leftover)
+    let unrelated = store.directory.appendingPathComponent("from-a-newer-holos.json", isDirectory: false)
+    try AtomicFile.write(Data("{}".utf8), to: unrelated)
+
+    #expect(try store.purgeTemporaryFiles() == 1)
+
+    #expect(!FileManager.default.fileExists(atPath: leftover.path))
+    #expect(FileManager.default.fileExists(atPath: unrelated.path), "Only atomic-write leftovers are removed.")
+    #expect(FileManager.default.fileExists(atPath: store.databaseURL.path))
+    #expect(try store.load().profiles.map(\.id) == ["JIM"])
+    #expect(try store.purgeTemporaryFiles() == 0, "Nothing to do the second time.")
+}
+
+@Test func storedLinesSayWhichForgetsHaveHadTheirStoreWrite() throws {
+    let root = try profileRoot()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let store = SpeakerProfileStore(directory: root.appendingPathComponent("Speakers"))
+    let crashed = ForgetRecord(kind: .all, sampleIDs: ["S1"], turnRememberOff: true)
+    let stored = ForgetRecord(kind: .sample, profileID: "JIM", sampleIDs: ["S2"])
+    let finished = ForgetRecord(kind: .session, sampleIDs: ["S3"], sessionIDs: ["M1"])
+    for record in [crashed, stored, finished] { try store.appendForgetRecord(record) }
+    try store.appendForgetRecord(.stored(stored.id, profileID: "MARIA"))
+    try store.appendForgetRecord(.stored(finished.id))
+    try store.appendForgetRecord(.done(finished.id))
+
+    #expect(try store.pendingForgets().map(\.id) == [crashed.id, stored.id], "A stored forget is still pending.")
+    #expect(try store.storedForget(crashed.id) == nil, "Its store write is still owed.")
+    #expect(try store.storedForget(stored.id)?.profileID == "MARIA", "The person its store write found.")
+    #expect(try store.forgetRecords().first { $0.id == crashed.id }?.turnRememberOff == true)
+
+    try store.compactForgetJournal()
+    let kept = try store.forgetRecords()
+    #expect(kept.filter { $0.id == finished.id }.isEmpty, "A finished forget and its stored line go together.")
+    #expect(kept.filter { $0.id == stored.id && $0.state == ForgetRecord.stored }.count == 1,
+            "The stored line of a pending forget is kept: it says its store write is done.")
+    #expect(try store.pendingForgets().map(\.id) == [crashed.id, stored.id])
 }

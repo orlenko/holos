@@ -24,11 +24,13 @@ enum PeopleLaunch {
     private nonisolated static let log = Logger(subsystem: "ca.orlenko.holos.app", category: "profiles")
     private static var resumed = false
 
-    /// `VoiceProfileService.resumePendingForgets` once per launch.
+    /// `VoiceProfileService.resumePendingForgets` once per launch, and the sweep of the voice renders an
+    /// interrupted enrollment left in the temporary directory.
     static func resumePendingForgetsOnce() {
         guard !resumed else { return }
         resumed = true
         Task.detached(priority: .utility) {
+            DiarizerVoiceSampleExtractor.removeStaleRenders()
             do {
                 try VoiceProfileService.resumePendingForgets(store: SpeakerProfileStore())
             } catch {

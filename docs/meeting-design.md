@@ -3370,17 +3370,67 @@ public struct SpeakerProfileDatabase: Codable, Sendable, Equatable {
   voices was off need nothing special: confirming a person later extracts on demand.
 - **Forgetting is resumable.** Every forget operation first appends a tombstone to
   `Support/Speakers/forget-journal.jsonl` (0600, fsync; `{id, kind, profileID?, sampleIDs,
-  sessionIDs, state: "pending"}`), then updates the profile store, then cleans each
-  affected session under its speaker lock (drops every reference to the profile from
-  each recognition result, that is its matches, merge suggestions, and `skippedProfiles`
-  entries, through the one helper `RecognitionResult.removeProfiles`; removes any
-  evaluation voice file entries; regenerates exports), then appends
-  `{id, state: "done"}`. `VoiceProfileService.resumePendingForgets(store:sessionsRoot:)`
-  runs at app launch and at the start of every `holos people`, `speakers`, and `session`
-  command and finishes any pending tombstone; each step is idempotent, so a crash at any
-  point leaves nothing behind once the next run completes. Tests (PR10):
-  `forgetResumesAfterCrashBetweenStoreAndSessions` (failure injected after the store
-  update; resume removes every reference), `forgetJournalReplayIsIdempotent`.
+  sessionIDs, turnRememberOff?, state: "pending"}`), then updates the profile store, then
+  appends `{id, profileID?, state: "stored"}`, then cleans each affected session under its
+  speaker lock (drops every reference to the profile from each recognition result, that is
+  its matches, merge suggestions, and `skippedProfiles` entries, through the one helper
+  `RecognitionResult.removeProfiles`; removes any evaluation voice file entries;
+  regenerates exports), then appends `{id, state: "done"}`.
+  `VoiceProfileService.resumePendingForgets(store:sessionsRoot:)` runs at app launch and
+  at the start of every `holos people`, `speakers`, and `session` command and finishes any
+  pending tombstone; each step is idempotent, so a crash at any point leaves nothing
+  behind once the next run completes.
+  - The `stored` line is what tells a resumed forget which phase it is in, rather than the
+    caller. While it is missing, the store write is still owed in full: it turns "Remember
+    voices" off when the tombstone asked for that, and it removes every sample the scope
+    covers in the store at that write, not only the IDs the tombstone listed. Once it is
+    there, a later run removes only the listed samples and never touches the setting
+    again, so a forget that keeps failing on one meeting cannot undo the user turning
+    remembering back on or take a sample learned since. A crash between the store write
+    and its `stored` line makes the next run sweep once more, which forgets slightly more
+    than it had to, never less.
+  - The `stored` line also records the person the meetings are cleaned of: for a `.sample`
+    forget, the person the store write found the sample under, which a merge may have
+    changed since the tombstone was written.
+  - The exports of a cleaned meeting are rewritten because they show the names recognition
+    gave, and a failure there keeps the tombstone pending. Whether the rewrite is owed
+    cannot be read back from the recognition file the run has already scrubbed, so
+    `.profile` rewrites every meeting that has recognition results and `.all` every
+    meeting whose exports Holos generated; the rewrite itself only writes files that
+    differ.
+  - A forget also removes atomic-write leftovers (`.<token>.tmp`) from the Speakers
+    folder: one holds a whole copy of the database, voiceprints and all, that a kill
+    between an fsync and a rename left behind.
+  - When a forgotten person's turn was won by a cluster that is not one of their speaker's
+    (the user reassigned it, or moved it to a speaker they made), that cluster's centroid
+    holds their voice and cannot be told apart from the rest of the cluster's, so the
+    meeting's evaluation voice data is deleted instead of filtered.
+  Tests (PR10): `forgetResumesAfterCrashBetweenStoreAndSessions` (failure injected after
+  the store update; resume removes every reference), `forgetJournalReplayIsIdempotent`,
+  `aForgetThatCrashedBeforeItsStoreWriteStillTurnsRememberingOff`,
+  `aResumedForgetLeavesRememberingAndNewerSamplesAlone`,
+  `forgettingASampleFollowsItToThePersonItWasMergedInto`,
+  `forgetStaysPendingUntilTheExportsAreRewritten`,
+  `forgetDeletesVoiceDataWhoseCentroidStillHoldsAReassignedTurn`,
+  `leftoverTemporaryFilesArePurgedFromTheStore`.
+- **A link is saved against the people and the labels as they are at the write.** The
+  batch's people are checked and marked used under `profiles.lock`, inside the meeting's
+  speaker lock, immediately before the lines are appended
+  (`SpeakerEditor.apply(requirePeople:)`), so a person another window forgot or merged
+  away is refused instead of being linked to by a meeting. A batch the caller's view says
+  changes nothing appends no line, so it is checked against the meeting's current labels
+  under the speaker lock instead of being reported as success. A person created for a link
+  that is then refused is taken back only while nobody has taken them up (no samples,
+  never marked used): another window may have linked them in another meeting between their
+  creation and this refusal. Tests (PR10): `anEditIsRefusedWhenThePersonItLinksIsGone`,
+  `aLinkThatChangesNothingIsRefusedWhenAnotherWindowChangedIt`,
+  `aPersonAnotherLinkHasTakenUpIsNotRolledBack`, `aRefusedNewPersonIsStillRemoved`.
+- **Enrollment renders are swept.** `DiarizerVoiceSampleExtractor` renders a track to
+  `holos-voice-<UUID>` in the temporary directory and deletes it in a `defer`, which a kill
+  or a power loss skips; the render is a decoded copy of the meeting's audio, so
+  `removeStaleRenders` removes such folders older than six hours (at most 64 per run) at
+  app launch and at the start of every `holos people`, `speakers`, and `session` command.
+  Test (PR10): `leftoverVoiceRendersAreSweptOnceTheyAreOldEnough`.
 - **Recognition** (`SpeakerRecognizer.recognize`, HolosSpeakers, pure; stage 7, only
   with "Remember voices" on):
   1. Candidates: machine speakers of diarized tracks with a centroid. Condition: `system`

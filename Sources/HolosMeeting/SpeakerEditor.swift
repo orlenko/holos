@@ -58,11 +58,19 @@ public enum SpeakerEditor {
     ///   voice sample from this meeting is built from (the speakers linked to them and those speakers' qualifying
     ///   turns); the caller then awaits `VoiceProfileService.refreshSamples(session:extractor:store:)`. Without it,
     ///   `needsSampleRefresh` is false.
+    /// - `requirePeople` (with `profiles`) are the people this batch links to: each must still be in the store when
+    ///   the lines are appended, checked and marked used in one locked step right before the append (§1.7 order:
+    ///   this speaker lock, then `profiles.lock`). A person another window forgot or merged away since the caller
+    ///   read them is refused with `unavailable`, instead of saving a link to nobody; and marking them used there,
+    ///   rather than after the append, is what lets a caller whose own link was refused tell a person nobody has
+    ///   taken up from one another window has linked meanwhile
+    ///   (`VoiceProfileService.rollBack`).
     @discardableResult
     public static func apply(_ actions: [SpeakerEditAction], view: SpeakerProjection, session: URL, source: String,
                              regenerateExports: Bool = true,
                              profileNames: [String: String] = [:],
-                             profiles: SpeakerProfileStore? = nil) throws -> SpeakerEditResult {
+                             profiles: SpeakerProfileStore? = nil,
+                             requirePeople: Set<String> = []) throws -> SpeakerEditResult {
         guard !actions.isEmpty else { throw HolosError.invalidInput("There is no speaker change to save.") }
         try requireSource(source)
         let preloaded = readRun(view.runID, session: session)
@@ -96,6 +104,7 @@ public enum SpeakerEditor {
                 current = next
                 viewState = viewState.applying(action, editID: id)
             }
+            try claimPeople(requirePeople, profiles: profiles, at: at)
             try SessionSpeakerStore.appendEdits(edits, session: session)
             log.info("Session \(base.run.sessionID, privacy: .public): saved \(edits.count, privacy: .public) speaker edits (batch \(batchID, privacy: .public), run \(base.run.id, privacy: .public))")
             return Saved(edits: edits, sessionID: base.run.sessionID, before: base.projection, after: current)
@@ -332,6 +341,23 @@ public enum SpeakerEditor {
             }
         }
         return SpeakerEditResult(snapshot: snapshot, needsSampleRefresh: needsSampleRefresh)
+    }
+
+    /// Under `profiles.lock` (the caller holds this session's speaker lock: the §1.7 order), checks that every
+    /// person in `people` is still in the store and marks them used. Throws `unavailable` when one is gone, so the
+    /// edits are never appended. Called right before the append, so an edit refused for any other reason claims
+    /// nobody.
+    static func claimPeople(_ people: Set<String>, profiles: SpeakerProfileStore?, at: Date) throws {
+        guard !people.isEmpty, let profiles else { return }
+        try profiles.update { database in
+            for id in people.sorted() {
+                guard let index = database.profiles.firstIndex(where: { $0.id == id }) else {
+                    throw HolosError.unavailable("That person is no longer in Holos (another window forgot or "
+                                                 + "merged them); reload and choose a name again.")
+                }
+                database.profiles[index].lastUsedAt = at
+            }
+        }
     }
 
     private static func requireSource(_ source: String) throws {
