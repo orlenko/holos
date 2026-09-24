@@ -12,13 +12,15 @@ struct SetupState {
     var busy: Bool
     var shortcutTitle: String
     var removeFillers: Bool
+    /// Whether the dictation preview is shown while dictating; problems are always shown.
+    var showPreview: Bool
     /// Opacity of the dictation preview, 0.3–1.0.
     var previewOpacity: Double
     var message: String
 }
 
 enum SetupAction: Int, CaseIterable {
-    case microphone, accessibility, inputMonitoring, assets, dictation, toggleFillers
+    case microphone, accessibility, inputMonitoring, assets, dictation, toggleFillers, togglePreview
 }
 
 /// A regular titled window, so setup status stays visible while the user works in System Settings.
@@ -33,6 +35,8 @@ final class SetupWindow: NSObject, NSWindowDelegate {
     private let messageLabel = NSTextField(wrappingLabelWithString: "")
     private let fillerToggle = NSButton(checkboxWithTitle: "Remove filler words (um, uh, ah, erm, hmm)",
                                         target: nil, action: nil)
+    private let previewToggle = NSButton(checkboxWithTitle: "Show the dictation preview while dictating",
+                                         target: nil, action: nil)
     private let opacitySlider = NSSlider(value: 0.85, minValue: 0.3, maxValue: 1.0, target: nil, action: nil)
     private let opacityValue = NSTextField(labelWithString: "")
     private var onOpacityChange: ((Double) -> Void)?
@@ -114,7 +118,12 @@ final class SetupWindow: NSObject, NSWindowDelegate {
                                              opacitySlider, opacityValue])
         opacityRow.spacing = 10
 
-        let stack = NSStackView(views: [messageLabel, grid, fillerToggle, opacityRow, note])
+        previewToggle.target = self
+        previewToggle.action = #selector(buttonPressed(_:))
+        previewToggle.tag = SetupAction.togglePreview.rawValue
+        previewToggle.toolTip = "When off, text just streams into the field. Problems that need you (text left on the clipboard, a failed dictation) are always shown."
+
+        let stack = NSStackView(views: [messageLabel, grid, fillerToggle, previewToggle, opacityRow, note])
         stack.orientation = .vertical
         stack.alignment = .leading
         stack.spacing = 20
@@ -144,6 +153,8 @@ final class SetupWindow: NSObject, NSWindowDelegate {
     func update(_ state: SetupState) {
         messageLabel.stringValue = "Status: \(state.message)"
         fillerToggle.state = state.removeFillers ? .on : .off
+        previewToggle.state = state.showPreview ? .on : .off
+        opacitySlider.isEnabled = state.showPreview
         // Leave the slider alone while the user drags it.
         if NSEvent.pressedMouseButtons == 0 { opacitySlider.doubleValue = state.previewOpacity }
         opacityValue.stringValue = "\(Int((opacitySlider.doubleValue * 100).rounded())) %"
