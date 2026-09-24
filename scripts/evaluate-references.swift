@@ -639,7 +639,8 @@ private struct ScoreReport: Decodable {
     let mappingSize: Int
     let mapping: [String: String]
     let genericLabels: [String]
-    let turnAgreementConfusion: Double
+    /// Absent when no labelled turn overlaps Otter's turns (not comparable).
+    let turnAgreementConfusion: Double?
     let turnComparedSeconds: Double
     let trackOffsets: [String: Double]
     let engineConfiguration: [String: String]
@@ -669,8 +670,8 @@ private struct SpeakerRow: Encodable {
     /// Agreement with Otter over the diarization segments.
     let agreementConfusion: Double
     let comparedSeconds: Double
-    /// Agreement with Otter over the labelled turns.
-    let turnAgreementConfusion: Double
+    /// Agreement with Otter over the labelled turns; nil when not comparable.
+    let turnAgreementConfusion: Double?
     let turnComparedSeconds: Double
     let mappedSpeakers: Int
     /// The post-processor's diarize stage (FluidAudio, one pass over the track).
@@ -927,7 +928,7 @@ private func speakerMarkdown(_ report: SpeakerReport) -> String {
         let configuration = row.speakerHint.map { "\(row.configuration) (\($0))" } ?? row.configuration
         lines.append("| \(row.pair) | \(configuration) | \(row.referenceSpeakers) (\(row.referenceSpeakersOver30s)) | "
             + "\(row.holosSpeakers) (\(row.holosSpeakersOver30s)) | \(percent(row.agreementConfusion)) | "
-            + String(format: "%.1f", row.comparedSeconds) + " | \(percent(row.turnAgreementConfusion)) | "
+            + String(format: "%.1f", row.comparedSeconds) + " | \(row.turnAgreementConfusion.map(percent) ?? "–") | "
             + String(format: "%.1f", row.turnComparedSeconds) + " | \(row.mappedSpeakers) | "
             + String(format: "%.1f | %.1f", row.diarizationSeconds, row.commandSeconds)
             + " | \(megabytes(row.peakRSSBytes)) | \(megabytes(row.peakFootprintBytes)) | "

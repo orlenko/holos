@@ -4157,9 +4157,12 @@ public enum DiarizationScoring {
     /// (Hungarian up to 20 × 20, greedy by overlap above that).
     public static func der(reference: [LabelledInterval], hypothesis: [LabelledInterval], collar: Double = 0.25) -> DiarizationScore
     /// For Otter references (turns cover silence): over frames where both sides have a speaker, the share whose
-    /// mapped speaker differs. Reported as "agreement with Otter", not DER.
+    /// mapped speaker differs. Reported as "agreement with Otter", not DER. `confusion` is nil (not comparable) when
+    /// no scored frame has both; `referenceSeconds` and `hypothesisSeconds` (scored time per side) say why.
     public static func agreement(reference: [LabelledInterval], hypothesis: [LabelledInterval],
-                                 collar: Double = 0.25) -> (confusion: Double, comparedSeconds: Double, mapping: [String: String])
+                                 collar: Double = 0.25) -> DiarizationAgreement
+    // DiarizationAgreement { confusion: Double?, comparedSeconds, referenceSeconds, hypothesisSeconds: Double,
+    //                        mapping: [String: String] }; prints no labels.
 }
 ```
 
@@ -4814,7 +4817,11 @@ holos session score <path> --otter <transcript.txt> [--collar 0.25] [--json]    
 - `session score` prints only numbers: reference speakers, Holos speakers, agreement
   confusion, compared seconds, mapping size. With `--json`, the mapping is keyed by
   the first 12 hex characters of the SHA-256 of each Otter label, so scripts can match
-  people across files without printing names. It never prints text.
+  people across files without printing names. It never prints text. It fails rather
+  than print zeros when nothing can be compared: no audio, no speaker segments, Otter
+  times that go backwards or start after the audio ends (another recording), no Otter
+  turn inside the audio, every turn inside the collar, or no overlap. A run without
+  labelled turns reports the turn score as not comparable.
 - `scripts/evaluate-references.swift --speakers` (with `--reference-format otter`): for
   each pair, `holos session import` (transcribed once) into
   `.local/evaluation/<run>/sessions`, then for each configuration `holos session diarize

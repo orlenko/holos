@@ -35,8 +35,30 @@ public struct DiarizationScore: Sendable, Equatable {
     }
 }
 
-/// Speaker labels can be private reference names: printing, `dump`, and test-failure output of an interval or a
-/// score show times, counts, and metrics only (docs/meeting-design.md §1.9).
+/// "Agreement with Otter" (`DiarizationScoring.agreement`): over scored frames where both sides have a speaker, the
+/// share whose mapped speaker differs.
+public struct DiarizationAgreement: Sendable, Equatable {
+    /// Share of `comparedSeconds` whose speakers do not agree; nil when nothing was compared (not comparable), so an
+    /// empty or disjoint input never reads as perfect agreement.
+    public var confusion: Double?
+    /// Scored time (outside the collar) where both sides have a speaker.
+    public var comparedSeconds: Double
+    /// Scored time with at least one reference speaker, and with at least one hypothesis speaker. They tell why
+    /// nothing was compared: no reference time left outside the collar, or no overlap.
+    public var referenceSeconds: Double
+    public var hypothesisSeconds: Double
+    /// Reference → hypothesis speaker; only pairs that share scored time.
+    public var mapping: [String: String]
+
+    public init(confusion: Double?, comparedSeconds: Double, referenceSeconds: Double, hypothesisSeconds: Double,
+                mapping: [String: String]) {
+        self.confusion = confusion; self.comparedSeconds = comparedSeconds
+        self.referenceSeconds = referenceSeconds; self.hypothesisSeconds = hypothesisSeconds; self.mapping = mapping
+    }
+}
+
+/// Speaker labels can be private reference names: printing, `dump`, and test-failure output of an interval, a
+/// score, or an agreement show times, counts, and metrics only (docs/meeting-design.md §1.9).
 extension LabelledInterval: CustomStringConvertible, CustomDebugStringConvertible, CustomReflectable {
     public var description: String { "LabelledInterval(start: \(start), end: \(end))" }
 
@@ -67,9 +89,25 @@ extension DiarizationScore: CustomStringConvertible, CustomDebugStringConvertibl
     }
 }
 
+extension DiarizationAgreement: CustomStringConvertible, CustomDebugStringConvertible, CustomReflectable {
+    public var description: String {
+        "DiarizationAgreement(confusion: \(confusion.map { "\($0)" } ?? "not comparable"), "
+            + "comparedSeconds: \(comparedSeconds), referenceSeconds: \(referenceSeconds), "
+            + "hypothesisSeconds: \(hypothesisSeconds), mappedPairs: \(mapping.count))"
+    }
+
+    public var debugDescription: String { description }
+
+    public var customMirror: Mirror {
+        Mirror(self, children: [
+            "confusion": confusion as Any, "comparedSeconds": comparedSeconds, "referenceSeconds": referenceSeconds,
+            "hypothesisSeconds": hypothesisSeconds, "mappedPairs": mapping.count,
+        ], displayStyle: .struct)
+    }
+}
+
 /// Speaker-diarization metrics (docs/meeting-design.md §5.3, R25). Labels are compared only for equality; the
-/// types that hold them print no labels. `agreement` returns its mapping in a plain tuple, which the caller must
-/// not print.
+/// types that hold them print no labels.
 ///
 /// Both functions work on 10 ms frames: frame `i` covers `[i, i + 1) × 10 ms` and a speaker is active in it when its
 /// centre lies in one of the speaker's intervals (`start ≤ centre < end`; one speaker's overlapping intervals count
@@ -117,21 +155,28 @@ public enum DiarizationScoring {
     /// mapped speaker differs. Reported as "agreement with Otter", not DER.
     ///
     /// A compared frame agrees when the mapped speaker of one of its reference speakers is among its hypothesis
-    /// speakers. `confusion` is the share of compared seconds that do not agree (0 when nothing is compared);
-    /// `comparedSeconds` is the scored time where both sides have a speaker; `mapping` is reference → hypothesis.
+    /// speakers. `confusion` is the share of compared seconds that do not agree, and nil when nothing is compared
+    /// (no valid interval on a side, no overlap, or every reference frame inside the collar).
     public static func agreement(reference: [LabelledInterval], hypothesis: [LabelledInterval],
-                                 collar: Double = 0.25) -> (confusion: Double, comparedSeconds: Double, mapping: [String: String]) {
+                                 collar: Double = 0.25) -> DiarizationAgreement {
         let timeline = FrameTimeline(reference: reference, hypothesis: hypothesis, collar: collar)
         let mapping = timeline.optimalMapping()
         var comparedFrames = 0
         var confusedFrames = 0
-        for piece in timeline.pieces where !piece.reference.isEmpty && !piece.hypothesis.isEmpty {
+        var referenceFrames = 0
+        var hypothesisFrames = 0
+        for piece in timeline.pieces {
+            if !piece.reference.isEmpty { referenceFrames += piece.frames }
+            if !piece.hypothesis.isEmpty { hypothesisFrames += piece.frames }
+            guard !piece.reference.isEmpty, !piece.hypothesis.isEmpty else { continue }
             comparedFrames += piece.frames
             let agrees = piece.reference.contains { mapping[$0].map(piece.hypothesis.contains) ?? false }
             if !agrees { confusedFrames += piece.frames }
         }
-        let confusion = comparedFrames > 0 ? Double(confusedFrames) / Double(comparedFrames) : 0
-        return (confusion, seconds(comparedFrames), timeline.names(of: mapping))
+        let confusion = comparedFrames > 0 ? Double(confusedFrames) / Double(comparedFrames) : nil
+        return DiarizationAgreement(confusion: confusion, comparedSeconds: seconds(comparedFrames),
+                                    referenceSeconds: seconds(referenceFrames),
+                                    hypothesisSeconds: seconds(hypothesisFrames), mapping: timeline.names(of: mapping))
     }
 
     /// Frames per second.

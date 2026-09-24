@@ -682,3 +682,113 @@ func scoreNeedsSpeakerLabelsAndTurns() async throws {
         _ = try SessionScorer.score(session: labelled, otterTranscript: sessionScorerOtterText, collar: -1)
     }
 }
+
+/// The message of the `HolosError.invalidInput` or `.unavailable` that `body` throws; nil for no or another error.
+private func sessionScorerRefusal(_ body: () throws -> Void) -> (invalid: Bool, message: String)? {
+    do {
+        try body()
+        return nil
+    } catch HolosError.invalidInput(let message) {
+        return (true, message)
+    } catch HolosError.unavailable(let message) {
+        return (false, message)
+    } catch {
+        return nil
+    }
+}
+
+@Test(.timeLimit(.minutes(1)))
+func scoreRejectsTranscriptsWithNoTurnInsideTheAudio() async throws {
+    let temp = try TemporaryDirectory("score")
+    defer { temp.remove() }
+    let session = try await sessionScorerSession(in: temp.url)
+    // The fixture's audio is 20 s. A transcript that starts at 30 s is another recording's; one whose only turn
+    // starts at 0:20 (Otter rounds down) covers none of the audio. Both used to score as zeros.
+    for otter in ["Maria Chen  0:30\nHello.\n", "Maria Chen  0:20\nHello.\n",
+                  "Maria Chen  0:00\nHello.\n\nJim Park  0:25\nHi.\n"] {
+        let refusal = sessionScorerRefusal { _ = try SessionScorer.score(session: session, otterTranscript: otter) }
+        #expect(refusal?.invalid == true, "a transcript outside the audio was scored")
+        for word in ["Maria", "Jim", "Hello"] {
+            #expect(refusal?.message.contains(word) == false, "the error named a label or transcript word")
+        }
+    }
+}
+
+@Test(.timeLimit(.minutes(1)))
+func scoreRejectsTimesThatGoBackwards() async throws {
+    let temp = try TemporaryDirectory("score")
+    defer { temp.remove() }
+    let session = try await sessionScorerSession(in: temp.url)
+    let otter = "Maria Chen  0:10\nHello.\n\nJim Park  0:05\nHi.\n"
+    let refusal = sessionScorerRefusal { _ = try SessionScorer.score(session: session, otterTranscript: otter) }
+    #expect(refusal?.invalid == true)
+    #expect(refusal?.message.contains("backwards") == true)
+}
+
+@Test(.timeLimit(.minutes(1)))
+func scoreRejectsLabelsWithoutSpeakerSegments() async throws {
+    let temp = try TemporaryDirectory("score")
+    defer { temp.remove() }
+    let transcript = SessionFixtures.transcript(SessionFixtures.alternatingSegments(track: "mic"))
+    let session = try await SessionFixtures.makeSession(in: temp.url, mode: .inPerson, transcript: transcript)
+    let empty = DiarizerOutput(segments: [], centroids: [:], windows: [], processingSeconds: 0)
+    try SessionFixtures.writeHeadRun(session: session, transcript: transcript, outputs: ["mic": empty])
+    let refusal = sessionScorerRefusal {
+        _ = try SessionScorer.score(session: session, otterTranscript: sessionScorerOtterText)
+    }
+    #expect(refusal?.invalid == false, "labels without segments were scored")
+}
+
+@Test(.timeLimit(.minutes(1)))
+func scoreRejectsReferenceAndLabelsThatDoNotOverlap() async throws {
+    let temp = try TemporaryDirectory("score")
+    defer { temp.remove() }
+    let transcript = SessionFixtures.transcript(SessionFixtures.alternatingSegments(track: "mic"))
+    let session = try await SessionFixtures.makeSession(in: temp.url, mode: .inPerson, transcript: transcript)
+    // Holos hears one speaker in 0–5 s; Otter's only turn runs 10–20 s.
+    try SessionFixtures.writeHeadRun(
+        session: session, transcript: transcript,
+        outputs: ["mic": FakeDiarizer.alternating(speakers: ["S1"], turnSeconds: 5, duration: 5)])
+    let refusal = sessionScorerRefusal {
+        _ = try SessionScorer.score(session: session, otterTranscript: "Maria Chen  0:10\nHello.\n")
+    }
+    #expect(refusal?.invalid == true, "disjoint reference and labels were scored")
+    #expect(refusal?.message.contains("overlap") == true)
+}
+
+@Test(.timeLimit(.minutes(1)))
+func scoreRejectsACollarThatCoversEveryTurn() async throws {
+    let temp = try TemporaryDirectory("score")
+    defer { temp.remove() }
+    let session = try await sessionScorerSession(in: temp.url)
+    // The fixture's Otter turns are 5 s long; a 3 s collar around each boundary leaves nothing to score.
+    let refusal = sessionScorerRefusal {
+        _ = try SessionScorer.score(session: session, otterTranscript: sessionScorerOtterText, collar: 3)
+    }
+    #expect(refusal?.invalid == true, "a transcript with every turn inside the collar was scored")
+    #expect(refusal?.message.contains("collar") == true)
+}
+
+@Test(.timeLimit(.minutes(1)))
+func scoreReportsTurnAgreementAsNotComparableWithoutLabelledTurns() async throws {
+    let temp = try TemporaryDirectory("score")
+    defer { temp.remove() }
+    // No words, so the run has speaker segments but no labelled turns.
+    let transcript = SessionFixtures.transcript([])
+    let session = try await SessionFixtures.makeSession(in: temp.url, mode: .inPerson, transcript: transcript)
+    try SessionFixtures.writeHeadRun(session: session, transcript: transcript,
+                                     outputs: ["mic": SessionFixtures.alternatingOutput()])
+    let report = try SessionScorer.score(session: session, otterTranscript: sessionScorerOtterText)
+    #expect(report.agreementConfusion == 0)
+    #expect(report.comparedSeconds > 15)
+    #expect(report.turnAgreementConfusion == nil)
+    #expect(report.turnComparedSeconds == 0)
+    #expect(report.summaryLines.contains { $0.hasSuffix("labelled turns: not comparable (no labelled turn overlaps Otter's turns)") })
+
+    let encoder = JSONEncoder()
+    encoder.outputFormatting = [.sortedKeys]
+    let json = String(decoding: try encoder.encode(report), as: UTF8.self)
+    #expect(!json.contains("turnAgreementConfusion"))
+    let decoded = try JSONDecoder().decode(SessionScorer.Report.self, from: Data(json.utf8))
+    #expect(decoded == report)
+}
