@@ -830,10 +830,87 @@ func recoverRebuildsAProcessingSessionWithoutATranscript() async throws {
     #expect(try SessionArchive.currentTranscriptID(at: session) == report.transcriptID, "The transcript is current.")
     #expect(try SessionArchive.readManifest(at: session).status == ArchiveStatus.interrupted)
     #expect(try !SessionArchive.isActive(at: session), "The writer lock is let go.")
-    // Nothing recorded the rebuild, so the next one is done again.
+    #expect(try rebuilderEvents(session, MeetingEventKind.transcriptRebuilt).isEmpty)
+    #expect(try rebuilderEvents(session, MeetingEventKind.transcriptRebuilding).last?.details["transcriptID"]
+        == report.transcriptID, "The rebuild said which transcript it saves before saving it.")
+    // The next rebuild finishes recording this one instead of rebuilding it again.
     let again = try await rebuilderRun(session)
-    #expect(!again.reused && again.recordingError == nil)
+    #expect(again.reused && again.recordingError == nil)
+    #expect(again.transcriptID == report.transcriptID)
+    #expect(again.journalSegments == 1)
     #expect(try SessionArchive.readManifest(at: session).status == ArchiveStatus.recovered)
+    #expect(try rebuilderRevisions(session).count == 1, "No second transcript.")
+    let recorded = try rebuilderEvents(session, MeetingEventKind.transcriptRebuilt)
+    #expect(recorded.count == 1 && recorded.last?.details["transcriptID"] == report.transcriptID)
+    // Recorded now: a third rebuild changes nothing.
+    let files = SessionFixtures.files(in: session).filter { !$0.key.hasPrefix(".") && $0.key != "status.json" }
+    #expect(try await rebuilderRun(session).reused)
+    #expect(SessionFixtures.files(in: session).filter { !$0.key.hasPrefix(".") && $0.key != "status.json" } == files)
+}
+
+/// Recovers `session` under a lease, then rebuilds its transcript with the session folder read-only, so the rebuilt
+/// transcript becomes current but its status and `transcriptRebuilt` cannot be recorded. Returns the rebuild.
+private func rebuilderUnrecordedRebuild(_ session: URL) async throws -> RebuildReport {
+    let lease = try SessionArchive.acquireProcessingLease(at: session)
+    defer { lease.release() }
+    _ = try await SessionArchive.recover(at: session, lease: lease)
+    #expect(chmod(session.path, 0o500) == 0)
+    defer { chmod(session.path, 0o700) }
+    return try await TranscriptRebuilder.rebuild(session: session, lease: lease, transcribe: false)
+}
+
+@Test(.timeLimit(.minutes(1)))
+func recoverFinishesRecordingARebuildOfAProcessingSession() async throws {
+    let temp = try TemporaryDirectory("rebuild")
+    defer { temp.remove() }
+    // The recorder stopped capturing and died before saving a transcript; the rebuild could not be recorded.
+    let (session, _) = try await rebuilderDiedWhileProcessing(in: temp.url, saveAll: false)
+    let first = try await rebuilderUnrecordedRebuild(session)
+    #expect(first.recordingError != nil)
+    #expect(try SessionArchive.currentTranscriptID(at: session) == first.transcriptID)
+    #expect(try SessionArchive.readManifest(at: session).status == ArchiveStatus.interrupted)
+
+    // The rebuilt transcript is not taken for one the recorder saved at stop: recover finishes recording it.
+    let request = SessionRecoveryCommand.Request(session: session, transcribe: false, postProcess: false)
+    let outcome = try await SessionRecoveryCommand.run(request, diarizer: nil)
+    #expect(outcome.exitCode == 0)
+    #expect(outcome.warnings.isEmpty)
+    #expect(outcome.rebuild?.reused == true)
+    #expect(outcome.rebuild?.transcriptID == first.transcriptID)
+    #expect(outcome.rebuild?.recordingError == nil)
+    #expect(outcome.status == ArchiveStatus.recovered)
+    #expect(try SessionArchive.readManifest(at: session).status == ArchiveStatus.recovered)
+    #expect(try rebuilderRevisions(session).count == 1)
+    #expect(try rebuilderEvents(session, MeetingEventKind.transcriptRebuilt).map { $0.details["transcriptID"] }
+        == [first.transcriptID])
+
+    // Recorded now: recover again changes nothing.
+    let files = SessionFixtures.files(in: session).filter { !$0.key.hasPrefix(".") && $0.key != "status.json" }
+    let again = try await SessionRecoveryCommand.run(request, diarizer: nil)
+    #expect(again.rebuild?.reused == true && again.status == ArchiveStatus.recovered)
+    #expect(SessionFixtures.files(in: session).filter { !$0.key.hasPrefix(".") && $0.key != "status.json" } == files)
+}
+
+@Test(.timeLimit(.minutes(1)))
+func recoverStillKeepsTheRecorderTranscriptAfterAnUnrecordedRebuildElsewhere() async throws {
+    let temp = try TemporaryDirectory("rebuild")
+    defer { temp.remove() }
+    // A rebuild event that names another transcript does not make the recorder's transcript a rebuild.
+    let (session, saved) = try await rebuilderDiedWhileProcessing(in: temp.url)
+    let savedID = try #require(saved?.id)
+    let lease = try SessionArchive.acquireProcessingLease(at: session)
+    _ = try await SessionArchive.recover(at: session, lease: lease)
+    let archive = try SessionArchive.openForMaintenance(at: session, lease: lease)
+    try await archive.recordEvent(kind: MeetingEventKind.transcriptRebuilding,
+                                  details: ["transcriptID": UUID().uuidString, "journalSegments": "2"])
+    await archive.releaseLock()
+    lease.release()
+
+    let outcome = try await SessionRecoveryCommand.run(
+        SessionRecoveryCommand.Request(session: session, transcribe: false, postProcess: false), diarizer: nil)
+    #expect(outcome.rebuild == nil, "The transcript saved at stop is kept.")
+    #expect(try SessionArchive.currentTranscriptID(at: session) == savedID)
+    #expect(outcome.status == ArchiveStatus.interrupted)
 }
 
 @Test(.timeLimit(.minutes(1)))
@@ -992,6 +1069,80 @@ func recoverRefusesANewerPostProcessingRecord(force: Bool) async throws {
     #expect(try Data(contentsOf: SessionPaths.postprocess(session)) == newer, "postprocess.json is never overwritten.")
     #expect(try Data(contentsOf: SessionPaths.head(session)) == head)
     #expect(try !SessionArchive.isProcessing(at: session), "The lease is released.")
+}
+
+@Test(.timeLimit(.minutes(1)), arguments: ["head", "run"], ["absent", "failed", "damaged", "noModels"])
+func recoverRefusesNewerSpeakerFilesBeforePostProcessing(file: String, record: String) async throws {
+    let temp = try TemporaryDirectory("rebuild")
+    defer { temp.remove() }
+    let session = try await rebuilderDeadMeeting(in: temp.url)
+    let first = try await SessionRecoveryCommand.run(
+        SessionRecoveryCommand.Request(session: session), diarizer: rebuilderDiarizer(),
+        makeSpeech: FakeSpeechFactory().factory, freeSpace: FixedFreeSpace(.max))
+    let runID = try #require(first.postProcessing?.runID)
+    let transcriptID = try #require(first.rebuild?.transcriptID)
+
+    // postprocess.json does not say the labels are current, so post-processing would run.
+    let postprocess = SessionPaths.postprocess(session)
+    let sessionID = try SessionArchive.readManifest(at: session).id
+    switch record {
+    case "absent":
+        try FileManager.default.removeItem(at: postprocess)
+    case "failed":
+        try AtomicFile.writeJSON(PostProcessingRecord(sessionID: sessionID, state: .failed, transcriptID: transcriptID,
+                                                      pid: 1, startedAt: Date(), updatedAt: Date()), to: postprocess)
+    case "damaged":
+        try rebuilderReplace(postprocess, with: Data("not json".utf8))
+    default:
+        // Speaker models were missing then, and a diarizer is given now.
+        try AtomicFile.writeJSON(PostProcessingRecord(sessionID: sessionID, state: .succeeded,
+                                                      transcriptID: transcriptID, pid: 1, startedAt: Date(),
+                                                      updatedAt: Date()), to: postprocess)
+    }
+    let recordBytes = try? Data(contentsOf: postprocess)
+    let url = file == "head" ? SessionPaths.head(session) : SessionPaths.run(runID, in: session)
+    let newer = try rebuilderMakeNewer(url)
+    #expect(SessionCatalog.summary(session: session).speakerState == .unreadable,
+            "The catalog calls the \(file) unreadable too.")
+
+    let steps = SharedValue<[SessionRecoveryCommand.Step]>([])
+    let error = await #expect(throws: HolosError.self) {
+        try await SessionRecoveryCommand.run(
+            SessionRecoveryCommand.Request(session: session), diarizer: rebuilderDiarizer(),
+            makeSpeech: FakeSpeechFactory().factory, freeSpace: FixedFreeSpace(.max),
+            step: { step in steps.update { $0.append(step) } })
+    }
+    #expect(isHolosError(error, "unavailable"), "A newer \(file) with a \(record) record is refused.")
+    #expect(error?.localizedDescription.contains("newer Holos") == true)
+    #expect(!steps.value.contains(.postProcessed), "Post-processing never started.")
+    #expect((try? Data(contentsOf: postprocess)) == recordBytes, "postprocess.json is not rewritten.")
+    #expect(try Data(contentsOf: url) == newer, "The newer \(file) is not replaced.")
+    #expect(try !SessionArchive.isProcessing(at: session), "The lease is released.")
+}
+
+@Test(.timeLimit(.minutes(1)))
+func recoverAndCatalogAgreeWhenTheHeadIsMissing() async throws {
+    let temp = try TemporaryDirectory("rebuild")
+    defer { temp.remove() }
+    let session = try await rebuilderDeadMeeting(in: temp.url)
+    let request = SessionRecoveryCommand.Request(session: session)
+    let first = try await SessionRecoveryCommand.run(request, diarizer: rebuilderDiarizer(),
+                                                     makeSpeech: FakeSpeechFactory().factory,
+                                                     freeSpace: FixedFreeSpace(.max))
+    let transcriptID = try #require(first.rebuild?.transcriptID)
+    #expect(SessionCatalog.summary(session: session).speakerState == .labelled)
+    try FileManager.default.removeItem(at: SessionPaths.head(session))
+
+    // postprocess.json still names a run: the catalog calls the labels unreadable, and recover labels again.
+    let summary = SessionCatalog.summary(session: session)
+    #expect(summary.speakerState == .unreadable)
+    #expect(summary.labelMessage?.contains("speakers/head.json is missing") == true)
+    #expect(try SessionRecoveryCommand.currentLabels(session, transcriptID: transcriptID, canLabel: true) == nil)
+    let again = try await SessionRecoveryCommand.run(request, diarizer: rebuilderDiarizer(),
+                                                     makeSpeech: FakeSpeechFactory().factory,
+                                                     freeSpace: FixedFreeSpace(.max))
+    #expect(again.postProcessing?.state == .succeeded)
+    #expect(SessionCatalog.summary(session: session).speakerState == .labelled)
 }
 
 @Test(.timeLimit(.minutes(1)))

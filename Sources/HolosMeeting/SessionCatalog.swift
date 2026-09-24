@@ -189,32 +189,20 @@ public enum SessionCatalog {
         }
     }
 
-    /// The speaker state from postprocess.json, speakers/head.json and the run the head names (`speakerState`). When
-    /// any of them exists but cannot be read (damaged, written by a newer Holos, an I/O error), or the head names a run
-    /// that is missing, the state is `unreadable` with why, never the state of a session without that file; the run is
-    /// the other file's, if it can be read.
+    /// The speaker state from postprocess.json, speakers/head.json and the run the head names (`speakerState`), as
+    /// `SavedSpeakerState` validates them (recovery validates them the same way). When any of them exists but cannot
+    /// be read (damaged, written by a newer Holos, an I/O error), the head names a run that is missing, or the record
+    /// names a run while the head is missing, the state is `unreadable` with why, never the state of a session without
+    /// that file; the run is the head's, else the record's.
     static func speakerLabels(_ session: URL, liveness: RecorderLiveness)
         -> (state: SpeakerLabelState, message: String?, runID: String?) {
-        var problems: [String] = []
-        var record: PostProcessingRecord?
-        var head: SpeakerHead?
-        do { record = try SessionFiles.postProcessingRecord(session: session) } catch {
-            problems.append(error.localizedDescription)
+        let saved = SavedSpeakerState.read(session: session)
+        guard saved.problems.isEmpty else {
+            let message = saved.problems.map(\.localizedDescription).joined(separator: " ")
+            log.error("Cannot read the speaker state: \(message, privacy: .private)")
+            return (.unreadable, message, saved.head?.runID ?? saved.record?.runID)
         }
-        do { head = try SessionSpeakerStore.readHead(session: session) } catch {
-            problems.append(error.localizedDescription)
-        }
-        // The head names a run; labels load from that run, so a missing, damaged or newer run is unreadable too.
-        if let head {
-            do { _ = try SessionSpeakerStore.readRun(id: head.runID, session: session) } catch {
-                problems.append("The labels' speaker run cannot be read: \(error.localizedDescription)")
-            }
-        }
-        guard problems.isEmpty else {
-            log.error("Cannot read the speaker state: \(problems.joined(separator: " "), privacy: .private)")
-            return (.unreadable, problems.joined(separator: " "), head?.runID ?? record?.runID)
-        }
-        return speakerState(record: record, headRunID: head?.runID, liveness: liveness)
+        return speakerState(record: saved.record, headRunID: saved.head?.runID, liveness: liveness)
     }
 
     /// Whether the speaker edit journal holds any edit, including lines this build cannot read and a partial last

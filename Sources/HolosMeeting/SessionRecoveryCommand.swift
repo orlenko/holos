@@ -74,12 +74,17 @@ public enum SessionRecoveryCommand {
     /// A saved transcript is kept only while it can be read (`SessionFiles.readableCurrentTranscriptID`): a pointer or
     /// revision that is missing, damaged, or holds another ID counts as none (a rebuild adds a revision and deletes
     /// none). One written by a newer Holos throws `unavailable`.
-    static func rebuilds(status: String, stoppedCapturing: Bool = false, session: URL) throws -> Bool {
+    ///
+    /// Only a transcript the recorder saved is kept: one a rebuild saved (a rebuild event in `events` names it) whose
+    /// status or `transcriptRebuilt` could not be recorded goes to the rebuild again, which finishes recording it.
+    static func rebuilds(status: String, stoppedCapturing: Bool = false, events: [ArchiveEvent] = [],
+                         session: URL) throws -> Bool {
         let keepsSavedTranscript = rebuiltWithoutTranscriptStatuses.contains(status)
             || (status == ArchiveStatus.interrupted && stoppedCapturing)
         if !keepsSavedTranscript, rebuiltStatuses.contains(status) { return true }
         guard keepsSavedTranscript else { return false }
-        return try SessionFiles.readableCurrentTranscriptID(session: session) == nil
+        guard let current = try SessionFiles.readableCurrentTranscriptID(session: session) else { return true }
+        return TranscriptRebuilder.rebuildSaved(current, events: events)
     }
 
     /// `error` from a step after the archive was recovered, saying so. A refusal (`unavailable`, such as a file
@@ -150,7 +155,8 @@ public enum SessionRecoveryCommand {
         let rebuildsTranscript: Bool
         do {
             rebuildsTranscript = try request.force
-                || rebuilds(status: status, stoppedCapturing: stoppedCapturing, session: session)
+                || rebuilds(status: status, stoppedCapturing: stoppedCapturing, events: recovery.events,
+                            session: session)
         } catch {
             throw afterRecovery("its transcript cannot be read", error)
         }
@@ -292,18 +298,23 @@ public enum SessionRecoveryCommand {
     /// false). Anything else (no record, a run that was interrupted or failed, labels possible now) gives nil:
     /// post-processing runs again.
     ///
-    /// A damaged postprocess.json, head, run, or transcript gives nil (post-processing replaces it). One written by a
-    /// newer Holos throws `unavailable` (schema rule 3, §1.6), and a file that cannot be read now throws too.
+    /// postprocess.json, the head, and the head's run are validated first, whatever the record says
+    /// (`SavedSpeakerState`, as the catalog validates them), so post-processing never starts over a file it must not
+    /// replace: one written by a newer Holos throws `unavailable` (schema rule 3, §1.6), and one that cannot be read
+    /// now throws too. A damaged or missing postprocess.json, head, run, or transcript gives nil (post-processing
+    /// replaces it).
     static func currentLabels(_ session: URL, transcriptID: String, canLabel: Bool) throws -> PostProcessingRecord? {
-        let found: PostProcessingRecord?
-        do {
-            found = try SessionFiles.postProcessingRecord(session: session)
-        } catch let error where SessionFiles.isDamage(error) {
-            log.error("postprocess.json is unusable and will be replaced: \(error.localizedDescription, privacy: .private)")
+        let saved = SavedSpeakerState.read(session: session)
+        if let refusal = saved.refusal { throw refusal }
+        if !saved.problems.isEmpty {
+            let message = saved.problems.map(\.localizedDescription).joined(separator: " ")
+            log.error("Speaker files are unusable and will be replaced: \(message, privacy: .private)")
+        }
+        guard let record = saved.record, record.state == .succeeded, record.transcriptID == transcriptID else {
             return nil
         }
-        guard let record = found, record.state == .succeeded, record.transcriptID == transcriptID else { return nil }
         guard record.runID != nil else { return canLabel ? nil : record }
+        guard saved.problems.isEmpty, saved.headRun != nil else { return nil }
         do {
             let transcript = try SessionFiles.transcript(id: transcriptID, session: session)
             guard let head = try SpeakerAnalysis.headState(session: session, transcript: transcript),

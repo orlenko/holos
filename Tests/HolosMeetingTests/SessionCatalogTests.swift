@@ -299,6 +299,17 @@ func catalogReportsUnreadableSpeakerFilesAndTranscripts() async throws {
     try catalogReplace(runURL, with: savedRun)
     #expect(SessionCatalog.summary(session: session).speakerState == .labelled)
 
+    // postprocess.json names a run, but the head the labels load through is missing: unreadable, never "labelled".
+    let headURL = SessionPaths.head(session)
+    let savedHead = try Data(contentsOf: headURL)
+    try FileManager.default.removeItem(at: headURL)
+    let headless = SessionCatalog.summary(session: session)
+    #expect(headless.speakerState == .unreadable)
+    #expect(headless.labelMessage?.contains("speakers/head.json is missing") == true)
+    #expect(headless.runID == run.id)
+    try catalogReplace(headURL, with: savedHead)
+    #expect(SessionCatalog.summary(session: session).speakerState == .labelled)
+
     // The current revision is read: truncated, mislabelled, or newer is not listed as the transcript.
     let revision = SessionPaths.transcript(transcript.id, in: session)
     let saved = try Data(contentsOf: revision)

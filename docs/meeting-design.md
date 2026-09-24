@@ -5029,10 +5029,15 @@ public enum SessionDeletion {
 4. If `transcribe`: `TrackReplayer.replay(from: max(0, coverageEnd − 2))` with the
    session vocabulary; `TranscriptCoverage.merge` keeps journal words before coverage and
    replayed words from it on, cutting segments at word boundaries.
-5. Sort by `(start, track)`; `openForMaintenance(at:lease:)`;
-   `saveTranscript(_:writeLegacyExports: false)` (pointer updated); append
-   `transcriptRebuilt {transcriptID, journalSegments, replayedSeconds}`; set status
-   `recovered`; `finish`.
+5. Sort by `(start, track)`; `openForMaintenance(at:lease:)`; append
+   `transcriptRebuilding` with the details `transcriptRebuilt` will have (so a transcript
+   a rebuild made current is never taken for one the recorder saved at stop);
+   `saveTranscript(_:writeLegacyExports: false)` (pointer updated); set status
+   `recovered`; append `transcriptRebuilt {transcriptID, journalSegments,
+   replayedSeconds}`; `finish`. A failure after the save is reported, not thrown; the next
+   rebuild (and recover, even for a session that keeps its saved transcript) finds the
+   `transcriptRebuilding` naming the current transcript and finishes writing the missing
+   status and event instead of rebuilding again.
 6. Idempotence by sequence numbers, not dates: if a `transcriptRebuilt` event exists with
    a higher `sequence` than the last `archiveRecovered` event, its `transcriptID` is the
    current pointer, that revision decodes and holds its own ID, and `!force`, return it
@@ -5046,9 +5051,12 @@ public enum SessionDeletion {
 Speaker state: `postprocess.json` `running` with liveness `processing` or `maintenance`
 → `running`; `running` otherwise → `interrupted`; `failed` → `failed`; a finished record
 with a run → `labelled`; a finished record without a run → `notLabelled` with the record's
-message; no record → `none`. A postprocess.json or speakers/head.json that exists but
-cannot be read (damaged, written by a newer Holos, I/O) → `unreadable` with why, never
-the state of a session without it.
+message; no record → `none`. A postprocess.json, speakers/head.json, or head run that
+exists but cannot be read (damaged, written by a newer Holos, I/O), a head whose run is
+missing, or a record that names a run while the head is missing → `unreadable` with why,
+never the state of a session without it. `recover` validates the same files the same way
+(one shared reader) before it decides to post-process, and refuses (`unavailable`) when
+one was written by a newer Holos.
 
 **CLI.**
 
