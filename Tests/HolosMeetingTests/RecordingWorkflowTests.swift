@@ -77,7 +77,7 @@ func recordOnlySavesAudioAndFinishesAudioOnly() async throws {
     let outcome = try await record(.testing(root: temp.url, recordOnly: true), captures: captures, speech: speech,
                                    stopAfterConsuming: 3)
     #expect(outcome.archiveStatus == ArchiveStatus.audioOnly)
-    #expect(outcome.stopReason == .signal)
+    #expect(outcome.stopReason == .requested, "A ManualStopSource stop is a stop request, not a signal.")
     #expect(outcome.transcriptID == nil)
     #expect(outcome.transcriptErrors.isEmpty)
     #expect(outcome.postProcessing == nil)
@@ -319,6 +319,93 @@ func postProcessHookRunsUnderLeaseAfterFinish() async throws {
     #expect(try !SessionArchive.isProcessing(at: outcome.directory), "The lease is released afterwards.")
 }
 
+/// §4.6 steps 5–6: the lease is taken before `archive.finish`, so from the stop until the hook runs the session
+/// always holds the writer lock or the processing lease.
+@Test(.timeLimit(.minutes(1))) @MainActor
+func leaseHandOffLeavesNoUnlockedGap() async throws {
+    let temp = try TemporaryDirectory()
+    defer { temp.remove() }
+    let hookStarted = SharedValue(false)
+    let probeDone = SharedValue(false)
+    let hook: PostProcessHook = { session, _, _ in
+        hookStarted.set(true)
+        // Hold the lease until the probe has stopped, so no sample can see its release.
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: .seconds(5))
+        while !probeDone.value, clock.now < deadline { try? await Task.sleep(for: .milliseconds(1)) }
+        return fakeRecord(session)
+    }
+    let captures = threeMicFrames()
+    let stop = ManualStopSource()
+    let run = Task {
+        try await RecordingWorkflow.run(.testing(root: temp.url, recordOnly: true),
+                                        dependencies: .testing(captures: captures, postProcess: hook, stop: stop))
+    }
+    #expect(await eventually { (captures.captures.first?.consumedFrames ?? 0) >= 3 })
+    let directory = try #require(sessionFolders(in: temp.url).first)
+    let probe = Task.detached { () -> (samples: Int, unlocked: Int) in
+        var samples = 0
+        var unlocked = 0
+        while !hookStarted.value {
+            // Writer lock first: once it is gone, the lease must already be held.
+            let locked = ((try? SessionArchive.isActive(at: directory)) ?? true)
+                || ((try? SessionArchive.isProcessing(at: directory)) ?? true)
+            samples += 1
+            if !locked { unlocked += 1 }
+        }
+        probeDone.set(true)
+        return (samples, unlocked)
+    }
+    stop.requestStop()
+    let outcome = try await run.value
+    let result = await probe.value
+    #expect(result.samples > 0)
+    #expect(result.unlocked == 0, "The session was left without any lock between stop and the hook.")
+    #expect(outcome.postProcessing == fakeRecord(outcome.directory))
+    #expect(try !SessionArchive.isProcessing(at: outcome.directory))
+}
+
+@Test(.timeLimit(.minutes(1))) @MainActor
+func cancellingTheRunKeepsAudioAndRethrowsCancellation() async throws {
+    for recordOnly in [false, true] {
+        let temp = try TemporaryDirectory()
+        defer { temp.remove() }
+        let hookCalls = SharedValue(0)
+        let hook: PostProcessHook = { session, _, _ in
+            hookCalls.update { $0 += 1 }
+            return fakeRecord(session)
+        }
+        let captures = threeMicFrames()
+        let run = Task {
+            try await RecordingWorkflow.run(.testing(root: temp.url, recordOnly: recordOnly),
+                                            dependencies: .testing(captures: captures, postProcess: hook))
+        }
+        #expect(await eventually { (captures.captures.first?.consumedFrames ?? 0) >= 3 })
+        run.cancel()
+        do {
+            _ = try await run.value
+            Issue.record("A cancelled recording must throw.")
+        } catch is CancellationError {
+        } catch {
+            Issue.record("Expected CancellationError, got \(error).")
+        }
+        let directory = try #require(sessionFolders(in: temp.url).first)
+        let manifest = try SessionArchive.readManifest(at: directory)
+        #expect(manifest.status == (recordOnly ? ArchiveStatus.audioOnly : ArchiveStatus.transcriptionIncomplete))
+        #expect(manifest.chunks.count == 1, "All captured audio is saved.")
+        #expect(manifest.chunks.first?.frameCount == 14_400)
+        let events = try SessionArchive.readEvents(at: directory).events
+        #expect(!events.contains { $0.kind == MeetingEventKind.captureFailed })
+        #expect(events.first { $0.kind == MeetingEventKind.captureStopped }?.details["cancelled"] == "true")
+        #expect(try SessionArchive.currentTranscriptID(at: directory) == nil, "No partial transcript is published.")
+        #expect(hookCalls.value == 0)
+        #expect(captures.captures.first?.stopCalls == 1)
+        #expect(try !SessionArchive.isActive(at: directory))
+        #expect(try !SessionArchive.isProcessing(at: directory))
+        #expect(!FileManager.default.fileExists(atPath: directory.appendingPathComponent("control.json").path))
+    }
+}
+
 @Test(.timeLimit(.minutes(1))) @MainActor
 func noHookMeansNoLease() async throws {
     let temp = try TemporaryDirectory()
@@ -515,6 +602,13 @@ func postProcessorRefusesWhenItCannotStart() async throws {
     defer { foreign.release() }
     await #expect(throws: HolosError.self) {
         try await MeetingPostProcessor().run(session: recording.directory, lease: foreign)
+    }
+
+    // A lease that was already released.
+    let released = try SessionArchive.acquireProcessingLease(at: recording.directory)
+    released.release()
+    await #expect(throws: HolosError.self) {
+        try await MeetingPostProcessor().run(session: recording.directory, lease: released)
     }
 
     // The lease is held elsewhere (acquisition retries for 1 s, then gives up).

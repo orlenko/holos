@@ -21,6 +21,8 @@ public enum TrackReplayer {
         let session = try await (makeSpeech ?? appleSpeechFactory)(locale, backend, contextualStrings) { _ in }
         do {
             for chunk in chunks {
+                // TODO(PR2a): open chunks through HolosStorage (ChunkFile on main) instead of by path, so a
+                // symlink in place of `audio/<track>` is never followed (meeting-design §1.7).
                 let file = try AVAudioFile(forReading: directory.appendingPathComponent(chunk.relativePath))
                 let sampleRate = file.processingFormat.sampleRate
                 var offset: AVAudioFramePosition = 0

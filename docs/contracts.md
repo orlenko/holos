@@ -31,7 +31,7 @@ ownership and the supported insertion-app matrix remain acceptance gates.
 | `HolosContent` | Input extraction and document chunking | Speech or language-model generation |
 | `HolosSpeakers` | Pure speaker algorithms over values: word-to-speaker alignment, run building, edit projection and label carry-over, transcript exporters, reference parsing and scoring | File IO, diarization engines, inferring personal names from text |
 | `HolosDiarization` | The FluidAudio adapter behind `SpeakerDiarizer`, speaker-model install and verification (planned) | Being linked by the app: only `HolosCLI` links it |
-| `HolosMeeting` | Meeting recording lifecycle and cancellation: capture and speech seams, stop sources, replay of saved audio, the post-processing hand-off; later the recorder state machine, control inbox, status, and the app's meeting controllers | AppKit views, FluidAudio, paths and locks inside a session folder |
+| `HolosMeeting` | Meeting recording lifecycle and cancellation: capture and speech seams, stop sources, replay of saved audio, the post-processing hand-off; later the recorder state machine, control inbox, status, and the app's meeting controllers | AppKit views, FluidAudio, paths and locks inside a session folder (for now it still writes the legacy `control.json` and reads `stop.request`, which PR2a removes, and replay opens chunk files by path until it reads them through HolosStorage) |
 | `HolosCLI`, `HolosApp` | Arguments, presentation, app/focus integration | A second copy of workflow business logic |
 
 The app's hotkey/focus adapters can stay in app-owned files. They do not warrant

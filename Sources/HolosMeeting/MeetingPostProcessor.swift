@@ -62,10 +62,18 @@ public struct MeetingPostProcessor: Sendable {
         if try SessionArchive.isActive(at: session) {
             throw HolosError.unavailable("This meeting is still recording. Stop it before labelling speakers.")
         }
+        // PR1 checks a caller's lease only as far as HolosStorage's public API allows: its folder must be this
+        // session's (no symlinks), and some holder must have the lock (a released lease with no other holder
+        // is refused). PR7b must do its lease-bound work through HolosStorage entry points that validate the
+        // lease themselves (`ProcessingLease.beginUse(for:)` on main: openForMaintenance(at:lease:),
+        // recover(at:lease:)), and then drop this local check.
         let owned: ProcessingLease?
         if let lease {
             guard Self.sameFolder(lease.session, session) else {
                 throw HolosError.invalidInput("The processing lease belongs to another session.")
+            }
+            guard try SessionArchive.isProcessing(at: session) else {
+                throw HolosError.invalidInput("The processing lease was already released; acquire a new one.")
             }
             owned = nil
         } else {
@@ -78,11 +86,13 @@ public struct MeetingPostProcessor: Sendable {
                                     updatedAt: Date(), message: Self.notAvailableMessage)
     }
 
-    /// Whether two URLs name the same folder (same device and inode), whatever their spelling.
+    /// Whether two URLs name the same real folder (same device and inode). A symlink in place of either folder
+    /// never matches (`lstat`).
     private static func sameFolder(_ first: URL, _ second: URL) -> Bool {
         var a = stat()
         var b = stat()
-        guard first.isFileURL, second.isFileURL, stat(first.path, &a) == 0, stat(second.path, &b) == 0 else {
+        guard first.isFileURL, second.isFileURL, lstat(first.path, &a) == 0, lstat(second.path, &b) == 0,
+              (a.st_mode & S_IFMT) == S_IFDIR, (b.st_mode & S_IFMT) == S_IFDIR else {
             return false
         }
         return a.st_dev == b.st_dev && a.st_ino == b.st_ino

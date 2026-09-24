@@ -85,6 +85,9 @@ public enum RecordingWorkflow {
     /// finishes the archive, and runs the hook under the lease (§4.6 steps 5–8).
     /// Capture failure: marks the archive incomplete and throws `HolosError.incomplete` (as today).
     /// Transcription failure: does not throw; the outcome carries the errors.
+    /// Task cancellation: stops like a stop request, keeps the saved audio, finishes the archive without a
+    /// partial transcript (`transcriptionIncomplete`, or `audioOnly` for record-only), skips post-processing,
+    /// and rethrows `CancellationError`.
     @MainActor public static func run(_ options: RecordingOptions,
                                       dependencies: RecordingDependencies) async throws -> RecordingOutcome {
         let reporter = dependencies.reporter
@@ -143,6 +146,9 @@ public enum RecordingWorkflow {
         defer { try? FileManager.default.removeItem(at: controlURL) }
         let stopURL = archive.directory.appendingPathComponent("stop.request")
         var recordingError: Error?
+        // Cancelling the task that runs the workflow stops the recording like a stop request: the audio is
+        // saved, the archive is finished, and CancellationError is rethrown (§1.4).
+        var cancelled = false
         var stopReason = StopReason.requested
         do {
             let control = RecordingControl(schemaVersion: 1, sessionID: archive.id, pid: getpid(), startedAt: Date())
@@ -152,7 +158,7 @@ public enum RecordingWorkflow {
             let clock = ContinuousClock()
             let started = clock.now
             while true {
-                if stop.shouldStop { stopReason = .signal; break }
+                if stop.shouldStop { stopReason = stop is SignalStopController ? .signal : .requested; break }
                 if captureError.value != nil { stopReason = .captureFailed; break }
                 if FileManager.default.fileExists(atPath: stopURL.path) { stopReason = .requested; break }
                 if let duration = options.duration, seconds(started.duration(to: clock.now)) >= duration {
@@ -160,6 +166,8 @@ public enum RecordingWorkflow {
                 }
                 try await Task.sleep(for: pollInterval)
             }
+        } catch is CancellationError {
+            cancelled = true
         } catch { recordingError = error }
         do { try await capture.stop() } catch { recordingError = recordingError ?? error }
         do { try await consume.value } catch { recordingError = recordingError ?? error }
@@ -167,11 +175,13 @@ public enum RecordingWorkflow {
         // Even on failure, audio capture is stopped before recognition is cancelled.
         // Let another signal interrupt a framework that is slow to cancel.
         stop.restoreDefaultHandlers()
+        var savedAudio = false
         if recordingError == nil {
             do {
                 let saved = try SessionArchive.readManifest(at: archive.directory)
+                savedAudio = !saved.chunks.isEmpty
                 if saved.chunks.isEmpty {
-                    recordingError = HolosError.incomplete("No audio buffers were captured.")
+                    if !cancelled { recordingError = HolosError.incomplete("No audio buffers were captured.") }
                 } else {
                     for track in tracks where !saved.chunks.contains(where: { $0.track == track }) {
                         reporter.message("No \(track) audio buffers arrived; that source track is empty.")
@@ -184,7 +194,14 @@ public enum RecordingWorkflow {
             try? await archive.recordEvent(kind: MeetingEventKind.captureFailed, details: ["error": recordingError.localizedDescription])
             try? await archive.finish(status: ArchiveStatus.incomplete)
             log.error("Session \(archive.id, privacy: .public) stopped with a capture error; saved audio is kept")
+            if cancelled { throw CancellationError() }
             throw HolosError.incomplete("Recording stopped with an error: \(recordingError.localizedDescription). Saved audio: \(archive.directory.path)")
+        }
+        // Without transcription, the saved audio can be transcribed later (`holos session retranscribe`).
+        let untranscribed = options.recordOnly ? ArchiveStatus.audioOnly : ArchiveStatus.transcriptionIncomplete
+        if cancelled {
+            for feed in feeds.values { await feed.cancel() }
+            try await finishCancelled(archive, status: savedAudio ? untranscribed : ArchiveStatus.incomplete)
         }
         log.notice("Session \(archive.id, privacy: .public) stopped capture (\(stopReason.rawValue, privacy: .public))")
         try await archive.setStatus(ArchiveStatus.processing)
@@ -203,6 +220,8 @@ public enum RecordingWorkflow {
                 } catch { transcriptErrors.append("\(track): \(error.localizedDescription)") }
             }
         }
+        // Cancelled during transcription: keep the audio, publish no partial transcript.
+        if Task.isCancelled { try await finishCancelled(archive, status: untranscribed) }
         var transcriptID: String?
         if !options.recordOnly {
             segments.sort { $0.start == $1.start ? ($0.track ?? "") < ($1.track ?? "") : $0.start < $1.start }
@@ -215,6 +234,11 @@ public enum RecordingWorkflow {
                                       details: ["transcriptionErrors": transcriptErrors.joined(separator: "; ")])
         let status = options.recordOnly ? ArchiveStatus.audioOnly
             : (transcriptErrors.isEmpty ? ArchiveStatus.complete : ArchiveStatus.transcriptionIncomplete)
+
+        if Task.isCancelled {
+            try await archive.finish(status: status)
+            throw CancellationError()
+        }
 
         // §4.6 steps 5–8: the lease is taken while the writer lock is still held, so the session is never
         // without a lock between capture and post-processing.
@@ -244,14 +268,27 @@ public enum RecordingWorkflow {
         }
     }
 
+    /// Records the stop, finishes the archive with `status`, and rethrows the cancellation.
+    private static func finishCancelled(_ archive: SessionArchive, status: String) async throws -> Never {
+        try? await archive.recordEvent(kind: MeetingEventKind.captureStopped, details: ["cancelled": "true"])
+        try? await archive.finish(status: status)
+        log.notice("Session \(archive.id, privacy: .public) cancelled; archive finished as \(status, privacy: .public)")
+        throw CancellationError()
+    }
+
     /// Takes the processing lease (retry 1 s) off the main actor. On failure, post-processing is skipped.
     private static func acquireLease(_ directory: URL, sessionID: String,
                                      reporter: any RecordingReporter) async -> ProcessingLease? {
         do {
             return try await Task.detached { try SessionArchive.acquireProcessingLease(at: directory) }.value
-        } catch {
-            log.error("Session \(sessionID, privacy: .public): processing lease unavailable; post-processing skipped")
+        } catch HolosError.unavailable {
+            log.error("Session \(sessionID, privacy: .public): processing lease held elsewhere; post-processing skipped")
             reporter.message("Another Holos process is labelling this meeting.")
+            return nil
+        } catch {
+            let code = error as NSError
+            log.error("Session \(sessionID, privacy: .public): cannot take the processing lease (\(code.domain, privacy: .public) \(code.code, privacy: .public)): \(error.localizedDescription, privacy: .private); post-processing skipped")
+            reporter.message("Speaker labelling skipped: \(error.localizedDescription)")
             return nil
         }
     }

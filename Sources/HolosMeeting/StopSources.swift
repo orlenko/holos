@@ -1,8 +1,9 @@
 import Darwin
 import Dispatch
 
-/// Asks a running recording to stop. `RecordingWorkflow.run` polls `shouldStop` every 100 ms; a stop from this
-/// source ends the recording with `StopReason.signal` (a `stop.request` file gives `.requested`).
+/// Asks a running recording to stop. `RecordingWorkflow.run` polls `shouldStop` every 100 ms. A stop from a
+/// `SignalStopController` ends the recording with `StopReason.signal`; any other source (`ManualStopSource`)
+/// and a `stop.request` file give `.requested`.
 public protocol RecorderStopSource: Sendable {
     var shouldStop: Bool { get }
     /// Called once audio is durable, so a second signal ends processing immediately.
