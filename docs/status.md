@@ -83,8 +83,8 @@ meeting-recording storage foundations (atomic writes, failed and torn appends,
 locks and the processing lease, close-on-exec descriptors, the transcript pointer,
 speaker storage, and JSON round trips of the shared file formats), the recording
 lifecycle with fake capture and speech (audio-only and transcribed recordings, capture
-and start failures, stop by duration or `stop.request`, fallback replay, vocabulary,
-and the processing-lease hand-off), and the speaker algorithms (alignment, edit
+and start failures, stop by duration, `stop.request`, or task cancellation, fallback
+replay, vocabulary, and the processing-lease hand-off), and the speaker algorithms (alignment, edit
 projection, carry-over, exporters, scoring) on synthetic data; run them with
 `./scripts/test.sh`, which keeps `HOLOS_DATA_DIR` and `HOLOS_SUPPORT_DIR` in a
 temporary folder. The opt-in native fixture was exercised separately for both
