@@ -14,6 +14,10 @@ public struct EditJournal: Sendable, Equatable {
     public init(edits: [SpeakerEdit] = [], tornTail: Bool = false, unreadableLines: Int = 0) {
         self.edits = edits; self.tornTail = tornTail; self.unreadableLines = unreadableLines
     }
+
+    /// Every line was read: no torn tail and no unreadable line. A projection built from an incomplete journal may
+    /// miss a link, a rejection, or a reassignment, so nothing learns a voice or uses recognition from it.
+    public var isComplete: Bool { unreadableLines == 0 && !tornTail }
 }
 
 /// Speaker files inside a session folder (docs/meeting-design.md §2.1): immutable runs, the head pointer,

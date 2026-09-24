@@ -15,7 +15,8 @@ enum RecognizeStage {
     static let noVoices = "No saved voices to compare."
     static let nothingToCompare = "No labelled speaker to compare."
 
-    /// Test hook: while set (a task-local value), called after the comparison and before the result is saved.
+    /// Test hook: while set (a task-local value), called after the first read of the people and before the comparison
+    /// that is saved.
     @TaskLocal static var beforeSaving: (@Sendable () throws -> Void)? = nil
 
     enum Outcome: Equatable {
@@ -39,27 +40,28 @@ enum RecognizeStage {
         guard database.profiles.contains(where: { $0.recognitionEnabled && !$0.samples.isEmpty }) else {
             return .skipped(noVoices)
         }
-        guard var result = SpeakerRecognizer.recognize(run: run, voiceData: voiceData, database: database) else {
+        guard run.engine != nil, voiceData != nil else {
             return .skipped(nothingToCompare)
         }
+        let result: RecognitionResult
         do {
             try beforeSaving?()
-            // The people are read again under the speaker lock and only those the recognizer would still compare
-            // (`SpeakerRecognizer.profiles`) are kept: a person forgotten, whose suggestions were turned off, or whose
-            // samples changed model meanwhile is dropped here, and a forget that updates the store later cleans this
-            // file after the lock is released (it takes the speaker lock per meeting after its store update).
-            let written = try SessionArchive.withSpeakerLock(at: session) { () throws -> Bool in
+            // The comparison that is saved is made again under the speaker lock from the people as they are then
+            // (the recognizer is pure and cheap), never from the earlier read: a sample forgotten, refreshed, or
+            // learned, a person forgotten, suggestions turned off, a model change, or a new calibration meanwhile is
+            // reflected in what is written. A forget whose store update comes later cleans this file after the lock
+            // is released (it takes the speaker lock per meeting after its store update).
+            let written = try SessionArchive.withSpeakerLock(at: session) { () throws -> RecognitionResult? in
                 let current = try store.load()
-                guard current.rememberVoices else { return false }
-                let (eligible, skipped) = SpeakerRecognizer.profiles(current, model: result.embeddingModel)
-                let people = Set(eligible.map(\.id))
-                result.matches.removeAll { !people.contains($0.profileID) }
-                result.mergeSuggestions.removeAll { !people.contains($0.profileID) }
-                result.skippedProfiles = skipped
-                try SessionSpeakerStore.writeRecognition(result, session: session)
-                return true
+                guard current.rememberVoices,
+                      let fresh = SpeakerRecognizer.recognize(run: run, voiceData: voiceData, database: current) else {
+                    return nil
+                }
+                try SessionSpeakerStore.writeRecognition(fresh, session: session)
+                return fresh
             }
-            guard written else { return .skipped(rememberOff) }
+            guard let written else { return .skipped(rememberOff) }
+            result = written
         } catch {
             log.error("Cannot save the voice comparison: \(ProcessSpawner.logCategory(error), privacy: .public)")
             return .failed("Cannot save the voice comparison: \(error.localizedDescription)")

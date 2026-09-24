@@ -190,7 +190,7 @@ final class PeopleWindowController: NSObject, NSWindowDelegate, NSTableViewDataS
         Task { [weak self] in
             let loaded = await Task.detached { () -> (SpeakerProfileDatabase, [SpeakerProfile])? in
                 guard let database = try? store.load() else { return nil }
-                return (database, VoiceProfileService.knownPeople(store: store))
+                return (database, VoiceProfileService.sortedPeople(database.profiles))
             }.value
             guard let self else { return }
             guard let (database, people) = loaded else {

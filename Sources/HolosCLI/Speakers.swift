@@ -627,6 +627,10 @@ enum SpeakerCommand {
             Console.error("The last speaker change in this meeting was cut off while it was being saved and was "
                           + "skipped.")
         }
+        if !snapshot.journal.isComplete {
+            Console.error("Voice suggestions are not shown, and no voice is learned from this meeting, while a "
+                          + "speaker change can't be read.")
+        }
     }
 
     /// The applied lines of the view's newest batch, in journal order (what `undoLast` will revert).

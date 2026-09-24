@@ -159,6 +159,62 @@ func profileStoreIsPrivateLockedAndNotBackedUp() async throws {
     }
 }
 
+@Test func damagedCalibrationIsRefusedOnLoad() throws {
+    let root = try profileRoot()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let store = SpeakerProfileStore(directory: root.appendingPathComponent("Speakers"))
+    func thresholds(likely: Double = 0.2, margin: Double = 0.1, possible: Double = 0.4,
+                    minimum: Double = 20) -> RecognitionThresholds {
+        RecognitionThresholds(likelyMaxDistance: likely, likelyMinMargin: margin, possibleMaxDistance: possible,
+                              minSampleSeconds: minimum)
+    }
+    // Valid, including a threshold just below 0 (calibration's "admit nothing"), and thresholds saved without a
+    // model by an earlier build (loaded, never applied).
+    for valid in [thresholds(), thresholds(likely: -Double.ulpOfOne, possible: -Double.ulpOfOne / 2)] {
+        try store.update { $0.calibratedThresholds = valid; $0.calibratedModel = profileModel }
+        #expect(try store.load().isCalibrated)
+    }
+    try store.update { $0.calibratedModel = nil }
+    #expect(try !store.load().isCalibrated)
+
+    // Out of range (a distance of 2 would admit zero-norm vectors), likely above possible, a negative margin or
+    // minimum length, a margin over 2, and a model without thresholds.
+    let damaged: [(RecognitionThresholds?, EmbeddingModelID?)] = [
+        (thresholds(possible: 2), profileModel),
+        (thresholds(likely: -1.5), profileModel),
+        (thresholds(likely: 0.5, possible: 0.4), profileModel),
+        (thresholds(margin: -0.1), profileModel),
+        (thresholds(margin: 3), profileModel),
+        (thresholds(minimum: -1), profileModel),
+        (thresholds(likely: 1e300, possible: 1e300), profileModel),
+        (nil, profileModel),
+        (thresholds(), EmbeddingModelID(id: "", revision: "1")),
+    ]
+    for (value, model) in damaged {
+        let database = SpeakerProfileDatabase(rememberVoices: true, calibratedThresholds: value,
+                                              calibratedModel: model)
+        let data = try HolosJSON.encoder().encode(database)
+        try AtomicFile.write(data, to: store.databaseURL)
+        #expect(throws: HolosError.self) { try store.load() }
+        #expect(throws: HolosError.self) { try store.update { $0.rememberVoices = false } }
+        #expect(try Data(contentsOf: store.databaseURL) == data)
+    }
+    // Every non-finite value is refused by the same rule (JSON cannot carry one, but a decoder might).
+    for bad in [Double.nan, .infinity, -.infinity] {
+        #expect(thresholds(likely: bad).problem != nil)
+        #expect(thresholds(margin: bad).problem != nil)
+        #expect(thresholds(possible: bad).problem != nil)
+        #expect(thresholds(minimum: bad).problem != nil)
+    }
+    // A negative count of dropped turns is damage too.
+    var sample = profileSample()
+    sample.droppedOutlierTurns = -1
+    let negative = SpeakerProfileDatabase(profiles: [SpeakerProfile(displayName: "Jim", embeddingModel: profileModel,
+                                                                    samples: [sample])])
+    try AtomicFile.write(try HolosJSON.encoder().encode(negative), to: store.databaseURL)
+    #expect(throws: HolosError.self) { try store.load() }
+}
+
 @Test func newerStoreIsRefusedAndNeverOverwritten() throws {
     let root = try profileRoot()
     defer { try? FileManager.default.removeItem(at: root) }

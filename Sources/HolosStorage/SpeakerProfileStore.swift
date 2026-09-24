@@ -114,13 +114,24 @@ public struct SpeakerProfileStore: Sendable {
         }
     }
 
-    /// The rules every saved database meets: schema version 1; profile and sample IDs are valid tokens and unique;
-    /// names are not blank; at most one `isSelf` profile; at most one sample per session per profile; a profile
-    /// with samples names its embedding model, and its samples share one non-empty dimension with finite values and
-    /// finite, non-negative speech seconds. Throws `invalidInput` saying which rule failed.
+    /// The rules every saved database meets: schema version 1; calibrated thresholds pass
+    /// `RecognitionThresholds.problem` (finite, in range, `likely ≤ possible`, a margin of 0 … 2, a non-negative
+    /// minimum sample length), and a calibrated model comes only with thresholds and names its model; profile and
+    /// sample IDs are valid tokens and unique; names are not blank; at most one `isSelf` profile; at most one sample
+    /// per session per profile; a profile with samples names its embedding model, and its samples share one non-empty
+    /// dimension with finite values, finite, non-negative speech seconds, and a non-negative count of dropped turns.
+    /// Throws `invalidInput` saying which rule failed.
     public static func validate(_ database: SpeakerProfileDatabase) throws {
         guard database.schemaVersion == SpeakerProfileDatabase.currentSchemaVersion else {
             throw HolosError.invalidInput("The people store has schema version \(database.schemaVersion); this Holos writes version \(SpeakerProfileDatabase.currentSchemaVersion).")
+        }
+        if let thresholds = database.calibratedThresholds, let problem = thresholds.problem {
+            throw HolosError.invalidInput("The people store's calibrated thresholds are damaged: \(problem).")
+        }
+        if let model = database.calibratedModel {
+            guard database.calibratedThresholds != nil, Self.validModel(model) else {
+                throw HolosError.invalidInput("The people store's calibration is damaged.")
+            }
         }
         var profileIDs = Set<String>()
         var sampleIDs = Set<String>()
@@ -142,12 +153,12 @@ public struct SpeakerProfileStore: Sendable {
                 guard SessionArchive.validToken(sample.sessionID), sessions.insert(sample.sessionID).inserted else {
                     throw HolosError.invalidInput("A person can have only one voice sample per meeting.")
                 }
-                guard profile.embeddingModel != nil else {
+                guard let model = profile.embeddingModel, Self.validModel(model) else {
                     throw HolosError.invalidInput("A person with voice samples needs their embedding model.")
                 }
                 let values = sample.embedding.values
                 guard !values.isEmpty, values.allSatisfy(\.isFinite), dimension == nil || dimension == values.count,
-                      sample.speechSeconds.isFinite, sample.speechSeconds >= 0 else {
+                      sample.speechSeconds.isFinite, sample.speechSeconds >= 0, sample.droppedOutlierTurns >= 0 else {
                     throw HolosError.invalidInput("A voice sample is damaged.")
                 }
                 dimension = values.count
@@ -156,6 +167,12 @@ public struct SpeakerProfileStore: Sendable {
         guard selfCount <= 1 else {
             throw HolosError.invalidInput("Only one person can be marked as you.")
         }
+    }
+
+    /// An embedding model names its ID and revision.
+    private static func validModel(_ model: EmbeddingModelID) -> Bool {
+        !model.id.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && !model.revision.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     // MARK: - Forget journal

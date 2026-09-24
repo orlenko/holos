@@ -394,14 +394,15 @@ extension SpeakerProjection {
             self.profileNames = known
             var matches: [String: [SpeakerMatch]] = [:]
             var suggestions: [MergeSuggestion] = []
-            if let recognition, recognition.runID == run.id {
+            if var recognition, recognition.runID == run.id {
+                recognition.removeProfiles { known[$0] == nil }
                 for match in recognition.matches {
                     guard let name = known[match.profileID] else { continue }
                     var current = match
                     current.profileName = name
                     matches[match.speakerID, default: []].append(current)
                 }
-                suggestions = recognition.mergeSuggestions.filter { known[$0.profileID] != nil }
+                suggestions = recognition.mergeSuggestions
             }
             self.matches = matches
             self.mergeSuggestions = suggestions

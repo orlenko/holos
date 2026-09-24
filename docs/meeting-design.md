@@ -3267,8 +3267,11 @@ public struct SpeakerProfileDatabase: Codable, Sendable, Equatable {
     public var schemaVersion: Int                // 1
     /// Off by default. Governs voice samples, per-session voice data, and recognition. Never names.
     public var rememberVoices: Bool
-    /// Set by `holos people calibrate --apply`; `likely` exists only when this is set.
+    /// Set by `holos people calibrate --apply`; `likely` exists only when this is set, and only for runs of
+    /// `calibratedModel`.
     public var calibratedThresholds: RecognitionThresholds?
+    /// The embedding model the thresholds were measured on; set with them.
+    public var calibratedModel: EmbeddingModelID?
     public var profiles: [SpeakerProfile]
 }
 ```
@@ -3279,7 +3282,24 @@ public struct SpeakerProfileDatabase: Codable, Sendable, Equatable {
   empty database (`rememberVoices: false`) when the file is missing.
   `update(_ body: (inout SpeakerProfileDatabase) throws -> T)` takes `profiles.lock`
   (2 s), reads, mutates, validates (unique IDs, one sample per session per profile,
-  one `isSelf`), and writes atomically. Centroids are computed, never stored.
+  one `isSelf`, finite sample values, and calibrated thresholds that are finite, in
+  range, `likely ≤ possible`, with a margin of 0 … 2, a non-negative minimum length,
+  and a calibrated model only with thresholds), and writes atomically; `load()` applies
+  the same validation and refuses a damaged store. Centroids are computed, never stored.
+- **Snapshot, then write.** Every operation that computes from an unlocked read and then
+  writes either computes inside the locked update (merge, rename, suggestions, `calibrate
+  --apply`, the store step of every forget) or checks under the lock that its inputs are
+  unchanged and otherwise starts again: enrollment and refresh publish only when the
+  speaker generation is unchanged and the store still gives the same sample plan;
+  recognition compares again under the speaker lock with the people read then. The first
+  run of a forget removes every sample matching its scope at its store write (`.all`:
+  every sample; `.session`: every sample of the meeting; `.profile`: the person;
+  `.sample`: the sample).
+- **Incomplete edit journals.** When `edits.jsonl` has a torn or unreadable line, a
+  meeting's labels may miss a link, a rejection, or a reassignment: no voice sample is
+  learned, recomputed, or removed from them (`unavailable`, said once there is
+  something to do), recognition results are not applied to the projection (no
+  suggestion, no automatic name), and "Confirm all" is refused.
 - **People without voiceprints.** Linking a speaker to a person always creates or links
   the profile, whatever the setting, so names carry across meetings: the review
   window's name field is a combo box of known people (most recently used first) and the
@@ -3336,8 +3356,10 @@ public struct SpeakerProfileDatabase: Codable, Sendable, Equatable {
 - **Forgetting is resumable.** Every forget operation first appends a tombstone to
   `Support/Speakers/forget-journal.jsonl` (0600, fsync; `{id, kind, profileID?, sampleIDs,
   sessionIDs, state: "pending"}`), then updates the profile store, then cleans each
-  affected session under its speaker lock (drops the profile from `recognition.json`,
-  removes any evaluation voice file entries, regenerates exports), then appends
+  affected session under its speaker lock (drops every reference to the profile from
+  each recognition result, that is its matches, merge suggestions, and `skippedProfiles`
+  entries, through the one helper `RecognitionResult.removeProfiles`; removes any
+  evaluation voice file entries; regenerates exports), then appends
   `{id, state: "done"}`. `VoiceProfileService.resumePendingForgets(store:sessionsRoot:)`
   runs at app launch and at the start of every `holos people`, `speakers`, and `session`
   command and finishes any pending tombstone; each step is idempotent, so a crash at any
@@ -3353,8 +3375,10 @@ public struct SpeakerProfileDatabase: Codable, Sendable, Equatable {
   3. Distance(speaker, profile) = minimum cosine distance (1 − cosine similarity) to the
      profile's non-weak samples of the same condition. If there are none, use its other
      samples and cap the tier at `possible`.
-  4. Thresholds: `database.calibratedThresholds ?? SpeakerRecognizer.defaultThresholds`.
-     **`likely` is possible only when `database.calibratedThresholds != nil`.** With the
+  4. Thresholds: `database.calibratedThresholds(for: run's embedding model) ??
+     SpeakerRecognizer.defaultThresholds` (calibrated thresholds apply only to runs of the
+     model they were measured on, `calibratedModel`).
+     **`likely` is possible only with calibrated thresholds for the run's model.** With the
      default thresholds the recognizer never produces `likely`, whatever the distance
      (an identical vector has distance 0, so a zero threshold alone would not prevent it).
      So **v1 only suggests** (`possible`, shown as "Maybe Jim — Confirm"); nothing is
@@ -3380,8 +3404,11 @@ public struct SpeakerProfileDatabase: Codable, Sendable, Equatable {
   same from the user's confirmed meetings (samples of one profile across sessions vs.
   samples of different profiles), prints percentiles and counts, and with `--apply`
   stores `calibratedThresholds` (`likelyMaxDistance` at ≤ 1 % false accepts,
-  `possibleMaxDistance` at ≤ 5 %). `--apply` requires at least 3 meetings with
-  confirmed links and at least 2 people with samples from 2 or more meetings.
+  `possibleMaxDistance` at ≤ 5 %) with `calibratedModel`. `--apply` requires at least 3
+  meetings with confirmed links and at least 2 people with samples from 2 or more
+  meetings, all samples of one embedding model (distances of different models are not
+  comparable; each model is reported separately), and computes the thresholds inside the
+  store's locked update.
 - **Enrollment** (`VoiceEnrollment.sample`, HolosSpeakers, pure): qualifying turns are
   the linked speakers' projected turns that are not reassigned, not `modified`, not
   overlapped, at least 2 s long, not excluded, and get a turn embedding from

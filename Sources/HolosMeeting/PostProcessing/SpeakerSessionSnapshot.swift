@@ -40,6 +40,8 @@ public struct SpeakerSessionSnapshot: Sendable {
     ///   transcript, and a file that cannot be read right now (I/O) is an error, never a reason to drop the
     ///   speakers. An unreadable recognition result is ignored (it only adds suggestions). A damaged meeting.json,
     ///   or one of another session, gives `MeetingInfo.inferred`.
+    /// - With an incomplete edit journal (`EditJournal.isComplete` false) the recognition result is not read or
+    ///   applied (`recognition` nil): no suggestion or automatic name is made on labels that may miss an edit.
     public static func load(session: URL, profileNames: [String: String] = [:]) throws -> SpeakerSessionSnapshot {
         let manifest = try SessionArchive.readManifest(at: session)
         let meeting: MeetingInfo
@@ -87,7 +89,11 @@ public struct SpeakerSessionSnapshot: Sendable {
 
         let journal = try SessionSpeakerStore.readEdits(session: session)
         var recognition: RecognitionResult?
-        if let run {
+        if !journal.isComplete {
+            // A torn or unreadable edit may be a link or a "Not Jim": no suggestion or automatic name is shown (or
+            // exported) on labels that may miss it.
+            log.error("Session \(manifest.id, privacy: .public): speaker edits cannot all be read; voice suggestions not applied")
+        } else if let run {
             do {
                 recognition = try SessionSpeakerStore.readRecognition(runID: run.id, session: session)
             } catch {

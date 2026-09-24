@@ -82,15 +82,30 @@ public struct SpeakerProfileDatabase: Codable, Sendable, Equatable {
     public var schemaVersion: Int
     /// Off by default. Governs voice samples, per-session voice data, and recognition. Never names.
     public var rememberVoices: Bool
-    /// Set by `holos people calibrate --apply`; `likely` exists only when this is set.
+    /// Set by `holos people calibrate --apply`; `likely` exists only when this is set, and only for runs of
+    /// `calibratedModel`.
     public var calibratedThresholds: RecognitionThresholds?
+    /// The embedding model `calibratedThresholds` were measured on (distances of different models cannot be
+    /// compared). Set with them; thresholds without it (saved before it existed) are never applied.
+    public var calibratedModel: EmbeddingModelID?
     public var profiles: [SpeakerProfile]
 
     public init(schemaVersion: Int = SpeakerProfileDatabase.currentSchemaVersion, rememberVoices: Bool = false,
-                calibratedThresholds: RecognitionThresholds? = nil, profiles: [SpeakerProfile] = []) {
+                calibratedThresholds: RecognitionThresholds? = nil, calibratedModel: EmbeddingModelID? = nil,
+                profiles: [SpeakerProfile] = []) {
         self.schemaVersion = schemaVersion; self.rememberVoices = rememberVoices
-        self.calibratedThresholds = calibratedThresholds; self.profiles = profiles
+        self.calibratedThresholds = calibratedThresholds; self.calibratedModel = calibratedModel
+        self.profiles = profiles
     }
+
+    /// The calibrated thresholds for a run of `model`: nil unless they were measured on that model.
+    public func calibratedThresholds(for model: EmbeddingModelID?) -> RecognitionThresholds? {
+        guard let model, calibratedModel == model else { return nil }
+        return calibratedThresholds
+    }
+
+    /// Whether calibrated thresholds apply to runs of some model (`calibratedModel`).
+    public var isCalibrated: Bool { calibratedThresholds(for: calibratedModel) != nil }
 
     /// Every stored sample.
     public var sampleCount: Int { profiles.reduce(0) { $0 + $1.samples.count } }
@@ -134,14 +149,14 @@ extension SpeakerProfile: CustomStringConvertible, CustomDebugStringConvertible,
 
 extension SpeakerProfileDatabase: CustomStringConvertible, CustomDebugStringConvertible, CustomReflectable {
     public var description: String {
-        "SpeakerProfileDatabase(rememberVoices: \(rememberVoices), calibrated: \(calibratedThresholds != nil), "
+        "SpeakerProfileDatabase(rememberVoices: \(rememberVoices), calibrated: \(isCalibrated), "
             + "profiles: \(profiles.count), samples: \(sampleCount))"
     }
 
     public var debugDescription: String { description }
 
     public var customMirror: Mirror {
-        Mirror(self, children: ["rememberVoices": rememberVoices, "calibrated": calibratedThresholds != nil,
+        Mirror(self, children: ["rememberVoices": rememberVoices, "calibrated": isCalibrated,
                                 "profiles": profiles.count, "samples": sampleCount], displayStyle: .struct)
     }
 }
