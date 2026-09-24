@@ -14,10 +14,12 @@ import Testing
 @Suite(.serialized) @MainActor struct RecorderEnvironmentLoopTests {}
 
 /// A scripted `SystemPowerEvents`: the test posts events and moves the lid; the loop's acknowledgements are kept.
+/// Like `SystemPowerMonitor`, it drops events posted while neither observing nor attached.
 final class RecorderFakePower: SystemPowerEvents {
     private struct State {
         var events: [TimedPowerEvent] = []
         var attached = false
+        var observing = false
         var lidOpen: Bool
         /// Lid reads since the lid last moved.
         var lidReads = 0
@@ -33,10 +35,14 @@ final class RecorderFakePower: SystemPowerEvents {
         self.onAllow = onAllow
     }
 
-    func post(_ event: PowerEvent) { state.withLock { $0.events.append(TimedPowerEvent(event)) } }
+    func post(_ event: PowerEvent) { post([TimedPowerEvent(event)]) }
 
     /// Posts `events` at once, so the loop drains them together, each as old as it says.
-    func post(_ events: [TimedPowerEvent]) { state.withLock { $0.events += events } }
+    func post(_ events: [TimedPowerEvent]) {
+        state.withLock { state in
+            if state.attached || state.observing { state.events += events }
+        }
+    }
 
     func setLid(open: Bool) {
         state.withLock { state in
@@ -52,6 +58,9 @@ final class RecorderFakePower: SystemPowerEvents {
     var allowed: [Int] { state.withLock { $0.allowed } }
 
     var attached: Bool { state.withLock { $0.attached } }
+
+    /// Observing or attached: events are queued.
+    var listening: Bool { state.withLock { $0.attached || $0.observing } }
 
     func pendingEvents() -> [PowerEvent] { pendingTimedEvents().map(\.event) }
 
@@ -74,9 +83,17 @@ final class RecorderFakePower: SystemPowerEvents {
         }
     }
 
+    func observe() { state.withLock { $0.observing = true } }
+
     func attach() { state.withLock { $0.attached = true } }
 
-    func detach() { state.withLock { $0.attached = false } }
+    func detach() {
+        state.withLock { state in
+            state.attached = false
+            state.observing = false
+            state.events.removeAll()
+        }
+    }
 }
 
 /// The built-in microphone of the PR2b tests.

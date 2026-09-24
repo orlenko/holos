@@ -417,6 +417,12 @@ private final class Recorder {
         // The Mac does not idle-sleep from start to exit, except while paused (§4.4).
         holdPower(true)
         defer { holdPower(false) }
+        // Sleep and wake during the start (a permission prompt, speech setup) are queued for the loop, which drains
+        // them first; the monitor lets the Mac sleep at once meanwhile (§4.4). A failed start detaches here; a
+        // finished loop has detached already.
+        let power = dependencies.power
+        power?.observe()
+        defer { power?.detach() }
         await archive.setJournalSync(.interval(seconds: 1))
         try await start()
         Self.log.notice("Session \(self.archive.id, privacy: .public) started recording (\(self.options.source.rawValue, privacy: .public))")
@@ -546,6 +552,7 @@ private final class Recorder {
         var nextTick = wall.now
         let stopRequest = archive.directory.appendingPathComponent("stop.request")
         // Sleep waits for the loop only while it runs; before and after, the monitor lets the Mac sleep at once (§4.4).
+        // Events queued since `observe()` in `run()` stay and are drained first.
         let power = dependencies.power
         power?.attach()
         defer {
@@ -563,10 +570,11 @@ private final class Recorder {
             // Power first: a sleep is acknowledged within seconds, and a capture end it causes is then ignored. Each
             // event is timed by its arrival, not by this drain: after a restart that held the loop past macOS's 30 s
             // limit, willSleep and didWake come in together after the wake, and only their arrival tells the length
-            // of the sleep.
+            // of the sleep. An event from before epoch 0's capture started (queued during the start) is at a negative
+            // session time: clamping it to 0 would shorten a sleep that began and ended during the start to nothing.
             let drained = clock.now()
             for timed in power?.pendingTimedEvents() ?? [] {
-                let at = max(0, drained - max(0, timed.secondsAgo))
+                let at = drained - max(0, timed.secondsAgo)
                 switch timed.event {
                 case .willSleep(let token):
                     pendingSleepTokens.append(token)

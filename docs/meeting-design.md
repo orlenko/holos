@@ -2532,7 +2532,15 @@ AudioCapture callback ─yield─▶ frames stream (4,096 buffers; overflow drop
   100 ms. `canSleep` is allowed immediately by the monitor. `willSleep` is queued for
   the loop only while a loop is attached (`attach()` at loop start, `detach()` at loop
   exit); otherwise the monitor calls `IOAllowPowerChange` itself, so transcription and
-  post-processing never delay a lid close.
+  post-processing never delay a lid close. From the recorder's start until the loop
+  attaches (`observe()`: permission prompts, speech setup, capture start), `willSleep`
+  and `didWake` are still queued with their arrival times, and `willSleep` is allowed at
+  once; the loop drains them first, after `captureStarted(epoch 0)`, so a sleep during
+  the start stops epoch 0 and resumes in epoch 1, or ends the recording
+  (`sleepTimeout`) after 15 minutes. Such events have negative session times (before
+  epoch 0's origin); they are not clamped to 0, which would erase the sleep's length.
+  Device-list and screen-unlock events (§4.2) are buffered from the moment the
+  dependencies are made, so they have no such gap; the lid is polled, not observed.
 - On `willSleep` the loop executes `stopCapture(.sleep)` as: ask capture to stop (wait at
   most 5 s), close every open chunk, then `allowSleep`, even if the platform stop has
   not returned. Budget under 7 s; macOS allows 30 s.
