@@ -59,8 +59,8 @@ public struct EventJournal: Sendable, Equatable {
     public var events: [ArchiveEvent]
     /// The file does not end with "\n"; the partial last line was skipped.
     public var tornTail: Bool
-    /// Complete lines skipped because they do not decode, or because their sequence is lower than the
-    /// previous readable event's.
+    /// Complete lines skipped because they do not decode, because their sequence is outside
+    /// 1...`Int.max - 1`, or because their sequence is lower than the previous readable event's.
     public var unreadableLines: Int
 
     public init(events: [ArchiveEvent] = [], tornTail: Bool = false, unreadableLines: Int = 0) {
@@ -107,6 +107,8 @@ public actor SessionArchive {
         MeetingEventKind.captureStopped, MeetingEventKind.archiveRecovered, MeetingEventKind.transcriptRebuilt,
     ]
     private static let maxJournalBytes = 1 << 30
+    /// The highest event sequence a reader accepts or a writer assigns, so "last + 1" never overflows.
+    static let maxEventSequence = Int.max - 1
     /// The longest group-commit interval; also keeps `Duration.seconds` from overflowing.
     static let maxJournalSyncInterval: Double = 3_600
     private static let maxTranscriptBytes = 256 << 20
@@ -263,6 +265,9 @@ public actor SessionArchive {
     public func recordEvent(kind: String, details: [String: String]) throws {
         try ensureOpen()
         guard !kind.isEmpty else { throw HolosError.invalidInput("Event kind is empty.") }
+        guard nextSequence <= Self.maxEventSequence else {
+            throw HolosError.incomplete("The event journal has no sequence numbers left.")
+        }
         try repairJournalIfNeeded()
         let event = ArchiveEvent(sequence: nextSequence, at: Date(), kind: kind, details: details)
         let line = try HolosJSON.line(event)
@@ -420,7 +425,8 @@ public actor SessionArchive {
     }
 
     /// Reads `events.jsonl` only (no chunk hashing). A partial last line is reported as `tornTail`; a complete
-    /// line that fails to decode, or whose sequence is lower than the previous event's, is skipped and counted.
+    /// line that fails to decode, whose sequence is outside 1...`maxEventSequence`, or whose sequence is lower
+    /// than the previous event's, is skipped and counted.
     /// A missing journal is empty.
     public nonisolated static func readEvents(at directory: URL) throws -> EventJournal {
         guard directory.isFileURL, plainDirectory(directory) else {
@@ -436,7 +442,8 @@ public actor SessionArchive {
         for line in lines {
             // `>=`: older builds reused a sequence after an append whose fsync failed; both lines are real.
             guard let event = try? decoder.decode(ArchiveEvent.self, from: line), !event.kind.isEmpty,
-                  event.sequence >= 1, event.sequence >= (events.last?.sequence ?? 0) else {
+                  event.sequence >= 1, event.sequence <= maxEventSequence,
+                  event.sequence >= (events.last?.sequence ?? 0) else {
                 unreadable += 1
                 continue
             }
@@ -557,9 +564,13 @@ public actor SessionArchive {
                 "unrecovered": unrecovered.joined(separator: ","),
                 "previousStatus": before.manifest?.status ?? "unknown",
             ]
-            if before.tornFinalJournalLine || before.events.last?.kind != MeetingEventKind.archiveRecovered ||
+            // Readable sequences stop at `maxEventSequence`, so `+ 1` cannot overflow; an exhausted journal
+            // gets no recovery event rather than one that would read back as unreadable.
+            let sequence = (before.events.last?.sequence ?? 0) + 1
+            if sequence <= maxEventSequence, before.tornFinalJournalLine ||
+                before.events.last?.kind != MeetingEventKind.archiveRecovered ||
                 before.events.last?.details != details {
-                let event = ArchiveEvent(sequence: (before.events.last?.sequence ?? 0) + 1,
+                let event = ArchiveEvent(sequence: sequence,
                                          at: Date(), kind: MeetingEventKind.archiveRecovered, details: details)
                 try AtomicFile.append(try HolosJSON.line(event), to: journal)
             }

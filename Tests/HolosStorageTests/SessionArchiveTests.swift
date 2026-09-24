@@ -361,6 +361,67 @@ private func abandonedRecording(in root: URL, events: Int) async throws -> URL {
     #expect(try SessionArchive.readEvents(at: directory).events.map(\.sequence) == [1, 1, 2])
 }
 
+/// A journal whose only line is one event with `sequence`, in an archive left `recording`.
+private func abandonedRecording(in root: URL, onlySequence sequence: Int) throws -> URL {
+    let directory = try archive(in: root).directory
+    let line = try HolosJSON.line(ArchiveEvent(sequence: sequence, at: Date(timeIntervalSince1970: 0),
+                                               kind: "tick", details: [:]))
+    try AtomicFile.write(line, to: SessionPaths.events(directory))
+    return directory
+}
+
+@Test func exhaustedSequenceIsUnreadableAndDoesNotTrap() async throws {
+    // A damaged journal starting at Int.max used to be readable, and every opener trapped on `last + 1`.
+    for opener in ["open", "maintenance", "recover"] {
+        let root = try temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let directory = try abandonedRecording(in: root, onlySequence: Int.max)
+        let read = try SessionArchive.readEvents(at: directory)
+        #expect(read.events.isEmpty)
+        #expect(read.unreadableLines == 1)
+        switch opener {
+        case "open":
+            let reopened = try SessionArchive.open(at: directory)
+            try await reopened.recordEvent(kind: "after", details: [:])
+            try await reopened.finish(status: ArchiveStatus.complete)
+        case "maintenance":
+            _ = try await SessionArchive.recover(at: directory)
+            let lease = try SessionArchive.acquireProcessingLease(at: directory)
+            let maintenance = try SessionArchive.openForMaintenance(at: directory, lease: lease)
+            try await maintenance.recordEvent(kind: "after", details: [:])
+            try await maintenance.finish(status: ArchiveStatus.recovered)
+            lease.release()
+        default:
+            let report = try await SessionArchive.recover(at: directory)
+            #expect(report.manifest?.status == ArchiveStatus.interrupted)
+            #expect(report.events.map(\.kind) == [MeetingEventKind.archiveRecovered])
+        }
+        #expect(try SessionArchive.readEvents(at: directory).events.last?.sequence ?? 0 < 10)
+    }
+}
+
+@Test func lastSequenceNumberIsNeverAssigned() async throws {
+    let root = try temporaryRoot()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let directory = try abandonedRecording(in: root, onlySequence: Int.max - 1)
+    #expect(try SessionArchive.readEvents(at: directory).events.map(\.sequence) == [Int.max - 1])
+
+    let reopened = try SessionArchive.open(at: directory)
+    await #expect(throws: HolosError.self) { try await reopened.recordEvent(kind: "after", details: [:]) }
+    try await reopened.finish(status: ArchiveStatus.complete)
+    #expect(try SessionArchive.readEvents(at: directory).events.map(\.sequence) == [Int.max - 1])
+}
+
+@Test func recoveryOfAnExhaustedJournalSkipsItsEvent() async throws {
+    let root = try temporaryRoot()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let directory = try abandonedRecording(in: root, onlySequence: Int.max - 1)
+    let report = try await SessionArchive.recover(at: directory)
+    #expect(report.manifest?.status == ArchiveStatus.interrupted)
+    #expect(report.events.map(\.sequence) == [Int.max - 1])
+    #expect(report.unreadableEventLines == 0)
+}
+
 /// Journal fsyncs (`events.jsonl`) counted by the AtomicFile test hook.
 private func journalSyncs(_ counter: FileSyncCounter) -> Int { counter.count("events.jsonl") }
 
