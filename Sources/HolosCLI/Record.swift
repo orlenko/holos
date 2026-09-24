@@ -144,27 +144,22 @@ struct Record: AsyncParsableCommand {
 
         mutating func run() throws {
             let root = directory.map(fileURL) ?? HolosPaths.sessions
-            guard FileManager.default.fileExists(atPath: root.path) else {
-                if json { Console.output("[]") } else { Console.output("No sessions yet.") }
-                return
-            }
-            let paths = try FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil)
-                .filter { $0.pathExtension == "holos" }
+            // The catalog's state: a recorder that died shows as interrupted, a folder whose manifest cannot be read
+            // as damaged (docs/meeting-design.md §5.6). Newest first.
             var entries: [Entry] = []
-            for path in paths.sorted(by: { $0.lastPathComponent < $1.lastPathComponent }) {
-                let manifest = try SessionArchive.readManifest(at: path)
-                var status = manifest.status
-                if status == ArchiveStatus.recording || status == ArchiveStatus.processing {
-                    if try !SessionArchive.isActive(at: path) { status = ArchiveStatus.interrupted }
-                }
-                var entry = Entry(id: manifest.id, status: status, name: manifest.name, chunks: manifest.chunks.count)
-                let liveness = RecorderChannel.liveness(session: path)
-                if liveness == .capturing || liveness == .processing,
-                   let recorder = try? RecorderChannel.readStatus(session: path) {
+            for summary in SessionCatalog.list(root: root) {
+                var entry = Entry(id: summary.id, status: summary.state.rawValue, name: summary.name,
+                                  chunks: summary.chunkCount)
+                if summary.liveness == .capturing || summary.liveness == .processing,
+                   let recorder = try? RecorderChannel.readStatus(session: summary.directory) {
                     entry.phase = recorder.phase
                     entry.elapsedSeconds = recorder.elapsedSeconds
                 }
                 entries.append(entry)
+            }
+            guard !entries.isEmpty else {
+                if json { Console.output("[]") } else { Console.output("No sessions yet.") }
+                return
             }
             if json {
                 try Console.json(entries)

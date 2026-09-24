@@ -1,0 +1,137 @@
+import Darwin
+import Foundation
+import HolosCore
+import os
+
+/// Contents of `audio-deleted.json` (docs/meeting-design.md §2.1, §4.13): written by Delete Audio, so the chunks the
+/// manifest still lists are known to be absent on purpose.
+public struct AudioDeletedRecord: Codable, Sendable, Equatable {
+    public var schemaVersion: Int
+    public var deletedAt: Date
+    /// Chunks the manifest listed when the audio was deleted.
+    public var chunkCount: Int
+    /// Seconds of audio deleted: the longest track's total chunk duration.
+    public var seconds: Double
+
+    public init(schemaVersion: Int = 1, deletedAt: Date = Date(), chunkCount: Int, seconds: Double) {
+        self.schemaVersion = schemaVersion; self.deletedAt = deletedAt
+        self.chunkCount = chunkCount; self.seconds = seconds
+    }
+}
+
+extension SessionManifest {
+    /// Seconds of audio saved: the longest track's total chunk duration.
+    public var savedSeconds: Double {
+        var totals: [String: Double] = [:]
+        for chunk in chunks where chunk.end.isFinite && chunk.start.isFinite && chunk.end > chunk.start {
+            totals[chunk.track, default: 0] += chunk.end - chunk.start
+        }
+        return totals.values.max() ?? 0
+    }
+}
+
+/// Delete Audio and Delete Meeting (docs/meeting-design.md §4.13). Both run under the caller's processing lease and
+/// refuse while a recorder holds the session's writer lock.
+///
+/// Every delete inside the session folder goes through `AtomicFile.removeTree`, which opens each folder on the way
+/// with O_NOFOLLOW: a symbolic link in place of `audio/`, `derived/`, or `speakers/` is refused (or, as the last
+/// component, removed itself), never followed out of the session.
+public enum SessionDeletion {
+    private static let log = Logger(subsystem: "ca.orlenko.holos.app", category: "storage")
+
+    /// `~/Library/Logs/Holos`, where the app writes each recorder child's output (`recorder-<SESSION-UUID>.log`).
+    public static var defaultLogDirectory: URL {
+        FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Logs/Holos", isDirectory: true)
+    }
+
+    /// Moves `url` to the Trash with `FileManager.trashItem`.
+    public static func systemTrash(_ url: URL) throws {
+        try FileManager.default.trashItem(at: url, resultingItemURL: nil)
+    }
+
+    /// §4.13. Requires the lease and no writer.
+    ///
+    /// Removes the session's audio for good: `speakers/voice/` (under the speaker lock), then writes
+    /// `audio-deleted.json`, then removes `derived/` and `audio/`. The manifest, event journal, transcripts, speaker
+    /// runs, edits, recognition results, and exports stay. The marker is written before any audio goes, so a failure
+    /// part-way never leaves chunks missing without it; calling again finishes the job and keeps the first marker.
+    ///
+    /// Throws `HolosError.invalidInput` when the lease is released or belongs to another session, or the manifest
+    /// cannot be read, and `HolosError.unavailable` while a recorder holds the writer lock or another process holds
+    /// the speaker lock for more than 2 s.
+    public static func deleteAudio(session: URL, lease: ProcessingLease) throws {
+        // The lease stays locked, even across a concurrent `release()`, until the deletion ends.
+        try lease.beginUse(for: session)
+        defer { lease.endUse() }
+        try requireNoWriter(session, action: "deleting its audio")
+        let manifest = try SessionArchive.readManifest(at: session)
+
+        // Voice data is only for evaluation sessions; it goes first and is never left behind by a later failure.
+        try SessionArchive.withSpeakerLock(at: session) {
+            try SessionSpeakerStore.deleteVoiceData(session: session)
+        }
+        let marker = SessionPaths.audioDeleted(session)
+        if try AtomicFile.entryType(at: marker) != S_IFREG {
+            try AtomicFile.writeJSON(AudioDeletedRecord(chunkCount: manifest.chunks.count,
+                                                        seconds: manifest.savedSeconds), to: marker)
+        }
+        try AtomicFile.removeTree(["derived"], in: session)
+        try AtomicFile.removeTree(["audio"], in: session)
+        log.notice("Session \(manifest.id, privacy: .public): deleted the audio of \(manifest.chunks.count, privacy: .public) chunks")
+    }
+
+    /// §4.13. `trash` defaults to FileManager.trashItem; `logDirectory` to ~/Library/Logs/Holos (tests inject both).
+    ///
+    /// Removes `speakers/voice/` first (under the speaker lock), so no voice data waits in the Trash, then hands the
+    /// session folder to `trash`, then deletes `<logDirectory>/recorder-<SESSION-UUID>.log`. The session ID comes from
+    /// the manifest, or from the folder name when the manifest cannot be read, so a damaged session can be deleted
+    /// too. A log that cannot be deleted is logged, not thrown: the meeting is already in the Trash by then.
+    ///
+    /// Throws, with the folder left in place, when the lease is released or belongs to another session, while a
+    /// recorder holds the writer lock, when the speaker lock stays busy, or when `trash` fails.
+    public static func moveToTrash(session: URL, lease: ProcessingLease,
+                                   logDirectory: URL = SessionDeletion.defaultLogDirectory,
+                                   trash: (URL) throws -> Void = SessionDeletion.systemTrash) throws {
+        try lease.beginUse(for: session)
+        defer { lease.endUse() }
+        try requireNoWriter(session, action: "deleting it")
+        let sessionID = self.sessionID(of: session)
+        try SessionArchive.withSpeakerLock(at: session) {
+            try SessionSpeakerStore.deleteVoiceData(session: session)
+        }
+        try trash(session)
+        log.notice("Session \(sessionID ?? "unknown", privacy: .public): moved to the Trash")
+        if let sessionID { removeRecorderLog(sessionID: sessionID, in: logDirectory) }
+    }
+
+    // MARK: - Private
+
+    private static func requireNoWriter(_ session: URL, action: String) throws {
+        guard try !SessionArchive.isActive(at: session) else {
+            throw HolosError.unavailable("This meeting is still recording. Stop it before \(action).")
+        }
+    }
+
+    /// The manifest's session ID, else the folder's `<UUID>` when it names one; nil otherwise.
+    private static func sessionID(of session: URL) -> String? {
+        if let manifest = try? SessionArchive.readManifest(at: session) { return manifest.id }
+        let name = session.standardizedFileURL.lastPathComponent
+        guard name.hasSuffix(".holos"), let uuid = UUID(uuidString: String(name.dropLast(6))) else { return nil }
+        return uuid.uuidString
+    }
+
+    /// Deletes `recorder-<sessionID>.log` from `directory` without following a symbolic link; nothing when either is
+    /// missing.
+    private static func removeRecorderLog(sessionID: String, in directory: URL) {
+        guard SessionArchive.validToken(sessionID) else { return }
+        do {
+            guard try AtomicFile.entryType(at: directory) == S_IFDIR else { return }
+            if try AtomicFile.removeTree(["recorder-\(sessionID).log"], in: directory) {
+                log.info("Session \(sessionID, privacy: .public): deleted the recorder log")
+            }
+        } catch {
+            log.error("Session \(sessionID, privacy: .public): cannot delete the recorder log: \(error.localizedDescription, privacy: .private)")
+        }
+    }
+}

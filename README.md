@@ -69,6 +69,10 @@ holos="$BIN_DIR/holos"
 
 "$holos" session import ./meeting.m4a   # an audio file to a transcribed, labelled session
 "$holos" session diarize /path/to/session.holos
+"$holos" session list                   # sessions, newest first, with state and size
+"$holos" speakers list <session>        # a session's speakers; also rename, merge, assign, ...
+"$holos" speakers rename <session> S2 "Maria"
+"$holos" session export <session> --format md
 
 "$holos" say "The build is ready."       # native speech playback
 printf '%s\n' "Piped text" | "$holos" say
@@ -123,6 +127,25 @@ when the session was imported (and labelled, or the speaker models are not
 installed), 3 when labelling failed, was skipped for another reason, or was
 cancelled, and 1 when nothing was imported.
 
+`holos speakers list <session>` shows a session's speakers (`--turns` adds every
+turn); `rename`, `merge`, `assign`, `split`, `exclude`, and `undo` correct them.
+`<session>` is the path to a `.holos` folder or a session ID. Each change is
+checked against the labels it was worked out on: if they changed meanwhile, the
+command refuses and exits 1 (list again and retry). Changes are saved in the
+session's edit journal, never in the labels themselves, and rewrite `exports/`.
+`holos session export <session> --format md|json|txt` writes the labelled
+transcript to stdout or, with `--output`, to a new file; `--all` rewrites
+`exports/`. No export contains voice data.
+
+`holos session list` shows every session, newest first: its state (`interrupted`
+when the recorder stopped unexpectedly, `damaged` when its manifest cannot be
+read), saved audio, size on disk, and speaker labels; `--interrupted` lists only
+the sessions to recover, `--json` prints everything. `holos record status` uses the
+same states. `holos session delete <session> --yes` moves a session to the Trash
+and deletes its recorder log; with `--audio-only` it deletes only the audio (for
+good), keeping the transcript, speaker labels, and exports. Both refuse while the
+session is recording or another Holos command is working on it.
+
 `say` accepts text arguments or UTF-8 stdin and can play speech or save `.m4a`,
 `.wav`, or `.caf`. `read` accepts a local UTF-8 text/Markdown file or `-` for stdin;
 Markdown is read verbatim. URL extraction and PDF/OCR are not implemented.
@@ -136,9 +159,21 @@ inactive archive without replacing its saved audio or original transcript:
 "$holos" session retranscribe /path/to/session.holos --output ./revised.json
 ```
 
-`session recover` refuses while another Holos process is working on the same
-session, and a damaged line in a session's event journal is skipped rather than
-blocking inspection. Each saved transcript revision is recorded as the current one in
+`session recover` finishes a session whose recorder stopped unexpectedly (a crash,
+`kill -9`, power loss): it indexes the saved audio, rebuilds the transcript from the
+phrases live transcription had already saved, transcribes only the audio those do
+not cover, and labels the speakers, all under one lock so no other Holos process can
+start in between. It prints what it did, for example `Recovered 212 chunks
+(1:46:10). Transcript rebuilt from 1812 saved phrases; transcribed 0:31 of uncovered
+audio. Speaker labels: 9 speakers.` `--no-transcribe` keeps only the saved phrases,
+`--no-postprocess` skips speaker labels, and `--force` rebuilds a transcript that
+was already rebuilt or a session that was not interrupted. Running it again changes
+nothing. It exits 0 when done, 3 when speaker labelling failed or was skipped for a
+reason other than missing speaker models, and 1 when recovery or the rebuild failed
+or some saved audio could not be recovered. It refuses while another Holos process
+is working on the same session. A damaged line in a session's event journal is
+skipped, and `inspect`, `recover`, and `session list` say how many were skipped.
+Each saved transcript revision is recorded as the current one in
 `transcripts/current.json`.
 
 `reference-data/` is reserved for private, user-provided reference recordings and
