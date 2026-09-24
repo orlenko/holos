@@ -558,22 +558,45 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
         if correctionsWindow == nil {
             correctionsWindow = CorrectionsWindow(
                 onLearn: { [weak self] edited in self?.learnCorrections(from: edited) },
-                onAdd: { [weak self] correction in self?.changeCorrections { $0.add(correction) } ?? false },
+                onAdd: { [weak self] correction, edit in
+                    self?.addCorrection(correction, resolving: edit) ?? false
+                },
                 onRemove: { [weak self] correction in self?.changeCorrections { $0.remove(correction) } ?? false })
         }
         correctionsWindow?.show(lastTranscript: lastTranscript, corrections: corrections.entries)
     }
 
-    private func learnCorrections(from edited: String) -> [Correction]? {
+    private func learnCorrections(from edited: String) -> CorrectionsWindow.LearnResult? {
         // Diff against the recognizer's words, so fixing text an existing rule produced replaces that rule.
-        let learned = CorrectionList.learn(original: lastRecognized, corrected: edited) { word in
-            NSSpellChecker.shared.checkSpelling(of: word, startingAt: 0).location == NSNotFound
-        }.filter { corrections.apply(to: $0.heard) != $0.meant }
-        guard !learned.isEmpty else { return [] }
+        // A word counts as "common" only if its lowercase form is in the dictionary: the spell checker also
+        // accepts capitalized names ("Gwen"), which should be learned on their own.
+        let result = CorrectionList.learnReportingDeclined(original: lastRecognized, corrected: edited) { word in
+            NSSpellChecker.shared.checkSpelling(of: word.lowercased(), startingAt: 0).location == NSNotFound
+        }
+        let learned = result.learned.filter { corrections.apply(to: $0.heard) != $0.meant }
+        let declined = result.declined.filter { corrections.apply(to: $0.heard) != $0.meant }
+        guard !learned.isEmpty else {
+            // Nothing is saved yet; each declined swap carries the edit, kept once the user adds that swap.
+            return CorrectionsWindow.LearnResult(
+                learned: [], declined: declined,
+                edit: .init(recognized: lastRecognized, edited: edited))
+        }
         guard changeCorrections({ list in for correction in learned { list.add(correction) } }) else { return nil }
         lastTranscript = edited
         lastRecognized = edited
-        return learned
+        return CorrectionsWindow.LearnResult(learned: learned, declined: declined, edit: nil)
+    }
+
+    /// A manual Add; one that resolves a declined swap also keeps the edit that swap came from, as Learn
+    /// does, unless a newer dictation or kept edit has replaced the text it was edited from.
+    private func addCorrection(_ correction: Correction, resolving edit: DeclinedCorrectionQueue.PendingEdit?)
+        -> Bool {
+        guard changeCorrections({ $0.add(correction) }) else { return false }
+        if let transcript = edit?.transcript(whenLastRecognized: lastRecognized) {
+            lastTranscript = transcript
+            lastRecognized = transcript
+        }
+        return true
     }
 
     /// Returns false when the change was rejected or could not be saved.
