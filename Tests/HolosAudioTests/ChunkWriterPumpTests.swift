@@ -115,6 +115,57 @@ private func pumpEventually(timeout: Duration = .seconds(10), _ condition: () ->
     #expect(gap.details["reason"] == GapReason.paused.rawValue)
 }
 
+/// The queue overflows right before a pause or a capture restart: the one gap after it still says `overflow`, where
+/// audio was lost (the boundary has its own journal event), whether the overflow was noted by the pump or by the
+/// capture's `followsDrop`.
+@Test(.timeLimit(.minutes(1)), arguments: [GapReason.paused, .captureRestarted], [false, true])
+func overflowBeforeABoundaryKeepsItsReason(boundary: GapReason, notedByCapture: Bool) async throws {
+    let (archive, root) = try pumpArchive()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let writer = AudioChunkWriter(archive: archive)
+    let pump = ChunkWriterPump(writer: writer, capacitySeconds: 1)
+    if notedByCapture {
+        for index in 0..<5 { #expect(pump.push(try pumpFrame("mic", at: Double(index) / 10))) }
+        pump.noteGap(track: "mic", reason: .overflow)
+    } else {
+        // The writer has not started: 1 s is queued, and the frames after it are dropped.
+        var dropped = 0
+        for index in 0..<15 where !pump.push(try pumpFrame("mic", at: Double(index) / 10)) { dropped += 1 }
+        #expect(dropped > 0)
+    }
+    let run = Task { try await pump.run() }
+    try await pump.closeAll(expectingGap: boundary)
+    #expect(pump.push(try pumpFrame("mic", at: 3)))
+    pump.finish()
+    try await run.value
+    try await writer.finish()
+    try await archive.finish(status: ArchiveStatus.complete)
+    let gaps = try SessionArchive.readEvents(at: archive.directory).events
+        .filter { $0.kind == MeetingEventKind.audioDiscontinuity }
+    #expect(gaps.map { $0.details["reason"] } == [GapReason.overflow.rawValue])
+    #expect(gaps.first?.details["nextStart"] == "3.0")
+}
+
+/// A boundary followed by an overflow before the next frame: the gap says `overflow` too, since audio was lost.
+@Test(.timeLimit(.minutes(1))) func overflowAfterABoundaryIsTheGapReason() async throws {
+    let (archive, root) = try pumpArchive()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let writer = AudioChunkWriter(archive: archive)
+    let pump = ChunkWriterPump(writer: writer)
+    for index in 0..<5 { #expect(pump.push(try pumpFrame("mic", at: Double(index) / 10))) }
+    let run = Task { try await pump.run() }
+    try await pump.closeAll(expectingGap: .paused)
+    pump.noteGap(track: "mic", reason: .overflow)
+    #expect(pump.push(try pumpFrame("mic", at: 3)))
+    pump.finish()
+    try await run.value
+    try await writer.finish()
+    try await archive.finish(status: ArchiveStatus.complete)
+    let gaps = try SessionArchive.readEvents(at: archive.directory).events
+        .filter { $0.kind == MeetingEventKind.audioDiscontinuity }
+    #expect(gaps.map { $0.details["reason"] } == [GapReason.overflow.rawValue])
+}
+
 /// A full meeting capture stream drops and counts buffers instead of failing (§4.3), and the next frame delivered
 /// on that track says audio was dropped before it.
 @Test @MainActor func captureOverflowDoesNotFail() async throws {

@@ -536,8 +536,12 @@ diarization times (after the render time map, §4.7), markers, and gaps. An expo
   during sleep; host time does not, which is why later epochs take their offset from
   this clock. `ManualSessionClock` is the test double.
 - **Epochs.** Each capture start is an epoch with a fresh `MeetingCapture`.
-  `AudioCapture.start(…, timelineOffset:)` sets its host-time origin to
-  `hostNow − timelineOffset`, so frame times continue on the session timeline. Epoch
+  `AudioCapture.start(…, timelineOffset:, timelineOffsetHostTime:)` sets its host-time
+  origin to `offsetHostTime − timelineOffset`, where `offsetHostTime`
+  (`CaptureRequest.offsetHostTime`) is the host time at which the recorder read the
+  session clock for the offset (`hostNow` when nil, as for epoch 0). Frame times
+  continue on the session timeline, and the capture's own setup time (ScreenCaptureKit's
+  content query, the audio engine) is part of the gap before its first frame. Epoch
   k+1 uses `timelineOffset = max(clock.now(), lastFrameEnd + 0.01)`, where
   `lastFrameEnd` is the largest frame end on any track, so a new epoch never overlaps
   the previous one even if the audio clock ran ahead of the host clock.
@@ -2625,7 +2629,10 @@ After `finish(reason)` the loop exits and `RecordingWorkflow.run` does, in order
 
 1. **Stop capture** with a 5 s timeout. On timeout, abandon the stream, log, and record
    `captureFailed {epoch, error: "Capture did not stop within 5 s"}`. Drain the consumer,
-   let the pump drain into the writer, then `writer.closeAll`.
+   let the pump drain into the writer, then `writer.closeAll`. When the epoch's stream had
+   already ended by itself (the user stopped sharing, or capture failed), the stop is only
+   cleanup: an error from it (ScreenCaptureKit refuses to stop a stopped stream) is logged,
+   never reported as a capture failure.
 2. Phase `stopping` → `transcribing`. **Finish live speech** per track with a timeout of
    30 s + 0.05 × the seconds fed to its current speech session. On timeout, cancel that
    session; segments it already finalized are kept. The same deadline also ends the finishes of
@@ -2641,21 +2648,41 @@ After `finish(reason)` the loop exits and `RecordingWorkflow.run` does, in order
    `transcripts/current.json`).
 5. If a post-process hook is set, **acquire the processing lease** (retry 1 s) while
    still holding the writer lock. On failure, skip post-processing with the message
-   "Another Holos process is labelling this meeting."
-6. `archive.finish(status)` releases the writer lock. There is no moment in which the
-   session holds neither lock, so liveness never reads `dead` between capture and
-   post-processing.
+   "Another Holos process is labelling this meeting." The hook does not run, but the
+   outcome and `RecorderExit` still carry a `.failed` post-processing record ("Speaker
+   labelling was skipped: … Run holos session diarize on this session later."), so
+   `Record.Start` exits 3 and the app shows it; only a `nil` hook gives no record.
+6. `archive.finish(status)` releases the writer lock when the lease is held. There is no
+   moment in which the session holds neither lock, so liveness never reads `dead` between
+   capture and post-processing. Without the lease (no hook, or it could not be taken),
+   and on every failure or cancellation path, `archive.finish(status, keepingLock: true)`
+   keeps the writer lock until `phase: exited` is written (step 8).
 7. Phase `postprocessing`; call the hook with the lease. Progress goes into one
    `AsyncStream` read by one task that updates `status.json` in order; after the hook
    returns, finish the stream and await that task.
-8. Release the lease; write `phase: exited` with `RecorderExit` (archive status, stop
-   reason, post-processing state and message). `StatusWriter` then stops its heartbeat
-   and ignores later updates.
+8. Write `phase: exited` with `RecorderExit` (archive status, stop reason,
+   post-processing state and message), then release the last lock (the writer lock or the
+   lease), so liveness goes to `exited` without reading `dead` on the way. `StatusWriter`
+   then stops its heartbeat and ignores later updates. A failed final write is retried
+   (3 attempts, 100 ms × attempt apart); only a write that lands finishes the writer. If
+   none does, the error is logged, the heartbeat resumes with the last phase, and the
+   recorder keeps its last lock until the process exits, so the session reads busy, not
+   dead, while it shuts down; after exit, recovery handles it like any unfinished status.
 9. Release the power assertion; delete leftover `control/*.json`; return the outcome.
 
 While steps 1–9 run, `ControlInbox` keeps polling once a second and acknowledges every
 request `ignored` ("The recorder is already stopping."). A stop during post-processing
 does not cancel it.
+
+Requests are closed before the last poll. Right before step 8 the recorder creates
+`control/.closed`, polls one last time (answering `ignored`), writes `exited`, and only
+once `exited` is written deletes leftover requests and removes the marker.
+`RecorderChannel.send` refuses when the marker exists; after publishing, it checks the
+marker and then `status.json`. Either one makes it withdraw its request: a request it
+removes is refused; one the recorder already took is answered by the last poll (or,
+if `status.json` already says exited without its answer, was a deleted leftover and is
+refused). The request file belongs to whoever unlinks it, so the inbox never handles a
+request its sender withdrew.
 
 **`StatusWriter` heartbeat.** The actor starts a 1 s timer at launch (phase `starting`)
 and rewrites `status.json` every second until `exited`, independent of the loop, so
@@ -3976,6 +4003,7 @@ hang); `CollectingReporter`; `TemporaryDirectory`; and
 | `durationStopsRecording` | `duration: 0.3`; capture keeps emitting | returns within 2 s; chunks present |
 | `postProcessHookRunsUnderLeaseAfterFinish` | hook records `isActive` and `isProcessing` when called | hook sees `isActive == false`, `isProcessing == true`; outcome carries the hook's record; lease released afterwards |
 | `noHookMeansNoLease` | `postProcess: nil` | outcome `postProcessing == nil`; no lease taken |
+| `leaseHeldElsewhereSkipsPostProcessing`, `leaseErrorFailsPostProcessing` | hook set; the lease is held elsewhere, or taking it fails | hook not called; outcome and `status.json` exit carry `.failed` with a "Speaker labelling was skipped" message |
 | `vocabularyReachesSpeechFactory` | `vocabulary: ["Maria Chen"]` | FakeSpeech saw `["Maria Chen"]` for live and replay sessions |
 | `replayFromSkipsEarlierAudio` | chunks 0–30 s and 30–60 s; `replay(from: 40)` | first frame fed starts at 40.0 (± one buffer); none earlier |
 | `postProcessorSkeletonIsSkipped` | `MeetingPostProcessor().run(session:lease: nil)` on a finished session | state `.skipped`; no `postprocess.json` written |

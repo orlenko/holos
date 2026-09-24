@@ -3,11 +3,20 @@ import HolosCore
 
 /// Fix the last dictation here; Holos compares it with what it wrote and keeps the word swaps.
 @MainActor
-final class CorrectionsWindow: NSObject, NSWindowDelegate {
+final class CorrectionsWindow: NSObject, NSWindowDelegate, NSTextFieldDelegate {
     private let window: NSWindow
-    /// Returns the learned pairs, or nil when the change could not be saved.
-    private let onLearn: (String) -> [Correction]?
-    private let onAdd: (Correction) -> Bool
+    struct LearnResult {
+        var learned: [Correction]
+        /// Single common-word swaps with no neighbouring word to anchor them; offered for manual adding.
+        var declined: [Correction]
+        /// The edit to keep once one of `declined` is added; nil when Learn already kept it.
+        var edit: DeclinedCorrectionQueue.PendingEdit?
+    }
+
+    /// Returns the learned and declined pairs, or nil when the change could not be saved.
+    private let onLearn: (String) -> LearnResult?
+    /// Adds a rule, with the edit of the declined swap it resolves (if any). False means not saved.
+    private let onAdd: (Correction, DeclinedCorrectionQueue.PendingEdit?) -> Bool
     private let onRemove: (Correction) -> Bool
     private let transcriptView: NSTextView
     private let learnButton = NSButton(title: "Learn Corrections", target: nil, action: nil)
@@ -16,10 +25,15 @@ final class CorrectionsWindow: NSObject, NSWindowDelegate {
     private let listStack = NSStackView()
     private let heardField = NSTextField()
     private let meantField = NSTextField()
+    private let skipButton = NSButton(title: "Skip", target: nil, action: nil)
     private var positioned = false
     private var shown: [Correction] = []
+    private var declined = DeclinedCorrectionQueue()
+    /// The feedback lines shown above the declined-swap suggestion, so a refill can redraw them.
+    private var reported: [String] = []
 
-    init(onLearn: @escaping (String) -> [Correction]?, onAdd: @escaping (Correction) -> Bool,
+    init(onLearn: @escaping (String) -> LearnResult?,
+         onAdd: @escaping (Correction, DeclinedCorrectionQueue.PendingEdit?) -> Bool,
          onRemove: @escaping (Correction) -> Bool) {
         window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 560, height: 600),
                           styleMask: [.titled, .closable, .miniaturizable, .resizable],
@@ -78,8 +92,15 @@ final class CorrectionsWindow: NSObject, NSWindowDelegate {
 
         heardField.placeholderString = "Heard (e.g. bull request)"
         meantField.placeholderString = "Meant (e.g. pull request)"
+        heardField.delegate = self
+        meantField.delegate = self
         let addButton = NSButton(title: "Add", target: self, action: #selector(addManual))
-        let addRow = NSStackView(views: [heardField, NSTextField(labelWithString: "→"), meantField, addButton])
+        skipButton.target = self
+        skipButton.action = #selector(skipDeclined)
+        skipButton.toolTip = "Drop the suggested correction without adding it."
+        skipButton.isHidden = true
+        let addRow = NSStackView(views: [heardField, NSTextField(labelWithString: "→"), meantField, addButton,
+                                         skipButton])
         addRow.spacing = 8
         heardField.widthAnchor.constraint(equalTo: meantField.widthAnchor).isActive = true
 
@@ -119,7 +140,7 @@ final class CorrectionsWindow: NSObject, NSWindowDelegate {
         transcriptView.isEditable = hasTranscript
         learnButton.isEnabled = hasTranscript
         copyButton.isEnabled = hasTranscript
-        feedbackLabel.stringValue = hasTranscript ? "" : "No dictation yet. You can still add corrections below."
+        report(hasTranscript ? [] : ["No dictation yet. You can still add corrections below."])
         update(corrections: corrections)
         if !positioned {
             window.center()
@@ -160,13 +181,55 @@ final class CorrectionsWindow: NSObject, NSWindowDelegate {
     }
 
     @objc private func learn() {
-        guard let learned = onLearn(transcriptView.string) else {
+        guard let result = onLearn(transcriptView.string) else {
             feedbackLabel.stringValue = Self.saveFailure
             return
         }
-        feedbackLabel.stringValue = learned.isEmpty
-            ? "No changed words found. Edit a misheard word above, then Learn."
-            : "Learned: " + learned.map { "\($0.heard) → \($0.meant)" }.joined(separator: "; ")
+        declined.receive(result.declined, edit: result.edit)
+        var lines: [String] = []
+        if !result.learned.isEmpty {
+            lines.append("Learned: " + Self.describe(result.learned))
+        }
+        if !result.declined.isEmpty {
+            lines.append("Not learned automatically: \(Self.describe(result.declined)). A common word with no word "
+                + "next to it could make a rule change unrelated text, so add it only if you want it everywhere.")
+        }
+        if lines.isEmpty {
+            lines.append("No changed words found. Edit a misheard word above, then Learn.")
+        }
+        report(lines)
+    }
+
+    /// Shows `lines`, then what declined swaps are waiting (filling the Add fields when both are blank).
+    private func report(_ lines: [String]) {
+        reported = lines
+        feedbackLabel.stringValue = (lines + [suggestDeclined()].compactMap { $0 }).joined(separator: "\n")
+    }
+
+    /// Clearing both Add fields by hand fills in the next waiting swap, as the suggestion says.
+    func controlTextDidChange(_ notification: Notification) {
+        guard declined.prefill(heard: heardField.stringValue, meant: meantField.stringValue) != nil else { return }
+        report(reported)
+    }
+
+    private static func describe(_ corrections: [Correction]) -> String {
+        corrections.map { "\($0.heard) → \($0.meant)" }.joined(separator: "; ")
+    }
+
+    /// Fills the Add fields with the next declined swap when both are empty, and describes what is waiting.
+    private func suggestDeclined() -> String? {
+        skipButton.isHidden = declined.isEmpty
+        guard let next = declined.pending.first else { return nil }
+        if let fill = declined.prefill(heard: heardField.stringValue, meant: meantField.stringValue) {
+            heardField.stringValue = fill.heard
+            meantField.stringValue = fill.meant
+        }
+        let waiting = "Waiting to add: \(Self.describe(declined.pending))."
+        if heardField.stringValue == next.heard, meantField.stringValue == next.meant {
+            return waiting + " \(next.heard) → \(next.meant) is filled in below; choose Add, or Skip to drop it."
+        }
+        return waiting + " Add or clear what is in the fields below to fill in \(next.heard) → \(next.meant), "
+            + "or Skip to drop it."
     }
 
     @objc private func copyText() {
@@ -182,13 +245,32 @@ final class CorrectionsWindow: NSObject, NSWindowDelegate {
             feedbackLabel.stringValue = "Enter both the misheard phrase and the intended one."
             return
         }
-        guard onAdd(correction) else {
+        // CorrectionList.add ignores a pair whose two sides are the same, so refuse it here, before the
+        // queue is touched or the edited transcript is committed.
+        guard correction.heard.trimmingCharacters(in: .whitespacesAndNewlines)
+                != correction.meant.trimmingCharacters(in: .whitespacesAndNewlines) else {
+            feedbackLabel.stringValue = "The misheard and intended text are the same, so there is nothing to add."
+            return
+        }
+        var remaining = declined
+        let resolved = remaining.resolve(added: correction)
+        guard onAdd(correction, resolved?.edit) else {
             feedbackLabel.stringValue = Self.saveFailure
             return
         }
+        declined = remaining
         heardField.stringValue = ""
         meantField.stringValue = ""
-        feedbackLabel.stringValue = "Added: \(correction.heard) → \(correction.meant)"
+        report(["Added: \(correction.heard) → \(correction.meant)"])
+    }
+
+    @objc private func skipDeclined() {
+        guard let skipped = declined.skip() else { return }
+        if heardField.stringValue == skipped.heard, meantField.stringValue == skipped.meant {
+            heardField.stringValue = ""
+            meantField.stringValue = ""
+        }
+        report(["Skipped: \(skipped.heard) → \(skipped.meant)"])
     }
 
     @objc private func removeEntry(_ sender: NSButton) {

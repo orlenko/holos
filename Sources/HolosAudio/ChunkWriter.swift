@@ -154,22 +154,29 @@ public actor AudioChunkWriter {
         for track in current.keys.sorted() { try await close(track: track) }
     }
 
-    /// Closes every open chunk; the next discontinuity event on each track carries `reason`, and the track's next
-    /// frame starts a new chunk at its own time.
+    /// Closes every open chunk; the next discontinuity event on each track carries `reason` (unless an `overflow` is
+    /// already pending there), and the track's next frame starts a new chunk at its own time.
     public func closeAll(expectingGap reason: GapReason) async throws {
-        for track in tracks.keys.sorted() {
-            tracks[track]?.pendingReason = reason.rawValue
-            tracks[track]?.boundary = true
-        }
+        for track in tracks.keys.sorted() { markGap(track: track, reason: reason) }
         try await finish()
     }
 
-    /// Sets the reason of the track's next `audioDiscontinuity` and makes its next frame start a new chunk at its own
-    /// time (audio was lost before it). Does nothing for a track with no audio yet.
+    /// Sets the reason of the track's next `audioDiscontinuity` (unless an `overflow` is already pending there) and
+    /// makes its next frame start a new chunk at its own time (audio was lost before it). Does nothing for a track
+    /// with no audio yet.
     public func noteGap(track: String, reason: GapReason) {
         guard tracks[track] != nil else { return }
-        tracks[track]?.pendingReason = reason.rawValue
-        tracks[track]?.boundary = true
+        markGap(track: track, reason: reason)
+    }
+
+    /// One discontinuity event covers everything between two frames, so one reason wins: a pending `overflow` is
+    /// kept over a later boundary (a pause, a restart, a sleep), since audio was lost there and the boundary has its
+    /// own journal event; any other pending reason gives way to the later one.
+    private func markGap(track: String, reason: GapReason) {
+        guard var state = tracks[track] else { return }
+        if state.pendingReason != GapReason.overflow.rawValue { state.pendingReason = reason.rawValue }
+        state.boundary = true
+        tracks[track] = state
     }
 
     /// Bytes of finalized chunks plus frames × channels × 2 of open chunks (the audio data, without file headers).
