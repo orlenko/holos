@@ -3214,17 +3214,31 @@ public struct SpeakerProfileDatabase: Codable, Sendable, Equatable {
   ```
 
   `FluidVoiceSampleExtractor` (HolosDiarization, PR10) renders the track with
-  `TrackRenderer`, runs FluidAudio's embedding extraction (`prepare()` with
-  `exposeChunkEmbeddings`, same model as the run), and for each requested turn takes every
-  window that overlaps it, weighted by the overlap seconds, exactly as
-  `TurnEmbeddings.compute` does (FluidAudio's windows are about 10 s, longer than most
-  2–9 s conversational turns, so containment would leave ordinary turns without an
-  embedding). A window that overlaps a turn of another speaker by more than its overlap
-  with the requested turn is skipped. The extractor then deletes the render. Test (PR10):
-  `extractorUsesOverlappingWindowsForShortTurns` (a 3 s turn inside a 10 s window gets
-  an embedding). The app never links FluidAudio:
-  its extractor runs the hidden `holos speakers enroll <session> <speakerID> --profile
-  <id> [--json]` child, which extracts and upserts the sample itself. Extraction needs the
+  `TrackRenderer`, runs a fresh FluidAudio pass with `exposeChunkEmbeddings` (same model
+  and configuration as the run), and selects vectors **by speaker slot first, then by
+  time**. FluidAudio emits one `ChunkEmbedding` per (10 s window, local speaker slot), and
+  two people in one window share the same window bounds, so time alone cannot separate
+  them. For each requested turn:
+  1. Map the turn to the fresh pass's speaker: the `speakerId` whose fresh segments
+     overlap the turn's time the most. If that overlap is under 60 % of the turn's
+     duration, or a second fresh speaker overlaps the turn by more than 25 %, the turn gets
+     no embedding (it is not clean single-speaker speech).
+  2. Take only `ChunkEmbedding`s with that `speakerId` whose window overlaps the turn,
+     weighted by overlap seconds, as `TurnEmbeddings.compute` does (windows are about
+     10 s, longer than most 2–9 s turns, so containment would leave ordinary turns
+     without an embedding). L2-normalize.
+  3. All other vectors, including every other speaker slot in the same windows, are
+     discarded in memory; the render is deleted.
+
+  Tests (PR10): `extractorUsesOverlappingWindowsForShortTurns` (a 3 s turn inside a 10 s
+  window gets an embedding), `extractorIgnoresOtherSpeakerSlotInSharedWindow` (two slots in
+  one window with orthogonal vectors; the turn's embedding equals its own slot's vector),
+  `extractorSkipsTurnsWithoutADominantSpeaker`. The app never links FluidAudio: its
+  extractor, `SubprocessVoiceSampleExtractor` (HolosMeeting), runs the bundled hidden
+  `holos speakers embed <session> --track <t> --turns <id,id,…> --json`, which prints the
+  turn embeddings as JSON on stdout (a pipe, never a file) and writes nothing.
+  `VoiceProfileService` is the only code that turns embeddings into a stored sample. The
+  CLI's own `link`/`me` commands inject `FluidVoiceSampleExtractor` directly. Extraction needs the
   session's audio: after Delete Audio, linking keeps the name and says "The recording's
   audio was deleted, so this voice can't be learned." `refreshSamples` re-extracts the
   affected `(profile, session)` samples the same way. Meetings processed while Remember
@@ -3287,7 +3301,7 @@ public struct SpeakerProfileDatabase: Codable, Sendable, Equatable {
   turns → no sample. Only the confirmed speaker's turns are ever sent to the extractor.
 - **`VoiceProfileService`** (HolosMeeting, PR10) is the only code that writes profiles
   and samples:
-  - `link(session:speakerID:to:view:learnVoice:store:)` where `to` is an existing
+  - `link(session:speakerID:to:view:learnVoice:extractor:store:)` (async) where `to` is an existing
     profile or a new name: creates or links the profile, appends `linkProfile` and
     `rename(name: profile.displayName)` in one batch (so the session keeps the name if
     the profile is later forgotten), and, if `learnVoice` and "Remember voices" is on
@@ -3296,14 +3310,16 @@ public struct SpeakerProfileDatabase: Codable, Sendable, Equatable {
     from this call, never from automatic matches (decision 2).
   - `confirmAll(session:view:learnVoices:store:)`: links every current suggestion in one
     batch, so one undo reverts it.
-  - `markSelf(session:speakerID:view:learnVoice:store:)`: "This is me". Like `link`, it
+  - `markSelf(session:speakerID:view:learnVoice:extractor:store:)` (async): "This is me". Like `link`, it
     enrolls a voice sample only when `learnVoice` is true (the Review footer's
     `ReviewSession.learnVoices`, and Remember voices on); otherwise it only records the
     `isSelf` link. Test `markSelfHonoursLearnVoice` (PR10).
   - `reject(session:speakerID:profileID:view:)`.
-  - `refreshSamples(session:store:)`: after any edit in a session that contributed
-    samples, recompute them; remove a sample when no qualifying turns remain.
-    `SpeakerEditor.apply` calls it after releasing the speaker lock.
+  - `refreshSamples(session:extractor:store:)` (async): after any edit in a session that
+    contributed samples, re-extract and recompute them; remove a sample when no qualifying
+    turns remain. `SpeakerEditor.apply` stays synchronous and returns
+    `needsSampleRefresh: Bool`; its callers (the CLI speaker commands and `ReviewSession`)
+    then `await refreshSamples`.
   - `forget(sampleID:)`, `forget(profileID:)`, `forget(sessionID:)` (samples learned
     from that meeting), `forgetAll()` (every sample and every voice file; names stay),
     `rename(profileID:to:)`, `merge(profileID:into:)` (refused across embedding models),
@@ -5382,8 +5398,9 @@ cross-meeting voiceprint database" and T11's "No cross-session identity claim").
   `Sources/HolosMeeting/PostProcessing/RecognizeStage.swift`.
 - Change `Sources/HolosMeeting/MeetingPostProcessor.swift` (`profiles:` parameter; the
   stage-6 voice-data gate; stage 7), `Sources/HolosMeeting/SpeakerEditor.swift`
-  (`profiles: SpeakerProfileStore? = nil` parameter on `apply`/`undoLast`; when set,
-  `VoiceProfileService.refreshSamples` after the speaker lock is released),
+  (`profiles: SpeakerProfileStore? = nil` parameter on `apply`/`undoLast`; when set, the
+  result's `needsSampleRefresh` tells the caller to `await
+  VoiceProfileService.refreshSamples(session:extractor:store:)` after the lock is released),
   `Sources/HolosCLI/PostProcessing.swift` (pass `SpeakerProfileStore()`),
   `Sources/HolosCLI/Speakers.swift` (`link`, `me`, `reject`; pass the store),
   `Sources/HolosCLI/Holos.swift` (add `People.self`), `Package.swift` (identical wave-4
@@ -5423,7 +5440,7 @@ public enum SpeakerRecognizer {
 public enum VoiceEnrollment {
     /// §4.10 enrollment rules. `speakerIDs` are the session's speakers linked to one profile.
     public static func sample(for speakerIDs: [String], projection: SpeakerProjection, run: DiarizationRun,
-                              voiceData: SessionVoiceData?, minSampleSeconds: Double = 20)
+                              turnEmbeddings: [TurnEmbedding], minSampleSeconds: Double = 20)
         -> (vector: FloatVector, speechSeconds: Double, condition: RecordingCondition, weak: Bool, droppedOutlierTurns: Int)?
 }
 
@@ -5435,16 +5452,25 @@ public enum RecognitionCalibration {
 
 public enum ProfileTarget: Sendable, Equatable { case existing(profileID: String), new(name: String) }
 
+/// Enrollment is asynchronous and the extractor is injected: its real implementations live in
+/// HolosDiarization (CLI) or spawn the bundled `holos` (app), and HolosMeeting cannot import FluidAudio.
+/// `extractor == nil`, `learnVoice == false`, Remember voices off, or deleted audio → the name/link is
+/// recorded and no sample is taken. Journal edits are appended under the speaker lock first; extraction
+/// runs after the lock is released; the sample is upserted under `profiles.lock` last.
 public enum VoiceProfileService {
     public static func link(session: URL, speakerID: String, to target: ProfileTarget, view: SpeakerProjection,
-                            learnVoice: Bool, store: SpeakerProfileStore) throws -> SpeakerSessionSnapshot
+                            learnVoice: Bool, extractor: (any VoiceSampleExtractor)?,
+                            store: SpeakerProfileStore) async throws -> SpeakerSessionSnapshot
     public static func confirmAll(session: URL, view: SpeakerProjection, learnVoices: Bool,
-                                  store: SpeakerProfileStore) throws -> SpeakerSessionSnapshot
+                                  extractor: (any VoiceSampleExtractor)?,
+                                  store: SpeakerProfileStore) async throws -> SpeakerSessionSnapshot
     public static func markSelf(session: URL, speakerID: String, view: SpeakerProjection,
-                                learnVoice: Bool, store: SpeakerProfileStore) throws -> SpeakerSessionSnapshot
+                                learnVoice: Bool, extractor: (any VoiceSampleExtractor)?,
+                                store: SpeakerProfileStore) async throws -> SpeakerSessionSnapshot
     public static func reject(session: URL, speakerID: String, profileID: String,
                               view: SpeakerProjection) throws -> SpeakerSessionSnapshot
-    public static func refreshSamples(session: URL, store: SpeakerProfileStore) throws
+    public static func refreshSamples(session: URL, extractor: (any VoiceSampleExtractor)?,
+                                      store: SpeakerProfileStore) async throws
     public static func setRemember(_ on: Bool, forgetExisting: Bool, store: SpeakerProfileStore,
                                    sessionsRoot: URL = HolosPaths.sessions) throws
     public static func rename(profileID: String, to name: String, store: SpeakerProfileStore) throws
@@ -6050,7 +6076,7 @@ reprocessing" in `docs/contracts.md`).
 | In-process mode released the lease before spawning the diarizer, leaving a window with no lock | Accepted. The lease descriptor is inherited by the child at fd 3 (`--lease-fd 3`) and the parent closes its copy only after a successful spawn (§4.1). Test `inProcessLeaseHandoffHasNoGap`. |
 | The vocabulary temp file leaked when launch failed or the child exited early | Accepted. `MeetingController` deletes it on launch failure, child exit, and first status; stale files are swept at launch (§4.12). Three PR4 tests. |
 | `markSelf` had no consent flag for voice learning | Accepted. `learnVoice:` added to `VoiceProfileService.markSelf`; `ReviewSession.markSelf` passes `learnVoices` (§4.10, PR10). Test `markSelfHonoursLearnVoice`. |
-| (second pass) Voice data for every diarized speaker was persisted before anyone was confirmed | Accepted. Post-processing never persists embeddings; recognition uses them in memory. Samples are extracted on demand for the confirmed speaker only (`VoiceSampleExtractor`, hidden `holos speakers enroll`) (§4.10). Tests `rememberOnStoresNoVoiceData`, `enrollExtractsOnlyTheConfirmedSpeaker`, `enrollWithoutAudioKeepsNameOnly`. This also settles open question Q9 (retention of unnamed speakers' voice data): there is none. |
+| (second pass) Voice data for every diarized speaker was persisted before anyone was confirmed | Accepted. Post-processing never persists embeddings; recognition uses them in memory. Samples are extracted on demand for the confirmed speaker only (`VoiceSampleExtractor`, hidden `holos speakers embed`) (§4.10). Tests `rememberOnStoresNoVoiceData`, `enrollExtractsOnlyTheConfirmedSpeaker`, `enrollWithoutAudioKeepsNameOnly`. This also settles open question Q9 (retention of unnamed speakers' voice data): there is none. |
 | (second pass) A crash during Forget could strand voice data with no way to retry | Accepted. Forget writes a tombstone to `forget-journal.jsonl` before touching the store; `resumePendingForgets` finishes pending work at app launch and CLI start (§4.10). Tests `forgetResumesAfterCrashBetweenStoreAndSessions`, `forgetJournalReplayIsIdempotent`. |
 | (second pass) note | The contract file comment on `SessionVoiceData` (§3) still says "written only while Remember voices is on". Contract files are frozen by their §3.0 digests and wave 0 already copied them, so the comment is left as is; the rules in §4.10 govern. |
 | (second pass) The diarize command did not accept the inherited lease | Accepted. Hidden `--lease-fd N` with descriptor validation (§5.5 PR7b CLI). Tests `diarizeAdoptsInheritedLease`, `diarizeRefusesForeignLeaseFd`. |
@@ -6058,3 +6084,5 @@ reprocessing" in `docs/contracts.md`).
 | (third pass) Most edit actions had no fingerprint, so stale edits could act on split or reassigned turns | Accepted. Fingerprints for reject, merge, split, newSpeaker, and excludeFromEnrollment (§4.9 table). Tests `staleExcludeAfterSplitIsRefused`, `staleMergeAfterReassignIsRefused`, `staleRejectAfterRelinkIsRefused`. |
 | (third pass) On-demand extraction kept only windows contained in a turn, so short turns never enrolled | Accepted. Overlap-weighted selection as in `TurnEmbeddings.compute` (§4.10). Test `extractorUsesOverlappingWindowsForShortTurns`. |
 | (third pass) A zero `likelyMaxDistance` still allowed `likely` at distance 0 | Accepted. `likely` requires `calibratedThresholds != nil` (§4.10 step 4–5). Test `identicalVectorIsOnlyPossibleUntilCalibrated`. |
+| (fourth pass) Enrollment methods were synchronous with no way to reach the async extractor | Accepted. `link`, `confirmAll`, `markSelf`, `refreshSamples` are `async` and take `extractor: (any VoiceSampleExtractor)?`; `SpeakerEditor.apply` returns `needsSampleRefresh` for callers to await; the app injects `SubprocessVoiceSampleExtractor` (hidden `holos speakers embed`, JSON on stdout only), the CLI injects `FluidVoiceSampleExtractor` (§4.10). `VoiceEnrollment.sample` takes `turnEmbeddings`. |
+| (fourth pass) Time overlap alone could mix another speaker's slot vector from a shared 10 s window into a sample | Accepted. The extractor maps each turn to the fresh pass's dominant `speakerId` and uses only that slot's `ChunkEmbedding`s; turns without a dominant speaker get none (§4.10). Tests `extractorIgnoresOtherSpeakerSlotInSharedWindow`, `extractorSkipsTurnsWithoutADominantSpeaker`. |
