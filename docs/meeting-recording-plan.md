@@ -1,7 +1,8 @@
 # Meeting recording plan: long recordings, speaker diarization, speaker labels
 
-Status: proposal, not implemented. Produced by a planning agent on 2026-09-23 from the code on
-`main` and web research; decisions in §8 are pending the user's review.
+Status: approved plan, not implemented. Produced by a planning agent on 2026-09-23 from the code on
+`main` and web research. The user reviewed §8 on 2026-09-23: recommendations 1–5, 7, and 8 accepted;
+6 and 9 changed (dictation is paused during meeting recording; built-in laptop mic only).
 
 ## 1. Summary
 
@@ -84,7 +85,7 @@ Extends `SessionArchive.create` (`Sources/HolosStorage/SessionArchive.swift:99`)
   manifest.json              schema v1 unchanged (readManifest requires ==1)
   audio/{mic,system}/*.caf   Int16 from PR2 on; old Float32 archives still read
   events.jsonl               new kinds: paused, resumed, marker, systemWillSleep, didWake,
-                             deviceChanged, diskLow, dictationStart/End
+                             deviceChanged, diskLow
   status.json                live recorder status; removed at finish, like control.json
   control/<uuid>.json        requests from the app: stop, pause, resume, marker
   transcripts/<id>.json
@@ -116,7 +117,7 @@ warnings, processing progress). XPC can come later.
 **Start.** Menu item "Start Meeting Recording…" opens a panel: name (default "Meeting YYYY-MM-DD
 HH:MM"); mode "In person (microphone)" (`--source mic`) or "Online call (mic + system audio)" with an
 optional meeting-app filter (`--app`); for calls, "others in the room with me" (diarize the mic
-track too); input device picker; disk estimate ("≈1.0 GB for 3 h · 24 GB free"); a dismissible
+track too); disk estimate ("≈1.0 GB for 3 h · 24 GB free"); a dismissible
 consent reminder. Toggle shortcut (default ⌃⌥⌘R) starts with the last settings; stopping by
 shortcut needs a second press within 2 s.
 
@@ -151,9 +152,9 @@ duration; Recover runs `SessionArchive.recover`, rebuilds the transcript from
 `transcriptFinalized` events, retranscribes only uncovered audio, then diarizes and exports. Tail
 loss is at most one open 30 s chunk.
 
-**Dictation during a meeting.** Stays available (separate processes, multi-client input). The app
-sends dictationStart/End markers; the transcript tags those words and can omit them from exports.
-If spike S2 finds a conflict, dictation pauses during meeting recording.
+**Dictation during a meeting.** Paused while a meeting recording is active (decision 6): the hotkey
+does nothing and the menu says "Dictation paused during meeting recording". It resumes when the
+recording stops. No dictation markers in the meeting transcript.
 
 ## 4. Transcription and diarization pipeline
 
@@ -245,14 +246,14 @@ the Markdown written in `saveTranscript` (`SessionArchive.swift:190–201`).
   approximate DER vs Otter turns, go/no-go.
 - **S2 — Recorder process and platform spike.** Holos.app launches the bundled CLI. Check which
   process macOS credits mic and screen-recording permissions to; `kill -9` the app mid-recording;
-  10 min screen lock; lid close on power and battery; AirPods connect/disconnect; dictation during
-  a recording; laptop mic vs USB boundary mic in a real room. Accept: findings in
+  10 min screen lock; lid close on power and battery; AirPods connect/disconnect; built-in laptop
+  mic capture quality in a real room. Accept: findings in
   `docs/hardware-validation.md` and the child-process vs in-process decision.
 - **PR1 — Extract HolosMeeting.** Move the workflow out of HolosCLI; add a capture protocol at the
   `AudioCapture` boundary (like `DictationCapture`). No behaviour change. Tests: existing suite plus
   a fake-capture workflow test (start → frames → stop → saved; capture error → "incomplete").
 - **PR2 — Long-recording robustness.** Int16 chunks; disk checks; power assertion; `status.json`;
-  `control/` requests; device-change restart; watchdog; sleep/wake policy; input-device choice.
+  `control/` requests; device-change restart; watchdog; sleep/wake policy.
   Tests: Int16 CAF round trip; disk policy with injected free space; control parsing and
   idempotence; sleep-policy state machine; gap event on resume. Manual: 3 h soak with RSS per hour,
   bytes per hour, chunk continuity; lid close; AirPods switch.
@@ -260,7 +261,7 @@ the Markdown written in `saveTranscript` (`SessionArchive.swift:190–201`).
   retranscribe only uncovered audio, list interrupted sessions. Tests: torn journal tail, coverage
   gaps, idempotent recovery.
 - **PR4 — Menu bar meeting controls.** Start panel, indicator, stop confirmation, toggle shortcut,
-  child start/reattach, interrupted-session prompt, quit dialog, dictation markers. Tests: a
+  child start/reattach, interrupted-session prompt, quit dialog, dictation paused while recording. Tests: a
   `MeetingController` reducer with a fake recorder. Manual: new `docs/meeting-validation.md`.
 - **PR5 — HolosSpeakers values, alignment, exporters** (no ML dependency). Synthetic tests for
   boundary words, gap words, flicker smoothing, overlap, untimed segments, split turns, edit
@@ -292,22 +293,26 @@ capture gaps in the 3 h soak.
 
 ## 8. Decisions and risks
 
-Decisions for the user (recommendation in brackets):
+Decisions (recommendation in brackets; the user's answer follows each):
 
 1. **Downloaded third-party model?** FluidAudio code is Apache-2.0; the weights are CC-BY-4.0 per
    the Hugging Face card (conflicts with the README's MIT/Apache claim). [Accept; pin version and
-   model revision with checksums; credit authors in About.]
+   model revision with checksums; credit authors in About.] **Accepted.**
 2. **Remember voices across meetings?** Reverses `docs/design.md` and T11. [Yes, opt-in, only from
-   confirmed labels, with forget and export; update both docs.]
+   confirmed labels, with forget and export; update both docs.] **Accepted.**
 3. **Audio format.** [Int16 PCM now; later an opt-in `session compact` to AAC after review.]
+   **Accepted.**
 4. **Where the recorder runs.** [Bundled CLI child process; in-process fallback if S2 shows
-   permissions are not credited to Holos.app.]
+   permissions are not credited to Holos.app.] **Accepted.**
 5. **Sleep policy.** [Resume after sleep under 15 min; otherwise finalize at the sleep point.]
-6. **Dictation during a meeting.** [Allow it and mark it in the transcript.]
-7. **Live speaker labels.** [Not in v1; revisit LS-EEND or Nemotron 3 later.]
+   **Accepted.**
+6. **Dictation during a meeting.** [Allow it and mark it in the transcript.] **Changed:** not
+   needed; pause dictation while a meeting recording is active.
+7. **Live speaker labels.** [Not in v1; revisit LS-EEND or Nemotron 3 later.] **Accepted.**
 8. **Recording consent.** [User's responsibility; dismissible one-line reminder in the start
-   panel.]
+   panel.] **Accepted.**
 9. **Room microphone.** [Test a USB omnidirectional boundary mic against the laptop mic in S2.]
+   **Changed:** use the built-in laptop mic for now; no boundary-mic test, no input-device picker.
 
 Risks and unknowns:
 
