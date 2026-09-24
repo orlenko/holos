@@ -164,7 +164,7 @@ public struct SpeakerProjection: Sendable, Equatable {
     /// |---|---|
     /// | `rename(s, _)` | current explicit name of `s`, or `""` |
     /// | `linkProfile(s, _)` | profile `s` is linked to by edits, or `""` |
-    /// | `reassignTurns(ids, _)` | current speaker of each id joined by `,`, `?` for unknown |
+    /// | `reassignTurns(ids, _)` | for each id: `<current speaker, ? for unknown>:<words>`, joined by `,` |
     /// | `rejectProfile(s, p)` | `link=<profile s is linked to, or "">;rejected=<1 if p already rejected for s, else 0>` |
     /// | `merge(from, into)` | for `from` then `into`: `<speaker>:<linked profile or "">:<sorted IDs of its current turns>` joined by `\|` |
     /// | `splitTurn(t, at)` | `<current speaker of t>:<t's words>` |
@@ -176,6 +176,10 @@ public struct SpeakerProjection: Sendable, Equatable {
     /// `+` when the turn spans several segments. Turn IDs within a merge fingerprint are joined by `,`. A turn
     /// that does not exist contributes `""`. Fingerprints longer than 256 Unicode scalars are replaced by the
     /// first 32 hex digits of their SHA-256 (of the UTF-8 bytes).
+    ///
+    /// `reassignTurns` includes each turn's words (the §4.9 table lists only the speaker), so a reassign made on a
+    /// view that has not seen another window split one of its turns is refused rather than moving only the part
+    /// that kept the turn's ID.
     public func fingerprint(for action: SpeakerEditAction) -> String? {
         state.fingerprint(for: action)
     }
@@ -198,13 +202,15 @@ public struct SpeakerProjection: Sendable, Equatable {
                                  state: next, otherRunEditCount: otherRunEditCount)
     }
 
-    /// Applied turn-level edits (reassign, split, new speaker, exclude): what `SpeakerCarryOver` cannot carry.
+    /// Applied edits that `SpeakerCarryOver` cannot carry: turn-level edits (reassign, split, new speaker, exclude)
+    /// and merges. A merge changes which turns a speaker owns, and the new run's speakers need not line up with the
+    /// merged clusters, so it is counted rather than silently lost.
     var appliedTurnEditCount: Int {
         zip(journal, outcomes).filter { entry, outcome in
             guard outcome == .applied else { return false }
             switch entry.action {
-            case .reassignTurns, .splitTurn, .newSpeaker, .excludeFromEnrollment: return true
-            case .rename, .linkProfile, .rejectProfile, .merge, .revert: return false
+            case .reassignTurns, .splitTurn, .newSpeaker, .excludeFromEnrollment, .merge: return true
+            case .rename, .linkProfile, .rejectProfile, .revert: return false
             }
         }.count
     }
@@ -299,6 +305,36 @@ public struct SpeakerProjection: Sendable, Equatable {
     static func compactFingerprint(_ raw: String) -> String {
         guard raw.unicodeScalars.count > 256 else { return raw }
         return String(FingerprintSHA256.hexDigest(Array(raw.utf8)).prefix(32))
+    }
+}
+
+// MARK: - Printing
+
+/// The projection keeps the whole transcript for `applying`. Printing, `dump`, and test-failure output show only the
+/// public fields (IDs, times, names), never transcript text (docs/meeting-design.md §1.5, §1.9).
+extension SpeakerProjection: CustomStringConvertible, CustomDebugStringConvertible, CustomReflectable {
+    public var description: String {
+        "SpeakerProjection(runID: \(runID), transcriptID: \(transcriptID), speakers: \(speakers.count), "
+            + "turns: \(turns.count), applied: \(appliedEditIDs.count), reverted: \(revertedEditIDs.count), "
+            + "stale: \(staleEdits.count), otherRun: \(otherRunEditCount))"
+    }
+
+    public var debugDescription: String { description }
+
+    public var customMirror: Mirror {
+        Mirror(self, children: [
+            "runID": runID,
+            "transcriptID": transcriptID,
+            "speakers": speakers,
+            "turns": turns,
+            "appliedEditIDs": appliedEditIDs,
+            "revertedEditIDs": revertedEditIDs,
+            "staleEdits": staleEdits,
+            "otherRunEditCount": otherRunEditCount,
+            "editCount": editCount,
+            "lastUndoableBatchID": lastUndoableBatchID as Any,
+            "mergeSuggestions": mergeSuggestions,
+        ], displayStyle: .struct)
     }
 }
 
@@ -446,7 +482,7 @@ extension SpeakerProjection {
             for turn in run.turns {
                 if let speakerID = turn.speakerID {
                     if speakers[speakerID] == nil {
-                        maxOrdinal += 1
+                        maxOrdinal = Self.ordinal(after: maxOrdinal)
                         unlisted.insert(speakerID)
                         speakers[speakerID] = SpeakerState(
                             id: speakerID, ordinal: maxOrdinal, clusterIDs: [], isChannel: false, channelName: nil,
@@ -540,7 +576,7 @@ extension SpeakerProjection {
                     return StaleReason.notUserSpeaker
                 }
                 guard speakers[speakerID] == nil else { return StaleReason.speakerExists }
-                maxOrdinal += 1
+                maxOrdinal = Self.ordinal(after: maxOrdinal)
                 speakers[speakerID] = SpeakerState(
                     id: speakerID, ordinal: maxOrdinal, clusterIDs: [], isChannel: false, channelName: nil,
                     isUserCreated: true, explicitName: SpeakerProjection.cleanName(name), profileID: nil,
@@ -559,6 +595,12 @@ extension SpeakerProjection {
         }
 
         static let userSpeakerPrefix = "user:"
+
+        /// `ordinal + 1`, or `Int.max` when a corrupt run already uses it: loading never traps on run data (§2.4).
+        /// Speakers that share an ordinal still list in a stable order (by ID).
+        static func ordinal(after ordinal: Int) -> Int {
+            ordinal < Int.max ? ordinal + 1 : Int.max
+        }
 
         /// `[first, at)` keeps the turn's ID, `[at, end)` becomes "<turnID>/<editID>" with the same speaker; both
         /// are `modified` and take start, end, and timing from their words. The new part keeps the exclusion flag.
@@ -610,9 +652,7 @@ extension SpeakerProjection {
             case .linkProfile(let speakerID, _):
                 raw = speakers[speakerID]?.profileID ?? ""
             case .reassignTurns(let turnIDs, _):
-                raw = turnIDs.map { turnID in
-                    turnIndex[turnID].map { turns[$0].speakerID ?? "?" } ?? ""
-                }.joined(separator: ",")
+                raw = turnIDs.map { turnDescription($0, withExclusion: false) }.joined(separator: ",")
             case .rejectProfile(let speakerID, let profileID):
                 let speaker = speakers[speakerID]
                 let rejected = speaker?.rejectedProfileIDs.contains(profileID) == true
@@ -636,7 +676,7 @@ extension SpeakerProjection {
         private func turnDescription(_ turnID: String, withExclusion: Bool) -> String {
             guard let index = turnIndex[turnID] else { return "" }
             let turn = turns[index]
-            let words = turn.spans.map { "\($0.segmentID)[\($0.first)..\($0.end - 1)]" }.joined(separator: "+")
+            let words = turn.spans.map { "\($0.segmentID)[\($0.first)..\($0.end &- 1)]" }.joined(separator: "+")
             let description = "\(turn.speakerID ?? "?"):\(words)"
             return withExclusion ? "\(description):\(turn.excluded ? 1 : 0)" : description
         }

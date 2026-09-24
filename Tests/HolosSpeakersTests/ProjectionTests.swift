@@ -551,7 +551,7 @@ private func turn(_ projection: SpeakerProjection, _ id: String) -> ProjectedTur
     #expect(view.fingerprint(for: .rename(speakerID: "system:S9", name: "X")) == "")
     #expect(view.fingerprint(for: .linkProfile(speakerID: "system:S1", profileID: "P")) == "P-JIM")
     #expect(view.fingerprint(for: .reassignTurns(turnIDs: ["T1", "T6", "T8", "T99"], to: "system:S2"))
-        == "system:S1,?,mic:me,")
+        == "system:S1:seg-T1[0..5],?:seg-T6[0..5],mic:me:seg-T8[0..5],")
     #expect(view.fingerprint(for: .rejectProfile(speakerID: "system:S1", profileID: "P-BOB")) == "link=P-JIM;rejected=0")
     #expect(view.fingerprint(for: .rejectProfile(speakerID: "system:S2", profileID: "P-BOB")) == "link=;rejected=1")
     #expect(view.fingerprint(for: .merge(from: "system:S3", into: "system:S1"))
@@ -648,6 +648,23 @@ private func turn(_ projection: SpeakerProjection, _ id: String) -> ProjectedTur
     journal.append(.newSpeaker(speakerID: "user:X", name: "X", turnIDs: ["T4"]), id: "E4", madeOn: older)
     #expect(journal.view.staleEdits.map(\.editID) == ["E2", "E3", "E4"])
     #expect(journal.view.staleEdits.allSatisfy { $0.reason == "changed since the edit was made" })
+}
+
+@Test func staleReassignAfterSplitIsRefused() throws {
+    let older = project()
+    var journal = Journal()
+    // Window A splits T2; window B, still showing the whole T2, moves it to S1.
+    journal.append(.splitTurn(turnID: "T2", at: WordRef(segmentID: "seg-T2", word: 3)), id: "E1")
+    journal.append(.reassignTurns(turnIDs: ["T2"], to: "system:S1"), id: "E2", madeOn: older)
+    let projection = journal.view
+    #expect(projection.appliedEditIDs == ["E1"])
+    #expect(projection.staleEdits == [StaleEdit(editID: "E2", reason: "changed since the edit was made")])
+    #expect(turn(projection, "T2")?.speakerID == "system:S2")
+    #expect(turn(projection, "T2/E1")?.speakerID == "system:S2")
+    // Made on the current view, the same reassign applies to the part it names.
+    journal.append(.reassignTurns(turnIDs: ["T2"], to: "system:S1"), id: "E3")
+    #expect(journal.view.appliedEditIDs == ["E1", "E3"])
+    #expect(turn(journal.view, "T2")?.speakerID == "system:S1")
 }
 
 @Test func invalidActionsAreStaleAndChangeNothing() {
@@ -781,6 +798,61 @@ private func randomAction(on view: SpeakerProjection, step: Int, editIDs: [Strin
     #expect(undone.revertedEditIDs == ["E1"])
     #expect(undone.lastUndoableBatchID == nil)
     #expect(undone.speakers == base.speakers)
+}
+
+@Test func applyingARepeatedEditIDMatchesMake() throws {
+    // The same ID twice: both lines apply, in order.
+    var twice = Journal()
+    var chained = project()
+    for (action, id) in [(SpeakerEditAction.rename(speakerID: "system:S1", name: "Jim"), "E1"),
+                         (.rename(speakerID: "system:S1", name: "Bob"), "E1")] {
+        twice.append(action, id: id)
+        chained = chained.applying(action, editID: id)
+    }
+    #expect(chained == twice.view)
+    #expect(chained.appliedEditIDs == ["E1", "E1"])
+    #expect(speaker(chained, "system:S1")?.name == "Bob")
+
+    // A reused ID whose first line was reverted: the revert names the ID, so the new line is reverted too.
+    var reverted = Journal()
+    chained = project()
+    for (action, id) in [(SpeakerEditAction.rename(speakerID: "system:S1", name: "Jim"), "E1"),
+                         (.revert(editID: "E1"), "E2"),
+                         (.rename(speakerID: "system:S1", name: "Bob"), "E1")] {
+        reverted.append(action, id: id)
+        chained = chained.applying(action, editID: id)
+    }
+    #expect(chained == reverted.view)
+    #expect(chained.revertedEditIDs == ["E1", "E1"])
+    #expect(chained.appliedEditIDs.isEmpty)
+    #expect(speaker(chained, "system:S1")?.name == "Speaker 1")
+}
+
+@Test func printingAProjectionShowsNoTranscriptText() {
+    var journal = Journal()
+    journal.append(.rename(speakerID: "system:S1", name: "Jim"), id: "E1")
+    let projection = journal.view
+    var dumped = ""
+    dump(projection, to: &dumped)
+    for text in [String(describing: projection), String(reflecting: projection), dumped] {
+        #expect(!text.contains("w0 w1"))
+        #expect(!text.contains("w3"))
+    }
+    #expect(String(describing: projection).contains("speakers: 4"))
+    #expect(dumped.contains("Jim"))
+}
+
+@Test func extremeOrdinalsDoNotTrap() throws {
+    var run = fixtureRun
+    run.speakers.removeAll { $0.id == "mic:me" }       // T8's speaker is not listed
+    run.speakers[2].ordinal = Int.max
+    let base = SpeakerProjection.make(run: run, transcript: fixtureTranscript, edits: [], recognition: nil,
+                                      profileNames: [:])
+    #expect(speaker(base, "mic:me")?.ordinal == Int.max)
+    let created = base.applying(.newSpeaker(speakerID: "user:X", name: "Guest", turnIDs: ["T1"]), editID: "E1")
+    #expect(created.appliedEditIDs == ["E1"])
+    #expect(speaker(created, "user:X")?.ordinal == Int.max)
+    #expect(created.speakers.map(\.id) == ["system:S1", "system:S2", "mic:me", "system:S3", "user:X"])
 }
 
 @Test func projectionOrdersTurnsByStartTrackAndNumericID() {

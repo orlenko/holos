@@ -184,6 +184,45 @@ private func projection(_ fixture: (run: DiarizationRun, transcript: Transcript)
     let result = SpeakerCarryOver.carry(from: before, to: new)
     // Jim (50 s) shares 30 s with C (30 s) and 20 s with A (20 s): C has the most shared time.
     #expect(result.actions == [.rename(speakerID: "system:C", name: "Jim")])
+    // The merge is not carried (A keeps its own label), so it is reported.
+    #expect(result.droppedTurnEdits == 1)
+}
+
+@Test func carryReportsMergesItCannotCarry() {
+    let old = timedRun("OLD", [speech("system:S1", 0, 30), speech("system:S3", 30, 60)])
+    let merged = projection(old, [.merge(from: "system:S3", into: "system:S1"),
+                                  .rename(speakerID: "system:S1", name: "Jim")])
+    let new = timedRun("NEW", [speech("system:X", 0, 30), speech("system:Y", 30, 60)]).run
+    let result = SpeakerCarryOver.carry(from: merged, to: new)
+    // Jim shares 30 s with each; the tie goes to X, and Y (half of Jim's merged speech) is left unnamed.
+    #expect(result.actions == [.rename(speakerID: "system:X", name: "Jim")])
+    #expect(result.unmatchedSpeakers.isEmpty)
+    #expect(result.droppedTurnEdits == 1)
+
+    // A reverted merge never took effect and is not counted.
+    let undone = projection(old, [.merge(from: "system:S3", into: "system:S1"), .revert(editID: "E1"),
+                                  .rename(speakerID: "system:S1", name: "Jim")])
+    #expect(SpeakerCarryOver.carry(from: undone, to: new).droppedTurnEdits == 0)
+}
+
+@Test func carryRefusesWhenTheBestMatchFailsTheHalfRule() {
+    // Jim spoke 0–100. X (200 s) shares 40 s with him: the most, but under half of the smaller talk time (100 s).
+    // Y (20 s) shares 15 s, which alone would pass. §4.9 accepts or refuses the speaker with the most shared time.
+    let old = timedRun("OLD", [speech("system:S1", 0, 100)])
+    let before = projection(old, [.rename(speakerID: "system:S1", name: "Jim")])
+    let new = timedRun("NEW", [speech("system:Y", 0, 15), speech("system:X", 60, 260), speech("system:Y", 300, 305)])
+    let result = SpeakerCarryOver.carry(from: before, to: new.run)
+    #expect(result.actions.isEmpty)
+    #expect(result.unmatchedSpeakers == ["system:S1"])
+
+    // The refused new speaker stays free: Bob, who spoke 100–280, still maps to X.
+    let two = timedRun("OLD", [speech("system:S1", 0, 100), speech("system:S2", 100, 280)])
+    let both = projection(two, [.rename(speakerID: "system:S1", name: "Jim"),
+                                .rename(speakerID: "system:S2", name: "Bob")])
+    let mapped = SpeakerCarryOver.carry(from: both, to: new.run)
+    // Bob–X (160 s) goes first; Jim's best left is Y (15 s of Y's 20 s), which passes.
+    #expect(mapped.actions == [.rename(speakerID: "system:Y", name: "Jim"), .rename(speakerID: "system:X", name: "Bob")])
+    #expect(mapped.unmatchedSpeakers.isEmpty)
 }
 
 @Test func carryIgnoresUnlabelledAndAutomaticSpeakers() {
