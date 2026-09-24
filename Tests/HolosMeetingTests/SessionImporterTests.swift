@@ -82,16 +82,26 @@ private func sessionImporterStagingFolders(_ root: URL) -> [String] {
     sessionImporterEntries(root).filter { $0.hasPrefix(ImportStaging.prefix) }
 }
 
-/// A staging folder as a killed import leaves it: a session folder inside, and (unless `lockFile` is false) an
-/// unlocked `.import.lock`.
-private func sessionImporterAbandonedStaging(in root: URL, lockFile: Bool = true) throws -> String {
-    let name = ImportStaging.prefix + UUID().uuidString
+/// A staging folder as a killed import leaves it: a session folder inside, the ownership marker (unless `marker` is
+/// false), and (unless `lockFile` is false) an unlocked `.import.lock`. Named `name` when given.
+private func sessionImporterAbandonedStaging(in root: URL, lockFile: Bool = true, marker: Bool = true,
+                                             name: String? = nil) throws -> String {
+    let name = name ?? ImportStaging.prefix + UUID().uuidString
     let folder = root.appendingPathComponent(name, isDirectory: true)
     let session = folder.appendingPathComponent("\(UUID().uuidString).holos/audio/mic", isDirectory: true)
     try FileManager.default.createDirectory(at: session, withIntermediateDirectories: true)
     try Data(repeating: 1, count: 64).write(to: session.appendingPathComponent("000001.caf"))
+    if marker {
+        try Data(ImportStaging.markerContents).write(to: folder.appendingPathComponent(ImportStaging.markerName))
+    }
     if lockFile { try Data().write(to: folder.appendingPathComponent(ImportStaging.lockName)) }
     return name
+}
+
+/// Every file under `folder`, relative paths, sorted.
+private func sessionImporterTree(_ folder: URL) -> [String] {
+    let enumerator = FileManager.default.enumerator(atPath: folder.path)
+    return ((enumerator?.allObjects as? [String]) ?? []).sorted()
 }
 
 /// A diarizer that waits until `open()` (or until cancelled) before answering.
@@ -358,6 +368,66 @@ func importRemovesAbandonedImportsButNotRunningOnes() async throws {
     #expect(entries.contains(running))
     #expect(entries.contains(starting))
     #expect(sessionFolders(in: root).map(\.lastPathComponent) == [session.lastPathComponent])
+}
+
+@Test(.timeLimit(.minutes(1)))
+func importSweepLeavesFoldersHolosDidNotMake() async throws {
+    let temp = try TemporaryDirectory("import")
+    defer { temp.remove() }
+    let wav = try sessionImporterStereoWAV(in: temp.url)
+    let root = temp.url.appendingPathComponent("Sessions", isDirectory: true)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    // Folders a user may keep in a `--directory` folder, each with an unlocked lock file and 2 hours old, so
+    // each would be removed if its name or contents were not checked.
+    let notes = try sessionImporterAbandonedStaging(in: root, name: ".import-notes")
+    let unmarked = try sessionImporterAbandonedStaging(in: root, marker: false)
+    let unmarkedOld = try sessionImporterAbandonedStaging(in: root, lockFile: false, marker: false)
+    let lowercase = try sessionImporterAbandonedStaging(in: root,
+                                                        name: ImportStaging.prefix + UUID().uuidString.lowercased())
+    let wrongMarker = try sessionImporterAbandonedStaging(in: root, marker: false)
+    try Data("holos".utf8).write(to: root.appendingPathComponent(wrongMarker)
+        .appendingPathComponent(ImportStaging.markerName))
+    // A marker that is a symbolic link to a real marker, and a staging name that is a symbolic link to a folder
+    // with a marker: neither is followed.
+    let linkedMarker = try sessionImporterAbandonedStaging(in: root, marker: false)
+    let realMarker = temp.url.appendingPathComponent("marker")
+    try Data(ImportStaging.markerContents).write(to: realMarker)
+    try FileManager.default.createSymbolicLink(
+        at: root.appendingPathComponent(linkedMarker).appendingPathComponent(ImportStaging.markerName),
+        withDestinationURL: realMarker)
+    let target = try sessionImporterAbandonedStaging(in: temp.url, name: "Target")
+    let linkedFolder = ImportStaging.prefix + UUID().uuidString
+    try FileManager.default.createSymbolicLink(at: root.appendingPathComponent(linkedFolder),
+                                               withDestinationURL: temp.url.appendingPathComponent(target))
+    let kept = [notes, unmarked, unmarkedOld, lowercase, wrongMarker, linkedMarker]
+    for name in kept {
+        try FileManager.default.setAttributes([.modificationDate: Date(timeIntervalSinceNow: -7_200)],
+                                              ofItemAtPath: root.appendingPathComponent(name).path)
+    }
+    let before = kept.map { sessionImporterTree(root.appendingPathComponent($0)) }
+    let targetBefore = sessionImporterTree(temp.url.appendingPathComponent(target))
+    // A real abandoned staging folder beside them is still removed.
+    let killed = try sessionImporterAbandonedStaging(in: root)
+
+    let session = try await sessionImporterImport(wav, root: root, speech: FakeSpeechFactory(), transcribe: false)
+
+    let entries = sessionImporterEntries(root)
+    #expect(!entries.contains(killed))
+    #expect(entries.contains(linkedFolder))
+    #expect(kept.map { sessionImporterTree(root.appendingPathComponent($0)) } == before)
+    #expect(before.allSatisfy { $0.contains { $0.hasSuffix("000001.caf") } })
+    #expect(sessionImporterTree(temp.url.appendingPathComponent(target)) == targetBefore)
+    #expect(entries.sorted() == (kept + [linkedFolder, session.lastPathComponent]).sorted())
+}
+
+@Test func stagingNamesAreExactUppercaseUUIDs() {
+    let id = UUID().uuidString
+    #expect(ImportStaging.isStagingName(ImportStaging.prefix + id))
+    #expect(!ImportStaging.isStagingName(ImportStaging.prefix + id.lowercased()))
+    #expect(!ImportStaging.isStagingName(".import-notes"))
+    #expect(!ImportStaging.isStagingName(ImportStaging.prefix))
+    #expect(!ImportStaging.isStagingName(ImportStaging.prefix + id + "x"))
+    #expect(!ImportStaging.isStagingName(id))
 }
 
 // MARK: - holos session import (import, then labelling)

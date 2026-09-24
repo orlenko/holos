@@ -294,9 +294,17 @@ private struct TranscriptionFailure: Error {
 /// locked (`flock`) from just after the folder is made until it is removed, so the sweep of another import leaves a
 /// running import alone. The folder's name does not end in `.holos`, so nothing lists it as a session, and
 /// `holos session recover` never turns a killed import into an interrupted recording.
+///
+/// The sessions root may be any folder the user names (`--directory`), so a sweep removes only a folder Holos
+/// made: one named exactly `.import-` + `UUID().uuidString` (upper case) that holds the ownership marker
+/// `.holos-import` with `markerContents`, both reached without following a symbolic link. Any other folder, such
+/// as `.import-notes`, is never touched.
 final class ImportStaging {
     static let prefix = ".import-"
     static let lockName = ".import.lock"
+    /// Written into every staging folder when it is made, before its lock file; removed last when it is published.
+    static let markerName = ".holos-import"
+    static let markerContents = Array("{\"holos\":\"import-staging\",\"version\":1}\n".utf8)
     /// A staging folder without its lock file is removed by a sweep only when it has not changed for this long: it
     /// may belong to an import that has just made it.
     static let unlockedGrace: TimeInterval = 3_600
@@ -330,6 +338,9 @@ final class ImportStaging {
         let folder = open(url.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
         if folder < 0 {
             code = errno
+        } else if let failed = writeMarker(in: folder) {
+            code = failed
+            Darwin.close(folder)
         } else {
             lock = openat(folder, lockName, O_CREAT | O_EXCL | O_RDWR | O_NOFOLLOW | O_CLOEXEC, 0o600)
             if lock < 0 {
@@ -376,6 +387,7 @@ final class ImportStaging {
             Self.log.error("Cannot save the sessions folder after an import: \(Self.errnoText(), privacy: .public)")
         }
         unlinkat(stagingFD, Self.lockName, 0)
+        unlinkat(stagingFD, Self.markerName, 0)
         closeLock()
         if unlinkat(rootFD, name, AT_REMOVEDIR) != 0 {
             Self.log.error("Cannot remove an empty import folder: \(Self.errnoText(), privacy: .public)")
@@ -400,17 +412,21 @@ final class ImportStaging {
     }
 
     /// Removes the staging folders in `root` that no running import holds: those whose lock file can be locked, and
-    /// those without one that have not changed for `unlockedGrace`. Failures are logged; an import never fails
-    /// because of an older one's leftovers.
+    /// those without one that have not changed for `unlockedGrace`. Only a folder with a staging name
+    /// (`isStagingName`) and the ownership marker (`hasMarker`) is a staging folder; nothing else is touched.
+    /// Failures are logged; an import never fails because of an older one's leftovers.
     static func sweep(_ root: URL, now: Date = Date()) {
-        guard let names = try? FileManager.default.contentsOfDirectory(atPath: root.path) else { return }
-        for name in names where name.hasPrefix(prefix) {
-            let path = root.appendingPathComponent(name).path
-            var info = stat()
-            guard lstat(path, &info) == 0, (info.st_mode & S_IFMT) == S_IFDIR else { continue }
-            let folder = open(path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        let base = resolved(root)
+        guard let names = try? FileManager.default.contentsOfDirectory(atPath: base.path) else { return }
+        let rootFD = open(base.path, O_RDONLY | O_DIRECTORY | O_CLOEXEC)
+        guard rootFD >= 0 else { return }
+        defer { Darwin.close(rootFD) }
+        for name in names where isStagingName(name) {
+            let folder = openat(rootFD, name, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
             guard folder >= 0 else { continue }
             defer { Darwin.close(folder) }
+            var info = stat()
+            guard fstat(folder, &info) == 0, (info.st_mode & S_IFMT) == S_IFDIR, hasMarker(in: folder) else { continue }
             let lock = openat(folder, lockName, O_RDWR | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC)
             if lock < 0 {
                 let missing = errno == ENOENT
@@ -423,12 +439,44 @@ final class ImportStaging {
             // Held (when there is a lock file) until the folder is gone, so no other sweep starts on it meanwhile.
             defer { if lock >= 0 { Darwin.close(lock) } }
             do {
-                try AtomicFile.removeTree([name], in: resolved(root))
+                try AtomicFile.removeTree([name], in: base)
                 log.notice("Removed an import that did not finish")
             } catch {
                 log.error("Cannot remove an import that did not finish: \(error.localizedDescription, privacy: .private)")
             }
         }
+    }
+
+    /// Whether `name` is one `create` makes: `prefix` followed by a UUID in `UUID().uuidString` form (upper case).
+    static func isStagingName(_ name: String) -> Bool {
+        guard name.hasPrefix(prefix) else { return false }
+        let suffix = String(name.dropFirst(prefix.count))
+        return UUID(uuidString: suffix)?.uuidString == suffix
+    }
+
+    /// Whether the open folder `folder` holds the ownership marker: a regular file (not a symbolic link) named
+    /// `markerName` whose contents are exactly `markerContents`.
+    static func hasMarker(in folder: Int32) -> Bool {
+        let fd = openat(folder, markerName, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC)
+        guard fd >= 0 else { return false }
+        defer { Darwin.close(fd) }
+        var info = stat()
+        guard fstat(fd, &info) == 0, (info.st_mode & S_IFMT) == S_IFREG,
+              info.st_size == off_t(markerContents.count) else { return false }
+        var buffer = [UInt8](repeating: 0, count: markerContents.count + 1)
+        let count = buffer.withUnsafeMutableBytes { Darwin.read(fd, $0.baseAddress, $0.count) }
+        return count == markerContents.count && Array(buffer.prefix(count)) == markerContents
+    }
+
+    /// Writes the ownership marker into the open, new folder `folder` (never over an existing file) and fsyncs it.
+    /// Returns nil, or the errno of the failure.
+    private static func writeMarker(in folder: Int32) -> Int32? {
+        let fd = openat(folder, markerName, O_CREAT | O_EXCL | O_WRONLY | O_NOFOLLOW | O_CLOEXEC, 0o600)
+        guard fd >= 0 else { return errno }
+        defer { Darwin.close(fd) }
+        let written = markerContents.withUnsafeBytes { Darwin.write(fd, $0.baseAddress, $0.count) }
+        guard written == markerContents.count else { return written < 0 ? errno : EIO }
+        return fsync(fd) == 0 ? nil : errno
     }
 
     private func closeLock() {

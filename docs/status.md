@@ -84,7 +84,8 @@ Hardware-facing and cross-app acceptance remain pending.
   the sessions folder and appears as a session only once it is complete, so an import
   that fails, is cancelled, or is killed is never taken for a recording; a failed or
   cancelled import removes that folder, and the next import removes one a killed
-  import left. Labelling runs under the lock the import took, and the session's path
+  import left (only a folder with that exact name and the `.holos-import` marker
+  Holos writes into it; nothing else in a `--directory` folder). Labelling runs under the lock the import took, and the session's path
   is printed once labelling ends. The hidden
   `session score --otter <transcript.txt>` compares a session's labels with Otter's
   and prints numbers only (hashed labels with `--json`).

@@ -281,29 +281,104 @@ private func editCounts(reference: [String], hypothesis: [String]) -> EditCounts
 }
 
 private func runCLI(_ options: Options, audio: URL, backend: String, output: URL) throws -> Double {
-    let process = Process()
-    process.executableURL = options.cli
-    process.arguments = ["transcribe", audio.path, "--locale", options.locale,
-                         "--backend", backend, "--output", output.path]
-    process.standardOutput = FileHandle.nullDevice
-    process.standardError = FileHandle.nullDevice
+    let result = try runInProcessGroup(options.cli, ["transcribe", audio.path, "--locale", options.locale,
+                                                     "--backend", backend, "--output", output.path],
+                                       stdout: nil, stderr: nil, timeout: options.timeoutSeconds, grace: 0.5)
+    if result.timedOut {
+        throw EvaluationError.message("CLI transcription timed out for \(audio.lastPathComponent) using \(backend).")
+    }
+    guard result.signal == nil, result.status == 0 else {
+        throw EvaluationError.message("CLI transcription failed for \(audio.lastPathComponent) using \(backend) (status \(result.signal ?? result.status)).")
+    }
+    return result.seconds
+}
+
+/// How a command run by `runInProcessGroup` ended.
+private struct GroupExit {
+    /// The exit status, when it exited.
+    var status: Int32
+    /// The signal that ended it, when one did.
+    var signal: Int32?
+    var timedOut: Bool
+    var seconds: Double
+}
+
+/// Runs `executable` in a new process group of its own (posix_spawn with POSIX_SPAWN_SETPGROUP), with stdin from
+/// /dev/null and stdout and stderr on the given descriptors (nil: /dev/null), and waits for it. Past `timeout` the
+/// whole group gets SIGTERM, and whatever of it is still running after `grace` seconds gets SIGKILL, so a wrapper
+/// such as `/usr/bin/time` cannot leave its child running when it is itself ended.
+private func runInProcessGroup(_ executable: URL, _ arguments: [String], stdout: Int32?, stderr: Int32?,
+                               timeout: Double, grace: Double) throws -> GroupExit {
+    var actions: posix_spawn_file_actions_t?
+    posix_spawn_file_actions_init(&actions)
+    defer { posix_spawn_file_actions_destroy(&actions) }
+    posix_spawn_file_actions_addopen(&actions, 0, "/dev/null", O_RDONLY, 0)
+    if let stdout { posix_spawn_file_actions_adddup2(&actions, stdout, 1) }
+    else { posix_spawn_file_actions_addopen(&actions, 1, "/dev/null", O_WRONLY, 0) }
+    if let stderr { posix_spawn_file_actions_adddup2(&actions, stderr, 2) }
+    else { posix_spawn_file_actions_addopen(&actions, 2, "/dev/null", O_WRONLY, 0) }
+    var attributes: posix_spawnattr_t?
+    posix_spawnattr_init(&attributes)
+    defer { posix_spawnattr_destroy(&attributes) }
+    // Its own group (pgid = its pid); only descriptors 0-2 are inherited; default signal handling, nothing blocked.
+    posix_spawnattr_setflags(&attributes, Int16(POSIX_SPAWN_SETPGROUP | POSIX_SPAWN_CLOEXEC_DEFAULT
+                                                    | POSIX_SPAWN_SETSIGDEF | POSIX_SPAWN_SETSIGMASK))
+    posix_spawnattr_setpgroup(&attributes, 0)
+    var all = sigset_t()
+    sigfillset(&all)
+    posix_spawnattr_setsigdefault(&attributes, &all)
+    var none = sigset_t()
+    sigemptyset(&none)
+    posix_spawnattr_setsigmask(&attributes, &none)
+    let argv: [UnsafeMutablePointer<CChar>?] = ([executable.path] + arguments).map { strdup($0) } + [nil]
+    defer { argv.forEach { free($0) } }
+    var pid: pid_t = 0
     let started = ProcessInfo.processInfo.systemUptime
-    try process.run()
-    while process.isRunning {
-        if ProcessInfo.processInfo.systemUptime - started > options.timeoutSeconds {
-            process.terminate()
-            Thread.sleep(forTimeInterval: 0.5)
-            if process.isRunning { _ = kill(process.processIdentifier, SIGKILL) }
-            process.waitUntilExit()
-            throw EvaluationError.message("CLI transcription timed out for \(audio.lastPathComponent) using \(backend).")
+    let code = posix_spawn(&pid, executable.path, &actions, &attributes, argv, environ)
+    guard code == 0 else {
+        throw EvaluationError.message("Cannot run \(executable.lastPathComponent): \(String(cString: strerror(code))).")
+    }
+    var status: Int32 = 0
+    var reaped = false
+    /// Reaps the child if it has ended (blocking when `wait`), retrying after a signal interrupts the call.
+    func reap(wait: Bool) {
+        guard !reaped else { return }
+        while true {
+            let result = waitpid(pid, &status, wait ? 0 : WNOHANG)
+            if result == pid { reaped = true; return }
+            if result < 0, errno == EINTR { continue }
+            return
+        }
+    }
+    func uptime() -> Double { ProcessInfo.processInfo.systemUptime }
+    /// Whether any process of the group is left (the unreaped child counts).
+    func groupAlive() -> Bool { kill(-pid, 0) == 0 || errno == EPERM }
+    var timedOut = false
+    while true {
+        reap(wait: false)
+        if reaped { break }
+        if uptime() - started > timeout {
+            timedOut = true
+            _ = kill(-pid, SIGTERM)
+            let graceStarted = uptime()
+            while uptime() - graceStarted < grace {
+                reap(wait: false)
+                if reaped, !groupAlive() { break }
+                Thread.sleep(forTimeInterval: 0.05)
+            }
+            if !reaped || groupAlive() { _ = kill(-pid, SIGKILL) }
+            reap(wait: true)
+            // The rest of the group was reparented; wait (briefly) until it is gone.
+            let killed = uptime()
+            while groupAlive(), uptime() - killed < 5 { Thread.sleep(forTimeInterval: 0.02) }
+            break
         }
         Thread.sleep(forTimeInterval: 0.05)
     }
-    process.waitUntilExit()
-    guard process.terminationReason == .exit, process.terminationStatus == 0 else {
-        throw EvaluationError.message("CLI transcription failed for \(audio.lastPathComponent) using \(backend) (status \(process.terminationStatus)).")
-    }
-    return ProcessInfo.processInfo.systemUptime - started
+    let seconds = uptime() - started
+    let signal = status & 0x7f
+    return GroupExit(status: (status >> 8) & 0xff, signal: signal == 0 ? nil : signal, timedOut: timedOut,
+                     seconds: seconds)
 }
 
 private func aggregate(_ rows: [PairResult], backend: String) -> Aggregate {
@@ -516,8 +591,9 @@ private struct SpeakerReport: Encodable {
 }
 
 /// Runs `executable` with stdout and stderr going to files in `scratch` (no pipe can fill up and stall it) and
-/// returns what it wrote; the files are removed. Past `timeout` the process gets SIGTERM (which makes
-/// `holos session import` remove its partial session), then SIGKILL after 10 s.
+/// returns what it wrote; the files are removed. It runs in a process group of its own, so past `timeout` the
+/// whole group (Holos too when `executable` is `/usr/bin/time`) gets SIGTERM (which makes `holos session import`
+/// remove its partial session), then SIGKILL after 10 s.
 private func runCommand(_ executable: URL, _ arguments: [String], timeout: Double, scratch: URL,
                         what: String) throws -> CommandResult {
     let manager = FileManager.default
@@ -534,38 +610,19 @@ private func runCommand(_ executable: URL, _ arguments: [String], timeout: Doubl
     }
     let out = try FileHandle(forWritingTo: outURL)
     let err = try FileHandle(forWritingTo: errURL)
-    let process = Process()
-    process.executableURL = executable
-    process.arguments = arguments
-    process.standardInput = FileHandle.nullDevice
-    process.standardOutput = out
-    process.standardError = err
-    let started = ProcessInfo.processInfo.systemUptime
-    try process.run()
-    while process.isRunning {
-        if ProcessInfo.processInfo.systemUptime - started > timeout {
-            process.terminate()
-            let grace = ProcessInfo.processInfo.systemUptime
-            while process.isRunning, ProcessInfo.processInfo.systemUptime - grace < 10 {
-                Thread.sleep(forTimeInterval: 0.1)
-            }
-            if process.isRunning { _ = kill(process.processIdentifier, SIGKILL) }
-            process.waitUntilExit()
+    let result: GroupExit
+    do {
+        defer {
             try? out.close()
             try? err.close()
-            throw EvaluationError.message("\(what) timed out after \(Int(timeout)) s.")
         }
-        Thread.sleep(forTimeInterval: 0.05)
+        result = try runInProcessGroup(executable, arguments, stdout: out.fileDescriptor,
+                                       stderr: err.fileDescriptor, timeout: timeout, grace: 10)
     }
-    process.waitUntilExit()
-    let seconds = ProcessInfo.processInfo.systemUptime - started
-    try out.close()
-    try err.close()
-    guard process.terminationReason == .exit else {
-        throw EvaluationError.message("\(what) was ended by signal \(process.terminationStatus).")
-    }
-    return CommandResult(status: process.terminationStatus, stdout: try Data(contentsOf: outURL),
-                         stderr: try Data(contentsOf: errURL), seconds: seconds)
+    if result.timedOut { throw EvaluationError.message("\(what) timed out after \(Int(timeout)) s.") }
+    if let signal = result.signal { throw EvaluationError.message("\(what) was ended by signal \(signal).") }
+    return CommandResult(status: result.status, stdout: try Data(contentsOf: outURL),
+                         stderr: try Data(contentsOf: errURL), seconds: result.seconds)
 }
 
 /// A number `/usr/bin/time -l` printed on its own line before `name` ("maximum resident set size").
@@ -891,7 +948,39 @@ private func selfTest() throws {
           floats(fromBase64: "AAA=") == nil else {
         throw EvaluationError.message("Centroid decoding self-test failed.")
     }
+    try processGroupSelfTest()
     print("Evaluation self-tests passed.")
+}
+
+/// A timed-out command under `/usr/bin/time` whose child ignores SIGTERM: `time` ends at SIGTERM, and its child
+/// must still be ended (SIGKILL to the group), not left running. And a command that finishes reports its status.
+private func processGroupSelfTest() throws {
+    let finished = try runInProcessGroup(URL(fileURLWithPath: "/bin/sh"), ["-c", "exit 3"], stdout: nil, stderr: nil,
+                                         timeout: 30, grace: 1)
+    guard !finished.timedOut, finished.signal == nil, finished.status == 3 else {
+        throw EvaluationError.message("Process-group exit status self-test failed.")
+    }
+    let folder = FileManager.default.temporaryDirectory
+        .appendingPathComponent("holos-evaluate-self-test-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: false,
+                                            attributes: [.posixPermissions: 0o700])
+    defer { try? FileManager.default.removeItem(at: folder) }
+    let pidFile = folder.appendingPathComponent("child.pid")
+    let script = "trap '' TERM; echo $$ > \"$0.tmp\"; mv \"$0.tmp\" \"$0\"; exec /bin/sleep 60"
+    let timed = try runInProcessGroup(URL(fileURLWithPath: "/usr/bin/time"), ["/bin/sh", "-c", script, pidFile.path],
+                                      stdout: nil, stderr: nil, timeout: 1, grace: 0.5)
+    guard timed.timedOut, let text = try? String(contentsOf: pidFile, encoding: .utf8),
+          let child = pid_t(text.trimmingCharacters(in: .whitespacesAndNewlines)), child > 0 else {
+        throw EvaluationError.message("Process-group timeout self-test did not start its child.")
+    }
+    let deadline = ProcessInfo.processInfo.systemUptime + 5
+    while kill(child, 0) == 0, ProcessInfo.processInfo.systemUptime < deadline {
+        Thread.sleep(forTimeInterval: 0.02)
+    }
+    guard kill(child, 0) != 0, errno == ESRCH else {
+        _ = kill(child, SIGKILL)
+        throw EvaluationError.message("Process-group timeout self-test left the timed child running.")
+    }
 }
 
 do {
