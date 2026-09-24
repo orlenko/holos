@@ -87,9 +87,11 @@ final class DictationOverlay {
 
     /// Shows or updates the preview. After the close button was clicked, updates stay hidden until
     /// `allowShowing()`; `force` is for messages the user must see (such as the rebuilt-app warning).
-    func show(title: String, text: String, force: Bool = false) {
+    func show(title: String, text: String, force: Bool = false, attention: Bool = false) {
         if dismissed && !force { return }
         if force { dismissed = false }
+        contentToken &+= 1
+        showingAttention = attention
         titleLabel.stringValue = title
         previewLabel.stringValue = Self.latestWords(of: text, font: previewLabel.font ?? .systemFont(ofSize: 15))
         let pointer = NSEvent.mouseLocation
@@ -133,6 +135,17 @@ final class DictationOverlay {
         return "…" + text[start...]
     }
 
+    var isVisible: Bool { panel.isVisible }
+    /// Changes every time the panel shows new content, so a timer can tell whether its content is still up.
+    private(set) var contentToken = 0
+    /// Whether the content on screen needs the user (a failure, text left on the clipboard, a warning).
+    private(set) var showingAttention = false
+
+    /// Opacity of the preview (not of its close button, which stays fully visible).
+    func setOpacity(_ value: Double) {
+        panel.alphaValue = CGFloat(min(1, max(0.3, value)))
+    }
+
     /// Called when a new dictation starts, so its preview appears again.
     func allowShowing() { dismissed = false }
 
@@ -142,6 +155,7 @@ final class DictationOverlay {
     }
 
     func hide() {
+        showingAttention = false
         if closePanel.parent != nil { panel.removeChildWindow(closePanel) }
         closePanel.orderOut(nil)
         panel.orderOut(nil)

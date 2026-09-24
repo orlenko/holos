@@ -73,6 +73,24 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
     /// Where the user was at key-down, to check before telling them to paste.
     private var originPID: pid_t?
     private var originFocus: AXUIElement?
+    private var previewOpacity: Double {
+        get { min(1, max(0.3, UserDefaults.standard.object(forKey: "previewOpacity") as? Double ?? 0.85)) }
+        set { UserDefaults.standard.set(min(1, max(0.3, newValue)), forKey: "previewOpacity") }
+    }
+    private var opacitySampleTask: Task<Void, Never>?
+    /// The overlay content token of the opacity sample currently on screen, if any.
+    private var sampleToken: Int?
+    /// When false, the preview is hidden during dictation and for results that went in fine; anything that
+    /// needs the user (text left on the clipboard, failures) is still shown.
+    private var showPreview: Bool {
+        get { UserDefaults.standard.object(forKey: "showPreview") as? Bool ?? true }
+        set { UserDefaults.standard.set(newValue, forKey: "showPreview") }
+    }
+    /// Set when the current result was not written cleanly, so it is shown even with the preview off.
+    private var resultNeedsAttention = false
+    /// A forced stop (for example the maximum duration) reported while finalizing; kept for the result message.
+    private var forcedStopMessage: String?
+
     private var removeFillers: Bool {
         get { UserDefaults.standard.object(forKey: "removeFillers") as? Bool ?? true }
         set { UserDefaults.standard.set(newValue, forKey: "removeFillers") }
@@ -101,6 +119,7 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
             shortcut = saved
         }
         controller = DictationController(locale: locale) { [weak self] update in self?.receive(update) }
+        overlay.setOpacity(previewOpacity)
         do { corrections = try CorrectionList.load(from: CorrectionList.defaultURL) }
         catch {
             correctionsWritable = false
@@ -210,7 +229,8 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
         log.error("Code signature no longer matches the app on disk; dictation paused")
         if enabled || enabling { disable(persist: false) }
         show("Holos was rebuilt while running. Quit and reopen Holos to dictate again.")
-        overlay.show(title: "Holos was rebuilt while running", text: "Quit and reopen Holos to dictate again.", force: true)
+        overlay.show(title: "Holos was rebuilt while running", text: "Quit and reopen Holos to dictate again.",
+                     force: true, attention: true)
         scheduleExpiry()
         return true
     }
@@ -284,6 +304,8 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
         case .began:
             guard !isBusy, !refuseIfReplaced(), !TextInsertion.isSecureInputActive() else { return }
             overlay.allowShowing()
+            resultNeedsAttention = false
+            forcedStopMessage = nil
             insertionBlockReason = nil
             insertedText = ""
             latestCommitted = ""
@@ -329,7 +351,13 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
             }
             expiryTask?.cancel()
             resultText = ""
-            if !controller.begin() {
+            if controller.begin() {
+                // A pending opacity sample must not hide this dictation's own preview or result.
+                // A rejected begin leaves the timer running so the sample still hides on time.
+                opacitySampleTask?.cancel()
+                opacitySampleTask = nil
+                sampleToken = nil
+            } else {
                 target = nil
                 show("Previous dictation is still stopping; release and try again shortly.")
             }
@@ -347,11 +375,17 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
             message = enabled ? "Ready — hold \(shortcutTitle)" : "Disabled"
         case .preparing:
             message = "Preparing — wait before speaking"
-            overlay.show(title: message, text: "Release to stop · Esc to cancel")
+            if showPreview {
+                overlay.show(title: message, text: "Release to stop · Esc to cancel")
+            } else {
+                overlay.hide()  // an earlier result's message no longer applies
+            }
         case .listening:
             message = "Listening — release \(shortcutTitle) to finish"
-            overlay.show(title: message,
-                         text: update.text.isEmpty ? "Speak now · Esc to cancel" : cleaned(update.text))
+            if showPreview {
+                overlay.show(title: message,
+                             text: update.text.isEmpty ? "Speak now · Esc to cancel" : cleaned(update.text))
+            }
             latestCommitted = update.committedText
             stream(cleanedForStreaming(update.committedText))
         case .finalizing:
@@ -360,7 +394,13 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
                 insertionBlockReason = reason + " Use Copy Result."
             }
             message = update.message ?? "Finishing locally…"
-            overlay.show(title: message, text: cleaned(update.text))
+            if let forced = update.message {  // a forced stop must stay visible through the result
+                resultNeedsAttention = true
+                forcedStopMessage = forced
+            }
+            if showPreview || update.message != nil {
+                overlay.show(title: message, text: cleaned(update.text), attention: update.message != nil)
+            }
             if !update.committedText.isEmpty { latestCommitted = update.committedText }
             stream(cleanedForStreaming(update.committedText))
         case .result:
@@ -373,7 +413,10 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
                 lastRecognized = recognized
             }
             finish(text, into: destination)
-            overlay.show(title: message, text: resultText)
+            if let forced = forcedStopMessage, !message.hasPrefix(forced) { message = forced + " " + message }
+            if showPreview || resultNeedsAttention {
+                overlay.show(title: message, text: resultText, attention: resultNeedsAttention)
+            }
             scheduleExpiry()
         case .failed:
             target = nil
@@ -400,7 +443,7 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
                         ? " The words that were not inserted are on the clipboard — press ⌘V."
                         : " Copy Result has the words that were not inserted."
                 }
-                overlay.show(title: message, text: resultText)
+                overlay.show(title: message, text: resultText, attention: true)
                 scheduleExpiry()
                 rebuildMenu()
                 return
@@ -409,13 +452,13 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
                 // The transcript no longer extends what was inserted, so no tail is safe to paste.
                 resultText = committed
                 message += " The transcript changed after text was inserted; check the field. Copy Result has the full transcript."
-                overlay.show(title: message, text: resultText)
+                overlay.show(title: message, text: resultText, attention: true)
                 scheduleExpiry()
                 rebuildMenu()
                 return
             }
             resultText = update.text
-            overlay.show(title: message, text: resultText)
+            overlay.show(title: message, text: resultText, attention: true)
             scheduleExpiry()
         }
         rebuildMenu()
@@ -477,6 +520,7 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
         guard !insertedText.isEmpty else {
             guard !text.isEmpty else {
                 message = "No speech recognized"
+                resultNeedsAttention = true  // shown even with the preview off, so it is not mistaken for success
                 return
             }
             let outcome: InsertionOutcome = if enabled, insertionBlockReason == nil, let destination {
@@ -490,6 +534,7 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
         }
         guard let rest = TextInsertion.unwritten(text, after: insertedText) else {
             message = "Text was inserted while you spoke, but the final transcript differs. Check the field; Copy Result copies the full transcript."
+            resultNeedsAttention = true
             return
         }
         let remainder = rest.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -520,6 +565,7 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
             message = outcomeMessage(outcome)
         case .needsCopy(let reason), .unverified(let reason), .targetChanged(let reason):
             log.notice("Not written: \(reason, privacy: .public)")
+            resultNeedsAttention = true
             resultText = unwritten
             let copied = copyToClipboard(unwritten)
             let moved: Bool = if case .targetChanged = outcome { true } else { focusMovedSinceKeyDown() }
@@ -642,10 +688,12 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
 
     private func scheduleExpiry() {
         expiryTask?.cancel()
+        let shown = overlay.contentToken
         expiryTask = Task { [weak self] in
             do {
                 try await Task.sleep(for: .seconds(8))
-                self?.overlay.hide()
+                // Hide only the content this timer was scheduled for, never something shown since.
+                if let self, self.overlay.contentToken == shown { self.overlay.hide() }
                 try await Task.sleep(for: .seconds(592))
                 self?.discardResult()
             } catch { }
@@ -684,8 +732,13 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
     @objc private func showSetup() {
         if setupWindow == nil {
             setupWindow = SetupWindow(perform: { [weak self] action in self?.performSetup(action) },
-                                      onClose: { [weak self] in self?.setupRefreshTask?.cancel(); self?.setupRefreshTask = nil })
+                                      onClose: { [weak self] in
+                                          self?.setupRefreshTask?.cancel(); self?.setupRefreshTask = nil
+                                          self?.setDockPresence(false)
+                                      },
+                                      onOpacityChange: { [weak self] value in self?.changePreviewOpacity(value) })
         }
+        setDockPresence(true)
         setupWindow?.show()
         refreshAssetState()
         // TCC has no change notification, so poll while the window is open.
@@ -698,13 +751,44 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    /// Applies the new opacity and shows a sample preview for a moment so the user can see the effect,
+    /// unless a dictation is in progress (its own preview already shows it).
+    private func changePreviewOpacity(_ value: Double) {
+        previewOpacity = value
+        overlay.setOpacity(previewOpacity)
+        // A visible preview or result already shows the new opacity; never replace it with the sample.
+        let sampleShowing = overlay.isVisible && sampleToken == overlay.contentToken
+        guard !isBusy, showPreview, !overlay.isVisible || sampleShowing else { return }
+        overlay.show(title: "Preview opacity \(Int((previewOpacity * 100).rounded())) %",
+                     text: "This is how the dictation preview looks over your windows.", force: true)
+        let sample = overlay.contentToken
+        sampleToken = sample
+        opacitySampleTask?.cancel()
+        opacitySampleTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(2))
+            guard !Task.isCancelled, let self else { return }
+            // Hide only if the panel still shows this sample, never a warning or result shown since.
+            if self.overlay.contentToken == sample { self.overlay.hide() }
+            if self.sampleToken == sample { self.sampleToken = nil }
+        }
+    }
+
+    /// Holos is a menu bar app with no Dock icon. While the Setup window is open it becomes a regular app,
+    /// so the window shows in the Dock and Command-Tab and can be found when other windows cover it.
+    private func setDockPresence(_ visible: Bool) {
+        let policy: NSApplication.ActivationPolicy = visible ? .regular : .accessory
+        guard NSApplication.shared.activationPolicy() != policy else { return }
+        NSApplication.shared.setActivationPolicy(policy)
+    }
+
     private func updateSetupWindow() {
         guard let setupWindow, setupWindow.isVisible else { return }
         setupWindow.update(SetupState(
             microphone: AudioCapture.microphonePermission, accessibility: AXIsProcessTrusted(),
             inputMonitoring: CGPreflightListenEventAccess(), assets: assetState, installingAssets: installingAssets,
             dictationEnabled: enabled, enabling: enabling, busy: isBusy, shortcutTitle: shortcutTitle,
-            removeFillers: removeFillers, message: message))
+            removeFillers: removeFillers, showPreview: showPreview, previewOpacity: previewOpacity,
+            message: message))
     }
 
     private func refreshAssetState() {
@@ -734,6 +818,11 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
         case .dictation: toggleEnabled()
         case .toggleFillers:
             removeFillers.toggle()
+            updateSetupWindow()
+        case .togglePreview:
+            showPreview.toggle()
+            // Anything that does not need the user goes away at once, during or after a dictation.
+            if !showPreview && !overlay.showingAttention { overlay.hide() }
             updateSetupWindow()
         }
     }
