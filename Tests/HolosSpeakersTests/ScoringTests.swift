@@ -124,6 +124,20 @@ private func near(_ value: Double, _ expected: Double) -> Bool {
     #expect(score.mapping == ["A": "A", "B": "B"])
 }
 
+@Test func scoreAndIntervalsPrintNoSpeakerLabels() {
+    let reference = intervals(("Private Ref", 0, 10))
+    let score = DiarizationScoring.der(reference: reference, hypothesis: intervals(("Private Hyp", 0, 10)))
+    #expect(score.mapping == ["Private Ref": "Private Hyp"])
+    var dumped = ""
+    dump(score, to: &dumped)
+    dump(reference, to: &dumped)
+    for text in [String(describing: score), String(reflecting: score), "\(score)", "\(reference)",
+                 String(reflecting: reference), dumped] {
+        #expect(!text.contains("Private"))
+    }
+    #expect(String(describing: score).contains("mappedPairs: 1"))
+}
+
 // MARK: - Agreement
 
 @Test func agreementComparesOnlyWhereBothSidesSpeak() {

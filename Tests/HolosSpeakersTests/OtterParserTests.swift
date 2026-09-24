@@ -18,11 +18,31 @@ import Testing
         """
     let turns = OtterTranscriptParser.parse(sample)
     #expect(turns == [
-        ReferenceTurn(speaker: "Alex Morgan", start: 3, end: 3727, wordCount: 5),
+        // "Let's" is two words, as the evaluator counts them.
+        ReferenceTurn(speaker: "Alex Morgan", start: 3, end: 3727, wordCount: 6),
         ReferenceTurn(speaker: "Sam", start: 3727, end: nil, wordCount: 5),
     ])
     // Counts only: a turn holds no text.
-    #expect(Mirror(reflecting: turns[0]).children.compactMap(\.label) == ["speaker", "start", "end", "wordCount"])
+    #expect(Mirror(reflecting: turns[0]).children.compactMap(\.label) == ["start", "end", "wordCount"])
+}
+
+@Test func otterWordCountMatchesTheEvaluator() throws {
+    // scripts/evaluate-references.swift: runs of [\p{L}\p{N}] after NFKC and lowercasing.
+    let words = try NSRegularExpression(pattern: OtterTranscriptParser.wordPattern)
+    #expect(OtterTranscriptParser.wordCount("don't 12:30 e-mail U.S.", words: words) == 8)
+    #expect(OtterTranscriptParser.wordCount("— … ,", words: words) == 0)
+    // Ligatures and full-width digits count as one word each.
+    #expect(OtterTranscriptParser.wordCount("ﬁne ２０２６", words: words) == 2)
+}
+
+@Test func referenceTurnPrintsNoSpeakerName() {
+    let turn = ReferenceTurn(speaker: "Private Name", start: 3, end: 9, wordCount: 4)
+    var dumped = ""
+    dump(turn, to: &dumped)
+    for text in [String(describing: turn), String(reflecting: turn), "\(turn)", dumped] {
+        #expect(!text.contains("Private"))
+        #expect(text.contains("wordCount"))
+    }
 }
 
 @Test func otterParserReadsBothTimeLayouts() {

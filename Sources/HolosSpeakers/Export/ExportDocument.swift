@@ -30,7 +30,8 @@ public struct ExportDocument: Sendable, Equatable {
     public var metadata: ExportMetadata
     /// The transcript the projection's spans reference: the head run's transcript (§2.4).
     public var transcript: Transcript
-    /// Supplies `runID`, `engine`, and `alignment` of the JSON export; ignored when built from another transcript.
+    /// Supplies `runID`, `engine`, and `alignment` of the JSON export; ignored when built from another transcript,
+    /// or when the (used) projection was built from another run (`projection.runID != run.id`).
     public var run: DiarizationRun?
     /// nil → one pseudo-turn per segment named by track ("Microphone", "System audio"). A projection built from
     /// another transcript (`projection.transcriptID != transcript.id`) is treated the same way, because its spans
@@ -171,7 +172,8 @@ struct ExportTurn: Sendable, Equatable {
 /// The document resolved once for every format: turns with text and labels, sorted annotations, and blocks.
 struct ExportContent {
     let document: ExportDocument
-    /// The document's run and projection when they were built from `document.transcript`.
+    /// The document's run and projection when they were built from `document.transcript`; the run only when it is
+    /// also the projection's run (or there is no projection).
     let run: DiarizationRun?
     let projection: SpeakerProjection?
     let turns: [ExportTurn]
@@ -183,9 +185,12 @@ struct ExportContent {
 
     init(_ document: ExportDocument) {
         self.document = document
-        run = document.run.flatMap { $0.transcriptID == document.transcript.id ? $0 : nil }
         let projection = document.projection.flatMap { $0.transcriptID == document.transcript.id ? $0 : nil }
         self.projection = projection
+        // A run from another run than the projection's would pair its engine and alignment with other turns.
+        run = document.run.flatMap { run in
+            run.transcriptID == document.transcript.id && (projection.map { $0.runID == run.id } ?? true) ? run : nil
+        }
 
         // Speaker ID → label and position in `projection.speakers`.
         var labels: [String: String] = [:]
@@ -396,13 +401,15 @@ enum ExportText {
     }
 
     /// Runs of whitespace, line breaks, and control characters become one space; the ends are trimmed. The result
-    /// never contains two whitespace characters in a row, so a text line can never look like a text-export header.
+    /// never contains two whitespace scalars in a row, so a text line can never look like a text-export header.
+    ///
+    /// Works per Unicode scalar, not per `Character`: a grapheme cluster can hold a whitespace scalar (a Prepend
+    /// scalar such as U+0600 joins the space after it), and the header regex matches scalars.
     static func singleLine(_ text: String) -> String {
-        var result = ""
-        result.reserveCapacity(text.utf8.count)
+        var result = String.UnicodeScalarView()
         var pendingSpace = false
-        for character in text {
-            if character.isWhitespace || character.unicodeScalars.contains(where: { $0.properties.generalCategory == .control }) {
+        for scalar in text.unicodeScalars {
+            if scalar.properties.isWhitespace || scalar.properties.generalCategory == .control {
                 pendingSpace = !result.isEmpty
                 continue
             }
@@ -410,9 +417,9 @@ enum ExportText {
                 result.append(" ")
                 pendingSpace = false
             }
-            result.append(character)
+            result.append(scalar)
         }
-        return result
+        return String(result)
     }
 
     /// A label on one header line; "Unknown speaker" when nothing printable is left.

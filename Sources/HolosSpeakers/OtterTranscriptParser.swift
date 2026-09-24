@@ -16,6 +16,20 @@ public struct ReferenceTurn: Sendable, Equatable {
     }
 }
 
+/// The speaker name is private reference data: printing, `dump`, and test-failure output show times and the word
+/// count only (docs/meeting-design.md §1.9).
+extension ReferenceTurn: CustomStringConvertible, CustomDebugStringConvertible, CustomReflectable {
+    public var description: String {
+        "ReferenceTurn(start: \(start), end: \(end.map { "\($0)" } ?? "nil"), wordCount: \(wordCount))"
+    }
+
+    public var debugDescription: String { description }
+
+    public var customMirror: Mirror {
+        Mirror(self, children: ["start": start, "end": end as Any, "wordCount": wordCount], displayStyle: .struct)
+    }
+}
+
 /// Reads Otter's plain-text export (and Holos's `transcript.txt`, which uses the same layout).
 public enum OtterTranscriptParser {
     /// Header lines "Name  mm:ss" or "Name  h:mm:ss" start turns; the footer "Transcribed by https://otter.ai" is
@@ -25,12 +39,13 @@ public enum OtterTranscriptParser {
     /// (scripts/evaluate-references.swift): the name is the text before the last run of two or more whitespace
     /// characters, trimmed, and the time after it is minutes and seconds, or hours, minutes, and seconds. The footer
     /// is the evaluator's case-insensitive `Transcribed by http(s)://otter.ai` line. Any other line adds its words
-    /// (whitespace-separated tokens with at least one letter or digit) to the current turn; lines before the first
+    /// (counted as the evaluator counts them: runs of letters and digits) to the current turn; lines before the first
     /// header belong to no turn. Turns keep file order; `end` is the next turn's start as written. A leading
     /// byte-order mark is dropped, so it never becomes part of the first speaker's name.
     public static func parse(_ text: String) -> [ReferenceTurn] {
         guard let header = try? NSRegularExpression(pattern: headerPattern),
-              let footer = try? NSRegularExpression(pattern: footerPattern) else { return [] }
+              let footer = try? NSRegularExpression(pattern: footerPattern),
+              let words = try? NSRegularExpression(pattern: wordPattern) else { return [] }
         let text = text.first == "\u{FEFF}" ? String(text.dropFirst()) : text
         var turns: [ReferenceTurn] = []
         for line in text.components(separatedBy: .newlines) {
@@ -41,7 +56,7 @@ public enum OtterTranscriptParser {
             }
             if footer.firstMatch(in: line, range: range) != nil { continue }
             guard !turns.isEmpty else { continue }
-            turns[turns.count - 1].wordCount += wordCount(line)
+            turns[turns.count - 1].wordCount += wordCount(line, words: words)
         }
         for index in turns.indices.dropLast() {
             turns[index].end = turns[index + 1].start
@@ -83,9 +98,12 @@ public enum OtterTranscriptParser {
         return value
     }
 
-    private static func wordCount(_ line: String) -> Int {
-        line.split(whereSeparator: \.isWhitespace)
-            .filter { $0.contains { $0.isLetter || $0.isNumber } }
-            .count
+    /// The evaluator's word count (`tokens` in scripts/evaluate-references.swift): runs of letters and digits after
+    /// NFKC and lowercasing, so "don't" and "12:30" are two words each.
+    static func wordCount(_ line: String, words: NSRegularExpression) -> Int {
+        let normalized = line.precomposedStringWithCompatibilityMapping.lowercased()
+        return words.numberOfMatches(in: normalized, range: NSRange(location: 0, length: (normalized as NSString).length))
     }
+
+    static let wordPattern = #"[\p{L}\p{N}]+"#
 }

@@ -313,16 +313,34 @@ private func matchesEvaluatorHeader(_ line: String) throws -> Bool {
     #expect(try matchesEvaluatorHeader("Item  4:30"))
     #expect(try !matchesEvaluatorHeader("Item 4:30"))
     #expect(OtterTranscriptParser.parse(text) == [
-        ReferenceTurn(speaker: "Room 12 A", start: 5, end: 9, wordCount: 2),
+        ReferenceTurn(speaker: "Room 12 A", start: 5, end: 9, wordCount: 3),
         ReferenceTurn(speaker: "Speaker 2", start: 9, end: nil, wordCount: 1),
     ])
 }
 
-@Test func singleLineCollapsesWhitespaceAndControls() {
+@Test func singleLineCollapsesWhitespaceAndControls() throws {
     #expect(ExportText.singleLine("  a\n\tb\u{7}c  d\u{2028}e ") == "a b c d e")
     #expect(ExportText.singleLine("\n \u{0}") == "")
     #expect(ExportText.headerLabel("\u{7}") == "Unknown speaker")
     #expect(ExportText.headerLabel(" Jim  (auto) ") == "Jim (auto)")
+    // U+0600 (a Prepend scalar) joins the space after it into one Character; the collapse works per scalar.
+    let prepended = ExportText.singleLine("Total\u{0600}  12:30")
+    #expect(prepended.unicodeScalars.map(\.value) == Array("Total\u{0600} 12:30".unicodeScalars.map(\.value)))
+    #expect(try !matchesEvaluatorHeader(prepended))
+}
+
+@Test func textWithPrependScalarDoesNotBecomeAHeader() throws {
+    let transcript = Transcript(
+        id: "TRANSCRIPT", createdAt: fixedDate, source: "mic+system", locale: "en-CA", backend: .speech,
+        segments: [measuredSegment("seg-a", start: 5, text: "hello there", track: "mic"),
+                   TranscriptSegment(id: "seg-b", start: 7, end: 8, text: "Total\u{0600}  12:30", track: "mic")])
+    let text = try rendered(ExportDocument(metadata: metadata(), transcript: transcript), .txt)
+    for line in text.split(separator: "\n").dropFirst() {
+        #expect(try !matchesEvaluatorHeader(String(line)))
+    }
+    let turns = OtterTranscriptParser.parse(text)
+    #expect(turns.map(\.speaker) == ["Microphone"])
+    #expect(turns.map(\.start) == [5])
 }
 
 // MARK: - JSON
@@ -416,6 +434,63 @@ private func matchesEvaluatorHeader(_ line: String) throws -> Bool {
     exported.metadata.durationSeconds = .nan
     let object = try json(exported)
     #expect((object["session"] as? [String: Any])?["durationSeconds"] is NSNull)
+}
+
+@Test func jsonWritesNullForNumbersThatAreNotFiniteInsideEmbeddedValues() throws {
+    var meeting = fixture([spec("T1", 10, "system:S1", "hello NaN Infinity")])
+    meeting.run.alignment.trackOffsets = ["system": .nan, "mic": .infinity]
+    meeting.run.alignment.parameters.gapSnapSeconds = -.infinity
+    let recognition = RecognitionResult(
+        runID: runID, createdAt: fixedDate, embeddingModel: EmbeddingModelID(id: "fake", revision: "1"),
+        thresholds: RecognitionThresholds(likelyMaxDistance: 0.2, likelyMinMargin: 0.1, possibleMaxDistance: 0.4,
+                                          minSampleSeconds: 20),
+        matches: [SpeakerMatch(speakerID: "system:S1", profileID: "P-1", profileName: "Jim", distance: .nan,
+                               tier: .likely)])
+    let exported = document(meeting, projection: projection(meeting, recognition: recognition, names: ["P-1": "Jim"]))
+    let data = try TranscriptExporter.render(exported, format: .json)
+    let object = try #require(try JSONSerialization.jsonObject(with: data) as? [String: Any])
+    let alignment = try #require(object["alignment"] as? [String: Any])
+    let offsets = try #require(alignment["trackOffsets"] as? [String: Any])
+    #expect(offsets["system"] is NSNull && offsets["mic"] is NSNull)
+    #expect((alignment["parameters"] as? [String: Any])?["gapSnapSeconds"] is NSNull)
+    let speakers = try #require(object["speakers"] as? [[String: Any]])
+    let provenance = try #require(speakers.first?["provenance"] as? [String: Any])
+    let recognized = try #require(provenance["recognized"] as? [String: Any])
+    #expect(recognized["distance"] is NSNull)
+    // Real strings that look like the old sentinels are kept.
+    let turns = try #require(object["turns"] as? [[String: Any]])
+    #expect(turns.first?["text"] as? String == "hello NaN Infinity")
+    #expect(try TranscriptExporter.render(exported, format: .json) == data)
+}
+
+@Test func jsonRunFieldsAreNullWithoutTheProjectionsRun() throws {
+    let meeting = fixture([spec("T1", 10, "system:S1", "hello there")])
+    let view = projection(meeting, actions: [.rename(speakerID: "system:S1", name: "Jim")])
+
+    // A projection without a run.
+    let withoutRun = ExportDocument(metadata: metadata(), transcript: meeting.transcript, projection: view)
+    var object = try json(withoutRun)
+    #expect(object["runID"] is NSNull && object["engine"] is NSNull && object["alignment"] is NSNull)
+    #expect((object["speakers"] as? [[String: Any]])?.first?["label"] as? String == "Jim")
+
+    // A run of the same transcript that is not the projection's run.
+    var otherRun = meeting.run
+    otherRun.id = "RUN-OTHER"
+    let mismatched = ExportDocument(metadata: metadata(), transcript: meeting.transcript, run: otherRun,
+                                    projection: view)
+    object = try json(mismatched)
+    #expect(object["runID"] is NSNull && object["engine"] is NSNull && object["alignment"] is NSNull)
+    #expect((object["speakers"] as? [[String: Any]])?.first?["label"] as? String == "Jim")
+
+    // The matching run fills all three.
+    object = try json(ExportDocument(metadata: metadata(), transcript: meeting.transcript, run: meeting.run,
+                                     projection: view))
+    #expect(object["runID"] as? String == runID)
+    #expect(object["engine"] is [String: Any] && object["alignment"] is [String: Any])
+
+    // A run without a projection still fills them.
+    object = try json(ExportDocument(metadata: metadata(), transcript: meeting.transcript, run: meeting.run))
+    #expect(object["runID"] as? String == runID)
 }
 
 // MARK: - Labels

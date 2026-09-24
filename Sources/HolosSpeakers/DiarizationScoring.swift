@@ -35,8 +35,41 @@ public struct DiarizationScore: Sendable, Equatable {
     }
 }
 
-/// Speaker-diarization metrics (docs/meeting-design.md §5.3, R25). Labels are compared only for equality and never
-/// printed, so private reference names stay inside the caller.
+/// Speaker labels can be private reference names: printing, `dump`, and test-failure output of an interval or a
+/// score show times, counts, and metrics only (docs/meeting-design.md §1.9).
+extension LabelledInterval: CustomStringConvertible, CustomDebugStringConvertible, CustomReflectable {
+    public var description: String { "LabelledInterval(start: \(start), end: \(end))" }
+
+    public var debugDescription: String { description }
+
+    public var customMirror: Mirror {
+        Mirror(self, children: ["start": start, "end": end], displayStyle: .struct)
+    }
+}
+
+extension DiarizationScore: CustomStringConvertible, CustomDebugStringConvertible, CustomReflectable {
+    public var description: String {
+        "DiarizationScore(der: \(der), referenceSeconds: \(referenceSeconds), missSeconds: \(missSeconds), "
+            + "falseAlarmSeconds: \(falseAlarmSeconds), confusionSeconds: \(confusionSeconds), "
+            + "mappedPairs: \(mapping.count), referenceSpeakers: \(referenceSpeakers), "
+            + "hypothesisSpeakers: \(hypothesisSpeakers))"
+    }
+
+    public var debugDescription: String { description }
+
+    public var customMirror: Mirror {
+        Mirror(self, children: [
+            "der": der, "referenceSeconds": referenceSeconds, "missSeconds": missSeconds,
+            "falseAlarmSeconds": falseAlarmSeconds, "confusionSeconds": confusionSeconds,
+            "mappedPairs": mapping.count, "referenceSpeakers": referenceSpeakers,
+            "hypothesisSpeakers": hypothesisSpeakers,
+        ], displayStyle: .struct)
+    }
+}
+
+/// Speaker-diarization metrics (docs/meeting-design.md §5.3, R25). Labels are compared only for equality; the
+/// types that hold them print no labels. `agreement` returns its mapping in a plain tuple, which the caller must
+/// not print.
 ///
 /// Both functions work on 10 ms frames: frame `i` covers `[i, i + 1) × 10 ms` and a speaker is active in it when its
 /// centre lies in one of the speaker's intervals (`start ≤ centre < end`; one speaker's overlapping intervals count

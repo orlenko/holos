@@ -23,24 +23,30 @@ import HolosCore
 /// ```
 ///
 /// Encoded with `HolosJSON` (sorted keys, pretty) and a final newline, so the same document always gives the same
-/// bytes. Every listed key is always present: `runID`, `engine`, and `alignment` are `null` without a run, or with a
-/// run built from another transcript (`runID` then falls back to the projection's); `speakerID` is `null` for an
+/// bytes. Every listed key is always present: `runID`, `engine`, and `alignment` are `null` without a run, with a
+/// run built from another transcript, or with a run other than the projection's; `speakerID` is `null` for an
 /// unknown speaker, and `profileID` is `null` without a confirmed link. `otherSpeakers` maps `otherClusters` to
 /// current speaker IDs (the speaker whose clusters include it after merges), without the turn's own speaker. A
-/// number that is not finite is written as `null`; gaps and markers whose times are not finite (or a gap that ends
+/// number that is not finite is written as `null`, including inside embedded values (`alignment`, `provenance`);
+/// gaps and markers whose times are not finite (or a gap that ends
 /// before it starts) are left out, and the rest are sorted by time. Without a projection, `speakers` is empty, each segment with text
 /// is a turn with `speakerID` `null` and `score` 0, and the `edits` counts are 0. Suggestions and the profile IDs of
 /// automatic matches are never written.
 enum JSONExport {
     static func render(_ content: ExportContent) throws -> Data {
         let encoder = HolosJSON.encoder()
-        // Numbers this file writes itself are already null when not finite; this keeps a corrupt value inside an
-        // embedded contract type (engine, alignment, provenance) from failing the whole export.
+        // Numbers this file writes itself are already null when not finite. A non-finite number inside an embedded
+        // contract value (alignment parameters and offsets, a recognition distance) is encoded as a per-render
+        // random sentinel string, which is then replaced by `null`. Input text cannot contain the sentinel, because
+        // it is a fresh UUID, so no real string is touched and the output stays deterministic.
+        let sentinel = "holos-nonfinite-\(UUID().uuidString)"
         encoder.nonConformingFloatEncodingStrategy = .convertToString(
-            positiveInfinity: "Infinity", negativeInfinity: "-Infinity", nan: "NaN")
-        var data = try encoder.encode(TranscriptFile(content))
-        data.append(0x0A)
-        return data
+            positiveInfinity: sentinel, negativeInfinity: sentinel, nan: sentinel)
+        let encoded = try encoder.encode(TranscriptFile(content))
+        var json = String(decoding: encoded, as: UTF8.self)
+        json = json.replacingOccurrences(of: "\"\(sentinel)\"", with: "null")
+        json.append("\n")
+        return Data(json.utf8)
     }
 
     static let format = "holos-transcript"
@@ -65,7 +71,7 @@ private struct TranscriptFile: Encodable {
         let document = content.document
         session = SessionEntry(document.metadata)
         transcriptID = document.transcript.id
-        runID = content.run?.id ?? content.projection?.runID
+        runID = content.run?.id
         engine = content.run?.engine
         alignment = content.run?.alignment
         speakers = (content.projection?.speakers ?? []).map(SpeakerEntry.init)
