@@ -51,9 +51,46 @@ public enum RecorderChannel {
     /// Refuses (`unavailable`) when the session has no manifest yet (the recorder is still starting; stop it
     /// with SIGTERM instead), when status.json says exited, or when only a maintenance command holds the session's
     /// locks (`maintenanceOnly`): no recorder would ever read or remove the request.
+    ///
+    /// Publication is closed on the recorder's way out (docs/meeting-design.md §4.6): before its last inbox poll it
+    /// creates `control/.closed`; it then polls, writes exited, deletes leftover requests, and removes the marker.
+    /// Once the request is published, `send` checks the marker and then status.json. Either one means the recorder may
+    /// have polled for the last time, so the request is withdrawn: if the withdrawal removed it, the send is refused;
+    /// if the recorder had already taken it, that last poll answers it before exited is written, and the send
+    /// succeeds, unless status.json already says exited without its answer (a leftover the recorder deleted). A
+    /// request published before the marker existed is seen by the last poll. So a send that succeeds is always
+    /// answered, and `--no-wait` never reports a request that nothing will read.
     @discardableResult
     public static func send(_ command: ControlCommand, label: String? = nil, session: URL,
                             sessionID: String, sender: String) throws -> ControlRequest {
+        try send(command, label: label, session: session, sessionID: sessionID, sender: sender, step: nil)
+    }
+
+    /// The points in `send` at which tests run the recorder's exit steps.
+    enum SendStep: Sendable, Equatable {
+        /// The checks before publishing are done; nothing is published yet.
+        case checked
+        case published
+        /// `control/.closed` was checked.
+        case checkedPublication
+        /// status.json was read after publishing (only when publication was open).
+        case checkedStatus
+        /// The request was withdrawn, or found taken (only when the recorder may have polled for the last time).
+        case withdrew
+    }
+
+    /// `send`, with `afterPublish` run between publishing the request and the checks after it (tests: a recorder
+    /// that exits in that window).
+    static func send(_ command: ControlCommand, label: String? = nil, session: URL, sessionID: String,
+                     sender: String, afterPublish: (() throws -> Void)?) throws -> ControlRequest {
+        try send(command, label: label, session: session, sessionID: sessionID, sender: sender, step: { step in
+            if step == .published { try afterPublish?() }
+        })
+    }
+
+    /// `send`, with `step` run at each `SendStep` (tests: every interleaving with the recorder's exit).
+    static func send(_ command: ControlCommand, label: String? = nil, session: URL, sessionID: String,
+                     sender: String, step: ((SendStep) throws -> Void)?) throws -> ControlRequest {
         guard SessionArchive.validToken(sessionID), UUID(uuidString: sessionID) != nil else {
             throw HolosError.invalidInput("Expected a session UUID.")
         }
@@ -64,12 +101,14 @@ public enum RecorderChannel {
             throw HolosError.unavailable("The recorder is still starting and cannot take requests yet; stop it with SIGTERM instead.")
         }
         guard manifest.id == sessionID else { throw HolosError.invalidInput("Session identity mismatch.") }
+        if ControlInbox.isPublicationClosed(session: session) { throw HolosError.unavailable(exitingMessage) }
         if let status = try readStatus(session: session), status.phase == .exited {
-            throw HolosError.unavailable("The recorder has already exited.")
+            throw HolosError.unavailable(exitedMessage)
         }
         if maintenanceOnly(session: session) {
             throw HolosError.unavailable("No recorder is running for this session: another Holos command (recovery, rebuild, speaker labelling, or deletion) is using it. Try again when it finishes.")
         }
+        try step?(.checked)
         let request = ControlRequest(sessionID: sessionID, command: command,
                                      label: label.map { String($0.prefix(ControlInbox.maxLabelLength)) },
                                      sentAtNanos: continuousNanoseconds(), sender: sender)
@@ -78,18 +117,49 @@ public enum RecorderChannel {
         // A same-folder `.<UUID>.tmp`, fsync'd and renamed into place: the recorder never sees a partial request.
         try AtomicFile.create(try HolosJSON.encoder().encode(request),
                               at: folder.appendingPathComponent("\(request.id).json", isDirectory: false))
+        try step?(.published)
+        // The marker first: the recorder removes it only after writing exited, so a check that misses it because it
+        // is already gone is followed by a status read that says exited.
+        let closed = ControlInbox.isPublicationClosed(session: session)
+        try step?(.checkedPublication)
+        if !closed {
+            guard (try? readStatus(session: session))?.phase == .exited else { return request }
+            try step?(.checkedStatus)
+        }
+        let removed = ControlInbox.removeRequest(id: request.id, session: session)
+        try step?(.withdrew)
+        let status = try? readStatus(session: session)
+        let exited = status?.phase == .exited
+        if removed { throw HolosError.unavailable(exited ? exitedMessage : exitingMessage) }
+        // Taken by the recorder: its last poll answers before exited is written; a leftover it deleted after exited
+        // was never answered.
+        if exited, status?.handledRequests.contains(where: { $0.id == request.id }) != true {
+            throw HolosError.unavailable(exitedMessage)
+        }
         return request
     }
 
+    static let exitedMessage = "The recorder has already exited."
+    static let exitingMessage = "The recorder is exiting and takes no more requests."
+
+    /// Removes a published request that no recorder will read (it exited without acknowledging it). A request the
+    /// recorder already took is gone already; that is not an error.
+    public static func withdraw(_ request: ControlRequest, session: URL) {
+        ControlInbox.removeRequest(id: request.id, session: session)
+    }
+
     /// Polls status.json every 50 ms for the request's ack. Nil after `timeout`, or as soon as the recorder has
-    /// exited without acknowledging it.
+    /// exited without acknowledging it; the request is then withdrawn (`withdraw`), since nothing will read it.
     public static func waitForAck(_ request: ControlRequest, session: URL, timeout: Duration) async -> ControlAck? {
         let clock = ContinuousClock()
         let deadline = clock.now.advanced(by: timeout)
         while true {
             if let status = try? readStatus(session: session) {
                 if let ack = status.handledRequests.last(where: { $0.id == request.id }) { return ack }
-                if status.phase == .exited { return nil }
+                if status.phase == .exited {
+                    withdraw(request, session: session)
+                    return nil
+                }
             }
             guard clock.now < deadline, !Task.isCancelled else { return nil }
             try? await Task.sleep(for: .milliseconds(50))

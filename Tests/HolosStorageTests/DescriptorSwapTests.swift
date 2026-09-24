@@ -244,3 +244,222 @@ private func swapStaleArchive(in root: URL) async throws -> URL {
     #expect(report.unrecoveredChunks == ["audio/mic/000001.caf"])
     #expect(report.manifest?.chunks.isEmpty == true)
 }
+
+/// `create(inEmptyFolder:)` writes the session into the folder it was given only when the path later writes take
+/// reaches that folder. Here the folder was renamed away and another put at its name: nothing is written into
+/// either, and the call throws. Otherwise the session is made in the open folder, and its processing lease can be
+/// taken through that folder's descriptor.
+@Test func createInEmptyFolderRefusesAPathThatNoLongerReachesTheFolder() async throws {
+    let root = try swapTemporaryRoot()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let fm = FileManager.default
+    let rootFD = open(root.path, O_RDONLY | O_DIRECTORY | O_CLOEXEC)
+    #expect(rootFD >= 0)
+    defer { close(rootFD) }
+
+    let name = "\(UUID().uuidString).holos"
+    let directory = root.appendingPathComponent(name, isDirectory: true)
+    #expect(mkdirat(rootFD, name, 0o700) == 0)
+    let folder = openat(rootFD, name, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+    #expect(folder >= 0)
+    defer { close(folder) }
+    let moved = root.appendingPathComponent("moved", isDirectory: true)
+    try fm.moveItem(at: directory, to: moved)
+    try fm.createDirectory(at: directory, withIntermediateDirectories: false)
+    #expect(throws: HolosError.self) {
+        _ = try SessionArchive.create(inEmptyFolder: folder, directory: directory, name: "Swap", source: .microphone,
+                                      locale: "en-CA", backend: .speech)
+    }
+    #expect(try fm.contentsOfDirectory(atPath: directory.path).isEmpty)
+    #expect(try fm.contentsOfDirectory(atPath: moved.path).isEmpty)
+
+    try fm.removeItem(at: directory)
+    try fm.moveItem(at: moved, to: directory)
+    let archive = try SessionArchive.create(inEmptyFolder: folder, directory: directory, name: "Swap",
+                                            source: .microphone, locale: "en-CA", backend: .speech)
+    let lease = try SessionArchive.acquireProcessingLease(inFolder: folder, session: directory, retry: .zero)
+    defer { lease.release() }
+    try lease.require(for: directory)
+    try await archive.finish(status: ArchiveStatus.complete)
+    #expect(try SessionArchive.readManifest(at: directory).name == "Swap")
+}
+
+/// The files (not folders) under `folder`, relative paths, sorted.
+private func swapFiles(_ folder: URL) -> [String] {
+    let fm = FileManager.default
+    let all = (fm.enumerator(atPath: folder.path)?.allObjects as? [String]) ?? []
+    return all.filter { path in
+        var isFolder: ObjCBool = false
+        return fm.fileExists(atPath: folder.appendingPathComponent(path).path, isDirectory: &isFolder)
+            && !isFolder.boolValue
+    }.sorted()
+}
+
+/// Makes `<parent>/<id>.holos` through the open `parent`, and returns its URL and its open descriptor.
+private func swapMadeSessionFolder(in parent: URL, parentFD: Int32) throws -> (URL, Int32) {
+    let name = "\(UUID().uuidString).holos"
+    guard mkdirat(parentFD, name, 0o700) == 0 else { throw HolosError.io("mkdirat failed") }
+    let fd = openat(parentFD, name, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+    guard fd >= 0 else { throw HolosError.io("openat failed") }
+    return (parent.appendingPathComponent(name, isDirectory: true), fd)
+}
+
+/// Once a session folder is pinned (as an import pins its staging session), every write that names it by path goes
+/// into the pinned folder, even after the folder holding it is renamed away and a folder with the same layout is put
+/// at its path: the manifest, journal, locks, metadata files, a chunk created for writing, the transcript and its
+/// exports, removals, and folder fsyncs. Nothing lands in the replacement; after the pin is released, the path
+/// reaches the replacement again.
+@Test func pinnedSessionFolderTakesEveryWriteWhateverThePathLeadsTo() async throws {
+    let root = try swapTemporaryRoot()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let fm = FileManager.default
+    let staging = root.appendingPathComponent("staging", isDirectory: true)
+    try fm.createDirectory(at: staging, withIntermediateDirectories: false)
+    let stagingFD = open(staging.path, O_RDONLY | O_DIRECTORY | O_CLOEXEC)
+    #expect(stagingFD >= 0)
+    defer { close(stagingFD) }
+    let (directory, folder) = try swapMadeSessionFolder(in: staging, parentFD: stagingFD)
+    defer { close(folder) }
+    let pin = try AtomicFile.pinSessionFolder(folder, at: directory)
+    defer { pin.release() }
+    let archive = try SessionArchive.create(inEmptyFolder: folder, directory: directory, name: "Swap",
+                                            source: .microphone, locale: "en-CA", backend: .speech)
+
+    let moved = root.appendingPathComponent("moved", isDirectory: true)
+    try fm.moveItem(at: staging, to: moved)
+    for path in ["audio/mic", "audio/system", "transcripts", "exports"] {
+        try fm.createDirectory(at: directory.appendingPathComponent(path), withIntermediateDirectories: true)
+    }
+    let original = moved.appendingPathComponent(directory.lastPathComponent, isDirectory: true)
+
+    try AtomicFile.create(Data("{}".utf8), at: SessionPaths.meetingInfo(directory))
+    try AtomicFile.write(Data("{}".utf8), to: SessionPaths.vocabulary(directory))
+    try AtomicFile.append(Data("{}\n".utf8), to: directory.appendingPathComponent("extra.jsonl"))
+    try AtomicFile.ensurePrivateDirectory(directory.appendingPathComponent("speakers/voice", isDirectory: true))
+    close(try AtomicFile.createForWriting(at: directory.appendingPathComponent("audio/mic/000001.caf")))
+    try AtomicFile.syncDirectory(directory.appendingPathComponent("audio/mic", isDirectory: true))
+    try AtomicFile.removeTree(["audio", "mic", "000001.caf"], in: directory)
+    try await archive.recordEvent(kind: "test", details: [:])
+    try await archive.setStatus(ArchiveStatus.processing)
+    try await archive.saveTranscript(Transcript(source: "swap", locale: "en-CA", backend: .speech),
+                                     writeLegacyExports: true)
+    let lease = try SessionArchive.acquireProcessingLease(at: directory, retry: .zero)
+    try lease.require(for: directory)
+    try SessionArchive.withSpeakerLock(at: directory) {}
+    try await archive.finish(status: ArchiveStatus.complete)
+    lease.release()
+
+    #expect(swapFiles(directory).isEmpty, "Written into the replacement: \(swapFiles(directory))")
+    let written = swapFiles(original)
+    for name in ["manifest.json", "events.jsonl", "meeting.json", "vocabulary.json", "extra.jsonl",
+                 "transcripts/current.json", "exports/transcript.txt", "exports/transcript.md",
+                 SessionLockFile.writer, SessionLockFile.processing, SessionLockFile.speakers] {
+        #expect(written.contains(name), "\(name) is missing from the pinned folder: \(written)")
+    }
+    #expect(!written.contains("audio/mic/000001.caf"))
+    #expect(fm.fileExists(atPath: original.appendingPathComponent("speakers/voice").path))
+    #expect(try SessionArchive.readManifest(at: directory).status == ArchiveStatus.complete)
+
+    pin.release()
+    #expect(throws: HolosError.self) { _ = try SessionArchive.readManifest(at: directory) }
+    try AtomicFile.write(Data("{}".utf8), to: SessionPaths.meetingInfo(directory))
+    #expect(swapFiles(directory) == ["meeting.json"])
+}
+
+/// One form for every path Holos keys or compares in a session: "/private" is dropped before tmp, var, and etc
+/// whether or not the path exists, and nothing else changes.
+@Test func canonicalComponentsDropPrivateBeforeSystemLinksOnly() {
+    func canonical(_ path: String) -> String {
+        NSString.path(withComponents: AtomicFile.canonicalComponents(URL(fileURLWithPath: path)))
+    }
+    let missing = "\(UUID().uuidString).holos"
+    #expect(canonical("/private/var/folders/\(missing)/a.json") == "/var/folders/\(missing)/a.json")
+    #expect(canonical("/private/tmp/\(missing)/./b/../a.json") == "/tmp/\(missing)/a.json")
+    #expect(canonical("/private/etc/hosts") == "/etc/hosts")
+    #expect(canonical("/var/folders/\(missing)") == "/var/folders/\(missing)")
+    #expect(canonical("/private/other/\(missing)") == "/private/other/\(missing)")
+    #expect(canonical("/private") == "/private")
+    #expect(canonical("/Users/private/var") == "/Users/private/var")
+}
+
+/// A pin covers its session however a path in it is named under the temporary folder, which /var leads to
+/// (/private/var): pinned with or without "/private", and written with or without it, to files the session has and
+/// files it does not have yet. A folder with the same layout and files put at the path after the session folder is
+/// renamed away receives nothing. Before, the pin was keyed with `URL.standardized` (keeping "/private") while file
+/// operations looked it up after `standardizedFileURL` (dropping it when the shorter path exists), so a write to
+/// a file the replacement also had, or any write named the other way, went into the replacement by path.
+@Test(arguments: [false, true], [false, true])
+func pinCoversTheSessionNamedWithOrWithoutPrivate(pinPrivate: Bool, writePrivate: Bool) async throws {
+    let root = try swapTemporaryRoot()
+    defer { try? FileManager.default.removeItem(at: root) }
+    try #require(root.path.hasPrefix("/var/"), "the temporary folder is not under /var: \(root.path)")
+    func named(_ url: URL, withPrivate: Bool) -> URL {
+        withPrivate ? URL(fileURLWithPath: "/private" + url.path, isDirectory: true) : url
+    }
+    let fm = FileManager.default
+    let staging = root.appendingPathComponent("staging", isDirectory: true)
+    try fm.createDirectory(at: staging, withIntermediateDirectories: false)
+    let stagingFD = open(staging.path, O_RDONLY | O_DIRECTORY | O_CLOEXEC)
+    #expect(stagingFD >= 0)
+    defer { close(stagingFD) }
+    let (directory, folder) = try swapMadeSessionFolder(in: staging, parentFD: stagingFD)
+    defer { close(folder) }
+    let pin = try AtomicFile.pinSessionFolder(folder, at: named(directory, withPrivate: pinPrivate))
+    defer { pin.release() }
+    let session = named(directory, withPrivate: writePrivate)
+    let archive = try SessionArchive.create(inEmptyFolder: folder, directory: session, name: "Swap",
+                                            source: .microphone, locale: "en-CA", backend: .speech)
+    try AtomicFile.write(Data("{}".utf8), to: SessionPaths.meetingInfo(session))
+    for form in [false, true] {
+        #expect(AtomicFile.isPinned(named(directory, withPrivate: form).appendingPathComponent("manifest.json")))
+    }
+
+    let moved = root.appendingPathComponent("moved", isDirectory: true)
+    try fm.moveItem(at: staging, to: moved)
+    for path in ["audio/mic", "transcripts", "exports"] {
+        try fm.createDirectory(at: directory.appendingPathComponent(path), withIntermediateDirectories: true)
+    }
+    let theirs = Data("theirs".utf8)
+    for name in ["meeting.json", "manifest.json", "vocabulary.json"] {
+        try theirs.write(to: directory.appendingPathComponent(name))
+    }
+    let replacement = swapFiles(directory)
+    let original = moved.appendingPathComponent(directory.lastPathComponent, isDirectory: true)
+
+    try AtomicFile.write(Data("{\"a\":1}".utf8), to: SessionPaths.meetingInfo(session))
+    try AtomicFile.write(Data("{}".utf8), to: SessionPaths.vocabulary(session))
+    try AtomicFile.syncDirectory(session.appendingPathComponent("audio/mic", isDirectory: true))
+    try await archive.setStatus(ArchiveStatus.processing)
+    try await archive.finish(status: ArchiveStatus.audioOnly)
+
+    #expect(swapFiles(directory) == replacement)
+    for name in ["meeting.json", "manifest.json", "vocabulary.json"] {
+        #expect(try Data(contentsOf: directory.appendingPathComponent(name)) == theirs,
+                "\(name) was written into the replacement")
+    }
+    #expect(try Data(contentsOf: SessionPaths.meetingInfo(original)) == Data("{\"a\":1}".utf8))
+    #expect(fm.fileExists(atPath: SessionPaths.vocabulary(original).path))
+    #expect(try SessionArchive.readManifest(at: original).status == ArchiveStatus.audioOnly)
+}
+
+/// A path is pinned once at a time, and releasing a pin that already ended never ends a later one.
+@Test func sessionFolderPinsAreOneAtATime() throws {
+    let root = try swapTemporaryRoot()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let rootFD = open(root.path, O_RDONLY | O_DIRECTORY | O_CLOEXEC)
+    #expect(rootFD >= 0)
+    defer { close(rootFD) }
+    let (directory, folder) = try swapMadeSessionFolder(in: root, parentFD: rootFD)
+    defer { close(folder) }
+    #expect(throws: HolosError.self) { _ = try AtomicFile.pinSessionFolder(folder, at: root) }
+    let first = try AtomicFile.pinSessionFolder(folder, at: directory)
+    #expect(throws: HolosError.self) { _ = try AtomicFile.pinSessionFolder(folder, at: directory) }
+    #expect(AtomicFile.isPinned(directory.appendingPathComponent("audio/mic/000001.caf")))
+    first.release()
+    #expect(!AtomicFile.isPinned(directory))
+    let second = try AtomicFile.pinSessionFolder(folder, at: directory)
+    first.release()
+    #expect(AtomicFile.isPinned(directory))
+    second.release()
+    #expect(!AtomicFile.isPinned(directory))
+}

@@ -330,6 +330,21 @@ and recovery reads a chunk's format and hash from one descriptor opened through 
 (`ChunkFile`, `AudioFileOpenWithCallbacks`), refusing it when the path no longer leads to that file. A `create` whose folder fsync fails removes the new
 file, so a retry is not refused as "already exists".
 
+**Threat model.** Holos protects session data against crashes and kills at any point, against
+concurrent Holos processes (the app, the recorder, CLI commands), and against accidental outside
+changes to the sessions folder (a folder renamed, moved, or replaced by a sync tool, the Finder,
+or a script while Holos works in it). It does not protect against a hostile process running as
+the same user: such a process can already read, change, or delete every session directly, so no
+check inside Holos can keep data from it. The descriptor-based checks (`openat` with
+`O_NOFOLLOW`, device and inode comparisons, verifying an entry after a rename and rolling it
+back when it is not the expected folder) exist so that Holos fails safely when the folder
+changes under it: it writes nothing into a folder it did not make, reports success only for the
+folder it verified, and says where anything it left behind is. The check-then-act windows that
+remain (for example between checking an entry and renaming it by name, which macOS cannot bind
+to a descriptor) are accepted; their consequence is closed by the check afterwards, not the
+window itself. Review findings that need a same-user process racing those windows are out of
+scope.
+
 Locks are `flock` on files in the session folder, one open file description per holder.
 
 | Lock file | Holders | Held for | How it is taken |
@@ -536,8 +551,12 @@ diarization times (after the render time map, §4.7), markers, and gaps. An expo
   during sleep; host time does not, which is why later epochs take their offset from
   this clock. `ManualSessionClock` is the test double.
 - **Epochs.** Each capture start is an epoch with a fresh `MeetingCapture`.
-  `AudioCapture.start(…, timelineOffset:)` sets its host-time origin to
-  `hostNow − timelineOffset`, so frame times continue on the session timeline. Epoch
+  `AudioCapture.start(…, timelineOffset:, timelineOffsetHostTime:)` sets its host-time
+  origin to `offsetHostTime − timelineOffset`, where `offsetHostTime`
+  (`CaptureRequest.offsetHostTime`) is the host time at which the recorder read the
+  session clock for the offset (`hostNow` when nil, as for epoch 0). Frame times
+  continue on the session timeline, and the capture's own setup time (ScreenCaptureKit's
+  content query, the audio engine) is part of the gap before its first frame. Epoch
   k+1 uses `timelineOffset = max(clock.now(), lastFrameEnd + 0.01)`, where
   `lastFrameEnd` is the largest frame end on any track, so a new epoch never overlaps
   the previous one even if the audio clock ran ahead of the host clock.
@@ -585,6 +604,14 @@ diarization times (after the render time map, §4.7), markers, and gaps. An expo
 - On load, every turn span is validated (the segment exists and
   `0 ≤ first < end ≤ effectiveWords.count`). A run with any invalid span is reported as
   unusable (`runProblem`), exports fall back to speaker-less output, and nothing traps.
+- Every fallback or skipped piece of data in a snapshot (an unusable head, run, or run
+  transcript; stale edits; a changed transcript; unreadable or torn journal lines; an
+  unreadable recognition result; a damaged meeting.json; skipped event log entries) is in
+  `SpeakerSnapshotDiagnostics`, whose notes every command that shows or writes speaker
+  labels prints on stderr. An unusable head says the labels were left out and to run
+  `holos session diarize --force`, which replaces a damaged `head.json` too. After an edit
+  or undo, the diagnostics merge the journal as read before the append, since the append
+  repairs a torn last line (`SpeakerSnapshotDiagnostics.merging`).
 
 ## 3. Contract files (wave 0; copy verbatim)
 
@@ -2625,7 +2652,10 @@ After `finish(reason)` the loop exits and `RecordingWorkflow.run` does, in order
 
 1. **Stop capture** with a 5 s timeout. On timeout, abandon the stream, log, and record
    `captureFailed {epoch, error: "Capture did not stop within 5 s"}`. Drain the consumer,
-   let the pump drain into the writer, then `writer.closeAll`.
+   let the pump drain into the writer, then `writer.closeAll`. When the epoch's stream had
+   already ended by itself (the user stopped sharing, or capture failed), the stop is only
+   cleanup: an error from it (ScreenCaptureKit refuses to stop a stopped stream) is logged,
+   never reported as a capture failure.
 2. Phase `stopping` → `transcribing`. **Finish live speech** per track with a timeout of
    30 s + 0.05 × the seconds fed to its current speech session. On timeout, cancel that
    session; segments it already finalized are kept. The same deadline also ends the finishes of
@@ -2641,21 +2671,41 @@ After `finish(reason)` the loop exits and `RecordingWorkflow.run` does, in order
    `transcripts/current.json`).
 5. If a post-process hook is set, **acquire the processing lease** (retry 1 s) while
    still holding the writer lock. On failure, skip post-processing with the message
-   "Another Holos process is labelling this meeting."
-6. `archive.finish(status)` releases the writer lock. There is no moment in which the
-   session holds neither lock, so liveness never reads `dead` between capture and
-   post-processing.
+   "Another Holos process is labelling this meeting." The hook does not run, but the
+   outcome and `RecorderExit` still carry a `.failed` post-processing record ("Speaker
+   labelling was skipped: … Run holos session diarize on this session later."), so
+   `Record.Start` exits 3 and the app shows it; only a `nil` hook gives no record.
+6. `archive.finish(status)` releases the writer lock when the lease is held. There is no
+   moment in which the session holds neither lock, so liveness never reads `dead` between
+   capture and post-processing. Without the lease (no hook, or it could not be taken),
+   and on every failure or cancellation path, `archive.finish(status, keepingLock: true)`
+   keeps the writer lock until `phase: exited` is written (step 8).
 7. Phase `postprocessing`; call the hook with the lease. Progress goes into one
    `AsyncStream` read by one task that updates `status.json` in order; after the hook
    returns, finish the stream and await that task.
-8. Release the lease; write `phase: exited` with `RecorderExit` (archive status, stop
-   reason, post-processing state and message). `StatusWriter` then stops its heartbeat
-   and ignores later updates.
+8. Write `phase: exited` with `RecorderExit` (archive status, stop reason,
+   post-processing state and message), then release the last lock (the writer lock or the
+   lease), so liveness goes to `exited` without reading `dead` on the way. `StatusWriter`
+   then stops its heartbeat and ignores later updates. A failed final write is retried
+   (3 attempts, 100 ms × attempt apart); only a write that lands finishes the writer. If
+   none does, the error is logged, the heartbeat resumes with the last phase, and the
+   recorder keeps its last lock until the process exits, so the session reads busy, not
+   dead, while it shuts down; after exit, recovery handles it like any unfinished status.
 9. Release the power assertion; delete leftover `control/*.json`; return the outcome.
 
 While steps 1–9 run, `ControlInbox` keeps polling once a second and acknowledges every
 request `ignored` ("The recorder is already stopping."). A stop during post-processing
 does not cancel it.
+
+Requests are closed before the last poll. Right before step 8 the recorder creates
+`control/.closed`, polls one last time (answering `ignored`), writes `exited`, and only
+once `exited` is written deletes leftover requests and removes the marker.
+`RecorderChannel.send` refuses when the marker exists; after publishing, it checks the
+marker and then `status.json`. Either one makes it withdraw its request: a request it
+removes is refused; one the recorder already took is answered by the last poll (or,
+if `status.json` already says exited without its answer, was a deleted leftover and is
+refused). The request file belongs to whoever unlinks it, so the inbox never handles a
+request its sender withdrew.
 
 **`StatusWriter` heartbeat.** The actor starts a 1 s timer at launch (phase `starting`)
 and rewrites `status.json` every second until `exited`, independent of the loop, so
@@ -3981,6 +4031,7 @@ hang); `CollectingReporter`; `TemporaryDirectory`; and
 | `durationStopsRecording` | `duration: 0.3`; capture keeps emitting | returns within 2 s; chunks present |
 | `postProcessHookRunsUnderLeaseAfterFinish` | hook records `isActive` and `isProcessing` when called | hook sees `isActive == false`, `isProcessing == true`; outcome carries the hook's record; lease released afterwards |
 | `noHookMeansNoLease` | `postProcess: nil` | outcome `postProcessing == nil`; no lease taken |
+| `leaseHeldElsewhereSkipsPostProcessing`, `leaseErrorFailsPostProcessing` | hook set; the lease is held elsewhere, or taking it fails | hook not called; outcome and `status.json` exit carry `.failed` with a "Speaker labelling was skipped" message |
 | `vocabularyReachesSpeechFactory` | `vocabulary: ["Maria Chen"]` | FakeSpeech saw `["Maria Chen"]` for live and replay sessions |
 | `replayFromSkipsEarlierAudio` | chunks 0–30 s and 30–60 s; `replay(from: 40)` | first frame fed starts at 40.0 (± one buffer); none earlier |
 | `postProcessorSkeletonIsSkipped` | `MeetingPostProcessor().run(session:lease: nil)` on a finished session | state `.skipped`; no `postprocess.json` written |
@@ -4162,9 +4213,12 @@ public enum DiarizationScoring {
     /// (Hungarian up to 20 × 20, greedy by overlap above that).
     public static func der(reference: [LabelledInterval], hypothesis: [LabelledInterval], collar: Double = 0.25) -> DiarizationScore
     /// For Otter references (turns cover silence): over frames where both sides have a speaker, the share whose
-    /// mapped speaker differs. Reported as "agreement with Otter", not DER.
+    /// mapped speaker differs. Reported as "agreement with Otter", not DER. `confusion` is nil (not comparable) when
+    /// no scored frame has both; `referenceSeconds` and `hypothesisSeconds` (scored time per side) say why.
     public static func agreement(reference: [LabelledInterval], hypothesis: [LabelledInterval],
-                                 collar: Double = 0.25) -> (confusion: Double, comparedSeconds: Double, mapping: [String: String])
+                                 collar: Double = 0.25) -> DiarizationAgreement
+    // DiarizationAgreement { confusion: Double?, comparedSeconds, referenceSeconds, hypothesisSeconds: Double,
+    //                        mapping: [String: String] }; prints no labels.
 }
 ```
 
@@ -4698,6 +4752,9 @@ public struct SpeakerSessionSnapshot: Sendable {
     /// Why the head run could not be used (missing transcript, invalid span), if so.
     public let runProblem: String?
     public let audioDeleted: Bool
+    public let meetingInfoDamaged: Bool        // meeting.json damaged or of another session; inferred used
+    public let recognitionUnreadable: Bool     // recognition result left out
+    public let skippedEvents: Int              // event log lines/events the gaps and markers skipped
     /// Throws unavailable when the session has no transcript.
     public static func load(session: URL, profileNames: [String: String] = [:]) throws -> SpeakerSessionSnapshot
     public func exportDocument(timeZone: TimeZone = .current) -> ExportDocument
@@ -4819,7 +4876,11 @@ holos session score <path> --otter <transcript.txt> [--collar 0.25] [--json]    
 - `session score` prints only numbers: reference speakers, Holos speakers, agreement
   confusion, compared seconds, mapping size. With `--json`, the mapping is keyed by
   the first 12 hex characters of the SHA-256 of each Otter label, so scripts can match
-  people across files without printing names. It never prints text.
+  people across files without printing names. It never prints text. It fails rather
+  than print zeros when nothing can be compared: no audio, no speaker segments, Otter
+  times that go backwards or start after the audio ends (another recording), no Otter
+  turn inside the audio, every turn inside the collar, or no overlap. A run without
+  labelled turns reports the turn score as not comparable.
 - `scripts/evaluate-references.swift --speakers` (with `--reference-format otter`): for
   each pair, `holos session import` (transcribed once) into
   `.local/evaluation/<run>/sessions`, then for each configuration `holos session diarize

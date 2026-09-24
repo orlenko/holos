@@ -12,9 +12,15 @@ public struct SpeakerEditResult: Sendable {
     /// speaker whose profile has a sample from this session (PR10 sets it; always false before PR10).
     /// The caller must then `await VoiceProfileService.refreshSamples(session:extractor:store:)`.
     public var needsSampleRefresh: Bool
+    /// What to warn about after the edit: `snapshot.diagnostics` merged with the journal as it was read under the
+    /// lock just before the append (`SpeakerSnapshotDiagnostics.merging`), so a torn last line the append repaired
+    /// is still reported.
+    public var diagnostics: SpeakerSnapshotDiagnostics
 
-    public init(snapshot: SpeakerSessionSnapshot, needsSampleRefresh: Bool = false) {
+    public init(snapshot: SpeakerSessionSnapshot, needsSampleRefresh: Bool = false,
+                diagnostics: SpeakerSnapshotDiagnostics? = nil) {
         self.snapshot = snapshot; self.needsSampleRefresh = needsSampleRefresh
+        self.diagnostics = diagnostics ?? snapshot.diagnostics
     }
 }
 
@@ -58,10 +64,37 @@ public enum SpeakerEditor {
     public static func apply(_ actions: [SpeakerEditAction], view: SpeakerProjection, session: URL, source: String,
                              regenerateExports: Bool = true,
                              profileNames: [String: String] = [:]) throws -> SpeakerEditResult {
+        let saved = try save(actions, view: view, session: session, source: source, profileNames: profileNames,
+                             skipIfUnchanged: false)
+        return try finish(saved ?? Saved(edits: [], journal: EditJournal()), session: session,
+                          regenerateExports: regenerateExports, profileNames: profileNames)
+    }
+
+    /// `apply`, except that a batch that would leave every speaker and turn of the CURRENT session as it is (a rename
+    /// to the current name, excluding turns already excluded, …) is not saved, since it would only use up an undo
+    /// step: returns nil, having written nothing and regenerated nothing.
+    ///
+    /// The decision is made under the speaker lock, after the same checks as `apply`: an action whose fingerprint on
+    /// `view` differs from the current state is refused with `changedMessage` even when it would change nothing on
+    /// `view` (renaming Jim to Jim after someone else renamed Jim to Maria), and an action the current state refuses
+    /// throws as in `apply`. A batch with a `revert` is always saved. Use this, not `changesNothing` on the view, to
+    /// tell the user there is nothing to change.
+    public static func applyUnlessUnchanged(_ actions: [SpeakerEditAction], view: SpeakerProjection, session: URL,
+                                            source: String, regenerateExports: Bool = true,
+                                            profileNames: [String: String] = [:]) throws -> SpeakerEditResult? {
+        guard let saved = try save(actions, view: view, session: session, source: source,
+                                   profileNames: profileNames, skipIfUnchanged: true) else { return nil }
+        return try finish(saved, session: session, regenerateExports: regenerateExports, profileNames: profileNames)
+    }
+
+    /// The compare-and-append of `apply`; nil (nothing written) when `skipIfUnchanged` and the batch leaves the
+    /// current state as it is.
+    private static func save(_ actions: [SpeakerEditAction], view: SpeakerProjection, session: URL, source: String,
+                             profileNames: [String: String], skipIfUnchanged: Bool) throws -> Saved? {
         guard !actions.isEmpty else { throw HolosError.invalidInput("There is no speaker change to save.") }
         try requireSource(source)
         let preloaded = readRun(view.runID, session: session)
-        let saved = try SessionArchive.withSpeakerLock(at: session) { () throws -> [SpeakerEdit] in
+        return try SessionArchive.withSpeakerLock(at: session) { () throws -> Saved? in
             let base = try currentBase(view: view, session: session, preloaded: preloaded, profileNames: profileNames)
             var viewState = view
             var current = base.projection
@@ -91,20 +124,25 @@ public enum SpeakerEditor {
                 current = next
                 viewState = viewState.applying(action, editID: id)
             }
+            if skipIfUnchanged, !edits.contains(where: { if case .revert = $0.action { true } else { false } }),
+               current.speakers == base.projection.speakers, current.turns == base.projection.turns {
+                log.info("Session \(base.run.sessionID, privacy: .public): a speaker change of \(edits.count, privacy: .public) edits changes nothing; not saved")
+                return nil
+            }
             try SessionSpeakerStore.appendEdits(edits, session: session)
             log.info("Session \(base.run.sessionID, privacy: .public): saved \(edits.count, privacy: .public) speaker edits (batch \(batchID, privacy: .public), run \(base.run.id, privacy: .public))")
-            return edits
+            return Saved(edits: edits, journal: base.journal)
         }
-        return try finish(saved, session: session, regenerateExports: regenerateExports, profileNames: profileNames)
     }
 
     /// Appends a revert for every edit of `view.lastUndoableBatchID` (same refusal rules).
     ///
     /// Details:
-    /// - Refused with `invalidInput` when the view has nothing to undo.
     /// - Refused, writing nothing, with `changedMessage` when the head run is not `view.runID`, when the session's
     ///   newest undoable batch is no longer the view's (someone edited or undid since), or when the lines of that
-    ///   batch in effect differ between the view and the session.
+    ///   batch in effect differ between the view and the session. These checks run under the speaker lock.
+    /// - Refused with `invalidInput` when there is nothing to undo, which is decided under the lock too: a view with
+    ///   nothing to undo while the session now has a change to undo is refused with `changedMessage`.
     /// - Only the batch's lines in effect are reverted, in journal order, as one new batch; a revert carries no
     ///   fingerprint (§4.9). Reverts are never undone themselves (there is no redo), so repeated calls walk back
     ///   through earlier batches.
@@ -117,13 +155,17 @@ public enum SpeakerEditor {
     public static func undoLast(view: SpeakerProjection, session: URL, source: String,
                                 regenerateExports: Bool = true) throws -> SpeakerEditResult {
         try requireSource(source)
-        guard let batchID = view.lastUndoableBatchID else {
-            throw HolosError.invalidInput("There is no speaker change to undo.")
-        }
         let preloaded = readRun(view.runID, session: session)
-        let saved = try SessionArchive.withSpeakerLock(at: session) { () throws -> [SpeakerEdit] in
+        let saved = try SessionArchive.withSpeakerLock(at: session) { () throws -> Saved in
             let base = try currentBase(view: view, session: session, preloaded: preloaded, profileNames: [:])
-            guard base.projection.lastUndoableBatchID == batchID else { throw refusedStaleView(base.run) }
+            // Compared under the lock even when the view has nothing to undo: a change saved since the view was
+            // loaded makes "nothing to undo" false, so that view is refused as outdated like any other.
+            guard base.projection.lastUndoableBatchID == view.lastUndoableBatchID else {
+                throw refusedStaleView(base.run)
+            }
+            guard let batchID = view.lastUndoableBatchID else {
+                throw HolosError.invalidInput("There is no speaker change to undo.")
+            }
             let lines = Set(base.journal.edits
                 .filter { $0.baseRunID == base.run.id && ($0.batchID ?? $0.id) == batchID }
                 .map(\.id))
@@ -168,7 +210,7 @@ public enum SpeakerEditor {
             }
             try SessionSpeakerStore.appendEdits(edits, session: session)
             log.info("Session \(base.run.sessionID, privacy: .public): undid batch \(batchID, privacy: .public) with \(edits.count, privacy: .public) reverts (batch \(revertBatch, privacy: .public))")
-            return edits
+            return Saved(edits: edits, journal: base.journal)
         }
         return try finish(saved, session: session, regenerateExports: regenerateExports, profileNames: [:])
     }
@@ -195,9 +237,10 @@ public enum SpeakerEditor {
     }
 
     /// True when `actions`, applied in order on `view`, leave every speaker and turn as it is (a rename to the
-    /// current name, clearing a name that is not set, excluding turns already excluded, …). Such a batch would still
-    /// be saved and would use up an undo step, so callers say there is nothing to change instead. False when an
-    /// action is not valid on `view`, so `apply` reports why.
+    /// current name, clearing a name that is not set, excluding turns already excluded, …). False when an action is
+    /// not valid on `view`, so `apply` reports why. A preview of `view` only (for example to disable a Save button):
+    /// the session may have changed since `view` was loaded, so to decide whether to save, or to tell the user there
+    /// is nothing to change, call `applyUnlessUnchanged`, which decides on the current state under the speaker lock.
     public static func changesNothing(_ actions: [SpeakerEditAction], on view: SpeakerProjection) -> Bool {
         var next = view
         for action in actions.map(cleaned) {
@@ -266,7 +309,7 @@ public enum SpeakerEditor {
                     "The transcript the speaker labels were made from is missing or damaged. Label speakers again.")
             }
             if let problem = SpeakerSessionSnapshot.spanProblem(run: run, transcript: transcript) {
-                throw HolosError.unavailable(problem)
+                throw HolosError.unavailable(problem + " Label speakers again.")
             }
             return RunFiles(run: run, transcript: transcript)
         }
@@ -291,13 +334,13 @@ public enum SpeakerEditor {
 
     /// Loads the result after the lock is released and regenerates the exports when asked. The lines are saved
     /// by then, so a failure here says so.
-    private static func finish(_ saved: [SpeakerEdit], session: URL, regenerateExports: Bool,
+    private static func finish(_ saved: Saved, session: URL, regenerateExports: Bool,
                                profileNames: [String: String]) throws -> SpeakerEditResult {
         let snapshot: SpeakerSessionSnapshot
         do {
             snapshot = try SpeakerSessionSnapshot.load(session: session, profileNames: profileNames)
         } catch {
-            log.error("Saved \(saved.count, privacy: .public) speaker edits, then could not reload the session: \(error.localizedDescription, privacy: .private)")
+            log.error("Saved \(saved.edits.count, privacy: .public) speaker edits, then could not reload the session: \(error.localizedDescription, privacy: .private)")
             throw HolosError.incomplete("The speaker change was saved, but the speaker labels could not be "
                                         + "reloaded: \(error.localizedDescription)")
         }
@@ -305,12 +348,22 @@ public enum SpeakerEditor {
             do {
                 try SessionExports.regenerate(session: session, profileNames: profileNames)
             } catch {
-                log.error("Saved \(saved.count, privacy: .public) speaker edits, then could not rewrite the exports: \(error.localizedDescription, privacy: .private)")
+                log.error("Saved \(saved.edits.count, privacy: .public) speaker edits, then could not rewrite the exports: \(error.localizedDescription, privacy: .private)")
                 throw HolosError.incomplete("The speaker change was saved, but the exports could not be rewritten: "
                                             + "\(error.localizedDescription) Export the transcript again to update them.")
             }
         }
-        return SpeakerEditResult(snapshot: snapshot, needsSampleRefresh: false)
+        let before = SpeakerSnapshotDiagnostics(session: session, unreadableLines: saved.journal.unreadableLines,
+                                                tornTail: saved.journal.tornTail)
+        return SpeakerEditResult(snapshot: snapshot, needsSampleRefresh: false,
+                                 diagnostics: snapshot.diagnostics.merging(before))
+    }
+
+    /// The lines a write appended, with the journal as it was read under the lock just before (its torn last line,
+    /// if any, is repaired by the append).
+    private struct Saved {
+        let edits: [SpeakerEdit]
+        let journal: EditJournal
     }
 
     private static func requireSource(_ source: String) throws {

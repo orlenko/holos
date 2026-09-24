@@ -1,6 +1,7 @@
 import ArgumentParser
 import Foundation
 import HolosCore
+import HolosStorage
 import HolosSynthesis
 
 struct Voices: AsyncParsableCommand {
@@ -32,9 +33,12 @@ struct Say: AsyncParsableCommand {
             let result = try await renderer.render(text: input, voiceIdentifier: voice, rate: rate, to: fileURL(output))
             Console.output(result.url.path)
         } else {
-            let temporary = FileManager.default.temporaryDirectory.appendingPathComponent("holos-say-\(UUID().uuidString)", isDirectory: true)
+            // The folder is created here (exclusively, 0700) and removed with `AtomicFile.removeTree`, which opens
+            // the temporary folder with O_NOFOLLOW and never follows a link inside it.
+            let parent = FileManager.default.temporaryDirectory.resolvingSymlinksInPath()
+            let temporary = parent.appendingPathComponent("holos-say-\(UUID().uuidString)", isDirectory: true)
             try FileManager.default.createDirectory(at: temporary, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
-            defer { try? FileManager.default.removeItem(at: temporary) }
+            defer { _ = try? AtomicFile.removeTree([temporary.lastPathComponent], in: parent) }
             let result = try await renderer.render(text: input, voiceIdentifier: voice, rate: rate, to: temporary.appendingPathComponent("speech.m4a"))
             if try await !SpeechPlayback.play(file: result.url, maxWait: maxWait) {
                 Console.error("Skipped speech because it waited longer than \(maxWait) seconds in the playback queue.")
