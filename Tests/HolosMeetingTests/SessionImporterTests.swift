@@ -416,10 +416,11 @@ func importPersistsNoStagingPath() async throws {
 }
 
 /// Another program renames the staging folder away after `ImportStaging.create` and puts a folder of its own at the
-/// same name before the session is made. The session is made through the staging folder's descriptor and refused
-/// because its path no longer reaches it, so the import fails having written nothing into the replacement, and the
-/// original staging folder is emptied. Before, `SessionArchive.create(root: staging.url)` made the session inside
-/// the replacement, and every later write (the whole imported audio) went there while the error said nothing was
+/// same name before the session is made. The session is made through the staging folder's descriptor, and its path
+/// is pinned to the folder made there, so every write goes into the staging folder the import made, wherever it now
+/// is: the import finishes and is published from there, the replacement is left exactly as it was, and the moved
+/// staging folder is emptied. Before, `SessionArchive.create(root: staging.url)` made the session inside the
+/// replacement, and every later write (the whole imported audio) went there while the error said nothing was
 /// imported.
 @Test(.timeLimit(.minutes(1)))
 func importNeverWritesIntoAFolderRenamedInAtTheStagingName() async throws {
@@ -430,25 +431,80 @@ func importNeverWritesIntoAFolderRenamedInAtTheStagingName() async throws {
     let moved = temp.url.appendingPathComponent("moved", isDirectory: true)
     let replacement = SharedValue<[String]>([])
     let swapped = SharedValue<String?>(nil)
-    let error = await #expect(throws: HolosError.self) {
-        try await ImportStaging.$beforeSession.withValue({ staging in
-            do {
-                try FileManager.default.moveItem(at: staging, to: moved)
-                _ = try sessionImporterAbandonedStaging(in: root, name: staging.lastPathComponent)
-            } catch {
-                Issue.record("Cannot swap the folder: \(error)")
-            }
-            swapped.update { $0 = staging.lastPathComponent }
-            replacement.update { $0 = sessionImporterTree(staging) }
-        }) {
-            _ = try await sessionImporterImport(wav, root: root, speech: FakeSpeechFactory(), transcribe: false)
+    let session = try await ImportStaging.$beforeSession.withValue({ staging in
+        do {
+            try FileManager.default.moveItem(at: staging, to: moved)
+            _ = try sessionImporterAbandonedStaging(in: root, name: staging.lastPathComponent)
+        } catch {
+            Issue.record("Cannot swap the folder: \(error)")
         }
+        swapped.update { $0 = staging.lastPathComponent }
+        replacement.update { $0 = sessionImporterTree(staging) }
+    }) {
+        try await sessionImporterImport(wav, root: root, speech: FakeSpeechFactory(), transcribe: false)
     }
-    #expect(error?.errorDescription?.contains("Nothing was imported.") == true)
     let name = try #require(swapped.value)
     #expect(replacement.value.contains { $0.hasSuffix("000001.caf") })
     #expect(sessionImporterTree(root.appendingPathComponent(name)) == replacement.value)
-    #expect(sessionImporterEntries(root) == [name])
+    #expect(sessionImporterEntries(root) == [name, session.lastPathComponent].sorted())
+    #expect(try SessionArchive.readManifest(at: session).chunks.reduce(0) { $0 + $1.frameCount } == 441_000)
+    #expect(sessionImporterTree(moved).isEmpty)
+}
+
+/// Once the session is made, its staging path is pinned to the folder `createSession` made: a staging folder another
+/// program renames away just after, before the first metadata write, with a folder of the same layout put at its
+/// path, receives nothing (no meeting.json, manifest, journal, chunk, lock, or transcript). Without transcription the
+/// import finishes from the folder it made; with it, the replay reads its chunks by path, finds none, and the import
+/// fails and removes what it made. Either way the replacement is left exactly as the other program made it.
+@Test(.timeLimit(.minutes(1)), arguments: [false, true])
+func importWritesNothingIntoAStagingFolderSwappedInAfterTheSessionIsMade(transcribe: Bool) async throws {
+    let temp = try TemporaryDirectory("import")
+    defer { temp.remove() }
+    let wav = try sessionImporterStereoWAV(in: temp.url)
+    let root = temp.url.appendingPathComponent("Sessions", isDirectory: true)
+    let moved = temp.url.appendingPathComponent("moved", isDirectory: true)
+    let swapped = SharedValue<URL?>(nil)
+    let replacement = SharedValue<[String]>([])
+    let outcome: Result<URL, any Error>
+    do {
+        outcome = .success(try await SessionImporter.$afterSession.withValue({ session in
+            let staging = session.deletingLastPathComponent()
+            do {
+                try FileManager.default.moveItem(at: staging, to: moved)
+                for path in ["audio/mic", "audio/system", "transcripts", "exports"] {
+                    try FileManager.default.createDirectory(at: session.appendingPathComponent(path),
+                                                            withIntermediateDirectories: true)
+                }
+            } catch {
+                Issue.record("Cannot swap the folder: \(error)")
+            }
+            swapped.update { $0 = staging }
+            replacement.update { $0 = sessionImporterTree(staging) }
+        }) {
+            try await sessionImporterImport(wav, root: root, speech: FakeSpeechFactory(), transcribe: transcribe)
+        })
+    } catch {
+        outcome = .failure(error)
+    }
+    let staging = try #require(swapped.value)
+    #expect(replacement.value.count == 6, "The swap made \(replacement.value)")
+    #expect(sessionImporterTree(staging) == replacement.value, "Written into the replacement.")
+    let sessionName = try #require(replacement.value.first { $0.hasSuffix(".holos") })
+    #expect(sessionImporterEntries(root) == (transcribe ? [staging.lastPathComponent]
+                                                        : [staging.lastPathComponent, sessionName].sorted()))
+    switch outcome {
+    case .success(let session):
+        #expect(!transcribe)
+        #expect(session.lastPathComponent == sessionName)
+        let manifest = try SessionArchive.readManifest(at: session)
+        #expect(manifest.status == ArchiveStatus.audioOnly)
+        #expect(manifest.chunks.reduce(0) { $0 + $1.frameCount } == 441_000)
+        #expect(FileManager.default.fileExists(atPath: SessionPaths.meetingInfo(session).path))
+        #expect(try !SessionArchive.inspectRecovery(at: session).needsAttention)
+    case .failure(let error):
+        #expect(transcribe, "The import failed: \(error)")
+    }
+    // The staging folder the import made, wherever it was moved, holds nothing once the import is over.
     #expect(sessionImporterTree(moved).isEmpty)
 }
 

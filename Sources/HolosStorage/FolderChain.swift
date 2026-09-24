@@ -23,6 +23,9 @@ extension AtomicFile {
     /// base, the session folder included, is opened with `openat` and O_NOFOLLOW, so a symbolic link or file in
     /// its place is refused with `HolosError.invalidInput`.
     ///
+    /// A session folder bound to a descriptor (`pinSessionFolder`) is not opened by path at all: `url` at or below
+    /// it is opened from that descriptor.
+    ///
     /// With `create`, each missing folder below the base (never the session folder above `url`) is made with
     /// `mkdirat`, reopened with O_NOFOLLOW, set to 0700 with `fchmod` on its own descriptor, and its parent is
     /// fsync'd; if a step after `mkdirat` fails, the new folder is removed again, so a retry creates it and fsyncs
@@ -33,6 +36,11 @@ extension AtomicFile {
         guard components.first == "/",
               !components.dropFirst().contains(where: { $0.isEmpty || $0 == "." || $0 == ".." }) else {
             throw HolosError.invalidInput("Invalid folder path.")
+        }
+        if let (pinned, sessionURL, below) = try pinnedSessionFolder(for: url) {
+            // A pinned session folder is never reached by path: everything below it is opened from its descriptor.
+            defer { Darwin.close(pinned) }
+            return try openFolder(below, in: pinned, baseURL: sessionURL, create: create)
         }
         if components.count == 1 {
             let fd = Darwin.open("/", O_RDONLY | O_DIRECTORY | O_CLOEXEC)
@@ -180,6 +188,83 @@ extension AtomicFile {
     /// Whether `name` is a session folder name (`<id>.holos`).
     static func isSessionFolderName(_ name: String) -> Bool { name.count > 6 && name.hasSuffix(".holos") }
 
+    /// Binds the session folder path `directory` (named `<id>.holos`) to the open folder `folder` until the returned
+    /// pin is released: from then on `openFolder` reaches `directory`, and every folder and file below it, through a
+    /// duplicate of `folder` (then `openat` with O_NOFOLLOW below it), never by path. So every Holos file operation
+    /// that names the session by path (`write`, `create`, `append`, `sync`, `truncate`, `readIfPresent`,
+    /// `removeTree`, `syncDirectory`, `ensurePrivateDirectory`, `createForWriting`, the session locks, `ChunkFile`,
+    /// the speaker store, the transcript pointer) works in `folder` even after another program renames the folder,
+    /// or one holding it, away and puts a different folder at that path; the one at the path is never touched.
+    ///
+    /// For a session made in a folder the caller holds open (an import's staging folder). The path is compared after
+    /// removing "." and ".." only (`URL.standardized`), so pass the URL the writes use. Throws `invalidInput` for a
+    /// path that is not a session folder or is already pinned, `io` when the descriptor cannot be duplicated.
+    public static func pinSessionFolder(_ folder: Int32, at directory: URL) throws -> SessionFolderPin {
+        guard directory.isFileURL, isSessionFolderName(directory.lastPathComponent) else {
+            throw HolosError.invalidInput("Only a session folder can be pinned.")
+        }
+        let key = pinKey(directory.standardized.pathComponents)
+        let copy = fcntl(folder, F_DUPFD_CLOEXEC, 0)
+        guard copy >= 0 else { throw HolosError.io("Cannot keep the session folder open: \(errnoText()).") }
+        let token = UUID()
+        let added = pinnedFolders.withLock { pins -> Bool in
+            guard pins[key] == nil else { return false }
+            pins[key] = (copy, token)
+            return true
+        }
+        guard added else {
+            Darwin.close(copy)
+            throw HolosError.invalidInput("The session folder \(directory.lastPathComponent) is already pinned.")
+        }
+        return SessionFolderPin(directory: directory, key: key, token: token)
+    }
+
+    /// Ends the pin `token` of `key`, closing its descriptor; nothing when that pin already ended.
+    static func unpin(_ key: String, token: UUID) {
+        let fd = pinnedFolders.withLock { pins -> Int32? in
+            guard let pin = pins[key], pin.token == token else { return nil }
+            pins[key] = nil
+            return pin.fd
+        }
+        if let fd { Darwin.close(fd) }
+    }
+
+    /// Whether a pin covers `url` (for tests).
+    static func isPinned(_ url: URL) -> Bool {
+        guard let fd = try? pinnedSessionFolder(for: url)?.fd else { return false }
+        Darwin.close(fd)
+        return true
+    }
+
+    /// Session folder paths (`pinKey`) bound to an open descriptor (`pinSessionFolder`), with the pin's token.
+    private static let pinnedFolders = Mutex<[String: (fd: Int32, token: UUID)]>([:])
+
+    /// For `url` at or below a pinned session folder: a duplicate of the pinned descriptor (the caller closes it),
+    /// the session folder's URL, and the names from it down to `url`. Nil when no pin covers `url`.
+    private static func pinnedSessionFolder(for url: URL) throws -> (fd: Int32, sessionURL: URL, below: [String])? {
+        let components = url.standardized.pathComponents
+        let found = pinnedFolders.withLock { pins -> (fd: Int32, errno: Int32, key: String, index: Int)? in
+            guard !pins.isEmpty else { return nil }
+            for index in components.indices.reversed() where isSessionFolderName(components[index]) {
+                let key = pinKey(components[...index])
+                guard let fd = pins[key]?.fd else { continue }
+                let copy = fcntl(fd, F_DUPFD_CLOEXEC, 0)
+                return (copy, copy < 0 ? errno : 0, key, index)
+            }
+            return nil
+        }
+        guard let found else { return nil }
+        guard found.fd >= 0 else {
+            throw HolosError.io("Cannot open folder \(components[found.index]): \(errnoText(found.errno)).")
+        }
+        return (found.fd, URL(fileURLWithPath: found.key, isDirectory: true),
+                Array(components[(found.index + 1)...]))
+    }
+
+    private static func pinKey<C: Collection>(_ components: C) -> String where C.Element == String {
+        NSString.path(withComponents: Array(components))
+    }
+
     // MARK: - Private
 
     /// Makes `name` in `parent` (0700), returns its descriptor opened with O_NOFOLLOW, and fsyncs `parent`.
@@ -248,6 +333,26 @@ extension AtomicFile {
         var info = stat()
         return stat(path, &info) == 0 || errno != ENOENT
     }
+}
+
+/// A session folder path bound to an open descriptor (`AtomicFile.pinSessionFolder`). The binding ends with
+/// `release()` or deinit.
+public final class SessionFolderPin: Sendable {
+    /// The pinned path, as the caller named it.
+    public let directory: URL
+    private let key: String
+    private let token: UUID
+
+    init(directory: URL, key: String, token: UUID) {
+        self.directory = directory
+        self.key = key
+        self.token = token
+    }
+
+    deinit { release() }
+
+    /// Ends the binding: later operations reach `directory` by path again. Later calls do nothing.
+    public func release() { AtomicFile.unpin(key, token: token) }
 }
 
 /// Which file an open descriptor or a folder entry is: its device and inode, whatever path reached it.

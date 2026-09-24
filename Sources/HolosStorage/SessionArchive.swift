@@ -173,8 +173,9 @@ public actor SessionArchive {
     ///
     /// The folders, the writer lock, and the identity check all go through `folder`. Every later write names the
     /// session by `directory`, so `directory` must reach `folder` (checked by device and inode through the same
-    /// folder chain those writes take); otherwise nothing is written and this throws `HolosError.io`. The caller
-    /// fsyncs the folder holding `folder`.
+    /// folder chain those writes take); otherwise nothing is written and this throws `HolosError.io`. For that to
+    /// hold after this call too, whatever other programs do to the path, the caller pins `directory` to `folder`
+    /// first (`AtomicFile.pinSessionFolder`), as an import does. The caller fsyncs the folder holding `folder`.
     public static func create(inEmptyFolder folder: Int32, directory: URL, name: String, source: AudioSource,
                               locale: String, backend: SpeechBackend) throws -> SessionArchive {
         let id = directory.deletingPathExtension().lastPathComponent

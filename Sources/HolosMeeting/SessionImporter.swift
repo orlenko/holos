@@ -18,6 +18,10 @@ public enum SessionImporter {
     /// The share of `progress` that copying the audio takes when the import also transcribes.
     static let audioProgressShare = 0.1
 
+    /// Test hook: while set (a task-local value), called with the session's staging path just after it is created,
+    /// before anything else is written into it, so tests can swap folders on the way.
+    @TaskLocal static var afterSession: (@Sendable (URL) -> Void)? = nil
+
     /// Creates a session from an audio file: track "mic", channels averaged to mono, source sample rate,
     /// Int16 chunks through AudioChunkWriter, meeting.json {mode: inPerson, origin: imported}, vocabulary.json;
     /// transcribes with TrackReplayer unless `transcribe == false`; finishes as complete or audioOnly.
@@ -83,6 +87,7 @@ public enum SessionImporter {
             throw failure(error, leftover: staging.discard())
         }
         let directory = archive.directory
+        afterSession?(directory)
         // Where the session appears once published. Anything persisted that names the session names this path,
         // never the staging folder, which is gone once the import finishes.
         let publishedDirectory = staging.publishedURL(directory.lastPathComponent)
@@ -197,7 +202,8 @@ public enum SessionImporter {
         guard let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: blockFrames) else {
             throw HolosError.io("Could not allocate an audio buffer for the import.")
         }
-        let writer = AudioChunkWriter(archive: archive)
+        // Through each chunk's descriptor: `AVAudioFile` would open the chunk by path, outside the session's pin.
+        let writer = AudioChunkWriter(archive: archive, throughDescriptor: true)
         let length = max(1, audio.length)
         var written = 0
         while audio.framePosition < audio.length {
@@ -310,9 +316,10 @@ private struct TranscriptionFailure: Error {
 /// checked once (the import keeps its own open from `create` on; a sweep opens each candidate and checks its marker
 /// and lock through it), never through its name again. The sessions root may be a folder other programs change, and
 /// a folder renamed in at a staging folder's name after the check is never emptied (`AtomicFile.removeOpenFolder`).
-/// The session is made through that descriptor too (`createSession`), so a folder renamed in at the staging name
-/// never receives the imported audio; later writes name the session by path, and reach nothing once the staging
-/// folder is renamed away.
+/// The session is made through that descriptor too (`createSession`), and its staging path is then pinned to the
+/// session folder's descriptor (`AtomicFile.pinSessionFolder`) until it is published or discarded: every later write
+/// that names the session by path goes through that descriptor, so a folder renamed in at the staging name, or at the
+/// session's name inside it, never receives anything the import writes.
 final class ImportStaging {
     static let prefix = ".import-"
     static let lockName = ".import.lock"
@@ -350,6 +357,9 @@ final class ImportStaging {
     private var sessionFD: Int32 = -1
     /// Its name (`<id>.holos`), once made.
     private(set) var sessionName: String?
+    /// Binds the session's staging path (`url/<sessionName>`) to `sessionFD` from `createSession` until the session
+    /// is published or discarded, so no write that names the session by path reaches another folder.
+    private var pin: SessionFolderPin?
 
     private init(root: URL, name: String, rootFD: Int32, folderFD: Int32, lockFD: Int32) {
         self.root = root; self.name = name; self.rootFD = rootFD; self.folderFD = folderFD; self.lockFD = lockFD
@@ -363,11 +373,13 @@ final class ImportStaging {
     }
 
     /// Makes the import's session folder `<id>.holos` in the staging folder through the descriptor `create` opened
-    /// (`mkdirat`), keeps it open, and creates the session archive in it (`SessionArchive.create(inEmptyFolder:)`),
-    /// which refuses unless the path every later write takes (`url/<id>.holos`) reaches that same folder. So a
-    /// folder renamed in at the staging name is never given the session: nothing is written into it, and the import
-    /// fails. Once made, the session folder is the one `acquireLease` locks, `publish` moves, and `discard` checks
-    /// for. Call it once. On a throw, `discard` removes whatever was made.
+    /// (`mkdirat`), keeps it open, pins the path every later write takes (`url/<id>.holos`) to it
+    /// (`AtomicFile.pinSessionFolder`, until `publish` or `discard`), and creates the session archive in it
+    /// (`SessionArchive.create(inEmptyFolder:)`). So a folder renamed in at the staging name, before or after this
+    /// call, is never given anything: the manifest, journal, locks, metadata, audio chunks (written through their
+    /// descriptors, `AudioChunkWriter(throughDescriptor:)`), and transcript all go into the folder made here. Once
+    /// made, the session folder is the one `acquireLease` locks, `publish` moves, and `discard` checks for. Call it
+    /// once. On a throw, `discard` removes whatever was made.
     func createSession(name sessionTitle: String, locale: String, backend: SpeechBackend) throws -> SessionArchive {
         precondition(sessionFD < 0, "createSession is called once")
         Self.beforeSession?(url)
@@ -389,9 +401,13 @@ final class ImportStaging {
         if fsync(folderFD) != 0 {
             throw HolosError.io("Cannot save the import folder: \(Self.errnoText()).")
         }
-        return try SessionArchive.create(inEmptyFolder: fd,
-                                         directory: url.appendingPathComponent(sessionName, isDirectory: true),
-                                         name: sessionTitle, source: .microphone, locale: locale, backend: backend)
+        let directory = url.appendingPathComponent(sessionName, isDirectory: true)
+        // From here on, every write that names the session by `directory` goes through `fd` (the archive's manifest,
+        // journal, and locks, meeting.json, vocabulary.json, audio chunks, the transcript), whatever the path
+        // leads to meanwhile.
+        pin = try AtomicFile.pinSessionFolder(fd, at: directory)
+        return try SessionArchive.create(inEmptyFolder: fd, directory: directory, name: sessionTitle,
+                                         source: .microphone, locale: locale, backend: backend)
     }
 
     /// The processing lease of the session `createSession` made, taken in the folder it holds open (so its lock file
@@ -529,6 +545,9 @@ final class ImportStaging {
         guard moved else {
             throw HolosError.io("Cannot move the imported session into the sessions folder: \(Self.errnoText()).")
         }
+        // The staging path no longer names the session; the published one is reached by path, as any session is.
+        pin?.release()
+        pin = nil
         if fsync(rootFD) != 0 || fsync(stagingFD) != 0 {
             Self.log.error("Cannot save the sessions folder after an import: \(Self.errnoText(), privacy: .public)")
         }
@@ -556,7 +575,11 @@ final class ImportStaging {
     /// out of the staging folder, it is not removed (it is no longer anywhere the import owns), and the sentence says
     /// so, naming where it is when that can be found.
     func discard() -> String? {
-        defer { closeLock() }
+        defer {
+            pin?.release()
+            pin = nil
+            closeLock()
+        }
         let stray = straySessionNote()
         do {
             try Self.remove(folder: folderFD, named: name, in: rootFD, root: root)

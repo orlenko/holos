@@ -12,7 +12,7 @@ import HolosCore
 ///
 /// No operation here follows a symbolic link in place of a folder Holos owns: `write`, `create`, `writeStream`,
 /// `append`, `truncate`, `sync`, `readIfPresent`/`readJSON`, `readAndRemove`, `openForReading`,
-/// `ensurePrivateDirectory`, and `removeTree` all open folders
+/// `ensurePrivateDirectory`, `createForWriting`, and `removeTree` all open folders
 /// with `openFolder` (FolderChain.swift): the folder holding the file is opened with O_NOFOLLOW, and inside a
 /// session folder (`<id>.holos`) so is every folder from the session folder down (an `openat` chain). A symbolic
 /// link or file in their place is refused with `HolosError.invalidInput`. Folders above those may be reached
@@ -142,6 +142,37 @@ public enum AtomicFile {
             throw HolosError.invalidInput("\(url.lastPathComponent) is not a regular file.")
         }
         return FileHandle(fileDescriptor: fd, closeOnDealloc: true)
+    }
+
+    /// Creates the new, empty regular file `url` (0600, never over an existing entry: O_CREAT|O_EXCL|O_NOFOLLOW)
+    /// relative to its folder, which is opened like `write` opens it, fsyncs that folder, and returns the file open
+    /// read-write (O_CLOEXEC; the caller closes it). For a file written in place through its descriptor, such as an
+    /// audio chunk: writes through it reach this file wherever its path leads later. Throws `invalidInput` when
+    /// `url` exists.
+    public static func createForWriting(at url: URL) throws -> Int32 {
+        guard url.isFileURL else { throw HolosError.invalidInput("File path must be a file URL.") }
+        let (parent, name) = try openParent(of: url)
+        defer { Darwin.close(parent) }
+        let fd = openat(parent, name, O_RDWR | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0o600)
+        guard fd >= 0 else {
+            let code = errno
+            if code == EEXIST {
+                throw HolosError.invalidInput("\(url.lastPathComponent) already exists and is never replaced.")
+            }
+            throw HolosError.io("Cannot create \(url.lastPathComponent): \(errnoText(code)).")
+        }
+        faultPlan?.changed(url.deletingLastPathComponent(), name)
+        do {
+            guard fchmod(fd, 0o600) == 0 else {
+                throw HolosError.io("Cannot set permissions of \(url.lastPathComponent): \(errnoText()).")
+            }
+            try syncFolder(parent, url.deletingLastPathComponent())
+            return fd
+        } catch {
+            Darwin.close(fd)
+            removeCreated(name, in: parent, url: url)
+            throw error
+        }
     }
 
     /// Like `write` (or `create` with `exclusive`), for a file too large to hold in memory: `fill` writes the
