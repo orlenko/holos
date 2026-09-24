@@ -107,17 +107,45 @@ import Testing
     // Adding any rule for a waiting phrase resolves it, even with an edited meant text.
     let resolvedEdited = queue.resolve(added: .init(heard: "BULL", meant: "pole"))
     let resolvedUnrelated = queue.resolve(added: .init(heard: "clod", meant: "cloud"))
-    #expect(resolvedEdited)
-    #expect(!resolvedUnrelated)
+    #expect(resolvedEdited?.correction == .init(heard: "bull", meant: "Poll"))
+    #expect(resolvedUnrelated == nil)
     #expect(queue.prefill(heard: "", meant: "") == .init(heard: "Male", meant: "Mail"))
 
     let skipped = queue.skip()
     #expect(skipped == .init(heard: "Male", meant: "Mail"))
     #expect(queue.pending == [.init(heard: "Tail", meant: "Tale")])
     let resolvedLast = queue.resolve(added: .init(heard: "Tail", meant: "Tale"))
-    #expect(resolvedLast)
+    #expect(resolvedLast != nil)
     #expect(queue.isEmpty)
     let skippedEmpty = queue.skip()
     #expect(skippedEmpty == nil)
     #expect(queue.prefill(heard: "", meant: "") == nil)
+}
+
+@Test func declinedSwapKeepsOnlyTheEditItCameFrom() {
+    // Dictation A's edit declined "Bull"; dictation B's edit then declined "Male" while "Bull" still waits.
+    let editA = DeclinedCorrectionQueue.PendingEdit(recognized: "Bull request", edited: "Pull request")
+    let editB = DeclinedCorrectionQueue.PendingEdit(recognized: "Male sent", edited: "Mail sent")
+    var queue = DeclinedCorrectionQueue()
+    queue.receive([.init(heard: "Bull", meant: "Pull")], edit: editA)
+    queue.receive([.init(heard: "Male", meant: "Mail")], edit: editB)
+    var lastRecognized = editB.recognized
+
+    // Adding A's swap must not keep B's edit, and must leave B's edit waiting on B's swap.
+    let resolvedA = queue.resolve(added: .init(heard: "Bull", meant: "Pull"))
+    #expect(resolvedA?.edit == editA)
+    #expect(resolvedA?.edit?.transcript(whenLastRecognized: lastRecognized) == nil)
+
+    let resolvedB = queue.resolve(added: .init(heard: "Male", meant: "Mail"))
+    #expect(resolvedB?.edit == editB)
+    let kept = resolvedB?.edit?.transcript(whenLastRecognized: lastRecognized)
+    #expect(kept == "Mail sent")
+    lastRecognized = kept ?? lastRecognized
+
+    // A second swap from an edit already kept does not keep it again.
+    #expect(editB.transcript(whenLastRecognized: lastRecognized) == nil)
+    // A newer Learn of the same phrase carries the newer edit.
+    queue.receive([.init(heard: "bull", meant: "Pull")], edit: editA)
+    queue.receive([.init(heard: "Bull", meant: "Pull")], edit: editB)
+    #expect(queue.items == [.init(correction: .init(heard: "Bull", meant: "Pull"), edit: editB)])
 }
