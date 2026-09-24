@@ -9,7 +9,8 @@ public struct CaptureRequest: Sendable, Equatable {
     /// Session time of this epoch's first frame (docs/meeting-design.md §2.3): 0 for epoch 0, then
     /// max(clock.now(), lastFrameEnd + 0.01).
     public var timelineOffset: Double
-    /// Which input device the microphone track records (§4.12; honoured from PR2b).
+    /// Which input device the microphone track records (§4.12). A `source` of `.system` records no microphone: a call
+    /// epoch started while the Mac has no input device.
     public var microphone: MicrophoneSelection
 
     public init(source: AudioSource, applicationBundleID: String? = nil, timelineOffset: Double = 0,
@@ -41,9 +42,10 @@ extension MeetingCapture {
     private let capture: AudioCapture
     public nonisolated let frames: AsyncThrowingStream<CapturedAudio, Error>
 
-    /// A full frame stream drops the buffer and counts it; capture continues (§4.3).
+    /// A full frame stream drops the buffer and counts it; capture continues (§4.3). A configuration change ends the
+    /// stream with `CaptureInterruption.configurationChanged`, so the recorder restarts in a new epoch (§4.2).
     public init(bufferCapacity: Int = 4096) {
-        capture = AudioCapture(bufferCapacity: bufferCapacity, overflow: .dropAndCount)
+        capture = AudioCapture(bufferCapacity: bufferCapacity, overflow: .dropAndCount, reportsConfigurationChanges: true)
         frames = capture.frames
     }
 

@@ -91,7 +91,8 @@ func recordOnlySavesAudioAndFinishesAudioOnly() async throws {
     #expect(kinds.contains(MeetingEventKind.captureStarted))
     #expect(kinds.contains(MeetingEventKind.captureStopped))
     #expect(speech.calls.isEmpty)
-    #expect(captures.requests == [CaptureRequest(source: .microphone)])
+    // In person records the built-in microphone (decision 9, PR2b).
+    #expect(captures.requests == [CaptureRequest(source: .microphone, microphone: .builtIn)])
     #expect(captures.captures.first?.stopCalls == 1)
     #expect(try SessionArchive.currentTranscriptID(at: outcome.directory) == nil)
     #expect(try !SessionArchive.isActive(at: outcome.directory))

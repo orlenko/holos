@@ -26,7 +26,11 @@ struct Record: AsyncParsableCommand {
                 printed on stderr.
                 """)
         @Option(help: "Session display name.") var name = "Meeting"
-        @Option(help: "Audio sources: mic, system, or mic+system.") var source: AudioSource = .microphoneAndSystem
+        @Option(help: """
+            Audio sources: mic (in person: the built-in microphone), system, or mic+system (a call: the system \
+            default input, such as a headset, and system audio).
+            """)
+        var source: AudioSource = .microphoneAndSystem
         @OptionGroup var recognition: RecognitionOptions
         @Option(help: "Session output root (default: HOLOS_DATA_DIR or Application Support/Holos/Sessions).") var directory: String?
         @Option(help: "Automatically stop after this many seconds.") var duration: Double?
@@ -57,11 +61,15 @@ struct Record: AsyncParsableCommand {
 
         @MainActor mutating func run() async throws {
             let vocabulary = try readVocabulary()
+            // Decision 9 (docs/meeting-design.md §4.12): in person records the built-in microphone and refuses to start
+            // without it ("The built-in microphone is unavailable. Open the lid and try again."); a call records the
+            // system default input, and without any input device records system audio alone.
             let options = RecordingOptions(name: name, source: source, locale: recognition.locale,
                                            backend: recognition.backend, root: directory.map(fileURL) ?? HolosPaths.sessions,
                                            duration: duration, recordOnly: recordOnly, applicationBundleID: app,
                                            vocabulary: vocabulary, sessionID: sessionId, othersInRoom: othersInRoom,
-                                           expectedSpeakers: expectedSpeakers, liveText: !noLiveText)
+                                           expectedSpeakers: expectedSpeakers, liveText: !noLiveText,
+                                           microphone: RecordingOptions.microphone(for: source))
             let dependencies = RecordingDependencies.live(stop: SignalStopController(), reporter: ConsoleReporter(),
                 postProcess: noPostprocess || recordOnly ? nil : recordingPostProcessHook())
             let outcome = try await RecordingWorkflow.run(options, dependencies: dependencies)
