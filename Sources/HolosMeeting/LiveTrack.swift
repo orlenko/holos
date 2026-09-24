@@ -12,14 +12,17 @@ final class LiveTrack: Sendable {
     private let journal: AsyncStream<TranscriptSegment>.Continuation
     private let needsReplay: LockedValue<Bool>
     private let reporter: any RecordingReporter
+    /// Cancelled directly as well as through `worker`: a speech framework's `finish()` may not observe task
+    /// cancellation.
+    private let session: any LiveSpeechSession
 
     private init(track: String, continuation: AsyncStream<PCMFrame>.Continuation,
                  worker: Task<[TranscriptSegment], Error>, journalWorker: Task<Void, Error>,
                  journal: AsyncStream<TranscriptSegment>.Continuation, needsReplay: LockedValue<Bool>,
-                 reporter: any RecordingReporter) {
+                 reporter: any RecordingReporter, session: any LiveSpeechSession) {
         self.track = track; self.continuation = continuation; self.worker = worker
         self.journalWorker = journalWorker; self.journal = journal; self.needsReplay = needsReplay
-        self.reporter = reporter
+        self.reporter = reporter; self.session = session
     }
 
     static func make(track: String, locale: String, backend: SpeechBackend, contextualStrings: [String],
@@ -56,7 +59,7 @@ final class LiveTrack: Sendable {
         }
         return LiveTrack(track: track, continuation: frames.continuation, worker: worker,
                          journalWorker: journalWorker, journal: updates.continuation, needsReplay: replay,
-                         reporter: reporter)
+                         reporter: reporter, session: session)
     }
 
     /// Never blocks: a full queue stops live transcription for the rest of the recording.
@@ -70,10 +73,17 @@ final class LiveTrack: Sendable {
         }
     }
 
-    /// The finalized segments, or nil when the track must be replayed from disk.
+    /// The finalized segments, or nil when the track must be replayed from disk. Cancelling the calling task
+    /// cancels the speech session and returns nil.
     func finish() async -> [TranscriptSegment]? {
         continuation.finish()
-        let result = try? await worker.value
+        let result = await withTaskCancellationHandler {
+            try? await worker.value
+        } onCancel: {
+            worker.cancel()
+            let session = session
+            Task { await session.cancel() }
+        }
         journal.finish()
         do { try await journalWorker.value }
         catch {
@@ -85,6 +95,8 @@ final class LiveTrack: Sendable {
 
     func cancel() async {
         continuation.finish(); worker.cancel()
+        // The worker may be inside `session.finish()`, which need not observe task cancellation.
+        await session.cancel()
         _ = try? await worker.value
         journal.finish()
         _ = try? await journalWorker.value

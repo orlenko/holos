@@ -87,7 +87,11 @@ public enum RecordingWorkflow {
     /// Transcription failure: does not throw; the outcome carries the errors.
     /// Task cancellation: stops like a stop request, keeps the saved audio, finishes the archive without a
     /// partial transcript (`transcriptionIncomplete`, or `audioOnly` for record-only), skips post-processing,
-    /// and rethrows `CancellationError`.
+    /// and rethrows `CancellationError`. Cancelled before capture starts: capture never starts and the archive
+    /// is finished `failed` (a `startFailed` event with `cancelled`). Cancelled once the transcript is saved:
+    /// the archive keeps its final status, the processing lease is released, and a hook that has not started
+    /// is skipped. Cancelled during the hook: the hook's run ends as it chooses, and `CancellationError` is
+    /// rethrown instead of an outcome.
     @MainActor public static func run(_ options: RecordingOptions,
                                       dependencies: RecordingDependencies) async throws -> RecordingOutcome {
         let reporter = dependencies.reporter
@@ -103,23 +107,32 @@ public enum RecordingWorkflow {
         do {
             if !options.recordOnly {
                 for track in tracks {
+                    try Task.checkCancellation()
                     do {
                         live[track] = try await LiveTrack.make(track: track, locale: options.locale,
                             backend: options.backend, contextualStrings: options.vocabulary,
                             makeSpeech: dependencies.makeSpeech, archive: archive, reporter: reporter)
                     } catch {
+                        // A cancelled run is not a speech failure: it ends before capture starts.
+                        try Task.checkCancellation()
                         reporter.message("Live \(track) transcription unavailable: \(error.localizedDescription). Recording will continue and transcription will be retried after stop.")
                     }
                 }
             }
+            // A run cancelled while setting up never opens the microphone or system audio.
+            try Task.checkCancellation()
             try await capture.start(CaptureRequest(source: options.source,
                                                    applicationBundleID: options.applicationBundleID))
         } catch {
             stop.restoreDefaultHandlers()
             for feed in live.values { await feed.cancel() }
-            try? await archive.recordEvent(kind: MeetingEventKind.startFailed, details: ["error": error.localizedDescription])
+            let cancelledAtStart = error is CancellationError || Task.isCancelled
+            let details = cancelledAtStart ? ["error": "Cancelled before capture started.", "cancelled": "true"]
+                : ["error": error.localizedDescription]
+            try? await archive.recordEvent(kind: MeetingEventKind.startFailed, details: details)
             try? await archive.finish(status: ArchiveStatus.failed)
             log.error("Session \(archive.id, privacy: .public) failed to start capture")
+            if cancelledAtStart { throw CancellationError() }
             throw error
         }
         log.notice("Session \(archive.id, privacy: .public) started recording (\(options.source.rawValue, privacy: .public))")
@@ -158,6 +171,7 @@ public enum RecordingWorkflow {
             let clock = ContinuousClock()
             let started = clock.now
             while true {
+                try Task.checkCancellation()
                 if stop.shouldStop { stopReason = stop is SignalStopController ? .signal : .requested; break }
                 if captureError.value != nil { stopReason = .captureFailed; break }
                 if FileManager.default.fileExists(atPath: stopURL.path) { stopReason = .requested; break }
@@ -172,6 +186,8 @@ public enum RecordingWorkflow {
         do { try await capture.stop() } catch { recordingError = recordingError ?? error }
         do { try await consume.value } catch { recordingError = recordingError ?? error }
         do { try await writer.finish() } catch { recordingError = recordingError ?? error }
+        // Cancelled after a stop, while capture was stopping: still a cancellation.
+        if Task.isCancelled { cancelled = true }
         // Even on failure, audio capture is stopped before recognition is cancelled.
         // Let another signal interrupt a framework that is slow to cancel.
         stop.restoreDefaultHandlers()
@@ -209,9 +225,13 @@ public enum RecordingWorkflow {
         var segments: [TranscriptSegment] = []
         var transcriptErrors: [String] = []
         for track in options.recordOnly ? [] : tracks {
+            if Task.isCancelled { break }
+            // A cancellation while finishing cancels the live speech session (LiveTrack.finish).
             if let feed = feeds[track], let finalized = await feed.finish() {
                 segments += finalized.map { var segment = $0; segment.track = track; return segment }
             } else {
+                // Cancelled while the live session finished: replay nothing.
+                if Task.isCancelled { break }
                 do {
                     reporter.message("Processing saved \(track) audio…")
                     segments += try await TrackReplayer.replay(directory: archive.directory, track: track,
@@ -248,11 +268,19 @@ public enum RecordingWorkflow {
         }
         defer { lease?.release() }
         try await archive.finish(status: status)
+        // Cancelled while the lease was being taken: the archive is finished; skip the hook, release the lease.
+        if Task.isCancelled {
+            lease?.release()
+            log.notice("Session \(archive.id, privacy: .public) cancelled before post-processing; archive finished as \(status, privacy: .public)")
+            throw CancellationError()
+        }
         var record: PostProcessingRecord?
         if let hook = dependencies.postProcess, let lease {
             record = await hook(archive.directory, lease, progressReporter(reporter))
             lease.release()
             log.notice("Session \(archive.id, privacy: .public) post-processing ended: \(record?.state.rawValue ?? "", privacy: .public)")
+            // The hook never throws; a cancellation during it still ends the run with CancellationError.
+            if Task.isCancelled { throw CancellationError() }
         }
         return RecordingOutcome(sessionID: archive.id, directory: archive.directory, archiveStatus: status,
                                 stopReason: stopReason, transcriptID: transcriptID,
