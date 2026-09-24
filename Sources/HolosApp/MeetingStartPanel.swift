@@ -179,8 +179,10 @@ final class MeetingStartPanel: NSObject, NSWindowDelegate {
             errorLabel.isHidden = true
         }
         refresh()
+        // The panel is not resizable, so its size is always the one its rows need: fit it on every show, and
+        // place it only the first time.
+        window.setContentSize(window.contentView?.fittingSize ?? window.frame.size)
         if !positioned {
-            window.setContentSize(window.contentView?.fittingSize ?? window.frame.size)
             window.center()
             positioned = true
         }
@@ -225,7 +227,10 @@ final class MeetingStartPanel: NSObject, NSWindowDelegate {
         let echoRisk = call && current.devices.systemDefault != nil && findOutputRoute()?.isBuiltInSpeakers == true
         if let echoRow, echoRow.isHidden == echoRisk {
             echoRow.isHidden = !echoRisk
-            if positioned, window.isVisible {
+            // Also while the window is hidden: `show` refreshes before it makes the window visible, and it sizes
+            // the window itself only the first time, so a row that came or went since the panel was last open
+            // would otherwise squeeze the rows below it.
+            if positioned {
                 window.setContentSize(window.contentView?.fittingSize ?? window.frame.size)
             }
         }
