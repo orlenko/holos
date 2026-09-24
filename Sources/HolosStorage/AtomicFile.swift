@@ -10,8 +10,9 @@ import HolosCore
 /// old or the new contents. Journal appends never leave a partial line: a failed append truncates back.
 /// Appends to one file must be serialized by the caller (the writer or speaker lock).
 ///
-/// No operation here follows a symbolic link in place of a folder Holos owns: `write`, `create`, `append`,
-/// `truncate`, `sync`, `readIfPresent`/`readJSON`, `ensurePrivateDirectory`, and `removeTree` all open folders
+/// No operation here follows a symbolic link in place of a folder Holos owns: `write`, `create`, `writeStream`,
+/// `append`, `truncate`, `sync`, `readIfPresent`/`readJSON`, `openForReading`, `ensurePrivateDirectory`, and
+/// `removeTree` all open folders
 /// with `openFolder` (FolderChain.swift): the folder holding the file is opened with O_NOFOLLOW, and inside a
 /// session folder (`<id>.holos`) so is every folder from the session folder down (an `openat` chain). A symbolic
 /// link or file in their place is refused with `HolosError.invalidInput`. Folders above those may be reached
@@ -116,6 +117,43 @@ public enum AtomicFile {
         return try decode(type, from: data, name: url.lastPathComponent)
     }
 
+    /// Opens a regular file for reading without following a symbolic link, through its folder opened like
+    /// `readIfPresent` opens it, and returns a handle that owns the descriptor (O_CLOEXEC); nil when the file or
+    /// its folder does not exist. Reads through the handle keep reading that file even if a link is swapped in
+    /// for it or a folder above it afterwards.
+    public static func openForReading(_ url: URL) throws -> FileHandle? {
+        guard url.isFileURL else { throw HolosError.invalidInput("File path must be a file URL.") }
+        guard let (parent, name) = try openParentIfPresent(of: url) else { return nil }
+        defer { Darwin.close(parent) }
+        // O_NONBLOCK keeps a FIFO planted in place of the file from blocking the open; it does not affect reads of
+        // a regular file.
+        let fd = openat(parent, name, O_RDONLY | O_NONBLOCK | O_CLOEXEC | O_NOFOLLOW)
+        if fd < 0 {
+            let code = errno
+            if code == ENOENT { return nil }
+            if code == ELOOP {
+                throw HolosError.invalidInput("\(url.lastPathComponent) is a symbolic link; Holos reads only regular files.")
+            }
+            throw HolosError.io("Cannot open \(url.lastPathComponent): \(errnoText(code)).")
+        }
+        var info = stat()
+        guard fstat(fd, &info) == 0, (info.st_mode & S_IFMT) == S_IFREG else {
+            Darwin.close(fd)
+            throw HolosError.invalidInput("\(url.lastPathComponent) is not a regular file.")
+        }
+        return FileHandle(fileDescriptor: fd, closeOnDealloc: true)
+    }
+
+    /// Like `write` (or `create` with `exclusive`), for a file too large to hold in memory: `fill` writes the
+    /// contents through the descriptor of the same-directory temporary file (opened read-write, so it may seek and
+    /// read back; it must not close it). The file is then fsync'd, renamed over `url`, and the folder fsync'd. When
+    /// `fill` or a later step throws (including `CancellationError`), the temporary file is removed and nothing is
+    /// published.
+    public static func writeStream(to url: URL, permissions: mode_t = 0o600, exclusive: Bool = false,
+                                   _ fill: (Int32) throws -> Void) throws {
+        try publish(to: url, permissions: permissions, exclusive: exclusive, readWrite: true, fill)
+    }
+
     // MARK: - Internal helpers
 
     /// Decodes with HolosJSON, turning a decoding error into `HolosError.invalidInput` that names the file.
@@ -132,7 +170,7 @@ public enum AtomicFile {
     /// Reads a regular file without following a symlink; nil when it or its folder does not exist. The folder
     /// holding it is opened like `write` opens it (`openFolder`), so inside a session a symbolic link in place of
     /// the session folder or any folder below it is refused (`invalidInput`) instead of redirecting the read.
-    static func readIfPresent(_ url: URL, maxBytes: Int) throws -> Data? {
+    public static func readIfPresent(_ url: URL, maxBytes: Int) throws -> Data? {
         guard url.isFileURL else { throw HolosError.invalidInput("File path must be a file URL.") }
         guard let (parent, name) = try openParentIfPresent(of: url) else { return nil }
         defer { Darwin.close(parent) }
@@ -201,8 +239,8 @@ public enum AtomicFile {
     }
 
     /// Removes `root/<components joined by "/">` and everything in it without following a symbolic link
-    /// anywhere, and fsyncs its parent folder. Every delete inside a session goes through here (speakers/voice
-    /// now; audio/, derived/, exports/ later).
+    /// anywhere, and fsyncs its parent folder. Every delete inside a session goes through here (speakers/voice and
+    /// derived/ now; audio/ and exports/ later).
     ///
     /// `root` and each component before the last are opened relative to the previous one with O_NOFOLLOW, so a
     /// symbolic link or file in their place is refused (`invalidInput`) instead of leading the delete outside
@@ -212,7 +250,7 @@ public enum AtomicFile {
     /// The parent folder is fsync'd even when there is nothing to remove, so a retry after a call that removed
     /// the entry and then failed to fsync makes the removal durable.
     @discardableResult
-    static func removeTree(_ components: [String], in root: URL) throws -> Bool {
+    public static func removeTree(_ components: [String], in root: URL) throws -> Bool {
         guard root.isFileURL, let last = components.last,
               components.allSatisfy({ !$0.isEmpty && $0 != "." && $0 != ".." && !$0.contains("/") }) else {
             throw HolosError.invalidInput("Invalid path to delete.")
@@ -365,11 +403,19 @@ public enum AtomicFile {
     // MARK: - Private
 
     private static func publish(_ data: Data, to url: URL, permissions: mode_t, exclusive: Bool) throws {
+        try publish(to: url, permissions: permissions, exclusive: exclusive, readWrite: false) { fd in
+            try writeAll(data, fd: fd)
+        }
+    }
+
+    private static func publish(to url: URL, permissions: mode_t, exclusive: Bool, readWrite: Bool,
+                                _ fill: (Int32) throws -> Void) throws {
         guard url.isFileURL else { throw HolosError.invalidInput("File path must be a file URL.") }
         let (parent, name) = try openParent(of: url)
         defer { Darwin.close(parent) }
         let temporary = ".\(UUID().uuidString).tmp"
-        let fd = openat(parent, temporary, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW, permissions)
+        let access = readWrite ? O_RDWR : O_WRONLY
+        let fd = openat(parent, temporary, access | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW, permissions)
         guard fd >= 0 else {
             throw HolosError.io("Cannot create a temporary file for \(url.lastPathComponent): \(errnoText()).")
         }
@@ -379,7 +425,7 @@ public enum AtomicFile {
             guard fchmod(fd, permissions) == 0 else {
                 throw HolosError.io("Cannot set permissions of \(url.lastPathComponent): \(errnoText()).")
             }
-            try writeAll(data, fd: fd)
+            try fill(fd)
             guard fsyncFile(fd, url) == 0 else {
                 throw HolosError.io("Cannot save \(url.lastPathComponent): \(errnoText()).")
             }
