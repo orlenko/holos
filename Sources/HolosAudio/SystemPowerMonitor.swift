@@ -117,7 +117,9 @@ public final class SystemPowerMonitor: SystemPowerEvents {
 
     /// Tests only: handles `message` as if IOKit had sent it, `nanosecondsAgo` before now.
     func deliver(_ message: UInt32, argument: Int, nanosecondsAgo: UInt64 = 0) {
-        core.receive(message: message, argument: argument, at: PowerEventCore.continuousNanoseconds() - nanosecondsAgo)
+        // Saturate: shortly after boot, continuous time can be smaller than the requested age.
+        let now = PowerEventCore.continuousNanoseconds()
+        core.receive(message: message, argument: argument, at: now > nanosecondsAgo ? now - nanosecondsAgo : 0)
     }
 
     public func pendingEvents() -> [PowerEvent] { core.pendingTimedEvents().map(\.event) }
