@@ -151,16 +151,22 @@ public struct SpeakerProfileStore: Sendable {
 
     // MARK: - Forget journal
 
-    /// Appends one line to `forget-journal.jsonl` (0600) under `profiles.lock` and fsyncs it.
+    /// Appends one line to `forget-journal.jsonl` (0600) under `profiles.lock` and fsyncs it. After a torn last line
+    /// the new line starts on a line of its own, so the torn part stays a separate damaged line.
     public func appendForgetRecord(_ record: ForgetRecord) throws {
         guard SessionArchive.validToken(record.id) else { throw HolosError.invalidInput("Invalid forget record ID.") }
         try withLock {
-            try AtomicFile.append(try HolosJSON.line(record), to: forgetJournalURL)
+            var line = try HolosJSON.line(record)
+            if let existing = try AtomicFile.readIfPresent(forgetJournalURL, maxBytes: Self.maxJournalBytes),
+               let last = existing.last, last != 0x0A {
+                line.insert(0x0A, at: line.startIndex)
+            }
+            try AtomicFile.append(line, to: forgetJournalURL)
         }
     }
 
     /// Every readable line, in file order. A torn last line, a damaged line, or one from a newer Holos is skipped
-    /// (the next run appends after the torn part is rewritten by `compactForgetJournal`).
+    /// (the next append starts a new line after a torn part; `compactForgetJournal` drops it).
     public func forgetRecords() throws -> [ForgetRecord] {
         guard let data = try AtomicFile.readIfPresent(forgetJournalURL, maxBytes: Self.maxJournalBytes) else {
             return []
@@ -188,18 +194,55 @@ public struct SpeakerProfileStore: Sendable {
         }
     }
 
-    /// Under `profiles.lock`, rewrites the journal with only its unfinished tombstones (removing it when none are
-    /// left), so it does not grow without bound. A torn or damaged line is dropped then.
+    /// Under `profiles.lock`, rewrites the journal without its finished tombstones (removing it when nothing is
+    /// left), so it does not grow without bound. A readable tombstone with its `done` line, a torn last line, and a
+    /// damaged line (not a JSON object with a schema version) are dropped. A line this build cannot read because it
+    /// comes from a newer Holos (a newer schema version, or a kind this build does not know) is kept byte for byte,
+    /// and so is a `done` line that finishes none of the readable tombstones (it may finish one of those lines), so a
+    /// newer Holos's pending forget is never destroyed (§1.6 rule 5).
     public func compactForgetJournal() throws {
         try withLock {
-            guard try AtomicFile.readIfPresent(forgetJournalURL, maxBytes: Self.maxJournalBytes) != nil else { return }
-            let pending = try pendingForgets()
-            if pending.isEmpty {
+            guard let data = try AtomicFile.readIfPresent(forgetJournalURL, maxBytes: Self.maxJournalBytes) else {
+                return
+            }
+            let decoder = HolosJSON.decoder()
+            // Damaged lines (not a JSON object with a usable schemaVersion, such as a torn line) are dropped.
+            let lines = JournalLines.split(data).lines.filter { line in
+                guard let version = SchemaVersion.probe(line) else { return false }
+                return version >= 1
+            }
+            let readable = lines.map { line -> ForgetRecord? in
+                guard let version = SchemaVersion.probe(line),
+                      SchemaVersion.readable(version, current: ForgetRecord.currentSchemaVersion) else { return nil }
+                return try? decoder.decode(ForgetRecord.self, from: line)
+            }
+            let pendingIDs = Set(readable.compactMap { $0 }.filter { $0.state == ForgetRecord.pending && $0.kind != nil }
+                .map(\.id))
+            let finished = Set(readable.compactMap { $0 }.filter { $0.state == ForgetRecord.done }.map(\.id))
+            let unreadable = readable.contains { $0 == nil }
+            var kept = Data()
+            var seen = Set<String>()
+            for (line, record) in zip(lines, readable) {
+                let keep: Bool
+                if let record {
+                    if record.state == ForgetRecord.done {
+                        keep = unreadable && !pendingIDs.contains(record.id) && seen.insert("done:" + record.id).inserted
+                    } else if record.state == ForgetRecord.pending, record.kind != nil {
+                        keep = !finished.contains(record.id) && seen.insert(record.id).inserted
+                    } else {
+                        keep = true
+                    }
+                } else {
+                    keep = true
+                }
+                guard keep else { continue }
+                kept.append(line)
+                kept.append(0x0A)
+            }
+            if kept.isEmpty {
                 try removeJournal()
-            } else {
-                var data = Data()
-                for record in pending { data.append(try HolosJSON.line(record)) }
-                try AtomicFile.write(data, to: forgetJournalURL)
+            } else if kept != data {
+                try AtomicFile.write(kept, to: forgetJournalURL)
             }
         }
     }

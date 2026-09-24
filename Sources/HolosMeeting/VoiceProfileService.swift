@@ -26,9 +26,11 @@ public enum ProfileTarget: Sendable, Equatable { case existing(profileID: String
 /// - A person's sample from a meeting is kept in step with that meeting's labels (`refreshSamples`): it is
 ///   recomputed from the speakers now linked to the person when its inputs changed, and removed when no qualifying
 ///   turn remains or it can no longer be recomputed (Remember voices off, audio deleted, no extractor, another
-///   embedding model), so a stored voiceprint never holds turns the user moved to someone else.
+///   embedding model), so a stored voiceprint never holds turns the user moved to someone else. A sample built from
+///   an earlier run of a meeting that was labelled again is only ever replaced, never removed, by a refresh.
 /// - A sample is saved only if the session's speaker generation did not change while it was computed (checked under
-///   the speaker lock, then `profiles.lock`); otherwise the work is redone from the new labels, at most 3 times.
+///   the speaker lock, then `profiles.lock`); otherwise the work is redone from the new labels, at most 3 times. A
+///   refresh never brings back a sample that was forgotten while it ran.
 /// - Forgetting writes a tombstone to `forget-journal.jsonl` first, then updates the store, then cleans each affected
 ///   session under its speaker lock, then marks the tombstone done; `resumePendingForgets` finishes any tombstone a
 ///   crash left.
@@ -98,7 +100,9 @@ public enum VoiceProfileService {
 
     /// "Not Jim" for this meeting only (`rejectProfile`); unlinks the speaker if it was linked to that person. Takes
     /// no extractor: when the speaker was linked to the person and the person has a sample from this meeting, the
-    /// caller then awaits `refreshSamples` (which does nothing when no sample is affected).
+    /// caller then awaits `refreshSamples` (which does nothing when no sample is affected), or, when this throws
+    /// `HolosError.incomplete` (the rejection was saved, then reloading or the exports failed),
+    /// `refreshSamples(afterSaving:session:extractor:store:)`.
     public static func reject(session: URL, speakerID: String, profileID: String,
                               view: SpeakerProjection) throws -> SpeakerSessionSnapshot {
         let result = try SpeakerEditor.apply([.rejectProfile(speakerID: speakerID, profileID: profileID)], view: view,
@@ -116,15 +120,47 @@ public enum VoiceProfileService {
         try await syncSamples(session: session, extractor: extractor, store: store, enroll: [])
     }
 
+    /// For an edit whose lines were saved but that then failed (`SpeakerEditor` or the caller's export rewrite threw
+    /// `HolosError.incomplete`, so `needsSampleRefresh` may never have been seen): brings this meeting's samples in
+    /// step as `refreshSamples` does, then throws `error`. When the refresh fails too, its reason is added to the
+    /// message. A later unrelated edit would not notice the stale sample, so this must not be skipped.
+    public static func refreshSamples(afterSaving error: any Error, session: URL,
+                                      extractor: (any VoiceSampleExtractor)?,
+                                      store: SpeakerProfileStore) async throws -> Never {
+        try await syncAfterSavedEdit(error, session: session, extractor: extractor, store: store, enroll: [])
+    }
+
+    private static func syncAfterSavedEdit(_ error: any Error, session: URL, extractor: (any VoiceSampleExtractor)?,
+                                           store: SpeakerProfileStore, enroll: Set<String>) async throws -> Never {
+        do {
+            try await syncSamples(session: session, extractor: extractor, store: store, enroll: enroll)
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch let refresh {
+            throw HolosError.incomplete(error.localizedDescription + " A voice sample learned from this meeting "
+                                        + "could not be updated either: " + refresh.localizedDescription)
+        }
+        throw error
+    }
+
     // MARK: - Managing people
 
     /// Turns "Remember voices" on or off. Off with `forgetExisting` also forgets every sample and every meeting's voice
     /// data (`forgetAll`); names always stay.
     public static func setRemember(_ on: Bool, forgetExisting: Bool, store: SpeakerProfileStore,
                                    sessionsRoot: URL = HolosPaths.sessions) throws {
+        if !on, forgetExisting {
+            // The tombstone comes first, and the setting is turned off in the same store write that removes the
+            // samples, so a crash or a lock timeout never leaves the setting off with every sample kept and nothing
+            // to resume.
+            let database = try store.load()
+            try forget(ForgetRecord(kind: .all, sampleIDs: database.profiles.flatMap(\.samples).map(\.id)),
+                       store: store, sessionsRoot: sessionsRoot, turnRememberOff: true)
+            log.notice("Remember voices turned off")
+            return
+        }
         try store.update { $0.rememberVoices = on }
         log.notice("Remember voices turned \(on ? "on" : "off", privacy: .public)")
-        if !on, forgetExisting { try forgetAll(store: store, sessionsRoot: sessionsRoot) }
     }
 
     /// Turns "Suggest <person> in new meetings" on or off.
@@ -193,8 +229,9 @@ public enum VoiceProfileService {
     }
 
     /// Forgets a person: their name and every sample. Meetings keep the name they were given; the person's entries
-    /// are removed from every meeting's recognition results and evaluation voice data, and the exports of meetings
-    /// whose recognition named them are rewritten.
+    /// are removed from the recognition results and evaluation voice data of every meeting in `sessionsRoot` (a
+    /// session kept in another folder is not visited), and the exports of meetings whose recognition named them are
+    /// rewritten.
     public static func forget(profileID: String, store: SpeakerProfileStore,
                               sessionsRoot: URL = HolosPaths.sessions) throws {
         let database = try store.load()
@@ -214,7 +251,8 @@ public enum VoiceProfileService {
                    store: store, sessionsRoot: HolosPaths.sessions)
     }
 
-    /// "Forget All Voices": every sample, and every meeting's voice data and recognition results; names stay.
+    /// "Forget All Voices": every sample, and the voice data and recognition results of every meeting in
+    /// `sessionsRoot` (a session kept in another folder is not visited); names stay.
     public static func forgetAll(store: SpeakerProfileStore, sessionsRoot: URL = HolosPaths.sessions) throws {
         let database = try store.load()
         try forget(ForgetRecord(kind: .all, sampleIDs: database.profiles.flatMap(\.samples).map(\.id)),
@@ -348,14 +386,20 @@ public enum VoiceProfileService {
                 needsRefresh = result.needsSampleRefresh
             }
         } catch {
-            if !created.isEmpty, !editsWereSaved(error) {
-                do {
-                    try store.update { $0.profiles.removeAll { created.contains($0.id) && $0.samples.isEmpty } }
-                } catch {
-                    log.error("Cannot remove a person whose link was refused: \(ProcessSpawner.logCategory(error), privacy: .public)")
+            guard editsWereSaved(error) else {
+                if !created.isEmpty {
+                    do {
+                        try store.update { $0.profiles.removeAll { created.contains($0.id) && $0.samples.isEmpty } }
+                    } catch {
+                        log.error("Cannot remove a person whose link was refused: \(ProcessSpawner.logCategory(error), privacy: .public)")
+                    }
                 }
+                throw error
             }
-            throw error
+            // The link is saved; only reloading or the exports failed, so the editor could not say whether samples
+            // are affected. Samples are brought in step anyway (cheap when nothing changed), then the error is
+            // reported.
+            try await syncAfterSavedEdit(error, session: session, extractor: extractor, store: store, enroll: enroll)
         }
         let linked = Set(links.map(\.profile.id))
         do {
@@ -398,15 +442,26 @@ public enum VoiceProfileService {
         let turns: [ProjectedTurn]
         let digest: String
         let action: Action
+        /// The existing sample stays when the new labels give no sample (it was built from another run; see `plan`).
+        let keepWhenUnlearnable: Bool
     }
 
     private enum SampleChange {
-        case remove(profileID: String)
-        case upsert(profileID: String, sample: VoiceprintSample)
+        /// Removes the sample `sampleID` (the one the plan saw).
+        case remove(profileID: String, sampleID: String)
+        /// Adds the sample, or replaces the one the plan saw (`replacing`). A refresh (`replacing` set) whose sample
+        /// is gone or was replaced meanwhile (forgotten, or learned again) is dropped, so it never brings a forgotten
+        /// sample back.
+        case upsert(profileID: String, sample: VoiceprintSample, replacing: String?)
     }
 
+    /// Said when the labels kept changing while samples were computed.
+    static let labelsKeptChanging = "The speaker labels kept changing while the voice was learned; try again."
+
     /// Brings every person's sample from this meeting in step with its labels, and learns samples for `enroll`.
-    /// Runs up to `sampleAttempts` times when the labels change while it works; then leaves the samples and logs.
+    /// Runs up to `sampleAttempts` times when the labels change while it works; then leaves the samples and throws
+    /// `unavailable`. Without usable labels it leaves the samples as they are, and throws `unavailable` when a voice
+    /// was to be learned (`enroll`).
     static func syncSamples(session: URL, extractor: (any VoiceSampleExtractor)?, store: SpeakerProfileStore,
                             enroll: Set<String>) async throws {
         for attempt in 1...sampleAttempts {
@@ -414,6 +469,10 @@ public enum VoiceProfileService {
             let (generation, snapshot) = try consistentSnapshot(session)
             guard let run = snapshot.run, let projection = snapshot.projection else {
                 log.notice("Session \(snapshot.manifest.id, privacy: .public): no usable speaker labels; voice samples left as they are")
+                guard enroll.isEmpty else {
+                    throw HolosError.unavailable(snapshot.runProblem
+                        ?? "This meeting has no usable speaker labels, so no voice can be learned from it.")
+                }
                 return
             }
             let database = try store.load()
@@ -439,14 +498,18 @@ public enum VoiceProfileService {
             for plan in plans {
                 switch plan.action {
                 case .remove:
-                    changes.append(.remove(profileID: plan.profileID))
+                    if let existing = plan.existing {
+                        changes.append(.remove(profileID: plan.profileID, sampleID: existing.id))
+                    }
                 case .extract:
                     guard extractionError == nil else { continue }
                     let turnEmbeddings = plan.turns.compactMap { embeddings[$0.id] }
                     guard let result = VoiceEnrollment.sample(for: plan.speakerIDs, projection: projection, run: run,
                                                               turnEmbeddings: turnEmbeddings,
                                                               minSampleSeconds: minimum) else {
-                        if plan.existing != nil { changes.append(.remove(profileID: plan.profileID)) }
+                        if let existing = plan.existing, !plan.keepWhenUnlearnable {
+                            changes.append(.remove(profileID: plan.profileID, sampleID: existing.id))
+                        }
                         continue
                     }
                     let sample = VoiceprintSample(
@@ -455,7 +518,7 @@ public enum VoiceProfileService {
                         speechSeconds: result.speechSeconds, embedding: result.vector, condition: result.condition,
                         weak: result.weak, droppedOutlierTurns: result.droppedOutlierTurns,
                         addedAt: plan.existing?.addedAt ?? Date(), generation: generation, inputDigest: plan.digest)
-                    changes.append(.upsert(profileID: plan.profileID, sample: sample))
+                    changes.append(.upsert(profileID: plan.profileID, sample: sample, replacing: plan.existing?.id))
                 }
             }
 
@@ -480,6 +543,7 @@ public enum VoiceProfileService {
             log.notice("Session \(sessionID, privacy: .public): speaker labels changed while voice samples were computed (attempt \(attempt, privacy: .public)); computing again")
         }
         log.error("Speaker labels kept changing; voice samples were left as they were after \(sampleAttempts, privacy: .public) attempts")
+        throw HolosError.unavailable(labelsKeptChanging)
     }
 
     /// The generation and the snapshot loaded while it held (read under the speaker lock before and after the load,
@@ -498,6 +562,12 @@ public enum VoiceProfileService {
 
     /// Which samples need work: each person with a sample from this meeting, plus `enroll`. Up-to-date samples
     /// (same input digest) need nothing.
+    ///
+    /// A sample built from the head run whose inputs changed is recomputed, or removed when it cannot be (no
+    /// qualifying turn left, Remember voices off, audio deleted, no extractor, another model): the change may have
+    /// moved a turn it holds to someone else. A sample built from an earlier run (the meeting was labelled again) is
+    /// different: that run can no longer be edited, so its turns are still the ones the user confirmed. It is replaced
+    /// only by a sample learned from the new labels, and otherwise kept.
     private static func plan(database: SpeakerProfileDatabase, snapshot: SpeakerSessionSnapshot, run: DiarizationRun,
                              projection: SpeakerProjection, enroll: Set<String>,
                              extractorAvailable: Bool) -> [SamplePlan] {
@@ -511,20 +581,28 @@ public enum VoiceProfileService {
             let speakerIDs = linkedSpeakers(profile.id, sample: existing, projection: projection, known: known)
             let digest = VoiceEnrollment.inputDigest(speakerIDs: speakerIDs, projection: projection)
             if let existing, existing.inputDigest == digest { continue }
+            let fromEarlierRun = existing.map { builtFromEarlierRun($0, headRunID: run.id) } ?? false
             let turns = VoiceEnrollment.candidateTurns(for: speakerIDs, projection: projection)
             let canLearn = database.rememberVoices && !snapshot.audioDeleted && extractorAvailable && model != nil
                 && (profile.embeddingModel == nil || profile.embeddingModel == model)
             let action: SamplePlan.Action
             if speakerIDs.isEmpty || turns.isEmpty || !canLearn {
-                guard existing != nil else { continue }
+                guard existing != nil, !fromEarlierRun else { continue }
                 action = .remove
             } else {
                 action = .extract
             }
             plans.append(SamplePlan(profileID: profile.id, existing: existing, speakerIDs: speakerIDs, turns: turns,
-                                    digest: digest, action: action))
+                                    digest: digest, action: action, keepWhenUnlearnable: fromEarlierRun))
         }
         return plans
+    }
+
+    /// Whether `sample` was computed from a run other than the head (its generation names another run ID).
+    static func builtFromEarlierRun(_ sample: VoiceprintSample, headRunID: String) -> Bool {
+        guard let generation = sample.generation,
+              let separator = generation.lastIndex(of: ":") else { return false }
+        return generation[..<separator] != headRunID
     }
 
     /// The meeting's speakers linked to `profileID`, plus the speakers `sample` was built from whose link names a
@@ -560,45 +638,38 @@ public enum VoiceProfileService {
         return embeddings
     }
 
-    /// Applies sample changes for one meeting to the database (caller holds `profiles.lock`). A person forgotten
-    /// meanwhile is skipped; nothing is added once "Remember voices" was turned off, to a person whose samples are of
-    /// another model, or over a sample built from a newer generation.
+    /// Applies sample changes for one meeting to the database (caller holds the speaker lock, then `profiles.lock`,
+    /// and the generation is the one the changes were computed from, so no newer sample can be overwritten). A person
+    /// forgotten meanwhile is skipped; nothing is added once "Remember voices" was turned off, or to a person whose
+    /// samples are of another model. A refresh of a sample that was forgotten (or replaced) meanwhile is dropped: a
+    /// forget never touches the speaker generation, so this check is what keeps a forgotten sample from coming back.
     private static func apply(_ changes: [SampleChange], to database: inout SpeakerProfileDatabase, sessionID: String,
                               model: EmbeddingModelID?) {
         for change in changes {
             switch change {
-            case .remove(let profileID):
+            case .remove(let profileID, let sampleID):
                 guard let index = database.profiles.firstIndex(where: { $0.id == profileID }) else { continue }
-                database.profiles[index].samples.removeAll { $0.sessionID == sessionID }
+                database.profiles[index].samples.removeAll { $0.id == sampleID }
                 if database.profiles[index].samples.isEmpty { database.profiles[index].embeddingModel = nil }
-            case .upsert(let profileID, var sample):
+            case .upsert(let profileID, var sample, let replacing):
                 guard database.rememberVoices, let model,
                       let index = database.profiles.firstIndex(where: { $0.id == profileID }) else { continue }
                 var profile = database.profiles[index]
                 if let current = profile.embeddingModel, current != model, !profile.samples.isEmpty { continue }
                 if let at = profile.samples.firstIndex(where: { $0.sessionID == sessionID }) {
                     let existing = profile.samples[at]
-                    if isNewer(existing.generation, than: sample.generation) { continue }
+                    if let replacing, existing.id != replacing { continue }
                     sample.id = existing.id
                     sample.addedAt = existing.addedAt
                     profile.samples[at] = sample
                 } else {
+                    guard replacing == nil else { continue }
                     profile.samples.append(sample)
                 }
                 profile.embeddingModel = model
                 database.profiles[index] = profile
             }
         }
-    }
-
-    /// Whether generation `a` ("<runID>:<bytes>") is later than `b`: the same run with a longer journal.
-    static func isNewer(_ a: String?, than b: String?) -> Bool {
-        guard let a, let b else { return false }
-        let left = a.split(separator: ":", maxSplits: 1)
-        let right = b.split(separator: ":", maxSplits: 1)
-        guard left.count == 2, right.count == 2, left[0] == right[0],
-              let first = Int64(left[1]), let second = Int64(right[1]) else { return false }
-        return first > second
     }
 
     /// Whether an edit from `before` to `after` changed the inputs of a sample some person has from this meeting
@@ -627,18 +698,23 @@ public enum VoiceProfileService {
 
     // MARK: - Forgetting (shared)
 
-    /// Writes the tombstone, then performs it.
-    private static func forget(_ record: ForgetRecord, store: SpeakerProfileStore, sessionsRoot: URL) throws {
+    /// Writes the tombstone, then performs it. `turnRememberOff` also turns "Remember voices" off in the store write
+    /// that removes the samples (only on this first run: a resumed tombstone never turns the setting off again, so
+    /// a forget that keeps failing cannot undo the user turning it back on).
+    private static func forget(_ record: ForgetRecord, store: SpeakerProfileStore, sessionsRoot: URL,
+                               turnRememberOff: Bool = false) throws {
         try store.appendForgetRecord(record)
-        try perform(record, store: store, sessionsRoot: sessionsRoot)
+        try perform(record, store: store, sessionsRoot: sessionsRoot, turnRememberOff: turnRememberOff)
         log.notice("Forgot voices (\(record.kind?.rawValue ?? "?", privacy: .public))")
     }
 
     /// The steps of one forget, each idempotent: the store, then the sessions, then the `done` line.
-    static func perform(_ record: ForgetRecord, store: SpeakerProfileStore, sessionsRoot: URL) throws {
+    static func perform(_ record: ForgetRecord, store: SpeakerProfileStore, sessionsRoot: URL,
+                        turnRememberOff: Bool = false) throws {
         guard let kind = record.kind else { return }
         let sampleIDs = Set(record.sampleIDs ?? [])
         try store.update { database in
+            if turnRememberOff { database.rememberVoices = false }
             if kind == .profile, let profileID = record.profileID {
                 database.profiles.removeAll { $0.id == profileID }
             }
@@ -676,33 +752,52 @@ public enum VoiceProfileService {
 
     /// Removes what a forget leaves in one meeting, under its speaker lock: every voice file and recognition result
     /// (`.all`), or the person's recognition matches (`.profile`) and the person's speakers' entries in evaluation
-    /// voice files (`.profile`, `.sample`). Rewrites the exports afterwards when recognition changed; a failure there
-    /// is logged, not retried (the forgotten data is gone, and the projection ignores forgotten people).
+    /// voice files (`.profile`, `.sample`). A recognition or voice file that cannot be read (damaged, or from a newer
+    /// Holos) cannot be checked for the person, so it is deleted with the rest of its folder; the forget always
+    /// finishes. Rewrites the exports afterwards when recognition changed; a failure there is logged, not retried (the
+    /// forgotten data is gone, and the projection ignores forgotten people).
     private static func clean(_ session: URL, kind: ForgetRecord.Kind, profileID: String?,
                               store: SpeakerProfileStore) throws {
         guard (try? SessionArchive.readManifest(at: session)) != nil else { return }
         let changedRecognition = try SessionArchive.withSpeakerLock(at: session) { () throws -> Bool in
             let runIDs = try SessionSpeakerStore.runIDs(session: session)
             if kind == .all {
-                let had = try runIDs.contains { try SessionSpeakerStore.readRecognition(runID: $0, session: session) != nil }
+                // An unreadable file counts as present and is deleted like the others; it never stops the delete.
+                let had = runIDs.contains { runID in
+                    do {
+                        return try SessionSpeakerStore.readRecognition(runID: runID, session: session) != nil
+                    } catch {
+                        return true
+                    }
+                }
                 try SessionSpeakerStore.deleteVoiceData(session: session)
                 try SessionSpeakerStore.deleteRecognition(session: session)
                 return had
             }
             guard let profileID else { return false }
             var changed = false
-            for runID in runIDs {
-                if kind == .profile, var result = try SessionSpeakerStore.readRecognition(runID: runID, session: session) {
-                    let matches = result.matches.filter { $0.profileID != profileID }
-                    let merges = result.mergeSuggestions.filter { $0.profileID != profileID }
-                    if matches.count != result.matches.count || merges.count != result.mergeSuggestions.count {
-                        result.matches = matches
-                        result.mergeSuggestions = merges
-                        try SessionSpeakerStore.writeRecognition(result, session: session)
-                        changed = true
-                    }
+            for runID in runIDs where kind == .profile {
+                let read: RecognitionResult?
+                do {
+                    read = try SessionSpeakerStore.readRecognition(runID: runID, session: session)
+                } catch {
+                    log.error("Deleted a meeting's recognition results that cannot be read: \(ProcessSpawner.logCategory(error), privacy: .public)")
+                    try SessionSpeakerStore.deleteRecognition(session: session)
+                    changed = true
+                    break
                 }
-                try removeVoiceEntries(of: profileID, runID: runID, session: session)
+                guard var result = read else { continue }
+                let matches = result.matches.filter { $0.profileID != profileID }
+                let merges = result.mergeSuggestions.filter { $0.profileID != profileID }
+                if matches.count != result.matches.count || merges.count != result.mergeSuggestions.count {
+                    result.matches = matches
+                    result.mergeSuggestions = merges
+                    try SessionSpeakerStore.writeRecognition(result, session: session)
+                    changed = true
+                }
+            }
+            for runID in runIDs {
+                guard try removeVoiceEntries(of: profileID, runID: runID, session: session) else { break }
             }
             return changed
         }
@@ -715,10 +810,20 @@ public enum VoiceProfileService {
     }
 
     /// Removes the centroids and turn embeddings of `profileID`'s speakers from the evaluation voice file of one run
-    /// (caller holds the speaker lock). Nothing to do without a voice file. When the run or its transcript cannot be
-    /// read, so the person's entries cannot be told apart, the meeting's voice data is deleted instead.
-    private static func removeVoiceEntries(of profileID: String, runID: String, session: URL) throws {
-        guard var voice = try SessionSpeakerStore.readVoiceData(runID: runID, session: session) else { return }
+    /// (caller holds the speaker lock). Nothing to do without a voice file. When the voice file cannot be read
+    /// (damaged, or from a newer Holos), or the run or its transcript cannot be, so the person's entries cannot be
+    /// told apart, the meeting's voice data is deleted instead. Returns false once the voice data was deleted (the
+    /// other runs have nothing left).
+    private static func removeVoiceEntries(of profileID: String, runID: String, session: URL) throws -> Bool {
+        let read: SessionVoiceData?
+        do {
+            read = try SessionSpeakerStore.readVoiceData(runID: runID, session: session)
+        } catch {
+            log.error("Deleted a meeting's voice data that cannot be read: \(ProcessSpawner.logCategory(error), privacy: .public)")
+            try SessionSpeakerStore.deleteVoiceData(session: session)
+            return false
+        }
+        guard var voice = read else { return true }
         let projection: SpeakerProjection
         do {
             let run = try SessionSpeakerStore.readRun(id: runID, session: session)
@@ -729,7 +834,7 @@ public enum VoiceProfileService {
         } catch let error where SessionFiles.isDamage(error) {
             log.error("Deleted a meeting's voice data whose speaker labels cannot be read")
             try SessionSpeakerStore.deleteVoiceData(session: session)
-            return
+            return false
         }
         let speakers = projection.speakers.filter { $0.profileID == profileID }
         let speakerIDs = Set(speakers.map(\.id))
@@ -738,10 +843,13 @@ public enum VoiceProfileService {
             .map { String($0.id.prefix { $0 != "/" }) })
         let centroids = voice.centroids.filter { !clusters.contains($0.key) }
         let embeddings = voice.turnEmbeddings.filter { !turns.contains($0.turnID) }
-        guard centroids.count != voice.centroids.count || embeddings.count != voice.turnEmbeddings.count else { return }
+        guard centroids.count != voice.centroids.count || embeddings.count != voice.turnEmbeddings.count else {
+            return true
+        }
         voice.centroids = centroids
         voice.turnEmbeddings = embeddings
         try SessionSpeakerStore.writeVoiceData(voice, session: session)
+        return true
     }
 
     /// The `.holos` folders directly in `root` (not links), sorted by name.

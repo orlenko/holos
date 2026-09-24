@@ -36,13 +36,24 @@ enum RecognizeStage {
         guard database.profiles.contains(where: { $0.recognitionEnabled && !$0.samples.isEmpty }) else {
             return .skipped(noVoices)
         }
-        guard let result = SpeakerRecognizer.recognize(run: run, voiceData: voiceData, database: database) else {
+        guard var result = SpeakerRecognizer.recognize(run: run, voiceData: voiceData, database: database) else {
             return .skipped(nothingToCompare)
         }
         do {
-            try SessionArchive.withSpeakerLock(at: session) {
+            // The people are read again under the speaker lock: a forget that updated the store meanwhile has its
+            // people dropped here, and one that updates it later cleans this file after the lock is released
+            // (it takes the speaker lock per meeting after its store update).
+            let written = try SessionArchive.withSpeakerLock(at: session) { () throws -> Bool in
+                let current = try store.load()
+                guard current.rememberVoices else { return false }
+                let people = Set(current.profiles.filter { !$0.samples.isEmpty }.map(\.id))
+                result.matches.removeAll { !people.contains($0.profileID) }
+                result.mergeSuggestions.removeAll { !people.contains($0.profileID) }
+                result.skippedProfiles.removeAll { !people.contains($0) }
                 try SessionSpeakerStore.writeRecognition(result, session: session)
+                return true
             }
+            guard written else { return .skipped(rememberOff) }
         } catch {
             log.error("Cannot save the voice comparison: \(ProcessSpawner.logCategory(error), privacy: .public)")
             return .failed("Cannot save the voice comparison: \(error.localizedDescription)")

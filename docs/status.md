@@ -157,12 +157,15 @@ Hardware-facing and cross-app acceptance remain pending.
   confirmed meetings (hidden `people calibrate --apply`; the default suggestion
   threshold, 0.43 cosine distance, comes from the Otter calibration below). Samples live
   in `Application Support/Holos/Speakers` (0700, 0600 files, excluded from Time Machine)
-  and follow later speaker edits in their meeting (a sample that can no longer be
-  recomputed is removed). `people list [--json]`, `rename`, `merge`, `forget` (a person,
-  one sample, a meeting's samples, or `--all`), and `export [--include-voiceprints]`
-  manage them; People… in the menu does the same. A forget is journalled first and
-  finished at the next app launch or `people`, `speakers`, or `session` command if Holos
-  stops midway. Known people's names are added to meeting recognition vocabulary.
+  and follow later speaker edits in their meeting (a sample whose turns changed and that
+  can no longer be recomputed is removed, with a note on stderr; one from an earlier
+  labelling of the meeting is kept until new labels replace it). `people list [--json]`,
+  `rename`, `merge`, `forget` (a person, one sample, a meeting's samples, or `--all`), and
+  `export [--include-voiceprints]` manage them; People… in the menu does the same.
+  Forgetting cleans the meetings in the sessions folder, not sessions kept elsewhere with
+  `--directory`. A forget is journalled first and finished at the next app launch or
+  `people`, `speakers`, or `session` command if Holos stops midway. Known people's names
+  are added to meeting recognition vocabulary.
 - `voices list` and `say` provide native voice discovery, playback, and `.m4a`,
   `.wav`, or `.caf` export. Text comes from arguments or UTF-8 stdin.
 - `read` renders a local UTF-8 text/Markdown file or stdin as an ordered AAC

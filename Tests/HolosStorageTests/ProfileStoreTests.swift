@@ -173,6 +173,38 @@ func profileStoreIsPrivateLockedAndNotBackedUp() async throws {
     #expect(try store.pendingForgets().isEmpty)
 }
 
+@Test func compactionKeepsLinesFromANewerHolos() throws {
+    let root = try profileRoot()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let store = SpeakerProfileStore(directory: root.appendingPathComponent("Speakers"))
+    let finished = ForgetRecord(kind: .sample, profileID: "JIM", sampleIDs: ["A"], sessionIDs: ["S"])
+    try store.appendForgetRecord(finished)
+    // A newer Holos's tombstones: a newer schema, and a kind this build does not know (its done line is readable).
+    let newerSchema = Data(#"{"schemaVersion":2,"id":"NEWER","kind":"all","state":"pending"}"#.utf8)
+    let newerKind = Data(#"{"schemaVersion":1,"id":"KIND","kind":"device","state":"pending"}"#.utf8)
+    for line in [newerSchema, newerKind] { try AtomicFile.append(line + Data([0x0A]), to: store.forgetJournalURL) }
+    try store.appendForgetRecord(.done(finished.id))
+    // A torn tail; the next line starts on a line of its own.
+    try AtomicFile.append(Data(#"{"schemaVersion":1,"id":"TORN""#.utf8), to: store.forgetJournalURL)
+    let pending = ForgetRecord(kind: .profile, profileID: "SAM", sampleIDs: [], sessionIDs: [])
+    try store.appendForgetRecord(pending)
+    #expect(try store.pendingForgets() == [pending])
+
+    try store.compactForgetJournal()
+    let text = String(decoding: try Data(contentsOf: store.forgetJournalURL), as: UTF8.self)
+    let lines = text.split(separator: "\n").map { Data($0.utf8) }
+    #expect(lines == [newerSchema, newerKind, try HolosJSON.line(pending).dropLast()])
+    #expect(try store.pendingForgets() == [pending])
+
+    // Finishing this build's tombstone keeps the newer lines, and their done line.
+    try store.appendForgetRecord(.done(pending.id))
+    try store.appendForgetRecord(.done("KIND"))
+    try store.compactForgetJournal()
+    let after = String(decoding: try Data(contentsOf: store.forgetJournalURL), as: UTF8.self)
+        .split(separator: "\n").map { Data($0.utf8) }
+    #expect(after == [newerSchema, newerKind, try HolosJSON.line(ForgetRecord.done("KIND")).dropLast()])
+}
+
 @Test func supportRootHoldsTheSpeakersFolder() {
     #expect(HolosPaths.speakerProfiles == HolosPaths.supportRoot.appendingPathComponent("Speakers", isDirectory: true))
 }

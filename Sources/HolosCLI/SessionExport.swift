@@ -37,14 +37,17 @@ extension Session {
 
         mutating func run() throws {
             let directory = try SessionLocator.resolve(session)
+            // People's current names, as every other writer of the exports passes them, so an automatic name
+            // ("Jim (auto)") does not depend on which command wrote the exports last.
+            let names = VoiceProfileService.profileNames()
             if all {
-                let result = try SessionExports.regenerate(session: directory)
+                let result = try SessionExports.regenerate(session: directory, profileNames: names)
                 Console.output(SessionPaths.exports(directory).path)
                 for url in result.movedAside { Console.error(SpeakerCommand.movedAsideNote(url)) }
                 return
             }
             guard let format else { throw ValidationError("Choose --format md, json, or txt, or use --all.") }
-            let data = try SessionExports.render(format, session: directory)
+            let data = try SessionExports.render(format, session: directory, profileNames: names)
             guard let output else {
                 try FileHandle.standardOutput.write(contentsOf: data)
                 return

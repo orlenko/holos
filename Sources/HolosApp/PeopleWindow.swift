@@ -218,7 +218,8 @@ final class PeopleWindowController: NSObject, NSWindowDelegate, NSTableViewDataS
     private func updateControls() {
         rememberBox.state = database.rememberVoices ? .on : .off
         rememberBox.isEnabled = !busy
-        forgetAllButton.isEnabled = !busy && database.sampleCount > 0
+        // Also without samples: Forget All deletes every meeting's voice data and recognition results too.
+        forgetAllButton.isEnabled = !busy
         let person = selectedPerson
         nameLabel.stringValue = person.map { $0.displayName + ($0.isSelf ? " (you)" : "") } ?? "No person selected"
         renameButton.isEnabled = !busy && person != nil
@@ -396,8 +397,9 @@ final class PeopleWindowController: NSObject, NSWindowDelegate, NSTableViewDataS
         let samples = database.sampleCount
         let alert = NSAlert()
         alert.messageText = "Forget all voices?"
-        alert.informativeText = "Holos forgets \(samples) voice \(samples == 1 ? "sample" : "samples") and every "
-            + "meeting's voice data. People and the names in your meetings stay. This cannot be undone."
+        alert.informativeText = "Holos forgets \(samples) voice \(samples == 1 ? "sample" : "samples") and the voice "
+            + "data of every meeting in the Holos sessions folder. People and the names in your meetings stay. This "
+            + "cannot be undone."
         alert.addButton(withTitle: "Forget All Voices")
         alert.addButton(withTitle: "Cancel")
         alert.alertStyle = .warning

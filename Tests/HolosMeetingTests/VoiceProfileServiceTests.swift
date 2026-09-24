@@ -576,16 +576,116 @@ func refreshGivesUpAfterThreeChanges() async throws {
     let busy = ProfileFakeExtractor { call in
         try SessionFixtures.appendEdits([.rename(speakerID: "system:S2", name: "Name \(call)")], session: session)
     }
-    try await VoiceProfileService.refreshSamples(session: session, extractor: busy, store: store)
+    // Giving up is reported, so a caller never says the voice was learned or is up to date.
+    do {
+        try await VoiceProfileService.refreshSamples(session: session, extractor: busy, store: store)
+        Issue.record("Giving up must throw.")
+    } catch let HolosError.unavailable(message) {
+        #expect(message == VoiceProfileService.labelsKeptChanging)
+    }
     #expect(busy.requests.count == VoiceProfileService.sampleAttempts)
     #expect(try store.load().profiles.first?.samples.first == original, "The existing sample is left as it was.")
 }
 
-@Test func newerGenerationWins() {
-    #expect(VoiceProfileService.isNewer("RUN:20", than: "RUN:10"))
-    #expect(!VoiceProfileService.isNewer("RUN:10", than: "RUN:20"))
-    #expect(!VoiceProfileService.isNewer("OTHER:20", than: "RUN:10"))
-    #expect(!VoiceProfileService.isNewer(nil, than: "RUN:10"))
+@Test func earlierRunIsToldFromTheGeneration() {
+    func sample(_ generation: String?) -> VoiceprintSample {
+        VoiceprintSample(sessionID: "S", sessionName: "x", speakerIDs: [], speechSeconds: 30,
+                         embedding: FloatVector([1, 0]), condition: .room, weak: false, generation: generation)
+    }
+    #expect(VoiceProfileService.builtFromEarlierRun(sample("OLD:20"), headRunID: "RUN"))
+    #expect(!VoiceProfileService.builtFromEarlierRun(sample("RUN:20"), headRunID: "RUN"))
+    #expect(!VoiceProfileService.builtFromEarlierRun(sample(nil), headRunID: "RUN"))
+}
+
+@Test(.timeLimit(.minutes(1)))
+func forgetDuringRefreshKeepsTheSampleForgotten() async throws {
+    let temp = try TemporaryDirectory("profiles")
+    defer { temp.remove() }
+    let store = profileStore(temp)
+    try store.update { $0.rememberVoices = true }
+    let (session, _) = try await profileSession(in: temp)
+    _ = try await VoiceProfileService.link(
+        session: session, speakerID: "system:S1", to: .new(name: "Jim"), view: try SessionFixtures.view(session),
+        learnVoice: true, extractor: ProfileFakeExtractor(), store: store)
+    let sample = try #require(try store.load().profiles.first?.samples.first)
+    // The sample's inputs change, so a refresh recomputes it.
+    try SessionFixtures.appendEdits([.excludeFromEnrollment(turnIDs: ["T3"])], session: session)
+
+    let entered = SharedValue(false)
+    let gate = SharedValue(false)
+    let slow = ProfileFakeExtractor { _ in
+        entered.set(true)
+        while !gate.value { try await Task.sleep(for: .milliseconds(5)) }
+    }
+    let refresh = Task { try await VoiceProfileService.refreshSamples(session: session, extractor: slow, store: store) }
+    #expect(await profileEventually { entered.value })
+
+    // The user forgets the sample while it is being recomputed; the refresh then finishes.
+    try VoiceProfileService.forget(sampleID: sample.id, store: store, sessionsRoot: temp.url)
+    gate.set(true)
+    try await refresh.value
+    #expect(try store.load().sampleCount == 0, "A refresh never brings a forgotten sample back.")
+    #expect(try store.load().profiles.count == 1)
+}
+
+@Test(.timeLimit(.minutes(1)))
+func refreshAfterAFailedSaveStillRecomputes() async throws {
+    let temp = try TemporaryDirectory("profiles")
+    defer { temp.remove() }
+    let store = profileStore(temp)
+    try store.update { $0.rememberVoices = true }
+    let (session, _) = try await profileSession(in: temp)
+    let t1 = profileUnit([1, 0.3, 0, 0, 0, 0, 0, 0])
+    let t3 = profileUnit([1, -0.3, 0, 0, 0, 0, 0, 0])
+    let extractor = ProfileFakeExtractor(vectors: ["T1": t1, "T3": t3])
+    _ = try await VoiceProfileService.link(
+        session: session, speakerID: "system:S1", to: .new(name: "Jim"), view: try SessionFixtures.view(session),
+        learnVoice: true, extractor: extractor, store: store)
+    // T3 goes to S2 and the save then "fails" (the exports could not be rewritten): the sample is still updated,
+    // and the original error is what the caller sees.
+    try SessionFixtures.appendEdits([.reassignTurns(turnIDs: ["T3"], to: "system:S2")], session: session)
+    do {
+        try await VoiceProfileService.refreshSamples(afterSaving: HolosError.incomplete("Exports failed."),
+                                                     session: session, extractor: extractor, store: store)
+    } catch let HolosError.incomplete(message) {
+        #expect(message == "Exports failed.")
+    }
+    let after = try #require(try store.load().profiles.first?.samples.first)
+    #expect(profileClose(after.embedding.values, t1))
+    #expect(extractor.requests.last?.turnIDs == ["T1"])
+}
+
+@Test(.timeLimit(.minutes(1)))
+func sampleFromAnEarlierRunIsKeptWhenItCannotBeRelearned() async throws {
+    let temp = try TemporaryDirectory("profiles")
+    defer { temp.remove() }
+    let store = profileStore(temp)
+    let (session, _) = try await profileSession(in: temp)
+    // Jim kept a sample from this meeting's earlier labels (another run) with Remember voices off ("Keep").
+    var old = VoiceprintSample(sessionID: try profileManifestID(session), sessionName: "Fixture meeting",
+                               speakerIDs: ["system:S9"], speechSeconds: 30, embedding: FloatVector(profileAxis(0)),
+                               condition: .call, weak: false, generation: "OLDRUN:120")
+    old.inputDigest = "old"
+    try store.update {
+        $0.profiles = [SpeakerProfile(id: "JIM", displayName: "Jim", embeddingModel: profileModel, samples: [old])]
+    }
+    let extractor = ProfileFakeExtractor()
+    try await VoiceProfileService.refreshSamples(session: session, extractor: extractor, store: store)
+    try SpeakerEditor.apply([.linkProfile(speakerID: "system:S1", profileID: "JIM")],
+                            view: try SessionFixtures.view(session), session: session, source: "cli",
+                            regenerateExports: false)
+    try await VoiceProfileService.refreshSamples(session: session, extractor: extractor, store: store)
+    let kept = try store.load().profiles.first?.samples ?? []
+    #expect(kept.map(\.id) == [old.id], "Kept: the earlier run's turns cannot change.")
+    #expect(kept.first?.speakerIDs == ["system:S9"] && kept.first?.inputDigest == "old")
+    #expect(extractor.requests.isEmpty)
+
+    // With Remember voices on, the new labels replace it.
+    try store.update { $0.rememberVoices = true }
+    try await VoiceProfileService.refreshSamples(session: session, extractor: extractor, store: store)
+    let replaced = try #require(try store.load().profiles.first?.samples.first)
+    #expect(replaced.id == old.id)
+    #expect(replaced.speakerIDs == ["system:S1"])
 }
 
 @Test(.timeLimit(.minutes(1)))
@@ -770,6 +870,71 @@ func rememberOffWithForget() async throws {
     #expect(!database.rememberVoices)
     #expect(database.sampleCount == 0)
     #expect(database.profiles.map(\.displayName) == ["Jim"])
+    #expect(!SessionFixtures.exists(SessionPaths.voiceDirectory(session)))
+}
+
+/// Replaces `url` with bytes that are not JSON.
+private func profileDamage(_ url: URL) throws {
+    try FileManager.default.removeItem(at: url)
+    try Data("not json".utf8).write(to: url)
+}
+
+@Test(.timeLimit(.minutes(1)))
+func forgetFinishesOverUnreadableRecognitionAndVoiceFiles() async throws {
+    let temp = try TemporaryDirectory("profiles")
+    defer { temp.remove() }
+    let store = profileStore(temp)
+
+    // A person: an unreadable recognition file is deleted (it may name them), and the forget finishes.
+    let (first, firstRun, jim) = try await profileForgetFixture(temp, store: store)
+    try profileDamage(SessionPaths.recognition(firstRun, in: first))
+    try VoiceProfileService.forget(profileID: jim, store: store, sessionsRoot: temp.url)
+    #expect(try store.pendingForgets().isEmpty)
+    #expect(!SessionFixtures.exists(first.appendingPathComponent("speakers/recognition")))
+    #expect(try SessionSpeakerStore.readVoiceData(runID: firstRun, session: first)?.centroids["mic:S1"] == nil)
+
+    // A sample: an unreadable voice file is deleted.
+    let (second, secondRun, _) = try await profileForgetFixture(temp, store: store)
+    try profileDamage(SessionPaths.voiceData(secondRun, in: second))
+    let secondID = try profileManifestID(second)
+    let sample = try #require(try store.load().profiles.flatMap(\.samples).first { $0.sessionID == secondID })
+    try VoiceProfileService.forget(sampleID: sample.id, store: store, sessionsRoot: temp.url)
+    #expect(try store.pendingForgets().isEmpty)
+    #expect(!SessionFixtures.exists(SessionPaths.voiceDirectory(second)))
+
+    // Everything: unreadable files are deleted without being read first.
+    let (third, thirdRun, _) = try await profileForgetFixture(temp, store: store)
+    try profileDamage(SessionPaths.recognition(thirdRun, in: third))
+    try profileDamage(SessionPaths.voiceData(thirdRun, in: third))
+    try VoiceProfileService.forgetAll(store: store, sessionsRoot: temp.url)
+    #expect(try store.pendingForgets().isEmpty)
+    for session in [first, second, third] {
+        #expect(!SessionFixtures.exists(SessionPaths.voiceDirectory(session)))
+        #expect(!SessionFixtures.exists(session.appendingPathComponent("speakers/recognition")))
+    }
+}
+
+@Test(.timeLimit(.minutes(1)))
+func rememberOffWithForgetTurnsOffInTheSameWrite() async throws {
+    let temp = try TemporaryDirectory("profiles")
+    defer { temp.remove() }
+    let store = profileStore(temp)
+    let (session, _, _) = try await profileForgetFixture(temp, store: store)
+    struct Crash: Error {}
+    #expect(throws: Crash.self) {
+        try VoiceProfileService.$afterForgetStoreUpdate.withValue({ throw Crash() }) {
+            try VoiceProfileService.setRemember(false, forgetExisting: true, store: store, sessionsRoot: temp.url)
+        }
+    }
+    // The setting and the samples changed together, and the tombstone is there to finish the rest.
+    #expect(try !store.load().rememberVoices)
+    #expect(try store.load().sampleCount == 0)
+    #expect(try store.pendingForgets().count == 1)
+
+    // A resumed forget never turns the setting off again.
+    try VoiceProfileService.setRemember(true, forgetExisting: false, store: store, sessionsRoot: temp.url)
+    try VoiceProfileService.resumePendingForgets(store: store, sessionsRoot: temp.url)
+    #expect(try store.load().rememberVoices)
     #expect(!SessionFixtures.exists(SessionPaths.voiceDirectory(session)))
 }
 

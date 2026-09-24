@@ -62,10 +62,14 @@ public struct DiarizerVoiceSampleExtractor: VoiceSampleExtractor {
             throw HolosError.unavailable(VoiceProfileService.audioDeletedNote)
         }
         let manifest = try SessionArchive.readManifest(at: session)
-        if let head = try SessionSpeakerStore.readHead(session: session),
-           let expected = try SessionSpeakerStore.readRun(id: head.runID, session: session).engine?.embeddingModel {
-            let info = try await diarizer.engineInfo()
-            guard info.embeddingModel == expected else { throw HolosError.unavailable(Self.modelChanged) }
+        var hint: SpeakerCountHint?
+        if let head = try SessionSpeakerStore.readHead(session: session) {
+            let run = try SessionSpeakerStore.readRun(id: head.runID, session: session)
+            if let expected = run.engine?.embeddingModel {
+                let info = try await diarizer.engineInfo()
+                guard info.embeddingModel == expected else { throw HolosError.unavailable(Self.modelChanged) }
+            }
+            hint = Self.speakerHint(run: run, session: session, manifest: manifest)
         }
         let seconds = TrackRenderer.renderedSeconds(manifest: manifest, track: track)
         if let free = try? freeSpace.availableBytes(at: temporaryDirectory),
@@ -78,13 +82,23 @@ public struct DiarizerVoiceSampleExtractor: VoiceSampleExtractor {
         let rendered = try TrackRenderer.render(session: session, manifest: manifest, track: track,
                                                 to: folder.appendingPathComponent("\(track)-16k.caf"))
         try Task.checkCancellation()
-        let output = try await diarizer.diarize(DiarizationRequest(audio: rendered.url, track: track),
+        let output = try await diarizer.diarize(DiarizationRequest(audio: rendered.url, track: track, speakers: hint),
                                                 progress: { _ in })
         let mapped = RenderTimeMap.map(output, map: rendered.timeMap)
         let embeddings = VoiceEnrollment.turnEmbeddings(turns: turns, segments: mapped.segments,
                                                         windows: mapped.windows)
         Self.log.info("Session \(manifest.id, privacy: .public): extracted \(embeddings.count, privacy: .public) of \(turns.count, privacy: .public) requested turn embeddings on \(track, privacy: .public)")
         return embeddings
+    }
+
+    /// The speaker-count hint post-processing gave the run's pass, so the fresh pass groups speakers the same way:
+    /// from meeting.json's expected speakers and the number of tracks the run diarized. A `--speakers` hint given to
+    /// `holos session diarize` is not recorded in the run, so it is not repeated here. Nil when meeting.json cannot
+    /// be read.
+    static func speakerHint(run: DiarizationRun, session: URL, manifest: SessionManifest) -> SpeakerCountHint? {
+        guard let meeting = try? SessionFiles.meetingInfo(session: session, manifest: manifest) else { return nil }
+        let diarized = run.tracks.filter { $0.policy == .diarized }.count
+        return SpeakerAnalysis.speakerHint(options: PostProcessingOptions(), meeting: meeting, diarizedTracks: diarized)
     }
 
     /// Deletes the temporary render folder (created 0700 by the render).

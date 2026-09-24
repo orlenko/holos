@@ -17,7 +17,7 @@ extension SessionExports {
         let target = url.deletingLastPathComponent().resolvingSymlinksInPath()
             .appendingPathComponent(url.lastPathComponent)
         let exists = HolosError.invalidInput(
-            "\(url.path) already exists; holos session export never replaces a file. Choose another name.")
+            "\(url.path) already exists; Holos never replaces a file here. Choose another name.")
         guard !entryExists(target) else { throw exists }
         do {
             try AtomicFile.create(data, at: target, permissions: 0o600)

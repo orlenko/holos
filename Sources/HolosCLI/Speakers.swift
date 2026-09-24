@@ -203,9 +203,16 @@ struct Speakers: AsyncParsableCommand {
         mutating func run() async throws {
             let loaded = try SpeakerCommand.load(session)
             let undone = SpeakerCommand.newestBatch(loaded)
-            let result = try SpeakerEditor.undoLast(view: loaded.view, session: loaded.session,
+            let owners = SpeakerCommand.sampleOwners(loaded)
+            let result: SpeakerEditResult
+            do {
+                result = try SpeakerEditor.undoLast(view: loaded.view, session: loaded.session,
                                                     source: SpeakerCommand.source, regenerateExports: false,
                                                     profiles: loaded.store)
+            } catch HolosError.incomplete(let message) {
+                try await SpeakerCommand.refreshAfterSavedChange(HolosError.incomplete(message), loaded,
+                                                                 owners: owners)
+            }
             let descriptions = undone.map {
                 SpeakerCommand.describe($0.action, before: loaded.view, after: nil, editID: $0.id,
                                         people: loaded.people)
@@ -223,9 +230,9 @@ struct Speakers: AsyncParsableCommand {
                               + "applied \(keptOut == 1 ? "stays" : "stay") out of effect; undo does not bring "
                               + "\(keptOut == 1 ? "it" : "them") back.")
             }
-            try SpeakerCommand.rewriteExports(loaded)
-            try await SpeakerCommand.refreshSamplesIfNeeded(result.needsSampleRefresh, loaded)
-            SpeakerCommand.printNotes(result.snapshot)
+            try await SpeakerCommand.finishChange(needsSampleRefresh: result.needsSampleRefresh,
+                                                  rewritingExports: true, loaded, owners: owners,
+                                                  snapshot: result.snapshot)
         }
     }
 
@@ -254,11 +261,19 @@ struct Speakers: AsyncParsableCommand {
             let target = try PeopleCommand.target(person, store: loaded.store)
             // Also without --learn-voice: a sample the person already has from this meeting is kept in step.
             let extractor = makeVoiceSampleExtractor(session: loaded.session)
-            let snapshot = try await VoiceProfileService.link(
-                session: loaded.session, speakerID: speakerID, to: target, view: loaded.view, learnVoice: learnVoice,
-                extractor: extractor, store: loaded.store)
+            let owners = SpeakerCommand.sampleOwners(loaded)
+            let snapshot: SpeakerSessionSnapshot
+            do {
+                snapshot = try await VoiceProfileService.link(
+                    session: loaded.session, speakerID: speakerID, to: target, view: loaded.view,
+                    learnVoice: learnVoice, extractor: extractor, store: loaded.store)
+            } catch {
+                SpeakerCommand.noteRemovedSamples(owners, loaded)
+                throw error
+            }
             try SpeakerCommand.reportLink(speakerID: speakerID, snapshot: snapshot, learnVoice: learnVoice,
                                           extractorAvailable: extractor != nil, loaded: loaded)
+            SpeakerCommand.noteRemovedSamples(owners, loaded)
         }
     }
 
@@ -280,11 +295,19 @@ struct Speakers: AsyncParsableCommand {
             let loaded = try SpeakerCommand.load(session)
             let speakerID = try SpeakerCommand.speakerID(speaker, in: loaded.view)
             let extractor = makeVoiceSampleExtractor(session: loaded.session)
-            let snapshot = try await VoiceProfileService.markSelf(
-                session: loaded.session, speakerID: speakerID, view: loaded.view, learnVoice: learnVoice,
-                extractor: extractor, store: loaded.store)
+            let owners = SpeakerCommand.sampleOwners(loaded)
+            let snapshot: SpeakerSessionSnapshot
+            do {
+                snapshot = try await VoiceProfileService.markSelf(
+                    session: loaded.session, speakerID: speakerID, view: loaded.view, learnVoice: learnVoice,
+                    extractor: extractor, store: loaded.store)
+            } catch {
+                SpeakerCommand.noteRemovedSamples(owners, loaded)
+                throw error
+            }
             try SpeakerCommand.reportLink(speakerID: speakerID, snapshot: snapshot, learnVoice: learnVoice,
                                           extractorAvailable: extractor != nil, loaded: loaded)
+            SpeakerCommand.noteRemovedSamples(owners, loaded)
         }
     }
 
@@ -311,13 +334,21 @@ struct Speakers: AsyncParsableCommand {
                 Console.output("Nothing to change; the speaker labels already look like that.")
                 return
             }
-            let snapshot = try VoiceProfileService.reject(session: loaded.session, speakerID: speakerID,
+            let owners = SpeakerCommand.sampleOwners(loaded)
+            let snapshot: SpeakerSessionSnapshot
+            do {
+                snapshot = try VoiceProfileService.reject(session: loaded.session, speakerID: speakerID,
                                                           profileID: profileID, view: loaded.view)
+            } catch HolosError.incomplete(let message) {
+                // Saved, but the exports (rewritten by the editor here) or the reload failed.
+                try await SpeakerCommand.refreshAfterSavedChange(HolosError.incomplete(message), loaded,
+                                                                 owners: owners)
+            }
             Console.output(SpeakerCommand.describe(action, before: loaded.view, after: snapshot.projection,
                                                    people: loaded.people))
             // A person's sample from this meeting stops using the speaker's turns (a no-op when none is affected).
-            try await SpeakerCommand.refreshSamplesIfNeeded(true, loaded)
-            SpeakerCommand.printNotes(snapshot)
+            try await SpeakerCommand.finishChange(needsSampleRefresh: true, rewritingExports: false, loaded,
+                                                  owners: owners, snapshot: snapshot)
         }
     }
 
@@ -425,16 +456,61 @@ enum SpeakerCommand {
             Console.output("Nothing to change; the speaker labels already look like that.")
             return
         }
-        let result = try SpeakerEditor.apply(actions, view: loaded.view, session: loaded.session, source: source,
+        let owners = sampleOwners(loaded)
+        let result: SpeakerEditResult
+        do {
+            result = try SpeakerEditor.apply(actions, view: loaded.view, session: loaded.session, source: source,
                                              regenerateExports: false, profileNames: loaded.people,
                                              profiles: loaded.store)
+        } catch HolosError.incomplete(let message) {
+            try await refreshAfterSavedChange(HolosError.incomplete(message), loaded, owners: owners)
+        }
         for action in actions {
             Console.output(describe(action, before: loaded.view, after: result.snapshot.projection,
                                     people: loaded.people))
         }
-        try rewriteExports(loaded)
-        try await refreshSamplesIfNeeded(result.needsSampleRefresh, loaded)
-        printNotes(result.snapshot)
+        try await finishChange(needsSampleRefresh: result.needsSampleRefresh, rewritingExports: true, loaded,
+                               owners: owners, snapshot: result.snapshot)
+    }
+
+    /// After a saved change: rewrites the exports (when asked), then updates the voice samples the change affects
+    /// whether or not the exports could be rewritten (a stale sample would hold turns the change moved to someone
+    /// else, and no later edit would notice), notes removed samples, and prints the label notes. Every failure is
+    /// reported together as `incomplete`.
+    static func finishChange(needsSampleRefresh: Bool, rewritingExports: Bool, _ loaded: LoadedSpeakers,
+                             owners: [String: String], snapshot: SpeakerSessionSnapshot) async throws {
+        var failures: [String] = []
+        if rewritingExports {
+            do {
+                try rewriteExports(loaded)
+            } catch {
+                failures.append(error.localizedDescription)
+            }
+        }
+        do {
+            try await refreshSamplesIfNeeded(needsSampleRefresh, loaded)
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            failures.append(error.localizedDescription)
+        }
+        noteRemovedSamples(owners, loaded)
+        printNotes(snapshot)
+        guard failures.isEmpty else { throw HolosError.incomplete(failures.joined(separator: " ")) }
+    }
+
+    /// The change was saved, then the editor failed (`incomplete`) before it could say whether samples are
+    /// affected: brings this meeting's samples in step anyway, then throws `error`.
+    static func refreshAfterSavedChange(_ error: HolosError, _ loaded: LoadedSpeakers,
+                                        owners: [String: String]) async throws -> Never {
+        do {
+            try await VoiceProfileService.refreshSamples(
+                afterSaving: error, session: loaded.session,
+                extractor: makeVoiceSampleExtractor(session: loaded.session), store: loaded.store)
+        } catch {
+            noteRemovedSamples(owners, loaded)
+            throw error
+        }
     }
 
     /// After a saved change that affects a person's voice sample from this meeting, recomputes it (or removes it).
@@ -449,6 +525,24 @@ enum SpeakerCommand {
         } catch {
             throw HolosError.incomplete("The change was saved, but a voice sample learned from this meeting could "
                                         + "not be updated: \(error.localizedDescription)")
+        }
+    }
+
+    /// The people who have a voice sample from this meeting (profile ID → name); empty when the store cannot be read.
+    static func sampleOwners(_ loaded: LoadedSpeakers) -> [String: String] {
+        guard let database = try? loaded.store.load() else { return [:] }
+        let sessionID = loaded.snapshot.manifest.id
+        return Dictionary(database.profiles.filter { $0.samples.contains { $0.sessionID == sessionID } }
+            .map { ($0.id, $0.displayName) }, uniquingKeysWith: { first, _ in first })
+    }
+
+    /// On stderr, for each person in `before` who no longer has a sample from this meeting.
+    static func noteRemovedSamples(_ before: [String: String], _ loaded: LoadedSpeakers) {
+        guard !before.isEmpty else { return }
+        let after = sampleOwners(loaded)
+        for (profileID, name) in before.sorted(by: { $0.value < $1.value }) where after[profileID] == nil {
+            Console.error("Removed \(name)'s voice sample from this meeting: the speakers or turns it was learned "
+                          + "from changed, and it could not be learned again from the new labels.")
         }
     }
 

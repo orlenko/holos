@@ -103,7 +103,7 @@ struct People: AsyncParsableCommand {
                 Console.output("Remember voices: off.")
                 if forget {
                     Console.output("Forgot \(PeopleCommand.count(samples, "voice sample")) and the voice data of "
-                                   + "every meeting. Names are kept.")
+                                   + "every meeting in \(HolosPaths.sessions.path). Names are kept.")
                 } else if samples > 0 {
                     Console.error("Kept \(PeopleCommand.count(samples, "voice sample")) from "
                                   + "\(PeopleCommand.count(meetings, "meeting")); forget them with "
@@ -163,7 +163,9 @@ struct People: AsyncParsableCommand {
                 forget <person> removes the person and their voice samples; meetings keep the name they were given. \
                 forget <person> --sample ID removes one sample. forget --session <session> removes the samples \
                 learned from that meeting (the meeting may already be deleted; give its session ID). forget --all \
-                removes every sample and every meeting's voice data; names stay. Forgetting cannot be undone.
+                removes every sample and every meeting's voice data; names stay. Meetings are cleaned in the \
+                sessions folder only (HOLOS_DATA_DIR, or Application Support/Holos/Sessions), not in sessions \
+                created elsewhere with --directory. Forgetting cannot be undone.
                 """)
 
         @Argument(help: "The person (an ID or a name).") var person: String?
@@ -186,7 +188,7 @@ struct People: AsyncParsableCommand {
                 let count = database.sampleCount
                 try VoiceProfileService.forgetAll(store: store)
                 Console.output("Forgot \(PeopleCommand.count(count, "voice sample")) and the voice data of every "
-                               + "meeting. Names are kept.")
+                               + "meeting in \(HolosPaths.sessions.path). Names are kept.")
             } else if let session {
                 let (sessionID, name) = try PeopleCommand.session(session)
                 let count = database.profiles.flatMap(\.samples).filter { $0.sessionID == sessionID }.count
