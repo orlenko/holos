@@ -22,9 +22,16 @@ public struct SpeakerSessionSnapshot: Sendable {
     public let markers: [TimelineMarker]
     /// A newer transcript exists than the one the run was built from.
     public let transcriptChanged: Bool
-    /// Why the head run could not be used (missing transcript, invalid span), if so.
+    /// Why the head run could not be used (damaged head or run, missing transcript, invalid span), if so: one
+    /// sentence of what is wrong; `diagnostics` adds that the labels were left out and how to relabel.
     public let runProblem: String?
     public let audioDeleted: Bool
+    /// meeting.json is damaged or belongs to another session, so `meeting` is `MeetingInfo.inferred`.
+    public let meetingInfoDamaged: Bool
+    /// The head run's recognition result could not be read and was left out (no voice matches or suggestions).
+    public let recognitionUnreadable: Bool
+    /// Event journal lines and events the gaps and markers skipped (`SessionTimelineReader`).
+    public let skippedEvents: Int
 
     private static let log = Logger(subsystem: "ca.orlenko.holos.app", category: "speakers")
 
@@ -38,17 +45,20 @@ public struct SpeakerSessionSnapshot: Sendable {
     ///   transcript is used.
     /// - A head or run written by a newer Holos is refused (`unavailable`), as are a newer meeting.json or
     ///   transcript, and a file that cannot be read right now (I/O) is an error, never a reason to drop the
-    ///   speakers. An unreadable recognition result is ignored (it only adds suggestions). A damaged meeting.json,
-    ///   or one of another session, gives `MeetingInfo.inferred`.
+    ///   speakers. An unreadable recognition result is ignored (it only adds voice matches and suggestions). A
+    ///   damaged meeting.json, or one of another session, gives `MeetingInfo.inferred`.
+    /// - Every such fallback, and every journal line or event skipped, is recorded (`runProblem`,
+    ///   `meetingInfoDamaged`, `recognitionUnreadable`, `journal`, `skippedEvents`) and reported by `diagnostics`.
     public static func load(session: URL, profileNames: [String: String] = [:]) throws -> SpeakerSessionSnapshot {
         let manifest = try SessionArchive.readManifest(at: session)
         let meeting: MeetingInfo
+        var meetingInfoDamaged = false
         do {
             meeting = try SessionFiles.meetingInfo(session: session, manifest: manifest)
         } catch let error where SessionFiles.isDamage(error) {
-            // The exports and the review window do not depend on meeting.json; the post-processor reports it.
             log.error("Session \(manifest.id, privacy: .public): meeting.json unusable, inferred instead: \(error.localizedDescription, privacy: .private)")
             meeting = MeetingInfo.inferred(sessionID: manifest.id, source: manifest.source, createdAt: manifest.createdAt)
+            meetingInfoDamaged = true
         }
         let currentID = try SessionArchive.currentTranscriptID(at: session)
 
@@ -67,12 +77,12 @@ public struct SpeakerSessionSnapshot: Sendable {
                         transcript = runTranscript
                     }
                 } catch let error where SessionFiles.isDamage(error) {
-                    runProblem = "The transcript the speaker labels were made from is missing or damaged. Label speakers again."
+                    runProblem = "The transcript the speaker labels were made from is missing or damaged."
                     log.error("Session \(manifest.id, privacy: .public): head run transcript unusable: \(error.localizedDescription, privacy: .private)")
                 }
             }
         } catch let error where SessionFiles.isDamage(error) {
-            runProblem = "The speaker labels are missing or damaged. Label speakers again."
+            runProblem = "The speaker labels are missing or damaged."
             log.error("Session \(manifest.id, privacy: .public): head run unusable: \(error.localizedDescription, privacy: .private)")
         }
         if transcript == nil {
@@ -87,24 +97,28 @@ public struct SpeakerSessionSnapshot: Sendable {
 
         let journal = try SessionSpeakerStore.readEdits(session: session)
         var recognition: RecognitionResult?
+        var recognitionUnreadable = false
         if let run {
             do {
                 recognition = try SessionSpeakerStore.readRecognition(runID: run.id, session: session)
             } catch {
                 log.error("Session \(manifest.id, privacy: .public): recognition result ignored: \(error.localizedDescription, privacy: .private)")
+                recognitionUnreadable = true
             }
         }
         let projection = run.map {
             SpeakerProjection.make(run: $0, transcript: transcript, edits: journal.edits, recognition: recognition,
                                    profileNames: profileNames)
         }
-        let timeline = try SessionTimelineReader.read(session: session)
+        let timeline = try SessionTimelineReader.readTimeline(session: session)
         return SpeakerSessionSnapshot(
             session: session, manifest: manifest, meeting: meeting, transcript: transcript, run: run,
             journal: journal, recognition: recognition, projection: projection, gaps: timeline.gaps,
             markers: timeline.markers,
             transcriptChanged: run.map { run in currentID.map { $0 != run.transcriptID } ?? false } ?? false,
-            runProblem: runProblem, audioDeleted: SessionFiles.audioDeleted(session: session))
+            runProblem: runProblem, audioDeleted: SessionFiles.audioDeleted(session: session),
+            meetingInfoDamaged: meetingInfoDamaged, recognitionUnreadable: recognitionUnreadable,
+            skippedEvents: timeline.skippedEvents)
     }
 
     public func exportDocument(timeZone: TimeZone = .current) -> ExportDocument {
@@ -126,7 +140,7 @@ public struct SpeakerSessionSnapshot: Sendable {
             for span in turn.spans {
                 guard let count = wordCounts[span.segmentID], span.first >= 0, span.first < span.end,
                       span.end <= count else {
-                    return "Speaker labels do not match the transcript (turn \(turn.id)). Label speakers again."
+                    return "Speaker labels do not match the transcript (turn \(turn.id))."
                 }
             }
         }

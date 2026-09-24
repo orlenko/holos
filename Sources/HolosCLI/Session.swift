@@ -12,6 +12,7 @@ struct Session: AsyncParsableCommand {
             Retranscribe.self,
             Diarize.self,
             Import.self,
+            Export.self,
             Score.self,
         ])
 
