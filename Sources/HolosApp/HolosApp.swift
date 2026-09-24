@@ -607,7 +607,10 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
                 onAdd: { [weak self] correction, edit in
                     self?.addCorrection(correction, resolving: edit) ?? false
                 },
-                onRemove: { [weak self] correction in self?.changeCorrections { $0.remove(correction) } ?? false })
+                onRemove: { [weak self] correction in self?.changeCorrections { $0.remove(correction) } ?? false },
+                onReplace: { [weak self] old, new in
+                    self?.changeCorrections { $0.replace(old, with: new) } ?? false
+                })
         }
         correctionsWindow?.show(lastTranscript: lastTranscript, corrections: corrections.entries)
     }
