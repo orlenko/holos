@@ -78,6 +78,8 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
         set { UserDefaults.standard.set(min(1, max(0.3, newValue)), forKey: "previewOpacity") }
     }
     private var opacitySampleTask: Task<Void, Never>?
+    /// The overlay content token of the opacity sample currently on screen, if any.
+    private var sampleToken: Int?
     /// When false, the preview is hidden during dictation and for results that went in fine; anything that
     /// needs the user (text left on the clipboard, failures) is still shown.
     private var showPreview: Bool {
@@ -722,17 +724,19 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
         previewOpacity = value
         overlay.setOpacity(previewOpacity)
         // A visible preview or result already shows the new opacity; never replace it with the sample.
-        guard !isBusy, showPreview, !overlay.isVisible || opacitySampleTask != nil else { return }
+        let sampleShowing = overlay.isVisible && sampleToken == overlay.contentToken
+        guard !isBusy, showPreview, !overlay.isVisible || sampleShowing else { return }
         overlay.show(title: "Preview opacity \(Int((previewOpacity * 100).rounded())) %",
                      text: "This is how the dictation preview looks over your windows.", force: true)
         let sample = overlay.contentToken
+        sampleToken = sample
         opacitySampleTask?.cancel()
         opacitySampleTask = Task { [weak self] in
             try? await Task.sleep(for: .seconds(2))
+            guard !Task.isCancelled, let self else { return }
             // Hide only if the panel still shows this sample, never a warning or result shown since.
-            guard !Task.isCancelled, let self, self.overlay.contentToken == sample else { return }
-            self.opacitySampleTask = nil
-            self.overlay.hide()
+            if self.overlay.contentToken == sample { self.overlay.hide() }
+            if self.sampleToken == sample { self.sampleToken = nil }
         }
     }
 
@@ -784,7 +788,8 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
             updateSetupWindow()
         case .togglePreview:
             showPreview.toggle()
-            if !showPreview && isBusy && !resultNeedsAttention { overlay.hide() }
+            // Anything that does not need the user goes away at once, during or after a dictation.
+            if !showPreview && !resultNeedsAttention { overlay.hide() }
             updateSetupWindow()
         }
     }
