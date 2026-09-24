@@ -50,6 +50,15 @@ import Testing
     #expect(OtterTranscriptParser.parse(sample).map(\.start) == [5, 754, 3600, 36_001])
 }
 
+@Test func otterParserReadsHoursWithMoreThanTwoDigits() {
+    let sample = "Speaker 1  100:00:05\none\n\nSpeaker 2  12345:06:07\ntwo\n\nSpeaker 3  \(String(repeating: "9", count: 400)):00:00\nthree\n"
+    let turns = OtterTranscriptParser.parse(sample)
+    #expect(turns.map(\.speaker) == ["Speaker 1", "Speaker 2", "Speaker 3"])
+    #expect(Array(turns.map(\.start).prefix(2)) == [360_005, 44_442_367])
+    // A value too large for any integer reads without trapping.
+    #expect(turns.last?.start == .infinity)
+}
+
 @Test func otterParserSkipsPreambleAndKeepsOrder() {
     let sample = "Council meeting notes\nexported today\n\nChair  0:10\nWelcome back.\r\n\r\nClerk   0:05  \nRoll call.\n"
     let turns = OtterTranscriptParser.parse(sample)

@@ -79,6 +79,82 @@ private func pointerTranscript(createdAt seconds: TimeInterval, text: String = "
     guard case .unavailable? = error else { Issue.record("Expected unavailable, got \(String(describing: error))"); return }
 }
 
+@Test func retryDoesNotOverwriteAnUnreadablePointer() async throws {
+    let root = try pointerTemporaryRoot()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let writer = try pointerArchive(in: root)
+    let a = pointerTranscript(createdAt: 1_790_000_000, text: "A")
+    let b = pointerTranscript(createdAt: 1_790_000_001, text: "B")
+    try await writer.saveTranscript(a, writeLegacyExports: false)
+    try await writer.saveTranscript(b, writeLegacyExports: false)
+    let pointerURL = SessionPaths.transcriptPointer(writer.directory)
+
+    // A pointer from a newer Holos: retrying A is refused as newer and leaves the pointer alone.
+    try AtomicFile.writeJSON(TranscriptPointer(schemaVersion: 2, transcriptID: b.id), to: pointerURL)
+    let newer = try Data(contentsOf: pointerURL)
+    let error = await #expect(throws: HolosError.self) { try await writer.saveTranscript(a, writeLegacyExports: false) }
+    guard case .unavailable? = error else { Issue.record("Expected unavailable, got \(String(describing: error))"); return }
+    #expect(try Data(contentsOf: pointerURL) == newer)
+
+    // A damaged pointer is refused too, not replaced.
+    let damaged = Data("{not json".utf8)
+    try AtomicFile.write(damaged, to: pointerURL)
+    await #expect(throws: HolosError.self) { try await writer.saveTranscript(a, writeLegacyExports: false) }
+    #expect(try Data(contentsOf: pointerURL) == damaged)
+
+    // A missing pointer does not make a finished revision retryable either.
+    try FileManager.default.removeItem(at: pointerURL)
+    await #expect(throws: HolosError.self) { try await writer.saveTranscript(a, writeLegacyExports: false) }
+    #expect(!FileManager.default.fileExists(atPath: pointerURL.path))
+    try await writer.finish(status: ArchiveStatus.complete)
+}
+
+@Test func olderRevisionCannotBeRepublished() async throws {
+    let root = try pointerTemporaryRoot()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let writer = try pointerArchive(in: root)
+    let a = pointerTranscript(createdAt: 1_790_000_000, text: "A")
+    let b = pointerTranscript(createdAt: 1_790_000_001, text: "B")
+    try await writer.saveTranscript(a)
+    try await writer.saveTranscript(b)
+    let text = try Data(contentsOf: SessionPaths.export("txt", in: writer.directory))
+    #expect(!FileManager.default.fileExists(atPath: SessionPaths.pendingTranscript(writer.directory).path))
+
+    await #expect(throws: HolosError.self) { try await writer.saveTranscript(a) }
+    #expect(try SessionArchive.currentTranscriptID(at: writer.directory) == b.id)
+    #expect(try Data(contentsOf: SessionPaths.export("txt", in: writer.directory)) == text)
+    try await writer.finish(status: ArchiveStatus.complete)
+}
+
+@Test func onlyThePendingSaveCanBeRetried() async throws {
+    let root = try pointerTemporaryRoot()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let writer = try pointerArchive(in: root)
+    let pointerURL = SessionPaths.transcriptPointer(writer.directory)
+    // The first save fails while publishing the pointer, so no pointer exists yet.
+    try FileManager.default.createDirectory(at: pointerURL, withIntermediateDirectories: false)
+    let a = pointerTranscript(createdAt: 1_790_000_000, text: "A")
+    await #expect(throws: HolosError.self) { try await writer.saveTranscript(a, writeLegacyExports: false) }
+    try FileManager.default.removeItem(at: pointerURL)
+    #expect(try TranscriptPointer.readPending(session: writer.directory)?.transcriptID == a.id)
+    try await writer.saveTranscript(a, writeLegacyExports: false)
+    #expect(try SessionArchive.currentTranscriptID(at: writer.directory) == a.id)
+    #expect(try TranscriptPointer.readPending(session: writer.directory) == nil)
+
+    // B fails the same way, then C is saved instead: B is abandoned and cannot be published over C.
+    try FileManager.default.removeItem(at: pointerURL)
+    try FileManager.default.createDirectory(at: pointerURL, withIntermediateDirectories: false)
+    let b = pointerTranscript(createdAt: 1_790_000_001, text: "B")
+    await #expect(throws: HolosError.self) { try await writer.saveTranscript(b, writeLegacyExports: false) }
+    try FileManager.default.removeItem(at: pointerURL)
+    let c = pointerTranscript(createdAt: 1_790_000_002, text: "C")
+    try await writer.saveTranscript(c, writeLegacyExports: false)
+    await #expect(throws: HolosError.self) { try await writer.saveTranscript(b, writeLegacyExports: false) }
+    #expect(try SessionArchive.currentTranscriptID(at: writer.directory) == c.id)
+    #expect(try !SessionArchive.inspectRecovery(at: writer.directory).needsAttention)
+    try await writer.finish(status: ArchiveStatus.complete)
+}
+
 @Test func pointerToAMissingRevisionIsReported() async throws {
     let root = try pointerTemporaryRoot()
     defer { try? FileManager.default.removeItem(at: root) }
@@ -99,4 +175,21 @@ private func pointerTranscript(createdAt seconds: TimeInterval, text: String = "
         await #expect(throws: HolosError.self) { try await writer.saveTranscript(transcript) }
     }
     try await writer.finish(status: ArchiveStatus.complete)
+}
+
+@Test func pointerNamingThePointerFileIsRefused() async throws {
+    let root = try pointerTemporaryRoot()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let writer = try pointerArchive(in: root)
+    try await writer.saveTranscript(pointerTranscript(createdAt: 1_790_000_000), writeLegacyExports: false)
+    try await writer.finish(status: ArchiveStatus.complete)
+    // A hand-edited pointer naming itself: transcripts/current.json is a regular file, so only the ID check
+    // stops it from being returned as the current revision.
+    for id in ["current", "CURRENT"] {
+        try AtomicFile.writeJSON(TranscriptPointer(transcriptID: id), to: SessionPaths.transcriptPointer(writer.directory))
+        let error = #expect(throws: HolosError.self) { try SessionArchive.currentTranscriptID(at: writer.directory) }
+        guard case .invalidInput? = error else { Issue.record("Expected invalidInput, got \(String(describing: error))"); return }
+        try AtomicFile.writeJSON(TranscriptPointer(transcriptID: id), to: SessionPaths.pendingTranscript(writer.directory))
+        #expect(throws: HolosError.self) { try TranscriptPointer.readPending(session: writer.directory) }
+    }
 }

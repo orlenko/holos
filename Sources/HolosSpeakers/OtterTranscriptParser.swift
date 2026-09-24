@@ -35,17 +35,16 @@ public enum OtterTranscriptParser {
     /// Header lines "Name  mm:ss" or "Name  h:mm:ss" start turns; the footer "Transcribed by https://otter.ai" is
     /// ignored.
     ///
-    /// A header is exactly a line the evaluator's regex `^\s*\S.*\s{2,}\d{1,2}:\d{2}(?::\d{2})?\s*$` accepts
-    /// (scripts/evaluate-references.swift): the name is the text before the last run of two or more whitespace
-    /// characters, trimmed, and the time after it is minutes and seconds, or hours, minutes, and seconds. The footer
-    /// is the evaluator's case-insensitive `Transcribed by http(s)://otter.ai` line. Any other line adds its words
-    /// (counted as the evaluator counts them: runs of letters and digits) to the current turn; lines before the first
-    /// header belong to no turn. Turns keep file order; `end` is the next turn's start as written. A leading
-    /// byte-order mark is dropped, so it never becomes part of the first speaker's name.
+    /// A header is exactly a line the evaluator's regex (`evaluatorHeaderPattern`, the same text as in
+    /// scripts/evaluate-references.swift) accepts: the name is the text before the last run of two or more whitespace
+    /// characters, trimmed, and the time after it is one- or two-digit minutes and seconds, or hours (one or more
+    /// digits, so a Holos export past 99 hours still reads), minutes, and seconds. The footer is the evaluator's
+    /// case-insensitive `Transcribed by http(s)://otter.ai` line. Any other line adds its words (counted as the
+    /// evaluator counts them: runs of letters and digits) to the current turn; lines before the first header belong
+    /// to no turn. Turns keep file order; `end` is the next turn's start as written. A leading byte-order mark is
+    /// dropped, so it never becomes part of the first speaker's name.
     public static func parse(_ text: String) -> [ReferenceTurn] {
-        guard let header = try? NSRegularExpression(pattern: headerPattern),
-              let footer = try? NSRegularExpression(pattern: footerPattern),
-              let words = try? NSRegularExpression(pattern: wordPattern) else { return [] }
+        guard let header = headerRegex, let footer = footerRegex, let words = wordRegex else { return [] }
         let text = text.first == "\u{FEFF}" ? String(text.dropFirst()) : text
         var turns: [ReferenceTurn] = []
         for line in text.components(separatedBy: .newlines) {
@@ -64,36 +63,49 @@ public enum OtterTranscriptParser {
         return turns
     }
 
-    /// The evaluator's header regex with capture groups: name, then hours or minutes, minutes or seconds, and
-    /// optional seconds. Lazy and greedy name matches accept the same lines; the time must end the line either way.
-    static let headerPattern = #"^\s*(\S.*?)\s{2,}(\d{1,2}):(\d{2})(?::(\d{2}))?\s*$"#
+    /// The header regex of scripts/evaluate-references.swift, character for character: `h:mm:ss` with one or more
+    /// hour digits, or `mm:ss` with one or two minute digits (Otter's layouts, and Holos's past 99 hours).
+    static let evaluatorHeaderPattern = #"^\s*\S.*\s{2,}(?:\d+:\d{2}:\d{2}|\d{1,2}:\d{2})\s*$"#
+
+    /// `evaluatorHeaderPattern` with capture groups: the name, then hours, minutes, and seconds (groups 2–4) or
+    /// minutes and seconds (groups 5–6). Lazy and greedy name matches accept the same lines; the time must end the
+    /// line either way.
+    static let headerPattern = #"^\s*(\S.*?)\s{2,}(?:(\d+):(\d{2}):(\d{2})|(\d{1,2}):(\d{2}))\s*$"#
     static let footerPattern = #"(?i)^\s*transcribed by\s+https?://otter\.ai/?\s*$"#
+    static let wordPattern = #"[\p{L}\p{N}]+"#
+
+    // Compiled once; NSRegularExpression is immutable and safe to share across threads.
+    nonisolated(unsafe) private static let headerRegex = try? NSRegularExpression(pattern: headerPattern)
+    nonisolated(unsafe) private static let footerRegex = try? NSRegularExpression(pattern: footerPattern)
+    nonisolated(unsafe) private static let wordRegex = try? NSRegularExpression(pattern: wordPattern)
 
     private static func turn(from match: NSTextCheckingResult, in line: String) -> ReferenceTurn? {
         func group(_ index: Int) -> Substring? {
             guard let range = Range(match.range(at: index), in: line) else { return nil }
             return line[range]
         }
-        guard let name = group(1), let first = group(2).flatMap(number), let second = group(3).flatMap(number) else {
-            return nil
-        }
-        let seconds: Int
-        if let third = group(4).flatMap(number) {
-            seconds = first * 3_600 + second * 60 + third
+        guard let name = group(1) else { return nil }
+        let seconds: Double
+        if let hours = group(2).flatMap(number), let minutes = group(3).flatMap(number),
+           let secondsPart = group(4).flatMap(number) {
+            seconds = hours * 3_600 + minutes * 60 + secondsPart
+        } else if let minutes = group(5).flatMap(number), let secondsPart = group(6).flatMap(number) {
+            seconds = minutes * 60 + secondsPart
         } else {
-            seconds = first * 60 + second
+            return nil
         }
         let speaker = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !speaker.isEmpty else { return nil }
-        return ReferenceTurn(speaker: speaker, start: Double(seconds))
+        return ReferenceTurn(speaker: speaker, start: seconds)
     }
 
-    /// The value of one to two decimal digits (`\d` also matches non-ASCII digits).
-    private static func number(_ digits: Substring) -> Int? {
-        var value = 0
+    /// The value of a run of decimal digits (`\d` also matches non-ASCII digits). Summed as a `Double`, so any number
+    /// of hour digits reads without overflow.
+    private static func number(_ digits: Substring) -> Double? {
+        var value = 0.0
         for character in digits {
             guard let digit = character.wholeNumberValue, (0...9).contains(digit) else { return nil }
-            value = value * 10 + digit
+            value = value * 10 + Double(digit)
         }
         return value
     }
@@ -104,6 +116,4 @@ public enum OtterTranscriptParser {
         let normalized = line.precomposedStringWithCompatibilityMapping.lowercased()
         return words.numberOfMatches(in: normalized, range: NSRange(location: 0, length: (normalized as NSString).length))
     }
-
-    static let wordPattern = #"[\p{L}\p{N}]+"#
 }

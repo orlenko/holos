@@ -10,8 +10,9 @@ public enum TimeFormat {
         return pad(total / 3_600) + ":" + pad(total / 60 % 60) + ":" + pad(total % 60)
     }
 
-    /// `mm:ss` below one hour ("01:05") and `h:mm:ss` from one hour ("1:02:05"): the header time of the text
-    /// export, which the Otter parser and the evaluator's header regex read. Whole seconds, rounded down.
+    /// `mm:ss` below one hour ("01:05") and `h:mm:ss` from one hour ("1:02:05", "100:00:00"): the header time of
+    /// the text export, which the Otter parser and the evaluator's header regex read (hours with any number of
+    /// digits). Whole seconds, rounded down.
     public static func compact(_ seconds: Double) -> String {
         layout(wholeSeconds(seconds, rule: .down))
     }

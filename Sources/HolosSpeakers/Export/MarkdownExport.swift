@@ -27,9 +27,11 @@ import HolosCore
 ///
 /// Date and start time are `metadata.createdAt` in `metadata.timeZone`. Participants are the projection's speakers
 /// with turns, by talk time descending (ties in speaker order); the line is left out without a projection. A gap or
-/// marker line at the same time as a block comes before it; repeated identical lines print once. Names, labels, and
-/// the title are kept on one line with Markdown punctuation escaped; a block's text is one paragraph whose leading
-/// block syntax ("# ", "- ", "1. ", ">", …) is escaped so it stays a paragraph.
+/// marker line at the same time as a block comes before it; repeated identical lines print once, adjacent or not.
+/// Names, labels, the title, and a block's text are kept on one line with every character that can start inline
+/// Markdown escaped (`\` `` ` `` `*` `_` `[` `]` `!` `<` `>` `&` `~` `|`), so no emphasis, code span, link, image,
+/// HTML, entity, strikethrough, or table changes them; a block's text is one paragraph with its leading block syntax
+/// ("# ", "- ", "1. ", "[x]: ", …) escaped too, so it renders literally as a visible paragraph.
 enum MarkdownExport {
     static func render(_ content: ExportContent) -> Data {
         let metadata = content.document.metadata
@@ -67,16 +69,16 @@ enum MarkdownExport {
                 header += " · overlapping with "
                     + block.overlapWith.map { escapeInline(ExportText.headerLabel($0)) }.joined(separator: ", ")
             }
-            events.append((block.start.isNaN ? .infinity : block.start, 2,
-                           header + "\n\n" + escapeParagraphStart(ExportText.singleLine(block.text))))
+            events.append((TurnOrder.sortKey(block.start), 2, header + "\n\n" + paragraph(block.text)))
         }
         let ordered = events.enumerated().sorted {
             ($0.element.time, $0.element.rank, $0.offset) < ($1.element.time, $1.element.rank, $1.offset)
         }
         var result: [String] = []
+        var printedLines: Set<String> = []
         for event in ordered.map(\.element) {
-            // The same gap reported for both tracks, or a doubled marker, prints once.
-            if event.rank < 2, result.last == event.text { continue }
+            // The same gap reported for several tracks, or a doubled marker, prints once, wherever the copies are.
+            if event.rank < 2, !printedLines.insert(event.text).inserted { continue }
             result.append(event.text)
         }
         return result
@@ -138,21 +140,38 @@ enum MarkdownExport {
 
     // MARK: Escaping
 
-    /// Backslash-escapes the characters that start inline Markdown (emphasis, code, links, HTML).
+    /// Backslash-escapes every character that can start inline Markdown, for titles, names, and labels.
     static func escapeInline(_ text: String) -> String {
+        escape(text, inlineEscapedCharacters)
+    }
+
+    /// A block's text as one paragraph that renders literally: on one line, with every character that can start
+    /// inline Markdown escaped, then leading block syntax escaped.
+    static func paragraph(_ text: String) -> String {
+        escapeParagraphStart(escape(ExportText.singleLine(text), inlineEscapedCharacters))
+    }
+
+    private static func escape(_ text: String, _ characters: Set<Character>) -> String {
         var result = ""
         result.reserveCapacity(text.utf8.count)
         for character in text {
-            if escapedCharacters.contains(character) { result.append("\\") }
+            if characters.contains(character) { result.append("\\") }
             result.append(character)
         }
         return result
     }
 
-    private static let escapedCharacters: Set<Character> = ["\\", "`", "*", "_", "[", "]", "<", ">"]
+    /// The ASCII punctuation that CommonMark or GFM can read as inline syntax anywhere in a line: escapes (`\`), code
+    /// spans, emphasis, links and images (`[`, `]`, `!`), inline HTML and autolinks (`<`, `>`), entity references
+    /// (`&`), strikethrough (`~`), and table cells (`|`). CommonMark lets a backslash escape any ASCII punctuation, so
+    /// each escaped character renders as itself. Other punctuation only matters at the start of a line, which
+    /// `escapeParagraphStart` handles.
+    static let inlineEscapedCharacters: Set<Character> =
+        ["\\", "`", "*", "_", "[", "]", "!", "<", ">", "&", "~", "|"]
 
     /// Escapes block syntax at the start of a one-line paragraph so it renders as text: an ATX heading, block quote,
-    /// list item, thematic break, code fence, or HTML block.
+    /// list item, thematic break, code fence, HTML block, or link reference definition (`[label]: url`, which
+    /// renders as nothing).
     static func escapeParagraphStart(_ line: String) -> String {
         guard let first = line.first else { return line }
         let second = line.dropFirst().first
@@ -163,6 +182,8 @@ enum MarkdownExport {
             if hashes <= 6, next == nil || next == " " { return "\\" + line }
         case ">", "<":
             return "\\" + line
+        case "[":
+            if line.contains("]:") { return "\\" + line }
         case "-", "+", "*":
             if second == nil || second == " " || isThematicBreak(line) { return "\\" + line }
         case "_":

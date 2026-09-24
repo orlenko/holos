@@ -119,8 +119,8 @@ public enum TranscriptExporter {
     /// (or the end of the segment text), per span, joined with " ", trimmed.
     ///
     /// Spans are clamped to the segment's effective words, and a span of a missing segment contributes nothing, so
-    /// an invalid span never traps. When recognizer offsets do not fit the text (out of order, past its end), the
-    /// span's word texts joined with " " are used instead.
+    /// an invalid span never traps. When the recognizer offsets of the span's words (and of the word after it) do not
+    /// fit the text (out of order, negative, past its end), the span's word texts joined with " " are used instead.
     public static func text(of spans: [WordSpan], in transcript: Transcript) -> String {
         TranscriptText(transcript).text(of: spans)
     }
@@ -132,7 +132,8 @@ public enum TranscriptExporter {
     /// no later than the second turn's start (gap and marker lines are placed by time, before a block starting at
     /// the same time, so a separating line always lands between the two blocks); a marker likewise by its time.
     /// Silence is measured from the latest end of the block's turns. Consecutive unknown-speaker turns merge only
-    /// on the same track; without a projection, consecutive segments of one track merge.
+    /// on the same track; without a projection, consecutive segments of one track merge. A turn whose start is not a
+    /// number sorts after every line and never joins a block of turns with known starts.
     public static func blocks(_ document: ExportDocument) -> [ExportBlock] {
         ExportContent(document).blocks
     }
@@ -257,11 +258,7 @@ struct ExportContent {
         let order = transcript.segments.indices.sorted { left, right in
             let a = transcript.segments[left]
             let b = transcript.segments[right]
-            let aStart = a.start.isNaN ? Double.infinity : a.start
-            let bStart = b.start.isNaN ? Double.infinity : b.start
-            if aStart != bStart { return aStart < bStart }
-            if a.track != b.track { return (a.track ?? "") < (b.track ?? "") }
-            return left < right
+            return TurnOrder.precedes(a.start, a.track ?? "", b.start, b.track ?? "") ?? (left < right)
         }
         var turns: [ExportTurn] = []
         for index in order {
@@ -280,8 +277,7 @@ struct ExportContent {
             turns.append(ExportTurn(
                 id: "T\(turns.count + 1)", speakerID: nil, groupKey: "track:\(track ?? "")", label: label,
                 track: track, start: segment.start, end: segment.end, text: text, overlap: false, otherSpeakerIDs: [],
-                score: 0,
-                timing: estimated == 0 ? .measured : estimated == entry.words.count ? .estimated : .mixed,
+                score: 0, timing: WordTimingQuality(estimated: estimated, of: entry.words.count),
                 spans: [WordSpan(segmentID: segment.id, first: 0, end: entry.words.count)]))
         }
         return turns
@@ -323,10 +319,13 @@ struct ExportContent {
         var blocks: [ExportBlock] = []
         var current: OpenBlock?
         for turn in turns where !ExportText.singleLine(turn.text).isEmpty {
-            if var open = current, open.key == turn.groupKey,
-               !(turn.start - open.end > ExportRules.blockSilenceSeconds),
-               !lineBetween(after: open.lastStart, upTo: turn.start) {
-                open.lastStart = turn.start
+            // A turn without a known start (NaN, sorted last) sorts, and is placed, after every line, so it never
+            // joins a block with a known start: that would pull its text before the lines in between.
+            let start = TurnOrder.sortKey(turn.start)
+            if var open = current, open.key == turn.groupKey, open.start.isNaN == turn.start.isNaN,
+               !(start - open.end > ExportRules.blockSilenceSeconds),
+               !lineBetween(after: open.lastStart, upTo: start) {
+                open.lastStart = start
                 open.end = max(open.end, turn.end)
                 open.turnIDs.append(turn.id)
                 open.texts.append(turn.text)
@@ -337,7 +336,7 @@ struct ExportContent {
                 continue
             }
             if let open = current { blocks.append(close(open)) }
-            current = OpenBlock(key: turn.groupKey, label: turn.label, start: turn.start, lastStart: turn.start,
+            current = OpenBlock(key: turn.groupKey, label: turn.label, start: turn.start, lastStart: start,
                                 end: turn.end, turnIDs: [turn.id], texts: [turn.text], others: turn.otherSpeakerIDs)
         }
         if let open = current { blocks.append(close(open)) }
@@ -363,14 +362,37 @@ struct TranscriptText {
             let first = max(0, first)
             let end = min(words.count, end)
             guard first < end else { return "" }
-            let lower = first == 0 ? 0 : min(max(words[first].utf16Offset, 0), utf16.count)
-            let upper = end == words.count ? utf16.count : min(max(words[end].utf16Offset, 0), utf16.count)
-            if lower < upper {
-                let text = ExportText.trimmed(String(decoding: utf16[lower..<upper], as: UTF16.self))
-                if !text.isEmpty { return text }
+            if offsetsFit(first: first, end: end) {
+                let lower = first == 0 ? 0 : words[first].utf16Offset
+                let upper = end == words.count ? utf16.count : words[end].utf16Offset
+                if lower < upper {
+                    let text = ExportText.trimmed(String(decoding: utf16[lower..<upper], as: UTF16.self))
+                    if !text.isEmpty { return text }
+                }
             }
             // Offsets that do not fit the text: fall back to the recognizer's word texts.
             return ExportText.trimmed(words[first..<end].map(\.text).joined(separator: " "))
+        }
+
+        /// True when the offsets of words `first...end` (the word after the range included, when there is one) lie
+        /// within the text, never decrease, and are Unicode scalar boundaries of the text. The raw offsets are
+        /// checked, not clamped ones: clamping a bad offset (-1 → 0, 999 → the text's length) would widen the slice
+        /// to text other words own. An offset between the two halves of a surrogate pair would decode as U+FFFD.
+        private func offsetsFit(first: Int, end: Int) -> Bool {
+            var previous = 0
+            for index in first...min(end, words.count - 1) {
+                let offset = words[index].utf16Offset
+                guard offset >= previous, offset <= utf16.count, isScalarBoundary(offset) else { return false }
+                previous = offset
+            }
+            return true
+        }
+
+        /// True when `offset` (within `0...utf16.count`) does not fall between a lead and a trail surrogate. A Swift
+        /// `String` never holds an unpaired surrogate, so every other offset starts or ends a whole scalar.
+        func isScalarBoundary(_ offset: Int) -> Bool {
+            guard offset > 0, offset < utf16.count else { return true }
+            return !(UTF16.isLeadSurrogate(utf16[offset - 1]) && UTF16.isTrailSurrogate(utf16[offset]))
         }
     }
 

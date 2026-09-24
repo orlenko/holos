@@ -110,9 +110,10 @@ private func allKeys(_ value: Any) -> Set<String> {
     return []
 }
 
-/// The evaluator's Otter header regex (scripts/evaluate-references.swift).
+/// The evaluator's Otter header regex (scripts/evaluate-references.swift; `evaluatorPatternMatchesTheScript` keeps
+/// the two texts equal).
 private func matchesEvaluatorHeader(_ line: String) throws -> Bool {
-    let pattern = try NSRegularExpression(pattern: #"^\s*\S.*\s{2,}\d{1,2}:\d{2}(?::\d{2})?\s*$"#)
+    let pattern = try NSRegularExpression(pattern: OtterTranscriptParser.evaluatorHeaderPattern)
     return pattern.firstMatch(in: line, range: NSRange(line.startIndex..<line.endIndex, in: line)) != nil
 }
 
@@ -269,6 +270,120 @@ private func matchesEvaluatorHeader(_ line: String) throws -> Bool {
     #expect(MarkdownExport.gapText(GapReason("somethingNew")) == "Audio gap")
 }
 
+@Test func identicalLinesPrintOnceEvenWhenNotAdjacent() throws {
+    let meeting = fixture([spec("T1", 10, "system:S1", "hello"), spec("T2", 200, "system:S1", "again")])
+    // Sleep on the microphone, a shorter pause on system audio, then the same sleep on system audio: A, B, A at one
+    // time. Two identical markers with another marker between them.
+    let exported = document(meeting, projection: projection(meeting),
+                            gaps: [TimelineGap(track: "mic", start: 100, end: 110, reason: .sleep),
+                                   TimelineGap(track: "system", start: 100, end: 105, reason: .paused),
+                                   TimelineGap(track: "system", start: 100, end: 110, reason: .sleep)],
+                            markers: [TimelineMarker(at: 150, label: "Vote"), TimelineMarker(at: 150, label: "Other"),
+                                      TimelineMarker(at: 150, label: "Vote")])
+    let markdown = try rendered(exported, .md)
+    #expect(markdown.components(separatedBy: "_[No audio: computer was asleep 00:01:40–00:01:50]_").count == 2)
+    #expect(markdown.components(separatedBy: "_[Recording paused 00:01:40–00:01:45]_").count == 2)
+    #expect(markdown.components(separatedBy: "_[Marker 00:02:30: Vote]_").count == 2)
+    #expect(markdown.components(separatedBy: "_[Marker 00:02:30: Other]_").count == 2)
+}
+
+@Test func markdownEscapesAmpersandsInTitleLabelsAndMarkers() throws {
+    let meeting = fixture([spec("T1", 10, "system:S1", "hello")])
+    let view = projection(meeting, actions: [.rename(speakerID: "system:S1", name: "A &amp; B")])
+    var exported = document(meeting, projection: view, markers: [TimelineMarker(at: 5, label: "Q&amp;A")])
+    exported.metadata.name = "R&amp;D sync"
+    let markdown = try rendered(exported, .md)
+    #expect(markdown.hasPrefix("# R\\&amp;D sync\n"))
+    #expect(markdown.contains("**A \\&amp; B** · 00:00:10"))
+    #expect(markdown.contains("- Participants: A \\&amp; B (00:01)"))
+    #expect(markdown.contains("_[Marker 00:00:05: Q\\&amp;A]_"))
+    #expect(!markdown.contains(" &amp;") && !markdown.contains("Q&amp;"))
+}
+
+@Test func markdownTextCannotHideOrRewriteWords() throws {
+    let meeting = fixture([
+        spec("T1", 10, "system:S1", "[budget]: https://example.com/vote"),
+        spec("T2", 20, "system:S2", "type <b>bold</b> and &amp; or &copy; then `x<y` and a\\*b"),
+        spec("T3", 30, "system:S1", "see [1]"),
+    ])
+    let markdown = try rendered(document(meeting, projection: projection(meeting)), .md)
+    // A link reference definition renders as nothing; escaped, it stays a visible paragraph.
+    #expect(markdown.contains("\n\\[budget\\]: https://example.com/vote\n"))
+    #expect(markdown.contains("\ntype \\<b\\>bold\\</b\\> and \\&amp; or \\&copy; then \\`x\\<y\\` and a\\\\\\*b\n"))
+    #expect(markdown.contains("\nsee \\[1\\]\n"))
+    #expect(MarkdownExport.paragraph("[a]: b") == "\\[a\\]: b")
+    #expect(MarkdownExport.paragraph("<div>") == "\\<div\\>")
+    #expect(MarkdownExport.paragraph("```fence") == "\\`\\`\\`fence")
+    // Inline links and images keep their URLs visible; emphasis, strikethrough, and table pipes stay literal.
+    #expect(MarkdownExport.paragraph("see [budget](https://example.com) now")
+        == "see \\[budget\\](https://example.com) now")
+    #expect(MarkdownExport.paragraph("![chart](c.png)") == "\\!\\[chart\\](c.png)")
+    #expect(MarkdownExport.paragraph("*a* _b_ ~~c~~ | d") == "\\*a\\* \\_b\\_ \\~\\~c\\~\\~ \\| d")
+}
+
+/// Reads `markdown` the way CommonMark reads backslash escapes: a backslash before ASCII punctuation is that
+/// character. Returns nil when a character that can start inline syntax appears unescaped.
+private func unescapedLiteral(_ markdown: String) -> String? {
+    var result = ""
+    var characters = markdown.makeIterator()
+    while let character = characters.next() {
+        if character == "\\" {
+            guard let next = characters.next(), next.isASCII, next.isPunctuation || next.isSymbol else { return nil }
+            result.append(next)
+        } else if MarkdownExport.inlineEscapedCharacters.contains(character) {
+            return nil
+        } else {
+            result.append(character)
+        }
+    }
+    return result
+}
+
+@Test func paragraphRendersPunctuationHeavyTextLiterally() throws {
+    let punctuation = Array("!\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~")
+    let alphabet = punctuation + punctuation + Array("ab1 9. \t\né") + ["😀", "e\u{301}"]
+    let prefixes = ["", "# ", "## ", "- ", "+ ", "* ", "1. ", "2) ", "> ", "[x]: ", "***", "---", "```", "~~~", "<", "|"]
+    // Control: the renderer does read Markdown, so unescaped syntax would change the text it shows.
+    #expect(String(try AttributedString(markdown: "- see [a](b) *c* &amp;").characters) == "see a c &")
+    var state: UInt64 = 0x9E37_79B9_7F4A_7C15
+    func next(_ bound: Int) -> Int {
+        state = state &* 6_364_136_223_846_793_005 &+ 1_442_695_040_888_963_407
+        return Int((state >> 33) % UInt64(bound))
+    }
+    for _ in 0..<3000 {
+        var text = prefixes[next(prefixes.count)]
+        for _ in 0..<next(24) { text.append(alphabet[next(alphabet.count)]) }
+        let expected = ExportText.singleLine(text)
+        let markdown = MarkdownExport.paragraph(text)
+        // Every original character survives, in order, and nothing that starts inline syntax is left bare.
+        #expect(unescapedLiteral(markdown) == expected, "\(text.debugDescription) → \(markdown.debugDescription)")
+        // A CommonMark renderer shows exactly the text: no block syntax, markup, links, or entities.
+        let rendered = try AttributedString(markdown: markdown)
+        #expect(String(rendered.characters) == expected, "\(text.debugDescription) → \(markdown.debugDescription)")
+    }
+}
+
+@Test func turnWithoutAStartDoesNotJoinABlockAcrossAMarker() throws {
+    let transcript = Transcript(
+        id: "TRANSCRIPT", createdAt: fixedDate, source: "mic", locale: "en-CA", backend: .speech,
+        segments: [measuredSegment("seg-a", start: 10, text: "before the vote", track: "mic"),
+                   TranscriptSegment(id: "seg-b", start: .nan, end: .nan, text: "time unknown", track: "mic")])
+    let exported = ExportDocument(metadata: metadata(source: .microphone), transcript: transcript,
+                                  markers: [TimelineMarker(at: 20, label: "Vote")])
+    let blocks = TranscriptExporter.blocks(exported)
+    #expect(blocks.map(\.turnIDs) == [["T1"], ["T2"]])
+    #expect(blocks.map(\.text) == ["before the vote", "time unknown"])
+    let markdown = try rendered(exported, .md)
+    let order = ["before the vote", "_[Marker 00:00:20: Vote]_", "time unknown"]
+    let positions = try order.map { try #require(markdown.range(of: $0)).lowerBound }
+    #expect(positions == positions.sorted())
+    // Two turns without a start still merge with each other.
+    var twice = exported
+    twice.transcript.segments.append(TranscriptSegment(id: "seg-c", start: .nan, end: .nan, text: "still unknown",
+                                                       track: "mic"))
+    #expect(TranscriptExporter.blocks(twice).map(\.turnIDs) == [["T1"], ["T2", "T3"]])
+}
+
 @Test func markerWithoutLabelAndDuplicateGapPrintOnce() throws {
     let meeting = fixture([spec("T1", 10, "system:S1", "hello"), spec("T2", 200, "system:S1", "again")])
     let exported = document(meeting, projection: projection(meeting),
@@ -302,6 +417,27 @@ private func matchesEvaluatorHeader(_ line: String) throws -> Bool {
         ReferenceTurn(speaker: "Jim", start: 65, end: 3725, wordCount: 3),
         ReferenceTurn(speaker: "Speaker 2", start: 3725, end: nil, wordCount: 1),
     ])
+}
+
+@Test func textRoundTripsPastNinetyNineHours() throws {
+    let meeting = fixture([
+        spec("T1", 359_990, "system:S1", "late words"),
+        spec("T2", 360_005, "system:S2", "later still"),
+    ])
+    let text = try rendered(document(meeting, projection: projection(meeting)), .txt)
+    #expect(text == "Speaker 1  99:59:50\nlate words\n\nSpeaker 2  100:00:05\nlater still\n\n")
+    #expect(try matchesEvaluatorHeader("Speaker 2  100:00:05"))
+    #expect(OtterTranscriptParser.parse(text) == [
+        ReferenceTurn(speaker: "Speaker 1", start: 359_990, end: 360_005, wordCount: 2),
+        ReferenceTurn(speaker: "Speaker 2", start: 360_005, end: nil, wordCount: 2),
+    ])
+}
+
+@Test func evaluatorPatternMatchesTheScript() throws {
+    let script = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+        .deletingLastPathComponent().appendingPathComponent("scripts/evaluate-references.swift")
+    let source = try String(contentsOf: script, encoding: .utf8)
+    #expect(source.contains("pattern: #\"\(OtterTranscriptParser.evaluatorHeaderPattern)\"#"))
 }
 
 @Test func textExportKeepsLabelsAndTextOnOneLine() throws {
@@ -637,6 +773,55 @@ private func matchesEvaluatorHeader(_ line: String) throws -> Bool {
     let broken = Transcript(id: "T", source: "system", locale: "en-CA", backend: .speech, segments: [segment])
     #expect(TranscriptExporter.text(of: [WordSpan(segmentID: "a", first: 1, end: 2)], in: broken) == "beta")
     #expect(TranscriptExporter.text(of: [WordSpan(segmentID: "a", first: 0, end: 3)], in: broken) == "alpha beta gamma")
+}
+
+@Test func negativeOffsetFallsBackInsteadOfWideningTheSlice() {
+    // Clamping -1 to 0 would slice from the start of the text and give the whole segment to the last word's span.
+    var segment = measuredSegment("a", start: 0, text: "alpha beta gamma", track: "system")
+    segment.words[2].utf16Offset = -1
+    let transcript = Transcript(id: "T", source: "system", locale: "en-CA", backend: .speech, segments: [segment])
+    #expect(TranscriptExporter.text(of: [WordSpan(segmentID: "a", first: 2, end: 3)], in: transcript) == "gamma")
+    #expect(TranscriptExporter.text(of: [WordSpan(segmentID: "a", first: 1, end: 2)], in: transcript) == "beta")
+    #expect(TranscriptExporter.text(of: [WordSpan(segmentID: "a", first: 0, end: 1)], in: transcript) == "alpha")
+    // Past the end is not clamped to the end either.
+    segment.words[2].utf16Offset = 99
+    let past = Transcript(id: "T", source: "system", locale: "en-CA", backend: .speech, segments: [segment])
+    #expect(TranscriptExporter.text(of: [WordSpan(segmentID: "a", first: 2, end: 3)], in: past) == "gamma")
+    #expect(TranscriptExporter.text(of: [WordSpan(segmentID: "a", first: 1, end: 2)], in: past) == "beta")
+}
+
+@Test func offsetInsideASurrogatePairFallsBackToWordTexts() {
+    // "😀" is two UTF-16 code units; an offset of 1 lands between them and would decode as U+FFFD.
+    var segment = measuredSegment("a", start: 0, text: "😀 hi there", track: "system")
+    segment.words[1].utf16Offset = 1
+    let transcript = Transcript(id: "T", source: "system", locale: "en-CA", backend: .speech, segments: [segment])
+    #expect(TranscriptExporter.text(of: [WordSpan(segmentID: "a", first: 0, end: 1)], in: transcript) == "😀")
+    #expect(TranscriptExporter.text(of: [WordSpan(segmentID: "a", first: 1, end: 2)], in: transcript) == "hi")
+    #expect(TranscriptExporter.text(of: [WordSpan(segmentID: "a", first: 0, end: 3)], in: transcript) == "😀 hi there")
+    // Offsets that sit on scalar boundaries still slice the text.
+    let fine = measuredSegment("b", start: 0, text: "😀, hi", track: "system")
+    let good = Transcript(id: "T", source: "system", locale: "en-CA", backend: .speech, segments: [fine])
+    #expect(TranscriptExporter.text(of: [WordSpan(segmentID: "b", first: 0, end: 1)], in: good) == "😀,")
+}
+
+@Test func scalarBoundaryRejectsEveryOffsetInsideASurrogatePair() {
+    let text = "a😀b𝄞"
+    let segment = TranscriptText.Segment(TranscriptSegment(id: "s", start: 0, end: 1, text: text, track: "mic"))
+    for offset in 0...text.utf16.count {
+        let index = String.Index(utf16Offset: offset, in: text)
+        let onScalar = index.samePosition(in: text.unicodeScalars) != nil
+        #expect(segment.isScalarBoundary(offset) == onScalar, "offset \(offset)")
+    }
+}
+
+@Test func timingQualityCountsEstimatedWords() {
+    #expect(WordTimingQuality(estimated: 0, of: 3) == .measured)
+    #expect(WordTimingQuality(estimated: 3, of: 3) == .estimated)
+    #expect(WordTimingQuality(estimated: 1, of: 3) == .mixed)
+    #expect(TurnOrder.precedes(.nan, "a", 5, "b") == false)
+    #expect(TurnOrder.precedes(5, "b", .nan, "a") == true)
+    #expect(TurnOrder.precedes(5, "a", 5, "b") == true)
+    #expect(TurnOrder.precedes(.nan, "a", .nan, "a") == nil)
 }
 
 // MARK: - Time formats

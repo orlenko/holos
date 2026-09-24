@@ -80,7 +80,9 @@ private enum EvaluationError: Error, CustomStringConvertible {
 private let cwd = URL(fileURLWithPath: FileManager.default.currentDirectoryPath, isDirectory: true)
 private let privateBase = cwd.appendingPathComponent(".local/evaluation", isDirectory: true).standardizedFileURL
 private let wordPattern = try NSRegularExpression(pattern: #"[\p{L}\p{N}]+"#)
-private let otterHeaderPattern = try NSRegularExpression(pattern: #"^\s*\S.*\s{2,}\d{1,2}:\d{2}(?::\d{2})?\s*$"#)
+// Same text as OtterTranscriptParser.evaluatorHeaderPattern: h:mm:ss with any number of hour digits (Holos exports
+// past 99 hours), or Otter's mm:ss with one or two minute digits.
+private let otterHeaderPattern = try NSRegularExpression(pattern: #"^\s*\S.*\s{2,}(?:\d+:\d{2}:\d{2}|\d{1,2}:\d{2})\s*$"#)
 private let otterFooterPattern = try NSRegularExpression(pattern: #"(?i)^\s*transcribed by\s+https?://otter\.ai/?\s*$"#)
 
 private func pathURL(_ path: String) -> URL {

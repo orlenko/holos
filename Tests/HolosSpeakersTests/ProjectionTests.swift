@@ -129,8 +129,15 @@ private func turn(_ projection: SpeakerProjection, _ id: String) -> ProjectedTur
 
 // MARK: - Actions
 
+/// What `fingerprint(for:)` returns for `raw`, compacted independently with CryptoKit.
+private func compacted(_ raw: String) -> String {
+    guard raw.unicodeScalars.count > 256 else { return raw }
+    return "fp1:sha256:" + SHA256.hash(data: Data(raw.utf8)).map { String(format: "%02x", $0) }.joined()
+}
+
 @Test func renameApplies() throws {
-    let projection = project([edit(.rename(speakerID: "system:S2", name: "Maria"), id: "E1", expected: "")])
+    let projection = project([edit(.rename(speakerID: "system:S2", name: "Maria"), id: "E1",
+                                   expected: "fp1:rename:speaker=9:system:S2=present;ordinal=2;name=none")])
     let s2 = try #require(speaker(projection, "system:S2"))
     #expect(s2.name == "Maria")
     #expect(s2.label == "Maria")
@@ -472,9 +479,12 @@ private func turn(_ projection: SpeakerProjection, _ id: String) -> ProjectedTur
 
 @Test func fingerprintIgnoresRecognition() {
     let projection = project(recognition: recognition([likelyJim]), names: people)
-    #expect(projection.fingerprint(for: .linkProfile(speakerID: "system:S1", profileID: "P-JIM")) == "")
-    #expect(projection.fingerprint(for: .rename(speakerID: "system:S1", name: "Jim")) == "")
-    #expect(projection.fingerprint(for: .rejectProfile(speakerID: "system:S1", profileID: "P-JIM")) == "link=;rejected=0")
+    #expect(projection.fingerprint(for: .linkProfile(speakerID: "system:S1", profileID: "P-JIM"))
+        == "fp1:linkProfile:profile=5:P-JIM;speaker=9:system:S1=present;ordinal=1;link=none;rejected=0")
+    #expect(projection.fingerprint(for: .rename(speakerID: "system:S1", name: "Jim"))
+        == "fp1:rename:speaker=9:system:S1=present;ordinal=1;name=none")
+    #expect(projection.fingerprint(for: .rejectProfile(speakerID: "system:S1", profileID: "P-JIM"))
+        == "fp1:rejectProfile:profile=5:P-JIM;speaker=9:system:S1=present;ordinal=1;link=none;rejected=0")
     #expect(projection.fingerprint(for: .merge(from: "system:S1", into: "system:S2"))
         == project().fingerprint(for: .merge(from: "system:S1", into: "system:S2")))
 }
@@ -547,20 +557,51 @@ private func turn(_ projection: SpeakerProjection, _ id: String) -> ProjectedTur
     journal.append(.reassignTurns(turnIDs: ["T6"], to: nil), id: "E4")
     journal.append(.excludeFromEnrollment(turnIDs: ["T2"]), id: "E5")
     let view = journal.view
-    #expect(view.fingerprint(for: .rename(speakerID: "system:S1", name: "X")) == "Jim")
-    #expect(view.fingerprint(for: .rename(speakerID: "system:S9", name: "X")) == "")
-    #expect(view.fingerprint(for: .linkProfile(speakerID: "system:S1", profileID: "P")) == "P-JIM")
-    #expect(view.fingerprint(for: .reassignTurns(turnIDs: ["T1", "T6", "T8", "T99"], to: "system:S2"))
-        == "system:S1:seg-T1[0..5],?:seg-T6[0..5],mic:me:seg-T8[0..5],")
-    #expect(view.fingerprint(for: .rejectProfile(speakerID: "system:S1", profileID: "P-BOB")) == "link=P-JIM;rejected=0")
-    #expect(view.fingerprint(for: .rejectProfile(speakerID: "system:S2", profileID: "P-BOB")) == "link=;rejected=1")
-    #expect(view.fingerprint(for: .merge(from: "system:S3", into: "system:S1"))
-        == "system:S3::T3|system:S1:P-JIM:T1,T4,T7")
+    #expect(view.fingerprint(for: .rename(speakerID: "system:S1", name: "X"))
+        == "fp1:rename:speaker=9:system:S1=present;ordinal=1;name=3:Jim")
+    #expect(view.fingerprint(for: .rename(speakerID: "system:S9", name: "X")) == "fp1:rename:speaker=9:system:S9=absent")
+    #expect(view.fingerprint(for: .linkProfile(speakerID: "system:S1", profileID: "P"))
+        == "fp1:linkProfile:profile=1:P;speaker=9:system:S1=present;ordinal=1;link=5:P-JIM;rejected=0")
+    #expect(view.fingerprint(for: .linkProfile(speakerID: "system:S2", profileID: "P-BOB"))
+        == "fp1:linkProfile:profile=5:P-BOB;speaker=9:system:S2=present;ordinal=2;link=none;rejected=1")
+    #expect(view.fingerprint(for: .reassignTurns(turnIDs: ["T1", "T6", "T99"], to: "system:S2"))
+        == "fp1:reassignTurns:to=9:system:S2=present;ordinal=2;turns=3["
+            + "2:T1=present;speaker=9:system:S1;words=1[6:seg-T1@0..<6],"
+            + "2:T6=present;speaker=none;words=1[6:seg-T6@0..<6],3:T99=absent]")
+    #expect(view.fingerprint(for: .reassignTurns(turnIDs: ["T8"], to: nil))
+        == "fp1:reassignTurns:to=none;turns=1[2:T8=present;speaker=6:mic:me;words=1[6:seg-T8@0..<6]]")
+    #expect(view.fingerprint(for: .reassignTurns(turnIDs: ["T8"], to: "system:S9"))
+        == "fp1:reassignTurns:to=9:system:S9=absent;turns=1[2:T8=present;speaker=6:mic:me;words=1[6:seg-T8@0..<6]]")
+    #expect(view.fingerprint(for: .rejectProfile(speakerID: "system:S1", profileID: "P-BOB"))
+        == "fp1:rejectProfile:profile=5:P-BOB;speaker=9:system:S1=present;ordinal=1;link=5:P-JIM;rejected=0")
+    #expect(view.fingerprint(for: .rejectProfile(speakerID: "system:S2", profileID: "P-BOB"))
+        == "fp1:rejectProfile:profile=5:P-BOB;speaker=9:system:S2=present;ordinal=2;link=none;rejected=1")
+    #expect(view.fingerprint(for: .rejectProfile(speakerID: "system:S9", profileID: "P-BOB"))
+        == "fp1:rejectProfile:profile=5:P-BOB;speaker=9:system:S9=absent")
+    // Merges describe both speakers in full, so these are long enough to be hashed.
+    #expect(view.fingerprint(for: .merge(from: "system:S3", into: "system:S1")) == compacted(
+        "fp1:merge:from=9:system:S3=present;ordinal=3;name=none;link=none;rejected=0[];clusters=1[9:system:S3];"
+            + "turns=1[2:T3:words=1[6:seg-T3@0..<6];excluded=0]"
+            + ";into=9:system:S1=present;ordinal=1;name=3:Jim;link=5:P-JIM;rejected=0[];clusters=1[9:system:S1];"
+            + "turns=3[2:T1:words=1[6:seg-T1@0..<6];excluded=0,2:T4:words=1[6:seg-T4@0..<6];excluded=0,"
+            + "2:T7:words=1[6:seg-T7@0..<6];excluded=0]"))
+    #expect(view.fingerprint(for: .merge(from: "system:S2", into: "system:S3")) == compacted(
+        "fp1:merge:from=9:system:S2=present;ordinal=2;name=none;link=none;rejected=1[5:P-BOB];"
+            + "clusters=1[9:system:S2];turns=2[2:T2:words=1[6:seg-T2@0..<6];excluded=1,"
+            + "2:T5:words=1[6:seg-T5@0..<6];excluded=0]"
+            + ";into=9:system:S3=present;ordinal=3;name=none;link=none;rejected=0[];clusters=1[9:system:S3];"
+            + "turns=1[2:T3:words=1[6:seg-T3@0..<6];excluded=0]"))
+    #expect(view.fingerprint(for: .merge(from: "system:S9", into: "mic:me")) == compacted(
+        "fp1:merge:from=9:system:S9=absent;into=6:mic:me=present;ordinal=4;name=none;link=none;rejected=0[];"
+            + "clusters=0[];turns=1[2:T8:words=1[6:seg-T8@0..<6];excluded=0]"))
     #expect(view.fingerprint(for: .splitTurn(turnID: "T5", at: WordRef(segmentID: "seg-T5", word: 3)))
-        == "system:S2:seg-T5[0..5]")
+        == "fp1:splitTurn:turn=2:T5=present;speaker=9:system:S2;words=1[6:seg-T5@0..<6]")
     #expect(view.fingerprint(for: .newSpeaker(speakerID: "user:X", name: nil, turnIDs: ["T2", "T6"]))
-        == "system:S2:seg-T2[0..5]:1,?:seg-T6[0..5]:0")
-    #expect(view.fingerprint(for: .excludeFromEnrollment(turnIDs: ["T2", "T99"])) == "system:S2:seg-T2[0..5]:1,")
+        == "fp1:newSpeaker:speaker=6:user:X=absent;turns=2[2:T2=present;speaker=9:system:S2;words=1[6:seg-T2@0..<6],"
+            + "2:T6=present;speaker=none;words=1[6:seg-T6@0..<6]]")
+    #expect(view.fingerprint(for: .excludeFromEnrollment(turnIDs: ["T2", "T99"]))
+        == "fp1:excludeFromEnrollment:turns=2[2:T2=present;speaker=9:system:S2;words=1[6:seg-T2@0..<6];excluded=1,"
+            + "3:T99=absent]")
     #expect(view.fingerprint(for: .revert(editID: "E1")) == nil)
     #expect(view.appliedEditIDs == ["E1", "E2", "E3", "E4", "E5"])
 }
@@ -570,19 +611,115 @@ private func turn(_ projection: SpeakerProjection, _ id: String) -> ProjectedTur
     var journal = Journal()
     journal.append(.rename(speakerID: "system:S1", name: longName), id: "E1")
     let fingerprint = try #require(journal.view.fingerprint(for: .rename(speakerID: "system:S1", name: nil)))
-    let digest = SHA256.hash(data: Data(longName.utf8)).map { String(format: "%02x", $0) }.joined()
-    #expect(fingerprint == String(digest.prefix(32)))
+    let prefix = "fp1:rename:speaker=9:system:S1=present;ordinal=1;name="
+    let raw = prefix + "305:" + longName
+    let digest = SHA256.hash(data: Data(raw.utf8)).map { String(format: "%02x", $0) }.joined()
+    #expect(fingerprint == "fp1:sha256:" + digest)
     // The hashed value still protects the edit.
     journal.append(.rename(speakerID: "system:S1", name: "Jim"), id: "E2")
     #expect(journal.view.appliedEditIDs == ["E1", "E2"])
     journal.edits.append(edit(.rename(speakerID: "system:S1", name: "Bob"), id: "E3", expected: fingerprint))
     #expect(journal.view.staleEdits == [StaleEdit(editID: "E3", reason: "changed since the edit was made")])
-    // Exactly 256 scalars stay as they are.
-    let limit = String(repeating: "\u{E9}", count: 256)
-    #expect(limit.unicodeScalars.count == 256 && limit.utf8.count == 512)
+    // A raw fingerprint of exactly 256 scalars stays as it is; one more is hashed.
+    #expect(prefix.unicodeScalars.count == 54)
+    let limit = String(repeating: "\u{E9}", count: 198)            // 54 + "198:" + 198 = 256 scalars
     var short = Journal()
     short.append(.rename(speakerID: "system:S1", name: limit), id: "E1")
-    #expect(short.view.fingerprint(for: .rename(speakerID: "system:S1", name: nil)) == limit)
+    #expect(short.view.fingerprint(for: .rename(speakerID: "system:S1", name: nil)) == prefix + "198:" + limit)
+    let over = limit + "\u{E9}"
+    short.append(.rename(speakerID: "system:S1", name: over), id: "E2")
+    let overRaw = prefix + "199:" + over
+    #expect(overRaw.unicodeScalars.count == 257)
+    #expect(short.view.fingerprint(for: .rename(speakerID: "system:S1", name: nil)) == compacted(overRaw))
+    #expect(compacted(overRaw) != overRaw)
+}
+
+@Test func hashedFingerprintNeverEqualsARawOne() throws {
+    // Window B loads S1 with a long name, whose fingerprint is hashed. Window A renames S1 to that exact hashed
+    // text. B's rename, made on the long name, must not overwrite A's.
+    let longName = String(repeating: "Jimmy ", count: 50) + "Jones"
+    var journal = Journal()
+    journal.append(.rename(speakerID: "system:S1", name: longName), id: "E1")
+    let older = journal.view
+    let hashed = try #require(older.fingerprint(for: .rename(speakerID: "system:S1", name: nil)))
+    #expect(hashed.hasPrefix("fp1:sha256:"))
+    journal.append(.rename(speakerID: "system:S1", name: hashed), id: "E2")
+    #expect(journal.view.fingerprint(for: .rename(speakerID: "system:S1", name: nil)) != hashed)
+    journal.append(.rename(speakerID: "system:S1", name: "Bob"), id: "E3", madeOn: older)
+    #expect(journal.view.staleEdits == [StaleEdit(editID: "E3", reason: "changed since the edit was made")])
+    #expect(speaker(journal.view, "system:S1")?.explicitName == hashed)
+}
+
+@Test func deletedSpeakerFingerprintDiffersFromAnUnnamedOne() throws {
+    // Window B loads unnamed S3; window A merges S3 into S1. The editor compares B's fingerprint with the current
+    // one, so every action naming S3 must fingerprint differently now that S3 is gone.
+    let older = project()
+    var journal = Journal()
+    journal.append(.merge(from: "system:S3", into: "system:S1"), id: "E1")
+    let current = journal.view
+    let actions: [SpeakerEditAction] = [
+        .rename(speakerID: "system:S3", name: "Sam"),
+        .linkProfile(speakerID: "system:S3", profileID: "P-JIM"),
+        .rejectProfile(speakerID: "system:S3", profileID: "P-JIM"),
+        .merge(from: "system:S3", into: "system:S2"),
+        .merge(from: "system:S2", into: "system:S3"),
+        .reassignTurns(turnIDs: ["T2"], to: "system:S3"),
+    ]
+    for action in actions {
+        #expect(older.fingerprint(for: action) != current.fingerprint(for: action), "\(action)")
+    }
+    #expect(current.fingerprint(for: .rename(speakerID: "system:S3", name: "Sam")) == "fp1:rename:speaker=9:system:S3=absent")
+    // A turn removed by reverting its split is absent, not an empty description.
+    var split = Journal()
+    split.append(.splitTurn(turnID: "T5", at: WordRef(segmentID: "seg-T5", word: 3)), id: "E1")
+    let withPart = split.view
+    split.append(.revert(editID: "E1"), id: "E2")
+    let partActions: [SpeakerEditAction] = [
+        .excludeFromEnrollment(turnIDs: ["T5/E1"]),
+        .splitTurn(turnID: "T5/E1", at: WordRef(segmentID: "seg-T5", word: 4)),
+        .reassignTurns(turnIDs: ["T5/E1"], to: nil),
+        .newSpeaker(speakerID: "user:X", name: nil, turnIDs: ["T5/E1"]),
+    ]
+    for action in partActions {
+        #expect(withPart.fingerprint(for: action) != split.view.fingerprint(for: action), "\(action)")
+    }
+    // A speaker re-created with the same ID after a merge removed it is a different speaker.
+    var recreated = Journal()
+    recreated.append(.newSpeaker(speakerID: "user:X", name: nil, turnIDs: ["T1"]), id: "E1")
+    let first = recreated.view
+    recreated.append(.merge(from: "user:X", into: "system:S2"), id: "E2")
+    recreated.append(.newSpeaker(speakerID: "user:X", name: nil, turnIDs: ["T4"]), id: "E3")
+    #expect(first.fingerprint(for: .rename(speakerID: "user:X", name: "Guest"))
+        != recreated.view.fingerprint(for: .rename(speakerID: "user:X", name: "Guest")))
+}
+
+@Test func longTurnFingerprintsAreHashedAndStillRefuseStaleEdits() throws {
+    var journal = Journal()
+    for number in 1...7 {
+        journal.append(.splitTurn(turnID: "T\(number)", at: WordRef(segmentID: "seg-T\(number)", word: 3)),
+                       id: "X\(number)")
+    }
+    let older = journal.view
+    let turnIDs = older.turns.map(\.id)
+    #expect(turnIDs.count == 15)
+    // 15 turn descriptions are well over 256 characters, so the exclude carries a tagged SHA-256.
+    let exclude = SpeakerEditAction.excludeFromEnrollment(turnIDs: turnIDs)
+    let fingerprint = try #require(older.fingerprint(for: exclude))
+    #expect(fingerprint.hasPrefix("fp1:sha256:"))
+    #expect(fingerprint.dropFirst(11).count == 64 && fingerprint.dropFirst(11).allSatisfy(\.isHexDigit))
+    // Each action has its own tag, so the same turns hash differently for another action.
+    let newSpeaker = SpeakerEditAction.newSpeaker(speakerID: "user:X", name: nil, turnIDs: turnIDs)
+    let newSpeakerFingerprint = try #require(older.fingerprint(for: newSpeaker))
+    #expect(newSpeakerFingerprint.hasPrefix("fp1:sha256:") && newSpeakerFingerprint != fingerprint)
+    // Another window splits T8; the exclusion made before that split is refused and flags nothing.
+    journal.append(.splitTurn(turnID: "T8", at: WordRef(segmentID: "seg-T8", word: 2)), id: "X8")
+    journal.append(exclude, id: "E1", madeOn: older)
+    #expect(journal.view.staleEdits == [StaleEdit(editID: "E1", reason: "changed since the edit was made")])
+    #expect(journal.view.turns.allSatisfy { !$0.excludedFromEnrollment })
+    // Made on the current view, the same exclusion applies.
+    journal.append(exclude, id: "E2")
+    #expect(journal.view.appliedEditIDs.last == "E2")
+    #expect(journal.view.turns.filter(\.excludedFromEnrollment).map(\.id).sorted() == turnIDs.sorted())
 }
 
 @Test func fingerprintDigestMatchesCryptoKit() {
@@ -623,6 +760,66 @@ private func turn(_ projection: SpeakerProjection, _ id: String) -> ProjectedTur
     #expect(speaker(projection, "system:S3") != nil)
     #expect(turn(projection, "T6")?.speakerID == "system:S3")
     #expect(turn(projection, "T3")?.speakerID == "system:S2")
+}
+
+@Test func staleMergeAfterChangeToEitherSpeakerIsRefused() throws {
+    let split = { (turnID: String) -> [SpeakerEditAction] in
+        // The speaker keeps the same turn IDs, but one of them now covers fewer words.
+        [.splitTurn(turnID: turnID, at: WordRef(segmentID: "seg-\(turnID)", word: 3)),
+         .reassignTurns(turnIDs: ["\(turnID)/C0"], to: "system:S2")]
+    }
+    // Window B, still showing the run as made, merges S3 into S1 after window A changed one of them.
+    let concurrent: [(String, [SpeakerEditAction])] = [
+        ("rename from", [.rename(speakerID: "system:S3", name: "Ann")]),
+        ("link from", [.linkProfile(speakerID: "system:S3", profileID: "P-JIM")]),
+        ("reject from", [.rejectProfile(speakerID: "system:S3", profileID: "P-JIM")]),
+        ("exclude from's turn", [.excludeFromEnrollment(turnIDs: ["T3"])]),
+        ("shrink from's turn", split("T3")),
+        ("rename into", [.rename(speakerID: "system:S1", name: "Jim")]),
+        ("link into", [.linkProfile(speakerID: "system:S1", profileID: "P-JIM")]),
+        ("reject into", [.rejectProfile(speakerID: "system:S1", profileID: "P-BOB")]),
+        ("exclude into's turn", [.excludeFromEnrollment(turnIDs: ["T1"])]),
+        ("shrink into's turn", split("T1")),
+    ]
+    let merge = SpeakerEditAction.merge(from: "system:S3", into: "system:S1")
+    for (label, actions) in concurrent {
+        let older = project()
+        var journal = Journal()
+        for (index, action) in actions.enumerated() { journal.append(action, id: "C\(index)") }
+        let changed = journal.view
+        journal.append(merge, id: "M", madeOn: older)
+        let projection = journal.view
+        #expect(projection.staleEdits == [StaleEdit(editID: "M", reason: "changed since the edit was made")], "\(label)")
+        #expect(projection.appliedEditIDs == actions.indices.map { "C\($0)" }, "\(label)")
+        #expect(projection.speakers == changed.speakers && projection.turns == changed.turns, "\(label)")
+        // Made on the current view, the same merge applies.
+        journal.append(merge, id: "M2")
+        #expect(journal.view.appliedEditIDs.last == "M2", "\(label)")
+        #expect(speaker(journal.view, "system:S3") == nil, "\(label)")
+    }
+    // A change to a third speaker leaves the merge valid.
+    let older = project()
+    var journal = Journal()
+    journal.append(.rename(speakerID: "system:S2", name: "Bob"), id: "C0")
+    journal.append(merge, id: "M", madeOn: older)
+    #expect(journal.view.appliedEditIDs == ["C0", "M"])
+}
+
+@Test func staleLinkAfterRejectionIsRefused() throws {
+    var journal = Journal(names: people)
+    let older = journal.view
+    // Window A says S1 is "Not Jim"; window B, still showing no rejection, links S1 to Jim.
+    journal.append(.rejectProfile(speakerID: "system:S1", profileID: "P-JIM"), id: "E1")
+    journal.append(.linkProfile(speakerID: "system:S1", profileID: "P-JIM"), id: "E2", madeOn: older)
+    let projection = journal.view
+    #expect(projection.staleEdits == [StaleEdit(editID: "E2", reason: "changed since the edit was made")])
+    let s1 = try #require(speaker(projection, "system:S1"))
+    #expect(s1.profileID == nil)
+    #expect(s1.rejectedProfileIDs == ["P-JIM"])
+    // Made on the current view, the link applies and lifts the rejection.
+    journal.append(.linkProfile(speakerID: "system:S1", profileID: "P-JIM"), id: "E3")
+    let linked = try #require(speaker(journal.view, "system:S1"))
+    #expect(linked.profileID == "P-JIM" && linked.rejectedProfileIDs.isEmpty)
 }
 
 @Test func staleRejectAfterRelinkIsRefused() throws {
@@ -721,18 +918,18 @@ private struct SeededNumbers {
 }
 
 /// Mostly valid actions on `view`'s current speakers and turns, with some invalid ones and reverts.
-private func randomAction(on view: SpeakerProjection, step: Int, editIDs: [String],
-                          random: inout SeededNumbers) -> SpeakerEditAction {
+private func randomAction(on view: SpeakerProjection, step: Int, editIDs: [String], random: inout SeededNumbers,
+                          names: [String?] = ["Jim", " Maria ", "", nil],
+                          profiles: [String] = ["P-JIM", "P-MARIA"]) -> SpeakerEditAction {
     let speakers = view.speakers.map(\.id) + ["system:S9"]
     let turns = view.turns.map(\.id) + ["T99"]
-    let names: [String?] = ["Jim", " Maria ", "", nil]
     switch Int(random.next() * 9) {
     case 0:
         return .rename(speakerID: random.pick(speakers), name: random.pick(names))
     case 1:
-        return .linkProfile(speakerID: random.pick(speakers), profileID: random.pick(["P-JIM", "P-MARIA"]))
+        return .linkProfile(speakerID: random.pick(speakers), profileID: random.pick(profiles))
     case 2:
-        return .rejectProfile(speakerID: random.pick(speakers), profileID: random.pick(["P-JIM", "P-MARIA"]))
+        return .rejectProfile(speakerID: random.pick(speakers), profileID: random.pick(profiles))
     case 3:
         return .merge(from: random.pick(speakers), into: random.pick(speakers))
     case 4:
@@ -786,6 +983,211 @@ private func randomAction(on view: SpeakerProjection, step: Int, editIDs: [Strin
     // The generator reaches every outcome, so the equalities above cover both the replay and incremental paths.
     #expect(applied > 100 && stale > 20 && reverted > 5 && splits > 5 && merges > 5 && created > 5,
             "applied \(applied), stale \(stale), reverted \(reverted), splits \(splits), merges \(merges), new \(created)")
+}
+
+// MARK: - Fingerprint injectivity
+
+/// The state an action reads, built from the projection's state as plain Swift values (never from the fingerprint
+/// encoding), so two states give equal facts exactly when the action sees the same thing. Text compares by Unicode
+/// scalars, as the length prefixes do.
+private indirect enum Fact: Hashable {
+    case absent
+    case nothing
+    case number(Int)
+    case text([Unicode.Scalar])
+    case list([Fact])
+    case bag([Fact: Int])
+}
+
+private func textFact(_ value: String?) -> Fact {
+    value.map { .text(Array($0.unicodeScalars)) } ?? .nothing
+}
+
+private func spansFact(_ spans: [WordSpan]) -> Fact {
+    .list(spans.map { .list([textFact($0.segmentID), .number($0.first), .number($0.end)]) })
+}
+
+private func speakerFact(_ state: SpeakerProjection.State, _ id: String,
+                         _ fields: (SpeakerProjection.SpeakerState) -> [Fact] = { _ in [] }) -> Fact {
+    guard let speaker = state.speakers[id] else { return .absent }
+    return .list([.number(speaker.ordinal)] + fields(speaker))
+}
+
+private func turnFact(_ state: SpeakerProjection.State, _ id: String, exclusion: Bool) -> Fact {
+    guard let index = state.turnIndex[id] else { return .absent }
+    let turn = state.turns[index]
+    var facts = [textFact(turn.speakerID), spansFact(turn.spans)]
+    if exclusion { facts.append(.number(turn.excluded ? 1 : 0)) }
+    return .list(facts)
+}
+
+/// What each action reads or discards, per the fingerprint table: whether each named speaker and turn exists (and a
+/// speaker's ordinal), plus the fields listed there.
+private func relevantState(for action: SpeakerEditAction, in state: SpeakerProjection.State) -> Fact {
+    switch action {
+    case .rename(let speakerID, _):
+        return speakerFact(state, speakerID) { [textFact($0.explicitName)] }
+    case .linkProfile(let speakerID, let profileID), .rejectProfile(let speakerID, let profileID):
+        return speakerFact(state, speakerID) {
+            [textFact($0.profileID), .number($0.rejectedProfileIDs.contains(profileID) ? 1 : 0)]
+        }
+    case .reassignTurns(let turnIDs, let to):
+        return .list([to.map { speakerFact(state, $0) } ?? .nothing,
+                      .list(turnIDs.map { turnFact(state, $0, exclusion: false) })])
+    case .merge(let from, let into):
+        let full = { (speakerID: String) -> Fact in
+            speakerFact(state, speakerID) { speaker in
+                var owned: [Fact: Int] = [:]
+                for turn in state.turns where turn.speakerID == speaker.id {
+                    let fact = Fact.list([textFact(turn.id), spansFact(turn.spans), .number(turn.excluded ? 1 : 0)])
+                    owned[fact, default: 0] += 1
+                }
+                return [textFact(speaker.explicitName), textFact(speaker.profileID),
+                        .list(speaker.rejectedProfileIDs.map { textFact($0) }),
+                        .list(speaker.clusterIDs.map { textFact($0) }), .bag(owned)]
+            }
+        }
+        return .list([full(from), full(into)])
+    case .splitTurn(let turnID, _):
+        return turnFact(state, turnID, exclusion: false)
+    case .newSpeaker(let speakerID, _, let turnIDs):
+        return .list([speakerFact(state, speakerID), .list(turnIDs.map { turnFact(state, $0, exclusion: false) })])
+    case .excludeFromEnrollment(let turnIDs):
+        return .list(turnIDs.map { turnFact(state, $0, exclusion: true) })
+    case .revert:
+        return .nothing
+    }
+}
+
+private func mentionsAbsent(_ fact: Fact) -> Bool {
+    switch fact {
+    case .absent: return true
+    case .list(let facts): return facts.contains(where: mentionsAbsent)
+    case .bag(let facts): return facts.keys.contains(where: mentionsAbsent)
+    case .nothing, .number, .text: return false
+    }
+}
+
+private func actionName(_ action: SpeakerEditAction) -> String {
+    switch action {
+    case .rename: return "rename"
+    case .linkProfile: return "linkProfile"
+    case .rejectProfile: return "rejectProfile"
+    case .reassignTurns: return "reassignTurns"
+    case .merge: return "merge"
+    case .splitTurn: return "splitTurn"
+    case .newSpeaker: return "newSpeaker"
+    case .excludeFromEnrollment: return "excludeFromEnrollment"
+    case .revert: return "revert"
+    }
+}
+
+@Test func fingerprintsAreInjectiveOverTheStateEachActionReads() throws {
+    // Names and profile IDs that look like the encoding: separators, length prefixes, hex digests, a hashed
+    // fingerprint, long names (hashed), and two spellings of é with different scalar counts.
+    let longName = String(repeating: "Jimmy ", count: 50) + "Jones"
+    let longTwin = String(repeating: "Jimmy ", count: 50) + "Jonas"
+    let hexName = String(repeating: "0123456789abcdef", count: 4)
+    var longJournal = Journal()
+    longJournal.append(.rename(speakerID: "system:S1", name: longName), id: "E1")
+    let hashed = try #require(longJournal.view.fingerprint(for: .rename(speakerID: "system:S1", name: nil)))
+    let names: [String?] = [
+        "Jim", " Maria ", "", nil, longName, longTwin, hexName, String(hexName.prefix(32)), "fp1:sha256:" + hexName,
+        hashed, "3:Jim", "Jim;link=none", "none", "=absent", "a,b]", "x=present;ordinal=1;name=none", "\u{E9}",
+        "e\u{301}",
+    ]
+    let profiles = ["P-JIM", "P-MARIA", "P;rejected=1", "5:P-JIM", ""]
+
+    // Every prefix of random journals over the fixture: merged-away and re-created speakers, links, rejections,
+    // splits (and reverted splits), reassigns, and exclusions.
+    var states = [project(), longJournal.view]
+    for seed in UInt64(1)...24 {
+        var random = SeededNumbers(state: seed &* 7_919)
+        var edits: [SpeakerEdit] = []
+        var chained = project()
+        for step in 0..<12 {
+            let action = randomAction(on: chained, step: step, editIDs: edits.map(\.id), random: &random,
+                                      names: names, profiles: profiles)
+            let id = "E\(step)"
+            edits.append(edit(action, id: id, expected: chained.fingerprint(for: action)))
+            chained = chained.applying(action, editID: id)
+            states.append(chained)
+        }
+    }
+
+    // Probes over every speaker and turn ID seen in any state (so each is present in some states and absent in
+    // others), plus IDs that never exist.
+    let speakerIDs = Set(states.flatMap { $0.state.speakers.keys }).union(["system:S9"]).sorted()
+    let turnIDs = Set(states.flatMap { $0.state.turns.map(\.id) }).union(["T99"]).sorted()
+    let mergeIDs = ["system:S1", "system:S2", "system:S3", "mic:me", "user:U0", "user:U3", "system:S9"]
+    var probes: [SpeakerEditAction] = []
+    for speakerID in speakerIDs {
+        probes.append(.rename(speakerID: speakerID, name: nil))
+        for profileID in profiles {
+            probes.append(.linkProfile(speakerID: speakerID, profileID: profileID))
+            probes.append(.rejectProfile(speakerID: speakerID, profileID: profileID))
+        }
+    }
+    for from in mergeIDs {
+        for into in mergeIDs { probes.append(.merge(from: from, into: into)) }
+    }
+    for ids in turnIDs.map({ [$0] }) + [["T1", "T5"], ["T5", "T99"], ["T2", "T2"]] {
+        for to in [nil, "system:S1", "user:U0", "system:S9"] as [String?] {
+            probes.append(.reassignTurns(turnIDs: ids, to: to))
+        }
+        probes.append(.newSpeaker(speakerID: "user:U0", name: nil, turnIDs: ids))
+        probes.append(.newSpeaker(speakerID: "user:U3", name: nil, turnIDs: ids))
+        probes.append(.excludeFromEnrollment(turnIDs: ids))
+    }
+    for turnID in turnIDs {
+        probes.append(.splitTurn(turnID: turnID, at: WordRef(segmentID: "seg-T1", word: 1)))
+    }
+
+    // For each probe: equal facts give equal fingerprints and different facts give different fingerprints.
+    var failures: [String] = []
+    var variedProbes: [String: Int] = [:]      // probes that saw at least three different states
+    var absentAndPresent = Set<String>()
+    var hashedCount = 0
+    for probe in probes {
+        let name = actionName(probe)
+        var factByFingerprint: [String: Fact] = [:]
+        var fingerprintByFact: [Fact: String] = [:]
+        for projection in states {
+            guard let fingerprint = projection.fingerprint(for: probe) else {
+                failures.append("no fingerprint: \(probe)")
+                continue
+            }
+            if fingerprint.hasPrefix("fp1:sha256:") {
+                hashedCount += 1
+            } else if !fingerprint.hasPrefix("fp1:\(name):") {
+                failures.append("untagged: \(probe)")
+            }
+            let fact = relevantState(for: probe, in: projection.state)
+            if let seen = factByFingerprint[fingerprint], seen != fact {
+                failures.append("different states, same fingerprint: \(probe)")
+            }
+            if let seen = fingerprintByFact[fact], seen != fingerprint {
+                failures.append("same state, different fingerprints: \(probe)")
+            }
+            if factByFingerprint[fingerprint] == nil { factByFingerprint[fingerprint] = fact }
+            if fingerprintByFact[fact] == nil { fingerprintByFact[fact] = fingerprint }
+        }
+        if fingerprintByFact.count >= 3 { variedProbes[name, default: 0] += 1 }
+        let absent = fingerprintByFact.keys.filter(mentionsAbsent).count
+        if absent > 0 && absent < fingerprintByFact.count { absentAndPresent.insert(name) }
+    }
+    let failureCount = failures.count
+    let firstFailures = Array(Set(failures)).sorted().prefix(5)
+    #expect(failureCount == 0, "\(failureCount) failures, first: \(firstFailures)")
+
+    // The generator reaches enough variety for the check above to mean something.
+    for name in ["rename", "linkProfile", "rejectProfile", "reassignTurns", "merge", "splitTurn", "newSpeaker",
+                 "excludeFromEnrollment"] {
+        #expect(variedProbes[name, default: 0] >= 3, "\(name): \(variedProbes[name, default: 0]) probes varied")
+    }
+    // Each action saw a named speaker or turn both missing and present.
+    #expect(absentAndPresent.count == 8, "\(absentAndPresent.sorted())")
+    #expect(hashedCount > 100, "hashed \(hashedCount)")
 }
 
 @Test func applyingARevertUndoesTheEdit() throws {
