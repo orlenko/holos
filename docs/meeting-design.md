@@ -2285,10 +2285,14 @@ public enum RecorderChannel {
     public static func readStatus(session: URL) throws -> RecorderStatus?
     /// Publishes one request atomically with `sentAtNanos` from mach_continuous_time; creates control/ (0700).
     /// Refuses (`unavailable`) when the session has no manifest yet (the recorder is still starting; stop it
-    /// with SIGTERM instead) or when status.json says exited.
+    /// with SIGTERM instead), when status.json says exited, or when only a maintenance command holds the
+    /// session (`maintenanceOnly`): no recorder would read or remove the request.
     @discardableResult
     public static func send(_ command: ControlCommand, label: String? = nil, session: URL,
                             sessionID: String, sender: String) throws -> ControlRequest
+    /// Liveness is `maintenance` and status.json is missing or exited, or names a process that is gone. A live
+    /// recorder with a stale status is not maintenance-only: it still answers `control/`.
+    public static func maintenanceOnly(session: URL, now: Date = Date()) -> Bool
     /// Polls status.json every 50 ms for the request's ack.
     public static func waitForAck(_ request: ControlRequest, session: URL, timeout: Duration) async -> ControlAck?
     /// "Fresh" means updatedAt less than 10 s before `now` and kill(pid, 0) == 0.
@@ -2588,6 +2592,11 @@ public enum DiskPolicy {
     public static func estimateText(source: AudioSource, hours: Double, freeBytes: Int64) -> String
 }
 ```
+
+The budget holds whatever the microphone delivers: AVAudioEngine keeps the input device's
+format (a stereo or 96 kHz interface), so the recorder's frame consumer converts every
+track to 48 kHz mono (`RecordingFormatConverter` in HolosAudio: channels averaged, one
+resampler per track and epoch) before the pump and the live tracks.
 
 Worked values: mic 4 h budget = 4 × 460.8 MB + 2 GB = 3.84 GB, 8 h = 5.69 GB;
 mic+system 4 h = 4 × (691.2 + 230.4) MB + 2 GB = 5.69 GB, 8 h = 9.37 GB. A 3 h

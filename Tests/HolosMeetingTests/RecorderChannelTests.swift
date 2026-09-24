@@ -76,6 +76,62 @@ private func deadRecordingSession(in root: URL) throws -> URL {
     }
 }
 
+/// The request files in `control/`.
+private func controlFiles(_ session: URL) -> [String] {
+    (try? FileManager.default.contentsOfDirectory(atPath: SessionPaths.controlDirectory(session).path)) ?? []
+}
+
+@Test func sendRefusesWhenOnlyMaintenanceHoldsTheSession() async throws {
+    let temp = try TemporaryDirectory("channel")
+    defer { temp.remove() }
+    let stale = Date().addingTimeInterval(-60)
+    // (a) Recovery holds the writer lock of a recorder that died: its status names a process that is gone.
+    let archive = try SessionArchive.create(root: temp.url, name: "Council", source: .microphone, locale: "en-CA",
+                                            backend: .speech)
+    let session = archive.directory
+    try AtomicFile.writeJSON(channelStatus(archive.id, phase: .recording, updatedAt: stale, pid: Int32.max),
+                             to: SessionPaths.status(session))
+    #expect(RecorderChannel.liveness(session: session) == .maintenance)
+    #expect(RecorderChannel.maintenanceOnly(session: session))
+    // `holos record stop` and `stop --no-wait` both publish through `send` first.
+    for command in [ControlCommand.stop, .pause, .marker] {
+        do {
+            try RecorderChannel.send(command, session: session, sessionID: archive.id, sender: "cli")
+            Issue.record("\(command) must be refused while only maintenance holds the session.")
+        } catch HolosError.unavailable(let message) {
+            #expect(message.contains("No recorder is running"))
+        }
+    }
+    #expect(controlFiles(session).isEmpty, "No request is left behind for a recorder that does not exist.")
+    // (b) `session diarize` holds the processing lease; no status was ever written.
+    try await archive.finish(status: ArchiveStatus.complete)
+    try FileManager.default.removeItem(at: SessionPaths.status(session))
+    let lease = try SessionArchive.acquireProcessingLease(at: session)
+    defer { lease.release() }
+    #expect(RecorderChannel.liveness(session: session) == .maintenance)
+    #expect(throws: HolosError.self) {
+        try RecorderChannel.send(.stop, session: session, sessionID: archive.id, sender: "cli")
+    }
+    #expect(controlFiles(session).isEmpty)
+}
+
+@Test func sendQueuesForALiveRecorderWithAStaleStatus() async throws {
+    let temp = try TemporaryDirectory("channel")
+    defer { temp.remove() }
+    // The recorder (this process) holds the writer lock but has not rewritten status.json for a minute: it is
+    // still running and still polls control/, so the request is queued.
+    let archive = try SessionArchive.create(root: temp.url, name: "Council", source: .microphone, locale: "en-CA",
+                                            backend: .speech)
+    let session = archive.directory
+    try AtomicFile.writeJSON(channelStatus(archive.id, phase: .recording, updatedAt: Date().addingTimeInterval(-60)),
+                             to: SessionPaths.status(session))
+    #expect(RecorderChannel.liveness(session: session) == .maintenance)
+    #expect(!RecorderChannel.maintenanceOnly(session: session))
+    let request = try RecorderChannel.send(.stop, session: session, sessionID: archive.id, sender: "cli")
+    #expect(controlFiles(session) == ["\(request.id).json"])
+    try await archive.finish(status: ArchiveStatus.complete)
+}
+
 @Test func livenessDistinguishesMaintenance() async throws {
     let temp = try TemporaryDirectory("channel")
     defer { temp.remove() }

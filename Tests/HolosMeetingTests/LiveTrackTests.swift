@@ -168,6 +168,52 @@ private func liveTrack(_ speech: @escaping LiveSpeechFactory, log: LiveEventLog,
     #expect(reporter.messages.contains { $0.hasPrefix("Live mic transcription could not restart: No assets.") })
 }
 
+/// Counts the speech sessions still in memory: made and not yet deallocated.
+private final class SessionCensus: Sendable {
+    private let alive = Mutex(0)
+    private let made = Mutex(0)
+    var count: Int { alive.withLock { $0 } }
+    var total: Int { made.withLock { $0 } }
+    func born() { alive.withLock { $0 += 1 }; made.withLock { $0 += 1 } }
+    func died() { alive.withLock { $0 -= 1 } }
+
+    var factory: LiveSpeechFactory {
+        { _, _, _, _ in CensusSpeech(census: self) }
+    }
+}
+
+/// A speech session that finishes at once with one segment and reports its own deallocation.
+private final class CensusSpeech: LiveSpeechSession {
+    let census: SessionCensus
+    init(census: SessionCensus) { self.census = census; census.born() }
+    deinit { census.died() }
+    func append(_ frame: PCMFrame) async throws {}
+    func finish() async throws -> [TranscriptSegment] { [TranscriptSegment(start: 0, end: 0.1, text: "Item")] }
+    func cancel() async {}
+}
+
+@Test(.timeLimit(.minutes(1))) func finishedSpeechSessionsAreReleased() async throws {
+    // A long recording: 40 epochs, each with a gap over 1 s inside, so 80 speech sessions. Each keeps an analyzer,
+    // a converter, and tasks while it lives; only its segments may outlast it.
+    let census = SessionCensus()
+    let track = liveTrack(census.factory, log: LiveEventLog())
+    for epoch in 0..<40 {
+        let start = Double(epoch) * 10
+        try await track.prepareSession(epoch: epoch, epochStart: start)
+        track.push(try liveFrame(start), epoch: epoch)
+        track.push(try liveFrame(start + 3), epoch: epoch)
+        track.boundary()
+    }
+    let fed = await eventuallyAsync { census.total >= 80 && census.count <= 2 }
+    #expect(fed, "\(census.count) of \(census.total) speech sessions are still in memory after they finished.")
+    let result = await track.finish()
+    #expect(census.total == 80)
+    #expect(result.segments.count == 80, "Every session's segments are kept.")
+    #expect(result.segments.first?.start == 0)
+    #expect(result.segments.last?.start == 393)
+    #expect(census.count == 0)
+}
+
 /// Polls `condition` every 5 ms for up to 10 s (outside the main actor).
 private func eventuallyAsync(_ condition: @Sendable () -> Bool) async -> Bool {
     let clock = ContinuousClock()

@@ -23,7 +23,8 @@ public enum DiskPolicy {
     static let renderHeadroom: Int64 = gigabyte
 
     /// Nominal Int16 capture: mic 48 kHz mono 345.6 MB/h; system 48 kHz mono 345.6 MB/h
-    /// (ScreenCaptureKit channelCount = 1).
+    /// (ScreenCaptureKit channelCount = 1). The recorder converts every track to 48 kHz mono before saving it
+    /// (`RecordingFormatConverter`), whatever format the microphone delivers, so these are what the files take.
     public static func captureBytesPerHour(_ source: AudioSource) -> Int64 {
         trackBytesPerHour * Int64(trackCount(source))
     }

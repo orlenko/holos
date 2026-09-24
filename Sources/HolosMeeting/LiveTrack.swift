@@ -64,11 +64,13 @@ final class LiveTrack: Sendable {
     }
 
     private struct SessionRecord {
-        let session: any LiveSpeechSession
+        /// The speech session until it is finished or cancelled; then nil, so a long recording with many sessions
+        /// (one per epoch and per gap over 1 s) keeps only their segments, not their analyzers.
+        var session: (any LiveSpeechSession)?
         /// Session time of its first frame; results are shifted by it.
         var base: Double?
         var fed = 0.0
-        /// Final updates so far, on the session timeline.
+        /// Final updates so far, on the session timeline (cleared once `result` replaces them).
         var finals: [TranscriptSegment] = []
         /// What `finish()` returned, on the session timeline; nil until it returns.
         var result: [TranscriptSegment]?
@@ -79,7 +81,8 @@ final class LiveTrack: Sendable {
         var nextSerial = 0
         /// Sessions made for epochs whose frames have not reached speech yet, by epoch.
         var prepared: [Int: Int] = [:]
-        /// Epochs that pushed frames: their prepared session is taken by those frames.
+        /// Epochs that pushed frames while their prepared session was still waiting: those frames take it. Only
+        /// epochs in `prepared` are kept.
         var pushedEpochs: Set<Int> = []
         /// The session the speech task feeds.
         var current: Int?
@@ -98,7 +101,8 @@ final class LiveTrack: Sendable {
     private struct Tasks {
         var speech: Task<Void, Never>?
         var journal: Task<Void, Never>?
-        var finishing: [Task<Void, Never>] = []
+        /// Sessions being finished, by serial; each task removes itself when done.
+        var finishing: [Int: Task<Void, Never>] = [:]
     }
 
     init(track: String, locale: String, backend: SpeechBackend, contextualStrings: [String],
@@ -165,7 +169,9 @@ final class LiveTrack: Sendable {
 
     /// Never blocks. A full queue makes the track fall behind from this frame's start.
     func push(_ frame: PCMFrame, epoch: Int) {
-        state.withLock { _ = $0.pushedEpochs.insert(epoch) }
+        state.withLock { state in
+            if state.prepared[epoch] != nil { state.pushedEpochs.insert(epoch) }
+        }
         guard !input.push(.frame(frame, epoch: epoch)), !input.isClosed else { return }
         let behind = state.withLock { $0.behindFrom != nil || $0.cancelled }
         if !behind {
@@ -213,7 +219,7 @@ final class LiveTrack: Sendable {
             self.cancelEverything()
         }
         let unused = state.withLock { state -> [Int] in
-            defer { state.prepared.removeAll() }
+            defer { state.prepared.removeAll(); state.pushedEpochs.removeAll() }
             return Array(state.prepared.values)
         }
         for serial in unused { await discardSession(serial) }
@@ -278,8 +284,8 @@ final class LiveTrack: Sendable {
                     serial = started
                 }
                 guard let (session, base) = state.withLock({ state -> (any LiveSpeechSession, Double)? in
-                    guard let record = state.sessions[serial] else { return nil }
-                    return (record.session, record.base ?? frame.startTime)
+                    guard let record = state.sessions[serial], let session = record.session else { return nil }
+                    return (session, record.base ?? frame.startTime)
                 }) else { break feeding }
                 do {
                     let rebased = try PCMFrame(samples: frame.samples, sampleRate: frame.sampleRate,
@@ -298,6 +304,7 @@ final class LiveTrack: Sendable {
                     reporter.message("Live transcription paused for \(track): \(Self.clause(error)). Audio remains on disk.")
                     _ = takeCurrent()
                     await session.cancel()
+                    state.withLock { $0.sessions[serial]?.session = nil }
                     fallBehind(from: frame.startTime, reason: "speechFailed")
                     break feeding
                 }
@@ -309,7 +316,10 @@ final class LiveTrack: Sendable {
     /// Makes the session prepared for `epoch` (or a new one) current for audio starting at `start`; nil when none can
     /// be made (the track falls behind from `start`).
     private func startSession(epoch: Int, at start: Double) async -> Int? {
-        var serial = state.withLock { state -> Int? in state.prepared.removeValue(forKey: epoch) }
+        var serial = state.withLock { state -> Int? in
+            state.pushedEpochs.remove(epoch)
+            return state.prepared.removeValue(forKey: epoch)
+        }
         if serial == nil {
             do {
                 serial = try await makeSession()
@@ -358,13 +368,19 @@ final class LiveTrack: Sendable {
     /// Finishes `serial` in the background, within its timeout, and no later than the deadline of `finish()` once
     /// that has started.
     private func finishLater(_ serial: Int) {
-        let task = Task { [weak self] () -> Void in await self?.finishSession(serial) }
-        tasks.withLock { $0.finishing.append(task) }
+        // Registered under the lock the task takes to remove itself, so a quick task never outlives its entry.
+        tasks.withLock { tasks in
+            tasks.finishing[serial] = Task { [weak self] () -> Void in
+                await self?.finishSession(serial)
+                self?.tasks.withLock { _ = $0.finishing.removeValue(forKey: serial) }
+            }
+        }
     }
 
     private func finishSession(_ serial: Int) async {
         guard let (session, fed, deadline) = state.withLock({ state -> (any LiveSpeechSession, Double, ContinuousClock.Instant?)? in
-            state.sessions[serial].map { ($0.session, $0.fed, state.finishDeadline) }
+            guard let record = state.sessions[serial], let session = record.session else { return nil }
+            return (session, record.fed, state.finishDeadline)
         }) else { return }
         var limit = timeouts.speechFinish(audioSeconds: fed)
         if let deadline { limit = min(limit, max(.zero, ContinuousClock.now.duration(to: deadline))) }
@@ -373,7 +389,12 @@ final class LiveTrack: Sendable {
         }
         switch outcome {
         case .finished(.success(let segments)):
-            state.withLock { $0.sessions[serial]?.result = segments }
+            // Done with the session: only its result is kept.
+            state.withLock { state in
+                state.sessions[serial]?.result = segments
+                state.sessions[serial]?.finals = []
+                state.sessions[serial]?.session = nil
+            }
             return
         case .finished(.failure(let error)):
             if !(error is CancellationError) {
@@ -387,6 +408,7 @@ final class LiveTrack: Sendable {
         await session.cancel()
         // Its finalized segments are kept; the rest of its audio is transcribed from disk.
         let from = state.withLock { state -> Double? in
+            state.sessions[serial]?.session = nil
             guard !state.cancelled, let record = state.sessions[serial] else { return nil }
             return record.finals.map(\.end).max() ?? record.base
         }
@@ -397,7 +419,7 @@ final class LiveTrack: Sendable {
         while true {
             let pending = tasks.withLock { tasks -> [Task<Void, Never>] in
                 defer { tasks.finishing.removeAll() }
-                return tasks.finishing
+                return Array(tasks.finishing.values)
             }
             if pending.isEmpty { return }
             for task in pending { await task.value }
@@ -406,7 +428,7 @@ final class LiveTrack: Sendable {
 
     private func discardSession(_ serial: Int) async {
         let session = state.withLock { state -> (any LiveSpeechSession)? in
-            state.sessions.removeValue(forKey: serial)?.session
+            state.sessions.removeValue(forKey: serial)?.session ?? nil
         }
         await session?.cancel()
     }
@@ -415,11 +437,11 @@ final class LiveTrack: Sendable {
         let (sessions, running) = state.withLock { state -> ([any LiveSpeechSession], Bool) in
             let wasCancelled = state.cancelled
             state.cancelled = true
-            return (state.sessions.values.map(\.session), wasCancelled)
+            return (state.sessions.values.compactMap(\.session), wasCancelled)
         }
         guard !running else { return }
         input.close(discardingQueued: true)
-        let (speech, finishing) = tasks.withLock { ($0.speech, $0.finishing) }
+        let (speech, finishing) = tasks.withLock { ($0.speech, $0.finishing.values) }
         speech?.cancel()
         for task in finishing { task.cancel() }
         // A speech framework's `append` or `finish` need not observe task cancellation.
