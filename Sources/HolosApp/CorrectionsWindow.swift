@@ -18,6 +18,9 @@ final class CorrectionsWindow: NSObject, NSWindowDelegate, NSTextFieldDelegate {
     /// Adds a rule, with the edit of the declined swap it resolves (if any). False means not saved.
     private let onAdd: (Correction, DeclinedCorrectionQueue.PendingEdit?) -> Bool
     private let onRemove: (Correction) -> Bool
+    /// Replaces the first rule with the second in place, with the edit of the declined swap it resolves (if any).
+    /// False means not saved.
+    private let onReplace: (Correction, Correction, DeclinedCorrectionQueue.PendingEdit?) -> Bool
     private let transcriptView: NSTextView
     private let learnButton = NSButton(title: "Learn Corrections", target: nil, action: nil)
     private let copyButton = NSButton(title: "Copy Text", target: nil, action: nil)
@@ -26,6 +29,10 @@ final class CorrectionsWindow: NSObject, NSWindowDelegate, NSTextFieldDelegate {
     private let heardField = NSTextField()
     private let meantField = NSTextField()
     private let skipButton = NSButton(title: "Skip", target: nil, action: nil)
+    private let addButton = NSButton(title: "Add", target: nil, action: nil)
+    private let cancelEditButton = NSButton(title: "Cancel", target: nil, action: nil)
+    /// The rule being edited in the fields below the list; Add becomes Save while it is set.
+    private var editing: Correction?
     private var positioned = false
     private var shown: [Correction] = []
     private var declined = DeclinedCorrectionQueue()
@@ -34,13 +41,15 @@ final class CorrectionsWindow: NSObject, NSWindowDelegate, NSTextFieldDelegate {
 
     init(onLearn: @escaping (String) -> LearnResult?,
          onAdd: @escaping (Correction, DeclinedCorrectionQueue.PendingEdit?) -> Bool,
-         onRemove: @escaping (Correction) -> Bool) {
+         onRemove: @escaping (Correction) -> Bool,
+         onReplace: @escaping (Correction, Correction, DeclinedCorrectionQueue.PendingEdit?) -> Bool) {
         window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 560, height: 600),
                           styleMask: [.titled, .closable, .miniaturizable, .resizable],
                           backing: .buffered, defer: true)
         self.onLearn = onLearn
         self.onAdd = onAdd
         self.onRemove = onRemove
+        self.onReplace = onReplace
         let transcriptScroll = NSTextView.scrollableTextView()
         transcriptView = transcriptScroll.documentView as! NSTextView
         super.init()
@@ -94,13 +103,22 @@ final class CorrectionsWindow: NSObject, NSWindowDelegate, NSTextFieldDelegate {
         meantField.placeholderString = "Meant (e.g. pull request)"
         heardField.delegate = self
         meantField.delegate = self
-        let addButton = NSButton(title: "Add", target: self, action: #selector(addManual))
+        // Return in either field adds (or saves an edit) rather than pressing the default Learn button.
+        for field in [heardField, meantField] {
+            field.target = self
+            field.action = #selector(addManual)
+        }
+        addButton.target = self
+        addButton.action = #selector(addManual)
+        cancelEditButton.target = self
+        cancelEditButton.action = #selector(cancelEdit)
+        cancelEditButton.isHidden = true
         skipButton.target = self
         skipButton.action = #selector(skipDeclined)
         skipButton.toolTip = "Drop the suggested correction without adding it."
         skipButton.isHidden = true
         let addRow = NSStackView(views: [heardField, NSTextField(labelWithString: "→"), meantField, addButton,
-                                         skipButton])
+                                         cancelEditButton, skipButton])
         addRow.spacing = 8
         heardField.widthAnchor.constraint(equalTo: meantField.widthAnchor).isActive = true
 
@@ -162,10 +180,13 @@ final class CorrectionsWindow: NSObject, NSWindowDelegate, NSTextFieldDelegate {
         for (index, correction) in corrections.enumerated() {
             let label = NSTextField(labelWithString: "\(correction.heard)  →  \(correction.meant)")
             label.lineBreakMode = .byTruncatingTail
+            let edit = NSButton(title: "Edit", target: self, action: #selector(editEntry(_:)))
+            edit.bezelStyle = .inline
+            edit.tag = index
             let remove = NSButton(title: "Remove", target: self, action: #selector(removeEntry(_:)))
             remove.bezelStyle = .inline
             remove.tag = index
-            let row = NSStackView(views: [label, NSView(), remove])
+            let row = NSStackView(views: [label, NSView(), edit, remove])
             row.spacing = 8
             listStack.addArrangedSubview(row)
             row.widthAnchor.constraint(equalTo: listStack.widthAnchor).isActive = true
@@ -208,7 +229,8 @@ final class CorrectionsWindow: NSObject, NSWindowDelegate, NSTextFieldDelegate {
 
     /// Clearing both Add fields by hand fills in the next waiting swap, as the suggestion says.
     func controlTextDidChange(_ notification: Notification) {
-        guard declined.prefill(heard: heardField.stringValue, meant: meantField.stringValue) != nil else { return }
+        guard editing == nil,
+              declined.prefill(heard: heardField.stringValue, meant: meantField.stringValue) != nil else { return }
         report(reported)
     }
 
@@ -218,9 +240,9 @@ final class CorrectionsWindow: NSObject, NSWindowDelegate, NSTextFieldDelegate {
 
     /// Fills the Add fields with the next declined swap when both are empty, and describes what is waiting.
     private func suggestDeclined() -> String? {
-        skipButton.isHidden = declined.isEmpty
+        skipButton.isHidden = declined.isEmpty || editing != nil
         guard let next = declined.pending.first else { return nil }
-        if let fill = declined.prefill(heard: heardField.stringValue, meant: meantField.stringValue) {
+        if editing == nil, let fill = declined.prefill(heard: heardField.stringValue, meant: meantField.stringValue) {
             heardField.stringValue = fill.heard
             meantField.stringValue = fill.meant
         }
@@ -239,6 +261,10 @@ final class CorrectionsWindow: NSObject, NSWindowDelegate, NSTextFieldDelegate {
     }
 
     @objc private func addManual() {
+        if let original = editing {
+            saveEdit(of: original)
+            return
+        }
         let correction = Correction(heard: heardField.stringValue, meant: meantField.stringValue)
         guard !correction.heard.trimmingCharacters(in: .whitespaces).isEmpty,
               !correction.meant.trimmingCharacters(in: .whitespaces).isEmpty else {
@@ -280,7 +306,77 @@ final class CorrectionsWindow: NSObject, NSWindowDelegate, NSTextFieldDelegate {
             feedbackLabel.stringValue = Self.saveFailure
             return
         }
+        if editing == correction {
+            endEditing(["Removed: \(correction.heard) → \(correction.meant)"])
+            return
+        }
         feedbackLabel.stringValue = "Removed: \(correction.heard) → \(correction.meant)"
+    }
+
+    /// Loads a rule into the fields below the list; Save replaces it in place.
+    @objc private func editEntry(_ sender: NSButton) {
+        guard shown.indices.contains(sender.tag) else { return }
+        let correction = shown[sender.tag]
+        // Never drop unsaved changes to the rule being edited by loading another one over them.
+        if let current = editing, current != correction,
+           heardField.stringValue != current.heard || meantField.stringValue != current.meant {
+            feedbackLabel.stringValue = "Save or Cancel the change to \(current.heard) → \(current.meant) first."
+            return
+        }
+        editing = correction
+        heardField.stringValue = correction.heard
+        meantField.stringValue = correction.meant
+        addButton.title = "Save"
+        cancelEditButton.isHidden = false
+        skipButton.isHidden = true
+        feedbackLabel.stringValue = "Editing \(correction.heard) → \(correction.meant). Change it below, then Save."
+        window.makeFirstResponder(meantField)
+    }
+
+    @objc private func cancelEdit() {
+        endEditing([])
+    }
+
+    private func saveEdit(of original: Correction) {
+        let changed = Correction(heard: heardField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines),
+                                 meant: meantField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines))
+        guard !changed.heard.isEmpty, !changed.meant.isEmpty else {
+            feedbackLabel.stringValue = "Enter both the misheard phrase and the intended one, or Remove the rule."
+            return
+        }
+        guard changed.heard != changed.meant else {
+            feedbackLabel.stringValue = "The misheard and intended text are the same; change one, or Remove the rule."
+            return
+        }
+        // An unchanged rule that is still listed needs no save; one removed or replaced meanwhile is saved again.
+        guard changed != original || !shown.contains(original) else {
+            endEditing(["No change to \(original.heard) → \(original.meant)."])
+            return
+        }
+        let replaced = CorrectionList(entries: shown).conflicts(replacing: original, with: changed)
+        // Saving a rule a declined swap asks for resolves that swap, and keeps its edit, as Add does.
+        var remaining = declined
+        let resolved = remaining.resolve(added: changed)
+        guard onReplace(original, changed, resolved?.edit) else {
+            feedbackLabel.stringValue = Self.saveFailure
+            return
+        }
+        declined = remaining
+        var lines = ["Changed: \(original.heard) → \(original.meant) is now \(changed.heard) → \(changed.meant)."]
+        if !replaced.isEmpty {
+            lines.append("It replaces the other rule for the same phrase: \(Self.describe(replaced)).")
+        }
+        endEditing(lines)
+    }
+
+    /// Leaves edit mode, clears the fields, and redraws the feedback (which may refill a waiting swap).
+    private func endEditing(_ lines: [String]) {
+        editing = nil
+        addButton.title = "Add"
+        cancelEditButton.isHidden = true
+        heardField.stringValue = ""
+        meantField.stringValue = ""
+        report(lines)
     }
 }
 
