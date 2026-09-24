@@ -1,24 +1,29 @@
 import AppKit
 
-/// A non-activating, mouse-transparent preview. It must not steal the insertion target.
+/// A non-activating preview. It must not steal the insertion target: the panel never becomes key or
+/// main, and clicking it does not activate Holos. Only its close button reacts to the mouse.
 @MainActor
 final class DictationOverlay {
     private let panel: NSPanel
+    private let closeButton = FirstMouseButton()
+    /// Set by the close button; `show` stays quiet until the next dictation calls `allowShowing()`.
+    private var dismissed = false
     private let titleLabel = NSTextField(labelWithString: "")
     private let previewLabel = NSTextField(wrappingLabelWithString: "")
     private static let previewWidth: CGFloat = 520 - 36
     private static let previewLines: CGFloat = 4
 
     init() {
-        panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 520, height: 150),
-                        styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: true)
+        panel = OverlayPanel(contentRect: NSRect(x: 0, y: 0, width: 520, height: 150),
+                             styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: true)
         panel.level = .floating
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .ignoresCycle]
         panel.isOpaque = false
         panel.backgroundColor = .clear
         panel.hasShadow = true
         panel.hidesOnDeactivate = false
-        panel.ignoresMouseEvents = true
+        panel.ignoresMouseEvents = false
+        panel.becomesKeyOnlyIfNeeded = true
         panel.isReleasedWhenClosed = false
 
         let material = NSVisualEffectView(frame: panel.contentView!.bounds)
@@ -40,7 +45,22 @@ final class DictationOverlay {
         stack.spacing = 10
         stack.translatesAutoresizingMaskIntoConstraints = false
         material.addSubview(stack)
+
+        closeButton.image = NSImage(systemSymbolName: "xmark.circle.fill", accessibilityDescription: "Dismiss")
+        closeButton.isBordered = false
+        closeButton.imagePosition = .imageOnly
+        closeButton.contentTintColor = .secondaryLabelColor
+        closeButton.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 15, weight: .regular)
+        closeButton.toolTip = "Dismiss (dictation keeps going)"
+        closeButton.refusesFirstResponder = true
+        closeButton.target = self
+        closeButton.action = #selector(dismiss)
+        closeButton.translatesAutoresizingMaskIntoConstraints = false
+        material.addSubview(closeButton)
         NSLayoutConstraint.activate([
+            closeButton.topAnchor.constraint(equalTo: material.topAnchor, constant: 10),
+            closeButton.trailingAnchor.constraint(equalTo: material.trailingAnchor, constant: -10),
+            titleLabel.trailingAnchor.constraint(lessThanOrEqualTo: closeButton.leadingAnchor, constant: -8),
             stack.leadingAnchor.constraint(equalTo: material.leadingAnchor, constant: 18),
             stack.trailingAnchor.constraint(equalTo: material.trailingAnchor, constant: -18),
             stack.topAnchor.constraint(equalTo: material.topAnchor, constant: 16),
@@ -51,7 +71,11 @@ final class DictationOverlay {
         panel.contentView = material
     }
 
-    func show(title: String, text: String) {
+    /// Shows or updates the preview. After the close button was clicked, updates stay hidden until
+    /// `allowShowing()`; `force` is for messages the user must see (such as the rebuilt-app warning).
+    func show(title: String, text: String, force: Bool = false) {
+        if dismissed && !force { return }
+        if force { dismissed = false }
         titleLabel.stringValue = title
         previewLabel.stringValue = Self.latestWords(of: text, font: previewLabel.font ?? .systemFont(ofSize: 15))
         let pointer = NSEvent.mouseLocation
@@ -91,9 +115,28 @@ final class DictationOverlay {
         return "…" + text[start...]
     }
 
+    /// Called when a new dictation starts, so its preview appears again.
+    func allowShowing() { dismissed = false }
+
+    @objc private func dismiss() {
+        dismissed = true
+        hide()
+    }
+
     func hide() {
         panel.orderOut(nil)
         titleLabel.stringValue = ""
         previewLabel.stringValue = ""
     }
+}
+
+/// Never key or main, so clicking the close button leaves keyboard focus in the field being dictated into.
+private final class OverlayPanel: NSPanel {
+    override var canBecomeKey: Bool { false }
+    override var canBecomeMain: Bool { false }
+}
+
+/// Reacts to the first click even though its window is never key.
+private final class FirstMouseButton: NSButton {
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 }
