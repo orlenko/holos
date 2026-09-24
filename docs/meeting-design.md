@@ -2613,7 +2613,10 @@ After `finish(reason)` the loop exits and `RecordingWorkflow.run` does, in order
 
 1. **Stop capture** with a 5 s timeout. On timeout, abandon the stream, log, and record
    `captureFailed {epoch, error: "Capture did not stop within 5 s"}`. Drain the consumer,
-   let the pump drain into the writer, then `writer.closeAll`.
+   let the pump drain into the writer, then `writer.closeAll`. When the epoch's stream had
+   already ended by itself (the user stopped sharing, or capture failed), the stop is only
+   cleanup: an error from it (ScreenCaptureKit refuses to stop a stopped stream) is logged,
+   never reported as a capture failure.
 2. Phase `stopping` → `transcribing`. **Finish live speech** per track with a timeout of
    30 s + 0.05 × the seconds fed to its current speech session. On timeout, cancel that
    session; segments it already finalized are kept. The same deadline also ends the finishes of
@@ -2644,7 +2647,11 @@ After `finish(reason)` the loop exits and `RecordingWorkflow.run` does, in order
 8. Write `phase: exited` with `RecorderExit` (archive status, stop reason,
    post-processing state and message), then release the last lock (the writer lock or the
    lease), so liveness goes to `exited` without reading `dead` on the way. `StatusWriter`
-   then stops its heartbeat and ignores later updates.
+   then stops its heartbeat and ignores later updates. A failed final write is retried
+   (3 attempts, 100 ms × attempt apart); only a write that lands finishes the writer. If
+   none does, the error is logged, the heartbeat resumes with the last phase, and the
+   recorder keeps its last lock until the process exits, so the session reads busy, not
+   dead, while it shuts down; after exit, recovery handles it like any unfinished status.
 9. Release the power assertion; delete leftover `control/*.json`; return the outcome.
 
 While steps 1–9 run, `ControlInbox` keeps polling once a second and acknowledges every

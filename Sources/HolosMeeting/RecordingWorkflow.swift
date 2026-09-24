@@ -61,6 +61,8 @@ public struct RecordingDependencies: Sendable {
     var tuning = RecorderTuning()
     /// Tests only: sees every status.json written, in order.
     var statusObserver: (@Sendable (RecorderStatus) -> Void)?
+    /// Tests only: replaces the atomic write of status.json (to inject failures).
+    var statusWrite: StatusWriter.FileWrite?
 
     /// No hardware defaults: tests use `.testing(...)` (Fakes.swift). The defaults of the later parameters are
     /// inert: a clock that starts when epoch 0 starts, unlimited free space, and the standard timeouts.
@@ -273,8 +275,13 @@ private final class Recorder {
     var cancelled = false
     var recordingError: Error?
     var archiveOpen = true
-    /// status.json says exited.
+    /// The exit was published (or tried): requests are no longer answered.
     var exited = false
+    /// status.json says exited.
+    var exitWritten = false
+    /// The exited status could not be written: the session's last lock stays held until this process exits, so
+    /// liveness never reads a recorder that is still shutting down as dead.
+    var holdsLocksUntilExit: Bool { exited && !exitWritten }
     var stoppedInbox: Task<Void, Never>?
 
     init(archive: SessionArchive, options: RecordingOptions, dependencies: RecordingDependencies) throws {
@@ -299,7 +306,7 @@ private final class Recorder {
             updatedAt: now, source: options.source,
             tracks: tracks.map { TrackStatus(track: $0, transcription: options.recordOnly ? .off : .live) })
         status = try StatusWriter(session: directory, initial: initial, heartbeat: dependencies.tuning.tick,
-                                  observer: dependencies.statusObserver)
+                                  observer: dependencies.statusObserver, write: dependencies.statusWrite)
         lastStatusPhase = .starting
     }
 
@@ -320,12 +327,12 @@ private final class Recorder {
                 try? await archive.finish(status: ArchiveStatus.transcriptionIncomplete, keepingLock: true)
                 archiveOpen = false
             }
-            if !exited {
+            if !exitWritten {
                 let saved = (try? SessionArchive.readManifest(at: archive.directory).status) ?? ArchiveStatus.incomplete
                 await exitStatus(RecorderExit(archiveStatus: saved, reason: machine.stopReason ?? .requested,
                                               message: error is CancellationError ? "Cancelled." : error.localizedDescription))
             } else {
-                await archive.releaseLock()
+                await releaseWriterLock()
             }
             throw error
         }
@@ -556,12 +563,15 @@ private final class Recorder {
     /// Asks the current capture to stop (at most the capture-stop timeout), then waits for its consumer. A cancelled run
     /// waits too: the microphone and system audio are released before it returns. A `CancellationError` from the stop
     /// (or any error once the run is cancelled) marks the run cancelled; another error is returned for the stop path
-    /// to report, and only logged when capture restarts.
+    /// to report, and only logged when capture restarts. When the stream had already ended by itself (the user
+    /// stopped sharing, or capture failed), the stop is only cleanup: an error from it (ScreenCaptureKit refuses to
+    /// stop a stream that has stopped) is logged and never returned, so it cannot turn a finished recording into a
+    /// capture failure.
     @discardableResult
     private func stopCurrentCapture() async -> Error? {
         guard let capture, !captureStopped else { return nil }
         captureStopped = true
-        monitor.requestStop(epoch: captureEpoch)
+        let alreadyEnded = monitor.requestStop(epoch: captureEpoch)
         let limit = dependencies.timeouts.captureStop
         let outcome = await awaitWithTimeout(limit, cancellable: false) { try await capture.stop() }
         var abandon = false
@@ -572,6 +582,8 @@ private final class Recorder {
         case .finished(.failure(let error)):
             if error is CancellationError || Task.isCancelled {
                 cancelled = true
+            } else if alreadyEnded {
+                Self.log.notice("Session \(self.archive.id, privacy: .public): stopping capture after its stream ended: \(error.localizedDescription, privacy: .public)")
             } else {
                 failure = error
                 Self.log.error("Session \(self.archive.id, privacy: .public): capture stop failed: \(error.localizedDescription, privacy: .public)")
@@ -911,7 +923,7 @@ private final class Recorder {
                 }
             } catch { leaseCancelled = true }
         }
-        defer { lease?.release() }
+        defer { releaseLease(lease) }
         // With the lease, the writer lock goes now (the hook opens the archive for maintenance under the lease).
         // Without it (no hook, or the lease could not be taken), the writer lock is the session's only lock: it is
         // kept until status.json says exited, so liveness never reads a dead recorder in between.
@@ -921,7 +933,7 @@ private final class Recorder {
         if leaseCancelled || Task.isCancelled {
             Self.log.notice("Session \(self.archive.id, privacy: .public) cancelled before post-processing; archive finished as \(finalStatus, privacy: .public)")
             await exitStatus(RecorderExit(archiveStatus: finalStatus, reason: stopReason, message: "Cancelled."))
-            lease?.release()
+            releaseLease(lease)
             throw CancellationError()
         }
         // 7. Post-processing under the lease; its progress is mirrored into status.json in order.
@@ -935,7 +947,7 @@ private final class Recorder {
             if Task.isCancelled {
                 await exitStatus(RecorderExit(archiveStatus: finalStatus, reason: stopReason, message: "Cancelled.",
                                         postprocessing: postRecord?.state, postprocessingMessage: postRecord?.message))
-                lease.release()
+                releaseLease(lease)
                 throw CancellationError()
             }
         }
@@ -943,7 +955,7 @@ private final class Recorder {
         // a lock as a dead recorder; leftover requests are deleted.
         await exitStatus(RecorderExit(archiveStatus: finalStatus, reason: stopReason,
                                 postprocessing: postRecord?.state, postprocessingMessage: postRecord?.message))
-        lease?.release()
+        releaseLease(lease)
         return RecordingOutcome(sessionID: archive.id, directory: archive.directory, archiveStatus: finalStatus,
                                 stopReason: stopReason, transcriptID: transcriptID,
                                 transcriptErrors: transcriptErrors, postProcessing: postRecord)
@@ -1054,8 +1066,14 @@ private final class Recorder {
 
     /// Stops answering requests (after a last answer), writes phase `exited`, deletes leftover requests, and only then
     /// releases the writer lock (every exit path finishes the archive keeping it), so `RecorderChannel.liveness` never
-    /// sees the session unlocked before it says exited. A processing lease is released by the caller, after this.
-    /// Called again, it only makes sure the writer lock is released.
+    /// sees the session unlocked before it says exited. A processing lease is released by the caller, after this
+    /// (`releaseLease`). Called again, it tries the exited status again if it was not written, then makes sure the
+    /// writer lock is released.
+    ///
+    /// When `StatusWriter` cannot write `exited` even after its retries, no lock is let go: the writer lock and the
+    /// lease stay held until this process exits (`holdsLocksUntilExit`), so the session reads as busy rather than
+    /// dead while this process still runs; once it has exited, recovery finds the status unfinished as for any
+    /// recorder that ended without saying so.
     private func exitStatus(_ exit: RecorderExit) async {
         if !exited {
             exited = true
@@ -1065,13 +1083,49 @@ private final class Recorder {
                 self.stoppedInbox = nil
             }
             await answerStoppedRequests()
-            do { try await status.finish(exit: exit) } catch {
-                Self.log.error("Session \(self.archive.id, privacy: .public): cannot write the final status: \(error.localizedDescription, privacy: .public)")
-            }
+            await writeExit(exit)
             ControlInbox.removeLeftovers(session: archive.directory)
+        } else if !exitWritten {
+            await writeExit(exit)
         }
-        await archive.releaseLock()
+        await releaseWriterLock()
     }
+
+    private func writeExit(_ exit: RecorderExit) async {
+        do {
+            try await status.finish(exit: exit)
+            exitWritten = true
+        } catch {
+            Self.log.error("Session \(self.archive.id, privacy: .public): cannot write the exited status; its locks stay held until this process exits: \(error.localizedDescription, privacy: .public)")
+        }
+    }
+
+    /// Releases the writer lock, unless the exited status could not be written.
+    private func releaseWriterLock() async {
+        if holdsLocksUntilExit {
+            LocksHeldUntilExit.keep(archive)
+        } else {
+            await archive.releaseLock()
+        }
+    }
+
+    /// Releases the processing lease, unless the exited status could not be written.
+    private func releaseLease(_ lease: ProcessingLease?) {
+        guard let lease else { return }
+        if holdsLocksUntilExit {
+            LocksHeldUntilExit.keep(lease)
+        } else {
+            lease.release()
+        }
+    }
+}
+
+/// Session locks a recorder must not let go of: its status.json could not be made to say exited. Keeping their
+/// owners here holds the locks until the process exits, when the system releases them.
+private enum LocksHeldUntilExit {
+    private static let held = Mutex<[any Sendable]>([])
+
+    static func keep(_ owner: any Sendable) { held.withLock { $0.append(owner) } }
 }
 
 extension RecorderMachine {
@@ -1115,6 +1169,8 @@ final class EpochMonitor: Sendable {
         var epoch = 0
         var sawFrame = false
         var stopRequested: Set<Int> = []
+        /// Epochs (the current one, or later) whose stream has already ended.
+        var ended: Set<Int> = []
         var events: [RecorderInput] = []
         var tracks: [String: TrackInfo] = [:]
         var dropped = false
@@ -1129,10 +1185,20 @@ final class EpochMonitor: Sendable {
             // A stop requested after its epoch's stream had already ended is never matched; an older epoch's end
             // is stale for the machine anyway.
             state.stopRequested = state.stopRequested.filter { $0 >= epoch }
+            state.ended = state.ended.filter { $0 >= epoch }
         }
     }
 
-    func requestStop(epoch: Int) { state.withLock { _ = $0.stopRequested.insert(epoch) } }
+    /// The loop is about to stop `epoch`'s capture. Returns true when that epoch's stream had already ended by itself
+    /// (the user stopped sharing, or capture failed): the stop is only cleanup then, and nothing waits for its end.
+    @discardableResult
+    func requestStop(epoch: Int) -> Bool {
+        state.withLock { state in
+            if state.ended.contains(epoch) { return true }
+            state.stopRequested.insert(epoch)
+            return false
+        }
+    }
 
     /// Tests only: stop requests not yet matched with their epoch's end.
     var pendingStopRequests: Int { state.withLock { $0.stopRequested.count } }
@@ -1159,6 +1225,7 @@ final class EpochMonitor: Sendable {
     func ended(epoch: Int, error: Error?, at: Double) {
         state.withLock { state in
             let end: CaptureEnd
+            state.ended.insert(epoch)
             // An epoch's stream ends once: its entry goes, so restarts over a long recording do not pile up.
             if state.stopRequested.remove(epoch) != nil {
                 end = .requested
