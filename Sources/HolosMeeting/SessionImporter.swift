@@ -43,8 +43,9 @@ public enum SessionImporter {
     /// - All or nothing, even when the process is killed: the session is built in a hidden staging folder in `root`
     ///   (`.import-<UUID>/<id>.holos`, which no listing, recovery, or catalog takes for a session) and appears as
     ///   `<root>/<id>.holos` in one rename once it is finished, and only once the published entry is checked to be
-    ///   that session's folder. The returned URL is where it is: under `root`, or under the sessions folder's current
-    ///   path when `root` was renamed (or a link to it retargeted) during the import. An unreadable file, a failed write, a transcription
+    ///   that session's folder. The returned URL is `<root>/<id>.holos`, the location the transcript names; when
+    ///   `root` was renamed (or a link to it retargeted) during the import, the session is published in the moved
+    ///   folder and the import throws, saying where it is. An unreadable file, a failed write, a transcription
     ///   error, or cancellation removes the staging folder (the source file is never changed) and throws;
     ///   `CancellationError` passes through unchanged. A staging folder left by a killed import is removed by a
     ///   later import in the same root once it is an hour old. Throws before creating anything when the file is not a readable audio file
