@@ -6,7 +6,8 @@ import HolosSpeakers
 import HolosStorage
 
 // Finished sessions for post-processing, export, and speaker-editing tests. Only the first-merged PR of each wave
-// edits this file (docs/meeting-design.md §1.8; PR7b in wave 2); other PRs add prefixed helpers in their own files.
+// edits this file (docs/meeting-design.md §1.8; PR7b in wave 2, PR8 in wave 3); other PRs add prefixed helpers in
+// their own files.
 
 enum SessionFixtures {
     static let date = Date(timeIntervalSince1970: 1_790_000_000)
@@ -113,23 +114,40 @@ enum SessionFixtures {
         return built.run
     }
 
-    /// Appends `actions` for the head run as one editor batch: each carries its fingerprint on the current view.
-    static func appendEdits(_ actions: [SpeakerEditAction], session: URL, source: String = "cli") throws {
-        try SessionArchive.withSpeakerLock(at: session) {
-            let snapshot = try SpeakerSessionSnapshot.load(session: session)
-            guard let run = snapshot.run, var view = snapshot.projection else {
-                throw HolosError.invalidInput("The fixture session has no usable head run.")
-            }
-            let batchID = UUID().uuidString
-            var edits: [SpeakerEdit] = []
-            for action in actions {
-                let id = UUID().uuidString
-                edits.append(SpeakerEdit(id: id, baseRunID: run.id, source: source, action: action,
-                                         expected: view.fingerprint(for: action), batchID: batchID))
-                view = view.applying(action, editID: id)
-            }
-            try SessionSpeakerStore.appendEdits(edits, session: session)
+    /// A finished session whose head run labels one track: `speakers` take turns of `turnSeconds` over
+    /// `duration` seconds (`FakeDiarizer.alternating`), one transcript segment per turn (`alternatingSegments`), so
+    /// turn Tn belongs to `speakers[(n - 1) % speakers.count]` and speaker k (from 1) has ordinal k. No exports are
+    /// written yet.
+    static func labelledSession(in root: URL, track: String = "system", speakers: [String] = ["S1", "S2"],
+                                turnSeconds: Double = 5, duration: Double = 20)
+        async throws -> (session: URL, transcript: Transcript, run: DiarizationRun) {
+        let transcript = transcript(alternatingSegments(track: track, turnSeconds: turnSeconds, duration: duration))
+        let session = try await makeSession(in: root, source: track == "mic" ? .microphone : .system,
+                                            audioSeconds: [track: duration], mode: track == "mic" ? .inPerson : .call,
+                                            transcript: transcript)
+        let output = FakeDiarizer.alternating(speakers: speakers, turnSeconds: turnSeconds, duration: duration)
+        let run = try writeHeadRun(session: session, transcript: transcript, outputs: [track: output])
+        return (session, transcript, run)
+    }
+
+    /// The head run's projection as a speaker command or window would show it.
+    static func view(_ session: URL) throws -> SpeakerProjection {
+        guard let projection = try SpeakerSessionSnapshot.load(session: session).projection else {
+            throw HolosError.invalidInput("The fixture session has no usable head run.")
         }
+        return projection
+    }
+
+    /// The raw bytes of speakers/edits.jsonl, nil when there is none, for "nothing was written" checks.
+    static func journalBytes(_ session: URL) -> Data? {
+        try? Data(contentsOf: SessionPaths.edits(session))
+    }
+
+    /// Appends `actions` for the head run as one batch through `SpeakerEditor`, made on the current view (each line
+    /// carries its fingerprint), without regenerating the exports.
+    static func appendEdits(_ actions: [SpeakerEditAction], session: URL, source: String = "cli") throws {
+        try SpeakerEditor.apply(actions, view: view(session), session: session, source: source,
+                                regenerateExports: false)
     }
 
     // MARK: - Inspecting
