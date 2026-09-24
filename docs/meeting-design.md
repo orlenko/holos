@@ -3318,8 +3318,20 @@ public struct SpeakerProfileDatabase: Codable, Sendable, Equatable {
   - `refreshSamples(session:extractor:store:)` (async): after any edit in a session that
     contributed samples, re-extract and recompute them; remove a sample when no qualifying
     turns remain. `SpeakerEditor.apply` stays synchronous and returns
-    `needsSampleRefresh: Bool`; its callers (the CLI speaker commands and `ReviewSession`)
-    then `await refreshSamples`.
+    `SpeakerEditResult` (`snapshot`, `needsSampleRefresh`); its callers (the CLI speaker
+    commands and `ReviewSession`) then `await refreshSamples`.
+  - **Refreshes cannot overwrite newer state.** Before extracting, `refreshSamples` (and
+    `link`/`markSelf` when they enroll) reads the session's speaker generation under the
+    speaker lock: `SessionSpeakerStore.generation(session:)` = head run ID plus the edit
+    journal's byte length (PR10 adds this additive helper). It computes the sample outside
+    the lock, then takes the speaker lock, then `profiles.lock` (the §1.7 order), re-reads
+    the generation, and upserts only if it is unchanged. Otherwise it releases both,
+    rebuilds the projection, and retries (at most 3 times, then leaves the existing sample
+    and logs). Samples are also stamped with the generation they were built from, so an
+    older result can never replace a newer one. Tests (PR10):
+    `staleRefreshDoesNotOverwriteNewerSample` (extraction A starts; an edit reassigns a
+    turn; extraction B finishes first; A finishes last and is discarded and retried),
+    `refreshGivesUpAfterThreeChanges`.
   - `forget(sampleID:)`, `forget(profileID:)`, `forget(sessionID:)` (samples learned
     from that meeting), `forgetAll()` (every sample and every voice file; names stay),
     `rename(profileID:to:)`, `merge(profileID:into:)` (refused across embedding models),
@@ -4963,11 +4975,19 @@ public enum SpeakerEditor {
     @discardableResult
     public static func apply(_ actions: [SpeakerEditAction], view: SpeakerProjection, session: URL, source: String,
                              regenerateExports: Bool = true,
-                             profileNames: [String: String] = [:]) throws -> SpeakerSessionSnapshot
+                             profileNames: [String: String] = [:]) throws -> SpeakerEditResult
     /// Appends a revert for every edit of `view.lastUndoableBatchID` (same refusal rules).
     @discardableResult
     public static func undoLast(view: SpeakerProjection, session: URL, source: String,
-                                regenerateExports: Bool = true) throws -> SpeakerSessionSnapshot
+                                regenerateExports: Bool = true) throws -> SpeakerEditResult
+}
+
+public struct SpeakerEditResult: Sendable {
+    public var snapshot: SpeakerSessionSnapshot
+    /// True when the batch changed a turn's speaker, turn boundaries, merges, exclusions, or links of a
+    /// speaker whose profile has a sample from this session (PR10 sets it; always false before PR10).
+    /// The caller must then `await VoiceProfileService.refreshSamples(session:extractor:store:)`.
+    public var needsSampleRefresh: Bool
 }
 
 public enum SpeakerTarget: Sendable, Equatable { case speaker(String), unknown }
@@ -5925,7 +5945,7 @@ the review changed them); R43 onward come from the review (§10).
 
 ## 9. Open questions
 
-None of these blocks wave 0 or wave 1. Q1, Q2, Q6–Q9, and Q12 are the user's choices;
+None of these blocks wave 0 or wave 1. Q1, Q2, Q6–Q8, and Q12 are the user's choices (Q9 is resolved);
 Q3–Q5 are answered by S2 and hardware runs; Q10–Q11 by PR7c and a later build
 experiment.
 
@@ -5953,9 +5973,9 @@ experiment.
 8. **Automatic names.** v1 only suggests names. `likely` (applied as "Jim (auto)")
    needs `holos people calibrate --apply` on at least 3 confirmed meetings. Is a hidden
    command acceptable, or should the People window offer "Calibrate from my meetings"?
-9. **Voice data of unnamed speakers.** While "Remember voices" is on, each meeting keeps
-   voice data for every speaker until its audio is deleted or voices are forgotten.
-   Should it expire, for example 30 days after the meeting?
+9. **Voice data of unnamed speakers.** Resolved (Codex review, §10.1): post-processing
+   never persists voice data for anyone; a voiceprint is stored only as a sample of a
+   person the user confirmed with voice learning on. Nothing to expire.
 10. FluidAudio's default trait links a prebuilt text-normalization binary the diarizer
     never uses (R2). A clean-build retry of the opt-out could drop it.
 11. **PR7c measurements:** whether `exclusiveSegments = false` keeps agreement with Otter;
@@ -6086,3 +6106,6 @@ reprocessing" in `docs/contracts.md`).
 | (third pass) A zero `likelyMaxDistance` still allowed `likely` at distance 0 | Accepted. `likely` requires `calibratedThresholds != nil` (§4.10 step 4–5). Test `identicalVectorIsOnlyPossibleUntilCalibrated`. |
 | (fourth pass) Enrollment methods were synchronous with no way to reach the async extractor | Accepted. `link`, `confirmAll`, `markSelf`, `refreshSamples` are `async` and take `extractor: (any VoiceSampleExtractor)?`; `SpeakerEditor.apply` returns `needsSampleRefresh` for callers to await; the app injects `SubprocessVoiceSampleExtractor` (hidden `holos speakers embed`, JSON on stdout only), the CLI injects `FluidVoiceSampleExtractor` (§4.10). `VoiceEnrollment.sample` takes `turnEmbeddings`. |
 | (fourth pass) Time overlap alone could mix another speaker's slot vector from a shared 10 s window into a sample | Accepted. The extractor maps each turn to the fresh pass's dominant `speakerId` and uses only that slot's `ChunkEmbedding`s; turns without a dominant speaker get none (§4.10). Tests `extractorIgnoresOtherSpeakerSlotInSharedWindow`, `extractorSkipsTurnsWithoutADominantSpeaker`. |
+| (fifth pass) Concurrent sample refreshes could let an older extraction overwrite a newer sample | Accepted. Generation check (head run + journal length) under speaker lock then `profiles.lock` before upsert; retry up to 3 times; samples stamped with their generation (§4.10). Tests `staleRefreshDoesNotOverwriteNewerSample`, `refreshGivesUpAfterThreeChanges`. |
+| (fifth pass) `SpeakerEditor.apply`/`undoLast` declared no refresh flag | Accepted. Both return `SpeakerEditResult { snapshot, needsSampleRefresh }` (§5.7). |
+| (fifth pass) Open question Q9 still described retaining unnamed speakers' voice data | Accepted. Q9 marked resolved (§9). |
