@@ -585,6 +585,32 @@ private func turn(_ projection: SpeakerProjection, _ id: String) -> ProjectedTur
     #expect(short.view.fingerprint(for: .rename(speakerID: "system:S1", name: nil)) == limit)
 }
 
+@Test func longTurnFingerprintsAreHashedAndStillRefuseStaleEdits() throws {
+    var journal = Journal()
+    for number in 1...7 {
+        journal.append(.splitTurn(turnID: "T\(number)", at: WordRef(segmentID: "seg-T\(number)", word: 3)),
+                       id: "X\(number)")
+    }
+    let older = journal.view
+    let turnIDs = older.turns.map(\.id)
+    #expect(turnIDs.count == 15)
+    // 15 turn descriptions are well over 256 characters, so the exclude carries a 32-digit SHA-256 prefix.
+    let exclude = SpeakerEditAction.excludeFromEnrollment(turnIDs: turnIDs)
+    let fingerprint = try #require(older.fingerprint(for: exclude))
+    #expect(fingerprint.count == 32 && fingerprint.allSatisfy(\.isHexDigit))
+    let newSpeaker = SpeakerEditAction.newSpeaker(speakerID: "user:X", name: nil, turnIDs: turnIDs)
+    #expect(older.fingerprint(for: newSpeaker) == fingerprint)
+    // Another window splits T8; the exclusion made before that split is refused and flags nothing.
+    journal.append(.splitTurn(turnID: "T8", at: WordRef(segmentID: "seg-T8", word: 2)), id: "X8")
+    journal.append(exclude, id: "E1", madeOn: older)
+    #expect(journal.view.staleEdits == [StaleEdit(editID: "E1", reason: "changed since the edit was made")])
+    #expect(journal.view.turns.allSatisfy { !$0.excludedFromEnrollment })
+    // Made on the current view, the same exclusion applies.
+    journal.append(exclude, id: "E2")
+    #expect(journal.view.appliedEditIDs.last == "E2")
+    #expect(journal.view.turns.filter(\.excludedFromEnrollment).map(\.id).sorted() == turnIDs.sorted())
+}
+
 @Test func fingerprintDigestMatchesCryptoKit() {
     #expect(FingerprintSHA256.hexDigest(Array("abc".utf8))
         == "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad")
