@@ -17,19 +17,26 @@ enum AppKeyboard {
         }
     }
 
-    /// Whether Escape closed the key window. A button whose key equivalent is Escape (a Cancel button), a text
-    /// field being edited, a modal alert, a sheet, a window without a close button, and a dictation in progress
+    /// Whether Escape closed the key window. A button whose key equivalent is Escape (a Cancel button), an
+    /// editable text field or view that has focus, a modal alert, a sheet, a window without a close button, and a dictation in progress
     /// (Escape cancels it) all keep their usual Escape.
     private static func closeOnEscape(_ event: NSEvent, isDictating: () -> Bool) -> Bool {
+        // Caps Lock and the like do not change Escape; Command, Control, Option and Shift do.
         guard event.keyCode == 53,
-              event.modifierFlags.intersection(.deviceIndependentFlagsMask).isEmpty,
+              event.modifierFlags.intersection([.command, .control, .option, .shift]).isEmpty,
               NSApp.modalWindow == nil, !isDictating(),
               let window = NSApp.keyWindow, window.styleMask.contains(.closable), window.attachedSheet == nil,
-              !(window.firstResponder is NSTextView)
+              !isEditingText(window.firstResponder)
         else { return false }
         if window.performKeyEquivalent(with: event) { return true }
         window.performClose(nil)
         return true
+    }
+
+    /// A field or text view the user can type into keeps Escape; a read-only one (the Live Transcript) does not.
+    private static func isEditingText(_ responder: NSResponder?) -> Bool {
+        guard let textView = responder as? NSTextView else { return false }
+        return textView.isEditable
     }
 
     private static func mainMenu() -> NSMenu {
