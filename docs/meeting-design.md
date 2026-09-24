@@ -2285,10 +2285,14 @@ public enum RecorderChannel {
     public static func readStatus(session: URL) throws -> RecorderStatus?
     /// Publishes one request atomically with `sentAtNanos` from mach_continuous_time; creates control/ (0700).
     /// Refuses (`unavailable`) when the session has no manifest yet (the recorder is still starting; stop it
-    /// with SIGTERM instead) or when status.json says exited.
+    /// with SIGTERM instead), when status.json says exited, or when only a maintenance command holds the
+    /// session (`maintenanceOnly`): no recorder would read or remove the request.
     @discardableResult
     public static func send(_ command: ControlCommand, label: String? = nil, session: URL,
                             sessionID: String, sender: String) throws -> ControlRequest
+    /// Liveness is `maintenance` and status.json is missing or exited, or names a process that is gone. A live
+    /// recorder with a stale status is not maintenance-only: it still answers `control/`.
+    public static func maintenanceOnly(session: URL, now: Date = Date()) -> Bool
     /// Polls status.json every 50 ms for the request's ack.
     public static func waitForAck(_ request: ControlRequest, session: URL, timeout: Duration) async -> ControlAck?
     /// "Fresh" means updatedAt less than 10 s before `now` and kill(pid, 0) == 0.
@@ -2597,6 +2601,11 @@ public enum DiskPolicy {
 }
 ```
 
+The budget holds whatever the microphone delivers: AVAudioEngine keeps the input device's
+format (a stereo or 96 kHz interface), so the recorder's frame consumer converts every
+track to 48 kHz mono (`RecordingFormatConverter` in HolosAudio: channels averaged, one
+resampler per track and epoch) before the pump and the live tracks.
+
 Worked values: mic 4 h budget = 4 × 460.8 MB + 2 GB = 3.84 GB, 8 h = 5.69 GB;
 mic+system 4 h = 4 × (691.2 + 230.4) MB + 2 GB = 5.69 GB, 8 h = 9.37 GB. A 3 h
 in-person meeting is about 1.04 GB, a 3 h call about 2.07 GB (it was 3.1 GB with stereo
@@ -2615,12 +2624,15 @@ After `finish(reason)` the loop exits and `RecordingWorkflow.run` does, in order
    let the pump drain into the writer, then `writer.closeAll`.
 2. Phase `stopping` → `transcribing`. **Finish live speech** per track with a timeout of
    30 s + 0.05 × the seconds fed to its current speech session. On timeout, cancel that
-   session; segments it already finalized are kept.
+   session; segments it already finalized are kept. The same deadline also ends the finishes of
+   earlier sessions (an epoch or gap that ended just before the stop) that are still running.
 3. **Coverage.** For each track, `TranscriptCoverage.coverageEnd` (below). A track whose
    live transcription never fell behind keeps its live segments. Otherwise
    `TrackReplayer.replay(from: max(0, coverageEnd − 2))` transcribes only the rest, and
    `TranscriptCoverage.merge` joins the two at word level. Hours of live words are never
-   thrown away because of one dropped frame. `--record-only`: no transcript.
+   thrown away because of one dropped frame. A replay that times out or fails after partial
+   progress keeps the segments of its finished sessions and the finals the failed session
+   reported; the track is recorded as a transcription error. `--record-only`: no transcript.
 4. `archive.saveTranscript(transcript, writeLegacyExports: false)` (updates
    `transcripts/current.json`).
 5. If a post-process hook is set, **acquire the processing lease** (retry 1 s) while

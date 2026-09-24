@@ -99,6 +99,28 @@ func recordOnlySavesAudioAndFinishesAudioOnly() async throws {
     #expect(!FileManager.default.fileExists(atPath: outcome.directory.appendingPathComponent("control.json").path))
 }
 
+@Test(.timeLimit(.minutes(1))) @MainActor
+func microphoneInOtherFormatsIsSavedAs48kMono() async throws {
+    // A stereo 96 kHz interface: AVAudioEngine delivers the device's format. The saved audio must be what
+    // DiskPolicy budgets (48 kHz mono Int16), not 4× that.
+    let temp = try TemporaryDirectory()
+    defer { temp.remove() }
+    let frames = (0..<20).map { index in
+        FakeFrame(start: Double(index) * 0.1, sampleRate: 96_000, channels: 2, value: 0.2)
+    }
+    let captures = FakeCaptureFactory([FakeCaptureScript(frames: frames)])
+    let outcome = try await record(.testing(root: temp.url, recordOnly: true), captures: captures,
+                                   stopAfterConsuming: frames.count)
+    let chunks = try SessionArchive.readManifest(at: outcome.directory).chunks
+    #expect(!chunks.isEmpty)
+    #expect(chunks.allSatisfy { $0.sampleRate == 48_000 && $0.channels == 1 })
+    let saved = chunks.map(\.frameCount).reduce(0, +)
+    // 2 s of input, including the resampler's look-ahead flushed when capture stopped.
+    #expect(abs(saved - 96_000) <= 2, "Saved \(saved) frames for 2 s of audio.")
+    let bytesPerHour = Double(saved * 2) / 2 * 3_600
+    #expect(abs(bytesPerHour - Double(DiskPolicy.captureBytesPerHour(.microphone))) / bytesPerHour < 0.01)
+}
+
 /// PR2a: a capture that fails no longer ends the recording; capture restarts at once in a new epoch, and the gap is
 /// marked (docs/meeting-design.md §4.2).
 @Test(.timeLimit(.minutes(1))) @MainActor

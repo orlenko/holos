@@ -49,7 +49,8 @@ public enum RecorderChannel {
 
     /// Publishes one request atomically with `sentAtNanos` from mach_continuous_time; creates control/ (0700).
     /// Refuses (`unavailable`) when the session has no manifest yet (the recorder is still starting; stop it
-    /// with SIGTERM instead) or when status.json says exited.
+    /// with SIGTERM instead), when status.json says exited, or when only a maintenance command holds the session's
+    /// locks (`maintenanceOnly`): no recorder would ever read or remove the request.
     @discardableResult
     public static func send(_ command: ControlCommand, label: String? = nil, session: URL,
                             sessionID: String, sender: String) throws -> ControlRequest {
@@ -65,6 +66,9 @@ public enum RecorderChannel {
         guard manifest.id == sessionID else { throw HolosError.invalidInput("Session identity mismatch.") }
         if let status = try readStatus(session: session), status.phase == .exited {
             throw HolosError.unavailable("The recorder has already exited.")
+        }
+        if maintenanceOnly(session: session) {
+            throw HolosError.unavailable("No recorder is running for this session: another Holos command (recovery, rebuild, speaker labelling, or deletion) is using it. Try again when it finishes.")
         }
         let request = ControlRequest(sessionID: sessionID, command: command,
                                      label: label.map { String($0.prefix(ControlInbox.maxLabelLength)) },
@@ -112,6 +116,21 @@ public enum RecorderChannel {
         // A recorder writes exited before it releases its last lock: one that did so since the first read exited.
         if let again = try? readStatus(session: session), again.phase == .exited { return .exited }
         return .dead
+    }
+
+    /// Liveness is `maintenance` and no recorder process is behind the session: status.json is missing or exited, or
+    /// names a process that is gone. Then recovery, a rebuild, `session diarize`, or a deletion holds the locks and
+    /// nothing polls `control/`. False for a recorder that is alive but has not rewritten status.json for 10 s: it
+    /// still answers requests.
+    public static func maintenanceOnly(session: URL, now: Date = Date()) -> Bool {
+        guard liveness(session: session, now: now) == .maintenance else { return false }
+        let status: RecorderStatus?
+        do { status = try readStatus(session: session) } catch {
+            // An unreadable status is not proof that no recorder is running.
+            return false
+        }
+        guard let status, status.phase != .exited else { return true }
+        return !processExists(status.pid)
     }
 
     /// For maintenance commands: when liveness is dead and status.json is not exited, rewrites it as exited

@@ -518,7 +518,8 @@ private final class Recorder {
     }
 
     /// Consumes one epoch's frames off the main actor. It never waits for the disk or speech: it only stamps arrival
-    /// times and hands frames to the pump and the live tracks (§4.3).
+    /// times, brings frames to 48 kHz mono (a microphone keeps its device's format, §4.5), and hands them to the pump
+    /// and the live tracks (§4.3).
     private func startConsumer(_ capture: any MeetingCapture, epoch: Int) {
         let frames = capture.frames
         let monitor = self.monitor
@@ -526,19 +527,33 @@ private final class Recorder {
         let feeds = live
         let clock = self.clock
         consumer = Task.detached(priority: .userInitiated) {
-            do {
-                for try await audio in frames {
-                    monitor.received(epoch: epoch, audio: audio, at: clock.now())
-                    if audio.followsDrop {
-                        // The capture queue was full just before this frame: the gap is marked right here.
-                        pump.noteGap(track: audio.track, reason: .overflow)
-                        monitor.noteDrop()
-                    }
-                    if !pump.push(audio) { monitor.noteDrop() }
-                    feeds[audio.track]?.push(audio.frame, epoch: epoch)
+            let format = RecordingFormatConverter()
+            func deliver(_ audio: CapturedAudio) {
+                if audio.followsDrop {
+                    // The capture queue was full just before this frame: the gap is marked right here.
+                    pump.noteGap(track: audio.track, reason: .overflow)
+                    monitor.noteDrop()
                 }
+                if !pump.push(audio) { monitor.noteDrop() }
+                feeds[audio.track]?.push(audio.frame, epoch: epoch)
+            }
+            /// The resamplers' last few milliseconds, before the end is reported.
+            func flush() {
+                do { for audio in try format.flush() { deliver(audio) } } catch {
+                    Logger(subsystem: "ca.orlenko.holos.app", category: "recorder").error("Cannot flush converted audio: \(error.localizedDescription, privacy: .public)")
+                }
+            }
+            do {
+                for try await captured in frames {
+                    // Nil while the resampler holds this frame's samples for the next one.
+                    let audio = try format.convert(captured)
+                    monitor.received(epoch: epoch, audio: audio ?? captured, at: clock.now())
+                    if let audio { deliver(audio) }
+                }
+                flush()
                 monitor.ended(epoch: epoch, error: nil, at: clock.now())
             } catch {
+                flush()
                 monitor.ended(epoch: epoch, error: error, at: clock.now())
             }
         }
@@ -1085,7 +1100,7 @@ private final class Recorder {
                     locale: options.locale, backend: options.backend, contextualStrings: options.vocabulary,
                     from: max(0, coverage - 2), makeSpeech: dependencies.makeSpeech, timeouts: dependencies.timeouts)
             } catch let partial as ReplayIncomplete {
-                // Speech stopped answering: keep what it returned; the track is incomplete.
+                // Speech stopped answering or failed: keep what it transcribed; the track is incomplete.
                 replayed = partial.segments
                 transcriptErrors.append("\(track): \(partial.localizedDescription)")
             } catch {
@@ -1322,10 +1337,16 @@ final class EpochMonitor: Sendable {
         state.withLock { state in
             state.epoch = epoch
             state.sawFrame = false
+            // A stop requested after its epoch's stream had already ended is never matched; an older epoch's end
+            // is stale for the machine anyway.
+            state.stopRequested = state.stopRequested.filter { $0 >= epoch }
         }
     }
 
     func requestStop(epoch: Int) { state.withLock { _ = $0.stopRequested.insert(epoch) } }
+
+    /// Tests only: stop requests not yet matched with their epoch's end.
+    var pendingStopRequests: Int { state.withLock { $0.stopRequested.count } }
 
     func received(epoch: Int, audio: CapturedAudio, at: Double) {
         state.withLock { state in
@@ -1349,7 +1370,8 @@ final class EpochMonitor: Sendable {
     func ended(epoch: Int, error: Error?, at: Double) {
         state.withLock { state in
             let end: CaptureEnd
-            if state.stopRequested.contains(epoch) {
+            // An epoch's stream ends once: its entry goes, so restarts over a long recording do not pile up.
+            if state.stopRequested.remove(epoch) != nil {
                 end = .requested
             } else if let interruption = error as? CaptureInterruption {
                 end = interruption == .userStoppedSharing ? .userStoppedSharing : .configurationChanged
