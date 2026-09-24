@@ -228,6 +228,8 @@ final class SetupWindow: NSObject, NSWindowDelegate {
         case "unavailable":
             set(.speakerModels, .problem, "The holos tool is missing from Holos.app; rebuild Holos with scripts/build-app.sh",
                 button: nil)
+        case "unknown":
+            set(.speakerModels, .problem, "Could not check the speaker models; `holos doctor` shows why", button: install)
         case let other?:
             set(.speakerModels, .problem, "Status unknown (\(other))", button: install)
         case nil:

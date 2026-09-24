@@ -414,7 +414,7 @@ extension HolosAppDelegate: NSMenuDelegate {
         meeting.startPanel?.show(
             name: MeetingStartSettings.defaultName(now: Date(), timeZone: .current), saved: saved,
             consentDismissed: UserDefaults.standard.bool(forKey: MeetingAppState.consentKey))
-        if meeting.speakerModels == nil || meeting.speakerModels == "unavailable" { refreshSpeakerModels() }
+        if meeting.speakerModels != "verified" { refreshSpeakerModels() }
     }
 
     private func startPanelEnvironment() -> MeetingStartPanel.Environment {
@@ -705,7 +705,8 @@ extension HolosAppDelegate: NSMenuDelegate {
                 let data = try? AtomicFile.readIfPresent(output, maxBytes: 1 << 20)
                 Self.removeFile(output)
                 let object = data.flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }
-                self.meeting.speakerModels = object?["speakerModels"] as? String ?? "unavailable"
+                // The tool ran but reported nothing usable: unknown, not missing.
+                self.meeting.speakerModels = object?["speakerModels"] as? String ?? "unknown"
                 self.updateSetupWindow()
                 self.meeting.startPanel?.refresh()
                 if self.meeting.speakerModels == "verified" { self.meeting.controller?.runAutoRelabel() }
