@@ -1,4 +1,5 @@
 import AVFoundation
+import Darwin
 import Foundation
 import HolosAudio
 import HolosCore
@@ -71,6 +72,64 @@ private func sessionImporterEventually(_ condition: () async -> Bool) async -> B
     return await condition()
 }
 
+/// Every name in `root`, hidden ones included, sorted.
+private func sessionImporterEntries(_ root: URL) -> [String] {
+    ((try? FileManager.default.contentsOfDirectory(atPath: root.path)) ?? []).sorted()
+}
+
+/// The hidden staging folders (`.import-<UUID>`) in `root`.
+private func sessionImporterStagingFolders(_ root: URL) -> [String] {
+    sessionImporterEntries(root).filter { $0.hasPrefix(ImportStaging.prefix) }
+}
+
+/// A staging folder as a killed import leaves it: a session folder inside, and (unless `lockFile` is false) an
+/// unlocked `.import.lock`.
+private func sessionImporterAbandonedStaging(in root: URL, lockFile: Bool = true) throws -> String {
+    let name = ImportStaging.prefix + UUID().uuidString
+    let folder = root.appendingPathComponent(name, isDirectory: true)
+    let session = folder.appendingPathComponent("\(UUID().uuidString).holos/audio/mic", isDirectory: true)
+    try FileManager.default.createDirectory(at: session, withIntermediateDirectories: true)
+    try Data(repeating: 1, count: 64).write(to: session.appendingPathComponent("000001.caf"))
+    if lockFile { try Data().write(to: folder.appendingPathComponent(ImportStaging.lockName)) }
+    return name
+}
+
+/// A diarizer that waits until `open()` (or until cancelled) before answering.
+private final class SessionImporterGatedDiarizer: SpeakerDiarizer {
+    private let fake: FakeDiarizer
+    private let gate = SharedValue(false)
+    private let entered = SharedValue(false)
+
+    init(_ fake: FakeDiarizer) { self.fake = fake }
+
+    var isWaiting: Bool { entered.value }
+    func open() { gate.set(true) }
+
+    func engineInfo() async throws -> DiarizationEngineInfo { try await fake.engineInfo() }
+
+    func diarize(_ request: DiarizationRequest,
+                 progress: @escaping @Sendable (Double) -> Void) async throws -> DiarizerOutput {
+        entered.set(true)
+        while !gate.value { try await Task.sleep(for: .milliseconds(5)) }
+        return try await fake.diarize(request, progress: progress)
+    }
+}
+
+/// Two speakers alternating every 5 s over the 10 s test audio.
+private func sessionImporterDiarizer(error: HolosError? = nil) -> FakeDiarizer {
+    FakeDiarizer(outputs: ["mic": FakeDiarizer.alternating(speakers: ["S1", "S2"], turnSeconds: 5, duration: 10)],
+                 error: error)
+}
+
+private func sessionImporterCommand(_ file: URL, root: URL, speech: FakeSpeechFactory,
+                                    diarizer: (any SpeakerDiarizer)?, transcribe: Bool = true,
+                                    postprocess: Bool = true) async throws -> SessionImportCommand.Outcome {
+    try await SessionImportCommand.run(
+        SessionImportCommand.Request(file: file, name: "Imported", root: root, locale: "en-CA", backend: .speech,
+                                     transcribe: transcribe, postprocess: postprocess),
+        diarizer: diarizer, makeSpeech: speech.factory, freeSpace: FixedFreeSpace(.max))
+}
+
 // MARK: - Import
 
 @Test(.timeLimit(.minutes(1)))
@@ -86,6 +145,8 @@ func importCreatesCompleteSession() async throws {
     }
 
     #expect(sessionFolders(in: root).map(\.lastPathComponent) == [session.lastPathComponent])
+    #expect(sessionImporterEntries(root) == [session.lastPathComponent], "The staging folder is gone.")
+    #expect(session.deletingLastPathComponent().path == root.path)
     let manifest = try SessionArchive.readManifest(at: session)
     #expect(manifest.status == ArchiveStatus.complete)
     #expect(manifest.name == "Imported")
@@ -211,8 +272,9 @@ func importWhoseTranscriptionFailsLeavesNoSession() async throws {
         }
         #expect(message.contains("could not be transcribed"))
         #expect(message.contains("Speech assets are missing."))
+        #expect(message.contains("Nothing was imported."))
     }
-    #expect(sessionFolders(in: root).isEmpty)
+    #expect(sessionImporterEntries(root).isEmpty)
     #expect(FileManager.default.fileExists(atPath: wav.path))
 }
 
@@ -230,12 +292,173 @@ func cancelledImportLeavesNoSession() async throws {
         return await session.finishCalls > 0
     }
     #expect(finishing)
-    #expect(sessionFolders(in: root).count == 1)
+    // While it runs, the import is out of sight: no `.holos` folder in the root, one hidden staging folder.
+    #expect(sessionFolders(in: root).isEmpty)
+    let staging = sessionImporterStagingFolders(root)
+    #expect(staging.count == 1)
+    #expect(sessionFolders(in: root.appendingPathComponent(staging.first ?? "missing")).count == 1)
     task.cancel()
 
     await #expect(throws: CancellationError.self) { _ = try await task.value }
-    #expect(sessionFolders(in: root).isEmpty)
+    #expect(sessionImporterEntries(root).isEmpty)
     #expect(await speech.sessions.first?.cancelled == true)
+}
+
+@Test(.timeLimit(.minutes(1)))
+func importGivesUpOnSpeechThatStopsAnswering() async throws {
+    let temp = try TemporaryDirectory("import")
+    defer { temp.remove() }
+    let wav = try sessionImporterStereoWAV(in: temp.url)
+    let root = temp.url.appendingPathComponent("Sessions", isDirectory: true)
+    let speech = FakeSpeechFactory([FakeSpeechScript(finishHangs: true)])
+    let timeouts = StopTimeouts(speechFinishBase: .milliseconds(200), speechFinishPerAudioSecond: 0)
+
+    let error = await #expect(throws: HolosError.self) {
+        _ = try await SessionImporter.importAudio(from: wav, name: "Imported", root: root, locale: "en-CA",
+                                                  backend: .speech, makeSpeech: speech.factory, timeouts: timeouts)
+    }
+    guard case .unavailable(let message)? = error else {
+        Issue.record("Expected unavailable, got \(String(describing: error))")
+        return
+    }
+    #expect(message.contains("could not be transcribed"))
+    #expect(message.contains("did not respond within 0.2 s"))
+    #expect(message.contains("Nothing was imported."))
+    #expect(sessionImporterEntries(root).isEmpty)
+    // The stuck session is cancelled without being waited for.
+    #expect(await sessionImporterEventually { await speech.sessions.first?.cancelled == true })
+}
+
+@Test(.timeLimit(.minutes(1)))
+func importRemovesAbandonedImportsButNotRunningOnes() async throws {
+    let temp = try TemporaryDirectory("import")
+    defer { temp.remove() }
+    let wav = try sessionImporterStereoWAV(in: temp.url)
+    let root = temp.url.appendingPathComponent("Sessions", isDirectory: true)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    // Killed imports: one with its (unlocked) lock file, one without a lock file that has not changed for 2 hours.
+    let killed = try sessionImporterAbandonedStaging(in: root)
+    let old = try sessionImporterAbandonedStaging(in: root, lockFile: false)
+    try FileManager.default.setAttributes([.modificationDate: Date(timeIntervalSinceNow: -7_200)],
+                                          ofItemAtPath: root.appendingPathComponent(old).path)
+    // Another import that is running (its lock is held), and one that has just made its folder (no lock file yet).
+    let running = try sessionImporterAbandonedStaging(in: root)
+    let lock = open(root.appendingPathComponent(running).appendingPathComponent(ImportStaging.lockName).path,
+                    O_RDWR | O_CLOEXEC)
+    #expect(lock >= 0)
+    defer { close(lock) }
+    #expect(flock(lock, LOCK_EX | LOCK_NB) == 0)
+    let starting = try sessionImporterAbandonedStaging(in: root, lockFile: false)
+
+    let session = try await sessionImporterImport(wav, root: root, speech: FakeSpeechFactory(), transcribe: false)
+
+    let entries = sessionImporterEntries(root)
+    #expect(!entries.contains(killed))
+    #expect(!entries.contains(old))
+    #expect(entries.contains(running))
+    #expect(entries.contains(starting))
+    #expect(sessionFolders(in: root).map(\.lastPathComponent) == [session.lastPathComponent])
+}
+
+// MARK: - holos session import (import, then labelling)
+
+@Test(.timeLimit(.minutes(1)))
+func importCommandLabelsUnderTheImportsLease() async throws {
+    let temp = try TemporaryDirectory("import")
+    defer { temp.remove() }
+    let wav = try sessionImporterStereoWAV(in: temp.url)
+    let root = temp.url.appendingPathComponent("Sessions", isDirectory: true)
+    let speech = FakeSpeechFactory([FakeSpeechScript(segments: [sessionImporterSegment()])])
+    let gated = SessionImporterGatedDiarizer(sessionImporterDiarizer())
+    let task = Task { try await sessionImporterCommand(wav, root: root, speech: speech, diarizer: gated) }
+    #expect(await sessionImporterEventually { gated.isWaiting })
+    let session = try #require(sessionFolders(in: root).first)
+    // The import's lease went straight to labelling: no other process could take the session in between.
+    #expect(try SessionArchive.isProcessing(at: session))
+    #expect(throws: HolosError.self) { try SessionArchive.acquireProcessingLease(at: session, retry: .zero) }
+    gated.open()
+
+    let outcome = try await task.value
+    #expect(outcome.session.lastPathComponent == session.lastPathComponent)
+    #expect(outcome.exitCode == 0)
+    #expect(outcome.postProcessing?.state == .succeeded)
+    #expect(outcome.summary?.hasSuffix("Exports: \(SessionPaths.exports(outcome.session).path)") == true)
+    #expect(try SessionSpeakerStore.readHead(session: outcome.session) != nil)
+    #expect(SessionFixtures.exists(SessionPaths.export("json", in: outcome.session)))
+    #expect(try !SessionArchive.isProcessing(at: outcome.session), "The lease is released at the end.")
+}
+
+@Test(.timeLimit(.minutes(1)))
+func importCommandExitCodes() async throws {
+    let temp = try TemporaryDirectory("import")
+    defer { temp.remove() }
+    let wav = try sessionImporterStereoWAV(in: temp.url)
+    let root = temp.url.appendingPathComponent("Sessions", isDirectory: true)
+    func speech() -> FakeSpeechFactory { FakeSpeechFactory([FakeSpeechScript(segments: [sessionImporterSegment()])]) }
+
+    // No speaker models: speaker-less exports and the setup hint, exit 0.
+    let withoutModels = try await sessionImporterCommand(wav, root: root, speech: speech(), diarizer: nil)
+    #expect(withoutModels.exitCode == 0)
+    #expect(withoutModels.summary?.hasPrefix("No speaker labels: speaker models are not installed.") == true)
+    #expect(SessionFixtures.exists(SessionPaths.export("txt", in: withoutModels.session)))
+
+    // Labelling fails: the session is kept, exit 3.
+    let failing = try await sessionImporterCommand(wav, root: root, speech: speech(),
+                                                   diarizer: sessionImporterDiarizer(error: .io("The diarizer broke.")))
+    #expect(failing.exitCode == 3)
+    #expect(try SessionArchive.readManifest(at: failing.session).status == ArchiveStatus.complete)
+    #expect(try !SessionArchive.isProcessing(at: failing.session))
+
+    // Not asked to label: exit 0, no labelling, lease released.
+    for (transcribe, postprocess) in [(true, false), (false, true)] {
+        let skipped = try await sessionImporterCommand(wav, root: root, speech: speech(),
+                                                       diarizer: sessionImporterDiarizer(), transcribe: transcribe,
+                                                       postprocess: postprocess)
+        #expect(skipped.exitCode == 0)
+        #expect(skipped.summary == nil)
+        #expect(skipped.postProcessing == nil)
+        #expect(!SessionFixtures.exists(SessionPaths.postprocess(skipped.session)))
+        #expect(try !SessionArchive.isProcessing(at: skipped.session))
+    }
+    #expect(sessionFolders(in: root).count == 4)
+    #expect(sessionImporterStagingFolders(root).isEmpty)
+
+    // Nothing imported: throws.
+    await #expect(throws: HolosError.self) {
+        _ = try await sessionImporterCommand(temp.url.appendingPathComponent("missing.wav"), root: root,
+                                             speech: speech(), diarizer: nil)
+    }
+    #expect(sessionFolders(in: root).count == 4)
+}
+
+@Test(.timeLimit(.minutes(1)))
+func importCommandCancellation() async throws {
+    let temp = try TemporaryDirectory("import")
+    defer { temp.remove() }
+    let wav = try sessionImporterStereoWAV(in: temp.url)
+    let root = temp.url.appendingPathComponent("Sessions", isDirectory: true)
+
+    // Cancelled while importing: nothing is imported, and the error says so.
+    let hanging = FakeSpeechFactory([FakeSpeechScript(finishHangs: true)])
+    let importing = Task { try await sessionImporterCommand(wav, root: root, speech: hanging, diarizer: nil) }
+    #expect(await sessionImporterEventually { await hanging.sessions.first?.finishCalls ?? 0 > 0 })
+    importing.cancel()
+    let error = await #expect(throws: HolosError.self) { _ = try await importing.value }
+    #expect(error?.errorDescription == "The import was cancelled; nothing was imported.")
+    #expect(sessionImporterEntries(root).isEmpty)
+
+    // Cancelled while labelling: the imported session is kept, exit 3.
+    let speech = FakeSpeechFactory([FakeSpeechScript(segments: [sessionImporterSegment()])])
+    let gated = SessionImporterGatedDiarizer(sessionImporterDiarizer())
+    let labelling = Task { try await sessionImporterCommand(wav, root: root, speech: speech, diarizer: gated) }
+    #expect(await sessionImporterEventually { gated.isWaiting })
+    labelling.cancel()
+    let outcome = try await labelling.value
+    #expect(outcome.exitCode == 3)
+    #expect(outcome.summary?.hasPrefix("Speaker labelling was cancelled.") == true)
+    #expect(try SessionArchive.readManifest(at: outcome.session).status == ArchiveStatus.complete)
+    #expect(try SessionArchive.currentTranscriptID(at: outcome.session) != nil)
+    #expect(try !SessionArchive.isProcessing(at: outcome.session))
 }
 
 // MARK: - Score

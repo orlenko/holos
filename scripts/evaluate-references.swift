@@ -497,7 +497,7 @@ private struct CalibrationReport: Encodable {
     let samePerson: DistanceSummary
     /// … and to different named labels.
     let differentPerson: DistanceSummary
-    /// The smallest distance with at most 5 % of the different-person pairs strictly below it (§4.10).
+    /// A threshold with at most 5 % of the different-person pairs at or below it, for `distance ≤ threshold` (§4.10).
     let possibleMaxDistance: Double?
     let samePersonAtOrBelowPossible: Int
     /// Mapped clusters left out because their Otter label names nobody ("Speaker 2").
@@ -619,10 +619,16 @@ private func summarize(_ sorted: [Double]) -> DistanceSummary {
                     p50: percentile(sorted, 0.5), p95: percentile(sorted, 0.95), maximum: sorted.last)
 }
 
-/// The smallest distance of an ascending array with at most 5 % of the array strictly below it.
-private func fivePercentFloor(_ sorted: [Double]) -> Double? {
+/// A threshold t for an inclusive comparison (distance ≤ t, as §4.10 compares) that admits at most 5 % of an
+/// ascending array, floor(0.05 · n) values: halfway between the largest value it admits and the first one it must
+/// keep out, or just below the smallest value when it may admit none. Values tied with the first one kept out are
+/// kept out too. Nil when empty.
+private func fivePercentThreshold(_ sorted: [Double]) -> Double? {
     guard !sorted.isEmpty else { return nil }
-    return sorted[min(sorted.count - 1, Int((0.05 * Double(sorted.count)).rounded(.down)))]
+    let allowed = Int((0.05 * Double(sorted.count)).rounded(.down))
+    let keptOut = sorted[allowed]
+    guard let admitted = sorted[..<allowed].last(where: { $0 < keptOut }) else { return keptOut.nextDown }
+    return (admitted + keptOut) / 2
 }
 
 private struct CalibrationInput {
@@ -649,7 +655,7 @@ private func calibrationReport(first: CalibrationInput, second: CalibrationInput
     }
     same.sort()
     different.sort()
-    let possible = fivePercentFloor(different)
+    let possible = fivePercentThreshold(different)
     let excluded = [first, second].reduce(0) { total, input in
         total + input.score.mapping.keys.filter { input.score.genericLabels.contains($0) }.count
     }
@@ -747,7 +753,7 @@ private func speakerMarkdown(_ report: SpeakerReport) -> String {
             lines.append("| \(name) | \(summary.count) | \(number(summary.minimum)) | \(number(summary.p5)) | "
                 + "\(number(summary.p50)) | \(number(summary.p95)) | \(number(summary.maximum)) |")
         }
-        lines += ["", "Smallest distance with at most 5 % of different-person pairs below it: "
+        lines += ["", "Threshold with at most 5 % of different-person pairs at or below it (compare distance ≤ it): "
                   + "\(number(calibration.possibleMaxDistance)); same-person pairs at or below it: "
                   + "\(calibration.samePersonAtOrBelowPossible) of \(calibration.samePerson.count). Mapped clusters "
                   + "with a generic Otter label, left out: \(calibration.genericLabelsExcluded)."]
@@ -866,7 +872,9 @@ private func selfTest() throws {
         throw EvaluationError.message("Otter metadata self-test failed.")
     }
     guard percentile([1, 2, 3, 4, 5], 0.5) == 3, percentile([0, 10], 0.05) == 0.5, percentile([], 0.5) == nil,
-          fivePercentFloor((1...40).map(Double.init)) == 3, fivePercentFloor([7]) == 7 else {
+          fivePercentThreshold((1...40).map(Double.init)) == 2.5, fivePercentThreshold([7]) == 7.0.nextDown,
+          fivePercentThreshold([0.421, 0.444] + (1...35).map { 0.5 + Double($0) / 100 }) == (0.421 + 0.444) / 2,
+          fivePercentThreshold([1, 1, 1] + (1...37).map { 1 + Double($0) }) == 1.0.nextDown else {
         throw EvaluationError.message("Percentile self-test failed.")
     }
     guard abs(cosineDistance([1, 0], [0, 1]) - 1) < 1e-12, abs(cosineDistance([2, 0], [1, 0])) < 1e-12,

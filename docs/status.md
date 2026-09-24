@@ -80,7 +80,12 @@ Hardware-facing and cross-app acceptance remain pending.
   a hint to install them. The app does not record meetings or label speakers yet.
 - Import and evaluation (wave 2): `session import <audio-file>` turns any audio file
   macOS reads into a session (one in-person microphone track), transcribes it, and
-  labels its speakers; a failed or cancelled import leaves nothing behind. The hidden
+  labels its speakers. The session is built in a hidden `.import-<UUID>` folder in
+  the sessions folder and appears as a session only once it is complete, so an import
+  that fails, is cancelled, or is killed is never taken for a recording; a failed or
+  cancelled import removes that folder, and the next import removes one a killed
+  import left. Labelling runs under the lock the import took, and the session's path
+  is printed once labelling ends. The hidden
   `session score --otter <transcript.txt>` compares a session's labels with Otter's
   and prints numbers only (hashed labels with `--json`).
   `scripts/evaluate-references.swift --speakers --calibrate` runs both over the private
@@ -162,9 +167,11 @@ See the [reference comparison](reference-evaluation.md) for scoring rules and re
 
 Speaker labels were run end to end (`session import`, `session diarize`,
 `session score`) on the three private Otter recordings (7, 20, and 89 minutes).
-Holos disagreed with Otter's speaker on 1.4–5.1 % of the time both mark as speech,
-found 2 of 2, 7 of 7, and 6 of 8 people with at least 30 s, and labelled the
-89-minute recording in about 17 s at under 800 MB peak memory. This is agreement
+Holos disagreed with Otter's speaker on 1.4–5.1 % of the time where both have a
+speaker. Holos had 2, 7, and 6 speakers with at least 30 s of speech; Otter had 2,
+7, and 8 labels with at least 30 s of turns (counts, not matched people). Holos
+labelled the 89-minute recording in about 17 s at about 780 MB peak RSS (about
+1.05 GB peak memory footprint). This is agreement
 with Otter, not accuracy. Keeping overlapping speech (`exclusiveSegments` false) did
 not raise disagreement, and a speaker-count hint did not recover merged speakers.
 See the [speaker evaluation](speaker-evaluation.md).

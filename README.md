@@ -98,8 +98,8 @@ open, with the gap marked; a longer one ends the recording where the Mac went to
 sleep, and a paused meeting stays paused through any sleep. The start
 check refuses or warns when disk space is low, and a recording stops by itself
 below 500 MB free. `record start` exits 3 when the audio was saved but the recording
-stopped by itself (low disk, a long sleep, a 6-hour pause) or speaker labelling was
-skipped or failed.
+stopped by itself (low disk, a long sleep, a 6-hour pause) or speaker labelling
+failed or was skipped for a reason other than missing speaker models.
 
 After a recording is saved, Holos labels its speakers (`--no-postprocess` skips
 this). In a call the microphone is "Me" unless `--others-in-room` is given; the
@@ -117,7 +117,11 @@ labelling was skipped or failed, and 1 when nothing was done (including when the
 speaker models are not installed).
 `holos session import <audio-file>` creates a session from any audio file macOS
 reads (its channels mixed into one in-person microphone track), transcribes it,
-and labels its speakers; it prints the new session's path.
+and labels its speakers; it prints the new session's path once labelling ends. The
+session appears in the sessions folder only once the import is complete. It exits 0
+when the session was imported (and labelled, or the speaker models are not
+installed), 3 when labelling failed, was skipped for another reason, or was
+cancelled, and 1 when nothing was imported.
 
 `say` accepts text arguments or UTF-8 stdin and can play speech or save `.m4a`,
 `.wav`, or `.caf`. `read` accepts a local UTF-8 text/Markdown file or `-` for stdin;

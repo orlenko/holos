@@ -30,7 +30,8 @@ extension Session {
         }
 
         mutating func run() throws {
-            let url = fileURL(otter)
+            // Only read, so a symbolic link to it is followed (the no-link rule is for files inside sessions).
+            let url = fileURL(otter).resolvingSymlinksInPath()
             guard let data = try AtomicFile.readIfPresent(url, maxBytes: Self.maxTranscriptBytes) else {
                 throw ValidationError("The Otter transcript \(url.path) does not exist.")
             }

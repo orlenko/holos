@@ -373,11 +373,16 @@ six shared participants were mapped to a cluster in both files.
 | Same person | 5 | 0.076 | 0.077 | 0.197 | 0.235 | 0.244 |
 | Different people | 37 | 0.421 | 0.514 | 0.846 | 0.992 | 1.044 |
 
-The smallest distance with at most 5 % of the different-person pairs below it is
-**0.444** (1 of 37 pairs, 0.421, lies below it); all 5 same-person pairs are at or
-below it. This is the measurement §4.10 asks PR10 to use for
+§4.10 accepts a suggestion when `distance ≤ possibleMaxDistance`. The largest
+threshold that admits at most 5 % of the 37 different-person pairs (1 pair) lies
+between the smallest different-person distance (0.421) and the next (0.444):
+halfway is **about 0.43**, which admits 1 of 37 (2.7 %). All 5 same-person pairs
+(at most 0.244) are below it. This is the measurement §4.10 asks PR10 to use for
 `defaultThresholds.possibleMaxDistance`; the sample is small (42 pairs from two
-recordings of one team).
+recordings of one team). The run printed 0.444, the second-smallest distance
+itself, which a `≤` comparison would meet for 2 of 37 pairs (5.4 %); the script now
+prints the midpoint, and 0.43 here is computed from the two distances above, not
+from a new run.
 
 ### Reproduce
 

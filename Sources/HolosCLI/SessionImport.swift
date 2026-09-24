@@ -14,10 +14,11 @@ extension Session {
             abstract: "Create a session from an audio file, transcribe it, and label its speakers.",
             discussion: """
                 The audio becomes the session's microphone track (channels mixed to mono) of an in-person meeting. \
-                Prints the new session's path on stdout. Exits 0 when the session was imported and labelled (or \
-                labelling was skipped because the speaker models are not installed), 3 when it was imported but \
-                speaker labelling failed or was skipped for another reason (printed on stderr), and 1 when nothing \
-                was imported. Ctrl-C cancels an import and removes the partial session.
+                Prints the new session's path on stdout once speaker labelling has ended. Exits 0 when the session \
+                was imported and labelled (or labelling was skipped because the speaker models are not installed), \
+                3 when it was imported but speaker labelling failed, was skipped for another reason, or was \
+                cancelled (printed on stderr), and 1 when nothing was imported. The session appears in the sessions \
+                folder only once it is complete; Ctrl-C during the import cancels it and removes its partial files.
                 """)
 
         @Argument(help: "Path to an audio file (WAV, CAF, AIFF, M4A, MP3, or another format macOS reads).")
@@ -41,7 +42,7 @@ extension Session {
         mutating func run() async throws {
             let file = fileURL(audioFile)
             let fallbackName = file.deletingPathExtension().lastPathComponent
-            let request = ImportRequest(
+            let request = SessionImportCommand.Request(
                 file: file, name: name ?? (fallbackName.isEmpty ? "Imported meeting" : fallbackName),
                 root: directory.map(fileURL) ?? HolosPaths.sessions, locale: recognition.locale,
                 backend: recognition.backend, vocabulary: try readVocabulary(), transcribe: !noTranscribe,
@@ -54,45 +55,24 @@ extension Session {
             if code != 0 { throw ExitCode(code) }
         }
 
-        /// The import, then speaker labelling. Returns the exit code for a session that was imported; throws when
-        /// nothing was imported.
-        private static func perform(_ request: ImportRequest) async throws -> Int32 {
-            let session: URL
-            do {
-                Console.error("Importing \(request.file.lastPathComponent)…")
-                session = try await SessionImporter.importAudio(
-                    from: request.file, name: request.name, root: request.root, locale: request.locale,
-                    backend: request.backend, vocabulary: request.vocabulary, transcribe: request.transcribe,
-                    progress: importProgressPrinter())
-            } catch is CancellationError {
-                throw HolosError.incomplete("The import was cancelled; nothing was imported.")
-            }
-            Console.output(session.path)
-            guard request.postprocess else { return 0 }
-            do {
-                // Like a recording's own post-processing: without speaker models the exports are written without
-                // speakers and the setup hint is printed, rather than failing.
-                let outcome = try await SessionDiarizeCommand.run(
-                    SessionDiarizeCommand.Request(session: session, afterRecording: true),
-                    diarizer: makeDiarizer(engineOverrides: [:]), progress: labellingProgressPrinter())
-                Console.error(outcome.summary)
-                // The audio and transcript are saved either way: a labelling problem is a warning (§1.4).
-                return outcome.exitCode == 0 ? 0 : 3
-            } catch is CancellationError {
-                Console.error("Speaker labelling was cancelled. The imported session is saved; label its speakers "
-                              + "with holos session diarize.")
-                return 3
-            } catch {
-                Console.error("Speakers were not labelled: \(error.localizedDescription) The imported session is "
-                              + "saved; label its speakers with holos session diarize.")
-                return 3
-            }
+        /// The import, then speaker labelling (`SessionImportCommand`). Returns the exit code for a session that was
+        /// imported; throws when nothing was imported.
+        private static func perform(_ request: SessionImportCommand.Request) async throws -> Int32 {
+            Console.error("Importing \(request.file.lastPathComponent)…")
+            let labels = request.transcribe && request.postprocess
+            let outcome = try await SessionImportCommand.run(
+                request, diarizer: labels ? makeDiarizer(engineOverrides: [:]) : nil,
+                importProgress: importProgressPrinter(), labellingProgress: labellingProgressPrinter())
+            if let summary = outcome.summary { Console.error(summary) }
+            Console.output(outcome.session.path)
+            return outcome.exitCode
         }
 
-        /// The vocabulary file, in the format `holos record start --vocabulary-file` takes. It is only read.
+        /// The vocabulary file, in the format `holos record start --vocabulary-file` takes. It is only read, so a
+        /// symbolic link to it is followed (the no-link rule is for files inside sessions).
         private func readVocabulary() throws -> [String] {
             guard let vocabularyFile else { return [] }
-            let url = fileURL(vocabularyFile)
+            let url = fileURL(vocabularyFile).resolvingSymlinksInPath()
             guard let data = try AtomicFile.readIfPresent(url, maxBytes: 1 << 20) else {
                 throw ValidationError("The vocabulary file \(url.path) does not exist.")
             }
@@ -130,18 +110,6 @@ extension Session {
             }
         }
     }
-}
-
-/// What one `holos session import` does, passed to the task that does it.
-private struct ImportRequest: Sendable {
-    var file: URL
-    var name: String
-    var root: URL
-    var locale: String
-    var backend: SpeechBackend
-    var vocabulary: [String]
-    var transcribe: Bool
-    var postprocess: Bool
 }
 
 /// While it exists, SIGINT and SIGTERM call `cancel` once instead of ending the process; after that first signal (or
