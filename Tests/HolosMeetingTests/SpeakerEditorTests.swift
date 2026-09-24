@@ -660,3 +660,59 @@ private func editorRefusal(_ expected: String, _ body: () throws -> Void,
     try FileManager.default.createSymbolicLink(at: link, withDestinationURL: session)
     _ = editorRefusal("invalidInput") { _ = try SessionLocator.resolve(link.path, root: temp.url) }
 }
+
+/// Cuts the journal's last line off, as a crash while saving does.
+private func tearJournal(_ session: URL) throws {
+    let handle = try FileHandle(forWritingTo: SessionPaths.edits(session))
+    defer { try? handle.close() }
+    try handle.seekToEnd()
+    try handle.write(contentsOf: Data("{\"action\":{\"rename".utf8))
+}
+
+@Test func editsAndUndoReportATornLineTheirAppendRepaired() async throws {
+    let temp = try TemporaryDirectory("editor")
+    defer { temp.remove() }
+    let (session, _, _) = try await SessionFixtures.labelledSession(in: temp.url)
+    let cutOff = "The last speaker change in this meeting was cut off while it was being saved and was skipped."
+    try AtomicFile.write(Data("{\"action\":{\"rename".utf8), to: SessionPaths.edits(session))
+    #expect(try SpeakerSessionSnapshot.load(session: session).diagnostics.tornTail)
+
+    // The append repairs the torn line, so the snapshot loaded afterwards no longer sees it; the result still says.
+    let edited = try SpeakerEditor.apply([.rename(speakerID: "system:S1", name: "Jim")],
+                                         view: try SessionFixtures.view(session), session: session, source: "cli",
+                                         regenerateExports: false)
+    #expect(!edited.snapshot.diagnostics.tornTail)
+    #expect(edited.diagnostics == SpeakerSnapshotDiagnostics(session: session, tornTail: true))
+    #expect(edited.diagnostics.notes == [cutOff])
+
+    // The same for an undo.
+    try tearJournal(session)
+    let undone = try SpeakerEditor.undoLast(view: try SessionFixtures.view(session), session: session, source: "cli",
+                                            regenerateExports: false)
+    #expect(!undone.snapshot.diagnostics.tornTail)
+    #expect(undone.diagnostics.notes == [cutOff])
+
+    // And for a change saved through applyUnlessUnchanged; the next change, with nothing torn, reports nothing.
+    try tearJournal(session)
+    let renamed = try #require(try SpeakerEditor.applyUnlessUnchanged(
+        [.rename(speakerID: "system:S2", name: "Ann")], view: try SessionFixtures.view(session), session: session,
+        source: "cli", regenerateExports: false))
+    #expect(renamed.diagnostics.notes == [cutOff])
+    let again = try SpeakerEditor.apply([.rename(speakerID: "system:S2", name: "Anna")],
+                                        view: try SessionFixtures.view(session), session: session, source: "cli",
+                                        regenerateExports: false)
+    #expect(again.diagnostics.notes == [], "A repaired line is reported once, by the write that repaired it.")
+    #expect(try SessionSpeakerStore.readEdits(session: session).unreadableLines == 0)
+}
+
+@Test func mergingKeepsTheEarlierJournalWarningsOnly() {
+    let session = URL(fileURLWithPath: "/tmp/merge.holos")
+    let later = SpeakerSnapshotDiagnostics(session: session, staleEdits: 1, unreadableLines: 1)
+    let earlier = SpeakerSnapshotDiagnostics(session: session, staleEdits: 3, transcriptChanged: true,
+                                             unreadableLines: 2, tornTail: true, runProblem: "Old.",
+                                             recognitionUnreadable: true, meetingInfoDamaged: true,
+                                             skippedEvents: 4)
+    #expect(later.merging(earlier)
+        == SpeakerSnapshotDiagnostics(session: session, staleEdits: 1, unreadableLines: 2, tornTail: true))
+    #expect(earlier.merging(SpeakerSnapshotDiagnostics(session: session)) == earlier)
+}

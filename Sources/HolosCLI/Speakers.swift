@@ -216,7 +216,7 @@ struct Speakers: ParsableCommand {
                               + "\(keptOut == 1 ? "it" : "them") back.")
             }
             try SpeakerCommand.rewriteExports(loaded.session)
-            SpeakerCommand.printNotes(result.snapshot.diagnostics)
+            SpeakerCommand.printNotes(result.diagnostics.merging(loaded.snapshot.diagnostics))
         }
     }
 }
@@ -240,8 +240,12 @@ enum SpeakerCommand {
         let session = try SessionLocator.resolve(text)
         let snapshot = try SpeakerSessionSnapshot.load(session: session)
         guard let view = snapshot.projection else {
-            throw HolosError.unavailable(snapshot.runProblem
-                ?? "This meeting has no speaker labels yet. Label them with holos session diarize \(session.path).")
+            if let problem = snapshot.runProblem {
+                throw HolosError.unavailable("\(problem) Label speakers again with holos session diarize --force "
+                                             + "\(session.path).")
+            }
+            throw HolosError.unavailable(
+                "This meeting has no speaker labels yet. Label them with holos session diarize \(session.path).")
         }
         return LoadedSpeakers(session: session, snapshot: snapshot, view: view)
     }
@@ -277,7 +281,8 @@ enum SpeakerCommand {
             Console.output(describe(action, before: loaded.view, after: result.snapshot.projection))
         }
         try rewriteExports(loaded.session)
-        printNotes(result.snapshot.diagnostics)
+        // The append repairs a torn last line, so the loaded view's journal warnings are kept (reported once).
+        printNotes(result.diagnostics.merging(loaded.snapshot.diagnostics))
     }
 
     /// Rewrites exports/ after a change was saved (the editor has released the speaker lock).

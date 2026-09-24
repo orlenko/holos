@@ -585,6 +585,14 @@ diarization times (after the render time map, §4.7), markers, and gaps. An expo
 - On load, every turn span is validated (the segment exists and
   `0 ≤ first < end ≤ effectiveWords.count`). A run with any invalid span is reported as
   unusable (`runProblem`), exports fall back to speaker-less output, and nothing traps.
+- Every fallback or skipped piece of data in a snapshot (an unusable head, run, or run
+  transcript; stale edits; a changed transcript; unreadable or torn journal lines; an
+  unreadable recognition result; a damaged meeting.json; skipped event log entries) is in
+  `SpeakerSnapshotDiagnostics`, whose notes every command that shows or writes speaker
+  labels prints on stderr. An unusable head says the labels were left out and to run
+  `holos session diarize --force`, which replaces a damaged `head.json` too. After an edit
+  or undo, the diagnostics merge the journal as read before the append, since the append
+  repairs a torn last line (`SpeakerSnapshotDiagnostics.merging`).
 
 ## 3. Contract files (wave 0; copy verbatim)
 
@@ -4693,6 +4701,9 @@ public struct SpeakerSessionSnapshot: Sendable {
     /// Why the head run could not be used (missing transcript, invalid span), if so.
     public let runProblem: String?
     public let audioDeleted: Bool
+    public let meetingInfoDamaged: Bool        // meeting.json damaged or of another session; inferred used
+    public let recognitionUnreadable: Bool     // recognition result left out
+    public let skippedEvents: Int              // event log lines/events the gaps and markers skipped
     /// Throws unavailable when the session has no transcript.
     public static func load(session: URL, profileNames: [String: String] = [:]) throws -> SpeakerSessionSnapshot
     public func exportDocument(timeZone: TimeZone = .current) -> ExportDocument

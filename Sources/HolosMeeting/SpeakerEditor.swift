@@ -12,9 +12,15 @@ public struct SpeakerEditResult: Sendable {
     /// speaker whose profile has a sample from this session (PR10 sets it; always false before PR10).
     /// The caller must then `await VoiceProfileService.refreshSamples(session:extractor:store:)`.
     public var needsSampleRefresh: Bool
+    /// What to warn about after the edit: `snapshot.diagnostics` merged with the journal as it was read under the
+    /// lock just before the append (`SpeakerSnapshotDiagnostics.merging`), so a torn last line the append repaired
+    /// is still reported.
+    public var diagnostics: SpeakerSnapshotDiagnostics
 
-    public init(snapshot: SpeakerSessionSnapshot, needsSampleRefresh: Bool = false) {
+    public init(snapshot: SpeakerSessionSnapshot, needsSampleRefresh: Bool = false,
+                diagnostics: SpeakerSnapshotDiagnostics? = nil) {
         self.snapshot = snapshot; self.needsSampleRefresh = needsSampleRefresh
+        self.diagnostics = diagnostics ?? snapshot.diagnostics
     }
 }
 
@@ -60,8 +66,8 @@ public enum SpeakerEditor {
                              profileNames: [String: String] = [:]) throws -> SpeakerEditResult {
         let saved = try save(actions, view: view, session: session, source: source, profileNames: profileNames,
                              skipIfUnchanged: false)
-        return try finish(saved ?? [], session: session, regenerateExports: regenerateExports,
-                          profileNames: profileNames)
+        return try finish(saved ?? Saved(edits: [], journal: EditJournal()), session: session,
+                          regenerateExports: regenerateExports, profileNames: profileNames)
     }
 
     /// `apply`, except that a batch that would leave every speaker and turn of the CURRENT session as it is (a rename
@@ -84,11 +90,11 @@ public enum SpeakerEditor {
     /// The compare-and-append of `apply`; nil (nothing written) when `skipIfUnchanged` and the batch leaves the
     /// current state as it is.
     private static func save(_ actions: [SpeakerEditAction], view: SpeakerProjection, session: URL, source: String,
-                             profileNames: [String: String], skipIfUnchanged: Bool) throws -> [SpeakerEdit]? {
+                             profileNames: [String: String], skipIfUnchanged: Bool) throws -> Saved? {
         guard !actions.isEmpty else { throw HolosError.invalidInput("There is no speaker change to save.") }
         try requireSource(source)
         let preloaded = readRun(view.runID, session: session)
-        return try SessionArchive.withSpeakerLock(at: session) { () throws -> [SpeakerEdit]? in
+        return try SessionArchive.withSpeakerLock(at: session) { () throws -> Saved? in
             let base = try currentBase(view: view, session: session, preloaded: preloaded, profileNames: profileNames)
             var viewState = view
             var current = base.projection
@@ -125,7 +131,7 @@ public enum SpeakerEditor {
             }
             try SessionSpeakerStore.appendEdits(edits, session: session)
             log.info("Session \(base.run.sessionID, privacy: .public): saved \(edits.count, privacy: .public) speaker edits (batch \(batchID, privacy: .public), run \(base.run.id, privacy: .public))")
-            return edits
+            return Saved(edits: edits, journal: base.journal)
         }
     }
 
@@ -150,7 +156,7 @@ public enum SpeakerEditor {
                                 regenerateExports: Bool = true) throws -> SpeakerEditResult {
         try requireSource(source)
         let preloaded = readRun(view.runID, session: session)
-        let saved = try SessionArchive.withSpeakerLock(at: session) { () throws -> [SpeakerEdit] in
+        let saved = try SessionArchive.withSpeakerLock(at: session) { () throws -> Saved in
             let base = try currentBase(view: view, session: session, preloaded: preloaded, profileNames: [:])
             // Compared under the lock even when the view has nothing to undo: a change saved since the view was
             // loaded makes "nothing to undo" false, so that view is refused as outdated like any other.
@@ -204,7 +210,7 @@ public enum SpeakerEditor {
             }
             try SessionSpeakerStore.appendEdits(edits, session: session)
             log.info("Session \(base.run.sessionID, privacy: .public): undid batch \(batchID, privacy: .public) with \(edits.count, privacy: .public) reverts (batch \(revertBatch, privacy: .public))")
-            return edits
+            return Saved(edits: edits, journal: base.journal)
         }
         return try finish(saved, session: session, regenerateExports: regenerateExports, profileNames: [:])
     }
@@ -303,7 +309,7 @@ public enum SpeakerEditor {
                     "The transcript the speaker labels were made from is missing or damaged. Label speakers again.")
             }
             if let problem = SpeakerSessionSnapshot.spanProblem(run: run, transcript: transcript) {
-                throw HolosError.unavailable(problem)
+                throw HolosError.unavailable(problem + " Label speakers again.")
             }
             return RunFiles(run: run, transcript: transcript)
         }
@@ -328,13 +334,13 @@ public enum SpeakerEditor {
 
     /// Loads the result after the lock is released and regenerates the exports when asked. The lines are saved
     /// by then, so a failure here says so.
-    private static func finish(_ saved: [SpeakerEdit], session: URL, regenerateExports: Bool,
+    private static func finish(_ saved: Saved, session: URL, regenerateExports: Bool,
                                profileNames: [String: String]) throws -> SpeakerEditResult {
         let snapshot: SpeakerSessionSnapshot
         do {
             snapshot = try SpeakerSessionSnapshot.load(session: session, profileNames: profileNames)
         } catch {
-            log.error("Saved \(saved.count, privacy: .public) speaker edits, then could not reload the session: \(error.localizedDescription, privacy: .private)")
+            log.error("Saved \(saved.edits.count, privacy: .public) speaker edits, then could not reload the session: \(error.localizedDescription, privacy: .private)")
             throw HolosError.incomplete("The speaker change was saved, but the speaker labels could not be "
                                         + "reloaded: \(error.localizedDescription)")
         }
@@ -342,12 +348,22 @@ public enum SpeakerEditor {
             do {
                 try SessionExports.regenerate(session: session, profileNames: profileNames)
             } catch {
-                log.error("Saved \(saved.count, privacy: .public) speaker edits, then could not rewrite the exports: \(error.localizedDescription, privacy: .private)")
+                log.error("Saved \(saved.edits.count, privacy: .public) speaker edits, then could not rewrite the exports: \(error.localizedDescription, privacy: .private)")
                 throw HolosError.incomplete("The speaker change was saved, but the exports could not be rewritten: "
                                             + "\(error.localizedDescription) Export the transcript again to update them.")
             }
         }
-        return SpeakerEditResult(snapshot: snapshot, needsSampleRefresh: false)
+        let before = SpeakerSnapshotDiagnostics(session: session, unreadableLines: saved.journal.unreadableLines,
+                                                tornTail: saved.journal.tornTail)
+        return SpeakerEditResult(snapshot: snapshot, needsSampleRefresh: false,
+                                 diagnostics: snapshot.diagnostics.merging(before))
+    }
+
+    /// The lines a write appended, with the journal as it was read under the lock just before (its torn last line,
+    /// if any, is repaired by the append).
+    private struct Saved {
+        let edits: [SpeakerEdit]
+        let journal: EditJournal
     }
 
     private static func requireSource(_ source: String) throws {
