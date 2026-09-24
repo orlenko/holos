@@ -407,6 +407,74 @@ private func editorRefusal(_ expected: String, _ body: () throws -> Void,
                                           .rename(speakerID: "system:S1", name: nil)], on: view))
 }
 
+@Test func noOpIsDecidedOnTheCurrentStateUnderTheLock() async throws {
+    let temp = try TemporaryDirectory("editor")
+    defer { temp.remove() }
+    let (session, _, _) = try await SessionFixtures.labelledSession(in: temp.url, speakers: ["S1", "S2", "S3"],
+                                                                     duration: 30)
+    try SpeakerEditor.apply([.rename(speakerID: "system:S1", name: "Jim")], view: try SessionFixtures.view(session),
+                            session: session, source: "cli", regenerateExports: false)
+    let viewV = try SessionFixtures.view(session)
+    let rename = SpeakerEditAction.rename(speakerID: "system:S1", name: "Jim")
+    #expect(SpeakerEditor.changesNothing([rename], on: viewV))
+
+    // Another window renames Jim to Maria after V was loaded: "Jim to Jim" on V is not a success.
+    try SpeakerEditor.apply([.rename(speakerID: "system:S1", name: "Maria")], view: try SessionFixtures.view(session),
+                            session: session, source: "app", regenerateExports: false)
+    var before = SessionFixtures.journalBytes(session)
+    let message = editorRefusal("unavailable") {
+        _ = try SpeakerEditor.applyUnlessUnchanged([rename], view: viewV, session: session, source: "cli",
+                                                   regenerateExports: false)
+    }
+    #expect(message == SpeakerEditor.changedMessage)
+    #expect(SessionFixtures.journalBytes(session) == before)
+    #expect(try SessionFixtures.view(session).speakers.first { $0.id == "system:S1" }?.label == "Maria")
+
+    // An unrelated change since the load leaves the action a no-op on the current state: nothing is written.
+    let viewW = try SessionFixtures.view(session)
+    try SpeakerEditor.apply([.rename(speakerID: "system:S2", name: "Ana")], view: try SessionFixtures.view(session),
+                            session: session, source: "app", regenerateExports: false)
+    before = SessionFixtures.journalBytes(session)
+    let unchanged = try SpeakerEditor.applyUnlessUnchanged([.rename(speakerID: "system:S1", name: " Maria\n")],
+                                                           view: viewW, session: session, source: "cli")
+    #expect(unchanged == nil)
+    #expect(SessionFixtures.journalBytes(session) == before)
+    #expect(editorExportsListing(session).isEmpty, "A change that is not saved regenerates nothing.")
+
+    // A change on the current state is saved as by apply.
+    let saved = try SpeakerEditor.applyUnlessUnchanged([.rename(speakerID: "system:S3", name: "Sam")],
+                                                       view: viewW, session: session, source: "cli",
+                                                       regenerateExports: false)
+    #expect(saved?.snapshot.projection?.speakers.first { $0.id == "system:S3" }?.label == "Sam")
+    #expect(try editorJournal(session).last?.action == .rename(speakerID: "system:S3", name: "Sam"))
+
+    // An action the current state refuses throws as in apply; it is never reported as a no-op.
+    _ = editorRefusal("invalidInput") {
+        _ = try SpeakerEditor.applyUnlessUnchanged([.rename(speakerID: "system:S9", name: nil)],
+                                                   view: try SessionFixtures.view(session), session: session,
+                                                   source: "cli", regenerateExports: false)
+    }
+}
+
+@Test func nothingToUndoIsDecidedOnTheCurrentStateUnderTheLock() async throws {
+    let temp = try TemporaryDirectory("editor")
+    defer { temp.remove() }
+    let (session, _, _) = try await SessionFixtures.labelledSession(in: temp.url)
+    let empty = try SessionFixtures.view(session)
+    #expect(empty.lastUndoableBatchID == nil)
+
+    // A change saved after the view was loaded: "nothing to undo" is no longer true, so the view is outdated.
+    try SpeakerEditor.apply([.rename(speakerID: "system:S1", name: "Jim")], view: try SessionFixtures.view(session),
+                            session: session, source: "app", regenerateExports: false)
+    let before = SessionFixtures.journalBytes(session)
+    let message = editorRefusal("unavailable") {
+        try SpeakerEditor.undoLast(view: empty, session: session, source: "cli", regenerateExports: false)
+    }
+    #expect(message == SpeakerEditor.changedMessage)
+    #expect(SessionFixtures.journalBytes(session) == before)
+    #expect(try SessionFixtures.view(session).speakers.first { $0.id == "system:S1" }?.label == "Jim")
+}
+
 // MARK: - session export --output
 
 @Test func exportOutputFileIsNewAndPrivate() throws {
@@ -591,4 +659,60 @@ private func editorRefusal(_ expected: String, _ body: () throws -> Void,
     let link = temp.url.appendingPathComponent("\(UUID().uuidString).holos")
     try FileManager.default.createSymbolicLink(at: link, withDestinationURL: session)
     _ = editorRefusal("invalidInput") { _ = try SessionLocator.resolve(link.path, root: temp.url) }
+}
+
+/// Cuts the journal's last line off, as a crash while saving does.
+private func tearJournal(_ session: URL) throws {
+    let handle = try FileHandle(forWritingTo: SessionPaths.edits(session))
+    defer { try? handle.close() }
+    try handle.seekToEnd()
+    try handle.write(contentsOf: Data("{\"action\":{\"rename".utf8))
+}
+
+@Test func editsAndUndoReportATornLineTheirAppendRepaired() async throws {
+    let temp = try TemporaryDirectory("editor")
+    defer { temp.remove() }
+    let (session, _, _) = try await SessionFixtures.labelledSession(in: temp.url)
+    let cutOff = "The last speaker change in this meeting was cut off while it was being saved and was skipped."
+    try AtomicFile.write(Data("{\"action\":{\"rename".utf8), to: SessionPaths.edits(session))
+    #expect(try SpeakerSessionSnapshot.load(session: session).diagnostics.tornTail)
+
+    // The append repairs the torn line, so the snapshot loaded afterwards no longer sees it; the result still says.
+    let edited = try SpeakerEditor.apply([.rename(speakerID: "system:S1", name: "Jim")],
+                                         view: try SessionFixtures.view(session), session: session, source: "cli",
+                                         regenerateExports: false)
+    #expect(!edited.snapshot.diagnostics.tornTail)
+    #expect(edited.diagnostics == SpeakerSnapshotDiagnostics(session: session, tornTail: true))
+    #expect(edited.diagnostics.notes == [cutOff])
+
+    // The same for an undo.
+    try tearJournal(session)
+    let undone = try SpeakerEditor.undoLast(view: try SessionFixtures.view(session), session: session, source: "cli",
+                                            regenerateExports: false)
+    #expect(!undone.snapshot.diagnostics.tornTail)
+    #expect(undone.diagnostics.notes == [cutOff])
+
+    // And for a change saved through applyUnlessUnchanged; the next change, with nothing torn, reports nothing.
+    try tearJournal(session)
+    let renamed = try #require(try SpeakerEditor.applyUnlessUnchanged(
+        [.rename(speakerID: "system:S2", name: "Ann")], view: try SessionFixtures.view(session), session: session,
+        source: "cli", regenerateExports: false))
+    #expect(renamed.diagnostics.notes == [cutOff])
+    let again = try SpeakerEditor.apply([.rename(speakerID: "system:S2", name: "Anna")],
+                                        view: try SessionFixtures.view(session), session: session, source: "cli",
+                                        regenerateExports: false)
+    #expect(again.diagnostics.notes == [], "A repaired line is reported once, by the write that repaired it.")
+    #expect(try SessionSpeakerStore.readEdits(session: session).unreadableLines == 0)
+}
+
+@Test func mergingKeepsTheEarlierJournalWarningsOnly() {
+    let session = URL(fileURLWithPath: "/tmp/merge.holos")
+    let later = SpeakerSnapshotDiagnostics(session: session, staleEdits: 1, unreadableLines: 1)
+    let earlier = SpeakerSnapshotDiagnostics(session: session, staleEdits: 3, transcriptChanged: true,
+                                             unreadableLines: 2, tornTail: true, runProblem: "Old.",
+                                             recognitionUnreadable: true, meetingInfoDamaged: true,
+                                             skippedEvents: 4)
+    #expect(later.merging(earlier)
+        == SpeakerSnapshotDiagnostics(session: session, staleEdits: 1, unreadableLines: 2, tornTail: true))
+    #expect(earlier.merging(SpeakerSnapshotDiagnostics(session: session)) == earlier)
 }

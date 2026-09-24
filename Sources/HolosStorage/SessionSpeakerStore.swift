@@ -213,12 +213,13 @@ public enum SessionSpeakerStore {
     /// swapped in during the call. Nothing is checked by path first. With `excludeFromBackup`, the backup exclusion
     /// is set on the descriptor that chain returned, so a link swapped in afterwards never redirects it.
     ///
-    /// The paths are compared after removing "." and ".." only (`URL.standardized`). `standardizedFileURL` would also
-    /// drop a leading "/private" when the shorter path exists, which it does for the session but not yet for the
-    /// folder, so a session under /private/tmp or /private/var could never get its speaker folders.
+    /// The paths are compared in `AtomicFile.canonicalComponents` form, which never looks at the file system:
+    /// `standardizedFileURL` would drop a leading "/private" when the shorter path exists, which it does for the
+    /// session but not yet for the folder, and a session and folder named one with "/private" and one without would
+    /// not match at all.
     private static func ensureSpeakerFolder(_ folder: URL, session: URL, excludeFromBackup: Bool = false) throws {
-        let sessionComponents = session.standardized.pathComponents
-        let folderComponents = folder.standardized.pathComponents
+        let sessionComponents = AtomicFile.canonicalComponents(session)
+        let folderComponents = AtomicFile.canonicalComponents(folder)
         guard folderComponents.count > sessionComponents.count,
               Array(folderComponents.prefix(sessionComponents.count)) == sessionComponents else {
             throw HolosError.invalidInput("\(folder.lastPathComponent) is not a folder of this session.")

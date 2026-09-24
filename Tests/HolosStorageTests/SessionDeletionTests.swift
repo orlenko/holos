@@ -118,6 +118,7 @@ private func deletionFiles(in folder: URL) -> [String: Data] {
 
     let marker = try AtomicFile.readJSON(AudioDeletedRecord.self, from: SessionPaths.audioDeleted(session))
     #expect(marker.schemaVersion == 1)
+    #expect(marker.sessionID == fixture.id)
     #expect(marker.chunkCount == 3)
     #expect(marker.seconds == 60, "The longest track: two 30 s mic chunks.")
     #expect(abs(marker.deletedAt.timeIntervalSinceNow) < 60)
@@ -146,6 +147,41 @@ private func deletionFiles(in folder: URL) -> [String: Data] {
     #expect(!exists(SessionPaths.derived(session)))
     #expect(try Data(contentsOf: SessionPaths.audioDeleted(session)) == first)
     #expect(!(try SessionArchive.inspectRecovery(at: session).needsAttention))
+}
+
+@Test func deleteAudioReadsAnExistingMarker() async throws {
+    let root = try deletionRoot()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let fixture = try await deletionSession(in: root)
+    let session = fixture.session
+    let marker = SessionPaths.audioDeleted(session)
+    let lease = try SessionArchive.acquireProcessingLease(at: session)
+    defer { lease.release() }
+
+    // A marker from a newer Holos is refused before anything is removed.
+    var object = try #require(try JSONSerialization.jsonObject(with: HolosJSON.encoder().encode(
+        AudioDeletedRecord(sessionID: fixture.id, chunkCount: 3, seconds: 60))) as? [String: Any])
+    object["schemaVersion"] = 2
+    let newer = try JSONSerialization.data(withJSONObject: object)
+    try newer.write(to: marker)
+    let before = deletionFiles(in: session)
+    #expect(isUnavailable(#expect(throws: HolosError.self) {
+        try SessionDeletion.deleteAudio(session: session, lease: lease)
+    }))
+    #expect(deletionFiles(in: session) == before, "Nothing was removed or written.")
+    #expect(isUnavailable(#expect(throws: HolosError.self) { try SessionArchive.inspectRecovery(at: session) }))
+
+    // A damaged marker, or one of another session, is replaced by this session's record.
+    let foreign = try HolosJSON.encoder().encode(AudioDeletedRecord(sessionID: UUID().uuidString, chunkCount: 9,
+                                                                    seconds: 9))
+    for data in [Data("not json".utf8), foreign] {
+        try FileManager.default.removeItem(at: marker)
+        try data.write(to: marker)
+        #expect(try !AudioDeletedRecord.isDeleted(session: session, sessionID: fixture.id))
+        try SessionDeletion.deleteAudio(session: session, lease: lease)
+        let record = try #require(try AudioDeletedRecord.read(session: session, sessionID: fixture.id))
+        #expect(record.sessionID == fixture.id && record.chunkCount == 3)
+    }
 }
 
 @Test func deleteRefusedWhileRecording() async throws {

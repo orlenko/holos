@@ -97,7 +97,7 @@ private func snapshotSession(in root: URL, mode: MeetingMode? = .inPerson) async
     let run = try SessionFixtures.writeHeadRun(session: session, transcript: transcript,
                                                outputs: ["mic": SessionFixtures.alternatingOutput()])
     try FileManager.default.removeItem(at: SessionPaths.run(run.id, in: session))
-    try AtomicFile.writeJSON(["schemaVersion": 1], to: SessionPaths.audioDeleted(session))
+    try AtomicFile.writeJSON(AudioDeletedRecord(chunkCount: 1, seconds: 1), to: SessionPaths.audioDeleted(session))
     let snapshot = try SpeakerSessionSnapshot.load(session: session)
     #expect(snapshot.run == nil)
     #expect(snapshot.runProblem != nil)
@@ -117,5 +117,137 @@ private func snapshotSession(in root: URL, mode: MeetingMode? = .inPerson) async
     guard case .unavailable? = error else {
         Issue.record("Expected unavailable, got \(String(describing: error))")
         return
+    }
+}
+
+// MARK: - Diagnostics of every fallback
+
+/// Appends `bytes` to the end of `url` as they are (no newline added).
+private func appendBytes(_ bytes: String, to url: URL) throws {
+    let handle = try FileHandle(forWritingTo: url)
+    defer { try? handle.close() }
+    try handle.seekToEnd()
+    try handle.write(contentsOf: Data(bytes.utf8))
+}
+
+/// Records one event in a finished session, as a maintenance open does.
+private func recordEvent(_ kind: String, _ details: [String: String], in session: URL) async throws {
+    let lease = try SessionArchive.acquireProcessingLease(at: session)
+    defer { lease.release() }
+    let archive = try SessionArchive.openForMaintenance(at: session, lease: lease)
+    try await archive.recordEvent(kind: kind, details: details)
+    try await archive.finish(status: ArchiveStatus.complete)
+}
+
+private struct FallbackCase: Sendable {
+    let name: String
+    /// Damages a labelled session (`SessionFixtures.labelledSession`) in one way.
+    let damage: @Sendable (_ session: URL, _ transcript: Transcript, _ run: DiarizationRun) async throws -> Void
+    /// The diagnostics a snapshot of the damaged session must report.
+    let expected: @Sendable (_ session: URL) -> SpeakerSnapshotDiagnostics
+}
+
+private let damagedLabels = "The speaker labels are missing or damaged."
+
+/// Every condition in which `SpeakerSessionSnapshot.load` falls back or skips data, each reported by exactly one note.
+private let fallbackCases: [FallbackCase] = [
+    FallbackCase(name: "damaged head.json", damage: { session, _, _ in
+        try AtomicFile.write(Data("not json".utf8), to: SessionPaths.head(session))
+    }, expected: { SpeakerSnapshotDiagnostics(session: $0, runProblem: damagedLabels) }),
+    FallbackCase(name: "missing head run", damage: { session, _, run in
+        try FileManager.default.removeItem(at: SessionPaths.run(run.id, in: session))
+    }, expected: { SpeakerSnapshotDiagnostics(session: $0, runProblem: damagedLabels) }),
+    FallbackCase(name: "damaged head run", damage: { session, _, run in
+        try AtomicFile.write(Data("{}".utf8), to: SessionPaths.run(run.id, in: session))
+    }, expected: { SpeakerSnapshotDiagnostics(session: $0, runProblem: damagedLabels) }),
+    FallbackCase(name: "missing run transcript", damage: { session, transcript, _ in
+        let revised = SessionFixtures.transcript(SessionFixtures.alternatingSegments(track: "system"))
+        try await SessionFixtures.saveTranscript(revised, in: session)
+        try FileManager.default.removeItem(at: SessionPaths.transcript(transcript.id, in: session))
+    }, expected: {
+        SpeakerSnapshotDiagnostics(
+            session: $0, runProblem: "The transcript the speaker labels were made from is missing or damaged.")
+    }),
+    FallbackCase(name: "span outside the transcript", damage: { session, transcript, run in
+        var bad = SpeakerRunBuilder.build(
+            sessionID: run.sessionID, transcript: transcript,
+            tracks: [.init(track: "system", policy: .diarized,
+                           output: FakeDiarizer.alternating(speakers: ["S1", "S2"], turnSeconds: 5, duration: 20))],
+            engine: .fake).run
+        bad.turns[1].spans[0].end = 999
+        try SessionArchive.withSpeakerLock(at: session) {
+            try SessionSpeakerStore.writeRun(bad, session: session)
+            try SessionSpeakerStore.writeHead(SpeakerHead(runID: bad.id), session: session)
+        }
+    }, expected: {
+        SpeakerSnapshotDiagnostics(session: $0, runProblem: "Speaker labels do not match the transcript (turn T2).")
+    }),
+    FallbackCase(name: "unreadable recognition result", damage: { session, _, run in
+        let url = SessionPaths.recognition(run.id, in: session)
+        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try AtomicFile.write(Data("not json".utf8), to: url)
+    }, expected: { SpeakerSnapshotDiagnostics(session: $0, recognitionUnreadable: true) }),
+    FallbackCase(name: "damaged meeting.json", damage: { session, _, _ in
+        try AtomicFile.write(Data("not json".utf8), to: SessionPaths.meetingInfo(session))
+    }, expected: { SpeakerSnapshotDiagnostics(session: $0, meetingInfoDamaged: true) }),
+    FallbackCase(name: "meeting.json of another session", damage: { session, _, _ in
+        try AtomicFile.writeJSON(MeetingInfo(sessionID: UUID().uuidString, mode: .call, othersInRoom: false,
+                                             createdAt: Date()),
+                                 to: SessionPaths.meetingInfo(session))
+    }, expected: { SpeakerSnapshotDiagnostics(session: $0, meetingInfoDamaged: true) }),
+    FallbackCase(name: "unreadable journal line", damage: { session, _, _ in
+        try AtomicFile.write(Data("not json\n".utf8), to: SessionPaths.edits(session))
+    }, expected: { SpeakerSnapshotDiagnostics(session: $0, unreadableLines: 1) }),
+    FallbackCase(name: "torn journal line", damage: { session, _, _ in
+        try AtomicFile.write(Data("{\"action\":{\"rename".utf8), to: SessionPaths.edits(session))
+    }, expected: { SpeakerSnapshotDiagnostics(session: $0, tornTail: true) }),
+    FallbackCase(name: "stale edit", damage: { session, _, run in
+        let edit = SpeakerEdit(baseRunID: run.id, source: "cli", action: .rename(speakerID: "system:S1", name: "X"),
+                               expected: "fp1:outdated")
+        try SessionArchive.withSpeakerLock(at: session) { try SessionSpeakerStore.appendEdits([edit], session: session) }
+    }, expected: { SpeakerSnapshotDiagnostics(session: $0, staleEdits: 1) }),
+    FallbackCase(name: "transcript changed", damage: { session, _, _ in
+        let revised = SessionFixtures.transcript(SessionFixtures.alternatingSegments(track: "system"))
+        try await SessionFixtures.saveTranscript(revised, in: session)
+    }, expected: { SpeakerSnapshotDiagnostics(session: $0, transcriptChanged: true) }),
+    FallbackCase(name: "unreadable event line", damage: { session, _, _ in
+        try appendBytes("not json\n", to: SessionPaths.events(session))
+    }, expected: { SpeakerSnapshotDiagnostics(session: $0, skippedEvents: 1) }),
+    FallbackCase(name: "torn event line", damage: { session, _, _ in
+        try appendBytes("{\"kind\":\"mar", to: SessionPaths.events(session))
+    }, expected: { SpeakerSnapshotDiagnostics(session: $0, skippedEvents: 1) }),
+    FallbackCase(name: "marker with an unreadable time", damage: { session, _, _ in
+        try await recordEvent(MeetingEventKind.marker, ["at": "soon", "requestID": UUID().uuidString], in: session)
+    }, expected: { SpeakerSnapshotDiagnostics(session: $0, skippedEvents: 1) }),
+    FallbackCase(name: "gap with an unreadable time", damage: { session, _, _ in
+        try await recordEvent(MeetingEventKind.audioDiscontinuity,
+                              ["track": "system", "previousEnd": "x", "nextStart": "12", "reason": "paused"],
+                              in: session)
+    }, expected: { SpeakerSnapshotDiagnostics(session: $0, skippedEvents: 1) }),
+]
+
+@Test(arguments: fallbackCases.indices)
+func snapshotReportsEveryFallback(_ index: Int) async throws {
+    let condition = fallbackCases[index]
+    let temp = try TemporaryDirectory("snapshot")
+    defer { temp.remove() }
+    let (session, transcript, run) = try await SessionFixtures.labelledSession(in: temp.url)
+    #expect(try SpeakerSessionSnapshot.load(session: session).diagnostics.notes == [],
+            "\(condition.name): an undamaged session reports nothing")
+
+    try await condition.damage(session, transcript, run)
+    let expected = condition.expected(session)
+    let snapshot = try SpeakerSessionSnapshot.load(session: session)
+    #expect(snapshot.diagnostics == expected, "\(condition.name)")
+    #expect(snapshot.diagnostics.notes.count == 1, "\(condition.name): one note")
+    // The exports report what they left out too (session export --format and --all).
+    #expect(try SessionExports.renderChecked(.txt, session: session).diagnostics == expected, "\(condition.name)")
+    #expect(try SessionExports.regenerate(session: session).diagnostics == expected, "\(condition.name)")
+    if let problem = expected.runProblem {
+        #expect(snapshot.run == nil && snapshot.projection == nil)
+        #expect(snapshot.diagnostics.notes == [
+            "\(problem) Speaker labels were left out, so the exports show the transcript without speakers. Label "
+                + "speakers again with holos session diarize --force \(session.path).",
+        ])
     }
 }

@@ -43,6 +43,31 @@ public struct CorrectionList: Codable, Sendable, Equatable {
         entries.removeAll { $0 == correction }
     }
 
+    /// Other entries `replace(_:with:)` would drop because they have the same heard phrase as `new`.
+    public func conflicts(replacing old: Correction, with new: Correction) -> [Correction] {
+        let key = Self.normalized(new.heard.trimmingCharacters(in: .whitespacesAndNewlines))
+        return entries.filter { $0 != old && Self.normalized($0.heard) == key }
+    }
+
+    /// Edits `old` in place, keeping its position. Returns false, changing nothing, for a blank or identical
+    /// pair. Another entry for the same heard phrase is dropped, as `add` does; an `old` that is no longer in
+    /// the list (removed meanwhile) makes this an `add`.
+    @discardableResult
+    public mutating func replace(_ old: Correction, with new: Correction) -> Bool {
+        let heard = new.heard.trimmingCharacters(in: .whitespacesAndNewlines)
+        let meant = new.meant.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !heard.isEmpty, !meant.isEmpty, heard != meant else { return false }
+        guard let index = entries.firstIndex(of: old) else {
+            add(Correction(heard: heard, meant: meant))
+            return true
+        }
+        let key = Self.normalized(heard)
+        entries[index] = Correction(heard: heard, meant: meant)
+        entries = entries.indices.filter { $0 == index || Self.normalized(entries[$0].heard) != key }
+            .map { entries[$0] }
+        return true
+    }
+
     public func apply(to text: String) -> String {
         guard !entries.isEmpty, let pattern = matcher() else { return text }
         let replacements = Dictionary(entries.map { (Self.normalized($0.heard), $0) },

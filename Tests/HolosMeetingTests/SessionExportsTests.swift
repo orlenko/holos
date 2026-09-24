@@ -159,6 +159,37 @@ private func exportsMakeWritableAndAppend(_ text: String, to url: URL) throws {
     #expect(text.contains("revisedword"))
 }
 
+@Test func exportsReportWhatTheirSnapshotSkipped() async throws {
+    let temp = try TemporaryDirectory("exports")
+    defer { temp.remove() }
+    let session = try await exportsSession(in: temp.url)
+    #expect(try SessionExports.regenerate(session: session).diagnostics?.notes == [])
+    #expect(try SessionExports.renderChecked(.txt, session: session).diagnostics.notes == [])
+
+    // A damaged line, then a last line cut off while it was being saved, and a transcript newer than the labels.
+    try AtomicFile.write(Data("not json\n{\"action\":{\"rename\":{\"na".utf8), to: SessionPaths.edits(session),
+                         permissions: 0o600)
+    let revised = SessionFixtures.transcript([SessionFixtures.segment(["revisedword"], track: "mic", start: 1)])
+    try await SessionFixtures.saveTranscript(revised, in: session)
+
+    let expected = SpeakerSnapshotDiagnostics(session: session, transcriptChanged: true, unreadableLines: 1,
+                                              tornTail: true)
+    #expect(try SpeakerSessionSnapshot.load(session: session).diagnostics == expected)
+    #expect(try SessionExports.regenerate(session: session).diagnostics == expected)
+    let rendered = try SessionExports.renderChecked(.md, session: session)
+    #expect(rendered.diagnostics == expected)
+    #expect(rendered.data == (try SessionExports.render(.md, session: session)))
+    #expect(expected.notes == [
+        "The transcript changed after speakers were labelled, so the exports show it without speakers. Label "
+            + "speakers again with holos session diarize \(session.path).",
+        "1 speaker change in this meeting could not be read (damaged, or saved by a newer version of Holos) and was "
+            + "skipped. If you use a newer Holos elsewhere, update this one before editing speakers.",
+        "The last speaker change in this meeting was cut off while it was being saved and was skipped.",
+    ])
+    #expect(SpeakerSnapshotDiagnostics(session: session, staleEdits: 2).notes
+        == ["2 earlier speaker changes could not be applied because the labels changed after they were made."])
+}
+
 @Test func generatedRecordFromANewerHolosIsRefused() async throws {
     let temp = try TemporaryDirectory("exports")
     defer { temp.remove() }

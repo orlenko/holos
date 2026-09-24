@@ -5,7 +5,7 @@ import HolosAudio
 import HolosCore
 @testable import HolosMeeting
 import HolosSpeakers
-import HolosStorage
+@testable import HolosStorage
 import Testing
 
 // `holos session import` and `holos session score` (docs/meeting-design.md §5.5 PR7c), with generated audio and
@@ -225,6 +225,443 @@ func importPassesVocabulary() async throws {
     let long = String(repeating: "x", count: 101)
     #expect(SessionImporter.cleaned(["  Maria Chen ", "", "   ", long, "Strata"]) == ["Maria Chen", "Strata"])
     #expect(SessionImporter.cleaned((0..<1_200).map { "term \($0)" }).count == 1_000)
+}
+
+/// The session is built in `.import-<UUID>/` and then moved, so nothing it persists may name the staging folder:
+/// `Transcript.source` and every other file name the published `<root>/<id>.holos`.
+@Test(.timeLimit(.minutes(1)))
+func importPersistsNoStagingPath() async throws {
+    let temp = try TemporaryDirectory("import")
+    defer { temp.remove() }
+    let wav = try sessionImporterStereoWAV(in: temp.url)
+    let root = temp.url.appendingPathComponent("Sessions", isDirectory: true)
+    let speech = FakeSpeechFactory([FakeSpeechScript(segments: [sessionImporterSegment()])])
+    let session = try await sessionImporterImport(wav, root: root, speech: speech, vocabulary: ["Maria Chen"])
+
+    let transcriptID = try #require(try SessionArchive.currentTranscriptID(at: session))
+    let transcript = try AtomicFile.readJSON(Transcript.self, from: SessionPaths.transcript(transcriptID, in: session))
+    #expect(transcript.source == session.path)
+    #expect(transcript.source == root.appendingPathComponent(session.lastPathComponent).path)
+    let files = sessionImporterTree(session)
+    #expect(files.contains { $0.hasSuffix(".json") })
+    for relative in files {
+        let url = session.appendingPathComponent(relative)
+        guard (try? url.resourceValues(forKeys: [.isRegularFileKey]))?.isRegularFile == true else { continue }
+        let data = try Data(contentsOf: url)
+        #expect(data.range(of: Data(ImportStaging.prefix.utf8)) == nil, "\(relative) names the staging folder")
+    }
+}
+
+/// A discard that fails part-way (any removal or fsync it makes, injected with `AtomicFile.faultPlan`) must leave
+/// the ownership marker on a folder that still holds anything, so the next sweep recognizes the folder and removes
+/// it. Before, the tree was removed in directory order, and a failure after the marker went left partial audio that
+/// no sweep would ever touch.
+@Test func discardThatFailsPartWayLeavesTheMarkerForTheNextSweep() throws {
+    let temp = try TemporaryDirectory("import")
+    defer { temp.remove() }
+    let root = temp.url.appendingPathComponent("Sessions", isDirectory: true)
+    func staged() throws -> ImportStaging {
+        let staging = try ImportStaging.create(in: root)
+        let session = staging.url.appendingPathComponent("\(UUID().uuidString).holos", isDirectory: true)
+        let audio = session.appendingPathComponent("audio/mic", isDirectory: true)
+        try FileManager.default.createDirectory(at: audio, withIntermediateDirectories: true)
+        for index in 1...3 {
+            try Data(repeating: 1, count: 64).write(to: audio.appendingPathComponent("00000\(index).caf"))
+        }
+        try Data("{}".utf8).write(to: session.appendingPathComponent("manifest.json"))
+        return staging
+    }
+    let far = Date(timeIntervalSinceNow: 10 * ImportStaging.unlockedGrace)
+
+    let twin = FaultPlan()
+    let clean = try staged()
+    #expect(AtomicFile.$faultPlan.withValue(twin) { clean.discard() } == nil)
+    #expect(sessionImporterEntries(root).isEmpty)
+    let steps = twin.steps.count
+    #expect(steps > 8)
+
+    var keptWithMarker = 0
+    for failAt in 0..<steps {
+        let staging = try staged()
+        let folder = staging.url
+        let leftover = AtomicFile.$faultPlan.withValue(FaultPlan(failAt: failAt)) { staging.discard() }
+        #expect(leftover != nil, "the fault at step \(failAt) (\(twin.steps[failAt])) was not reported")
+        guard FileManager.default.fileExists(atPath: folder.path) else { continue }
+        let left = sessionImporterTree(folder)
+        if left.contains(ImportStaging.markerName) {
+            keptWithMarker += 1
+            // The next sweep, once the folder is old enough, finishes the removal.
+            ImportStaging.sweep(root, now: far)
+            #expect(!FileManager.default.fileExists(atPath: folder.path),
+                    "the sweep left the folder of the fault at step \(failAt) (\(twin.steps[failAt]))")
+        } else {
+            // Only a failure on the marker's own folder can lose the marker, and then nothing else is left.
+            #expect(left.isEmpty, "the fault at step \(failAt) (\(twin.steps[failAt])) left \(left) unmarked")
+            try FileManager.default.removeItem(at: folder)
+        }
+        #expect(sessionImporterEntries(root).isEmpty)
+    }
+    #expect(keptWithMarker > 0)
+
+    // The case the review named: the first delete inside the session fails. The marker stays, and the sweep removes
+    // the folder.
+    let first = try #require(twin.steps.first)
+    #expect(first.hasPrefix("unlink ") && !first.contains(ImportStaging.markerName)
+            && !first.contains(ImportStaging.lockName))
+    let staging = try staged()
+    let leftover = AtomicFile.$faultPlan.withValue(FaultPlan(failAt: 0)) { staging.discard() }
+    #expect(leftover?.contains("the next import removes it") == true)
+    #expect(sessionImporterTree(staging.url).contains(ImportStaging.markerName))
+    #expect(sessionImporterTree(staging.url).contains { $0.hasSuffix(".caf") })
+    ImportStaging.sweep(root, now: far)
+    #expect(sessionImporterEntries(root).isEmpty)
+}
+
+/// Another program may rename a staging folder away after a sweep checked it (marker, lock) and put a folder of its
+/// own at the same name. The sweep removes the folder it checked, through that folder's descriptor: the replacement,
+/// even one that looks like a staging folder, is left whole. Before, the removal reopened the name and deleted the
+/// replacement.
+@Test func sweepNeverEmptiesAFolderRenamedInAfterItsCheck() throws {
+    let temp = try TemporaryDirectory("import")
+    defer { temp.remove() }
+    let root = temp.url.appendingPathComponent("Sessions", isDirectory: true)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    let name = try sessionImporterAbandonedStaging(in: root)
+    let moved = temp.url.appendingPathComponent("moved", isDirectory: true)
+    var replacement: [String] = []
+    ImportStaging.sweep(root, now: Date(timeIntervalSinceNow: 10 * ImportStaging.unlockedGrace)) { removing in
+        #expect(removing == name)
+        do {
+            try FileManager.default.moveItem(at: root.appendingPathComponent(name), to: moved)
+            _ = try sessionImporterAbandonedStaging(in: root, name: name)
+        } catch {
+            Issue.record("Cannot swap the folder: \(error)")
+        }
+        replacement = sessionImporterTree(root.appendingPathComponent(name))
+    }
+
+    #expect(replacement.contains { $0.hasSuffix("000001.caf") })
+    #expect(sessionImporterTree(root.appendingPathComponent(name)) == replacement)
+    #expect(sessionImporterTree(moved).isEmpty)
+}
+
+/// `discard` and `publish` work through the folder `create` made and opened, so a folder renamed in at the staging
+/// name meanwhile is neither emptied nor published from, and its marker and lock file stay.
+@Test func discardAndPublishNeverTouchAFolderRenamedInAtTheStagingName() throws {
+    let temp = try TemporaryDirectory("import")
+    defer { temp.remove() }
+    let root = temp.url.appendingPathComponent("Sessions", isDirectory: true)
+    let fm = FileManager.default
+
+    let discarded = try ImportStaging.create(in: root)
+    let ours = discarded.url.appendingPathComponent("\(UUID().uuidString).holos/audio/mic", isDirectory: true)
+    try fm.createDirectory(at: ours, withIntermediateDirectories: true)
+    try Data(repeating: 2, count: 64).write(to: ours.appendingPathComponent("000001.caf"))
+    let movedDiscard = temp.url.appendingPathComponent("moved-discard", isDirectory: true)
+    try fm.moveItem(at: discarded.url, to: movedDiscard)
+    _ = try sessionImporterAbandonedStaging(in: root, name: discarded.name)
+    let theirs = sessionImporterTree(discarded.url)
+    #expect(discarded.discard() == nil)
+    #expect(sessionImporterTree(discarded.url) == theirs)
+    #expect(theirs.contains { $0.hasSuffix("000001.caf") })
+    #expect(sessionImporterTree(movedDiscard).isEmpty)
+    try fm.removeItem(at: discarded.url)
+
+    let published = try ImportStaging.create(in: root)
+    let sessionName = "\(UUID().uuidString).holos"
+    let session = published.url.appendingPathComponent("\(sessionName)/audio/mic", isDirectory: true)
+    try fm.createDirectory(at: session, withIntermediateDirectories: true)
+    try Data(repeating: 2, count: 64).write(to: session.appendingPathComponent("000001.caf"))
+    let movedPublish = temp.url.appendingPathComponent("moved-publish", isDirectory: true)
+    try fm.moveItem(at: published.url, to: movedPublish)
+    // The replacement holds a session folder of the same name, a marker, and a lock file.
+    let other = published.url.appendingPathComponent(sessionName, isDirectory: true)
+    try fm.createDirectory(at: other, withIntermediateDirectories: true)
+    try Data("theirs".utf8).write(to: other.appendingPathComponent("theirs.txt"))
+    try Data(ImportStaging.markerContents).write(to: published.url.appendingPathComponent(ImportStaging.markerName))
+    try Data().write(to: published.url.appendingPathComponent(ImportStaging.lockName))
+    let replacement = sessionImporterTree(published.url)
+
+    let result = try published.publish(sessionName)
+    #expect(sessionImporterTree(result) == ["audio", "audio/mic", "audio/mic/000001.caf"])
+    #expect(sessionImporterTree(published.url) == replacement)
+    #expect(sessionImporterTree(movedPublish).isEmpty)
+}
+
+/// A folder renamed in at the new staging name before `create` opens it is refused and left exactly as it was:
+/// `create` neither writes its lock file and marker into it nor removes anything from it.
+@Test func createRefusesAFolderRenamedInBeforeItIsOpened() throws {
+    let temp = try TemporaryDirectory("import")
+    defer { temp.remove() }
+    let root = temp.url.appendingPathComponent("Sessions", isDirectory: true)
+    var swapped: String?
+    var theirs: [String] = []
+    #expect(throws: HolosError.self) {
+        _ = try ImportStaging.create(in: root) { step in
+            guard step == .folderMade, let made = sessionImporterStagingFolders(root).first else { return }
+            do {
+                try FileManager.default.moveItem(at: root.appendingPathComponent(made),
+                                                 to: temp.url.appendingPathComponent("made", isDirectory: true))
+                _ = try sessionImporterAbandonedStaging(in: root, lockFile: false, marker: false, name: made)
+            } catch {
+                Issue.record("Cannot swap the folder: \(error)")
+            }
+            swapped = made
+            theirs = sessionImporterTree(root.appendingPathComponent(made))
+        }
+    }
+    let name = try #require(swapped)
+    #expect(theirs.contains { $0.hasSuffix("000001.caf") })
+    #expect(sessionImporterTree(root.appendingPathComponent(name)) == theirs)
+}
+
+/// Another program renames the staging folder away after `ImportStaging.create` and puts a folder of its own at the
+/// same name before the session is made. The session is made through the staging folder's descriptor, and its path
+/// is pinned to the folder made there, so every write goes into the staging folder the import made, wherever it now
+/// is: the import finishes and is published from there, the replacement is left exactly as it was, and the moved
+/// staging folder is emptied. Before, `SessionArchive.create(root: staging.url)` made the session inside the
+/// replacement, and every later write (the whole imported audio) went there while the error said nothing was
+/// imported.
+@Test(.timeLimit(.minutes(1)))
+func importNeverWritesIntoAFolderRenamedInAtTheStagingName() async throws {
+    let temp = try TemporaryDirectory("import")
+    defer { temp.remove() }
+    let wav = try sessionImporterStereoWAV(in: temp.url)
+    let root = temp.url.appendingPathComponent("Sessions", isDirectory: true)
+    let moved = temp.url.appendingPathComponent("moved", isDirectory: true)
+    let replacement = SharedValue<[String]>([])
+    let swapped = SharedValue<String?>(nil)
+    let session = try await ImportStaging.$beforeSession.withValue({ staging in
+        do {
+            try FileManager.default.moveItem(at: staging, to: moved)
+            _ = try sessionImporterAbandonedStaging(in: root, name: staging.lastPathComponent)
+        } catch {
+            Issue.record("Cannot swap the folder: \(error)")
+        }
+        swapped.update { $0 = staging.lastPathComponent }
+        replacement.update { $0 = sessionImporterTree(staging) }
+    }) {
+        try await sessionImporterImport(wav, root: root, speech: FakeSpeechFactory(), transcribe: false)
+    }
+    let name = try #require(swapped.value)
+    #expect(replacement.value.contains { $0.hasSuffix("000001.caf") })
+    #expect(sessionImporterTree(root.appendingPathComponent(name)) == replacement.value)
+    #expect(sessionImporterEntries(root) == [name, session.lastPathComponent].sorted())
+    #expect(try SessionArchive.readManifest(at: session).chunks.reduce(0) { $0 + $1.frameCount } == 441_000)
+    #expect(sessionImporterTree(moved).isEmpty)
+}
+
+/// Once the session is made, its staging path is pinned to the folder `createSession` made: a staging folder another
+/// program renames away just after, before the first metadata write, with a folder of the same layout put at its
+/// path, receives nothing (no meeting.json, manifest, journal, chunk, lock, or transcript). Without transcription the
+/// import finishes from the folder it made; with it, the replay reads its chunks by path, finds none, and the import
+/// fails and removes what it made. Either way the replacement is left exactly as the other program made it.
+@Test(.timeLimit(.minutes(1)), arguments: [false, true])
+func importWritesNothingIntoAStagingFolderSwappedInAfterTheSessionIsMade(transcribe: Bool) async throws {
+    let temp = try TemporaryDirectory("import")
+    defer { temp.remove() }
+    let wav = try sessionImporterStereoWAV(in: temp.url)
+    let root = temp.url.appendingPathComponent("Sessions", isDirectory: true)
+    let moved = temp.url.appendingPathComponent("moved", isDirectory: true)
+    let swapped = SharedValue<URL?>(nil)
+    let replacement = SharedValue<[String]>([])
+    let outcome: Result<URL, any Error>
+    do {
+        outcome = .success(try await SessionImporter.$afterSession.withValue({ session in
+            let staging = session.deletingLastPathComponent()
+            do {
+                try FileManager.default.moveItem(at: staging, to: moved)
+                for path in ["audio/mic", "audio/system", "transcripts", "exports"] {
+                    try FileManager.default.createDirectory(at: session.appendingPathComponent(path),
+                                                            withIntermediateDirectories: true)
+                }
+            } catch {
+                Issue.record("Cannot swap the folder: \(error)")
+            }
+            swapped.update { $0 = staging }
+            replacement.update { $0 = sessionImporterTree(staging) }
+        }) {
+            try await sessionImporterImport(wav, root: root, speech: FakeSpeechFactory(), transcribe: transcribe)
+        })
+    } catch {
+        outcome = .failure(error)
+    }
+    let staging = try #require(swapped.value)
+    #expect(replacement.value.count == 6, "The swap made \(replacement.value)")
+    #expect(sessionImporterTree(staging) == replacement.value, "Written into the replacement.")
+    let sessionName = try #require(replacement.value.first { $0.hasSuffix(".holos") })
+    #expect(sessionImporterEntries(root) == (transcribe ? [staging.lastPathComponent]
+                                                        : [staging.lastPathComponent, sessionName].sorted()))
+    switch outcome {
+    case .success(let session):
+        #expect(!transcribe)
+        #expect(session.lastPathComponent == sessionName)
+        let manifest = try SessionArchive.readManifest(at: session)
+        #expect(manifest.status == ArchiveStatus.audioOnly)
+        #expect(manifest.chunks.reduce(0) { $0 + $1.frameCount } == 441_000)
+        #expect(FileManager.default.fileExists(atPath: SessionPaths.meetingInfo(session).path))
+        #expect(try !SessionArchive.inspectRecovery(at: session).needsAttention)
+    case .failure(let error):
+        #expect(transcribe, "The import failed: \(error)")
+    }
+    // The staging folder the import made, wherever it was moved, holds nothing once the import is over.
+    #expect(sessionImporterTree(moved).isEmpty)
+}
+
+/// Once the session is made, only that folder is published, and a discard says where it went when another program
+/// moved it out of the staging folder: a folder moved in at its name is not published, and the error does not claim
+/// that nothing was imported while the moved session holds the audio.
+@Test func publishAndDiscardFollowTheSessionFolderCreateSessionMade() async throws {
+    let temp = try TemporaryDirectory("import")
+    defer { temp.remove() }
+    let root = temp.url.appendingPathComponent("Sessions", isDirectory: true)
+    let fm = FileManager.default
+
+    let staging = try ImportStaging.create(in: root)
+    let archive = try staging.createSession(name: "Imported", locale: "en-CA", backend: .speech)
+    #expect(archive.directory == staging.url.appendingPathComponent(try #require(staging.sessionName)))
+    let lease = try staging.acquireLease()
+    try await archive.finish(status: ArchiveStatus.failed)
+    lease.release()
+    let sessionName = try #require(staging.sessionName)
+    let stray = temp.url.appendingPathComponent("stray-\(UUID().uuidString)", isDirectory: true)
+    try fm.moveItem(at: archive.directory, to: stray)
+    let planted = archive.directory.appendingPathComponent("audio/mic", isDirectory: true)
+    try fm.createDirectory(at: planted, withIntermediateDirectories: true)
+    try Data("theirs".utf8).write(to: planted.appendingPathComponent("000001.caf"))
+
+    #expect(throws: HolosError.self) { _ = try staging.publish(sessionName) }
+    #expect(!fm.fileExists(atPath: root.appendingPathComponent(sessionName).path))
+    let note = try #require(staging.discard())
+    #expect(note.contains("moved out of the import folder"))
+    #expect(note.contains(stray.lastPathComponent))
+    #expect(sessionImporterTree(stray).contains("manifest.json"))
+    #expect(sessionImporterEntries(root).isEmpty)
+}
+
+/// A finished staging session with its archive closed, for `publish` tests.
+private func sessionImporterFinishedStaging(in root: URL) async throws -> (ImportStaging, SessionArchive, String) {
+    let staging = try ImportStaging.create(in: root)
+    let archive = try staging.createSession(name: "Imported", locale: "en-CA", backend: .speech)
+    let lease = try staging.acquireLease()
+    try await archive.finish(status: ArchiveStatus.audioOnly)
+    lease.release()
+    return (staging, archive, try #require(staging.sessionName))
+}
+
+/// The rename names its source entry, so a folder swapped in at the session's name after `publish` checked it and
+/// before the rename is what the rename moves. The published entry is checked after the rename: the swapped-in folder
+/// is moved back into the staging folder, `publish` throws, nothing stays published, and `discard` says where the
+/// session went. Before, `publish` returned the swapped-in folder as the imported session.
+@Test func publishRollsBackAFolderSwappedInBetweenTheCheckAndTheRename() async throws {
+    let temp = try TemporaryDirectory("import")
+    defer { temp.remove() }
+    let root = temp.url.appendingPathComponent("Sessions", isDirectory: true)
+    let fm = FileManager.default
+    let (staging, archive, sessionName) = try await sessionImporterFinishedStaging(in: root)
+    let stray = temp.url.appendingPathComponent("stray-\(UUID().uuidString)", isDirectory: true)
+
+    #expect(throws: HolosError.self) {
+        _ = try staging.publish(sessionName, beforeMove: {
+            do {
+                try fm.moveItem(at: archive.directory, to: stray)
+                try fm.createDirectory(at: archive.directory, withIntermediateDirectories: true)
+                try Data("theirs".utf8).write(to: archive.directory.appendingPathComponent("theirs.txt"))
+            } catch {
+                Issue.record("Cannot swap the folder: \(error)")
+            }
+        })
+    }
+    #expect(!staging.published)
+    #expect(!fm.fileExists(atPath: root.appendingPathComponent(sessionName).path))
+    #expect(sessionImporterTree(archive.directory) == ["theirs.txt"], "The swapped-in folder is back in staging.")
+    let note = try #require(staging.discard())
+    #expect(note.contains(stray.lastPathComponent))
+    #expect(sessionImporterTree(stray).contains("manifest.json"))
+    #expect(sessionImporterEntries(root).isEmpty)
+}
+
+/// When the sessions root is renamed, or a link to it retargeted, while the session is published, the session lands
+/// in the folder `create` opened. `publish` never returns a location other than `publishedURL` (the one the import
+/// persists as `Transcript.source`): it throws, naming where the session is now, and leaves the published session
+/// alone. Before, it returned the root's current path from `F_GETPATH` while the transcript named the old one.
+@Test(arguments: [false, true])
+func publishFailsClearlyWhenTheOpenedRootMoved(throughLink: Bool) async throws {
+    let temp = try TemporaryDirectory("import")
+    defer { temp.remove() }
+    let fm = FileManager.default
+    let real = temp.url.appendingPathComponent("Sessions", isDirectory: true)
+    let other = temp.url.appendingPathComponent("Other", isDirectory: true)
+    let renamed = temp.url.appendingPathComponent("Renamed", isDirectory: true)
+    let link = temp.url.appendingPathComponent("Link", isDirectory: true)
+    try fm.createDirectory(at: real, withIntermediateDirectories: true)
+    try fm.createDirectory(at: other, withIntermediateDirectories: true)
+    if throughLink { try fm.createSymbolicLink(at: link, withDestinationURL: real) }
+    let root = throughLink ? link : real
+    let (staging, _, sessionName) = try await sessionImporterFinishedStaging(in: root)
+
+    var message = ""
+    do {
+        let result = try staging.publish(sessionName, after: { step in
+            guard step == .moved else { return }
+            do {
+                if throughLink {
+                    try fm.removeItem(at: link)
+                    try fm.createSymbolicLink(at: link, withDestinationURL: other)
+                } else {
+                    try fm.moveItem(at: real, to: renamed)
+                }
+            } catch {
+                Issue.record("Cannot move the root: \(error)")
+            }
+        })
+        Issue.record("publish returned \(result.path) although the root moved")
+    } catch HolosError.io(let text) {
+        message = text
+    }
+    let actual = (throughLink ? real : renamed).appendingPathComponent(sessionName, isDirectory: true)
+    #expect(message.contains(sessionName))
+    #expect(message.contains("It is now in"))
+    #expect(message.contains((throughLink ? real : renamed).lastPathComponent))
+    #expect(fm.fileExists(atPath: actual.appendingPathComponent("manifest.json").path))
+    #expect(staging.published)
+    #expect(staging.discard() == nil)
+    #expect(fm.fileExists(atPath: actual.appendingPathComponent("manifest.json").path))
+}
+
+/// While the root stays put, `publish` returns exactly `publishedURL`, the location the import persists.
+@Test func publishReturnsThePublishedURL() async throws {
+    let temp = try TemporaryDirectory("import")
+    defer { temp.remove() }
+    let root = temp.url.appendingPathComponent("Sessions", isDirectory: true)
+    let (staging, _, sessionName) = try await sessionImporterFinishedStaging(in: root)
+    let result = try staging.publish(sessionName)
+    #expect(result == staging.publishedURL(sessionName))
+    #expect(FileManager.default.fileExists(atPath: result.appendingPathComponent("manifest.json").path))
+}
+
+/// A cancel before `start` is kept: the work starts cancelled and none of it runs, so interrupt handling installed
+/// before `holos session import` starts its work never misses a signal. A cancel after `start` reaches the task.
+@Test(.timeLimit(.minutes(1)))
+func cancellableStartKeepsACancelMadeBeforeTheWorkStarts() async throws {
+    let early = CancellableStart<Bool>()
+    early.cancel()
+    let ran = SharedValue(false)
+    await #expect(throws: CancellationError.self) {
+        _ = try await early.start {
+            ran.update { $0 = true }
+            return true
+        }.value
+    }
+    #expect(!ran.value)
+
+    let late = CancellableStart<Bool>()
+    let task = late.start {
+        try await Task.sleep(for: .seconds(30))
+        return true
+    }
+    late.cancel()
+    await #expect(throws: CancellationError.self) { _ = try await task.value }
 }
 
 @Test(.timeLimit(.minutes(1)))
@@ -681,4 +1118,114 @@ func scoreNeedsSpeakerLabelsAndTurns() async throws {
     #expect(throws: HolosError.self) {
         _ = try SessionScorer.score(session: labelled, otterTranscript: sessionScorerOtterText, collar: -1)
     }
+}
+
+/// The message of the `HolosError.invalidInput` or `.unavailable` that `body` throws; nil for no or another error.
+private func sessionScorerRefusal(_ body: () throws -> Void) -> (invalid: Bool, message: String)? {
+    do {
+        try body()
+        return nil
+    } catch HolosError.invalidInput(let message) {
+        return (true, message)
+    } catch HolosError.unavailable(let message) {
+        return (false, message)
+    } catch {
+        return nil
+    }
+}
+
+@Test(.timeLimit(.minutes(1)))
+func scoreRejectsTranscriptsWithNoTurnInsideTheAudio() async throws {
+    let temp = try TemporaryDirectory("score")
+    defer { temp.remove() }
+    let session = try await sessionScorerSession(in: temp.url)
+    // The fixture's audio is 20 s. A transcript that starts at 30 s is another recording's; one whose only turn
+    // starts at 0:20 (Otter rounds down) covers none of the audio. Both used to score as zeros.
+    for otter in ["Maria Chen  0:30\nHello.\n", "Maria Chen  0:20\nHello.\n",
+                  "Maria Chen  0:00\nHello.\n\nJim Park  0:25\nHi.\n"] {
+        let refusal = sessionScorerRefusal { _ = try SessionScorer.score(session: session, otterTranscript: otter) }
+        #expect(refusal?.invalid == true, "a transcript outside the audio was scored")
+        for word in ["Maria", "Jim", "Hello"] {
+            #expect(refusal?.message.contains(word) == false, "the error named a label or transcript word")
+        }
+    }
+}
+
+@Test(.timeLimit(.minutes(1)))
+func scoreRejectsTimesThatGoBackwards() async throws {
+    let temp = try TemporaryDirectory("score")
+    defer { temp.remove() }
+    let session = try await sessionScorerSession(in: temp.url)
+    let otter = "Maria Chen  0:10\nHello.\n\nJim Park  0:05\nHi.\n"
+    let refusal = sessionScorerRefusal { _ = try SessionScorer.score(session: session, otterTranscript: otter) }
+    #expect(refusal?.invalid == true)
+    #expect(refusal?.message.contains("backwards") == true)
+}
+
+@Test(.timeLimit(.minutes(1)))
+func scoreRejectsLabelsWithoutSpeakerSegments() async throws {
+    let temp = try TemporaryDirectory("score")
+    defer { temp.remove() }
+    let transcript = SessionFixtures.transcript(SessionFixtures.alternatingSegments(track: "mic"))
+    let session = try await SessionFixtures.makeSession(in: temp.url, mode: .inPerson, transcript: transcript)
+    let empty = DiarizerOutput(segments: [], centroids: [:], windows: [], processingSeconds: 0)
+    try SessionFixtures.writeHeadRun(session: session, transcript: transcript, outputs: ["mic": empty])
+    let refusal = sessionScorerRefusal {
+        _ = try SessionScorer.score(session: session, otterTranscript: sessionScorerOtterText)
+    }
+    #expect(refusal?.invalid == false, "labels without segments were scored")
+}
+
+@Test(.timeLimit(.minutes(1)))
+func scoreRejectsReferenceAndLabelsThatDoNotOverlap() async throws {
+    let temp = try TemporaryDirectory("score")
+    defer { temp.remove() }
+    let transcript = SessionFixtures.transcript(SessionFixtures.alternatingSegments(track: "mic"))
+    let session = try await SessionFixtures.makeSession(in: temp.url, mode: .inPerson, transcript: transcript)
+    // Holos hears one speaker in 0–5 s; Otter's only turn runs 10–20 s.
+    try SessionFixtures.writeHeadRun(
+        session: session, transcript: transcript,
+        outputs: ["mic": FakeDiarizer.alternating(speakers: ["S1"], turnSeconds: 5, duration: 5)])
+    let refusal = sessionScorerRefusal {
+        _ = try SessionScorer.score(session: session, otterTranscript: "Maria Chen  0:10\nHello.\n")
+    }
+    #expect(refusal?.invalid == true, "disjoint reference and labels were scored")
+    #expect(refusal?.message.contains("overlap") == true)
+}
+
+@Test(.timeLimit(.minutes(1)))
+func scoreRejectsACollarThatCoversEveryTurn() async throws {
+    let temp = try TemporaryDirectory("score")
+    defer { temp.remove() }
+    let session = try await sessionScorerSession(in: temp.url)
+    // The fixture's Otter turns are 5 s long; a 3 s collar around each boundary leaves nothing to score.
+    let refusal = sessionScorerRefusal {
+        _ = try SessionScorer.score(session: session, otterTranscript: sessionScorerOtterText, collar: 3)
+    }
+    #expect(refusal?.invalid == true, "a transcript with every turn inside the collar was scored")
+    #expect(refusal?.message.contains("collar") == true)
+}
+
+@Test(.timeLimit(.minutes(1)))
+func scoreReportsTurnAgreementAsNotComparableWithoutLabelledTurns() async throws {
+    let temp = try TemporaryDirectory("score")
+    defer { temp.remove() }
+    // No words, so the run has speaker segments but no labelled turns.
+    let transcript = SessionFixtures.transcript([])
+    let session = try await SessionFixtures.makeSession(in: temp.url, mode: .inPerson, transcript: transcript)
+    try SessionFixtures.writeHeadRun(session: session, transcript: transcript,
+                                     outputs: ["mic": SessionFixtures.alternatingOutput()])
+    let report = try SessionScorer.score(session: session, otterTranscript: sessionScorerOtterText)
+    #expect(report.agreementConfusion == 0)
+    #expect(report.comparedSeconds > 15)
+    #expect(report.turnAgreementConfusion == nil)
+    #expect(report.turnComparedSeconds == 0)
+    #expect(report.summaryLines.contains { $0.hasSuffix("labelled turns: not comparable (no labelled turn overlaps Otter's turns)") })
+
+    let encoder = JSONEncoder()
+    encoder.outputFormatting = [.sortedKeys]
+    let json = String(decoding: try encoder.encode(report), as: UTF8.self)
+    #expect(!json.contains("turnAgreementConfusion"))
+    let decoded = try JSONDecoder().decode(SessionScorer.Report.self, from: Data(json.utf8))
+    #expect(decoded == report)
 }

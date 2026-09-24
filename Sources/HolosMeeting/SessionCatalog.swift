@@ -19,6 +19,9 @@ public enum SpeakerLabelState: String, Codable, Sendable {
     case notLabelled
     case failed
     case interrupted
+    /// postprocess.json or speakers/head.json cannot be read: damaged, written by a newer Holos, or an I/O error;
+    /// `labelMessage` says why.
+    case unreadable
 }
 
 /// One session in the catalog. Reading it takes no lock and changes nothing.
@@ -34,7 +37,12 @@ public struct SessionSummary: Codable, Sendable, Equatable, Identifiable {
     /// Longest track's total chunk duration.
     public var savedSeconds: Double
     public var chunkCount: Int
+    /// The current transcript, once its revision was read and holds this ID; nil when there is none or it cannot be
+    /// read (`transcriptProblem` then says why).
     public var transcriptID: String?
+    /// Why the current transcript cannot be read (the pointer or revision is missing, damaged, holds another ID, or
+    /// was written by a newer Holos); nil when it can, or when the session has none.
+    public var transcriptProblem: String?
     public var speakerState: SpeakerLabelState
     public var labelMessage: String?
     public var runID: String?
@@ -49,12 +57,14 @@ public struct SessionSummary: Codable, Sendable, Equatable, Identifiable {
     public init(id: String, directory: URL, name: String, createdAt: Date, source: AudioSource,
                 origin: MeetingOrigin = .recorded, state: SessionState, manifestStatus: String,
                 savedSeconds: Double = 0, chunkCount: Int = 0, transcriptID: String? = nil,
-                speakerState: SpeakerLabelState = .none, labelMessage: String? = nil, runID: String? = nil,
+                transcriptProblem: String? = nil, speakerState: SpeakerLabelState = .none,
+                labelMessage: String? = nil, runID: String? = nil,
                 hasSpeakerEdits: Bool = false, phase: RecorderPhase? = nil, pid: Int32? = nil,
                 liveness: RecorderLiveness, bytes: Int64 = 0, derivedBytes: Int64 = 0, audioDeleted: Bool = false) {
         self.id = id; self.directory = directory; self.name = name; self.createdAt = createdAt
         self.source = source; self.origin = origin; self.state = state; self.manifestStatus = manifestStatus
         self.savedSeconds = savedSeconds; self.chunkCount = chunkCount; self.transcriptID = transcriptID
+        self.transcriptProblem = transcriptProblem
         self.speakerState = speakerState; self.labelMessage = labelMessage; self.runID = runID
         self.hasSpeakerEdits = hasSpeakerEdits; self.phase = phase; self.pid = pid; self.liveness = liveness
         self.bytes = bytes; self.derivedBytes = derivedBytes; self.audioDeleted = audioDeleted
@@ -68,7 +78,6 @@ extension RecorderLiveness: Codable {}
 /// tolerant: a file that cannot be read makes its part of the summary unknown, never the listing fail.
 public enum SessionCatalog {
     private static let log = Logger(subsystem: "ca.orlenko.holos.app", category: "meeting")
-    private static let maxRecordBytes = 1 << 20
     /// Folders deeper than this inside a session are not counted in its size.
     private static let maxDepth = 16
 
@@ -101,20 +110,30 @@ public enum SessionCatalog {
                 id: folder.hasSuffix(".holos") ? String(folder.dropLast(6)) : folder, directory: session,
                 name: folder, createdAt: folderCreationDate(session), source: .microphone, state: .damaged,
                 manifestStatus: "", phase: phase, pid: pid, liveness: liveness, bytes: sizes.bytes,
-                derivedBytes: sizes.derived, audioDeleted: SessionFiles.audioDeleted(session: session))
+                derivedBytes: sizes.derived, audioDeleted: audioDeleted(session, sessionID: nil))
         }
         let origin = (try? SessionFiles.meetingInfo(session: session, manifest: manifest))?.origin ?? .recorded
-        let head = try? SessionSpeakerStore.readHead(session: session)
-        let speakers = speakerState(record: postProcessingRecord(session), headRunID: head?.runID, liveness: liveness)
-        let transcriptID = try? SessionArchive.currentTranscriptID(at: session)
+        let speakers = speakerLabels(session, liveness: liveness)
+        // The revision is read, not only found, so a damaged, truncated, mislabelled, or newer one is never listed
+        // as the session's transcript.
+        var transcriptID: String?
+        var transcriptProblem: String?
+        do {
+            transcriptID = try SessionFiles.currentTranscript(session: session)?.id
+        } catch {
+            log.error("Session \(manifest.id, privacy: .public): current transcript unreadable: \(error.localizedDescription, privacy: .private)")
+            transcriptProblem = error.localizedDescription
+        }
         return SessionSummary(
             id: manifest.id, directory: session, name: manifest.name, createdAt: manifest.createdAt,
             source: manifest.source, origin: origin,
             state: state(manifestStatus: manifest.status, liveness: liveness), manifestStatus: manifest.status,
             savedSeconds: manifest.savedSeconds, chunkCount: manifest.chunks.count, transcriptID: transcriptID,
-            speakerState: speakers.state, labelMessage: speakers.message, runID: speakers.runID,
+            transcriptProblem: transcriptProblem, speakerState: speakers.state, labelMessage: speakers.message,
+            runID: speakers.runID,
             hasSpeakerEdits: hasSpeakerEdits(session), phase: phase, pid: pid, liveness: liveness,
-            bytes: sizes.bytes, derivedBytes: sizes.derived, audioDeleted: SessionFiles.audioDeleted(session: session))
+            bytes: sizes.bytes, derivedBytes: sizes.derived,
+            audioDeleted: audioDeleted(session, sessionID: manifest.id))
     }
 
     // MARK: - State mapping
@@ -171,18 +190,22 @@ public enum SessionCatalog {
         }
     }
 
-    /// postprocess.json; nil when missing, damaged, or written by a newer Holos (treated as no record).
-    private static func postProcessingRecord(_ session: URL) -> PostProcessingRecord? {
-        do {
-            guard let data = try AtomicFile.readIfPresent(SessionPaths.postprocess(session), maxBytes: maxRecordBytes) else {
-                return nil
-            }
-            try SessionFiles.checkVersion(data, current: 1, name: "postprocess.json")
-            return try HolosJSON.decoder().decode(PostProcessingRecord.self, from: data)
-        } catch {
-            log.error("Cannot read postprocess.json: \(error.localizedDescription, privacy: .private)")
-            return nil
+    /// The speaker state from postprocess.json, speakers/head.json and the run the head names (`speakerState`), as
+    /// `SavedSpeakerState` validates them (recovery validates them the same way): a head counts as labels only when
+    /// `SpeakerSessionSnapshot.load`, which the exports and speaker commands use, loads its run. When any of them
+    /// exists but cannot be read (damaged, of another session, written by a newer Holos, an I/O error), the head's run
+    /// or its transcript is missing or damaged, a span does not fit that transcript, or the record names a run while
+    /// the head is missing, the state is `unreadable` with why, never the state of a session without that file; the
+    /// run is the head's, else the record's.
+    static func speakerLabels(_ session: URL, liveness: RecorderLiveness)
+        -> (state: SpeakerLabelState, message: String?, runID: String?) {
+        let saved = SavedSpeakerState.read(session: session)
+        guard saved.problems.isEmpty else {
+            let message = saved.problems.map(\.localizedDescription).joined(separator: " ")
+            log.error("Cannot read the speaker state: \(message, privacy: .private)")
+            return (.unreadable, message, saved.head?.runID ?? saved.record?.runID)
         }
+        return speakerState(record: saved.record, headRunID: saved.head?.runID, liveness: liveness)
     }
 
     /// Whether the speaker edit journal holds any edit, including lines this build cannot read and a partial last
@@ -191,6 +214,18 @@ public enum SessionCatalog {
     static func hasSpeakerEdits(_ session: URL) -> Bool {
         guard let journal = try? SessionSpeakerStore.readEdits(session: session) else { return true }
         return !journal.edits.isEmpty || journal.unreadableLines > 0 || journal.tornTail
+    }
+
+    /// Whether the session's audio was deleted on purpose: audio-deleted.json is a readable record of this session
+    /// (`AudioDeletedRecord.isDeleted`). A marker that is damaged, of another session, written by a newer Holos, or
+    /// cannot be read now is not listed as deleted audio (the error is logged).
+    static func audioDeleted(_ session: URL, sessionID: String?) -> Bool {
+        do {
+            return try SessionFiles.audioDeleted(session: session, sessionID: sessionID)
+        } catch {
+            log.error("Cannot read audio-deleted.json: \(error.localizedDescription, privacy: .private)")
+            return false
+        }
     }
 
     /// When the folder was created (for a session whose manifest cannot be read).

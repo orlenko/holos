@@ -146,7 +146,7 @@ private func near(_ value: Double, _ expected: Double) -> Bool {
                                               hypothesis: intervals(("X", 1, 4), ("Y", 12, 15), ("X", 16, 18)))
     #expect(result.mapping == ["A": "X", "B": "Y"])
     #expect(near(result.comparedSeconds, 8))
-    #expect(near(result.confusion, 0.25))           // 16–18 s: B heard as X
+    #expect(near(result.confusion ?? .nan, 0.25))   // 16–18 s: B heard as X
 }
 
 @Test func agreementCountsAFrameAsAgreeingWhenTheMappedSpeakerIsAmongOverlaps() {
@@ -157,9 +157,43 @@ private func near(_ value: Double, _ expected: Double) -> Bool {
     #expect(result.confusion == 0)
 }
 
-@Test func agreementWithNothingComparedIsZero() {
-    let result = DiarizationScoring.agreement(reference: intervals(("A", 0, 10)), hypothesis: [])
-    #expect(result.confusion == 0 && result.comparedSeconds == 0 && result.mapping.isEmpty)
+@Test func agreementWithNothingComparedIsNotComparable() {
+    let noHypothesis = DiarizationScoring.agreement(reference: intervals(("A", 0, 10)), hypothesis: [])
+    #expect(noHypothesis.confusion == nil && noHypothesis.comparedSeconds == 0 && noHypothesis.mapping.isEmpty)
+    #expect(near(noHypothesis.referenceSeconds, 9.5) && noHypothesis.hypothesisSeconds == 0)
+
+    let noReference = DiarizationScoring.agreement(reference: [], hypothesis: intervals(("X", 0, 10)))
+    #expect(noReference.confusion == nil && noReference.referenceSeconds == 0)
+    #expect(near(noReference.hypothesisSeconds, 10))
+
+    let nothing = DiarizationScoring.agreement(reference: intervals(("A", .nan, 1)), hypothesis: [])
+    #expect(nothing == DiarizationAgreement(confusion: nil, comparedSeconds: 0, referenceSeconds: 0,
+                                            hypothesisSeconds: 0, mapping: [:]))
+}
+
+@Test func agreementWithoutOverlapIsNotComparable() {
+    let result = DiarizationScoring.agreement(reference: intervals(("A", 10, 20)), hypothesis: intervals(("X", 0, 5)))
+    #expect(result.confusion == nil && result.comparedSeconds == 0 && result.mapping.isEmpty)
+    #expect(result.referenceSeconds > 0 && result.hypothesisSeconds > 0)
+}
+
+@Test func agreementWithEveryTurnInsideTheCollarIsNotComparable() {
+    // Two 0.4 s turns with a 0.25 s collar: every frame is within 0.25 s of a boundary.
+    let result = DiarizationScoring.agreement(reference: intervals(("A", 0, 0.4), ("B", 0.4, 0.8)),
+                                              hypothesis: intervals(("X", 0, 0.8)), collar: 0.25)
+    #expect(result.confusion == nil && result.referenceSeconds == 0 && result.comparedSeconds == 0)
+}
+
+@Test func agreementPrintsNoSpeakerLabels() {
+    let result = DiarizationScoring.agreement(reference: intervals(("Private Ref", 0, 10)),
+                                              hypothesis: intervals(("Private Hyp", 0, 10)))
+    #expect(result.mapping == ["Private Ref": "Private Hyp"])
+    var dumped = ""
+    dump(result, to: &dumped)
+    for text in [String(describing: result), String(reflecting: result), dumped] {
+        #expect(!text.contains("Private"))
+    }
+    #expect(String(describing: result).contains("mappedPairs: 1"))
 }
 
 // MARK: - Assignment
