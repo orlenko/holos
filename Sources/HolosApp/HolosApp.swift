@@ -563,16 +563,20 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
         correctionsWindow?.show(lastTranscript: lastTranscript, corrections: corrections.entries)
     }
 
-    private func learnCorrections(from edited: String) -> [Correction]? {
+    private func learnCorrections(from edited: String) -> CorrectionsWindow.LearnResult? {
         // Diff against the recognizer's words, so fixing text an existing rule produced replaces that rule.
-        let learned = CorrectionList.learn(original: lastRecognized, corrected: edited) { word in
-            NSSpellChecker.shared.checkSpelling(of: word, startingAt: 0).location == NSNotFound
-        }.filter { corrections.apply(to: $0.heard) != $0.meant }
-        guard !learned.isEmpty else { return [] }
+        // A word counts as "common" only if its lowercase form is in the dictionary: the spell checker also
+        // accepts capitalized names ("Gwen"), which should be learned on their own.
+        let result = CorrectionList.learnReportingDeclined(original: lastRecognized, corrected: edited) { word in
+            NSSpellChecker.shared.checkSpelling(of: word.lowercased(), startingAt: 0).location == NSNotFound
+        }
+        let learned = result.learned.filter { corrections.apply(to: $0.heard) != $0.meant }
+        let declined = result.declined.filter { corrections.apply(to: $0.heard) != $0.meant }
+        guard !learned.isEmpty else { return CorrectionsWindow.LearnResult(learned: [], declined: declined) }
         guard changeCorrections({ list in for correction in learned { list.add(correction) } }) else { return nil }
         lastTranscript = edited
         lastRecognized = edited
-        return learned
+        return CorrectionsWindow.LearnResult(learned: learned, declined: declined)
     }
 
     /// Returns false when the change was rejected or could not be saved.

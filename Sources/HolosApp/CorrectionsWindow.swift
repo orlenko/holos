@@ -6,7 +6,13 @@ import HolosCore
 final class CorrectionsWindow: NSObject, NSWindowDelegate {
     private let window: NSWindow
     /// Returns the learned pairs, or nil when the change could not be saved.
-    private let onLearn: (String) -> [Correction]?
+    struct LearnResult {
+        var learned: [Correction]
+        /// Single common-word swaps with no neighbouring word to anchor them; offered for manual adding.
+        var declined: [Correction]
+    }
+
+    private let onLearn: (String) -> LearnResult?
     private let onAdd: (Correction) -> Bool
     private let onRemove: (Correction) -> Bool
     private let transcriptView: NSTextView
@@ -19,7 +25,7 @@ final class CorrectionsWindow: NSObject, NSWindowDelegate {
     private var positioned = false
     private var shown: [Correction] = []
 
-    init(onLearn: @escaping (String) -> [Correction]?, onAdd: @escaping (Correction) -> Bool,
+    init(onLearn: @escaping (String) -> LearnResult?, onAdd: @escaping (Correction) -> Bool,
          onRemove: @escaping (Correction) -> Bool) {
         window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 560, height: 600),
                           styleMask: [.titled, .closable, .miniaturizable, .resizable],
@@ -160,13 +166,24 @@ final class CorrectionsWindow: NSObject, NSWindowDelegate {
     }
 
     @objc private func learn() {
-        guard let learned = onLearn(transcriptView.string) else {
+        guard let result = onLearn(transcriptView.string) else {
             feedbackLabel.stringValue = Self.saveFailure
             return
         }
-        feedbackLabel.stringValue = learned.isEmpty
+        var lines: [String] = []
+        if !result.learned.isEmpty {
+            lines.append("Learned: " + result.learned.map { "\($0.heard) → \($0.meant)" }.joined(separator: "; "))
+        }
+        if let first = result.declined.first {
+            let pairs = result.declined.map { "\($0.heard) → \($0.meant)" }.joined(separator: "; ")
+            lines.append("Not learned automatically: \(pairs). \(first.heard) is a common word with no word next to it, "
+                + "so a rule could change unrelated text. It is filled in below; choose Add to use it everywhere.")
+            heardField.stringValue = first.heard
+            meantField.stringValue = first.meant
+        }
+        feedbackLabel.stringValue = lines.isEmpty
             ? "No changed words found. Edit a misheard word above, then Learn."
-            : "Learned: " + learned.map { "\($0.heard) → \($0.meant)" }.joined(separator: "; ")
+            : lines.joined(separator: "\n")
     }
 
     @objc private func copyText() {

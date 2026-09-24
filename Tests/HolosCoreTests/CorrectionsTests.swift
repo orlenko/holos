@@ -72,3 +72,15 @@ import Testing
     #expect(CorrectionList.learn(original: "Holus.", corrected: "Holos.", isDictionaryWord: { _ in false })
         == [.init(heard: "Holus", meant: "Holos")])
 }
+
+@Test func reportsDictionaryWordSwapsItDeclines() {
+    let text = "Hi, Gwen. Good morning."
+    let fixed = "Hi, Gwyn. Good morning."
+    let everyWordIsCommon = CorrectionList.learnReportingDeclined(original: text, corrected: fixed) { _ in true }
+    #expect(everyWordIsCommon.learned.isEmpty)
+    #expect(everyWordIsCommon.declined == [.init(heard: "Gwen", meant: "Gwyn")])
+    // A name whose lowercase form is not a word is learned on its own.
+    let namesAreNotCommon = CorrectionList.learnReportingDeclined(original: text, corrected: fixed) { $0 != "Gwen" }
+    #expect(namesAreNotCommon.learned == [.init(heard: "Gwen", meant: "Gwyn")])
+    #expect(namesAreNotCommon.declined.isEmpty)
+}
