@@ -30,17 +30,25 @@ public struct RecordingOptions: Sendable, Equatable {
     public var expectedSpeakers: Int?
     /// Report finalized phrases while recording (the CLI prints them); false for `--no-live-text`.
     public var liveText: Bool
-    /// Which input the microphone track records (§4.12; PR2b chooses it from the source).
+    /// Which input the microphone track records (decision 9, §4.12): the built-in microphone in person (`mic`), the
+    /// system default input in a call (`mic+system`), the device the call app uses.
     public var microphone: MicrophoneSelection
 
+    /// `microphone` nil chooses it from `source`: `.builtIn` for `mic`, `.systemDefault` otherwise.
     public init(name: String, source: AudioSource, locale: String, backend: SpeechBackend, root: URL,
                 duration: Double? = nil, recordOnly: Bool = false, applicationBundleID: String? = nil,
                 vocabulary: [String] = [], sessionID: String? = nil, othersInRoom: Bool = false,
-                expectedSpeakers: Int? = nil, liveText: Bool = true, microphone: MicrophoneSelection = .systemDefault) {
+                expectedSpeakers: Int? = nil, liveText: Bool = true, microphone: MicrophoneSelection? = nil) {
         self.name = name; self.source = source; self.locale = locale; self.backend = backend; self.root = root
         self.duration = duration; self.recordOnly = recordOnly; self.applicationBundleID = applicationBundleID
         self.vocabulary = vocabulary; self.sessionID = sessionID; self.othersInRoom = othersInRoom
-        self.expectedSpeakers = expectedSpeakers; self.liveText = liveText; self.microphone = microphone
+        self.expectedSpeakers = expectedSpeakers; self.liveText = liveText
+        self.microphone = microphone ?? Self.microphone(for: source)
+    }
+
+    /// Decision 9: in person records the built-in microphone; a call records the system default input.
+    public static func microphone(for source: AudioSource) -> MicrophoneSelection {
+        source == .microphone ? .builtIn : .systemDefault
     }
 }
 
@@ -57,6 +65,14 @@ public struct RecordingDependencies: Sendable {
     /// Free space on the sessions volume (§4.5).
     public var freeSpace: any FreeSpaceProvider
     public var timeouts: StopTimeouts
+    /// System sleep and wake, and the lid state (§4.4); nil: none are seen, and the lid counts as open.
+    public var power: (any SystemPowerEvents)?
+    /// Takes the idle-sleep assertion, named by its argument (§4.4). nil from it: no assertion is held.
+    public var makePowerAssertion: @Sendable (String) -> PowerAssertion?
+    /// The built-in microphone and the system default input, looked up before every capture start (§4.12).
+    public var findInputDevices: @Sendable () -> InputDevices
+    /// Device-list changes and screen unlocks, after which a waiting recorder retries at once (§4.2); nil: none.
+    public var environmentEvents: AudioEnvironmentEvents?
     /// Loop cadence and queue sizes; tests shorten them.
     var tuning = RecorderTuning()
     /// Tests only: sees every status.json written, in order.
@@ -68,24 +84,58 @@ public struct RecordingDependencies: Sendable {
     var hostTime: @Sendable () -> Double = { AudioCapture.hostSeconds() }
 
     /// No hardware defaults: tests use `.testing(...)` (Fakes.swift). The defaults of the later parameters are
-    /// inert: a clock that starts when epoch 0 starts, unlimited free space, and the standard timeouts.
+    /// inert: a clock that starts when epoch 0 starts, unlimited free space, the standard timeouts, no power events
+    /// or assertion, a placeholder built-in microphone that is also the default input, and no environment events.
     public init(makeCapture: @escaping @MainActor @Sendable () -> any MeetingCapture,
                 makeSpeech: @escaping LiveSpeechFactory, stop: any RecorderStopSource,
                 reporter: any RecordingReporter, postProcess: PostProcessHook?,
                 makeClock: (@Sendable (Double) -> any SessionClock)? = nil,
-                freeSpace: any FreeSpaceProvider = FixedFreeSpace(.max), timeouts: StopTimeouts = .standard) {
+                freeSpace: any FreeSpaceProvider = FixedFreeSpace(.max), timeouts: StopTimeouts = .standard,
+                power: (any SystemPowerEvents)? = nil,
+                makePowerAssertion: @escaping @Sendable (String) -> PowerAssertion? = { _ in nil },
+                findInputDevices: @escaping @Sendable () -> InputDevices = { RecordingDependencies.placeholderDevices },
+                environmentEvents: AudioEnvironmentEvents? = nil) {
         self.makeCapture = makeCapture; self.makeSpeech = makeSpeech; self.stop = stop
         self.reporter = reporter; self.postProcess = postProcess
         self.makeClock = makeClock ?? { _ in ElapsedSessionClock() }
         self.freeSpace = freeSpace; self.timeouts = timeouts
+        self.power = power; self.makePowerAssertion = makePowerAssertion
+        self.findInputDevices = findInputDevices; self.environmentEvents = environmentEvents
     }
 
-    /// LiveMeetingCapture + AppleSpeechSession.make, `ContinuousSessionClock`, and `VolumeFreeSpace`.
+    /// LiveMeetingCapture + AppleSpeechSession.make, `ContinuousSessionClock`, `VolumeFreeSpace`, `SystemPowerMonitor`,
+    /// `PowerAssertion`, `BuiltInMicrophone.devices`, and `AudioEnvironmentEvents`.
     public static func live(stop: any RecorderStopSource, reporter: any RecordingReporter,
                             postProcess: PostProcessHook?) -> RecordingDependencies {
         RecordingDependencies(makeCapture: { LiveMeetingCapture() }, makeSpeech: appleSpeechFactory,
                               stop: stop, reporter: reporter, postProcess: postProcess,
-                              makeClock: { ContinuousSessionClock(hostTimeOrigin: $0) }, freeSpace: VolumeFreeSpace())
+                              makeClock: { ContinuousSessionClock(hostTimeOrigin: $0) }, freeSpace: VolumeFreeSpace(),
+                              power: livePowerMonitor(), makePowerAssertion: livePowerAssertion,
+                              findInputDevices: { BuiltInMicrophone.devices() },
+                              environmentEvents: AudioEnvironmentEvents())
+    }
+
+    /// The inert default of `findInputDevices`: a built-in microphone that is also the default input.
+    public static let placeholderDevices: InputDevices = {
+        let builtIn = InputDevice(id: 0, uid: "BuiltInMicrophoneDevice", name: "Built-in Microphone")
+        return InputDevices(builtIn: builtIn, systemDefault: builtIn)
+    }()
+
+    private static let log = Logger(subsystem: "ca.orlenko.holos.app", category: "power")
+
+    /// A recording without a sleep monitor keeps going; it just does not see sleep coming.
+    private static func livePowerMonitor() -> SystemPowerMonitor? {
+        do { return try SystemPowerMonitor() } catch {
+            log.error("No sleep monitor: \(error.localizedDescription, privacy: .public)")
+            return nil
+        }
+    }
+
+    private static func livePowerAssertion(_ reason: String) -> PowerAssertion? {
+        do { return try PowerAssertion(reason: reason) } catch {
+            log.error("No idle-sleep assertion: \(error.localizedDescription, privacy: .public)")
+            return nil
+        }
     }
 }
 
@@ -104,6 +154,11 @@ struct RecorderTuning: Sendable {
     var pumpCapacitySeconds = 60.0
     var liveQueueSeconds = LiveTrack.queueSeconds
     var journalCapacity = LiveTrack.journalCapacity
+    /// The stall limits (3 s to warn, 10 s to restart the microphone).
+    var watchdog = TrackWatchdog()
+    /// Everything done for a sleep before it is allowed (stop capture, close chunks) beyond the capture-stop limit;
+    /// macOS waits at most 30 s (§4.4).
+    var sleepMargin: Duration = .seconds(2)
 }
 
 /// How a recording that saved its audio ended.
@@ -140,13 +195,21 @@ public enum RecordingWorkflow {
     /// which is rewritten every second until it says `exited`. The loop runs `RecorderMachine`: capture restarts in
     /// new epochs after a failure or a device change, waits and retries while audio is unavailable, pauses, and
     /// answers control requests in `control/` (§4.1, §4.2). A finished recording returns an outcome whatever stopped it
-    /// (`stopReason`), including 10 minutes without audio (`captureFailed`) and a low disk (`diskLow`).
+    /// (`stopReason`), including 10 minutes without audio (`captureFailed`), a low disk (`diskLow`), and a sleep of 15
+    /// minutes or more (`sleepTimeout`).
     ///
-    /// Throws before creating a session for invalid options and when the disk has too little space. Capture never
-    /// started: the archive is finished `failed` and the error is thrown. Audio could not be saved (the writer failed,
-    /// or no audio arrived): marks the archive incomplete and throws `HolosError.incomplete`. Transcription failure:
-    /// does not throw; the outcome carries the errors. A hook that cannot get the processing lease does not run: the
-    /// outcome and `status.json` carry a `.failed` post-processing record saying so.
+    /// Sleep and power (§4.4): the idle-sleep assertion is held from start to exit, except while paused. Before a
+    /// system sleep capture stops and the chunks are closed, then the sleep is allowed; a wake within 15 minutes with
+    /// the lid open resumes in a new epoch. A track that delivers nothing for 3 s is reported stalled, and a silent
+    /// microphone is restarted. The microphone (§4.12): in person the built-in one, a call the system default input;
+    /// a call without any input device records system audio alone until one appears.
+    ///
+    /// Throws before creating a session for invalid options, when the disk has too little space, and in person when
+    /// the built-in microphone is missing. Capture never started: the archive is finished `failed` and the error is
+    /// thrown. Audio could not be saved (the writer failed, or no audio arrived): marks the archive incomplete and
+    /// throws `HolosError.incomplete`. Transcription failure: does not throw; the outcome carries the errors. A hook
+    /// that cannot get the processing lease does not run: the outcome and `status.json` carry a `.failed`
+    /// post-processing record saying so.
     ///
     /// Task cancellation: stops like a stop request, keeps the saved audio, finishes the archive without a partial
     /// transcript (`transcriptionIncomplete`, or `audioOnly` for record-only), skips post-processing, and rethrows
@@ -169,12 +232,17 @@ public enum RecordingWorkflow {
         let stop = dependencies.stop
         defer { stop.restoreDefaultHandlers() }
         let options = try validated(options)
+        // In person without the built-in microphone: refused before a session exists (§4.12).
+        guard let plan = EpochPlan.make(options, devices: dependencies.findInputDevices(),
+                                        lidOpen: dependencies.power?.isLidOpen() ?? true) else {
+            throw HolosError.unavailable(EpochPlan.builtInMicrophoneUnavailable)
+        }
         try checkDisk(options, dependencies)
         let archive = try SessionArchive.create(root: options.root, name: options.name, source: options.source,
                                                 locale: options.locale, backend: options.backend, id: options.sessionID)
         let recorder: Recorder
         do {
-            recorder = try Recorder(archive: archive, options: options, dependencies: dependencies)
+            recorder = try Recorder(archive: archive, options: options, dependencies: dependencies, plan: plan)
         } catch {
             try? await archive.recordEvent(kind: MeetingEventKind.startFailed, details: ["error": error.localizedDescription])
             try? await archive.finish(status: ArchiveStatus.failed)
@@ -236,6 +304,38 @@ public enum RecordingWorkflow {
     }
 }
 
+// MARK: - Epoch plan
+
+/// What one capture epoch records, from the input devices present when it starts (decision 9, §4.12).
+struct EpochPlan: Sendable, Equatable {
+    static let builtInMicrophoneUnavailable = BuiltInMicrophone.unavailableMessage
+
+    /// The epoch's `CaptureRequest.source`: `.system` for a call epoch without the microphone.
+    var source: AudioSource
+    /// The tracks the epoch records.
+    var tracks: [String]
+    /// The input device the microphone track records, for status.json.
+    var microphoneName: String?
+
+    /// In person: the selected microphone (the built-in one), or nil when the built-in microphone is gone or the lid is
+    /// closed (Macs with Apple silicon or a T2 chip disconnect it in hardware then, and the device may stay listed
+    /// while recording silence). A call: the selected input (the system default), or system audio alone when the Mac
+    /// has no input device.
+    static func make(_ options: RecordingOptions, devices: InputDevices, lidOpen: Bool = true) -> EpochPlan? {
+        let microphone = options.microphone == .builtIn ? devices.builtIn : devices.systemDefault
+        switch options.source {
+        case .microphone:
+            if options.microphone == .builtIn, microphone == nil || !lidOpen { return nil }
+            return EpochPlan(source: .microphone, tracks: ["mic"], microphoneName: microphone?.name)
+        case .microphoneAndSystem:
+            guard let microphone else { return EpochPlan(source: .system, tracks: ["system"], microphoneName: nil) }
+            return EpochPlan(source: .microphoneAndSystem, tracks: ["mic", "system"], microphoneName: microphone.name)
+        case .system:
+            return EpochPlan(source: .system, tracks: ["system"], microphoneName: nil)
+        }
+    }
+}
+
 // MARK: - Recorder
 
 /// One recording from its first status write to `exited` (docs/meeting-design.md §4.2, §4.6).
@@ -254,11 +354,24 @@ private final class Recorder {
     var reporter: any RecordingReporter { dependencies.reporter }
 
     var live: [String: LiveTrack] = [:]
-    var machine = RecorderMachine()
+    var machine: RecorderMachine
     /// Session time; a placeholder at 0 until epoch 0's capture starts.
     var clock: any SessionClock = ManualSessionClock(0)
     var capture: (any MeetingCapture)?
     var captureEpoch = 0
+    /// What the current epoch records (epoch 0's is decided before the session is created).
+    var plan: EpochPlan
+    /// The idle-sleep assertion is wanted (from start to exit, except while paused, §4.4).
+    var powerHeld = false
+    var powerAssertion: PowerAssertion?
+    /// willSleep tokens not yet acknowledged.
+    var pendingSleepTokens: [Int] = []
+    /// While a willSleep waits for the loop: when the sleep must be allowed (the capture-stop limit plus
+    /// `tuning.sleepMargin` after it was drained). Every step before `allowSleep` ends by then.
+    var sleepDeadline: ContinuousClock.Instant?
+    var sleepBudget: Duration { dependencies.timeouts.captureStop + dependencies.tuning.sleepMargin }
+    /// The lid state at the last tick.
+    var lidOpen = true
     /// `stop()` was called on the current capture.
     var captureStopped = false
     /// The current capture's dropped-buffer count at the last status refresh.
@@ -287,11 +400,15 @@ private final class Recorder {
     var holdsLocksUntilExit: Bool { exited && !exitWritten }
     var stoppedInbox: Task<Void, Never>?
 
-    init(archive: SessionArchive, options: RecordingOptions, dependencies: RecordingDependencies) throws {
+    init(archive: SessionArchive, options: RecordingOptions, dependencies: RecordingDependencies,
+         plan: EpochPlan) throws {
         self.archive = archive
         self.options = options
         self.dependencies = dependencies
-        tracks = options.source == .microphoneAndSystem ? ["mic", "system"] : [options.source.rawValue]
+        self.plan = plan
+        let tracks = options.source == .microphoneAndSystem ? ["mic", "system"] : [options.source.rawValue]
+        self.tracks = tracks
+        machine = RecorderMachine(tracks: tracks, watchdog: dependencies.tuning.watchdog)
         writer = AudioChunkWriter(archive: archive)
         pump = ChunkWriterPump(writer: writer, capacitySeconds: dependencies.tuning.pumpCapacitySeconds)
         let directory = archive.directory
@@ -306,7 +423,7 @@ private final class Recorder {
         let now = Date()
         let initial = RecorderStatus(
             sessionID: archive.id, name: options.name, pid: getpid(), phase: .starting, sequence: 0, startedAt: now,
-            updatedAt: now, source: options.source,
+            updatedAt: now, source: options.source, microphoneName: plan.microphoneName,
             tracks: tracks.map { TrackStatus(track: $0, transcription: options.recordOnly ? .off : .live) })
         status = try StatusWriter(session: directory, initial: initial, heartbeat: dependencies.tuning.tick,
                                   observer: dependencies.statusObserver, write: dependencies.statusWrite)
@@ -314,6 +431,15 @@ private final class Recorder {
     }
 
     func run() async throws -> RecordingOutcome {
+        // The Mac does not idle-sleep from start to exit, except while paused (§4.4).
+        holdPower(true)
+        defer { holdPower(false) }
+        // Sleep and wake during the start (a permission prompt, speech setup) are queued for the loop, which drains
+        // them first; the monitor lets the Mac sleep at once meanwhile (§4.4). A failed start detaches here; a
+        // finished loop has detached already.
+        let power = dependencies.power
+        power?.observe()
+        defer { power?.detach() }
         await archive.setJournalSync(.interval(seconds: 1))
         try await start()
         Self.log.notice("Session \(self.archive.id, privacy: .public) started recording (\(self.options.source.rawValue, privacy: .public))")
@@ -360,7 +486,7 @@ private final class Recorder {
             self.capture = capture
             captureStopped = false
             monitor.begin(epoch: 0)
-            try await capture.start(CaptureRequest(source: options.source,
+            try await capture.start(CaptureRequest(source: plan.source,
                                                    applicationBundleID: options.applicationBundleID,
                                                    timelineOffset: 0, microphone: options.microphone))
         } catch {
@@ -459,12 +585,50 @@ private final class Recorder {
         let wall = ContinuousClock()
         var nextTick = wall.now
         let stopRequest = archive.directory.appendingPathComponent("stop.request")
+        // Sleep waits for the loop only while it runs; before and after, the monitor lets the Mac sleep at once (§4.4).
+        // Events queued since `observe()` in `run()` stay and are drained first.
+        let power = dependencies.power
+        power?.attach()
+        defer {
+            power?.detach()
+            pendingSleepTokens.removeAll()
+        }
+        lidOpen = power?.isLidOpen() ?? true
+        // Epoch 0's capture started just before the loop: its stall timers start now, at session time ~0.
+        await apply(.captureStarted(epoch: 0, tracks: plan.tracks, at: clock.now()))
         while machine.stopReason == nil {
             if Task.isCancelled { cancelled = true }
             // Cancelled, or a capture stop ended with CancellationError.
             if cancelled { return }
             if writerFailed.value { return }
+            // Power first: a sleep is acknowledged within seconds, and a capture end it causes is then ignored. Each
+            // event is timed by its arrival, not by this drain: after a restart that held the loop past macOS's 30 s
+            // limit, willSleep and didWake come in together after the wake, and only their arrival tells the length
+            // of the sleep. An event from before epoch 0's capture started (queued during the start) is at a negative
+            // session time: clamping it to 0 would shorten a sleep that began and ended during the start to nothing.
+            let drained = clock.now()
+            for timed in power?.pendingTimedEvents() ?? [] {
+                let at = drained - max(0, timed.secondsAgo)
+                switch timed.event {
+                case .willSleep(let token):
+                    pendingSleepTokens.append(token)
+                    sleepDeadline = ContinuousClock.now.advanced(by: sleepBudget)
+                    await apply(.willSleep(at: at))
+                    // The machine allows it after closing chunks; whatever happened, the Mac is never held awake.
+                    allowSleep()
+                case .didWake:
+                    await apply(.didWake(at: at, lidOpen: power?.isLidOpen() ?? true))
+                }
+            }
             for event in monitor.drain() { await apply(event) }
+            for reason in dependencies.environmentEvents?.pendingReasons() ?? [] {
+                // A call recording without the microphone restarts only when an input device is back.
+                if machine.phase == .recording || machine.phase == .starting, machine.microphoneMissing,
+                   EpochPlan.make(options, devices: dependencies.findInputDevices())?.tracks.contains("mic") != true {
+                    continue
+                }
+                await apply(.retryNow(reason: reason, at: clock.now()))
+            }
             for item in inbox.poll() {
                 switch item {
                 case .request(let request):
@@ -491,8 +655,11 @@ private final class Recorder {
             }
             if wall.now >= nextTick {
                 nextTick = wall.now.advanced(by: dependencies.tuning.tick)
+                let lid = power?.isLidOpen() ?? true
+                if lid, !lidOpen { await apply(.retryNow(reason: Self.lidOpened, at: clock.now())) }
+                lidOpen = lid
                 let free = try? dependencies.freeSpace.availableBytes(at: archive.directory)
-                await apply(.tick(at: clock.now(), lidOpen: true, freeBytes: free, lastFrameAt: monitor.lastFrameAt()))
+                await apply(.tick(at: clock.now(), lidOpen: lid, freeBytes: free, lastFrameAt: monitor.lastFrameAt()))
                 await refreshStatus()
             } else if machine.phase != lastStatusPhase {
                 await refreshStatus()
@@ -535,13 +702,11 @@ private final class Recorder {
             await warn(warning)
         case .clearWarning(let code):
             shownWarnings.remove(code)
-            let session = archive.id
-            do { try await status.update { $0.warnings.removeAll { $0.code == code } } } catch {
-                Self.log.error("Session \(session, privacy: .public): cannot write status.json: \(error.localizedDescription, privacy: .public)")
-            }
-        case .allowSleep, .holdPowerAssertion:
-            // The power assertion and sleep acknowledgement arrive with PR2b.
-            break
+            await updateStatus { $0.warnings.removeAll { $0.code == code } }
+        case .allowSleep:
+            allowSleep()
+        case .holdPowerAssertion(let hold):
+            holdPower(hold)
         case .finish(let reason):
             Self.log.notice("Session \(self.archive.id, privacy: .public) is stopping (\(reason.rawValue, privacy: .public))")
         }
@@ -550,11 +715,15 @@ private final class Recorder {
 
     /// Stops the current capture (≤ the capture-stop timeout), drains its consumer, closes every open chunk with
     /// `reason` pending once the frames before it are written, and sends a boundary to each live track.
+    ///
+    /// Before a sleep (§4.4) all of it fits in the capture-stop limit plus `tuning.sleepMargin` (7 s): the Mac is
+    /// allowed to sleep next, even if the platform stop has not returned or the disk is still behind.
     private func stopCapture(reason: GapReason) async {
         lastGapReason = reason
-        await stopCurrentCapture()
+        let deadline = reason == .sleep ? sleepDeadline ?? ContinuousClock.now.advanced(by: sleepBudget) : nil
+        await stopCurrentCapture(deadline: deadline)
         let pump = self.pump
-        if case .timedOut = await awaitWithTimeout(dependencies.timeouts.captureStop, {
+        if case .timedOut = await awaitWithTimeout(Self.limit(dependencies.timeouts.captureStop, by: deadline), {
             try await pump.closeAll(expectingGap: reason)
         }) {
             // Still queued behind a slow disk; the frames after it go into new chunks all the same.
@@ -563,20 +732,28 @@ private final class Recorder {
         for feed in live.values { feed.boundary() }
     }
 
+    /// `limit`, shortened to what is left before `deadline`.
+    private static func limit(_ limit: Duration, by deadline: ContinuousClock.Instant?) -> Duration {
+        guard let deadline else { return limit }
+        return max(.zero, min(limit, ContinuousClock.now.duration(to: deadline)))
+    }
+
     /// Asks the current capture to stop (at most the capture-stop timeout), then waits for its consumer. A cancelled run
     /// waits too: the microphone and system audio are released before it returns. A `CancellationError` from the stop
     /// (or any error once the run is cancelled) marks the run cancelled; another error is returned for the stop path
     /// to report, and only logged when capture restarts. When the stream had already ended by itself (the user
     /// stopped sharing, or capture failed), the stop is only cleanup: an error from it (ScreenCaptureKit refuses to
     /// stop a stream that has stopped) is logged and never returned, so it cannot turn a finished recording into a
-    /// capture failure.
+    /// capture failure. Every wait also ends at `deadline`.
     @discardableResult
-    private func stopCurrentCapture() async -> Error? {
+    private func stopCurrentCapture(deadline: ContinuousClock.Instant? = nil) async -> Error? {
         guard let capture, !captureStopped else { return nil }
         captureStopped = true
         let alreadyEnded = monitor.requestStop(epoch: captureEpoch)
         let limit = dependencies.timeouts.captureStop
-        let outcome = await awaitWithTimeout(limit, cancellable: false) { try await capture.stop() }
+        let outcome = await awaitWithTimeout(Self.limit(limit, by: deadline), cancellable: false) {
+            try await capture.stop()
+        }
         var abandon = false
         var failure: Error?
         switch outcome {
@@ -605,23 +782,34 @@ private final class Recorder {
         self.consumer = nil
         if abandon { consumer.cancel() }
         // A stopped stream ends at once; one that never ends is abandoned.
-        if case .finished = await awaitWithTimeout(limit, cancellable: false, { await consumer.value }) { return failure }
+        if case .finished = await awaitWithTimeout(Self.limit(limit, by: deadline), cancellable: false, {
+            await consumer.value
+        }) { return failure }
         consumer.cancel()
-        _ = await awaitWithTimeout(.seconds(1), cancellable: false) { await consumer.value }
+        _ = await awaitWithTimeout(Self.limit(.seconds(1), by: deadline), cancellable: false) { await consumer.value }
         return failure
     }
 
     /// Starts epoch `epoch` (§2.3): the next speech sessions are ready first, then capture starts at
     /// timelineOffset max(clock.now(), lastFrameEnd + 0.01), anchored at the host time the clock was read
-    /// (`CaptureRequest.offsetHostTime`). A start failure comes back as `startFailed`; a `CancellationError` from the
-    /// start, or any error once the run is cancelled, marks the run cancelled instead (the loop then takes the
-    /// cancellation stop path).
+    /// (`CaptureRequest.offsetHostTime`). Success comes back as `captureStarted` with the epoch's tracks, a start
+    /// failure as `startFailed`; a `CancellationError` from the start, or any error once the run is cancelled, marks
+    /// the run cancelled instead (the loop then takes the cancellation stop path).
+    ///
+    /// The input devices are looked up first (§4.12): in person without the built-in microphone the start fails at
+    /// once (the recorder waits for the lid to open); a call without any input device records system audio alone.
     ///
     /// Neither step can hold up the loop: a speech session not ready within `tuning.restartLimit` is made later by
     /// its live track, and a capture that has not started by then is abandoned (stopped once its start returns) and
     /// reported as `startFailed`, so the waiting and backoff rules take over.
     private func startCapture(epoch: Int) async -> RecorderInput? {
         if cancelled || Task.isCancelled { return nil }
+        guard let plan = EpochPlan.make(options, devices: dependencies.findInputDevices(),
+                                        lidOpen: dependencies.power?.isLidOpen() ?? true) else {
+            Self.log.error("Session \(self.archive.id, privacy: .public): no built-in microphone for epoch \(epoch, privacy: .public)")
+            let off = RecorderMachine.builtInMicrophoneOff
+            return .captureEnded(epoch: epoch, .startFailed(message: off), at: clock.now())
+        }
         let limit = dependencies.tuning.restartLimit
         let epochStart = clock.now()
         let feeds = Array(live.values)
@@ -649,13 +837,14 @@ private final class Recorder {
         captureStopped = false
         lastCaptureDrops = 0
         monitor.begin(epoch: epoch)
-        let request = CaptureRequest(source: options.source, applicationBundleID: options.applicationBundleID,
+        let request = CaptureRequest(source: plan.source, applicationBundleID: options.applicationBundleID,
                                      timelineOffset: offset, microphone: options.microphone,
                                      offsetHostTime: offsetHostTime)
         let starting = Task { @MainActor in try await capture.start(request) }
+        let startedAt: Double
         switch await awaitWithTimeout(limit, { try await starting.value }) {
         case .finished(.success):
-            break
+            startedAt = clock.now()
         case .finished(.failure(let error)):
             if error is CancellationError || Task.isCancelled {
                 // A cancellation, not an audio outage: the run stops as cancelled and keeps the audio it saved. The
@@ -669,7 +858,11 @@ private final class Recorder {
                 return nil
             }
             Self.log.error("Session \(self.archive.id, privacy: .public): epoch \(epoch, privacy: .public) failed to start")
-            return .captureEnded(epoch: epoch, .startFailed(message: error.localizedDescription), at: clock.now())
+            // The capture's own lookup of the built-in microphone failed (the lid closed since the plan was made):
+            // the recorder says how to continue.
+            let message = error.localizedDescription == BuiltInMicrophone.unavailableMessage
+                ? RecorderMachine.builtInMicrophoneOff : error.localizedDescription
+            return .captureEnded(epoch: epoch, .startFailed(message: message), at: clock.now())
         case .timedOut, .cancelled:
             // Abandoned: whenever the start returns, the capture is stopped so nothing keeps recording unseen.
             starting.cancel()
@@ -695,8 +888,41 @@ private final class Recorder {
             "timelineOffset": String(offset),
         ])
         startConsumer(capture, epoch: epoch)
-        return nil
+        if plan.microphoneName != self.plan.microphoneName {
+            let name = plan.microphoneName
+            await updateStatus { $0.microphoneName = name }
+        }
+        self.plan = plan
+        return .captureStarted(epoch: epoch, tracks: plan.tracks, at: startedAt)
     }
+
+    // MARK: - Power
+
+    /// Lets every pending sleep go ahead (IOAllowPowerChange).
+    private func allowSleep() {
+        sleepDeadline = nil
+        guard !pendingSleepTokens.isEmpty else { return }
+        let tokens = pendingSleepTokens
+        pendingSleepTokens.removeAll()
+        for token in tokens { dependencies.power?.allowPowerChange(token: token) }
+        Self.log.notice("Session \(self.archive.id, privacy: .public) allowed the system to sleep")
+    }
+
+    /// Takes or releases the idle-sleep assertion.
+    private func holdPower(_ hold: Bool) {
+        guard hold != powerHeld else { return }
+        powerHeld = hold
+        if hold {
+            powerAssertion = dependencies.makePowerAssertion(Self.powerAssertionName)
+        } else {
+            powerAssertion?.release()
+            powerAssertion = nil
+        }
+    }
+
+    static let powerAssertionName = "Holos meeting recording"
+    /// The `retryNow` reason when a tick sees the lid open again.
+    static let lidOpened = "lidOpened"
 
     /// "5" or "0.2": a limit in seconds for a message.
     static func seconds(_ duration: Duration) -> String {
@@ -715,7 +941,10 @@ private final class Recorder {
     // MARK: - Status
 
     private func recordEvent(_ kind: String, _ details: [String: String]) async {
-        do { try await archive.recordEvent(kind: kind, details: details) } catch {
+        let archive = self.archive
+        if let error = await beforeSleepDeadline("the \(kind) event", {
+            try await archive.recordEvent(kind: kind, details: details)
+        }) {
             Self.log.error("Session \(self.archive.id, privacy: .public): cannot journal \(kind, privacy: .public): \(error.localizedDescription, privacy: .public)")
         }
     }
@@ -755,8 +984,29 @@ private final class Recorder {
     }
 
     private func updateStatus(_ change: @escaping @Sendable (inout RecorderStatus) -> Void) async {
-        do { try await status.update(change) } catch {
+        let status = self.status
+        if let error = await beforeSleepDeadline("a status.json write", { try await status.update(change) }) {
             Self.log.error("Session \(self.archive.id, privacy: .public): cannot write status.json: \(error.localizedDescription, privacy: .public)")
+        }
+    }
+
+    /// Runs `write` (a journal or status.json write) and returns its error. While a sleep waits for the loop, the wait
+    /// ends at the sleep deadline: the write goes on behind a slow disk, unreported, and the Mac is allowed to sleep
+    /// on time (§4.4).
+    private func beforeSleepDeadline(_ what: String,
+                                     _ write: @escaping @Sendable () async throws -> Void) async -> Error? {
+        guard let deadline = sleepDeadline, !pendingSleepTokens.isEmpty else {
+            do { try await write() } catch { return error }
+            return nil
+        }
+        switch await awaitWithTimeout(Self.limit(.seconds(3_600), by: deadline), cancellable: false, write) {
+        case .finished(.failure(let error)):
+            return error
+        case .timedOut:
+            Self.log.notice("Session \(self.archive.id, privacy: .public): \(what, privacy: .public) finishes after the sleep is allowed")
+            return nil
+        case .finished(.success), .cancelled:
+            return nil
         }
     }
 
@@ -788,12 +1038,13 @@ private final class Recorder {
         let free = try? dependencies.freeSpace.availableBytes(at: archive.directory)
         let markers = machine.markers
         let recordOnly = options.recordOnly
+        let stalled = Set(machine.stalledTracks)
         let trackStatuses = tracks.map { track -> TrackStatus in
             let info = seen[track]
             return TrackStatus(track: track, transcription: recordOnly ? .off : (live[track]?.transcription ?? .behind),
                                lastFrameSeconds: info?.lastFrameEnd,
                                lastFinalizedSeconds: live[track]?.lastFinalizedSeconds,
-                               sampleRate: info?.sampleRate, channels: info?.channels, stalled: false,
+                               sampleRate: info?.sampleRate, channels: info?.channels, stalled: stalled.contains(track),
                                backlogSeconds: backlog[track] ?? 0)
         }
         let latest = live.values.max { ($0.lastFinalizedSeconds ?? -1) < ($1.lastFinalizedSeconds ?? -1) }
@@ -816,6 +1067,8 @@ private final class Recorder {
     /// §4.6 steps 1–9.
     private func stopPath() async throws -> RecordingOutcome {
         let stopReason = machine.stopReason ?? (writerFailed.value ? .captureFailed : .requested)
+        // A meeting stopped while paused keeps the Mac awake again for transcription and labelling (§4.4).
+        holdPower(true)
         await setPhase(.stopping)
         answerRequestsWhileStopping()
         // 1. Stop capture, drain the consumer, let the pump drain into the writer, close every chunk. A failed stop is a

@@ -8,15 +8,23 @@ import Testing
 // A timed wait that gives up on an operation still has to release what that operation makes once it returns
 // (docs/meeting-design.md §4.6): a speech session created after its time limit is cancelled, never left running.
 
+/// Waits, ignoring cancellation, until `released` is true: an operation that returns only after the test has seen
+/// how the wait ended, however loaded the machine is.
+private func waitUntilReleased(_ released: SharedValue<Bool>) async {
+    while !released.value { await recorderWaitIgnoringCancellation(0.005) }
+}
+
 @Test(.timeLimit(.minutes(1))) @MainActor
 func awaitWithTimeoutDiscardsAValueThatArrivesAfterTheTimeout() async {
     let discarded = SharedValue<[Int]>([])
+    let released = SharedValue(false)
     let outcome = await awaitWithTimeout(.milliseconds(50), discardingLate: { value in
         discarded.update { $0.append(value) }
     }) {
-        await recorderWaitIgnoringCancellation(0.3)
+        await waitUntilReleased(released)
         return 7
     }
+    released.set(true)
     guard case .timedOut = outcome else {
         Issue.record("Expected a timeout, got \(outcome).")
         return
@@ -27,16 +35,21 @@ func awaitWithTimeoutDiscardsAValueThatArrivesAfterTheTimeout() async {
 @Test(.timeLimit(.minutes(1))) @MainActor
 func awaitWithTimeoutDiscardsAValueThatArrivesAfterTheCallerWasCancelled() async {
     let discarded = SharedValue<[Int]>([])
+    let started = SharedValue(false)
+    let released = SharedValue(false)
     let waiting = Task {
         await awaitWithTimeout(.seconds(30), discardingLate: { value in discarded.update { $0.append(value) } }) {
-            await recorderWaitIgnoringCancellation(0.3)
+            started.set(true)
+            await waitUntilReleased(released)
             return 9
         }
     }
-    try? await Task.sleep(for: .milliseconds(20))
+    #expect(await eventually { started.value })
     waiting.cancel()
-    guard case .cancelled = await waiting.value else {
-        Issue.record("Expected the wait to end cancelled.")
+    let outcome = await waiting.value
+    released.set(true)
+    guard case .cancelled = outcome else {
+        Issue.record("Expected the wait to end cancelled, got \(outcome).")
         return
     }
     #expect(await eventually { discarded.value == [9] })

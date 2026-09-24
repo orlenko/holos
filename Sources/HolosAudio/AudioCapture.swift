@@ -1,4 +1,6 @@
+import AudioToolbox
 import AVFoundation
+import CoreAudio
 import CoreMedia
 import Foundation
 import HolosCore
@@ -25,8 +27,7 @@ public enum CaptureOverflow: Sendable, Equatable {
     case dropAndCount
 }
 
-/// Which input device a meeting's microphone track records (docs/meeting-design.md §4.12). PR2a declares it and
-/// passes it through; PR2b pins the built-in microphone for `.builtIn`.
+/// Which input device a meeting's microphone track records (docs/meeting-design.md §4.12).
 public enum MicrophoneSelection: Sendable, Equatable {
     /// The system default input (online calls; dictation).
     case systemDefault
@@ -36,7 +37,8 @@ public enum MicrophoneSelection: Sendable, Equatable {
 
 /// Why a capture's frame stream ended with something other than a failure.
 public enum CaptureInterruption: Error, Equatable, Sendable {
-    /// AVAudioEngineConfigurationChange (reported from PR2b).
+    /// AVAudioEngineConfigurationChange, or the system default input changed during a call capture that records it.
+    /// Reported only by captures made with `reportsConfigurationChanges`.
     case configurationChanged
     /// The user stopped sharing (`SCStreamError.Code.userStopped` only).
     case userStoppedSharing
@@ -57,17 +59,29 @@ public final class AudioCapture {
     public let frames: AsyncThrowingStream<CapturedAudio, Error>
     public private(set) var hostTimeOrigin: Double
     private let receiver: CaptureReceiver
+    private let reportsConfigurationChanges: Bool
     private var engine: AVAudioEngine?
     private var stream: SCStream?
     private var started = false
+    /// The AVAudioEngineConfigurationChange observer of a running microphone capture.
+    private var configurationObserver: (any NSObjectProtocol)?
+    /// Watches the system default input during a call capture that records it.
+    private var defaultInputListener: SystemAudioListener?
 
     /// `bufferCapacity` buffers wait for the consumer. When the queue is full, `.fail` (dictation's default) ends the
     /// stream with an error; `.dropAndCount` drops the buffer, counts it (`droppedBuffers`), and continues.
-    public init(bufferCapacity: Int = 256, overflow: CaptureOverflow = .fail) {
+    ///
+    /// With `reportsConfigurationChanges` (meeting recordings, docs/meeting-design.md §4.2), the stream ends with
+    /// `CaptureInterruption.configurationChanged` when AVAudioEngine reports a configuration change, or when the system
+    /// default input changes while ScreenCaptureKit records it, so the recorder restarts on the new configuration.
+    /// Without it (dictation) a configuration change is not reported, as before.
+    public init(bufferCapacity: Int = 256, overflow: CaptureOverflow = .fail,
+                reportsConfigurationChanges: Bool = false) {
         let pair = AsyncThrowingStream<CapturedAudio, Error>.makeStream(bufferingPolicy: .bufferingOldest(bufferCapacity))
         frames = pair.stream
         hostTimeOrigin = CMClockGetTime(CMClockGetHostTimeClock()).seconds
         receiver = CaptureReceiver(origin: hostTimeOrigin, continuation: pair.continuation, overflow: overflow)
+        self.reportsConfigurationChanges = reportsConfigurationChanges
     }
 
     /// Buffers dropped because the frame stream was full.
@@ -111,7 +125,12 @@ public final class AudioCapture {
     /// Starts capture. Frame times are `timelineOffset` plus the host seconds since `timelineOffsetHostTime` (since
     /// the origin is set, when nil): the host-time origin is `timelineOrigin(...)`, so a restarted capture continues a
     /// meeting's session timeline, setup time included (docs/meeting-design.md §2.3). System audio is captured mono.
-    /// `microphone` is honoured from PR2b; until then the microphone is always the system default input.
+    ///
+    /// `microphone` chooses the input the microphone track records (§4.12): `.builtIn` pins the built-in microphone
+    /// (AVAudioEngine's input unit is set to it before its format is read; ScreenCaptureKit gets its device ID), so
+    /// connecting a headset does not move the recording; `.systemDefault` records the system default input. A
+    /// `.builtIn` capture throws `HolosError.unavailable` when the Mac has no built-in microphone right now (lid closed
+    /// in clamshell mode). `source: .system` records no microphone at all.
     public func start(source: AudioSource, applicationBundleID: String?, timelineOffset: Double,
                       microphone: MicrophoneSelection, timelineOffsetHostTime: Double? = nil) async throws {
         try Task.checkCancellation()
@@ -129,9 +148,18 @@ public final class AudioCapture {
                 throw HolosError.permissionDenied("Microphone access is required. Enable it for Holos or your terminal in System Settings > Privacy & Security > Microphone.")
             }
         }
+        // The pinned device, looked up just before the capture starts.
+        var builtIn: InputDevice?
+        if source != .system, microphone == .builtIn {
+            guard let device = BuiltInMicrophone.devices().builtIn else {
+                throw HolosError.unavailable(BuiltInMicrophone.unavailableMessage)
+            }
+            builtIn = device
+        }
         if source == .microphone {
             let audioEngine = AVAudioEngine()
             let input = audioEngine.inputNode
+            if let builtIn { try Self.pin(input, to: builtIn) }
             let format = input.outputFormat(forBus: 0)
             guard format.sampleRate.isFinite, format.sampleRate > 0,
                   format.sampleRate < Double(UInt32.max), format.channelCount > 0 else {
@@ -155,8 +183,19 @@ public final class AudioCapture {
             hostTimeOrigin = Self.timelineOrigin(timelineOffset: timelineOffset, offsetHostTime: timelineOffsetHostTime,
                                                  now: Self.hostSeconds())
             receiver.setOrigin(hostTimeOrigin)
+            if reportsConfigurationChanges {
+                // The engine stops itself on a configuration change (a device came or went, a format changed).
+                configurationObserver = NotificationCenter.default.addObserver(
+                    forName: .AVAudioEngineConfigurationChange, object: audioEngine, queue: nil) { _ in
+                    receiver.fail(CaptureInterruption.configurationChanged)
+                }
+            }
             do { try audioEngine.start() }
-            catch { input.removeTap(onBus: 0); throw error }
+            catch {
+                removeConfigurationWatchers()
+                input.removeTap(onBus: 0)
+                throw error
+            }
             engine = audioEngine
         } else {
             let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: false)
@@ -185,6 +224,8 @@ public final class AudioCapture {
             config.channelCount = 1
             config.excludesCurrentProcessAudio = true
             config.captureMicrophone = source == .microphoneAndSystem
+            // nil records the system default input, the device the call app uses.
+            if config.captureMicrophone, let builtIn { config.microphoneCaptureDeviceID = builtIn.uid }
             let captureStream = SCStream(filter: filter, configuration: config, delegate: receiver)
             let queue = DispatchQueue(label: "ca.orlenko.holos.capture", qos: .userInitiated)
             try captureStream.addStreamOutput(receiver, type: .audio, sampleHandlerQueue: queue)
@@ -194,18 +235,54 @@ public final class AudioCapture {
             hostTimeOrigin = Self.timelineOrigin(timelineOffset: timelineOffset, offsetHostTime: timelineOffsetHostTime,
                                                  now: Self.hostSeconds())
             receiver.setOrigin(hostTimeOrigin)
-            try await captureStream.startCapture()
+            if reportsConfigurationChanges, config.captureMicrophone, builtIn == nil {
+                // A new default input is a configuration change: the recorder restarts on it (§4.12).
+                let receiver = self.receiver
+                defaultInputListener = SystemAudioListener(selector: kAudioHardwarePropertyDefaultInputDevice,
+                                                           label: "ca.orlenko.holos.default-input") {
+                    receiver.fail(CaptureInterruption.configurationChanged)
+                }
+            }
+            do { try await captureStream.startCapture() }
+            catch {
+                removeConfigurationWatchers()
+                throw error
+            }
             stream = captureStream
         }
         started = true
     }
 
     public func stop() async throws {
+        removeConfigurationWatchers()
         engine?.inputNode.removeTap(onBus: 0)
         engine?.stop()
         engine = nil
         defer { stream = nil; started = false; receiver.finish() }
         if let stream { try await stream.stopCapture() }
+    }
+
+    private func removeConfigurationWatchers() {
+        if let configurationObserver { NotificationCenter.default.removeObserver(configurationObserver) }
+        configurationObserver = nil
+        defaultInputListener?.remove()
+        defaultInputListener = nil
+    }
+
+    /// Makes `input` record `device` instead of the system default input. Must run before the input's format is read.
+    private static func pin(_ input: AVAudioInputNode, to device: InputDevice) throws {
+        let status: OSStatus? = input.withAudioUnit { (unit: borrowing AudioUnit?) -> OSStatus? in
+            guard let unit = copy unit else { return nil }
+            var id = AudioDeviceID(device.id)
+            return AudioUnitSetProperty(unit, kAudioOutputUnitProperty_CurrentDevice, kAudioUnitScope_Global, 0, &id,
+                                        UInt32(MemoryLayout<AudioDeviceID>.size))
+        }
+        guard let status else {
+            throw HolosError.unavailable("Cannot select the built-in microphone: the audio input has no audio unit.")
+        }
+        guard status == noErr else {
+            throw HolosError.unavailable("Cannot select the built-in microphone (Core Audio error \(status)).")
+        }
     }
 }
 

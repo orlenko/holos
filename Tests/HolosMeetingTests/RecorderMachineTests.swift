@@ -238,3 +238,23 @@ private func failStartsUntil(_ machine: inout RecorderMachine, until: Double) ->
                                           details: ["freeBytes": "400000000", "action": "stop"]))
     #expect(stopped.last == .finish(.diskLow))
 }
+
+/// The disk is checked while epoch 0 waits for its first frame and while waiting to retry, not only while recording.
+@Test func diskLowIsCheckedWhileStartingAndWaiting() {
+    var starting = RecorderMachine(tracks: ["mic"])
+    _ = starting.handle(.captureStarted(epoch: 0, tracks: ["mic"], at: 0))
+    #expect(starting.phase == .starting)
+    #expect(starting.handle(recorderTick(1, freeBytes: 1_900_000_000)).first
+        == .recordEvent(kind: MeetingEventKind.diskLow, details: ["freeBytes": "1900000000", "action": "warn"]))
+    #expect(starting.handle(recorderTick(2, freeBytes: 400_000_000)).last == .finish(.diskLow))
+    #expect(starting.stopReason == .diskLow)
+
+    var waiting = recorderRunningMachine()
+    _ = waiting.handle(.captureEnded(epoch: 0, .failed(message: "Gone."), at: 1))
+    _ = waiting.handle(.captureEnded(epoch: 1, .startFailed(message: "Gone."), at: 1))
+    #expect(waiting.phase == .waiting)
+    let effects = waiting.handle(recorderTick(5, freeBytes: 400_000_000))
+    #expect(effects.last == .finish(.diskLow))
+    #expect(!effects.contains(.startCapture(epoch: 2)), "No retry once the disk is full.")
+    #expect(waiting.stopReason == .diskLow)
+}
