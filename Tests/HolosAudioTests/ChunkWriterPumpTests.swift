@@ -115,9 +115,10 @@ private func pumpEventually(timeout: Duration = .seconds(10), _ condition: () ->
     #expect(gap.details["reason"] == GapReason.paused.rawValue)
 }
 
-/// A full capture stream drops and counts buffers instead of failing (§4.3).
+/// A full meeting capture stream drops and counts buffers instead of failing (§4.3), and the next frame delivered
+/// on that track says audio was dropped before it.
 @Test @MainActor func captureOverflowDoesNotFail() async throws {
-    let capture = AudioCapture(bufferCapacity: 2)
+    let capture = AudioCapture(bufferCapacity: 2, overflow: .dropAndCount)
     for index in 0..<5 {
         capture.emitForTesting(track: "mic", frame: try PCMFrame(samples: [0.1], sampleRate: 48_000, channels: 1,
                                                                  startTime: Double(index)))
@@ -126,11 +127,36 @@ private func pumpEventually(timeout: Duration = .seconds(10), _ condition: () ->
     #expect(capture.droppedBuffers(track: "mic") == 3)
     #expect(capture.droppedBuffers(track: "system") == 0)
     var frames = capture.frames.makeAsyncIterator()
-    #expect(try await frames.next()?.frame.startTime == 0)
-    #expect(try await frames.next()?.frame.startTime == 1)
-    // The stream is still open: a later buffer arrives.
+    let first = try await frames.next()
+    #expect(first?.frame.startTime == 0)
+    #expect(first?.followsDrop == false)
+    #expect(try await frames.next()?.followsDrop == false, "Buffers queued before the drop are not marked.")
+    // The stream is still open: a later buffer arrives, marked as following the dropped ones.
     capture.emitForTesting(track: "mic", frame: try PCMFrame(samples: [0.1], sampleRate: 48_000, channels: 1,
                                                              startTime: 9))
-    #expect(try await frames.next()?.frame.startTime == 9)
+    capture.emitForTesting(track: "mic", frame: try PCMFrame(samples: [0.1], sampleRate: 48_000, channels: 1,
+                                                             startTime: 10))
+    let after = try await frames.next()
+    #expect(after?.frame.startTime == 9)
+    #expect(after?.followsDrop == true)
+    #expect(try await frames.next()?.followsDrop == false, "Only the first frame after a drop is marked.")
     #expect(capture.droppedBuffers == 3)
+}
+
+/// Dictation keeps failing on overflow, so a stalled feed never inserts text with a silent hole.
+@Test @MainActor func captureOverflowFailsByDefault() async throws {
+    let capture = AudioCapture(bufferCapacity: 2)
+    for index in 0..<3 {
+        capture.emitForTesting(track: "mic", frame: try PCMFrame(samples: [0.1], sampleRate: 48_000, channels: 1,
+                                                                 startTime: Double(index)))
+    }
+    var frames = capture.frames.makeAsyncIterator()
+    #expect(try await frames.next()?.frame.startTime == 0)
+    #expect(try await frames.next()?.frame.startTime == 1)
+    do {
+        _ = try await frames.next()
+        Issue.record("The stream should end with the overflow error.")
+    } catch {
+        #expect(error is HolosError)
+    }
 }

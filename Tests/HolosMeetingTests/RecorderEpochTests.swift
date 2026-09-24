@@ -24,7 +24,8 @@ func epochsRecordDiscontinuityWithReason() async throws {
     clock.set(1)
     #expect(try await recorderSend(.pause, to: session)?.result == .applied)
     #expect(try RecorderChannel.readStatus(session: session)?.phase == .paused)
-    #expect(captures.captures.first?.stopCalls == 1, "Pausing stops capture.")
+    // The answer goes out before capture stops (acknowledgements come first).
+    #expect(await eventually { captures.captures.first?.stopCalls == 1 }, "Pausing stops capture.")
     clock.set(5)
     #expect(try await recorderSend(.resume, to: session)?.result == .applied)
     #expect(await eventually { captures.captures.count == 2 && (captures.captures[1].consumedFrames) >= 2 })
@@ -195,4 +196,122 @@ func failFiveTimesThenRecover() async throws {
     #expect(gaps.map { $0.details["reason"] } == [GapReason.audioUnavailable.rawValue])
     #expect(try recorderEvents(outcome.directory, MeetingEventKind.captureWaiting).count == 5)
     #expect(captures.requests.map(\.timelineOffset) == captures.requests.map(\.timelineOffset).sorted())
+}
+
+/// A capture that delivers the given audio when started and whose count says one buffer was dropped.
+@MainActor
+private final class RecorderDroppingCapture: MeetingCapture {
+    nonisolated let frames: AsyncThrowingStream<CapturedAudio, Error>
+    private let continuation: AsyncThrowingStream<CapturedAudio, Error>.Continuation
+    private let audio: [CapturedAudio]
+
+    init(_ audio: [CapturedAudio]) {
+        (frames, continuation) = AsyncThrowingStream<CapturedAudio, Error>.makeStream()
+        self.audio = audio
+    }
+
+    var hostTimeOrigin: Double { 1_000 }
+    var droppedBuffers: Int { 1 }
+
+    func start(_ request: CaptureRequest) async throws {
+        for item in audio { continuation.yield(item) }
+    }
+
+    func stop() async throws { continuation.finish() }
+}
+
+/// The capture queue dropped 30 ms of audio (shorter than the 50 ms jitter tolerance): the gap is marked right
+/// before the first frame after the drop, with reason `overflow`, and the recorder warns `audioDropped` (§4.3).
+@Test(.timeLimit(.minutes(1))) @MainActor
+func captureDropIsMarkedWhereItHappened() async throws {
+    let temp = try TemporaryDirectory()
+    defer { temp.remove() }
+    var audio = try FakeFrame.run(count: 3).map { try $0.captured(offset: 0) }
+    let late = try FakeFrame(start: 0.33).captured(offset: 0)
+    audio.append(CapturedAudio(track: late.track, frame: late.frame, followsDrop: true))
+    audio.append(try FakeFrame(start: 0.43).captured(offset: 0))
+    let delivered = audio
+    let warned = SharedValue(false)
+    let stop = ManualStopSource()
+    let dependencies = recorderDependencies(captures: FakeCaptureFactory(), stop: stop,
+                                            makeCapture: { RecorderDroppingCapture(delivered) },
+                                            statusObserver: { status in
+        if status.warnings.contains(where: { $0.code == .audioDropped }) { warned.set(true) }
+    })
+    let run = Task { try await RecordingWorkflow.run(.testing(root: temp.url, recordOnly: true), dependencies: dependencies) }
+    #expect(await eventually { warned.value })
+    stop.requestStop()
+    let outcome = try await run.value
+    let chunks = try SessionArchive.readManifest(at: outcome.directory).chunks.sorted { $0.start < $1.start }
+    #expect(chunks.count == 2)
+    #expect(abs((chunks.first?.end ?? 0) - 0.3) < 1e-9)
+    #expect(abs((chunks.last?.start ?? 0) - 0.33) < 1e-9, "The frame after the drop keeps its own time.")
+    let gaps = try recorderEvents(outcome.directory, MeetingEventKind.audioDiscontinuity)
+    #expect(gaps.count == 1)
+    #expect(gaps.first?.details["reason"] == GapReason.overflow.rawValue)
+    #expect(gaps.first?.details["previousEnd"] == "0.3")
+    #expect(gaps.first?.details["nextStart"] == "0.33")
+}
+
+/// A capture restart whose start never returns does not hold up the loop: after the restart limit it counts as a
+/// failed start, the recorder waits and retries, and the abandoned capture is stopped once its start returns.
+@Test(.timeLimit(.minutes(1))) @MainActor
+func hungRestartIsAbandoned() async throws {
+    let temp = try TemporaryDirectory()
+    defer { temp.remove() }
+    let captures = FakeCaptureFactory([
+        FakeCaptureScript(frames: FakeFrame.run(count: 2), failAfterFrames: 2, failure: .io("Gone.")),
+        FakeCaptureScript(frames: FakeFrame.run(count: 2)),
+    ])
+    let hung = RecorderHungStartCapture()
+    let made = SharedValue(0)
+    var tuning = recorderFastTuning()
+    tuning.restartLimit = .milliseconds(300)
+    let stop = ManualStopSource()
+    let dependencies = recorderDependencies(captures: captures, stop: stop, tuning: tuning, makeCapture: {
+        let index = made.update { count -> Int in defer { count += 1 }; return count }
+        return index == 1 ? hung : captures.make()
+    })
+    let run = Task { try await RecordingWorkflow.run(.testing(root: temp.url, recordOnly: true), dependencies: dependencies) }
+    #expect(await eventually(timeout: .seconds(10)) { captures.captures.count == 2 && captures.captures[1].consumedFrames >= 2 })
+    #expect(await eventually { hung.stopCalls == 1 }, "The abandoned capture is stopped.")
+    stop.requestStop()
+    let outcome = try await run.value
+    #expect(outcome.stopReason == .requested)
+    let failures = try recorderEvents(outcome.directory, MeetingEventKind.captureFailed)
+    #expect(failures.contains { $0.details["error"] == "Audio capture did not start within 0.3 s." })
+    #expect(try recorderEvents(outcome.directory, MeetingEventKind.captureWaiting).count == 1)
+}
+
+/// A capture whose `start` waits until it is cancelled.
+@MainActor
+private final class RecorderHungStartCapture: MeetingCapture {
+    nonisolated let frames = AsyncThrowingStream<CapturedAudio, Error> { $0.finish() }
+    private(set) var stopCalls = 0
+
+    var hostTimeOrigin: Double { 1_000 }
+
+    func start(_ request: CaptureRequest) async throws {
+        try await Task.sleep(for: .seconds(60))
+    }
+
+    func stop() async throws { stopCalls += 1 }
+}
+
+/// Acknowledgements are written before capture stops or starts, so a sender's 3 s wait never covers them.
+@Test func acknowledgementsGoAheadOfCaptureEffects() throws {
+    var machine = recorderRunningMachine()
+    let pause = recorderRequest(.pause)
+    let effects = RecorderMachine.acknowledgingFirst(machine.handle(.control(pause, at: 1)))
+    #expect(effects.first == recorderAck(pause, .applied))
+    #expect(effects.dropFirst().first == .stopCapture(reason: .paused))
+    let resume = recorderRequest(.resume)
+    let resumed = RecorderMachine.acknowledgingFirst(machine.handle(.control(resume, at: 2)))
+    let ack = try #require(resumed.firstIndex(of: recorderAck(resume, .applied)))
+    let start = try #require(resumed.firstIndex(of: .startCapture(epoch: 1)))
+    #expect(ack < start)
+    // Without a capture effect, the order is unchanged: a marker's event is journaled before its answer.
+    let marker = recorderRequest(.marker, label: "Vote")
+    let marked = machine.handle(.control(marker, at: 3))
+    #expect(RecorderMachine.acknowledgingFirst(marked) == marked)
 }

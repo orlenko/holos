@@ -91,6 +91,8 @@ final class LiveTrack: Sendable {
         var lastFinalized: Double?
         var lastPhrase: String?
         var cancelled = false
+        /// Set by `finish()`: sessions finished after it share its budget.
+        var finishDeadline: ContinuousClock.Instant?
     }
 
     private struct Tasks {
@@ -189,9 +191,12 @@ final class LiveTrack: Sendable {
     func finish() async -> LiveTrackResult {
         input.close()
         let (speech, fed) = (tasks.withLock { $0.speech }, currentFed())
+        // One budget for the whole finish (§4.6): draining the queue and finishing the sessions that are still open.
+        let limit = timeouts.speechFinish(audioSeconds: fed + input.load)
+        let deadline = ContinuousClock.now.advanced(by: limit)
+        state.withLock { $0.finishDeadline = deadline }
         await withTaskCancellationHandler {
             if let speech {
-                let limit = timeouts.speechFinish(audioSeconds: fed + input.load)
                 if case .timedOut = await awaitWithTimeout(limit, { await speech.value }) {
                     Self.log.error("Live \(self.track, privacy: .public) transcription did not drain in time; cancelled")
                     speech.cancel()
@@ -287,7 +292,9 @@ final class LiveTrack: Sendable {
                     }
                     expected = end
                 } catch {
-                    if error is CancellationError || state.withLock({ $0.cancelled }) { break feeding }
+                    // Cancelled from here (the track, or a drain that timed out and records the point itself): stop.
+                    // A session's own CancellationError is a failure like any other: the rest is replayed.
+                    if Task.isCancelled || state.withLock({ $0.cancelled }) { break feeding }
                     reporter.message("Live transcription paused for \(track): \(Self.clause(error)). Audio remains on disk.")
                     _ = takeCurrent()
                     await session.cancel()
@@ -348,17 +355,20 @@ final class LiveTrack: Sendable {
 
     // MARK: - Finishing sessions
 
-    /// Finishes `serial` in the background, within its timeout.
+    /// Finishes `serial` in the background, within its timeout, and no later than the deadline of `finish()` once
+    /// that has started.
     private func finishLater(_ serial: Int) {
         let task = Task { [weak self] () -> Void in await self?.finishSession(serial) }
         tasks.withLock { $0.finishing.append(task) }
     }
 
     private func finishSession(_ serial: Int) async {
-        guard let (session, fed) = state.withLock({ state -> (any LiveSpeechSession, Double)? in
-            state.sessions[serial].map { ($0.session, $0.fed) }
+        guard let (session, fed, deadline) = state.withLock({ state -> (any LiveSpeechSession, Double, ContinuousClock.Instant?)? in
+            state.sessions[serial].map { ($0.session, $0.fed, state.finishDeadline) }
         }) else { return }
-        let outcome = await awaitWithTimeout(timeouts.speechFinish(audioSeconds: fed)) {
+        var limit = timeouts.speechFinish(audioSeconds: fed)
+        if let deadline { limit = min(limit, max(.zero, ContinuousClock.now.duration(to: deadline))) }
+        let outcome = await awaitWithTimeout(limit) {
             try await session.finish()
         }
         switch outcome {

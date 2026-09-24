@@ -79,6 +79,15 @@ enum RecorderControl {
             return
         }
         guard let ack = await RecorderChannel.waitForAck(request, session: session, timeout: ackTimeout) else {
+            // A recorder that exited meanwhile deleted the request unanswered.
+            if let status = try? RecorderChannel.readStatus(session: session), status.phase == .exited {
+                let reason = status.exit?.reason.rawValue ?? "unknown"
+                if command == .stop {
+                    Console.output("The recorder has already exited (\(reason)).")
+                    return
+                }
+                throw HolosError.unavailable("The recorder has already exited (\(reason)).")
+            }
             Console.error("Recorder did not respond within 3 s; the request stays queued.")
             throw ExitCode(1)
         }

@@ -92,6 +92,8 @@ struct RecorderTuning: Sendable {
     var tick: Duration = .seconds(1)
     /// Control requests are answered this often after capture stops.
     var stoppedPoll: Duration = .seconds(1)
+    /// A restart's speech sessions and capture start may take this long before the loop moves on (§4.2).
+    var restartLimit: Duration = .seconds(10)
     var pumpCapacitySeconds = 60.0
     var liveQueueSeconds = LiveTrack.queueSeconds
     var journalCapacity = LiveTrack.journalCapacity
@@ -144,6 +146,13 @@ public enum RecordingWorkflow {
     /// its final status, the processing lease is released, and a hook that has not started is skipped. Cancelled
     /// during the hook: the hook's run ends as it chooses, and `CancellationError` is rethrown instead of an outcome.
     /// In every case `status.json` ends `exited` and no lock is left held.
+    ///
+    /// A `CancellationError` from an awaited dependency (starting or stopping capture, replaying saved audio, the
+    /// processing lease) is handled as a cancellation, never as a capture or transcription failure; so is any error
+    /// from starting or stopping capture or from a replay once the task is cancelled. The frame consumer is still
+    /// drained and the chunk writer finished first. A frame stream that ends with an error of its own, even
+    /// `CancellationError`, is a capture failure: capture restarts in a new epoch (§4.2). A live speech session's
+    /// `CancellationError` only moves that track to replay.
     @MainActor public static func run(_ options: RecordingOptions,
                                       dependencies: RecordingDependencies) async throws -> RecordingOutcome {
         let stop = dependencies.stop
@@ -387,24 +396,18 @@ private final class Recorder {
     /// times and hands frames to the pump and the live tracks (§4.3).
     private func startConsumer(_ capture: any MeetingCapture, epoch: Int) {
         let frames = capture.frames
-        let dropCounter = capture.trackDropCounter
         let monitor = self.monitor
         let pump = self.pump
         let feeds = live
         let clock = self.clock
         consumer = Task.detached(priority: .userInitiated) {
-            var seenDrops: [String: Int] = [:]
             do {
                 for try await audio in frames {
                     monitor.received(epoch: epoch, audio: audio, at: clock.now())
-                    if let dropCounter {
-                        let dropped = dropCounter(audio.track)
-                        if dropped > seenDrops[audio.track, default: 0] {
-                            // The capture queue was full: the lost buffers precede this one.
-                            seenDrops[audio.track] = dropped
-                            pump.noteGap(track: audio.track, reason: .overflow)
-                            monitor.noteDrop()
-                        }
+                    if audio.followsDrop {
+                        // The capture queue was full just before this frame: the gap is marked right here.
+                        pump.noteGap(track: audio.track, reason: .overflow)
+                        monitor.noteDrop()
                     }
                     if !pump.push(audio) { monitor.noteDrop() }
                     feeds[audio.track]?.push(audio.frame, epoch: epoch)
@@ -424,10 +427,9 @@ private final class Recorder {
         var nextTick = wall.now
         let stopRequest = archive.directory.appendingPathComponent("stop.request")
         while machine.stopReason == nil {
-            if Task.isCancelled {
-                cancelled = true
-                return
-            }
+            if Task.isCancelled { cancelled = true }
+            // Cancelled, or a capture stop ended with CancellationError.
+            if cancelled { return }
             if writerFailed.value { return }
             for event in monitor.drain() { await apply(event) }
             for item in inbox.poll() {
@@ -467,12 +469,18 @@ private final class Recorder {
         }
     }
 
-    /// Feeds one input to the machine and executes its effects in order, then any inputs they produced.
+    /// Feeds one input to the machine and executes its effects in order, then any inputs they produced. A cancelled
+    /// run applies nothing more: the loop is about to stop, and a capture end caused by the cancellation is not a
+    /// capture failure.
     private func apply(_ input: RecorderInput) async {
         var pending = [input]
         while !pending.isEmpty {
+            if Task.isCancelled || cancelled {
+                cancelled = true
+                return
+            }
             let next = pending.removeFirst()
-            for effect in machine.handle(next) {
+            for effect in RecorderMachine.acknowledgingFirst(machine.handle(next)) {
                 if let followUp = await execute(effect) { pending.append(followUp) }
             }
         }
@@ -523,24 +531,31 @@ private final class Recorder {
     }
 
     /// Asks the current capture to stop (at most the capture-stop timeout), then waits for its consumer. A cancelled run
-    /// waits too: the microphone and system audio are released before it returns.
-    private func stopCurrentCapture() async {
-        guard let capture, !captureStopped else { return }
+    /// waits too: the microphone and system audio are released before it returns. A `CancellationError` from the stop
+    /// (or any error once the run is cancelled) marks the run cancelled; another error is returned for the stop path
+    /// to report, and only logged when capture restarts.
+    @discardableResult
+    private func stopCurrentCapture() async -> Error? {
+        guard let capture, !captureStopped else { return nil }
         captureStopped = true
         monitor.requestStop(epoch: captureEpoch)
         let limit = dependencies.timeouts.captureStop
         let outcome = await awaitWithTimeout(limit, cancellable: false) { try await capture.stop() }
         var abandon = false
+        var failure: Error?
         switch outcome {
         case .finished(.success):
             break
         case .finished(.failure(let error)):
-            Self.log.error("Session \(self.archive.id, privacy: .public): capture stop failed: \(error.localizedDescription, privacy: .public)")
+            if error is CancellationError || Task.isCancelled {
+                cancelled = true
+            } else {
+                failure = error
+                Self.log.error("Session \(self.archive.id, privacy: .public): capture stop failed: \(error.localizedDescription, privacy: .public)")
+            }
         case .timedOut:
             abandon = true
-            let (whole, fraction) = limit.components
-            let seconds = fraction == 0 ? String(whole)
-                : String(format: "%.1f", locale: Locale(identifier: "en_US_POSIX"), Double(whole) + Double(fraction) / 1e18)
+            let seconds = Self.seconds(limit)
             Self.log.error("Session \(self.archive.id, privacy: .public): capture did not stop within \(seconds, privacy: .public) s; abandoned")
             await recordEvent(MeetingEventKind.captureFailed, [
                 "epoch": String(captureEpoch), "error": "Capture did not stop within \(seconds) s",
@@ -548,35 +563,72 @@ private final class Recorder {
         case .cancelled:
             abandon = true
         }
-        guard let consumer else { return }
+        guard let consumer else { return failure }
         self.consumer = nil
         if abandon { consumer.cancel() }
         // A stopped stream ends at once; one that never ends is abandoned.
-        if case .finished = await awaitWithTimeout(limit, cancellable: false, { await consumer.value }) { return }
+        if case .finished = await awaitWithTimeout(limit, cancellable: false, { await consumer.value }) { return failure }
         consumer.cancel()
         _ = await awaitWithTimeout(.seconds(1), cancellable: false) { await consumer.value }
+        return failure
     }
 
     /// Starts epoch `epoch` (§2.3): the next speech sessions are ready first, then capture starts at
     /// timelineOffset max(clock.now(), lastFrameEnd + 0.01). A start failure comes back as `startFailed`.
+    ///
+    /// Neither step can hold up the loop: a speech session not ready within `tuning.restartLimit` is made later by
+    /// its live track, and a capture that has not started by then is abandoned (stopped once its start returns) and
+    /// reported as `startFailed`, so the waiting and backoff rules take over.
     private func startCapture(epoch: Int) async -> RecorderInput? {
-        for feed in live.values {
-            try? await feed.prepareSession(epoch: epoch, epochStart: clock.now())
+        if cancelled || Task.isCancelled { return nil }
+        let limit = dependencies.tuning.restartLimit
+        let epochStart = clock.now()
+        let feeds = Array(live.values)
+        // The tracks' sessions are made concurrently; a creation that fails makes that track fall behind.
+        if !feeds.isEmpty {
+            _ = await awaitWithTimeout(limit) {
+                await withTaskGroup(of: Void.self) { group in
+                    for feed in feeds {
+                        group.addTask { try? await feed.prepareSession(epoch: epoch, epochStart: epochStart) }
+                    }
+                }
+            }
         }
-        let offset = max(clock.now(), monitor.lastFrameEnd().map { $0 + 0.01 } ?? 0)
+        // The offset follows both the last frame received and the last sample written (contiguous frames are written
+        // back to back, which can run past their timestamps).
+        let lastEnd = [monitor.lastFrameEnd(), writer.lastFrameEnd > 0 ? writer.lastFrameEnd : nil].compactMap { $0 }.max()
+        let offset = max(clock.now(), lastEnd.map { $0 + 0.01 } ?? 0)
         let capture = dependencies.makeCapture()
         self.capture = capture
         captureEpoch = epoch
         captureStopped = false
         lastCaptureDrops = 0
         monitor.begin(epoch: epoch)
-        do {
-            try await capture.start(CaptureRequest(source: options.source,
-                                                   applicationBundleID: options.applicationBundleID,
-                                                   timelineOffset: offset, microphone: options.microphone))
-        } catch {
+        let request = CaptureRequest(source: options.source, applicationBundleID: options.applicationBundleID,
+                                     timelineOffset: offset, microphone: options.microphone)
+        let starting = Task { @MainActor in try await capture.start(request) }
+        switch await awaitWithTimeout(limit, { try await starting.value }) {
+        case .finished(.success):
+            break
+        case .finished(.failure(let error)):
             Self.log.error("Session \(self.archive.id, privacy: .public): epoch \(epoch, privacy: .public) failed to start")
             return .captureEnded(epoch: epoch, .startFailed(message: error.localizedDescription), at: clock.now())
+        case .timedOut, .cancelled:
+            // Abandoned: whenever the start returns, the capture is stopped so nothing keeps recording unseen.
+            starting.cancel()
+            captureStopped = true
+            Task { @MainActor in
+                _ = await starting.result
+                try? await capture.stop()
+            }
+            if Task.isCancelled {
+                cancelled = true
+                return nil
+            }
+            let seconds = Self.seconds(limit)
+            Self.log.error("Session \(self.archive.id, privacy: .public): epoch \(epoch, privacy: .public) did not start within \(seconds, privacy: .public) s; abandoned")
+            return .captureEnded(epoch: epoch, .startFailed(message: "Audio capture did not start within \(seconds) s."),
+                                 at: clock.now())
         }
         await recordEvent(MeetingEventKind.captureStarted, [
             "hostTimeOrigin": String(capture.hostTimeOrigin), "epoch": String(epoch), "timelineOffset": String(offset),
@@ -587,6 +639,13 @@ private final class Recorder {
         ])
         startConsumer(capture, epoch: epoch)
         return nil
+    }
+
+    /// "5" or "0.2": a limit in seconds for a message.
+    static func seconds(_ duration: Duration) -> String {
+        let (whole, fraction) = duration.components
+        return fraction == 0 ? String(whole)
+            : String(format: "%.1f", locale: Locale(identifier: "en_US_POSIX"), Double(whole) + Double(fraction) / 1e18)
     }
 
     private func internalStopRequest(sender: String) -> ControlRequest {
@@ -651,7 +710,7 @@ private final class Recorder {
 
     /// Rewrites the live fields of status.json (every tick, and when the phase changes).
     private func refreshStatus() async {
-        // A capture that counts drops only in total (no per-track counter) is noticed here.
+        // Drops with no frame after them yet (so no `followsDrop` frame) still warn.
         let captureDrops = capture?.droppedBuffers ?? 0
         let newCaptureDrops = captureDrops > lastCaptureDrops
         lastCaptureDrops = captureDrops
@@ -702,8 +761,9 @@ private final class Recorder {
         let stopReason = machine.stopReason ?? (writerFailed.value ? .captureFailed : .requested)
         await setPhase(.stopping)
         answerRequestsWhileStopping()
-        // 1. Stop capture, drain the consumer, let the pump drain into the writer, close every chunk.
-        await stopCurrentCapture()
+        // 1. Stop capture, drain the consumer, let the pump drain into the writer, close every chunk. A failed stop is a
+        // capture error (a timeout only records captureFailed); a CancellationError from it is a cancellation.
+        if let failure = await stopCurrentCapture() { recordingError = recordingError ?? failure }
         pump.finish()
         if let writerTask {
             do { try await writerTask.value } catch { recordingError = recordingError ?? error }
@@ -753,6 +813,7 @@ private final class Recorder {
         // 2–3. Finish live speech; replay only what it missed, and merge at word level.
         var segments: [TranscriptSegment] = []
         var transcriptErrors: [String] = []
+        var transcriptionCancelled = false
         for track in options.recordOnly ? [] : tracks {
             if Task.isCancelled { break }
             guard let feed = live[track] else { continue }
@@ -766,17 +827,26 @@ private final class Recorder {
             var replayed: [TranscriptSegment] = []
             do {
                 reporter.message("Processing saved \(track) audio…")
+                // Every speech call of the replay has a time limit (§1.3), like the live finish before it.
                 replayed = try await TrackReplayer.replay(directory: archive.directory, track: track,
                     locale: options.locale, backend: options.backend, contextualStrings: options.vocabulary,
-                    from: max(0, coverage - 2), makeSpeech: dependencies.makeSpeech)
+                    from: max(0, coverage - 2), makeSpeech: dependencies.makeSpeech, timeouts: dependencies.timeouts)
+            } catch let partial as ReplayIncomplete {
+                // Speech stopped answering: keep what it returned; the track is incomplete.
+                replayed = partial.segments
+                transcriptErrors.append("\(track): \(partial.localizedDescription)")
             } catch {
-                if Task.isCancelled { break }
+                // A cancelled replay is a cancellation, not a transcription failure.
+                if error is CancellationError || Task.isCancelled {
+                    transcriptionCancelled = true
+                    break
+                }
                 transcriptErrors.append("\(track): \(error.localizedDescription)")
             }
             segments += TranscriptCoverage.merge(live: result.segments, replayed: replayed, coverageEnd: coverage)
         }
         // Cancelled during transcription: keep the audio, publish no partial transcript.
-        if Task.isCancelled {
+        if transcriptionCancelled || Task.isCancelled {
             try await finishCancelled(status: untranscribed)
         }
         // 4. The transcript, named by transcripts/current.json.
@@ -803,17 +873,18 @@ private final class Recorder {
         // 5–6. The lease is taken while the writer lock is still held, so the session is never without a lock
         // between capture and post-processing.
         var lease: ProcessingLease?
+        var leaseCancelled = false
         if dependencies.postProcess != nil {
-            lease = await acquireLease()
+            do { lease = try await acquireLease() } catch { leaseCancelled = true }
         }
         defer { lease?.release() }
         try await archive.finish(status: finalStatus)
         archiveOpen = false
         // Cancelled while the lease was being taken: the archive is finished; skip the hook, release the lease.
-        if Task.isCancelled {
-            lease?.release()
+        if leaseCancelled || Task.isCancelled {
             Self.log.notice("Session \(self.archive.id, privacy: .public) cancelled before post-processing; archive finished as \(finalStatus, privacy: .public)")
             await exitStatus(RecorderExit(archiveStatus: finalStatus, reason: stopReason, message: "Cancelled."))
+            lease?.release()
             throw CancellationError()
         }
         // 7. Post-processing under the lease; its progress is mirrored into status.json in order.
@@ -823,19 +894,20 @@ private final class Recorder {
             let mirror = ProgressMirror(status: status)
             postRecord = await hook(archive.directory, lease, progressHandler(mirror))
             await mirror.finish()
-            lease.release()
             Self.log.notice("Session \(self.archive.id, privacy: .public) post-processing ended: \(postRecord?.state.rawValue ?? "", privacy: .public)")
             // The hook never throws; a cancellation during it still ends the run with CancellationError.
             if Task.isCancelled {
                 await exitStatus(RecorderExit(archiveStatus: finalStatus, reason: stopReason, message: "Cancelled.",
                                         postprocessing: postRecord?.state, postprocessingMessage: postRecord?.message))
+                lease.release()
                 throw CancellationError()
             }
         }
-        // 8–9. Release the lease; status says exited; leftover requests are deleted.
-        lease?.release()
+        // 8–9. status.json says exited, then the lease is released, so no one reads a `postprocessing` status without
+        // a lock as a dead recorder; leftover requests are deleted.
         await exitStatus(RecorderExit(archiveStatus: finalStatus, reason: stopReason,
                                 postprocessing: postRecord?.state, postprocessingMessage: postRecord?.message))
+        lease?.release()
         return RecordingOutcome(sessionID: archive.id, directory: archive.directory, archiveStatus: finalStatus,
                                 stopReason: stopReason, transcriptID: transcriptID,
                                 transcriptErrors: transcriptErrors, postProcessing: postRecord)
@@ -866,12 +938,15 @@ private final class Recorder {
         throw CancellationError()
     }
 
-    /// Takes the processing lease (retry 1 s) off the main actor. On failure, post-processing is skipped.
-    private func acquireLease() async -> ProcessingLease? {
+    /// Takes the processing lease (retry 1 s) off the main actor. On failure, post-processing is skipped. Throws only
+    /// `CancellationError`.
+    private func acquireLease() async throws -> ProcessingLease? {
         let directory = archive.directory
         let sessionID = archive.id
         do {
             return try await Task.detached { try SessionArchive.acquireProcessingLease(at: directory) }.value
+        } catch is CancellationError {
+            throw CancellationError()
         } catch HolosError.unavailable {
             Self.log.error("Session \(sessionID, privacy: .public): processing lease held elsewhere; post-processing skipped")
             reporter.message("Another Holos process is labelling this meeting.")
@@ -939,6 +1014,28 @@ private final class Recorder {
             Self.log.error("Session \(self.archive.id, privacy: .public): cannot write the final status: \(error.localizedDescription, privacy: .public)")
         }
         ControlInbox.removeLeftovers(session: archive.directory)
+    }
+}
+
+extension RecorderMachine {
+    /// The order in which the loop executes `effects`: as emitted, except that acknowledgements go ahead of stopping or
+    /// starting capture. The machine has already decided the change, and a sender waits only 3 s for its answer
+    /// (§4.1), while a capture stop, the drain of the chunks queued before it, or the next epoch's speech sessions can
+    /// take longer.
+    static func acknowledgingFirst(_ effects: [RecorderEffect]) -> [RecorderEffect] {
+        func isCapture(_ effect: RecorderEffect) -> Bool {
+            switch effect {
+            case .stopCapture, .startCapture: true
+            default: false
+            }
+        }
+        func isAck(_ effect: RecorderEffect) -> Bool {
+            if case .acknowledge = effect { return true }
+            return false
+        }
+        guard let first = effects.firstIndex(where: isCapture) else { return effects }
+        let rest = effects[first...]
+        return Array(effects[..<first]) + rest.filter(isAck) + rest.filter { !isAck($0) }
     }
 }
 

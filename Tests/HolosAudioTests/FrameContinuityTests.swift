@@ -105,6 +105,27 @@ private struct ContinuityFixture {
     #expect(samples[48_000] == -0.5)
 }
 
+/// A pending boundary (a drop or a restart) followed by a frame that starts 30 ms before the written end: the new
+/// chunk still never starts before the previous one ends.
+@Test func boundaryFollowedByAnEarlyFrameIsTrimmed() async throws {
+    let fixture = try ContinuityFixture()
+    defer { fixture.remove() }
+    try await fixture.append(0, 1.0)
+    await fixture.writer.noteGap(track: "mic", reason: .overflow)
+    try await fixture.append(0.97, 0.1)
+    let (chunks, events) = try await fixture.finish()
+    #expect(chunks.count == 2)
+    for (previous, next) in zip(chunks, chunks.dropFirst()) {
+        #expect(next.start >= previous.end, "No chunk starts before the previous one ends.")
+    }
+    #expect(abs((chunks.last?.start ?? 0) - 1.0) < 1e-9)
+    #expect(chunks.last?.frameCount == 3_360, "The 0.03 s before the previous end is dropped.")
+    let overlap = try #require(events.first { $0.kind == MeetingEventKind.timestampOverlap })
+    #expect(abs((overlap.details["droppedSeconds"].flatMap(Double.init) ?? 0) - 0.03) < 1e-9)
+    let gap = try #require(events.first { $0.kind == MeetingEventKind.audioDiscontinuity })
+    #expect(gap.details["reason"] == GapReason.overflow.rawValue)
+}
+
 @Test func closeAllStartsTheNextFrameAtItsOwnTimeWithTheReason() async throws {
     let fixture = try ContinuityFixture()
     defer { fixture.remove() }

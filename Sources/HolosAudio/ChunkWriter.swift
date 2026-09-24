@@ -71,28 +71,42 @@ public actor AudioChunkWriter {
                                                     sampleRate: frame.sampleRate, expected: state.expected)
             switch decision {
             case .overlap(let dropFrames):
-                let dropped = min(dropFrames, frame.frameCount)
-                try await archive.recordEvent(kind: MeetingEventKind.timestampOverlap, details: [
-                    "track": track, "previousEnd": String(state.expected), "nextStart": String(frame.startTime),
-                    "droppedSeconds": String(Double(dropped) / frame.sampleRate),
-                ])
-                Self.log.notice("Dropped \(dropped, privacy: .public) overlapping \(track, privacy: .public) frames")
-                if dropped >= frame.frameCount {
+                guard let rest = try await trimOverlap(frame, dropFrames: dropFrames, expected: state.expected,
+                                                       track: track) else {
                     return CapturedAudio(track: track, frame: try PCMFrame(samples: [], sampleRate: frame.sampleRate,
                         channels: frame.channels, startTime: state.expected))
                 }
-                // The rest starts within one sample of the previous end: it continues there.
-                frame = try PCMFrame(samples: Array(frame.samples[(dropped * frame.channels)...]),
-                                     sampleRate: frame.sampleRate, channels: frame.channels, startTime: state.expected)
+                frame = rest
                 if state.boundary || formatChanged {
                     startsNewChunk = true
                     discontinuity = (state.expected, state.pendingReason ?? "formatChanged")
                 }
             case .contiguous(let drift):
                 if state.boundary || formatChanged {
-                    // A new epoch (or a format change) is not sample-continuous: keep the frame's own time.
+                    // A new epoch (or a format change) is not sample-continuous: keep the frame's own time, except
+                    // that the new chunk never starts before the previous one ends: samples before it are dropped
+                    // as for an overlap.
                     startsNewChunk = true
                     discontinuity = (state.expected, state.pendingReason ?? "formatChanged")
+                    if drift < 0 {
+                        // As in FrameContinuity: a millionth of a sample absorbs floating-point error.
+                        let exact = (state.expected - frame.startTime) * frame.sampleRate
+                        let dropFrames = exact.isFinite
+                            ? Int(min(Double(frame.frameCount), max(0, (exact - 1e-6).rounded(.up))))
+                            : frame.frameCount
+                        if dropFrames > 0 {
+                            guard let rest = try await trimOverlap(frame, dropFrames: dropFrames,
+                                                                   expected: state.expected, track: track) else {
+                                return CapturedAudio(track: track, frame: try PCMFrame(samples: [],
+                                    sampleRate: frame.sampleRate, channels: frame.channels, startTime: state.expected))
+                            }
+                            frame = rest
+                        } else {
+                            // Less than one sample early: it starts where the previous chunk ends.
+                            frame = try PCMFrame(samples: frame.samples, sampleRate: frame.sampleRate,
+                                                 channels: frame.channels, startTime: state.expected)
+                        }
+                    }
                 } else {
                     if abs(drift) > Self.driftLogThreshold,
                        state.lastDriftLog.map({ frame.startTime - $0 >= Self.driftLogInterval }) ?? true {
@@ -163,6 +177,22 @@ public actor AudioChunkWriter {
 
     /// The largest end time written on any track (0 before any audio).
     public nonisolated var lastFrameEnd: Double { stats.lastFrameEnd }
+
+    /// Drops the first `dropFrames` frames of `frame`, which lie before `expected`, and records `timestampOverlap`.
+    /// Returns the rest, starting at `expected`, or nil when nothing is left.
+    private func trimOverlap(_ frame: PCMFrame, dropFrames: Int, expected: Double, track: String) async throws
+        -> PCMFrame? {
+        let dropped = min(dropFrames, frame.frameCount)
+        try await archive.recordEvent(kind: MeetingEventKind.timestampOverlap, details: [
+            "track": track, "previousEnd": String(expected), "nextStart": String(frame.startTime),
+            "droppedSeconds": String(Double(dropped) / frame.sampleRate),
+        ])
+        Self.log.notice("Dropped \(dropped, privacy: .public) overlapping \(track, privacy: .public) frames")
+        guard dropped < frame.frameCount else { return nil }
+        // The rest starts within one sample of the previous end: it continues there.
+        return try PCMFrame(samples: Array(frame.samples[(dropped * frame.channels)...]),
+                            sampleRate: frame.sampleRate, channels: frame.channels, startTime: expected)
+    }
 
     // MARK: - Chunks
 

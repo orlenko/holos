@@ -108,7 +108,10 @@ public enum RecorderChannel {
             if let status, fresh, status.phase == .postprocessing || status.phase == .transcribing { return .processing }
             return .maintenance
         }
-        return status?.phase == .exited ? .exited : .dead
+        if status?.phase == .exited { return .exited }
+        // A recorder writes exited before it releases its last lock: one that did so since the first read exited.
+        if let again = try? readStatus(session: session), again.phase == .exited { return .exited }
+        return .dead
     }
 
     /// For maintenance commands: when liveness is dead and status.json is not exited, rewrites it as exited

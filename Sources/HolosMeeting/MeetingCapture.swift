@@ -20,21 +20,20 @@ public struct CaptureRequest: Sendable, Equatable {
 }
 
 /// One capture epoch. `frames` is single-use: it finishes after `stop()` or throws on failure
-/// (`CaptureInterruption` for a configuration change or a user who stopped sharing).
+/// (`CaptureInterruption` for a configuration change or a user who stopped sharing). The first frame delivered after
+/// a dropped buffer has `CapturedAudio.followsDrop` set, so the consumer marks the gap where it happened (§4.3).
 @MainActor public protocol MeetingCapture: AnyObject, Sendable {
     nonisolated var frames: AsyncThrowingStream<CapturedAudio, Error> { get }
     var hostTimeOrigin: Double { get }
     /// Buffers dropped because the frame stream was full; capture continues after a drop.
     var droppedBuffers: Int { get }
-    /// Reads the dropped-buffer count of one track from any thread, so the frame consumer can mark the gap where it
-    /// happened (§4.3). Nil when the capture does not count per track (the default).
-    nonisolated var trackDropCounter: (@Sendable (String) -> Int)? { get }
     func start(_ request: CaptureRequest) async throws
     func stop() async throws
 }
 
 extension MeetingCapture {
-    public nonisolated var trackDropCounter: (@Sendable (String) -> Int)? { nil }
+    /// A capture that never drops buffers.
+    public var droppedBuffers: Int { 0 }
 }
 
 /// Wraps `AudioCapture`, passing the epoch's timeline offset and microphone selection through.
@@ -42,19 +41,15 @@ extension MeetingCapture {
     private let capture: AudioCapture
     public nonisolated let frames: AsyncThrowingStream<CapturedAudio, Error>
 
+    /// A full frame stream drops the buffer and counts it; capture continues (§4.3).
     public init(bufferCapacity: Int = 4096) {
-        capture = AudioCapture(bufferCapacity: bufferCapacity)
+        capture = AudioCapture(bufferCapacity: bufferCapacity, overflow: .dropAndCount)
         frames = capture.frames
     }
 
     public var hostTimeOrigin: Double { capture.hostTimeOrigin }
 
     public var droppedBuffers: Int { capture.droppedBuffers }
-
-    public nonisolated var trackDropCounter: (@Sendable (String) -> Int)? {
-        let capture = capture
-        return { track in capture.droppedBuffers(track: track) }
-    }
 
     public func start(_ request: CaptureRequest) async throws {
         try await capture.start(source: request.source, applicationBundleID: request.applicationBundleID,

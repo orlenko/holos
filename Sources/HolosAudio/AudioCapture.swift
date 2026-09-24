@@ -8,7 +8,21 @@ import Synchronization
 public struct CapturedAudio: Sendable {
     public let track: String
     public let frame: PCMFrame
-    public init(track: String, frame: PCMFrame) { self.track = track; self.frame = frame }
+    /// Buffers of this track were dropped just before this frame because the frame stream was full
+    /// (`CaptureOverflow.dropAndCount`): audio is missing between the previous frame and this one.
+    public let followsDrop: Bool
+    public init(track: String, frame: PCMFrame, followsDrop: Bool = false) {
+        self.track = track; self.frame = frame; self.followsDrop = followsDrop
+    }
+}
+
+/// What `AudioCapture` does when its frame stream is full.
+public enum CaptureOverflow: Sendable, Equatable {
+    /// End the stream with an error, so a short capture (dictation) never has a silent hole.
+    case fail
+    /// Drop the buffer, count it (`droppedBuffers`), mark the next delivered frame of the track `followsDrop`, and
+    /// keep capturing (meeting recordings, docs/meeting-design.md §4.3).
+    case dropAndCount
 }
 
 /// Which input device a meeting's microphone track records (docs/meeting-design.md §4.12). PR2a declares it and
@@ -47,13 +61,13 @@ public final class AudioCapture {
     private var stream: SCStream?
     private var started = false
 
-    /// `bufferCapacity` buffers wait for the consumer; when the queue is full a buffer is dropped and counted
-    /// (`droppedBuffers`), and capture continues.
-    public init(bufferCapacity: Int = 256) {
+    /// `bufferCapacity` buffers wait for the consumer. When the queue is full, `.fail` (dictation's default) ends the
+    /// stream with an error; `.dropAndCount` drops the buffer, counts it (`droppedBuffers`), and continues.
+    public init(bufferCapacity: Int = 256, overflow: CaptureOverflow = .fail) {
         let pair = AsyncThrowingStream<CapturedAudio, Error>.makeStream(bufferingPolicy: .bufferingOldest(bufferCapacity))
         frames = pair.stream
         hostTimeOrigin = CMClockGetTime(CMClockGetHostTimeClock()).seconds
-        receiver = CaptureReceiver(origin: hostTimeOrigin, continuation: pair.continuation)
+        receiver = CaptureReceiver(origin: hostTimeOrigin, continuation: pair.continuation, overflow: overflow)
     }
 
     /// Buffers dropped because the frame stream was full.
@@ -182,26 +196,50 @@ private final class CaptureReceiver: NSObject, SCStreamOutput, SCStreamDelegate,
     var origin: Double { originValue.withLock { $0 } }
     let continuation: AsyncThrowingStream<CapturedAudio, Error>.Continuation
     private let ended = Mutex(false)
-    /// Buffers dropped because the stream was full, per track.
-    private let dropped = Mutex<[String: Int]>([:])
+    private let overflow: CaptureOverflow
+    private struct Drops {
+        /// Buffers dropped because the stream was full, per track.
+        var counts: [String: Int] = [:]
+        /// Tracks whose next delivered frame follows a drop.
+        var pending: Set<String> = []
+    }
+    private let drops = Mutex(Drops())
 
-    init(origin: Double, continuation: AsyncThrowingStream<CapturedAudio, Error>.Continuation) {
-        self.originValue = Mutex(origin); self.continuation = continuation
+    init(origin: Double, continuation: AsyncThrowingStream<CapturedAudio, Error>.Continuation,
+         overflow: CaptureOverflow) {
+        self.originValue = Mutex(origin); self.continuation = continuation; self.overflow = overflow
     }
 
     func setOrigin(_ value: Double) { originValue.withLock { $0 = value } }
 
     /// Dropped buffers of `track`, or of every track when nil.
     func droppedBuffers(track: String?) -> Int {
-        dropped.withLock { counts in track.map { counts[$0] ?? 0 } ?? counts.values.reduce(0, +) }
+        drops.withLock { drops in track.map { drops.counts[$0] ?? 0 } ?? drops.counts.values.reduce(0, +) }
     }
 
-    /// Never fails on a full queue: the buffer is dropped and counted, and the consumer marks the gap
-    /// (docs/meeting-design.md §4.3).
+    /// On a full queue, `.fail` ends the stream; `.dropAndCount` drops and counts the buffer, and the next frame of the
+    /// track that is delivered carries `followsDrop`, so the consumer marks the gap right before it
+    /// (docs/meeting-design.md §4.3). Callbacks of one track arrive in order, never concurrently.
     func emit(track: String, frame: PCMFrame) {
         guard !ended.withLock({ $0 }) else { return }
-        if case .dropped = continuation.yield(CapturedAudio(track: track, frame: frame)) {
-            dropped.withLock { $0[track, default: 0] += 1 }
+        let followsDrop = drops.withLock { $0.pending.contains(track) }
+        switch continuation.yield(CapturedAudio(track: track, frame: frame, followsDrop: followsDrop)) {
+        case .dropped:
+            switch overflow {
+            case .fail:
+                fail(HolosError.incomplete("The audio recording queue overflowed. Capture stopped to avoid an unreported gap."))
+            case .dropAndCount:
+                drops.withLock { drops in
+                    drops.counts[track, default: 0] += 1
+                    drops.pending.insert(track)
+                }
+            }
+        case .enqueued:
+            if followsDrop { drops.withLock { _ = $0.pending.remove(track) } }
+        case .terminated:
+            break
+        @unknown default:
+            break
         }
     }
 

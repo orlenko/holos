@@ -72,17 +72,64 @@ func hungSpeechFinishTimesOut() async throws {
     #expect(outcome.archiveStatus == ArchiveStatus.complete)
 }
 
+/// Replay runs when live speech failed, so its speech calls have time limits too (§1.3): a replay session whose
+/// `finish()` hangs is cancelled, the segments of the replay session before it are kept, and the track is incomplete.
+@Test(.timeLimit(.minutes(1))) @MainActor
+func hungReplayFinishTimesOut() async throws {
+    let temp = try TemporaryDirectory()
+    defer { temp.remove() }
+    let speech = FakeSpeechFactory([
+        // Live speech is unavailable, so the whole track is replayed.
+        FakeSpeechScript(makeError: .unavailable("Live speech is unavailable.")),
+        // The replay's first session (before the 1.7 s gap) finishes; the second one hangs.
+        FakeSpeechScript(segments: [TranscriptSegment(start: 0, end: 0.2, text: "Before the gap")]),
+        FakeSpeechScript(finishHangs: true),
+    ])
+    let frames = FakeFrame.run(count: 3) + FakeFrame.run(from: 2, count: 3)
+    let captures = FakeCaptureFactory([FakeCaptureScript(frames: frames)])
+    let stop = ManualStopSource()
+    let timeouts = StopTimeouts(speechFinishBase: .milliseconds(300), speechFinishPerAudioSecond: 0)
+    let run = Task {
+        try await RecordingWorkflow.run(.testing(root: temp.url),
+            dependencies: recorderDependencies(captures: captures, speech: speech.factory, stop: stop,
+                                               timeouts: timeouts))
+    }
+    #expect(await eventually { (captures.captures.first?.consumedFrames ?? 0) >= 6 })
+    let clock = ContinuousClock()
+    let stopped = clock.now
+    stop.requestStop()
+    let outcome = try await run.value
+    #expect(stopped.duration(to: clock.now) < .seconds(10), "The stop path does not wait for the hung replay.")
+    #expect(speech.sessions.count == 2)
+    // Cancelled without waiting for it, since it may be stuck.
+    var cancelled = false
+    for _ in 0..<200 where !cancelled {
+        cancelled = await speech.sessions.last?.cancelled == true
+        if !cancelled { try? await Task.sleep(for: .milliseconds(10)) }
+    }
+    #expect(cancelled, "The hung replay session is cancelled.")
+    #expect(outcome.archiveStatus == ArchiveStatus.transcriptionIncomplete)
+    #expect(outcome.transcriptErrors.count == 1)
+    #expect(outcome.transcriptErrors.first?.hasPrefix("mic: Speech did not respond within 0.3 s") == true)
+    let transcript = try AtomicFile.readJSON(Transcript.self, from: SessionPaths.transcript(
+        try #require(outcome.transcriptID), in: outcome.directory))
+    #expect(transcript.segments.map(\.text) == ["Before the gap"], "Segments already returned are kept.")
+    let status = try #require(try RecorderChannel.readStatus(session: outcome.directory))
+    #expect(status.phase == .exited)
+    #expect(try !SessionArchive.isActive(at: outcome.directory))
+}
+
 @Test(.timeLimit(.minutes(1))) @MainActor
 func leaseTakenBeforeFinish() async throws {
     let temp = try TemporaryDirectory()
     defer { temp.remove() }
     let hookStarted = SharedValue(false)
-    let probeDone = SharedValue(false)
+    let probeSawHook = SharedValue(false)
     let hook: PostProcessHook = { session, _, _ in
         hookStarted.set(true)
         let clock = ContinuousClock()
         let deadline = clock.now.advanced(by: .seconds(5))
-        while !probeDone.value, clock.now < deadline { try? await Task.sleep(for: .milliseconds(1)) }
+        while !probeSawHook.value, clock.now < deadline { try? await Task.sleep(for: .milliseconds(1)) }
         return stopRecord(session, state: .succeeded)
     }
     let captures = FakeCaptureFactory([FakeCaptureScript(frames: FakeFrame.run(count: 3))])
@@ -93,28 +140,37 @@ func leaseTakenBeforeFinish() async throws {
     }
     #expect(await eventually { (captures.captures.first?.consumedFrames ?? 0) >= 3 })
     let session = try #require(await recorderSession(in: temp.url))
-    let probe = Task.detached { () -> (samples: Int, dead: Int, unlocked: Int, seen: Set<RecorderLiveness>) in
-        var samples = 0, dead = 0, unlocked = 0
+    // Probes from before the stop until status.json says exited: into the hook and out of it.
+    let probe = Task.detached { () -> (samples: Int, afterHook: Int, dead: Int, unlocked: Int, seen: Set<RecorderLiveness>) in
+        var samples = 0, afterHook = 0, dead = 0, unlocked = 0
         var seen: Set<RecorderLiveness> = []
-        while !hookStarted.value {
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: .seconds(20))
+        while clock.now < deadline {
+            let hookRunning = hookStarted.value
+            // Locks first, then the status: the recorder writes exited before it releases its last lock.
             let writer = (try? SessionArchive.isActive(at: session)) ?? true
             let lease = (try? SessionArchive.isProcessing(at: session)) ?? true
             let liveness = RecorderChannel.liveness(session: session)
+            let exited = (try? RecorderChannel.readStatus(session: session))?.phase == .exited
             samples += 1
+            if hookRunning { afterHook += 1 }
             seen.insert(liveness)
             if liveness == .dead { dead += 1 }
-            if !writer && !lease { unlocked += 1 }
-            try? await Task.sleep(for: .milliseconds(5))
+            if !writer && !lease && !exited { unlocked += 1 }
+            if hookRunning { probeSawHook.set(true) }
+            if exited { break }
+            try? await Task.sleep(for: .milliseconds(1))
         }
-        probeDone.set(true)
-        return (samples, dead, unlocked, seen)
+        return (samples, afterHook, dead, unlocked, seen)
     }
     stop.requestStop()
     let outcome = try await run.value
     let result = await probe.value
     #expect(result.samples > 0)
-    #expect(result.dead == 0, "Liveness never reads dead during the hand-off (saw \(result.seen)).")
-    #expect(result.unlocked == 0, "The lease is held before the writer lock is released.")
+    #expect(result.afterHook > 0, "The probe ran while and after the hook ran.")
+    #expect(result.dead == 0, "Liveness never reads dead during the hand-off or the exit (saw \(result.seen)).")
+    #expect(result.unlocked == 0, "The lease is held before the writer lock is released, until status says exited.")
     #expect(outcome.postProcessing?.state == .succeeded)
     #expect(RecorderChannel.liveness(session: session) == .exited)
 }
