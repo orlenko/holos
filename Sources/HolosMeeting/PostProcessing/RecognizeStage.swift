@@ -15,6 +15,9 @@ enum RecognizeStage {
     static let noVoices = "No saved voices to compare."
     static let nothingToCompare = "No labelled speaker to compare."
 
+    /// Test hook: while set (a task-local value), called after the comparison and before the result is saved.
+    @TaskLocal static var beforeSaving: (@Sendable () throws -> Void)? = nil
+
     enum Outcome: Equatable {
         /// An expected skip: it never makes the record `partial`.
         case skipped(String)
@@ -40,16 +43,19 @@ enum RecognizeStage {
             return .skipped(nothingToCompare)
         }
         do {
-            // The people are read again under the speaker lock: a forget that updated the store meanwhile has its
-            // people dropped here, and one that updates it later cleans this file after the lock is released
-            // (it takes the speaker lock per meeting after its store update).
+            try beforeSaving?()
+            // The people are read again under the speaker lock and only those the recognizer would still compare
+            // (`SpeakerRecognizer.profiles`) are kept: a person forgotten, whose suggestions were turned off, or whose
+            // samples changed model meanwhile is dropped here, and a forget that updates the store later cleans this
+            // file after the lock is released (it takes the speaker lock per meeting after its store update).
             let written = try SessionArchive.withSpeakerLock(at: session) { () throws -> Bool in
                 let current = try store.load()
                 guard current.rememberVoices else { return false }
-                let people = Set(current.profiles.filter { !$0.samples.isEmpty }.map(\.id))
+                let (eligible, skipped) = SpeakerRecognizer.profiles(current, model: result.embeddingModel)
+                let people = Set(eligible.map(\.id))
                 result.matches.removeAll { !people.contains($0.profileID) }
                 result.mergeSuggestions.removeAll { !people.contains($0.profileID) }
-                result.skippedProfiles.removeAll { !people.contains($0) }
+                result.skippedProfiles = skipped
                 try SessionSpeakerStore.writeRecognition(result, session: session)
                 return true
             }

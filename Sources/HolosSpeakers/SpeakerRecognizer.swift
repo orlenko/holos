@@ -43,15 +43,7 @@ public enum SpeakerRecognizer {
         let calibrated = database.calibratedThresholds != nil
 
         let candidates = candidates(run: run, voiceData: voiceData)
-        var eligible: [SpeakerProfile] = []
-        var skipped: [String] = []
-        for profile in database.profiles where profile.recognitionEnabled && !profile.samples.isEmpty {
-            if profile.embeddingModel == model {
-                eligible.append(profile)
-            } else {
-                skipped.append(profile.id)
-            }
-        }
+        let (eligible, skipped) = profiles(database, model: model)
 
         // Steps 3 and 5: every pair's distance and tier.
         var pairs: [Pair] = []
@@ -93,6 +85,23 @@ public enum SpeakerRecognizer {
                              distance: $0.distance, tier: $0.tier)
             },
             mergeSuggestions: suggestions, skippedProfiles: skipped)
+    }
+
+    /// Step 2: the people a run of `model` is compared with (`recognitionEnabled`, with samples, of `model`), and the
+    /// IDs of those skipped because their samples are of another model. A caller that rereads the store before saving
+    /// a result keeps only what these still allow.
+    public static func profiles(_ database: SpeakerProfileDatabase,
+                                model: EmbeddingModelID) -> (eligible: [SpeakerProfile], skipped: [String]) {
+        var eligible: [SpeakerProfile] = []
+        var skipped: [String] = []
+        for profile in database.profiles where profile.recognitionEnabled && !profile.samples.isEmpty {
+            if profile.embeddingModel == model {
+                eligible.append(profile)
+            } else {
+                skipped.append(profile.id)
+            }
+        }
+        return (eligible, skipped)
     }
 
     // MARK: - Private

@@ -120,6 +120,45 @@ func profileStoreIsPrivateLockedAndNotBackedUp() async throws {
     #expect(try Data(contentsOf: store.databaseURL) == before, "A refused update writes nothing.")
 }
 
+@Test func damagedStoreIsRefusedOnLoad() throws {
+    let root = try profileRoot()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let store = SpeakerProfileStore(directory: root.appendingPathComponent("Speakers"))
+    try store.update { $0.rememberVoices = true }
+    let session = UUID().uuidString
+    let repeated = profileSample()
+    let damaged: [SpeakerProfileDatabase] = [
+        // A repeated person ID, two people marked as you, two samples from one meeting, a repeated sample ID,
+        // samples of different dimensions, and a sample without its person's embedding model.
+        SpeakerProfileDatabase(profiles: [SpeakerProfile(id: "JIM", displayName: "Jim"),
+                                          SpeakerProfile(id: "JIM", displayName: "Jim")]),
+        SpeakerProfileDatabase(profiles: [SpeakerProfile(displayName: "Me", isSelf: true),
+                                          SpeakerProfile(displayName: "Also me", isSelf: true)]),
+        SpeakerProfileDatabase(profiles: [SpeakerProfile(displayName: "Jim", embeddingModel: profileModel,
+                                                         samples: [profileSample(session: session),
+                                                                   profileSample(session: session)])]),
+        SpeakerProfileDatabase(profiles: [
+            SpeakerProfile(displayName: "Jim", embeddingModel: profileModel, samples: [repeated]),
+            SpeakerProfile(displayName: "Maria", embeddingModel: profileModel, samples: [repeated]),
+        ]),
+        SpeakerProfileDatabase(profiles: [SpeakerProfile(displayName: "Jim", embeddingModel: profileModel, samples: [
+            profileSample(), VoiceprintSample(sessionID: session, sessionName: "Other", speakerIDs: ["mic:S1"],
+                                              speechSeconds: 30, embedding: FloatVector([1, 0]), condition: .room,
+                                              weak: false, addedAt: profileDate),
+        ])]),
+        SpeakerProfileDatabase(profiles: [SpeakerProfile(displayName: "Jim", samples: [profileSample()])]),
+    ]
+    for database in damaged {
+        let data = try HolosJSON.encoder().encode(database)
+        try AtomicFile.write(data, to: store.databaseURL)
+        #expect(throws: HolosError.self) { try store.load() }
+        // A no-op update reads through `load`, so it is refused too, and nothing is rewritten.
+        #expect(throws: HolosError.self) { try store.update { _ in } }
+        #expect(throws: HolosError.self) { try store.update { $0.rememberVoices = false } }
+        #expect(try Data(contentsOf: store.databaseURL) == data)
+    }
+}
+
 @Test func newerStoreIsRefusedAndNeverOverwritten() throws {
     let root = try profileRoot()
     defer { try? FileManager.default.removeItem(at: root) }

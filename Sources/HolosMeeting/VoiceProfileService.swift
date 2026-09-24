@@ -704,13 +704,20 @@ public enum VoiceProfileService {
     private static func forget(_ record: ForgetRecord, store: SpeakerProfileStore, sessionsRoot: URL,
                                turnRememberOff: Bool = false) throws {
         try store.appendForgetRecord(record)
-        try perform(record, store: store, sessionsRoot: sessionsRoot, turnRememberOff: turnRememberOff)
+        try perform(record, store: store, sessionsRoot: sessionsRoot, turnRememberOff: turnRememberOff, initial: true)
         log.notice("Forgot voices (\(record.kind?.rawValue ?? "?", privacy: .public))")
     }
 
-    /// The steps of one forget, each idempotent: the store, then the sessions, then the `done` line.
+    /// The steps of one forget, each idempotent: the store, then the sessions, then the `done` line. The `done` line
+    /// is written only when every place the forgotten data could be was cleaned; otherwise this throws and the
+    /// tombstone stays pending.
+    ///
+    /// `initial` (the first run, not a resumed tombstone): an `.all` forget removes every sample in the store write,
+    /// not only those the tombstone lists, so a sample learned between listing them and this write (while the setting
+    /// was still on) is removed too. A resumed `.all` removes only the listed samples, so it never removes one learned
+    /// after the user turned "Remember voices" back on.
     static func perform(_ record: ForgetRecord, store: SpeakerProfileStore, sessionsRoot: URL,
-                        turnRememberOff: Bool = false) throws {
+                        turnRememberOff: Bool = false, initial: Bool = false) throws {
         guard let kind = record.kind else { return }
         let sampleIDs = Set(record.sampleIDs ?? [])
         try store.update { database in
@@ -718,8 +725,9 @@ public enum VoiceProfileService {
             if kind == .profile, let profileID = record.profileID {
                 database.profiles.removeAll { $0.id == profileID }
             }
+            let everySample = initial && kind == .all
             for index in database.profiles.indices {
-                database.profiles[index].samples.removeAll { sampleIDs.contains($0.id) }
+                database.profiles[index].samples.removeAll { everySample || sampleIDs.contains($0.id) }
                 if database.profiles[index].samples.isEmpty { database.profiles[index].embeddingModel = nil }
             }
         }
@@ -728,9 +736,10 @@ public enum VoiceProfileService {
         var sessions: [URL] = []
         switch kind {
         case .profile, .all:
-            sessions = sessionFolders(sessionsRoot)
+            // A root that cannot be listed (other than one that does not exist) throws, so the forget stays pending.
+            sessions = try sessionFolders(sessionsRoot)
         case .sample:
-            sessions = (record.sessionIDs ?? []).compactMap { sessionFolder($0, root: sessionsRoot) }
+            sessions = try (record.sessionIDs ?? []).compactMap { try sessionFolder($0, root: sessionsRoot) }
         case .session:
             sessions = []
         }
@@ -752,52 +761,50 @@ public enum VoiceProfileService {
 
     /// Removes what a forget leaves in one meeting, under its speaker lock: every voice file and recognition result
     /// (`.all`), or the person's recognition matches (`.profile`) and the person's speakers' entries in evaluation
-    /// voice files (`.profile`, `.sample`). A recognition or voice file that cannot be read (damaged, or from a newer
-    /// Holos) cannot be checked for the person, so it is deleted with the rest of its folder; the forget always
-    /// finishes. Rewrites the exports afterwards when recognition changed; a failure there is logged, not retried (the
-    /// forgotten data is gone, and the projection ignores forgotten people).
+    /// voice files (`.profile`, `.sample`). The person's entries are those linked to them, or to someone no longer in
+    /// the store (merged into them, or forgotten earlier). Whatever cannot be checked for the person is deleted with
+    /// the rest of its folder: a recognition or voice file that cannot be read (damaged, or from a newer Holos), an
+    /// unexpected entry in those folders, voice data whose run, transcript, or edit journal cannot be fully read, and
+    /// every voice file (and, for `.profile`, recognition result) of a meeting whose manifest cannot be read. Anything
+    /// that cannot be listed or deleted throws, so the forget stays pending. Rewrites the exports afterwards when
+    /// recognition changed; a failure there is logged, not retried (the forgotten data is gone, and the projection
+    /// ignores forgotten people).
     private static func clean(_ session: URL, kind: ForgetRecord.Kind, profileID: String?,
                               store: SpeakerProfileStore) throws {
-        guard (try? SessionArchive.readManifest(at: session)) != nil else { return }
+        do {
+            _ = try SessionArchive.readManifest(at: session)
+        } catch {
+            if try SessionSpeakerStore.purgeVoiceFolders(session: session, recognition: kind != .sample) {
+                log.error("Deleted the voice data of a meeting whose manifest cannot be read: \(ProcessSpawner.logCategory(error), privacy: .public)")
+            }
+            return
+        }
         let changedRecognition = try SessionArchive.withSpeakerLock(at: session) { () throws -> Bool in
-            let runIDs = try SessionSpeakerStore.runIDs(session: session)
+            let recognition = try SessionSpeakerStore.recognitionFiles(session: session)
             if kind == .all {
-                // An unreadable file counts as present and is deleted like the others; it never stops the delete.
-                let had = runIDs.contains { runID in
-                    do {
-                        return try SessionSpeakerStore.readRecognition(runID: runID, session: session) != nil
-                    } catch {
-                        return true
-                    }
-                }
+                // Unreadable files are deleted like the others, without being read first.
                 try SessionSpeakerStore.deleteVoiceData(session: session)
                 try SessionSpeakerStore.deleteRecognition(session: session)
-                return had
+                return !recognition.runIDs.isEmpty || recognition.other
             }
             guard let profileID else { return false }
-            var changed = false
-            for runID in runIDs where kind == .profile {
-                let read: RecognitionResult?
-                do {
-                    read = try SessionSpeakerStore.readRecognition(runID: runID, session: session)
-                } catch {
-                    log.error("Deleted a meeting's recognition results that cannot be read: \(ProcessSpawner.logCategory(error), privacy: .public)")
-                    try SessionSpeakerStore.deleteRecognition(session: session)
-                    changed = true
-                    break
-                }
-                guard var result = read else { continue }
-                let matches = result.matches.filter { $0.profileID != profileID }
-                let merges = result.mergeSuggestions.filter { $0.profileID != profileID }
-                if matches.count != result.matches.count || merges.count != result.mergeSuggestions.count {
-                    result.matches = matches
-                    result.mergeSuggestions = merges
-                    try SessionSpeakerStore.writeRecognition(result, session: session)
-                    changed = true
-                }
+            let known = Set(try store.load().profiles.map(\.id))
+            let isThePerson: (String?) -> Bool = { linked in
+                guard let linked else { return false }
+                return linked == profileID || !known.contains(linked)
             }
-            for runID in runIDs {
-                guard try removeVoiceEntries(of: profileID, runID: runID, session: session) else { break }
+            var changed = false
+            if kind == .profile {
+                changed = try removeMatches(isThePerson, files: recognition, session: session)
+            }
+            let voice = try SessionSpeakerStore.voiceDataFiles(session: session)
+            if voice.other {
+                log.error("Deleted a meeting's voice data that holds unexpected files")
+                try SessionSpeakerStore.deleteVoiceData(session: session)
+            } else {
+                for runID in voice.runIDs {
+                    guard try removeVoiceEntries(isThePerson, runID: runID, session: session) else { break }
+                }
             }
             return changed
         }
@@ -809,12 +816,47 @@ public enum VoiceProfileService {
         }
     }
 
-    /// Removes the centroids and turn embeddings of `profileID`'s speakers from the evaluation voice file of one run
-    /// (caller holds the speaker lock). Nothing to do without a voice file. When the voice file cannot be read
-    /// (damaged, or from a newer Holos), or the run or its transcript cannot be, so the person's entries cannot be
-    /// told apart, the meeting's voice data is deleted instead. Returns false once the voice data was deleted (the
+    /// Removes the matches and merge suggestions naming the person (`isThePerson`) from every recognition result in
+    /// `files` (caller holds the speaker lock). When one cannot be read, or the folder holds an unexpected entry, the
+    /// meeting's recognition results are deleted instead. Returns whether anything changed.
+    private static func removeMatches(_ isThePerson: (String?) -> Bool, files: (runIDs: [String], other: Bool),
+                                      session: URL) throws -> Bool {
+        if files.other {
+            log.error("Deleted a meeting's recognition results that hold unexpected files")
+            try SessionSpeakerStore.deleteRecognition(session: session)
+            return true
+        }
+        var changed = false
+        for runID in files.runIDs {
+            let read: RecognitionResult?
+            do {
+                read = try SessionSpeakerStore.readRecognition(runID: runID, session: session)
+            } catch {
+                log.error("Deleted a meeting's recognition results that cannot be read: \(ProcessSpawner.logCategory(error), privacy: .public)")
+                try SessionSpeakerStore.deleteRecognition(session: session)
+                return true
+            }
+            guard var result = read else { continue }
+            let matches = result.matches.filter { !isThePerson($0.profileID) }
+            let merges = result.mergeSuggestions.filter { !isThePerson($0.profileID) }
+            if matches.count != result.matches.count || merges.count != result.mergeSuggestions.count {
+                result.matches = matches
+                result.mergeSuggestions = merges
+                try SessionSpeakerStore.writeRecognition(result, session: session)
+                changed = true
+            }
+        }
+        return changed
+    }
+
+    /// Removes the centroids and turn embeddings of the person's speakers (`isThePerson` of their link) from the
+    /// evaluation voice file of one run (caller holds the speaker lock). Nothing to do without a voice file. When the
+    /// voice file cannot be read (damaged, or from a newer Holos), or its run, transcript, or edit journal cannot be
+    /// read in full (a damaged, newer, or torn journal line may be the person's link), so the person's entries cannot
+    /// be told apart, the meeting's voice data is deleted instead. Returns false once the voice data was deleted (the
     /// other runs have nothing left).
-    private static func removeVoiceEntries(of profileID: String, runID: String, session: URL) throws -> Bool {
+    private static func removeVoiceEntries(_ isThePerson: (String?) -> Bool, runID: String,
+                                           session: URL) throws -> Bool {
         let read: SessionVoiceData?
         do {
             read = try SessionSpeakerStore.readVoiceData(runID: runID, session: session)
@@ -828,15 +870,20 @@ public enum VoiceProfileService {
         do {
             let run = try SessionSpeakerStore.readRun(id: runID, session: session)
             let transcript = try SessionFiles.transcript(id: run.transcriptID, session: session)
-            let edits = try SessionSpeakerStore.readEdits(session: session).edits
-            projection = SpeakerProjection.make(run: run, transcript: transcript, edits: edits, recognition: nil,
-                                                profileNames: [:])
+            let journal = try SessionSpeakerStore.readEdits(session: session)
+            guard journal.unreadableLines == 0, !journal.tornTail else {
+                log.error("Deleted a meeting's voice data whose speaker edits cannot all be read")
+                try SessionSpeakerStore.deleteVoiceData(session: session)
+                return false
+            }
+            projection = SpeakerProjection.make(run: run, transcript: transcript, edits: journal.edits,
+                                                recognition: nil, profileNames: [:])
         } catch let error where SessionFiles.isDamage(error) {
             log.error("Deleted a meeting's voice data whose speaker labels cannot be read")
             try SessionSpeakerStore.deleteVoiceData(session: session)
             return false
         }
-        let speakers = projection.speakers.filter { $0.profileID == profileID }
+        let speakers = projection.speakers.filter { isThePerson($0.profileID) }
         let speakerIDs = Set(speakers.map(\.id))
         let clusters = Set(speakers.flatMap(\.clusterIDs))
         let turns = Set(projection.turns.filter { $0.speakerID.map(speakerIDs.contains) ?? false }
@@ -852,24 +899,40 @@ public enum VoiceProfileService {
         return true
     }
 
-    /// The `.holos` folders directly in `root` (not links), sorted by name.
-    static func sessionFolders(_ root: URL) -> [URL] {
-        guard let names = try? FileManager.default.contentsOfDirectory(atPath: root.path) else { return [] }
-        return names.filter { $0.hasSuffix(".holos") && !$0.hasPrefix(".") }.sorted().compactMap {
-            sessionFolder(url: root.appendingPathComponent($0, isDirectory: true))
+    /// The `.holos` folders directly in `root` (not links), sorted by name. Empty when `root` does not exist; any
+    /// other failure to list it, or to inspect an entry, is thrown (a forget must not take it for "no meetings").
+    static func sessionFolders(_ root: URL) throws -> [URL] {
+        var info = stat()
+        if stat(root.path, &info) != 0 {
+            let code = errno
+            if code == ENOENT { return [] }
+            throw HolosError.io("Cannot open the meetings folder: \(String(cString: strerror(code))).")
+        }
+        let names: [String]
+        do {
+            names = try FileManager.default.contentsOfDirectory(atPath: root.path)
+        } catch {
+            throw HolosError.io("Cannot list the meetings folder: \(error.localizedDescription)")
+        }
+        return try names.filter { $0.hasSuffix(".holos") && !$0.hasPrefix(".") }.sorted().compactMap {
+            try sessionFolder(url: root.appendingPathComponent($0, isDirectory: true))
         }
     }
 
-    /// `<root>/<SESSION-ID>.holos` when it is a folder.
-    private static func sessionFolder(_ sessionID: String, root: URL) -> URL? {
+    /// `<root>/<SESSION-ID>.holos` when it is a folder; nil when it does not exist (or is not a folder).
+    private static func sessionFolder(_ sessionID: String, root: URL) throws -> URL? {
         guard SessionArchive.validToken(sessionID) else { return nil }
-        return sessionFolder(url: root.appendingPathComponent("\(sessionID).holos", isDirectory: true))
+        return try sessionFolder(url: root.appendingPathComponent("\(sessionID).holos", isDirectory: true))
     }
 
-    private static func sessionFolder(url: URL) -> URL? {
+    private static func sessionFolder(url: URL) throws -> URL? {
         var info = stat()
-        guard lstat(url.path, &info) == 0, (info.st_mode & S_IFMT) == S_IFDIR else { return nil }
-        return url
+        guard lstat(url.path, &info) == 0 else {
+            let code = errno
+            if code == ENOENT || code == ENOTDIR { return nil }
+            throw HolosError.io("Cannot inspect a meeting folder: \(String(cString: strerror(code))).")
+        }
+        return (info.st_mode & S_IFMT) == S_IFDIR ? url : nil
     }
 
     // MARK: - Helpers

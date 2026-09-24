@@ -77,6 +77,26 @@ private func person(_ id: String, _ samples: [VoiceprintSample]) -> SpeakerProfi
     #expect(RecognitionCalibration.thresholds(differentPerson: []) == nil)
 }
 
+@Test func zeroBudgetRefusesZeroDistances() throws {
+    // Two separate people with an identical sample: distance 0. Nothing may be admitted, not even that pair.
+    for distances in [[0.0, 0.6], [0.0, 0.0, 0.7], [0.0]] {
+        let threshold = RecognitionCalibration.admitting(distances, rate: 0.01)
+        #expect(threshold < 0)
+        #expect(distances.filter { $0 <= threshold }.isEmpty)
+    }
+    // A tie at 0 that the budget would otherwise split is refused together.
+    let tie = RecognitionCalibration.admitting([0, 0, 0.3, 0.5], rate: 0.25)
+    #expect([0, 0, 0.3, 0.5].filter { $0 <= tie }.isEmpty)
+    let thresholds = try #require(RecognitionCalibration.thresholds(differentPerson: [0, 0.2, 0.4]))
+    #expect(thresholds.likelyMaxDistance < 0)
+    #expect(thresholds.possibleMaxDistance < 0)
+    // Adjacent values: the threshold stays below the first refused one.
+    let low = 0.3
+    let adjacent = RecognitionCalibration.admitting([low, low.nextUp], rate: 0.5)
+    #expect(adjacent < low.nextUp)
+    #expect(adjacent >= low)
+}
+
 @Test func calibrationComparesOnlyOneModelAndDifferentMeetings() {
     var other = person("OTHER", [sample("M1", vector(0)), sample("M2", vector(1))])
     other.embeddingModel = EmbeddingModelID(id: "other", revision: "2")
