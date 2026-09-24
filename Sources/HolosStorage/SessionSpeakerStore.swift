@@ -218,6 +218,52 @@ public enum SessionSpeakerStore {
         log.info("Deleted session voice data")
     }
 
+    // MARK: - Forgetting
+
+    /// The run IDs of the `<runID>.json` files in speakers/voice/, sorted, and whether that folder holds anything
+    /// else (a leftover temporary file, a link, a folder), which a forget cannot check for a person. ([], false)
+    /// without the folder. A listing error is thrown.
+    public static func voiceDataFiles(session: URL) throws -> (runIDs: [String], other: Bool) {
+        try speakerFiles(in: SessionPaths.voiceDirectory(session), session: session)
+    }
+
+    /// Like `voiceDataFiles`, for speakers/recognition/.
+    public static func recognitionFiles(session: URL) throws -> (runIDs: [String], other: Bool) {
+        try speakerFiles(in: SessionPaths.recognitionDirectory(session), session: session)
+    }
+
+    /// For a forget in a session whose manifest cannot be read, so its speakers cannot be checked for a person:
+    /// removes speakers/voice/ and, with `recognition`, speakers/recognition/. Holds the speaker lock when the folder
+    /// has a `manifest.json` file; without one the lock cannot be taken, and no Holos process can take it to write
+    /// speaker files there either. Returns whether anything was removed. Refuses (`invalidInput`) a symbolic link or
+    /// file in place of the session folder or speakers/.
+    public static func purgeVoiceFolders(session: URL, recognition: Bool) throws -> Bool {
+        let purge = { () throws -> Bool in
+            try SessionLockFile.requireSessionFolder(session)
+            var removed = try AtomicFile.removeTree(["speakers", "voice"], in: session)
+            if recognition { removed = try AtomicFile.removeTree(["speakers", "recognition"], in: session) || removed }
+            return removed
+        }
+        guard try AtomicFile.entryType(at: SessionPaths.manifest(session)) == S_IFREG else { return try purge() }
+        return try SessionArchive.withSpeakerLock(at: session, purge)
+    }
+
+    private static func speakerFiles(in folder: URL, session: URL) throws -> (runIDs: [String], other: Bool) {
+        try SessionLockFile.requireSessionFolder(session)
+        guard let entries = try AtomicFile.listFolder(folder) else { return ([], false) }
+        var runIDs: [String] = []
+        var other = false
+        for entry in entries where entry.name != ".DS_Store" {
+            let id = entry.name.hasSuffix(".json") ? String(entry.name.dropLast(5)) : ""
+            if entry.type == S_IFREG, SessionArchive.validToken(id) {
+                runIDs.append(id)
+            } else {
+                other = true
+            }
+        }
+        return (runIDs.sorted(), other)
+    }
+
     // MARK: - Private
 
     private static func requireToken(_ value: String, _ what: String) throws {

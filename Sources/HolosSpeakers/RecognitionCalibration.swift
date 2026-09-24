@@ -91,14 +91,19 @@ public enum RecognitionCalibration {
 
     /// The largest threshold (compared with `≤`) that admits at most `rate` of `distances`, placed halfway between
     /// the last admitted distance and the first refused one (halfway between 0 and the smallest when none may be
-    /// admitted), as docs/speaker-evaluation.md derives the default. Ties at the boundary are refused together.
+    /// admitted), as docs/speaker-evaluation.md derives the default. Ties at the boundary are refused together. The
+    /// result is always below the first refused distance: when none may be admitted and the smallest distance is not
+    /// above 0, it is just below that distance (negative), so even a distance of 0 is refused.
     public static func admitting(_ distances: [Double], rate: Double) -> Double {
         let sorted = distances.filter(\.isFinite).sorted()
         guard !sorted.isEmpty else { return 0 }
         var admitted = min(sorted.count - 1, Int((rate * Double(sorted.count)) + 1e-9))
         while admitted > 0, sorted[admitted - 1] >= sorted[admitted] { admitted -= 1 }
-        let lower = admitted > 0 ? sorted[admitted - 1] : 0
-        return (lower + sorted[admitted]) / 2
+        let refused = sorted[admitted]
+        guard admitted > 0 else { return refused > 0 ? refused / 2 : refused.nextDown }
+        let halfway = (sorted[admitted - 1] + refused) / 2
+        // Rounding can land the midpoint of two adjacent values on the upper one; keep it below.
+        return halfway < refused ? halfway : refused.nextDown
     }
 
     /// The `p` quantile (0...1) of `values` by linear interpolation between order statistics, for reports; nil when

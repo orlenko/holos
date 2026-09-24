@@ -80,18 +80,27 @@ public struct SpeakerProfileStore: Sendable {
     // MARK: - Database
 
     /// The database; a missing file (or folder) gives an empty one with "Remember voices" off. A file written by a
-    /// newer Holos is refused (`unavailable`); a damaged one throws `invalidInput` and is never overwritten.
+    /// newer Holos is refused (`unavailable`); a damaged one (not JSON, or JSON that breaks a `validate` rule, such as
+    /// a repeated ID) throws `invalidInput` and is never overwritten.
     public func load() throws -> SpeakerProfileDatabase {
         guard let data = try AtomicFile.readIfPresent(databaseURL, maxBytes: Self.maxDatabaseBytes) else {
             return SpeakerProfileDatabase()
         }
-        return try SchemaVersion.decode(SpeakerProfileDatabase.self, from: data,
-                                        current: SpeakerProfileDatabase.currentSchemaVersion,
-                                        name: Self.databaseName)
+        let database = try SchemaVersion.decode(SpeakerProfileDatabase.self, from: data,
+                                                current: SpeakerProfileDatabase.currentSchemaVersion,
+                                                name: Self.databaseName)
+        do {
+            try Self.validate(database)
+        } catch {
+            Self.log.error("The people store is damaged and was not used")
+            throw error
+        }
+        return database
     }
 
-    /// Takes `profiles.lock` (2 s), reads the database, lets `body` change it, validates the result (`validate`),
-    /// and writes it atomically when it changed. Nothing is written when `body` or the validation throws.
+    /// Takes `profiles.lock` (2 s), reads the database (`load`, so a damaged one is refused even when `body` changes
+    /// nothing), lets `body` change it, validates the result (`validate`), and writes it atomically when it changed.
+    /// Nothing is written when the read, `body`, or the validation throws.
     public func update<T>(_ body: (inout SpeakerProfileDatabase) throws -> T) throws -> T {
         try withLock {
             var database = try load()
