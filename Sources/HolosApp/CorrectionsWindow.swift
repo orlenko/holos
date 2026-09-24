@@ -245,6 +245,13 @@ final class CorrectionsWindow: NSObject, NSWindowDelegate, NSTextFieldDelegate {
             feedbackLabel.stringValue = "Enter both the misheard phrase and the intended one."
             return
         }
+        // CorrectionList.add ignores a pair whose two sides are the same, so refuse it here, before the
+        // queue is touched or the edited transcript is committed.
+        guard correction.heard.trimmingCharacters(in: .whitespacesAndNewlines)
+                != correction.meant.trimmingCharacters(in: .whitespacesAndNewlines) else {
+            feedbackLabel.stringValue = "The misheard and intended text are the same, so there is nothing to add."
+            return
+        }
         var remaining = declined
         let resolved = remaining.resolve(added: correction)
         guard onAdd(correction, resolved?.edit) else {
