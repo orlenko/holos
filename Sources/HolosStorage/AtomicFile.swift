@@ -30,6 +30,10 @@ public enum AtomicFile {
     /// Test hook: while true (a task-local value), every folder fsync fails as an I/O error would.
     @TaskLocal static var failFolderSync = false
 
+    /// Test hook: while set (a task-local value), every fsync, rename, and unlink that publishes or removes an
+    /// entry is numbered, and the one the plan names fails as an I/O error would (`FaultPlan`).
+    @TaskLocal static var faultPlan: FaultPlan? = nil
+
     /// Writes a same-directory temporary file (O_CREAT|O_EXCL|O_CLOEXEC, `permissions`), fsyncs it,
     /// renames it over `url`, and fsyncs the directory. Leaves no temporary file on failure.
     public static func write(_ data: Data, to url: URL, permissions: mode_t = 0o600) throws {
@@ -62,7 +66,7 @@ public enum AtomicFile {
         do {
             try writeAll(data, fd: fd, failAfter: appendFailureAfterBytes)
             if sync {
-                guard fsync(fd) == 0 else {
+                guard fsyncFile(fd, url) == 0 else {
                     throw HolosError.io("Cannot save \(url.lastPathComponent): \(errnoText()).")
                 }
                 fileSyncCounter?.record(url)
@@ -179,7 +183,7 @@ public enum AtomicFile {
         guard fstat(fd, &info) == 0, (info.st_mode & S_IFMT) == S_IFREG else {
             throw HolosError.invalidInput("\(url.lastPathComponent) is not a regular file.")
         }
-        guard ftruncate(fd, off_t(size)) == 0, fsync(fd) == 0 else {
+        guard ftruncate(fd, off_t(size)) == 0, fsyncFile(fd, url) == 0 else {
             throw HolosError.io("Cannot repair \(url.lastPathComponent): \(errnoText()).")
         }
     }
@@ -191,7 +195,7 @@ public enum AtomicFile {
         let fd = openat(parent, name, O_WRONLY | O_APPEND | O_NONBLOCK | O_CLOEXEC | O_NOFOLLOW)
         guard fd >= 0 else { throw HolosError.io("Cannot open \(url.lastPathComponent): \(errnoText()).") }
         defer { Darwin.close(fd) }
-        guard fsync(fd) == 0 else { throw HolosError.io("Cannot save \(url.lastPathComponent): \(errnoText()).") }
+        guard fsyncFile(fd, url) == 0 else { throw HolosError.io("Cannot save \(url.lastPathComponent): \(errnoText()).") }
         fileSyncCounter?.record(url)
     }
 
@@ -203,6 +207,9 @@ public enum AtomicFile {
     /// symbolic link or file in their place is refused (`invalidInput`) instead of leading the delete outside
     /// `root`, even if it is swapped in during the call. A symbolic link at the last component or anywhere in
     /// the tree is removed itself, never its target. Returns false when there is nothing to remove.
+    ///
+    /// The parent folder is fsync'd even when there is nothing to remove, so a retry after a call that removed
+    /// the entry and then failed to fsync makes the removal durable.
     @discardableResult
     static func removeTree(_ components: [String], in root: URL) throws -> Bool {
         guard root.isFileURL, let last = components.last,
@@ -215,11 +222,13 @@ public enum AtomicFile {
             return false
         }
         defer { Darwin.close(parent) }
-        guard try removeEntry(Array(last.utf8CString), in: parent) else { return false }
-        guard fsync(parent) == 0 else {
+        let parentURL = components.dropLast().reduce(root) { $0.appendingPathComponent($1, isDirectory: true) }
+        let removed = try removeEntry(Array(last.utf8CString), in: parent)
+        if removed { faultPlan?.changed(parentURL, last) }
+        guard fsyncFolder(parent, parentURL) else {
             throw HolosError.io("Cannot save the folder holding \(last): \(errnoText()).")
         }
-        return true
+        return removed
     }
 
     /// Removes the entry `name` (a NUL-terminated C string) of the folder `parent`, recursively for a folder.
@@ -251,10 +260,10 @@ public enum AtomicFile {
                 }
                 for child in children { _ = try removeEntry(child, in: dirfd(folder)) }
             }
-            guard unlinkat(parent, name, AT_REMOVEDIR) == 0 else {
+            guard !injectFault("unlink \(display)"), unlinkat(parent, name, AT_REMOVEDIR) == 0 else {
                 throw HolosError.io("Cannot delete \(display): \(errnoText()).")
             }
-        } else if unlinkat(parent, name, 0) != 0 {
+        } else if injectFault("unlink \(display)") || unlinkat(parent, name, 0) != 0 {
             let code = errno
             if code == ENOENT { return false }
             throw HolosError.io("Cannot delete \(display): \(errnoText(code)).")
@@ -288,17 +297,38 @@ public enum AtomicFile {
 
     /// Fsyncs the open folder `fd` (named `url` in messages and the test counter).
     static func syncFolder(_ fd: Int32, _ url: URL) throws {
-        guard !failFolderSync, fsync(fd) == 0 else {
+        guard !failFolderSync, fsyncFolder(fd, url) else {
             let reason = failFolderSync ? "simulated failure" : errnoText()
             throw HolosError.io("Cannot save folder \(url.lastPathComponent): \(reason).")
         }
         fileSyncCounter?.recordFolder(url)
     }
 
+    /// Fsyncs the open folder `fd` (named `url`); false with errno set when it fails. Subject to `faultPlan`.
+    static func fsyncFolder(_ fd: Int32, _ url: URL) -> Bool {
+        if injectFault("fsync \(url.lastPathComponent)/") || fsync(fd) != 0 { return false }
+        faultPlan?.synced(url)
+        return true
+    }
+
+    /// Fsyncs the open file `fd` (named `url`). Subject to `faultPlan`.
+    static func fsyncFile(_ fd: Int32, _ url: URL) -> Int32 {
+        if injectFault("fsync \(url.lastPathComponent)") { return -1 }
+        return fsync(fd)
+    }
+
+    /// Whether `faultPlan` fails `step`; if so, sets errno to EIO.
+    static func injectFault(_ step: String) -> Bool {
+        guard let plan = faultPlan, plan.shouldFail(step) else { return false }
+        errno = EIO
+        return true
+    }
+
     /// Unlinks `name`, which the failed call created in `parent`, and fsyncs `parent`, so a retry creates it again.
     private static func removeCreated(_ name: String, in parent: Int32, url: URL) {
-        if unlinkat(parent, name, 0) == 0 {
-            if fsync(parent) != 0 {
+        if !injectFault("unlink \(name)"), unlinkat(parent, name, 0) == 0 {
+            faultPlan?.changed(url.deletingLastPathComponent(), name)
+            if !fsyncFolder(parent, url.deletingLastPathComponent()) {
                 log.error("Cannot save the folder after removing \(url.lastPathComponent, privacy: .public): \(errnoText(), privacy: .public)")
             }
             log.error("Write failed; removed the new file \(url.lastPathComponent, privacy: .public)")
@@ -349,14 +379,17 @@ public enum AtomicFile {
                 throw HolosError.io("Cannot set permissions of \(url.lastPathComponent): \(errnoText()).")
             }
             try writeAll(data, fd: fd)
-            guard fsync(fd) == 0 else { throw HolosError.io("Cannot save \(url.lastPathComponent): \(errnoText()).") }
+            guard fsyncFile(fd, url) == 0 else {
+                throw HolosError.io("Cannot save \(url.lastPathComponent): \(errnoText()).")
+            }
             Darwin.close(fd)
             descriptorOpen = false
             if exclusive {
                 try renameExclusive(temporary, to: name, in: parent, url: url)
-            } else if renameat(parent, temporary, parent, name) != 0 {
+            } else if injectFault("rename \(name)") || renameat(parent, temporary, parent, name) != 0 {
                 throw HolosError.io("Cannot publish \(url.lastPathComponent): \(errnoText()).")
             }
+            faultPlan?.changed(url.deletingLastPathComponent(), name)
         } catch {
             if descriptorOpen { Darwin.close(fd) }
             unlinkat(parent, temporary, 0)
@@ -373,6 +406,9 @@ public enum AtomicFile {
     }
 
     private static func renameExclusive(_ temporary: String, to name: String, in parent: Int32, url: URL) throws {
+        if injectFault("rename \(name)") {
+            throw HolosError.io("Cannot publish \(url.lastPathComponent): \(errnoText()).")
+        }
         if renameatx_np(parent, temporary, parent, name, UInt32(RENAME_EXCL)) == 0 { return }
         var code = errno
         if code == ENOTSUP || code == EINVAL {
@@ -398,6 +434,7 @@ public enum AtomicFile {
             fd = openat(parent, name, flags | O_CREAT | O_EXCL, permissions)
             if fd >= 0 {
                 created = true
+                faultPlan?.changed(url.deletingLastPathComponent(), name)
                 guard fchmod(fd, permissions) == 0 else {
                     let message = errnoText()
                     Darwin.close(fd)
@@ -446,4 +483,55 @@ final class FileSyncCounter: Sendable {
     func recordFolder(_ url: URL) { counts.withLock { $0[url.lastPathComponent + "/", default: 0] += 1 } }
 
     func count(_ name: String) -> Int { counts.withLock { $0[name] ?? 0 } }
+}
+
+/// Fault injection for tests (`AtomicFile.faultPlan`). Numbers every fsync, rename, and unlink step from 0 and fails
+/// the one at `failAt`, until `disarm()`. Also records each entry a step added, replaced, or removed and each
+/// successful folder fsync, so a test can check that every change was made durable.
+final class FaultPlan: Sendable {
+    private struct State {
+        var failAt: Int?
+        var steps: [String] = []
+        /// In order: a changed entry (folder path, name) or a folder fsync (folder path, nil).
+        var log: [(folder: String, entry: String?)] = []
+    }
+
+    private let state: Mutex<State>
+
+    init(failAt: Int? = nil) { state = Mutex(State(failAt: failAt)) }
+
+    /// The steps seen so far, in order.
+    var steps: [String] { state.withLock { $0.steps } }
+
+    /// Stops failing; later steps are still numbered and recorded.
+    func disarm() { state.withLock { $0.failAt = nil } }
+
+    /// Changed entries ("folder/name") that no later successful fsync of their folder covers, except names in
+    /// `ignoring`.
+    func unsyncedChanges(ignoring: Set<String> = []) -> [String] {
+        state.withLock { state in
+            var pending: [String: [String]] = [:]
+            for (folder, entry) in state.log {
+                if let entry {
+                    if !ignoring.contains(entry) { pending[folder, default: []].append(entry) }
+                } else {
+                    pending[folder] = nil
+                }
+            }
+            return pending.flatMap { folder, entries in entries.map { "\(folder)/\($0)" } }.sorted()
+        }
+    }
+
+    func shouldFail(_ step: String) -> Bool {
+        state.withLock { state in
+            defer { state.steps.append(step) }
+            return state.steps.count == state.failAt
+        }
+    }
+
+    func changed(_ folder: URL, _ entry: String) { state.withLock { $0.log.append((Self.key(folder), entry)) } }
+
+    func synced(_ folder: URL) { state.withLock { $0.log.append((Self.key(folder), nil)) } }
+
+    private static func key(_ folder: URL) -> String { folder.standardizedFileURL.path }
 }

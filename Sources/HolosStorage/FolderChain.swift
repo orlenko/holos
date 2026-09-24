@@ -170,6 +170,7 @@ extension AtomicFile {
             if code == EEXIST { return openat(parent, name, folderFlags) }
             throw HolosError.io("Cannot create folder \(name): \(errnoText(code)).")
         }
+        faultPlan?.changed(parentURL, name)
         let fd = openat(parent, name, folderFlags)
         guard fd >= 0 else { throw folderOpenError(name, errno) }
         do {
@@ -183,8 +184,9 @@ extension AtomicFile {
             // Remove the folder this call made, so a retry makes it again and fsyncs its parent. A later open would
             // otherwise find it and return without making it durable.
             Darwin.close(fd)
-            if unlinkat(parent, name, AT_REMOVEDIR) == 0 {
-                _ = fsync(parent)
+            if !injectFault("unlink \(name)"), unlinkat(parent, name, AT_REMOVEDIR) == 0 {
+                faultPlan?.changed(parentURL, name)
+                _ = fsyncFolder(parent, parentURL)
             } else {
                 log.error("Cannot remove folder \(name, privacy: .public) after a failed create: \(errnoText(), privacy: .public)")
             }

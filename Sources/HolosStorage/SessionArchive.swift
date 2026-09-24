@@ -326,15 +326,20 @@ public actor SessionArchive {
         let encoded = try Self.encode(transcript)
         let pending = SessionPaths.pendingTranscript(directory)
         if let existing = try AtomicFile.readIfPresent(snapshot, maxBytes: Self.maxTranscriptBytes) {
-            // A retry finishes only the save that `current.pending` names: the same bytes, not yet current,
-            // left by a save that failed after creating the revision (for example while publishing the
-            // pointer). Any other existing revision is refused, so a finished older revision can never be
-            // republished over a newer one. A damaged or newer pointer is refused, never overwritten.
-            let current = try TranscriptPointer.read(session: directory)?.transcriptID
-            guard existing == encoded, current != transcript.id,
+            // A retry finishes only the save that `current.pending` names: the same bytes, left by a save that
+            // failed after creating the revision. The pointer may already name it (the save failed while
+            // fsyncing transcripts/ after publishing it), so the retry publishes it again and fsyncs. Any other
+            // existing revision is refused, so a finished older revision can never be republished over a newer
+            // one: `current.pending` is removed once a save finishes, and the next save replaces it. A damaged
+            // or newer pointer is refused, never overwritten.
+            _ = try TranscriptPointer.read(session: directory)
+            guard existing == encoded,
                   try TranscriptPointer.readPending(session: directory)?.transcriptID == transcript.id else {
                 throw HolosError.invalidInput("Transcript revision already exists.")
             }
+            // The earlier attempt may have left the revision without a durable folder entry (its folder fsync
+            // failed and the file could not be removed); make it durable before anything points at it.
+            try AtomicFile.syncDirectory(SessionPaths.transcripts(directory))
         } else {
             // Written first, so a revision is never left without it; a later save replaces it, which abandons
             // this one.
@@ -358,8 +363,8 @@ public actor SessionArchive {
         }
         try AtomicFile.writeJSON(TranscriptPointer(transcriptID: transcript.id),
                                  to: SessionPaths.transcriptPointer(directory))
-        // The save is finished. A marker left behind names the current revision, which is refused anyway, and
-        // the next save replaces it.
+        // The save is finished. A marker left behind names the current revision: saving it again only
+        // republishes the same pointer and exports and removes the marker, and the next save replaces it.
         do {
             try AtomicFile.removeTree(["transcripts", "current.pending"], in: directory)
         } catch {
@@ -663,6 +668,10 @@ public actor SessionArchive {
                 try AtomicFile.append(try HolosJSON.line(event), to: journal)
             }
             try writeManifest(manifest, in: directory)
+        } else {
+            // An earlier recovery may have replaced the journal or manifest and then failed to fsync the session
+            // folder; this retry finds nothing to change, so it finishes that fsync.
+            try AtomicFile.syncDirectory(directory)
         }
         let after = try inspectRecovery(at: directory)
         return RecoveryReport(manifest: after.manifest, manifestError: after.manifestError,
