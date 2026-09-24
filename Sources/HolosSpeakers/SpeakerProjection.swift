@@ -162,21 +162,30 @@ public struct SpeakerProjection: Sendable, Equatable {
     ///
     /// | Action | Fingerprint |
     /// |---|---|
-    /// | `rename(s, _)` | current explicit name of `s`, or `""` |
-    /// | `linkProfile(s, p)` | same as `rejectProfile(s, p)` (linking drops `p` from the rejections) |
-    /// | `reassignTurns(ids, _)` | for each id: `<current speaker, ? for unknown>:<words>`, joined by `,` |
-    /// | `rejectProfile(s, p)` | `link=<profile s is linked to, or "">;rejected=<1 if p already rejected for s, else 0>` |
-    /// | `merge(from, into)` | for `from` then `into`, joined by `\|`: `<speaker>:name=<scalar count of its explicit name>:<explicit name or "">;link=<linked profile or "">;rejected=<sorted rejected profile IDs joined by ,>;turns=<sorted <turn ID>=<words>:<excluded 0/1> of its current turns, joined by ,>` |
-    /// | `splitTurn(t, at)` | `<current speaker of t>:<t's words>` |
-    /// | `newSpeaker(_, _, ids)` | for each id: `<current speaker>:<words>:<excluded 0/1>`, joined by `,` |
-    /// | `excludeFromEnrollment(ids)` | same as `newSpeaker` for `ids` |
+    /// | `rename(s, _)` | `fp1:rename:speaker=` S(s, `name=`O(explicit name)) |
+    /// | `linkProfile(s, p)` | `fp1:linkProfile:profile=`L(p)`;speaker=` S(s, `link=`O(linked profile)`;rejected=<1 if p is rejected, else 0>`) |
+    /// | `rejectProfile(s, p)` | `fp1:rejectProfile:` and the rest as `linkProfile` |
+    /// | `reassignTurns(ids, to)` | `fp1:reassignTurns:to=<none for unknown, else S(to)>;turns=` N(T(id) for each id) |
+    /// | `merge(from, into)` | `fp1:merge:from=` S(from, M) `;into=` S(into, M), where M = `name=`O(explicit name)`;link=`O(linked profile)`;rejected=`N(L(p) per rejection, in order)`;clusters=`N(L(c) per cluster, in order)`;turns=`N(sorted `L(turn ID):words=W;excluded=<0/1>` of its turns) |
+    /// | `splitTurn(t, _)` | `fp1:splitTurn:turn=` T(t) |
+    /// | `newSpeaker(s, _, ids)` | `fp1:newSpeaker:speaker=` S(s) `;turns=` N(T(id) for each id) |
+    /// | `excludeFromEnrollment(ids)` | `fp1:excludeFromEnrollment:turns=` N(T(id)`;excluded=<0/1>` for each id) |
     /// | `revert(editID)` | `nil` (revert staleness is decided when reverts are collected) |
     ///
-    /// A turn's words are `<segment ID>[<first word>..<last word>]` per span (inclusive word indices), joined by
-    /// `+` when the turn spans several segments. A turn that does not exist contributes `""`. Each fingerprint
-    /// covers all state its action overwrites or discards: a merge deletes `from` (name, link, rejections) and
-    /// moves its turns, so both speakers are described in full. Fingerprints longer than 256 Unicode scalars are replaced by the
-    /// first 32 hex digits of their SHA-256 (of the UTF-8 bytes).
+    /// - L(x) = `<Unicode scalar count of x>:<x>`; every string (names and IDs) is written this way.
+    /// - O(x) = `none` when x is nil, else L(x).
+    /// - N(items) = `<count>[<items joined by ,>]`.
+    /// - S(id, fields) = L(id)`=absent`, or L(id)`=present;ordinal=<n>` then `;fields` when there are any. The
+    ///   ordinal tells a speaker from one created later with the same ID after a merge removed the first.
+    /// - T(id) = L(id)`=absent`, or L(id)`=present;speaker=`O(speaker, none = unknown)`;words=`W.
+    /// - W = N(L(segment ID)`@<first>..<end>` per span, `end` exclusive).
+    ///
+    /// Every piece is self-delimiting, so each action's encoding is injective over the state it covers, and every
+    /// referenced speaker or turn records whether it exists: deleting a speaker never looks like an unnamed one.
+    /// Each fingerprint covers all state its action overwrites or discards: a merge deletes `from` (name, link,
+    /// rejections, clusters) and moves its turns, so both speakers are described in full. A fingerprint longer than
+    /// 256 Unicode scalars is replaced by `fp1:sha256:<64 hex digits of the SHA-256 of its UTF-8 bytes>`, which
+    /// never equals a raw fingerprint (no action is named `sha256`).
     ///
     /// `reassignTurns` includes each turn's words (the §4.9 table lists only the speaker), so a reassign made on a
     /// view that has not seen another window split one of its turns is refused rather than moving only the part
@@ -301,11 +310,16 @@ public struct SpeakerProjection: Sendable, Equatable {
         return trimmed
     }
 
-    /// `raw`, or the first 32 hex digits of its SHA-256 when it is longer than 256 Unicode scalars. Scalars rather
-    /// than characters, because grapheme breaking can change between Unicode versions and fingerprints persist.
+    /// Starts every fingerprint, raw or hashed.
+    static let fingerprintVersion = "fp1:"
+
+    /// `raw`, or `fp1:sha256:<64 hex digits of its SHA-256>` (of the UTF-8 bytes) when it is longer than 256
+    /// Unicode scalars. Scalars rather than characters, because grapheme breaking can change between Unicode versions
+    /// and fingerprints persist. Raw fingerprints start with `fp1:<action name>:`, and no action is named `sha256`,
+    /// so a hashed value never equals a raw one.
     static func compactFingerprint(_ raw: String) -> String {
         guard raw.unicodeScalars.count > 256 else { return raw }
-        return String(FingerprintSHA256.hexDigest(Array(raw.utf8)).prefix(32))
+        return fingerprintVersion + "sha256:" + FingerprintSHA256.hexDigest(Array(raw.utf8))
     }
 }
 
@@ -645,59 +659,85 @@ extension SpeakerProjection {
 
         // MARK: Fingerprints
 
+        /// See `SpeakerProjection.fingerprint(for:)` for the grammar. Every piece is self-delimiting (a
+        /// length-prefixed string, `none`, a counted list, an integer followed by a fixed separator, or one of two
+        /// tags), so the encoding of one action is injective over the state it covers.
         func fingerprint(for action: SpeakerEditAction) -> String? {
             let raw: String
             switch action {
             case .rename(let speakerID, _):
-                raw = speakers[speakerID]?.explicitName ?? ""
-            case .reassignTurns(let turnIDs, _):
-                raw = turnIDs.map { turnDescription($0, withExclusion: false) }.joined(separator: ",")
-            case .linkProfile(let speakerID, let profileID), .rejectProfile(let speakerID, let profileID):
-                // Linking drops `profileID` from the rejections and rejecting unlinks it: both carry the link and
-                // whether `profileID` is already rejected.
-                let speaker = speakers[speakerID]
-                let rejected = speaker?.rejectedProfileIDs.contains(profileID) == true
-                raw = "link=\(speaker?.profileID ?? "");rejected=\(rejected ? 1 : 0)"
+                raw = "rename:speaker=" + speakerRecord(speakerID) { "name=\(Self.optionalText($0.explicitName))" }
+            case .linkProfile(let speakerID, let profileID):
+                raw = "linkProfile:" + profileRecord(speakerID, profileID)
+            case .rejectProfile(let speakerID, let profileID):
+                raw = "rejectProfile:" + profileRecord(speakerID, profileID)
+            case .reassignTurns(let turnIDs, let to):
+                let target = to.map { speakerRecord($0) } ?? "none"
+                raw = "reassignTurns:to=\(target);turns=" + Self.list(turnIDs.map { turnRecord($0, exclusion: false) })
             case .merge(let from, let into):
-                raw = [from, into].map(mergeDescription).joined(separator: "|")
+                raw = "merge:from=\(speakerRecord(from, mergeFields));into=\(speakerRecord(into, mergeFields))"
             case .splitTurn(let turnID, _):
-                raw = turnDescription(turnID, withExclusion: false)
-            case .newSpeaker(_, _, let turnIDs), .excludeFromEnrollment(let turnIDs):
-                raw = turnIDs.map { turnDescription($0, withExclusion: true) }.joined(separator: ",")
+                raw = "splitTurn:turn=" + turnRecord(turnID, exclusion: false)
+            case .newSpeaker(let speakerID, _, let turnIDs):
+                raw = "newSpeaker:speaker=\(speakerRecord(speakerID));turns="
+                    + Self.list(turnIDs.map { turnRecord($0, exclusion: false) })
+            case .excludeFromEnrollment(let turnIDs):
+                raw = "excludeFromEnrollment:turns=" + Self.list(turnIDs.map { turnRecord($0, exclusion: true) })
             case .revert:
                 return nil
             }
-            return SpeakerProjection.compactFingerprint(raw)
+            return SpeakerProjection.compactFingerprint(SpeakerProjection.fingerprintVersion + raw)
         }
 
-        /// `<speaker or ?>:<words>[:<excluded 0/1>]`, or "" for a turn that does not exist.
-        private func turnDescription(_ turnID: String, withExclusion: Bool) -> String {
-            guard let index = turnIndex[turnID] else { return "" }
-            let turn = turns[index]
-            let description = "\(turn.speakerID ?? "?"):\(Self.words(of: turn))"
-            return withExclusion ? "\(description):\(turn.excluded ? 1 : 0)" : description
+        /// `<L(id)>=absent`, or `<L(id)>=present;ordinal=<n>` followed by `;<fields>` when `fields` gives any.
+        /// The ordinal tells a speaker apart from a later one created with the same ID after a merge removed it.
+        private func speakerRecord(_ speakerID: String, _ fields: (SpeakerState) -> String = { _ in "" }) -> String {
+            guard let speaker = speakers[speakerID] else { return "\(Self.text(speakerID))=absent" }
+            let extra = fields(speaker)
+            return "\(Self.text(speakerID))=present;ordinal=\(speaker.ordinal)" + (extra.isEmpty ? "" : ";\(extra)")
         }
 
-        /// Everything a merge deletes (`from`) or keeps as the merged speaker (`into`):
-        /// `<speaker>:name=<scalar count>:<explicit name or "">;link=<profile or "">;rejected=<sorted rejected
-        /// profile IDs joined by ,>;turns=<sorted "<turn ID>=<words>:<excluded 0/1>" of its turns joined by ,>`.
-        /// The name is length-prefixed because it is free text and may contain the separators.
-        private func mergeDescription(_ speakerID: String) -> String {
-            let speaker = speakers[speakerID]
-            let name = speaker?.explicitName ?? ""
-            let rejected = (speaker?.rejectedProfileIDs ?? []).sorted().joined(separator: ",")
-            let owned = turns.filter { $0.speakerID == speakerID }
-                .map { "\($0.id)=\(Self.words(of: $0)):\($0.excluded ? 1 : 0)" }
+        /// Linking drops the profile from the rejections and rejecting unlinks it: both carry the link and whether
+        /// the profile is already rejected.
+        private func profileRecord(_ speakerID: String, _ profileID: String) -> String {
+            "profile=\(Self.text(profileID));speaker=" + speakerRecord(speakerID) { speaker in
+                let rejected = speaker.rejectedProfileIDs.contains(profileID)
+                return "link=\(Self.optionalText(speaker.profileID));rejected=\(rejected ? 1 : 0)"
+            }
+        }
+
+        /// Everything a merge deletes (`from`) or keeps as the merged speaker (`into`).
+        private func mergeFields(_ speaker: SpeakerState) -> String {
+            let owned = turns.filter { $0.speakerID == speaker.id }
+                .map { "\(Self.text($0.id)):words=\(Self.words(of: $0));excluded=\($0.excluded ? 1 : 0)" }
                 .sorted()
-                .joined(separator: ",")
-            return "\(speakerID):name=\(name.unicodeScalars.count):\(name);link=\(speaker?.profileID ?? "")"
-                + ";rejected=\(rejected);turns=\(owned)"
+            return "name=\(Self.optionalText(speaker.explicitName));link=\(Self.optionalText(speaker.profileID))"
+                + ";rejected=\(Self.list(speaker.rejectedProfileIDs.map(Self.text)))"
+                + ";clusters=\(Self.list(speaker.clusterIDs.map(Self.text)));turns=\(Self.list(owned))"
         }
 
-        /// `<segment ID>[<first word>..<last word>]` per span, joined by `+`.
-        private static func words(of turn: TurnState) -> String {
-            turn.spans.map { "\($0.segmentID)[\($0.first)..\($0.end &- 1)]" }.joined(separator: "+")
+        /// `<L(id)>=absent`, or `<L(id)>=present;speaker=<O(speaker)>;words=<W>` plus `;excluded=<0/1>`.
+        private func turnRecord(_ turnID: String, exclusion: Bool) -> String {
+            guard let index = turnIndex[turnID] else { return "\(Self.text(turnID))=absent" }
+            let turn = turns[index]
+            let record = "\(Self.text(turnID))=present;speaker=\(Self.optionalText(turn.speakerID))"
+                + ";words=\(Self.words(of: turn))"
+            return exclusion ? "\(record);excluded=\(turn.excluded ? 1 : 0)" : record
         }
+
+        /// W: `<L(segment ID)>@<first>..<end>` per span (`end` exclusive), as a counted list.
+        private static func words(of turn: TurnState) -> String {
+            list(turn.spans.map { "\(text($0.segmentID))@\($0.first)..<\($0.end)" })
+        }
+
+        /// L: `<Unicode scalar count>:<value>`, so free text never runs into the field after it.
+        private static func text(_ value: String) -> String { "\(value.unicodeScalars.count):\(value)" }
+
+        /// O: `none`, or L(value). `none` cannot start a length prefix.
+        private static func optionalText(_ value: String?) -> String { value.map(text) ?? "none" }
+
+        /// N: `<count>[<item>,<item>,…]`.
+        private static func list(_ items: [String]) -> String { "\(items.count)[\(items.joined(separator: ","))]" }
 
         // MARK: Step 5 and output
 
