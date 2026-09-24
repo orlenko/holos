@@ -156,6 +156,37 @@ public enum SessionSpeakerStore {
         try AtomicFile.writeJSON(result, to: SessionPaths.recognition(result.runID, in: session))
     }
 
+    /// Removes speakers/recognition/ and everything in it (Forget All Voices, PR10). Nothing to remove is not an
+    /// error; a symbolic link or file in place of speakers/ is refused (`invalidInput`). Caller holds the speaker lock.
+    public static func deleteRecognition(session: URL) throws {
+        try SessionLockFile.requireSessionFolder(session)
+        guard try AtomicFile.removeTree(["speakers", "recognition"], in: session) else { return }
+        log.info("Deleted session recognition results")
+    }
+
+    // MARK: - Generation
+
+    /// The session's speaker generation (docs/meeting-design.md §4.10, PR10): the head run ID and the edit journal's
+    /// byte length, as "<runID>:<bytes>"; nil without a head. The journal only grows under one head, so any edit or
+    /// relabel changes it. Read it under the speaker lock to compare it with a later reading.
+    public static func generation(session: URL) throws -> String? {
+        guard let head = try readHead(session: session) else { return nil }
+        var length: Int64 = 0
+        if let (parent, name) = try AtomicFile.openParentIfPresent(of: SessionPaths.edits(session)) {
+            defer { Darwin.close(parent) }
+            var info = stat()
+            if fstatat(parent, name, &info, AT_SYMLINK_NOFOLLOW) == 0 {
+                guard (info.st_mode & S_IFMT) == S_IFREG else {
+                    throw HolosError.invalidInput("speakers/edits.jsonl is not a regular file.")
+                }
+                length = Int64(info.st_size)
+            } else if errno != ENOENT {
+                throw HolosError.io("Cannot inspect speakers/edits.jsonl: \(AtomicFile.errnoText()).")
+            }
+        }
+        return "\(head.runID):\(length)"
+    }
+
     // MARK: - Voice data (biometric; only while "Remember voices" is on)
 
     public static func readVoiceData(runID: String, session: URL) throws -> SessionVoiceData? {

@@ -49,12 +49,15 @@ public struct MeetingPostProcessor: Sendable {
     let diarizer: (any SpeakerDiarizer)?
     let options: PostProcessingOptions
     let freeSpace: any FreeSpaceProvider
+    let profiles: SpeakerProfileStore?
 
     /// `diarizer == nil` (speaker models not installed) gives speaker-less exports and the setup hint.
-    /// `freeSpace` measures the volume before rendering.
+    /// `freeSpace` measures the volume before rendering. With `profiles` (PR10) whose "Remember voices" is on and
+    /// some person has voice samples, stage 7 compares the new run's speakers with them (distances only), and the
+    /// exports show people's current names; without it nothing is recognized.
     public init(diarizer: (any SpeakerDiarizer)? = nil, options: PostProcessingOptions = .init(),
-                freeSpace: any FreeSpaceProvider = VolumeFreeSpace()) {
-        self.diarizer = diarizer; self.options = options; self.freeSpace = freeSpace
+                freeSpace: any FreeSpaceProvider = VolumeFreeSpace(), profiles: SpeakerProfileStore? = nil) {
+        self.diarizer = diarizer; self.options = options; self.freeSpace = freeSpace; self.profiles = profiles
     }
 
     /// Runs every stage for one finished session under `lease` (nil: acquire one, retry 1 s) and returns the
@@ -170,7 +173,8 @@ public struct MeetingPostProcessor: Sendable {
         // Stage 8: exports (the speaker lock taken in stage 6 was released there).
         started = recorder.begin(.export, message: "Writing transcript files…")
         do {
-            let result = try SessionExports.regenerate(session: session)
+            let names = profiles.map { VoiceProfileService.profileNames(store: $0) } ?? [:]
+            let result = try SessionExports.regenerate(session: session, profileNames: names)
             let moved = result.movedAside.count
             recorder.end(.export, .succeeded,
                          moved == 0 ? nil : "Moved \(moved) edited transcript \(moved == 1 ? "file" : "files") aside.",
@@ -313,7 +317,21 @@ public struct MeetingPostProcessor: Sendable {
             result.runID = head?.usableRunID
             result.problem = "Cannot save the speaker labels: \(error.localizedDescription)"
         }
-        // Stage 7 (recognition) is added by PR10; without a profile store nothing is recognized.
+
+        // Stage 7: recognition on the in-memory voice data of the run just published (never persisted here).
+        if result.published, let profiles {
+            let started = recorder.begin(.recognize, message: "Comparing voices…")
+            switch RecognizeStage.run(built.run, voiceData: built.voiceData, session: session, store: profiles) {
+            case .skipped(let message):
+                recorder.end(.recognize, .skipped, message, since: started)
+            case .recognized(let recognition):
+                recorder.end(.recognize, .succeeded, RecognizeStage.message(recognition), since: started)
+            case .failed(let message):
+                recorder.end(.recognize, .failed, message, since: started)
+                // The labels are saved; only the suggestions are missing, which makes the record partial.
+                result.problem = ([result.message].compactMap { $0 } + [message]).joined(separator: " ")
+            }
+        }
         return result
     }
 

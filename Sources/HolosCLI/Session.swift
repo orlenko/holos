@@ -101,7 +101,7 @@ struct Session: AsyncParsableCommand {
                                                          postProcess: !noPostprocess, force: force)
             let outcome = try await SessionRecoveryCommand.run(
                 request, diarizer: noPostprocess ? nil : makeDiarizer(engineOverrides: [:]),
-                progress: Self.progressPrinter())
+                profiles: SpeakerProfileStore(), progress: Self.progressPrinter())
             if json {
                 let recovery = outcome.recovery
                 try Console.json(Result(

@@ -2,6 +2,7 @@ import ArgumentParser
 import Foundation
 import HolosCore
 import HolosMeeting
+import HolosStorage
 import Synchronization
 
 extension Session {
@@ -61,7 +62,8 @@ extension Session {
             let request = SessionDiarizeCommand.Request(session: fileURL(path), options: options,
                                                         afterRecording: afterRecording, leaseDescriptor: leaseFd)
             let outcome = try await SessionDiarizeCommand.run(
-                request, diarizer: makeDiarizer(engineOverrides: overrides), progress: progressPrinter())
+                request, diarizer: makeDiarizer(engineOverrides: overrides), profiles: SpeakerProfileStore(),
+                progress: progressPrinter())
             // Stdout carries the result; a warning or failure is explained on stderr (docs/meeting-design.md §1.4).
             if json {
                 try Console.json(outcome.record)

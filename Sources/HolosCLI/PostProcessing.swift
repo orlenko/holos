@@ -9,9 +9,11 @@ import HolosStorage
 ///
 /// The diarizer is `FluidDiarizer` with `options.engineOverrides` applied when the speaker models are verified
 /// (`FluidModels.status() == .verified`), else nil (speaker-less exports and the setup hint). Invalid engine
-/// overrides give a diarizer that fails with the reason, so the diarize stage records it.
+/// overrides give a diarizer that fails with the reason, so the diarize stage records it. The people store
+/// (`SpeakerProfileStore()`) lets stage 7 suggest known people when "Remember voices" is on (PR10).
 func makeMeetingPostProcessor(options: PostProcessingOptions = .init()) -> MeetingPostProcessor {
-    MeetingPostProcessor(diarizer: makeDiarizer(engineOverrides: options.engineOverrides), options: options)
+    MeetingPostProcessor(diarizer: makeDiarizer(engineOverrides: options.engineOverrides), options: options,
+                         profiles: SpeakerProfileStore())
 }
 
 /// `FluidDiarizer` over the installed models, or nil when they are not verified.
@@ -23,6 +25,19 @@ func makeDiarizer(engineOverrides: [String: String]) -> (any SpeakerDiarizer)? {
     } catch {
         return RejectedSettingsDiarizer(error: error as? HolosError ?? .invalidInput(error.localizedDescription))
     }
+}
+
+/// The CLI's voice sample extractor (docs/meeting-design.md §4.10): a fresh FluidAudio pass with chunk embeddings,
+/// configured like the session's head run (its recorded `exclusiveSegments` and `clusteringThreshold`), through
+/// `DiarizerVoiceSampleExtractor`. Nil when the speaker models are not verified.
+func makeVoiceSampleExtractor(session: URL) -> (any VoiceSampleExtractor)? {
+    var overrides: [String: String] = [:]
+    if let head = try? SessionSpeakerStore.readHead(session: session),
+       let run = try? SessionSpeakerStore.readRun(id: head.runID, session: session),
+       let configuration = run.engine?.configuration {
+        for key in FluidDiarizerConfiguration.overrideKeys { overrides[key] = configuration[key] }
+    }
+    return makeDiarizer(engineOverrides: overrides).map { DiarizerVoiceSampleExtractor(diarizer: $0) }
 }
 
 /// The hook `holos record start` runs under the processing lease after the archive is finished.

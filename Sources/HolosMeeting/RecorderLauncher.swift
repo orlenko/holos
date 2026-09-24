@@ -390,6 +390,8 @@ public enum ProcessSpawner {
         case file(URL, append: Bool)
         /// Only for stderr: the same file as stdout.
         case sameAsOutput
+        /// An open descriptor of the caller's, such as a pipe's write end (not closed by `spawn`).
+        case descriptor(Int32)
     }
 
     /// Spawns `executable` with `arguments` (argv[0] is the executable's path). stdin is `/dev/null`.
@@ -403,6 +405,7 @@ public enum ProcessSpawner {
         var opened: [Int32] = []
         defer { for fd in opened { Darwin.close(fd) } }
         func open(_ output: Output) throws -> Int32? {
+            if case .descriptor(let fd) = output { return fd }
             guard case .file(let url, let append) = output else { return nil }
             let flags = O_WRONLY | O_CREAT | O_CLOEXEC | O_NOFOLLOW | (append ? O_APPEND : O_TRUNC)
             let fd = Darwin.open(url.path, flags, 0o600)

@@ -222,6 +222,7 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
         }
         menu.addItem(.separator())
         addMeetingsItem(to: menu)
+        addPeopleItem(to: menu)
         menu.addItem(item("Setup…", #selector(showSetup)))
         addAboutItem(to: menu)
         menu.addItem(.separator())

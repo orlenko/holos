@@ -101,8 +101,10 @@ public enum SessionRecoveryCommand {
     /// Throws, and changes nothing more, when the lease is held elsewhere, recovery refuses (missing or damaged
     /// audio, an unreadable manifest, an active recorder), or the transcript cannot be rebuilt (the archive recovery
     /// is kept). A post-processing failure does not throw: it is reported in `warnings` with exit code 3.
+    /// `profiles` is passed to the post-processor (voice suggestions, PR10).
     public static func run(_ request: Request, diarizer: (any SpeakerDiarizer)?, makeSpeech: LiveSpeechFactory? = nil,
                            freeSpace: any FreeSpaceProvider = VolumeFreeSpace(),
+                           profiles: SpeakerProfileStore? = nil,
                            progress: @escaping @Sendable (String) -> Void = { _ in },
                            step: @escaping @Sendable (Step) -> Void = { _ in }) async throws -> Outcome {
         let session = request.session
@@ -183,7 +185,7 @@ public enum SessionRecoveryCommand {
             } else {
                 do {
                     let processor = MeetingPostProcessor(diarizer: diarizer, options: PostProcessingOptions(),
-                                                         freeSpace: freeSpace)
+                                                         freeSpace: freeSpace, profiles: profiles)
                     let result = try await processor.run(session: session, lease: lease) { progress($0.message) }
                     record = result
                     step(.postProcessed)

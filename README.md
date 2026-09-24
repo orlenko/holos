@@ -3,9 +3,9 @@
 Holos is a local speech toolkit for Apple Silicon Macs, written in Swift. It has
 a command-line interface for on-device transcription, meeting recording with
 speaker labels, archive recovery, and native speech playback/export, plus a
-locally built menu bar app for push-to-talk dictation. Implemented inference runs
-locally with Apple's frameworks and, for speaker labels, FluidAudio's Core ML
-models; a cloud inference backend is not implemented.
+locally built menu bar app for push-to-talk dictation and meeting recording.
+Implemented inference runs locally with Apple's frameworks and, for speaker labels,
+FluidAudio's Core ML models; a cloud inference backend is not implemented.
 
 The software was built on macOS 27 with Apple Silicon and Swift 6.4. Live
 microphone/system-audio capture, app permissions, cross-app insertion, and audible
@@ -39,7 +39,8 @@ open build/Holos.app
 The build does not install or launch the app, add a login item, or enable dictation.
 Quit Holos before rebuilding; the script refuses to replace a running copy, because
 that invalidates its code signature (macOS re-prompts for permissions, and dictation
-into a terminal has frozen the terminal). A running Holos that detects this pauses
+into a terminal has frozen the terminal). It also refuses while a meeting recorder or
+its speaker labelling runs from the bundle. A running Holos that detects this pauses
 dictation and asks to be reopened.
 On first launch, dictation is disabled and the Holos Setup window opens (reopen it
 with **Setup…** in the menu). It shows live status for each step: explicitly grant
@@ -49,6 +50,23 @@ is Right Option; Control–Option–Space is available as an alternate. The menu
 app shows a live preview, and releasing the shortcut finalizes one utterance.
 See the [dictation validation guide](docs/dictation-validation.md) before relying
 on insertion into other apps.
+
+The app also records meetings from the menu bar: **Start Meeting Recording…**, then
+Pause, Add Marker, Show Live Transcript, and **Stop and Save…**. The recorder is the
+bundled `holos` tool (`Holos.app/Contents/MacOS/holos`, which `build-app.sh` now
+builds and signs) running as a child of the app: it keeps recording if the app quits
+or crashes, and the app finds it again on relaunch, as it does a meeting started from
+a terminal. Its log is `~/Library/Logs/Holos/recorder-<id>.log`;
+`defaults write ca.orlenko.holos.app meetingRecorderMode inProcess` records inside
+the app instead. Dictation is paused while a meeting records. If a permission prompt
+is open when you choose Stop Recording, the recorder stops once the prompt is
+answered. **Meetings…** lists recordings and can recover them, label their speakers,
+open or save the transcript, delete the audio or the whole meeting, and clean up
+leftover renders. Setup has a "Speaker labels" row that installs the speaker models
+(about 21 MB). Holos relabels a meeting automatically when its labelling was
+interrupted (at most twice per meeting, within 7 days). **People…** lists the people
+you have named and their remembered voices (below). See the
+[meeting validation guide](docs/meeting-validation.md) for the manual checks.
 
 ## Quick start
 
@@ -72,6 +90,8 @@ holos="$BIN_DIR/holos"
 "$holos" session list                   # sessions, newest first, with state and size
 "$holos" speakers list <session>        # a session's speakers; also rename, merge, assign, ...
 "$holos" speakers rename <session> S2 "Maria"
+"$holos" speakers link <session> S3 new:Jim   # a person whose name carries across meetings
+"$holos" people list                    # people, their voice samples, and Remember voices
 "$holos" session export <session> --format md
 
 "$holos" say "The build is ready."       # native speech playback
@@ -137,6 +157,22 @@ session's edit journal, never in the labels themselves, and rewrite `exports/`.
 transcript to stdout or, with `--output`, to a new file; `--all` rewrites
 `exports/`. No export contains voice data.
 
+People and voices: `holos speakers link <session> <speaker> <person|new:NAME>` links a
+speaker to a person (`holos speakers me` to you), which also names the speaker, so the
+name carries across meetings; `holos speakers reject` says a speaker is not someone in
+that meeting. Names never need a voiceprint. Remembering voices is opt-in and off by
+default (`holos people remember on|off|status`, or the People window): with it on,
+`link --learn-voice` learns the person's voice from that speaker's clear turns (only do
+this for people who agreed; voiceprints are biometric data), and later meetings suggest
+them as "Maybe Jim" in `holos speakers list`. Suggestions are never exported, and no
+name is applied automatically unless you calibrate on your own confirmed meetings (hidden
+`holos people calibrate --apply`). Voice samples stay in
+`~/Library/Application Support/Holos/Speakers` (private, not in Time Machine backups);
+post-processing never stores voice embeddings. `holos people list`, `rename`, `merge`,
+`forget <person> [--sample ID] | --session <session> | --all` (with `--yes`), and
+`export [--output FILE] [--include-voiceprints]` manage them; a person's sample from a
+meeting follows later speaker edits in that meeting.
+
 `holos session list` shows every session, newest first: its state (`interrupted`
 when the recorder stopped unexpectedly, `damaged` when its manifest cannot be
 read), saved audio, size on disk, and speaker labels; `--interrupted` lists only
@@ -190,6 +226,8 @@ transcripts. It is gitignored; keep originals out of commits.
 - [Private-reference comparison method and results](docs/reference-evaluation.md)
 - [Manual live-recording checks](docs/hardware-validation.md)
 - [Menu bar dictation setup and manual validation](docs/dictation-validation.md)
+- [Menu bar meeting recording checks](docs/meeting-validation.md) and
+  [people and voice profile checks](docs/voice-profile-validation.md)
 - [Meeting recording plan](docs/meeting-recording-plan.md) and
   [implementation design](docs/meeting-design.md) (in progress)
 - [Speaker labelling evaluation](docs/speaker-evaluation.md) and

@@ -9,7 +9,7 @@ public struct SpeakerEditResult: Sendable {
     /// The session after the edit (loaded once the speaker lock was released; it may include later edits).
     public var snapshot: SpeakerSessionSnapshot
     /// True when the batch changed a turn's speaker, turn boundaries, merges, exclusions, or links of a
-    /// speaker whose profile has a sample from this session (PR10 sets it; always false before PR10).
+    /// speaker whose profile has a sample from this session (set only when the editor was given the profile store).
     /// The caller must then `await VoiceProfileService.refreshSamples(session:extractor:store:)`.
     public var needsSampleRefresh: Bool
 
@@ -54,14 +54,19 @@ public enum SpeakerEditor {
     /// - A head run that cannot be used (missing or damaged, or its transcript is) refuses the edit (`unavailable`).
     /// - Once the lines are appended, a failure to load the result or to regenerate the exports throws
     ///   `HolosError.incomplete` saying the change was saved.
+    /// - With `profiles` (PR10), the result's `needsSampleRefresh` says whether the batch changed what a person's
+    ///   voice sample from this meeting is built from (the speakers linked to them and those speakers' qualifying
+    ///   turns); the caller then awaits `VoiceProfileService.refreshSamples(session:extractor:store:)`. Without it,
+    ///   `needsSampleRefresh` is false.
     @discardableResult
     public static func apply(_ actions: [SpeakerEditAction], view: SpeakerProjection, session: URL, source: String,
                              regenerateExports: Bool = true,
-                             profileNames: [String: String] = [:]) throws -> SpeakerEditResult {
+                             profileNames: [String: String] = [:],
+                             profiles: SpeakerProfileStore? = nil) throws -> SpeakerEditResult {
         guard !actions.isEmpty else { throw HolosError.invalidInput("There is no speaker change to save.") }
         try requireSource(source)
         let preloaded = readRun(view.runID, session: session)
-        let saved = try SessionArchive.withSpeakerLock(at: session) { () throws -> [SpeakerEdit] in
+        let saved = try SessionArchive.withSpeakerLock(at: session) { () throws -> Saved in
             let base = try currentBase(view: view, session: session, preloaded: preloaded, profileNames: profileNames)
             var viewState = view
             var current = base.projection
@@ -93,9 +98,10 @@ public enum SpeakerEditor {
             }
             try SessionSpeakerStore.appendEdits(edits, session: session)
             log.info("Session \(base.run.sessionID, privacy: .public): saved \(edits.count, privacy: .public) speaker edits (batch \(batchID, privacy: .public), run \(base.run.id, privacy: .public))")
-            return edits
+            return Saved(edits: edits, sessionID: base.run.sessionID, before: base.projection, after: current)
         }
-        return try finish(saved, session: session, regenerateExports: regenerateExports, profileNames: profileNames)
+        return try finish(saved, session: session, regenerateExports: regenerateExports, profileNames: profileNames,
+                          profiles: profiles)
     }
 
     /// Appends a revert for every edit of `view.lastUndoableBatchID` (same refusal rules).
@@ -113,15 +119,17 @@ public enum SpeakerEditor {
     ///   batch is reverted; such lines are reverted in the same new batch, so they stay out of effect and undo never
     ///   gets stuck on them. After the newest batch only stale lines and reverts follow, so nothing else can change;
     ///   if the replay shows otherwise, the undo is refused with `invalidInput`.
+    /// - With `profiles` (PR10), `needsSampleRefresh` is set as `apply` sets it.
     @discardableResult
     public static func undoLast(view: SpeakerProjection, session: URL, source: String,
-                                regenerateExports: Bool = true) throws -> SpeakerEditResult {
+                                regenerateExports: Bool = true,
+                                profiles: SpeakerProfileStore? = nil) throws -> SpeakerEditResult {
         try requireSource(source)
         guard let batchID = view.lastUndoableBatchID else {
             throw HolosError.invalidInput("There is no speaker change to undo.")
         }
         let preloaded = readRun(view.runID, session: session)
-        let saved = try SessionArchive.withSpeakerLock(at: session) { () throws -> [SpeakerEdit] in
+        let saved = try SessionArchive.withSpeakerLock(at: session) { () throws -> Saved in
             let base = try currentBase(view: view, session: session, preloaded: preloaded, profileNames: [:])
             guard base.projection.lastUndoableBatchID == batchID else { throw refusedStaleView(base.run) }
             let lines = Set(base.journal.edits
@@ -168,9 +176,10 @@ public enum SpeakerEditor {
             }
             try SessionSpeakerStore.appendEdits(edits, session: session)
             log.info("Session \(base.run.sessionID, privacy: .public): undid batch \(batchID, privacy: .public) with \(edits.count, privacy: .public) reverts (batch \(revertBatch, privacy: .public))")
-            return edits
+            return Saved(edits: edits, sessionID: base.run.sessionID, before: base.projection, after: current)
         }
-        return try finish(saved, session: session, regenerateExports: regenerateExports, profileNames: [:])
+        return try finish(saved, session: session, regenerateExports: regenerateExports, profileNames: [:],
+                          profiles: profiles)
     }
 
     /// A speaker name as it is saved: runs of whitespace, line breaks, and control characters become one space and
@@ -233,6 +242,14 @@ public enum SpeakerEditor {
         return next.appliedEditIDs == current.appliedEditIDs.filter { $0 != target } && stale(next) == stale(current)
     }
 
+    /// What a batch appended, with the session's labels (no recognition) before and after it.
+    private struct Saved {
+        let edits: [SpeakerEdit]
+        let sessionID: String
+        let before: SpeakerProjection
+        let after: SpeakerProjection
+    }
+
     /// The head run with its transcript and the current journal, read under the speaker lock.
     private struct Base {
         let run: DiarizationRun
@@ -291,13 +308,17 @@ public enum SpeakerEditor {
 
     /// Loads the result after the lock is released and regenerates the exports when asked. The lines are saved
     /// by then, so a failure here says so.
-    private static func finish(_ saved: [SpeakerEdit], session: URL, regenerateExports: Bool,
-                               profileNames: [String: String]) throws -> SpeakerEditResult {
+    private static func finish(_ saved: Saved, session: URL, regenerateExports: Bool,
+                               profileNames: [String: String], profiles: SpeakerProfileStore?) throws -> SpeakerEditResult {
+        let needsSampleRefresh = profiles.map {
+            VoiceProfileService.samplesAffected(before: saved.before, after: saved.after, sessionID: saved.sessionID,
+                                                store: $0)
+        } ?? false
         let snapshot: SpeakerSessionSnapshot
         do {
             snapshot = try SpeakerSessionSnapshot.load(session: session, profileNames: profileNames)
         } catch {
-            log.error("Saved \(saved.count, privacy: .public) speaker edits, then could not reload the session: \(error.localizedDescription, privacy: .private)")
+            log.error("Saved \(saved.edits.count, privacy: .public) speaker edits, then could not reload the session: \(error.localizedDescription, privacy: .private)")
             throw HolosError.incomplete("The speaker change was saved, but the speaker labels could not be "
                                         + "reloaded: \(error.localizedDescription)")
         }
@@ -305,12 +326,12 @@ public enum SpeakerEditor {
             do {
                 try SessionExports.regenerate(session: session, profileNames: profileNames)
             } catch {
-                log.error("Saved \(saved.count, privacy: .public) speaker edits, then could not rewrite the exports: \(error.localizedDescription, privacy: .private)")
+                log.error("Saved \(saved.edits.count, privacy: .public) speaker edits, then could not rewrite the exports: \(error.localizedDescription, privacy: .private)")
                 throw HolosError.incomplete("The speaker change was saved, but the exports could not be rewritten: "
                                             + "\(error.localizedDescription) Export the transcript again to update them.")
             }
         }
-        return SpeakerEditResult(snapshot: snapshot, needsSampleRefresh: false)
+        return SpeakerEditResult(snapshot: snapshot, needsSampleRefresh: needsSampleRefresh)
     }
 
     private static func requireSource(_ source: String) throws {
