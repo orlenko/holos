@@ -306,9 +306,6 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
             overlay.allowShowing()
             resultNeedsAttention = false
             forcedStopMessage = nil
-            // A pending opacity sample must not hide this dictation's own preview or result.
-            opacitySampleTask?.cancel()
-            opacitySampleTask = nil
             insertionBlockReason = nil
             insertedText = ""
             latestCommitted = ""
@@ -354,7 +351,13 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
             }
             expiryTask?.cancel()
             resultText = ""
-            if !controller.begin() {
+            if controller.begin() {
+                // A pending opacity sample must not hide this dictation's own preview or result.
+                // A rejected begin leaves the timer running so the sample still hides on time.
+                opacitySampleTask?.cancel()
+                opacitySampleTask = nil
+                sampleToken = nil
+            } else {
                 target = nil
                 show("Previous dictation is still stopping; release and try again shortly.")
             }
