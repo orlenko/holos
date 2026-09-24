@@ -539,6 +539,110 @@ func importWritesNothingIntoAStagingFolderSwappedInAfterTheSessionIsMade(transcr
     #expect(sessionImporterEntries(root).isEmpty)
 }
 
+/// A finished staging session with its archive closed, for `publish` tests.
+private func sessionImporterFinishedStaging(in root: URL) async throws -> (ImportStaging, SessionArchive, String) {
+    let staging = try ImportStaging.create(in: root)
+    let archive = try staging.createSession(name: "Imported", locale: "en-CA", backend: .speech)
+    let lease = try staging.acquireLease()
+    try await archive.finish(status: ArchiveStatus.audioOnly)
+    lease.release()
+    return (staging, archive, try #require(staging.sessionName))
+}
+
+/// The rename names its source entry, so a folder swapped in at the session's name after `publish` checked it and
+/// before the rename is what the rename moves. The published entry is checked after the rename: the swapped-in folder
+/// is moved back into the staging folder, `publish` throws, nothing stays published, and `discard` says where the
+/// session went. Before, `publish` returned the swapped-in folder as the imported session.
+@Test func publishRollsBackAFolderSwappedInBetweenTheCheckAndTheRename() async throws {
+    let temp = try TemporaryDirectory("import")
+    defer { temp.remove() }
+    let root = temp.url.appendingPathComponent("Sessions", isDirectory: true)
+    let fm = FileManager.default
+    let (staging, archive, sessionName) = try await sessionImporterFinishedStaging(in: root)
+    let stray = temp.url.appendingPathComponent("stray-\(UUID().uuidString)", isDirectory: true)
+
+    #expect(throws: HolosError.self) {
+        _ = try staging.publish(sessionName, beforeMove: {
+            do {
+                try fm.moveItem(at: archive.directory, to: stray)
+                try fm.createDirectory(at: archive.directory, withIntermediateDirectories: true)
+                try Data("theirs".utf8).write(to: archive.directory.appendingPathComponent("theirs.txt"))
+            } catch {
+                Issue.record("Cannot swap the folder: \(error)")
+            }
+        })
+    }
+    #expect(!staging.published)
+    #expect(!fm.fileExists(atPath: root.appendingPathComponent(sessionName).path))
+    #expect(sessionImporterTree(archive.directory) == ["theirs.txt"], "The swapped-in folder is back in staging.")
+    let note = try #require(staging.discard())
+    #expect(note.contains(stray.lastPathComponent))
+    #expect(sessionImporterTree(stray).contains("manifest.json"))
+    #expect(sessionImporterEntries(root).isEmpty)
+}
+
+/// When the sessions root is renamed, or a link to it retargeted, while the session is published, the session lands
+/// in the folder `create` opened, and `publish` returns where that folder is now rather than the stale `root` path.
+@Test(arguments: [false, true])
+func publishReturnsWhereTheOpenedRootIsNow(throughLink: Bool) async throws {
+    let temp = try TemporaryDirectory("import")
+    defer { temp.remove() }
+    let fm = FileManager.default
+    let real = temp.url.appendingPathComponent("Sessions", isDirectory: true)
+    let other = temp.url.appendingPathComponent("Other", isDirectory: true)
+    let renamed = temp.url.appendingPathComponent("Renamed", isDirectory: true)
+    let link = temp.url.appendingPathComponent("Link", isDirectory: true)
+    try fm.createDirectory(at: real, withIntermediateDirectories: true)
+    try fm.createDirectory(at: other, withIntermediateDirectories: true)
+    if throughLink { try fm.createSymbolicLink(at: link, withDestinationURL: real) }
+    let root = throughLink ? link : real
+    let (staging, _, sessionName) = try await sessionImporterFinishedStaging(in: root)
+
+    let result = try staging.publish(sessionName, after: { step in
+        guard step == .moved else { return }
+        do {
+            if throughLink {
+                try fm.removeItem(at: link)
+                try fm.createSymbolicLink(at: link, withDestinationURL: other)
+            } else {
+                try fm.moveItem(at: real, to: renamed)
+            }
+        } catch {
+            Issue.record("Cannot move the root: \(error)")
+        }
+    })
+    let expected = (throughLink ? real : renamed).appendingPathComponent(sessionName, isDirectory: true)
+    #expect(result.resolvingSymlinksInPath().path == expected.resolvingSymlinksInPath().path)
+    #expect(fm.fileExists(atPath: result.appendingPathComponent("manifest.json").path))
+    #expect(staging.published)
+    #expect(staging.discard() == nil)
+    #expect(fm.fileExists(atPath: result.appendingPathComponent("manifest.json").path))
+}
+
+/// A cancel before `start` is kept: the work starts cancelled and none of it runs, so interrupt handling installed
+/// before `holos session import` starts its work never misses a signal. A cancel after `start` reaches the task.
+@Test(.timeLimit(.minutes(1)))
+func cancellableStartKeepsACancelMadeBeforeTheWorkStarts() async throws {
+    let early = CancellableStart<Bool>()
+    early.cancel()
+    let ran = SharedValue(false)
+    await #expect(throws: CancellationError.self) {
+        _ = try await early.start {
+            ran.update { $0 = true }
+            return true
+        }.value
+    }
+    #expect(!ran.value)
+
+    let late = CancellableStart<Bool>()
+    let task = late.start {
+        try await Task.sleep(for: .seconds(30))
+        return true
+    }
+    late.cancel()
+    await #expect(throws: CancellationError.self) { _ = try await task.value }
+}
+
 @Test(.timeLimit(.minutes(1)))
 func importWithoutTranscriptionIsAudioOnly() async throws {
     let temp = try TemporaryDirectory("import")

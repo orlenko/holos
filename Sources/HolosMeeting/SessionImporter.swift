@@ -42,7 +42,9 @@ public enum SessionImporter {
     ///   fails the import like any other transcription error.
     /// - All or nothing, even when the process is killed: the session is built in a hidden staging folder in `root`
     ///   (`.import-<UUID>/<id>.holos`, which no listing, recovery, or catalog takes for a session) and appears as
-    ///   `<root>/<id>.holos` in one rename once it is finished. An unreadable file, a failed write, a transcription
+    ///   `<root>/<id>.holos` in one rename once it is finished, and only once the published entry is checked to be
+    ///   that session's folder. The returned URL is where it is: under `root`, or under the sessions folder's current
+    ///   path when `root` was renamed (or a link to it retargeted) during the import. An unreadable file, a failed write, a transcription
     ///   error, or cancellation removes the staging folder (the source file is never changed) and throws;
     ///   `CancellationError` passes through unchanged. A staging folder left by a killed import is removed by a
     ///   later import in the same root once it is an hour old. Throws before creating anything when the file is not a readable audio file
@@ -129,13 +131,18 @@ public enum SessionImporter {
             lease = held
             try await archive.finish(status: status)
             try Task.checkCancellation()
-            // Nothing after the rename throws: once published, the session is the caller's.
+            // Once published, the session is the caller's; `publish` throws after its rename only when the sessions
+            // folder can no longer be found, and says so (the catch below leaves the published session alone).
             let published = try staging.publish(directory.lastPathComponent)
             meter.report(1)
             log.notice("Session \(archive.id, privacy: .public): imported \(seconds, privacy: .public) s of audio, \(segmentCount, privacy: .public) segments, as \(status, privacy: .public)")
             return ImportedSession(directory: published, lease: held)
         } catch {
             lease?.release()
+            if staging.published {
+                _ = staging.discard()
+                throw error
+            }
             // Closes the writer lock if the archive is still open; an archive already finished refuses, harmlessly.
             try? await archive.finish(status: ArchiveStatus.failed)
             let leftover = staging.discard()
@@ -357,6 +364,9 @@ final class ImportStaging {
     private var sessionFD: Int32 = -1
     /// Its name (`<id>.holos`), once made.
     private(set) var sessionName: String?
+    /// Whether `publish` moved the session folder into the root (and checked it got there): from then on the session
+    /// is no longer the staging folder's, and `discard` leaves it alone.
+    private(set) var published = false
     /// Binds the session's staging path (`url/<sessionName>`) to `sessionFD` from `createSession` until the session
     /// is published or discarded, so no write that names the session by path reaches another folder.
     private var pin: SessionFolderPin?
@@ -436,19 +446,9 @@ final class ImportStaging {
         guard sessionFD >= 0, let sessionName, !Self.names(sessionName, in: folderFD, folder: sessionFD) else {
             return nil
         }
-        var buffer = [CChar](repeating: 0, count: Int(MAXPATHLEN))
-        if fcntl(sessionFD, F_GETPATH, &buffer) == 0 {
-            let path = String(decoding: buffer.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) }, as: UTF8.self)
-            // F_GETPATH can report where a folder was before it was removed; the path counts only if it still names
-            // this folder.
-            let parent = open((path as NSString).deletingLastPathComponent, O_RDONLY | O_DIRECTORY | O_CLOEXEC)
-            if parent >= 0 {
-                defer { Darwin.close(parent) }
-                if Self.names((path as NSString).lastPathComponent, in: parent, folder: sessionFD) {
-                    return "Its session folder was moved out of the import folder while it was being imported, to "
-                        + "\(path), and was left there; it is not a finished session, so delete it."
-                }
-            }
+        if let path = Self.currentPath(of: sessionFD) {
+            return "Its session folder was moved out of the import folder while it was being imported, to "
+                + "\(path), and was left there; it is not a finished session, so delete it."
         }
         return "Its session folder was moved out of the import folder while it was being imported and could not be "
             + "found to remove."
@@ -516,15 +516,23 @@ final class ImportStaging {
 
     /// Moves the finished session folder `sessionName` from the staging folder to `root` in one rename (never over
     /// an existing folder), makes the rename durable, and removes the empty staging folder. Throws, having moved
-    /// nothing, when the rename fails; after the rename it never throws (a staging folder it cannot remove is left
-    /// for the next sweep). The marker is removed before the lock file and the lock, so a sweep leaves the emptied
-    /// folder alone. `after` runs after each step (for tests).
+    /// nothing, when the rename fails; after the rename it throws only when the root can no longer be found (below);
+    /// a staging folder it cannot remove is left for the next sweep. The marker is removed before the lock file and
+    /// the lock, so a sweep leaves the emptied folder alone. `beforeMove` runs just before the rename and `after`
+    /// after each step (both for tests).
     ///
     /// The rename, the unlinks, and the removal of the emptied folder go through the folder `create` opened, so a
     /// folder renamed in at the staging name meanwhile is never published from or changed. Once `createSession` has
     /// made the session, only that folder is published: `sessionName` must be its name, and the entry of that name
-    /// must still be the folder it made (device and inode), not one another program moved in in its place.
-    func publish(_ sessionName: String, after: (Step) -> Void = { _ in }) throws -> URL {
+    /// must still be the folder it made (device and inode), not one another program moved in in its place. The
+    /// rename itself names its source by name, so the published entry is checked again after it: a folder swapped in
+    /// between the check and the rename is moved back into the staging folder and the call throws.
+    ///
+    /// Returns where the session is: `<root>/<sessionName>` while `root` still leads to the folder `create` opened,
+    /// else that folder's current path. Throws when neither can be told (the session is published all the same,
+    /// and `published` is true).
+    func publish(_ sessionName: String, beforeMove: () -> Void = {},
+                 after: (Step) -> Void = { _ in }) throws -> URL {
         let stagingFD = folderFD
         if sessionFD >= 0 {
             guard sessionName == self.sessionName, Self.names(sessionName, in: stagingFD, folder: sessionFD) else {
@@ -532,19 +540,26 @@ final class ImportStaging {
                                     + "published.")
             }
         }
-        var moved = renameatx_np(stagingFD, sessionName, rootFD, sessionName, UInt32(RENAME_EXCL)) == 0
-        if !moved, errno == ENOTSUP || errno == EINVAL {
-            // A volume without RENAME_EXCL: the name is a new UUID, and it is checked to be free just before.
-            var info = stat()
-            if fstatat(rootFD, sessionName, &info, AT_SYMLINK_NOFOLLOW) != 0, errno == ENOENT {
-                moved = renameat(stagingFD, sessionName, rootFD, sessionName) == 0
-            } else {
-                errno = EEXIST
-            }
-        }
-        guard moved else {
+        beforeMove()
+        guard Self.renameExclusive(sessionName, from: stagingFD, to: rootFD) else {
             throw HolosError.io("Cannot move the imported session into the sessions folder: \(Self.errnoText()).")
         }
+        // The rename names its source entry, so a folder swapped in between the check above and the rename is what
+        // it moved. That window cannot be closed on macOS; its consequence is: the published entry is checked to be
+        // the session folder, and anything else is moved back into the staging folder (which `discard` empties).
+        if sessionFD >= 0, !Self.names(sessionName, in: rootFD, folder: sessionFD) {
+            let restored = Self.renameExclusive(sessionName, from: rootFD, to: stagingFD)
+            let code = errno
+            if restored, fsync(rootFD) != 0 || fsync(stagingFD) != 0 {
+                Self.log.error("Cannot save the sessions folder after an import: \(Self.errnoText(), privacy: .public)")
+            }
+            throw HolosError.io("The imported session was replaced in its import folder just before it was published, "
+                                + "so it was not published."
+                                + (restored ? "" : " The folder moved into the sessions folder in its place, "
+                                   + "\(publishedURL(sessionName).path), could not be moved back "
+                                   + "(\(String(cString: strerror(code)))); it is not the imported session."))
+        }
+        published = true
         // The staging path no longer names the session; the published one is reached by path, as any session is.
         pin?.release()
         pin = nil
@@ -559,12 +574,59 @@ final class ImportStaging {
         closeLock()
         after(.unlocked)
         Self.removeIfEmpty(stagingFD, named: name, in: rootFD)
-        return publishedURL(sessionName)
+        guard let location = publishedLocation(sessionName) else {
+            throw HolosError.io("The session was imported as \(sessionName), but the sessions folder was moved or "
+                                + "replaced during the import, so where it is now cannot be told. Look for "
+                                + "\(sessionName) where \(root.path) was.")
+        }
+        return location
     }
 
     /// Where `publish(sessionName)` puts the session: `<root>/<sessionName>`.
     func publishedURL(_ sessionName: String) -> URL {
         root.appendingPathComponent(sessionName, isDirectory: true)
+    }
+
+    /// Where the session published as `sessionName` in the open root is now: `publishedURL(sessionName)` while
+    /// `root` still leads to the folder open as `rootFD` (device and inode, links followed as `create` followed them);
+    /// else the path the system reports for that folder, when it still names it (the root was renamed, or a link to
+    /// it retargeted, during the import). Nil when neither holds.
+    private func publishedLocation(_ sessionName: String) -> URL? {
+        var opened = stat()
+        var named = stat()
+        if fstat(rootFD, &opened) == 0, stat(root.path, &named) == 0,
+           named.st_dev == opened.st_dev, named.st_ino == opened.st_ino {
+            return publishedURL(sessionName)
+        }
+        guard let path = Self.currentPath(of: rootFD) else { return nil }
+        return URL(fileURLWithPath: path, isDirectory: true).appendingPathComponent(sessionName, isDirectory: true)
+    }
+
+    /// The path of the open folder `folder`, when the path the system reports for it (`F_GETPATH`) still names it.
+    private static func currentPath(of folder: Int32) -> String? {
+        var buffer = [CChar](repeating: 0, count: Int(MAXPATHLEN))
+        guard fcntl(folder, F_GETPATH, &buffer) == 0 else { return nil }
+        let path = String(decoding: buffer.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) }, as: UTF8.self)
+        // F_GETPATH can report where a folder was before it was removed; the path counts only if it still names
+        // this folder.
+        let parent = open((path as NSString).deletingLastPathComponent, O_RDONLY | O_DIRECTORY | O_CLOEXEC)
+        guard parent >= 0 else { return nil }
+        defer { Darwin.close(parent) }
+        return names((path as NSString).lastPathComponent, in: parent, folder: folder) ? path : nil
+    }
+
+    /// Renames `name` in the open folder `source` to the same name in `target`, never over an existing entry.
+    /// Sets errno on failure.
+    private static func renameExclusive(_ name: String, from source: Int32, to target: Int32) -> Bool {
+        if renameatx_np(source, name, target, name, UInt32(RENAME_EXCL)) == 0 { return true }
+        guard errno == ENOTSUP || errno == EINVAL else { return false }
+        // A volume without RENAME_EXCL: the name is a new UUID, and it is checked to be free just before.
+        var info = stat()
+        if fstatat(target, name, &info, AT_SYMLINK_NOFOLLOW) != 0, errno == ENOENT {
+            return renameat(source, name, target, name) == 0
+        }
+        errno = EEXIST
+        return false
     }
 
     /// Removes the staging folder `create` made, through the descriptor it opened, and everything in it (`remove`),
@@ -580,6 +642,8 @@ final class ImportStaging {
             pin = nil
             closeLock()
         }
+        // A published session is the caller's, and `publish` already removed the staging folder.
+        if published { return nil }
         let stray = straySessionNote()
         do {
             try Self.remove(folder: folderFD, named: name, in: rootFD, root: root)

@@ -330,6 +330,21 @@ and recovery reads a chunk's format and hash from one descriptor opened through 
 (`ChunkFile`, `AudioFileOpenWithCallbacks`), refusing it when the path no longer leads to that file. A `create` whose folder fsync fails removes the new
 file, so a retry is not refused as "already exists".
 
+**Threat model.** Holos protects session data against crashes and kills at any point, against
+concurrent Holos processes (the app, the recorder, CLI commands), and against accidental outside
+changes to the sessions folder (a folder renamed, moved, or replaced by a sync tool, the Finder,
+or a script while Holos works in it). It does not protect against a hostile process running as
+the same user: such a process can already read, change, or delete every session directly, so no
+check inside Holos can keep data from it. The descriptor-based checks (`openat` with
+`O_NOFOLLOW`, device and inode comparisons, verifying an entry after a rename and rolling it
+back when it is not the expected folder) exist so that Holos fails safely when the folder
+changes under it: it writes nothing into a folder it did not make, reports success only for the
+folder it verified, and says where anything it left behind is. The check-then-act windows that
+remain (for example between checking an entry and renaming it by name, which macOS cannot bind
+to a descriptor) are accepted; their consequence is closed by the check afterwards, not the
+window itself. Review findings that need a same-user process racing those windows are out of
+scope.
+
 Locks are `flock` on files in the session folder, one open file description per holder.
 
 | Lock file | Holders | Held for | How it is taken |
