@@ -87,7 +87,7 @@ extension HolosAppDelegate: NSMenuDelegate {
         Self.sweepCommandOutputs()
         controller.attachOnLaunch()
         refreshSpeakerModels()
-        DispatchQueue.main.async { [weak self] in self?.promptAboutInterruptedRecordings() }
+        Task { [weak self] in await self?.promptAboutInterruptedRecordings() }
     }
 
     // MARK: - State and effects
@@ -183,11 +183,17 @@ extension HolosAppDelegate: NSMenuDelegate {
             }
             menu.addItem(item("Start Meeting Recording…", #selector(startMeetingRecording)))
         case .starting:
-            let headline = disabledLine("◌ Starting — \(Self.short(controller.reducer.meetingName ?? "meeting"))")
+            // The recorder notices a stop only once its start returns (after a permission prompt is answered), so
+            // the item says Stop, and the menu says so once it was asked.
+            let stopping = controller.reducer.stoppedWhileStarting
+            let name = Self.short(controller.reducer.meetingName ?? "meeting")
+            let headline = disabledLine(stopping ? "◌ Stopping — \(name)…" : "◌ Starting — \(name)")
             menu.addItem(headline)
             meeting.headlineItem = headline
             if let notice = meeting.notice { menu.addItem(disabledLine(notice, indent: 1)) }
-            menu.addItem(item("Cancel Recording", #selector(cancelMeetingStart)))
+            let stop = item("Stop Recording", #selector(stopMeetingStart))
+            stop.isEnabled = !stopping
+            menu.addItem(stop)
         case .active(_, let status):
             addRecordingItems(status, to: menu)
         case .finishing(_, let status):
@@ -238,7 +244,7 @@ extension HolosAppDelegate: NSMenuDelegate {
         menu.addItem(marker)
         menu.addItem(item("Show Live Transcript…", #selector(showLiveTranscript)))
         let stop = item("Stop and Save…", #selector(stopMeetingRecording))
-        stop.isEnabled = !stopping
+        stop.isEnabled = !stopping && meeting.controller?.reducer.stopRequested != true
         menu.addItem(stop)
     }
 
@@ -472,7 +478,7 @@ extension HolosAppDelegate: NSMenuDelegate {
         controller.confirmStop()
     }
 
-    @objc func cancelMeetingStart() {
+    @objc func stopMeetingStart() {
         meeting.controller?.confirmStop()
     }
 
@@ -674,11 +680,13 @@ extension HolosAppDelegate: NSMenuDelegate {
     // MARK: - Interrupted recordings
 
     /// After launch: one alert per interrupted recording not asked about before (§5.8 "Interrupted prompt").
-    func promptAboutInterruptedRecordings() {
+    func promptAboutInterruptedRecordings() async {
         guard let controller = meeting.controller else { return }
+        let alreadyPrompted = Set(UserDefaults.standard.stringArray(forKey: MeetingAppState.promptedKey) ?? [])
+        let interrupted = await controller.interruptedSessions(excluding: alreadyPrompted)
+        // Read again: the list took a while.
         var prompted = Set(UserDefaults.standard.stringArray(forKey: MeetingAppState.promptedKey) ?? [])
-        let interrupted = controller.interruptedSessions(excluding: prompted)
-        for summary in interrupted {
+        for summary in interrupted where !prompted.contains(summary.id) {
             prompted.insert(summary.id)
             UserDefaults.standard.set(Array(prompted), forKey: MeetingAppState.promptedKey)
             let alert = NSAlert()
@@ -737,7 +745,7 @@ extension HolosAppDelegate: NSMenuDelegate {
             meeting.checkingSpeakerModels = false
             meeting.speakerModels = "unavailable"
             Self.removeFile(output)
-            Self.meetingLog.error("Cannot check the speaker models: \(error.localizedDescription, privacy: .public)")
+            Self.meetingLog.error("Cannot check the speaker models (\(ProcessSpawner.logCategory(error), privacy: .public)): \(error.localizedDescription, privacy: .private)")
         }
     }
 
@@ -839,15 +847,34 @@ extension HolosAppDelegate: NSMenuDelegate {
         Task { [weak self] in
             let clock = ContinuousClock()
             let deadline = clock.now.advanced(by: limit)
+            var undelivered = false
             while clock.now < deadline {
                 guard let self, let controller = self.meeting.controller else { break }
+                // The stop request could not be published and no signal reached the recorder (a meeting this app
+                // did not start): quitting now would leave it recording with no one told.
+                if Self.stopNotDelivered(controller) {
+                    undelivered = true
+                    break
+                }
                 let recordingHere = self.meeting.inProcess?.isRecording == true
                 if Self.readyToQuit(controller, inProcess: inProcess, recordingHere: recordingHere) { break }
                 try? await Task.sleep(for: .milliseconds(200))
             }
             self?.meeting.savingWindow?.close()
-            NSApplication.shared.reply(toApplicationShouldTerminate: true)
+            NSApplication.shared.reply(toApplicationShouldTerminate: !undelivered)
+            if undelivered, let self {
+                let reason = self.meeting.notice.map { "\n\n\($0)" } ?? ""
+                self.showMeetingAlert(
+                    "Holos could not stop the recording.",
+                    "The meeting is still recording, so Holos did not quit. Try Stop and Save from the menu again, or stop it where it was started.\(reason)")
+            }
         }
+    }
+
+    /// The meeting is still recording and no stop is on its way: the request failed and could not be signalled.
+    private static func stopNotDelivered(_ controller: MeetingController) -> Bool {
+        guard case .active(_, let status) = controller.state else { return false }
+        return status.phase != .stopping && !controller.reducer.stopRequested
     }
 
     /// Child mode: once capture stopped. In-process: once the recording in this process ended or saved its transcript.

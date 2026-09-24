@@ -24,9 +24,12 @@ Recorder output goes to `~/Library/Logs/Holos/recorder-<SESSION-UUID>.log`.
 3. After approving, the status item shows a red record symbol and the elapsed time; the menu shows
    the recording lines (time, disk used and free, microphone, transcription state).
 4. Stop and save, rebuild the app, and repeat. Note whether the permission survives a rebuild.
+5. If a prompt still appears (for example after a rebuild), choose **Stop Recording** while it is
+   open. The menu says the recorder stops once the prompt is answered, and no "did not start within
+   2 minutes" failure appears even after 2 minutes. Then answer the prompt.
 
 Pass: the prompts name Holos; "Waiting for permission…" appears while a prompt is open; recording
-works.
+works; a recording stopped at the prompt ends with "The recording was stopped before it started."
 
 Result: Pending.
 

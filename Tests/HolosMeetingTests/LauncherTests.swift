@@ -36,15 +36,42 @@ private func launcherMode(_ url: URL) -> mode_t? {
     let root = URL(fileURLWithPath: "/Users/me/Library/Application Support/Holos/Sessions", isDirectory: true)
     let vocabulary = URL(fileURLWithPath: "/private/tmp/holos-vocabulary-\(id).json")
     #expect(ChildProcessLauncher.arguments(settings, sessionID: id, root: root, vocabularyFile: vocabulary) == [
-        "record", "start", "--session-id", id, "--name", "Council meeting", "--source", "mic+system",
+        "record", "start", "--session-id", id, "--name=Council meeting", "--source", "mic+system",
         "--app", "us.zoom.xos", "--others-in-room", "--expected-speakers", "8",
         "--vocabulary-file", vocabulary.path, "--no-live-text", "--directory", root.path,
     ])
     let inPerson = MeetingStartSettings(name: "Board", source: .microphone)
     #expect(ChildProcessLauncher.arguments(inPerson, sessionID: id, root: root, vocabularyFile: nil) == [
-        "record", "start", "--session-id", id, "--name", "Board", "--source", "mic", "--no-live-text",
+        "record", "start", "--session-id", id, "--name=Board", "--source", "mic", "--no-live-text",
         "--directory", root.path,
     ])
+    // A name that starts with a dash stays one element, joined to its option, so it is never read as an option.
+    let dashed = MeetingStartSettings(name: "-1:1 with Sam", source: .microphone)
+    let arguments = ChildProcessLauncher.arguments(dashed, sessionID: id, root: root, vocabularyFile: nil)
+    #expect(arguments.contains("--name=-1:1 with Sam"))
+    #expect(!arguments.contains("--name"))
+}
+
+@Test @MainActor func childWatcherRetriesWhenTheExitEventComesBeforeTheChildIsWaitable() async throws {
+    // The exit event can be posted before the child can be waited for: the first reaps after it find nothing.
+    let pid = try ProcessSpawner.spawn(executable: URL(fileURLWithPath: "/bin/sleep"), arguments: ["0.3"],
+                                       standardOutput: .null, standardError: .null)
+    let probe = ReaperProbe()
+    let watcher = ChildWatcher(pid: pid, reaper: { pid in
+        probe.calls += 1
+        // The check at set-up (the child is still running) and the first check after the exit event.
+        return probe.calls <= 2 ? nil : ProcessSpawner.reapIfExited(pid)
+    }, retryInterval: .milliseconds(10)) { probe.code = $0 }
+    #expect(await eventually(timeout: .seconds(30)) { probe.code != nil })
+    #expect(probe.code == 0)
+    #expect(probe.calls >= 3)
+    _ = watcher
+}
+
+@MainActor
+private final class ReaperProbe {
+    var calls = 0
+    var code: Int32?
 }
 
 @Test func spawnedChildInheritsNoLocks() async throws {

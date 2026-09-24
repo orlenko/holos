@@ -140,6 +140,15 @@ struct MeetingControllerTuning: Sendable {
                 throw HolosError.unavailable(MeetingReducer.stillSaving)
             }
         case .finishing: throw HolosError.unavailable(MeetingReducer.stillSaving)
+        case .starting where reducer.stoppedWhileStarting: throw HolosError.unavailable(MeetingReducer.stillStopping)
+        case .starting, .active: throw HolosError.unavailable(MeetingReducer.alreadyRecording)
+        }
+        // A meeting started in a terminal since the last rescan (every 3 s) is followed instead: a second recorder
+        // must not take the microphone.
+        rescan()
+        switch state {
+        case .idle, .failed: break
+        case .finishing: throw HolosError.unavailable(MeetingReducer.stillSaving)
         case .starting, .active: throw HolosError.unavailable(MeetingReducer.alreadyRecording)
         }
         let settings = settings.normalized(now: now())
@@ -167,7 +176,7 @@ struct MeetingControllerTuning: Sendable {
         }
         if let launchError {
             removeVocabularyFile(sessionID: sessionID)
-            Self.log.error("Session \(sessionID, privacy: .public): the recorder could not start: \(launchError.localizedDescription, privacy: .public)")
+            Self.log.error("Session \(sessionID, privacy: .public): the recorder could not start (\(ProcessSpawner.logCategory(launchError), privacy: .public)): \(launchError.localizedDescription, privacy: .private)")
             dispatch(.launchFailed(message: launchError.localizedDescription), forceChange: true)
             throw launchError
         }
@@ -191,9 +200,13 @@ struct MeetingControllerTuning: Sendable {
     /// Clears a failure shown in the menu.
     public func dismissFailure() { dispatch(.dismissFailure) }
 
-    /// Interrupted sessions not yet prompted about (SessionCatalog).
-    public func interruptedSessions(excluding prompted: Set<String>) -> [SessionSummary] {
-        SessionCatalog.list(root: root, now: now()).filter { $0.state == .interrupted && !prompted.contains($0.id) }
+    /// Interrupted sessions not yet prompted about (SessionCatalog). The catalog walks every session, so it is listed
+    /// off the main actor (§1.3).
+    public func interruptedSessions(excluding prompted: Set<String>) async -> [SessionSummary] {
+        let root = self.root
+        let at = now()
+        let listed = await Task.detached { SessionCatalog.list(root: root, now: at) }.value
+        return listed.filter { $0.state == .interrupted && !prompted.contains($0.id) }
     }
 
     /// The session folder of `sessionID` under the root.
@@ -368,13 +381,13 @@ struct MeetingControllerTuning: Sendable {
 
     private func sendFailed(_ command: ControlCommand, sessionID: String, error: any Error) {
         let message = error.localizedDescription
-        Self.log.error("Session \(sessionID, privacy: .public): cannot send \(command.rawValue, privacy: .public): \(message, privacy: .public)")
+        Self.log.error("Session \(sessionID, privacy: .public): cannot send \(command.rawValue, privacy: .public) (\(ProcessSpawner.logCategory(error), privacy: .public)): \(message, privacy: .private)")
         if command == .stop {
             // The recorder is already on its way out: nothing to do.
             if [RecorderChannel.exitedMessage, RecorderChannel.exitingMessage].contains(message) { return }
             // A recorder this app started stops gracefully on SIGTERM too. One it only found (a terminal or an earlier
             // app) gets no signal, so the controls must work again: Stop can be tried once more.
-            launcher.terminate(sessionID: sessionID)
+            if launcher.terminate(sessionID: sessionID) { return }
             reducer.stopWasNotDelivered()
         }
         onEffect(.announce("Could not ask the recorder to \(command.rawValue): \(message)"))
@@ -460,7 +473,7 @@ struct MeetingControllerTuning: Sendable {
                 self.relabellingSessionID = pick.id
                 Self.log.notice("Session \(pick.id, privacy: .public): relabelling automatically (attempt \(attempts[pick.id] ?? 0, privacy: .public))")
             } catch {
-                Self.log.error("Session \(pick.id, privacy: .public): automatic relabel could not start: \(error.localizedDescription, privacy: .public)")
+                Self.log.error("Session \(pick.id, privacy: .public): automatic relabel could not start (\(ProcessSpawner.logCategory(error), privacy: .public)): \(error.localizedDescription, privacy: .private)")
                 self.relabelling = false
             }
         }

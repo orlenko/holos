@@ -140,11 +140,15 @@ private final class ControllerHeartbeat {
     // `holos record start` in a terminal, after the app launched.
     let archive = try liveSession(in: temp.url)
     let heartbeat = ControllerHeartbeat(session: archive.directory, status: meetingStatus(archive.id, phase: .recording))
-    #expect(await eventually(timeout: .seconds(60)) {
-        heartbeat.beat()
-        if case .active(let id, _) = controller.state { return id == archive.id }
-        return false
-    })
+    heartbeat.beat(force: true)
+    // Within one rescan: once the rescan interval has passed, the next pass of the loop follows it.
+    try await Task.sleep(for: controller.tuning.rescan + .milliseconds(10))
+    heartbeat.beat()
+    controller.step()
+    guard case .active(let id, _) = controller.state, id == archive.id else {
+        Issue.record("Expected active after one rescan, got \(controller.state).")
+        return
+    }
     #expect(probe.dictation == [true])
     // It stops: capture ends, then the recorder exits.
     heartbeat.status.phase = .transcribing
@@ -161,6 +165,43 @@ private final class ControllerHeartbeat {
     try await archive.finish(status: ArchiveStatus.complete)
     #expect(await eventually(timeout: .seconds(60)) { controller.state == .idle })
     #expect(probe.effects.contains { if case .finished(archive.id, _, false) = $0 { true } else { false } })
+}
+
+@Test @MainActor func startFollowsATerminalMeetingNotYetRescanned() async throws {
+    let temp = try TemporaryDirectory("controller")
+    defer { temp.remove() }
+    let launcher = FakeRecorderLauncher()
+    let probe = ControllerProbe()
+    let controller = makeController(root: temp.url, launcher: launcher, probe: probe)
+    defer { controller.stopMonitoring() }
+    // `holos record start` in a terminal a moment ago; the idle rescan has not seen it yet (it is not polling here).
+    let archive = try liveSession(in: temp.url, phase: .starting)
+    let error = #expect(throws: HolosError.self) {
+        try controller.start(MeetingStartSettings(name: "Second", source: .microphone))
+    }
+    #expect(error?.localizedDescription == MeetingReducer.alreadyRecording)
+    #expect(launcher.launches.isEmpty)
+    guard case .active(let id, _) = controller.state, id == archive.id else {
+        Issue.record("Expected the terminal meeting to be followed, got \(controller.state).")
+        return
+    }
+    try await archive.finish(status: ArchiveStatus.complete)
+}
+
+@Test @MainActor func startWhileAStoppedStartWaitsSaysItIsStopping() throws {
+    let temp = try TemporaryDirectory("controller")
+    defer { temp.remove() }
+    let launcher = FakeRecorderLauncher()
+    let controller = makeController(root: temp.url, launcher: launcher, probe: ControllerProbe())
+    defer { controller.stopMonitoring() }
+    try controller.start(MeetingStartSettings(name: "Council", source: .microphone))
+    controller.confirmStop()
+    #expect(launcher.terminated == launcher.launches.map(\.sessionID))
+    let error = #expect(throws: HolosError.self) {
+        try controller.start(MeetingStartSettings(name: "Again", source: .microphone))
+    }
+    #expect(error?.localizedDescription == MeetingReducer.stillStopping)
+    #expect(launcher.launches.count == 1)
 }
 
 @Test @MainActor func controllerWritesControlFiles() async throws {
@@ -225,6 +266,27 @@ private final class ControllerHeartbeat {
         Issue.record("The meeting is still recording.")
         return
     }
+    try await archive.finish(status: ArchiveStatus.complete)
+}
+
+@Test @MainActor func failedStopRequestIsSignalledToALaunchedRecorder() async throws {
+    let temp = try TemporaryDirectory("controller")
+    defer { temp.remove() }
+    let launcher = FakeRecorderLauncher()
+    let probe = ControllerProbe()
+    let controller = makeController(root: temp.url, launcher: launcher, probe: probe)
+    defer { controller.stopMonitoring() }
+    try controller.start(MeetingStartSettings(name: "Council meeting", source: .microphone))
+    let id = try #require(launcher.launches.first?.sessionID)
+    let archive = try liveSession(in: temp.url, id: id, phase: .recording)
+    controller.poll()
+    // A file where control/ belongs: no request can be published, but the recorder gets SIGTERM.
+    try Data().write(to: SessionPaths.controlDirectory(archive.directory))
+    controller.confirmStop()
+    #expect(launcher.terminated == [id])
+    #expect(controller.reducer.stopRequested, "The stop was delivered by the signal.")
+    controller.confirmStop()
+    #expect(launcher.terminated == [id], "Stop is not sent twice.")
     try await archive.finish(status: ArchiveStatus.complete)
 }
 
@@ -491,8 +553,8 @@ private final class ControllerHeartbeat {
         return archive.id
     }()
     let controller = makeController(root: temp.url, launcher: FakeRecorderLauncher(), probe: ControllerProbe())
-    #expect(controller.interruptedSessions(excluding: []).map(\.id) == [id])
-    #expect(controller.interruptedSessions(excluding: [id]).isEmpty)
+    #expect(await controller.interruptedSessions(excluding: []).map(\.id) == [id])
+    #expect(await controller.interruptedSessions(excluding: [id]).isEmpty)
 }
 
 @Test @MainActor func automaticRelabelRunsDiarizeOnce() async throws {

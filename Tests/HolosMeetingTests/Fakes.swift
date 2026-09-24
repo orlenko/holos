@@ -456,7 +456,12 @@ final class FakeRecorderLauncher: RecorderLauncher {
         return pid
     }
 
-    func terminate(sessionID: String) { terminated.append(sessionID) }
+    /// Records the request; delivered only to a recorder this launcher started.
+    @discardableResult
+    func terminate(sessionID: String) -> Bool {
+        terminated.append(sessionID)
+        return launches.contains { $0.sessionID == sessionID }
+    }
 
     /// Ends the recorder launched for `sessionID` (the last launch when nil), as its process exiting would.
     func exit(_ sessionID: String? = nil, code: Int32, logTail: String?) {

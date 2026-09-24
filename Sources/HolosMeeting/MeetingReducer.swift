@@ -105,7 +105,11 @@ public struct MeetingReducer: Sendable, Equatable {
     /// "Waiting for permission…" was announced for this start.
     private var permissionHintShown = false
     /// A stop was sent (or, while starting, the child was asked to terminate) for the followed session.
-    private var stopRequested = false
+    public private(set) var stopRequested = false
+    /// The stop was asked for while the recorder was still starting. The recorder notices it only once its start
+    /// returns (after any permission prompt is answered), so the start timeout no longer applies, and a recording that
+    /// ends with less than a second of audio was stopped before it started.
+    public private(set) var stoppedWhileStarting = false
 
     /// Seconds after the start without a recording status before "Waiting for permission…".
     static let permissionHintSeconds = 5.0
@@ -119,7 +123,13 @@ public struct MeetingReducer: Sendable, Equatable {
     static let waitingForPermission = "Waiting for permission…"
     static let stoppedBeforeRecording = "The recorder stopped before recording started."
     static let stoppedUnexpectedly = "The recorder stopped unexpectedly. Recover the saved audio from Meetings."
-    static let cancelledBeforeStart = "The recording was cancelled before it started."
+    static let cancelledBeforeStart = "The recording was stopped before it started."
+    static let stoppingWhileStarting =
+        "Stopping. If macOS is asking for permission, the recorder stops once you answer the prompt."
+    static let stillStopping =
+        "The last recording is still stopping. If macOS is asking for permission, answer the prompt first."
+    /// A recording stopped while starting that saved less audio than this was stopped before it started.
+    static let cancelledRecordingSeconds = 1.0
 
     /// True while dictation must stay paused: the followed meeting is starting, or its phase `isMeetingActive`
     /// (docs/meeting-design.md §4.12).
@@ -189,6 +199,7 @@ public struct MeetingReducer: Sendable, Equatable {
             meetingName = settings.name
             permissionHintShown = false
             stopRequested = false
+            stoppedWhileStarting = false
             return [.launch(settings, sessionID: sessionID)]
         case .finishing:
             return [.announce(Self.stillSaving)]
@@ -268,12 +279,20 @@ public struct MeetingReducer: Sendable, Equatable {
             case .idle, .failed: return []
             }
         }
-        if savedNothing(status) {
+        if stoppedWhileStarting, savedNothing(status) || status.recordedSeconds < Self.cancelledRecordingSeconds {
+            // The user stopped the recorder before capture started. It noticed only once its start returned (a
+            // permission prompt was answered), then stopped at once with nothing or a moment of audio: nothing failed,
+            // and there is no meeting to report.
             switch state {
-            case .starting where stopRequested:
-                // The user cancelled before capture started: nothing to save, and nothing failed.
+            case .starting, .active, .finishing:
                 state = .idle
                 return [.announce(Self.cancelledBeforeStart)]
+            case .idle, .failed:
+                return []
+            }
+        }
+        if savedNothing(status) {
+            switch state {
             case .starting, .active, .finishing:
                 return fail(sessionID, status.exit?.message ?? Self.stoppedBeforeRecording, keepSession: false)
             case .idle, .failed:
@@ -308,6 +327,9 @@ public struct MeetingReducer: Sendable, Equatable {
 
     private mutating func tick(at: Date) -> [MeetingEffect] {
         guard case .starting(let sessionID, let since, _) = state else { return [] }
+        // A recorder asked to stop while starting is waiting for its start to return (a permission prompt, speech
+        // setup) and stops then; failing it here would report a timeout the user did not care about.
+        guard !stoppedWhileStarting else { return [] }
         let elapsed = at.timeIntervalSince(since)
         if elapsed >= Self.startTimeoutSeconds {
             let log = "~/Library/Logs/Holos/recorder-\(sessionID).log"
@@ -326,7 +348,8 @@ public struct MeetingReducer: Sendable, Equatable {
         case .starting(let sessionID, _, _):
             guard !stopRequested else { return [] }
             stopRequested = true
-            return [.terminateChild(sessionID: sessionID)]
+            stoppedWhileStarting = true
+            return [.terminateChild(sessionID: sessionID), .announce(Self.stoppingWhileStarting)]
         case .active(let sessionID, let status):
             guard !stopRequested, status.phase != .stopping else { return [] }
             stopRequested = true
@@ -358,6 +381,7 @@ public struct MeetingReducer: Sendable, Equatable {
         meetingName = status.name
         permissionHintShown = false
         stopRequested = false
+        stoppedWhileStarting = false
         return []
     }
 

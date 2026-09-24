@@ -132,23 +132,60 @@ private func isFailed(_ state: MeetingState) -> String? {
 
 @Test func stopWhileStartingTerminatesChild() {
     var reducer = startedReducer()
-    #expect(reducer.reduce(.stopConfirmed) == [.terminateChild(sessionID: reducerID)])
+    #expect(reducer.reduce(.stopConfirmed) == [
+        .terminateChild(sessionID: reducerID),
+        .announce("Stopping. If macOS is asking for permission, the recorder stops once you answer the prompt."),
+    ])
+    #expect(reducer.stoppedWhileStarting)
     #expect(reducer.reduce(.stopConfirmed).isEmpty)
-    // The child then ends before recording: the start was cancelled, not failed.
+    // The child then ends before recording: the start was stopped, not failed.
     let effects = reducer.reduce(.childExited(code: 0, logTail: nil, at: reducerStart.addingTimeInterval(3)))
     #expect(reducer.state == .idle)
     #expect(effects.contains(.setDictationPaused(false)))
 }
 
-@Test func stopDuringStartThatSavedNothingIsACancel() {
-    // The recorder answers the SIGTERM by finishing without capture (exited, startFailed) before the child's exit.
+@Test func stopWhileWaitingForPermissionDoesNotTimeOut() {
+    // The recorder notices the SIGTERM only once its start returns, after the permission prompt is answered: the
+    // start timeout must not report a failure the user did not care about.
+    var reducer = startedReducer()
+    _ = reducer.reduce(.tick(at: reducerStart.addingTimeInterval(6)))
+    _ = reducer.reduce(.stopConfirmed)
+    #expect(reducer.reduce(.tick(at: reducerStart.addingTimeInterval(121))).isEmpty)
+    #expect(reducer.reduce(.tick(at: reducerStart.addingTimeInterval(600))).isEmpty)
+    #expect(reducer.state == .starting(sessionID: reducerID, since: reducerStart, pid: 4_242))
+}
+
+@Test func stopWhileStartingThenAllowIsAStopBeforeRecording() {
+    // The prompt is answered 10 minutes later: the recorder starts capture, notices the SIGTERM in its first loop
+    // pass, and stops (reason signal) with a moment of audio. That is what its real exit looks like.
     var reducer = startedReducer()
     _ = reducer.reduce(.stopConfirmed)
-    let exit = RecorderExit(archiveStatus: ArchiveStatus.failed, reason: .startFailed, message: "Cancelled.")
-    let effects = reducer.reduce(read(.exited, after: 3, exit: exit, liveness: .exited))
+    _ = reducer.reduce(read(.recording, after: 600.2))
+    guard case .active = reducer.state else {
+        Issue.record("Expected active, got \(reducer.state).")
+        return
+    }
+    #expect(reducer.reduce(.stopConfirmed).isEmpty, "The stop is already on its way.")
+    _ = reducer.reduce(read(.transcribing, after: 600.4))
+    let at = reducerStart.addingTimeInterval(601)
+    let status = meetingStatus(reducerID, phase: .exited, updatedAt: at, elapsed: 0.4,
+                               exit: RecorderExit(archiveStatus: ArchiveStatus.complete, reason: .signal))
+    let effects = reducer.reduce(.statusRead(status, liveness: .exited, at: at))
     #expect(reducer.state == .idle)
-    #expect(effects.contains(.announce("The recording was cancelled before it started.")))
-    #expect(effects.contains(.setDictationPaused(false)))
+    #expect(effects.contains(.announce("The recording was stopped before it started.")))
+    #expect(!effects.contains { if case .finished = $0 { true } else { false } })
+}
+
+@Test func stopWhileStartingThatRecordedIsSaved() {
+    // Stopped while starting, but the recorder had already captured a few seconds when it noticed: a real meeting.
+    var reducer = startedReducer()
+    _ = reducer.reduce(.stopConfirmed)
+    let at = reducerStart.addingTimeInterval(20)
+    let status = meetingStatus(reducerID, phase: .exited, updatedAt: at, elapsed: 5,
+                               exit: RecorderExit(archiveStatus: ArchiveStatus.incomplete, reason: .signal))
+    let effects = reducer.reduce(.statusRead(status, liveness: .exited, at: at))
+    #expect(reducer.state == .idle)
+    #expect(effects.contains { if case .finished(reducerID, let summary, _) = $0 { summary.hasPrefix("Saved Council meeting (0:00:05).") } else { false } })
 }
 
 @Test func undeliveredStopCanBeRetried() {

@@ -12,7 +12,9 @@ import os
 @MainActor public protocol RecorderLauncher: AnyObject {
     /// Starts a recorder for `sessionID`; returns the child pid (nil for in-process).
     func launch(_ settings: MeetingStartSettings, sessionID: String, root: URL, vocabularyFile: URL?) throws -> Int32?
-    func terminate(sessionID: String)
+    /// Asks the recorder of `sessionID` to stop gracefully. Returns false when this launcher does not run it (a
+    /// meeting started in a terminal or by an earlier app) or the request could not be delivered.
+    @discardableResult func terminate(sessionID: String) -> Bool
     /// Called on the main actor when a launched recorder ends: its exit code and the last line of its log. Read when
     /// a recorder is launched: that recorder's end calls the closure set at that time.
     var onExit: ((Int32, String?) -> Void)? { get set }      // exit code, last log line
@@ -45,12 +47,15 @@ import os
         Bundle.main.bundleURL.appendingPathComponent("Contents/MacOS/holos", isDirectory: false)
     }
 
-    /// ["record", "start", "--session-id", id, "--name", name, "--source", src, ("--app", id)?,
+    /// ["record", "start", "--session-id", id, "--name=<name>", "--source", src, ("--app", id)?,
     ///  ("--others-in-room")?, ("--expected-speakers", n)?, ("--vocabulary-file", path)?,
     ///  "--no-live-text", "--directory", root.path]
+    ///
+    /// The name is joined to its option: as a separate element, a name starting with "-" ("- standup") would be
+    /// parsed as an option and the recorder would exit with a usage error.
     public nonisolated static func arguments(_ settings: MeetingStartSettings, sessionID: String, root: URL,
                                              vocabularyFile: URL?) -> [String] {
-        var arguments = ["record", "start", "--session-id", sessionID, "--name", settings.name,
+        var arguments = ["record", "start", "--session-id", sessionID, "--name=\(settings.name)",
                          "--source", settings.source.rawValue]
         if let app = settings.applicationBundleID { arguments += ["--app", app] }
         if settings.othersInRoom { arguments.append("--others-in-room") }
@@ -91,11 +96,14 @@ import os
     }
 
     /// SIGTERM: the recorder stops gracefully (audio saved, post-processing runs).
-    public func terminate(sessionID: String) {
-        guard let child = children[sessionID] else { return }
-        if kill(child.pid, SIGTERM) != 0 {
+    @discardableResult
+    public func terminate(sessionID: String) -> Bool {
+        guard let child = children[sessionID] else { return false }
+        guard kill(child.pid, SIGTERM) == 0 else {
             Self.log.error("Session \(sessionID, privacy: .public): cannot signal the recorder: \(String(cString: strerror(errno)), privacy: .public)")
+            return false
         }
+        return true
     }
 
     /// The pid of the running recorder of `sessionID`, if this launcher started it.
@@ -163,8 +171,11 @@ import os
     }
 
     /// Like SIGTERM to a child: a graceful stop.
-    public func terminate(sessionID: String) {
-        running[sessionID]?.stop.requestStop()
+    @discardableResult
+    public func terminate(sessionID: String) -> Bool {
+        guard let recording = running[sessionID] else { return false }
+        recording.stop.requestStop()
+        return true
     }
 
     /// The CLI's exit code for an outcome (docs/meeting-design.md §1.4).
@@ -208,7 +219,7 @@ import os
                                          inheritedDescriptors: [(from: descriptor, to: 3)])
             }
         } catch {
-            Self.log.error("Session \(sessionID, privacy: .public): speaker labelling could not start: \(error.localizedDescription, privacy: .public)")
+            Self.log.error("Session \(sessionID, privacy: .public): speaker labelling could not start (\(ProcessSpawner.logCategory(error), privacy: .public)): \(error.localizedDescription, privacy: .private)")
             return PostProcessingRecord(sessionID: sessionID, state: .failed, pid: getpid(), startedAt: startedAt,
                                         updatedAt: Date(),
                                         message: "Speaker labelling could not start: \(error.localizedDescription) Use Label Speakers in Meetings later.")
@@ -314,33 +325,52 @@ private struct LoggingReporter: RecordingReporter {
 
 /// Waits for one child with a process source on the main queue plus `waitpid(WNOHANG)`, and reports its exit code
 /// once. Also checks right after it is set up, so a child that exited before the source existed is still reaped.
+/// The exit event can arrive a moment before the child can be waited for; the watcher then checks again every
+/// `retryInterval` until it is reaped.
 @MainActor final class ChildWatcher {
     let pid: pid_t
     private var source: (any DispatchSourceProcess)?
     private var completion: (@MainActor (Int32) -> Void)?
+    private let reaper: @MainActor (pid_t) -> Int32?
+    private let retryInterval: DispatchTimeInterval
 
-    init(pid: pid_t, completion: @escaping @MainActor (Int32) -> Void) {
+    init(pid: pid_t, reaper: @escaping @MainActor (pid_t) -> Int32? = { ProcessSpawner.reapIfExited($0) },
+         retryInterval: DispatchTimeInterval = .milliseconds(20),
+         completion: @escaping @MainActor (Int32) -> Void) {
         self.pid = pid
+        self.reaper = reaper
+        self.retryInterval = retryInterval
         self.completion = completion
         let source = DispatchSource.makeProcessSource(identifier: pid, eventMask: .exit, queue: .main)
         source.setEventHandler { [weak self] in
-            MainActor.assumeIsolated { self?.reap() }
+            MainActor.assumeIsolated { self?.reapAfterExit() }
         }
         self.source = source
         source.resume()
         // A process source made after the child exited may never fire.
         DispatchQueue.main.async { [weak self] in
-            MainActor.assumeIsolated { self?.reap() }
+            MainActor.assumeIsolated { _ = self?.reap() }
         }
     }
 
-    private func reap() {
-        guard completion != nil, let code = ProcessSpawner.reapIfExited(pid) else { return }
+    /// The child exited: it is reaped now, or as soon as it can be waited for.
+    private func reapAfterExit() {
+        guard completion != nil, !reap() else { return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + retryInterval) { [weak self] in
+            MainActor.assumeIsolated { self?.reapAfterExit() }
+        }
+    }
+
+    /// Reaps the child if it has ended and reports its exit; true once reported.
+    private func reap() -> Bool {
+        guard completion != nil else { return true }
+        guard let code = reaper(pid) else { return false }
         source?.cancel()
         source = nil
         let done = completion
         completion = nil
         done?(code)
+        return true
     }
 }
 
@@ -449,6 +479,23 @@ public enum ProcessSpawner {
             if errno == EINTR { continue }
             return -1
         }
+    }
+
+    /// A category of `error` that is safe to log publicly ("unavailable", "io", "NSCocoaErrorDomain 4"): error texts
+    /// can hold user paths, which are logged only as private (docs/meeting-design.md §1.5).
+    public static func logCategory(_ error: any Error) -> String {
+        if let error = error as? HolosError {
+            return switch error {
+            case .invalidInput: "invalidInput"
+            case .unavailable: "unavailable"
+            case .permissionDenied: "permissionDenied"
+            case .incomplete: "incomplete"
+            case .io: "io"
+            }
+        }
+        if error is CancellationError { return "cancelled" }
+        let bridged = error as NSError
+        return "\(bridged.domain) \(bridged.code)"
     }
 
     /// WEXITSTATUS, or 128 + WTERMSIG.
