@@ -212,7 +212,14 @@ public struct MeetingReducer: Sendable, Equatable {
             return follow(followed, status, keepStarting: false)
         case .finishing(_, let last):
             if let status, status.phase == .exited { return exited(status) }
-            if liveness == .dead { return labellingStopped(followed, lastPhase: (status ?? last)?.phase) }
+            if liveness == .dead {
+                // An in-process recorder's labelling child releases the lease when it exits, a moment before the
+                // recorder writes exited; its status is still being rewritten then. Only a status that stopped
+                // changing means the recorder is gone.
+                let latest = status ?? last
+                if let latest, at.timeIntervalSince(latest.updatedAt) < Self.freshSeconds { return [] }
+                return labellingStopped(followed, lastPhase: latest?.phase)
+            }
             guard let status, fresh else { return [] }
             return follow(followed, status, keepStarting: false)
         case .failed:

@@ -209,6 +209,20 @@ private func isFailed(_ state: MeetingState) -> String? {
                                   speakersReady: false)])
 }
 
+@Test func finishingWaitsWhileItsStatusIsStillRewritten() {
+    // In-process mode: the labelling child released the lease; the recorder writes exited a moment later.
+    var reducer = activeReducer()
+    let event = read(.postprocessing, after: 20)
+    _ = reducer.reduce(event)
+    guard case .statusRead(let status?, _, _) = event else { return }
+    #expect(reducer.reduce(.statusRead(status, liveness: .dead, at: reducerStart.addingTimeInterval(21))).isEmpty)
+    #expect(reducer.state == .finishing(sessionID: reducerID, status: status))
+    // No rewrite for 10 s: the recorder is gone.
+    let effects = reducer.reduce(.statusRead(status, liveness: .dead, at: reducerStart.addingTimeInterval(31)))
+    #expect(reducer.state == .idle)
+    #expect(effects.first.map { if case .finished(_, _, false) = $0 { true } else { false } } == true)
+}
+
 @Test func deadWhileTranscribingPointsToRecovery() {
     var reducer = activeReducer()
     _ = reducer.reduce(read(.transcribing, after: 20))
