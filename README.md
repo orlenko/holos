@@ -22,8 +22,11 @@ BIN_DIR=$(swift build --show-bin-path)
 "$BIN_DIR/holos" --help
 ```
 
-Run the test suite with `./scripts/test.sh`. Do not use `swift run` for capture
-permission checks; the identity that owns macOS permissions still needs validation.
+Run the test suite with `./scripts/test.sh`. Unless you set them yourself, it points
+`HOLOS_DATA_DIR` (sessions) and `HOLOS_SUPPORT_DIR` (Application Support files) at a
+temporary folder and removes it afterwards, so tests never touch your real data. Do
+not use `swift run` for capture permission checks; the identity that owns macOS
+permissions still needs validation.
 
 To build the ad-hoc-signed accessory menu bar app locally, then launch it yourself:
 
@@ -88,6 +91,11 @@ inactive archive without replacing its saved audio or original transcript:
 "$holos" session recover /path/to/session.holos
 "$holos" session retranscribe /path/to/session.holos --output ./revised.json
 ```
+
+`session recover` refuses while another Holos process is working on the same
+session, and a damaged line in a session's event journal is skipped rather than
+blocking inspection. Each saved transcript revision is recorded as the current one in
+`transcripts/current.json`.
 
 `reference-data/` is reserved for private, user-provided reference recordings and
 transcripts. It is gitignored; keep originals out of commits.

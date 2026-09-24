@@ -19,6 +19,14 @@ Hardware-facing and cross-app acceptance remain pending.
 - `session inspect`, `recover`, and `retranscribe` validate/recover archived audio
   and write a new transcript revision to a separately named JSON file. Audio and
   existing archive revisions are retained.
+- Session archives (meeting-recording wave 0): a failed journal append is truncated
+  back instead of leaving a partial line; a corrupt journal line is skipped and
+  counted, so `inspect` and `recover` still work; `transcripts/current.json` names
+  the current transcript revision (older archives fall back to the newest one);
+  `recover` takes a per-session processing lease and refuses while another Holos
+  process holds it. The value types and storage for meeting recording and speaker
+  labels (runs, edit journal, opt-in voice data, locks) exist as internal APIs;
+  no command writes speaker data yet.
 - `voices list` and `say` provide native voice discovery, playback, and `.m4a`,
   `.wav`, or `.caf` export. Text comes from arguments or UTF-8 stdin.
 - `read` renders a local UTF-8 text/Markdown file or stdin as an ordered AAC
@@ -56,8 +64,12 @@ cross-track echo cancellation and duplicate-speech removal are not implemented.
 `docs/speech-validation.md` records a local fixture run for both native recognizer
 backends, plus the scope of that check. The test suites cover software-level
 transcription events, archive recovery, synthesis, content processing, hotkey
-state transitions, insertion policy, and dictation lifecycle races; run them with
-`./scripts/test.sh`. The opt-in native fixture was exercised separately for both
+state transitions, insertion policy, and dictation lifecycle races, plus the
+meeting-recording storage foundations (atomic writes, failed and torn appends,
+locks and the processing lease, close-on-exec descriptors, the transcript pointer,
+speaker storage, and JSON round trips of the shared file formats); run them with
+`./scripts/test.sh`, which keeps `HOLOS_DATA_DIR` and `HOLOS_SUPPORT_DIR` in a
+temporary folder. The opt-in native fixture was exercised separately for both
 recognizers. WAV, CAF, and M4A synthesis/export were exercised without audible
 playback. These checks do not establish real-device capture, permission ownership,
 cross-app insertion, speaker separation, playback quality, or representative

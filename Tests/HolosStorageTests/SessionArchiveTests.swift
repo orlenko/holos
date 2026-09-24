@@ -238,6 +238,387 @@ private func makeStaleArchive(in root: URL) async throws -> URL {
     #expect(plain == "First phrase Second phrase\n")
 }
 
+// MARK: - PR6: tolerant journal, group commit, leases, maintenance, integrity of new files
+
+private func appendRaw(_ text: String, to url: URL) throws {
+    let handle = try FileHandle(forWritingTo: url)
+    try handle.seekToEnd()
+    try handle.write(contentsOf: Data(text.utf8))
+    try handle.close()
+}
+
+private func fileSize(_ url: URL) throws -> Int {
+    try #require(FileManager.default.attributesOfItem(atPath: url.path)[.size] as? NSNumber).intValue
+}
+
+private func isInvalidInput(_ error: HolosError?) -> Bool {
+    if case .invalidInput? = error { return true }
+    return false
+}
+
+/// A finished archive with one registered chunk and two events.
+private func finishedArchive(in root: URL) async throws -> URL {
+    let writer = try archive(in: root)
+    let path = "audio/mic/000001.caf"
+    try writeCAF(at: writer.directory.appendingPathComponent(path))
+    try await writer.registerChunk(.init(track: "mic", relativePath: path, start: 0, end: 64.0 / 48_000,
+                                         sampleRate: 48_000, channels: 1, frameCount: 64))
+    try await writer.recordEvent(kind: MeetingEventKind.chunkOpened, details: ["track": "mic", "relativePath": path])
+    try await writer.recordEvent(kind: MeetingEventKind.captureStopped, details: ["reason": StopReason.requested.rawValue])
+    try await writer.finish(status: ArchiveStatus.complete)
+    return writer.directory
+}
+
+/// An archive left `recording` with events written and no live writer (the process "exited").
+private func abandonedRecording(in root: URL, events: Int) async throws -> URL {
+    let writer = try archive(in: root)
+    for index in 1...events { try await writer.recordEvent(kind: "tick", details: ["index": "\(index)"]) }
+    return writer.directory
+}
+
+@Test func failedAppendLeavesNoPartialLine() async throws {
+    let root = try temporaryRoot()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let writer = try archive(in: root)
+    let journal = SessionPaths.events(writer.directory)
+    try await writer.recordEvent(kind: "first", details: [:])
+    let size = try fileSize(journal)
+    await #expect(throws: HolosError.self) {
+        try await AtomicFile.$appendFailureAfterBytes.withValue(10) {
+            try await writer.recordEvent(kind: "second", details: ["text": "never saved"])
+        }
+    }
+    #expect(try fileSize(journal) == size)
+    try await writer.recordEvent(kind: "third", details: [:])
+    try await writer.finish(status: ArchiveStatus.complete)
+    let events = try SessionArchive.readEvents(at: writer.directory)
+    #expect(events.events.map(\.sequence) == [1, 2])
+    #expect(events.events.map(\.kind) == ["first", "third"])
+    #expect(events.unreadableLines == 0)
+    #expect(!events.tornTail)
+}
+
+@Test func corruptMiddleEventLineIsSkippedAndCounted() async throws {
+    let root = try temporaryRoot()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let directory = try await abandonedRecording(in: root, events: 1)
+    let journal = SessionPaths.events(directory)
+    try appendRaw("{\"sequence\":2,\"kind\":garbage\n", to: journal)
+    try appendRaw(String(decoding: try HolosJSON.line(ArchiveEvent(sequence: 2, at: Date(timeIntervalSince1970: 0),
+                                                                   kind: "tick", details: [:])), as: UTF8.self),
+                  to: journal)
+
+    let read = try SessionArchive.readEvents(at: directory)
+    #expect(read.events.map(\.sequence) == [1, 2])
+    #expect(read.unreadableLines == 1)
+    #expect(!read.tornTail)
+    let report = try SessionArchive.inspectRecovery(at: directory)
+    #expect(report.events.count == 2)
+    #expect(report.unreadableEventLines == 1)
+    #expect(!report.needsAttention)
+
+    let reopened = try SessionArchive.open(at: directory)
+    try await reopened.recordEvent(kind: "after", details: [:])
+    try await reopened.finish(status: ArchiveStatus.complete)
+    let after = try SessionArchive.readEvents(at: directory)
+    #expect(after.events.map(\.sequence) == [1, 2, 3])
+    #expect(after.unreadableLines == 1)
+}
+
+@Test func outOfOrderEventLinesAreSkipped() async throws {
+    let root = try temporaryRoot()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let directory = try await abandonedRecording(in: root, events: 2)
+    let journal = SessionPaths.events(directory)
+    // A duplicated sequence number decodes but cannot follow event 2.
+    try appendRaw(String(decoding: try HolosJSON.line(ArchiveEvent(sequence: 2, at: Date(timeIntervalSince1970: 0),
+                                                                   kind: "duplicate", details: [:])), as: UTF8.self),
+                  to: journal)
+    let read = try SessionArchive.readEvents(at: directory)
+    #expect(read.events.map(\.kind) == ["tick", "tick"])
+    #expect(read.unreadableLines == 1)
+}
+
+@Test func groupCommitKeepsEveryEvent() async throws {
+    let root = try temporaryRoot()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let writer = try archive(in: root)
+    await writer.setJournalSync(.interval(seconds: 1))
+    for index in 1...3 { try await writer.recordEvent(kind: "tick", details: ["index": "\(index)"]) }
+    try await writer.recordEvent(kind: MeetingEventKind.captureStopped, details: [:])
+    try await writer.recordEvent(kind: "late", details: [:])
+    try await writer.finish(status: ArchiveStatus.complete)
+    let text = try String(contentsOf: SessionPaths.events(writer.directory), encoding: .utf8)
+    #expect(text.hasSuffix("\n"))
+    let lines = text.split(separator: "\n")
+    #expect(lines.count == 5)
+    for line in lines { #expect(throws: Never.self) { try JSONDecoder.holos.decode(ArchiveEvent.self, from: Data(line.utf8)) } }
+    #expect(try SessionArchive.readEvents(at: writer.directory).events.map(\.sequence) == [1, 2, 3, 4, 5])
+}
+
+@Test func groupCommitFlushesAfterTheInterval() async throws {
+    let root = try temporaryRoot()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let writer = try archive(in: root)
+    await writer.setJournalSync(.interval(seconds: 0.05))
+    try await writer.recordEvent(kind: "first", details: [:])
+    try await writer.recordEvent(kind: "second", details: [:])
+    try await Task.sleep(for: .milliseconds(150))
+    try await writer.recordEvent(kind: "third", details: [:])
+    await writer.setJournalSync(.everyEvent)
+    try await writer.recordEvent(kind: "fourth", details: [:])
+    try await writer.finish(status: ArchiveStatus.complete)
+    #expect(try SessionArchive.readEvents(at: writer.directory).events.map(\.kind) == ["first", "second", "third", "fourth"])
+}
+
+@Test func maintenanceOpenNeedsMatchingLease() async throws {
+    let root = try temporaryRoot()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let first = try await finishedArchive(in: root)
+    let second = try await finishedArchive(in: root)
+    let otherLease = try SessionArchive.acquireProcessingLease(at: second)
+    defer { otherLease.release() }
+    let wrong = #expect(throws: HolosError.self) { try SessionArchive.openForMaintenance(at: first, lease: otherLease) }
+    #expect(isInvalidInput(wrong))
+    #expect(try !SessionArchive.isActive(at: first))
+
+    let lease = try SessionArchive.acquireProcessingLease(at: first)
+    let maintenance = try SessionArchive.openForMaintenance(at: first, lease: lease)
+    #expect(try SessionArchive.isActive(at: first))
+    #expect(throws: HolosError.self) { try SessionArchive.openForMaintenance(at: first, lease: lease) }
+    try await maintenance.recordEvent(kind: MeetingEventKind.transcriptRebuilt, details: ["transcriptID": "T"])
+    try await maintenance.saveTranscript(Transcript(source: "mic", locale: "en-CA", backend: .speech),
+                                         writeLegacyExports: false)
+    try await maintenance.finish(status: ArchiveStatus.recovered)
+    #expect(try !SessionArchive.isActive(at: first))
+    #expect(try SessionArchive.isProcessing(at: first))
+    #expect(try SessionArchive.readManifest(at: first).status == ArchiveStatus.recovered)
+    #expect(try SessionArchive.readEvents(at: first).events.map(\.sequence) == [1, 2, 3])
+    lease.release()
+
+    let released = #expect(throws: HolosError.self) { try SessionArchive.openForMaintenance(at: first, lease: lease) }
+    #expect(isInvalidInput(released))
+}
+
+@Test func maintenanceOpenRefusesARecordingArchive() async throws {
+    let root = try temporaryRoot()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let directory = try await abandonedRecording(in: root, events: 1)
+    let lease = try SessionArchive.acquireProcessingLease(at: directory)
+    defer { lease.release() }
+    let error = #expect(throws: HolosError.self) { try SessionArchive.openForMaintenance(at: directory, lease: lease) }
+    #expect(isInvalidInput(error))
+    #expect(try !SessionArchive.isActive(at: directory))
+}
+
+@Test func maintenanceOpenRepairsTornTail() async throws {
+    let root = try temporaryRoot()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let directory = try await finishedArchive(in: root)
+    let journal = SessionPaths.events(directory)
+    try appendRaw("{\"sequence\":3,\"ki", to: journal)
+    let torn = try Data(contentsOf: journal)
+    #expect(try SessionArchive.readEvents(at: directory).tornTail)
+
+    let lease = try SessionArchive.acquireProcessingLease(at: directory)
+    defer { lease.release() }
+    let maintenance = try SessionArchive.openForMaintenance(at: directory, lease: lease)
+    try await maintenance.recordEvent(kind: MeetingEventKind.transcriptRebuilt, details: [:])
+    try await maintenance.finish(status: ArchiveStatus.recovered)
+
+    let backups = try FileManager.default.contentsOfDirectory(atPath: directory.path)
+        .filter { $0.hasPrefix("events.torn-") }
+    #expect(backups.count == 1)
+    if let backup = backups.first { #expect(try Data(contentsOf: directory.appendingPathComponent(backup)) == torn) }
+    let read = try SessionArchive.readEvents(at: directory)
+    #expect(read.events.map(\.sequence) == [1, 2, 3])
+    #expect(read.events.last?.kind == MeetingEventKind.transcriptRebuilt)
+    #expect(!read.tornTail)
+    #expect(read.unreadableLines == 0)
+}
+
+@Test func recoverRefusedWhileLeaseHeldElsewhere() async throws {
+    let root = try temporaryRoot()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let directory = try await makeStaleArchive(in: root)
+    let manifest = try Data(contentsOf: SessionPaths.manifest(directory))
+    let journal = try Data(contentsOf: SessionPaths.events(directory))
+    let fd = Darwin.open(directory.appendingPathComponent(".processing.lock").path, O_CREAT | O_RDWR | O_CLOEXEC, 0o600)
+    try #require(fd >= 0)
+    try #require(flock(fd, LOCK_EX | LOCK_NB) == 0)
+    await #expect(throws: HolosError.self) { try await SessionArchive.recover(at: directory) }
+    #expect(try Data(contentsOf: SessionPaths.manifest(directory)) == manifest)
+    #expect(try Data(contentsOf: SessionPaths.events(directory)) == journal)
+    flock(fd, LOCK_UN)
+    Darwin.close(fd)
+
+    let report = try await SessionArchive.recover(at: directory)
+    #expect(report.manifest?.status == ArchiveStatus.interrupted)
+    #expect(try !SessionArchive.isProcessing(at: directory))
+}
+
+@Test func recoverUnderTheCallersLease() async throws {
+    let root = try temporaryRoot()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let directory = try await makeStaleArchive(in: root)
+    let lease = try SessionArchive.acquireProcessingLease(at: directory)
+    let report = try await SessionArchive.recover(at: directory, lease: lease)
+    #expect(report.manifest?.status == ArchiveStatus.interrupted)
+    #expect(try SessionArchive.isProcessing(at: directory))
+    #expect(try !SessionArchive.isActive(at: directory))
+    let maintenance = try SessionArchive.openForMaintenance(at: directory, lease: lease)
+    try await maintenance.finish(status: ArchiveStatus.recovered)
+    lease.release()
+}
+
+@Test func oldArchiveInspectsClean() async throws {
+    let root = try temporaryRoot()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let writer = try archive(in: root)
+    let directory = writer.directory
+    try Data([1, 2, 3]).write(to: directory.appendingPathComponent("audio/mic/000001.caf"))
+    try await writer.registerChunk(.init(track: "mic", relativePath: "audio/mic/000001.caf",
+                                         start: 0, end: 1, sampleRate: 1, channels: 1, frameCount: 1))
+    let transcript = Transcript(createdAt: Date(timeIntervalSince1970: 1_700_000_000), source: "mic",
+                                locale: "en-CA", backend: .speech, segments: [.init(start: 0, end: 1, text: "Hi")])
+    try await writer.saveTranscript(transcript)
+    try await writer.finish(status: ArchiveStatus.complete)
+
+    // Rewrite the files the way builds before PR6 wrote them: escaped slashes, no pointer, no new folders.
+    let old = JSONEncoder()
+    old.dateEncodingStrategy = .iso8601
+    old.outputFormatting = [.sortedKeys, .prettyPrinted]
+    try old.encode(try SessionArchive.readManifest(at: directory)).write(to: SessionPaths.manifest(directory))
+    #expect(try String(contentsOf: SessionPaths.manifest(directory), encoding: .utf8).contains(#"audio\/mic"#))
+    try FileManager.default.removeItem(at: SessionPaths.transcriptPointer(directory))
+    old.outputFormatting = [.sortedKeys]
+    var line = try old.encode(ArchiveEvent(sequence: 1, at: Date(timeIntervalSince1970: 1_700_000_000),
+                                           kind: MeetingEventKind.captureStarted, details: ["hostTimeOrigin": "1.5"]))
+    line.append(0x0A)
+    try line.write(to: SessionPaths.events(directory))
+
+    let report = try SessionArchive.inspectRecovery(at: directory)
+    #expect(!report.needsAttention)
+    #expect(report.events.count == 1)
+    #expect(report.manifest?.chunks.count == 1)
+    #expect(try SessionArchive.currentTranscriptID(at: directory) == transcript.id)
+    #expect(try !SessionArchive.isActive(at: directory))
+    #expect(try !SessionArchive.isProcessing(at: directory))
+    #expect(try SessionSpeakerStore.readHead(session: directory) == nil)
+    #expect(try SessionSpeakerStore.readEdits(session: directory) == EditJournal())
+    #expect(try SessionSpeakerStore.runIDs(session: directory) == [])
+}
+
+@Test func newFoldersDoNotAffectIntegrity() async throws {
+    let root = try temporaryRoot()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let directory = try await finishedArchive(in: root)
+    let manifest = try SessionArchive.readManifest(at: directory)
+    let lease = try SessionArchive.acquireProcessingLease(at: directory)
+    let maintenance = try SessionArchive.openForMaintenance(at: directory, lease: lease)
+    try await maintenance.saveTranscript(Transcript(source: "mic", locale: "en-CA", backend: .speech),
+                                         writeLegacyExports: false)
+    try await maintenance.finish(status: ArchiveStatus.complete)
+    lease.release()
+
+    let run = DiarizationRun(sessionID: manifest.id, createdAt: Date(timeIntervalSince1970: 1_790_000_000),
+                             transcriptID: UUID().uuidString, engine: nil,
+                             alignment: AlignmentInfo(version: 1, parameters: .v1), tracks: [], speakers: [], turns: [])
+    try SessionArchive.withSpeakerLock(at: directory) {
+        try SessionSpeakerStore.writeRun(run, session: directory)
+        try SessionSpeakerStore.writeHead(SpeakerHead(runID: run.id), session: directory)
+        try SessionSpeakerStore.appendEdits([SpeakerEdit(baseRunID: run.id, source: "cli",
+                                                         action: .rename(speakerID: "mic:me", name: "Me"))],
+                                            session: directory)
+    }
+    try AtomicFile.ensurePrivateDirectory(SessionPaths.derived(directory))
+    try Data([1, 2, 3]).write(to: SessionPaths.derived(directory).appendingPathComponent("x.caf"))
+    try AtomicFile.writeJSON(RecorderStatus(sessionID: manifest.id, name: manifest.name, pid: 1, phase: .exited,
+                                            sequence: 1, startedAt: Date(), updatedAt: Date(), source: manifest.source),
+                             to: SessionPaths.status(directory))
+    try AtomicFile.ensurePrivateDirectory(SessionPaths.controlDirectory(directory))
+    try AtomicFile.writeJSON(ControlRequest(sessionID: manifest.id, command: .stop, sender: "cli"),
+                             to: SessionPaths.controlDirectory(directory).appendingPathComponent("\(UUID().uuidString).json"))
+    try AtomicFile.writeJSON(MeetingInfo(sessionID: manifest.id, mode: .inPerson, othersInRoom: false),
+                             to: SessionPaths.meetingInfo(directory))
+    try AtomicFile.writeJSON(PostProcessingRecord(sessionID: manifest.id, state: .succeeded, pid: 1,
+                                                  startedAt: Date(), updatedAt: Date()),
+                             to: SessionPaths.postprocess(directory))
+
+    let report = try SessionArchive.inspectRecovery(at: directory)
+    #expect(!report.needsAttention)
+    #expect(report.unindexedChunks.isEmpty)
+    #expect(report.unreadableEventLines == 0)
+}
+
+@Test func deletedAudioIsExpected() async throws {
+    let root = try temporaryRoot()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let directory = try await finishedArchive(in: root)
+    try FileManager.default.removeItem(at: directory.appendingPathComponent("audio"))
+    let withoutMarker = try SessionArchive.inspectRecovery(at: directory)
+    #expect(withoutMarker.missingChunks == ["audio/mic/000001.caf"])
+    #expect(withoutMarker.needsAttention)
+
+    try AtomicFile.writeJSON(["schemaVersion": 1], to: SessionPaths.audioDeleted(directory))
+    let report = try SessionArchive.inspectRecovery(at: directory)
+    #expect(report.missingChunks.isEmpty)
+    #expect(!report.needsAttention)
+    #expect(try !SessionArchive.isActive(at: directory))
+
+    // Maintenance still works without audio folders.
+    let lease = try SessionArchive.acquireProcessingLease(at: directory)
+    let maintenance = try SessionArchive.openForMaintenance(at: directory, lease: lease)
+    try await maintenance.recordEvent(kind: "audioDeleted", details: [:])
+    try await maintenance.finish(status: ArchiveStatus.complete)
+    lease.release()
+}
+
+@Test func createWithExplicitID() async throws {
+    let root = try temporaryRoot()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let id = UUID().uuidString
+    let writer = try SessionArchive.create(root: root, name: "Explicit", source: .microphone,
+                                           locale: "en-CA", backend: .speech, id: id)
+    #expect(writer.id == id)
+    #expect(writer.directory.lastPathComponent == "\(id).holos")
+    #expect(writer.directory.deletingLastPathComponent().standardizedFileURL == root.standardizedFileURL)
+    try await writer.finish(status: ArchiveStatus.complete)
+    #expect(try SessionArchive.readManifest(at: writer.directory).id == id)
+}
+
+@Test func createRefusesExistingOrInvalidID() async throws {
+    let root = try temporaryRoot()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let id = UUID().uuidString
+    let first = try SessionArchive.create(root: root, name: "First", source: .microphone,
+                                          locale: "en-CA", backend: .speech, id: id)
+    let manifest = try Data(contentsOf: SessionPaths.manifest(first.directory))
+    for bad in [id, "../x", "", id.lowercased(), "not-a-uuid"] {
+        let error = #expect(throws: HolosError.self) {
+            try SessionArchive.create(root: root, name: "Second", source: .microphone,
+                                      locale: "en-CA", backend: .speech, id: bad)
+        }
+        #expect(isInvalidInput(error), "\(bad)")
+    }
+    #expect(try Data(contentsOf: SessionPaths.manifest(first.directory)) == manifest)
+    #expect(try FileManager.default.contentsOfDirectory(atPath: root.path) == ["\(id).holos"])
+    #expect(!FileManager.default.fileExists(atPath: root.deletingLastPathComponent().appendingPathComponent("x.holos").path))
+    try await first.finish(status: ArchiveStatus.complete)
+}
+
+@Test func readEventsSkipsHashing() async throws {
+    let root = try temporaryRoot()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let directory = try await finishedArchive(in: root)
+    try Data([9, 9, 9]).write(to: directory.appendingPathComponent("audio/mic/000001.caf"))
+    #expect(try SessionArchive.inspectRecovery(at: directory).corruptChunks == ["audio/mic/000001.caf"])
+    let journal = try SessionArchive.readEvents(at: directory)
+    #expect(journal.events.map(\.kind) == [MeetingEventKind.chunkOpened, MeetingEventKind.captureStopped])
+    #expect(!journal.tornTail)
+    #expect(journal.unreadableLines == 0)
+}
+
 private extension JSONDecoder {
     static var holos: JSONDecoder {
         let decoder = JSONDecoder()
