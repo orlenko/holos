@@ -2,11 +2,16 @@ import ArgumentParser
 import Darwin
 import Foundation
 import HolosCore
+import HolosMeeting
 import HolosStorage
 
 struct Record: AsyncParsableCommand {
     static let configuration = CommandConfiguration(abstract: "Record microphone and system audio with a growing local transcript.",
-        subcommands: [Start.self, Status.self, Stop.self])
+        subcommands: [
+            Start.self,
+            Status.self,
+            Stop.self,
+        ])
 
     struct Start: AsyncParsableCommand {
         static let configuration = CommandConfiguration(abstract: "Start a foreground recording. Ctrl-C saves and stops.")
@@ -16,6 +21,7 @@ struct Record: AsyncParsableCommand {
         @Option(help: "Session output root (default: HOLOS_DATA_DIR or Application Support/Holos/Sessions).") var directory: String?
         @Option(help: "Automatically stop after this many seconds.") var duration: Double?
         @Flag(help: "Save audio without running speech recognition.") var recordOnly = false
+        @Flag(help: "Skip post-processing (speaker labels) after the recording.") var noPostprocess = false
         @Option(help: "Capture system audio only from this running application bundle ID.") var app: String?
 
         mutating func validate() throws {
@@ -24,8 +30,20 @@ struct Record: AsyncParsableCommand {
         }
 
         @MainActor mutating func run() async throws {
-            try await RecordingWorkflow.run(name: name, source: source, locale: recognition.locale, backend: recognition.backend,
-                root: directory.map(fileURL) ?? HolosPaths.sessions, duration: duration, recordOnly: recordOnly, app: app)
+            let options = RecordingOptions(name: name, source: source, locale: recognition.locale,
+                                           backend: recognition.backend, root: directory.map(fileURL) ?? HolosPaths.sessions,
+                                           duration: duration, recordOnly: recordOnly, applicationBundleID: app)
+            let dependencies = RecordingDependencies.live(stop: SignalStopController(), reporter: ConsoleReporter(),
+                postProcess: noPostprocess || recordOnly ? nil : makePostProcessHook(options: .init()))
+            let outcome = try await RecordingWorkflow.run(options, dependencies: dependencies)
+            if let record = outcome.postProcessing, record.state == .failed || record.state == .partial,
+               let message = record.message {
+                Console.error(message)
+            }
+            Console.error("Saved \(outcome.directory.path)")
+            if !outcome.transcriptErrors.isEmpty {
+                throw HolosError.incomplete("Audio saved; transcription needs retry: \(outcome.transcriptErrors.joined(separator: "; ")).")
+            }
         }
     }
 

@@ -29,13 +29,17 @@ ownership and the supported insertion-app matrix remain acceptance gates.
 | `HolosCorrections` | Rule matching, candidate retrieval, validated local-model decisions | Unrestricted rewriting, application monitoring |
 | `HolosSynthesis` | Voice inventory, buffer rendering, encoding, playback queue | Web fetching, meeting recording |
 | `HolosContent` | Input extraction and document chunking | Speech or language-model generation |
-| `HolosSpeakers` | Diarization boundary, turn alignment, speaker edit projection | Inferring personal names from text |
-| `HolosWorkflows` | Dictation, meeting, reading orchestration and cancellation | Concrete CLI/AppKit views |
+| `HolosSpeakers` | Pure speaker algorithms over values: word-to-speaker alignment, run building, edit projection and label carry-over, transcript exporters, reference parsing and scoring | File IO, diarization engines, inferring personal names from text |
+| `HolosDiarization` | The FluidAudio adapter behind `SpeakerDiarizer`, speaker-model install and verification (planned) | Being linked by the app: only `HolosCLI` links it |
+| `HolosMeeting` | Meeting recording lifecycle and cancellation: capture and speech seams, stop sources, replay of saved audio, the post-processing hand-off; later the recorder state machine, control inbox, status, and the app's meeting controllers | AppKit views, FluidAudio, paths and locks inside a session folder |
 | `HolosCLI`, `HolosApp` | Arguments, presentation, app/focus integration | A second copy of workflow business logic |
 
 The app's hotkey/focus adapters can stay in app-owned files. They do not warrant
-another package. `HolosSpeakers` initially supports manual labels; an external
-diarizer belongs behind its adapter and is conditional on the product choice.
+another package. Dictation orchestration lives in `HolosDictation` and reading in
+`HolosContent`. Diarization engines sit behind the `SpeakerDiarizer` protocol in
+`HolosCore`: `HolosMeeting` receives `any SpeakerDiarizer`, and the app never links
+FluidAudio; it runs diarization in a `holos` process. Target graph and rules:
+[meeting-design §1.1](meeting-design.md#11-targets-and-dependency-graph).
 
 ## Shared values
 
@@ -154,11 +158,10 @@ replays transcription with a small context overlap. Never claim finalized text
 beyond durable audio. Edits are applied against a named revision and expected text;
 a stale edit is a conflict, not an unconditional replacement.
 
-Same-host start/stop/status uses a versioned per-user control endpoint with filesystem
-access restrictions, peer identity checks where available, request IDs, and bounded
-messages. Commands are an allowlist; a stop request targets an exact session ID and
-is idempotent. No network listener or shell command execution is required. The
-permissions spike decides XPC versus a Unix socket for each concrete process.
+Same-host start/stop/status uses versioned files in the private session folder, with
+request IDs and bounded messages (see local app/session control below). Commands are
+an allowlist; a stop request targets an exact session ID and is idempotent. No network
+listener or shell command execution is required.
 
 ### Corrections and insertion
 
@@ -185,12 +188,14 @@ Cancellation is permitted before insertion. A focus mismatch produces
 `awaitingExplicitPaste`; device/permission failures produce an actionable status.
 Queue or reject a second dictation explicitly while finalizing; never mix utterances.
 
-Local app/session control accepts a small versioned command set and session IDs,
-not arbitrary code or shell commands. Restrict a Unix socket to its owning user and
-validate peer identity where available, or apply equivalent XPC client validation.
-The recorder owns its stop endpoint and archive lock. Define CLI disconnect,
-SIGINT, and SIGTERM behavior explicitly; a second signal may stop waiting for
-analysis but must preserve the recording already saved.
+Local app/session control is specified in
+[meeting-design §4.1](meeting-design.md#41-recorder--app-protocol): files, not sockets
+or XPC. The session folder is private (0700); the app or CLI publishes one
+allowlisted, versioned request (`stop`, `pause`, `resume`, `marker`) for an exact
+session ID as `control/<UUID>.json`, and the recorder applies it at most once and
+acknowledges it in `status.json`. The recorder owns its archive writer lock and hands
+the processing lease to post-processing. SIGINT and SIGTERM stop gracefully; once
+audio is saved, a second signal may end processing but preserves the recording.
 
 ### Synthesis and documents
 

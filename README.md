@@ -77,7 +77,9 @@ recognition. While recording, the terminal displays finalized phrases as they
 arrive, tagged with their source track (`mic` or `system`); those labels identify
 audio tracks, not individual speakers. Ctrl-C stops capture and saves audio before
 transcription finishes. A further Ctrl-C during post-recording transcription exits
-that processing while keeping the saved archive.
+that processing while keeping the saved archive. `--no-postprocess` skips the step
+that runs after a recording is saved; that step will label speakers in a later
+release and has nothing to do yet.
 
 `say` accepts text arguments or UTF-8 stdin and can play speech or save `.m4a`,
 `.wav`, or `.caf`. `read` accepts a local UTF-8 text/Markdown file or `-` for stdin;
@@ -110,3 +112,5 @@ transcripts. It is gitignored; keep originals out of commits.
 - [Private-reference comparison method and results](docs/reference-evaluation.md)
 - [Manual live-recording checks](docs/hardware-validation.md)
 - [Menu bar dictation setup and manual validation](docs/dictation-validation.md)
+- [Meeting recording plan](docs/meeting-recording-plan.md) and
+  [implementation design](docs/meeting-design.md) (in progress)
