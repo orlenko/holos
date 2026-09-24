@@ -71,6 +71,10 @@ extension Session {
             } else {
                 Console.error(outcome.summary)
             }
+            // The exports were written (exit 0 or 3): report what their snapshot skipped, as every speaker command does.
+            if outcome.exitCode != 1, let snapshot = try? SpeakerSessionSnapshot.load(session: request.session) {
+                SpeakerCommand.printNotes(snapshot.diagnostics)
+            }
             if outcome.exitCode != 0 { throw ExitCode(outcome.exitCode) }
         }
 

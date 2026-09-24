@@ -47,7 +47,7 @@ struct Speakers: ParsableCommand {
             } else {
                 for line in SpeakerCommand.listing(loaded, includeTurns: turns) { Console.output(line) }
             }
-            SpeakerCommand.printNotes(loaded.snapshot)
+            SpeakerCommand.printNotes(loaded.snapshot.diagnostics)
         }
     }
 
@@ -216,7 +216,7 @@ struct Speakers: ParsableCommand {
                               + "\(keptOut == 1 ? "it" : "them") back.")
             }
             try SpeakerCommand.rewriteExports(loaded.session)
-            SpeakerCommand.printNotes(result.snapshot)
+            SpeakerCommand.printNotes(result.snapshot.diagnostics)
         }
     }
 }
@@ -269,13 +269,15 @@ enum SpeakerCommand {
                                                                   session: loaded.session, source: source,
                                                                   regenerateExports: false) else {
             Console.output("Nothing to change; the speaker labels already look like that.")
+            // The editor found the current labels as loaded, so the loaded snapshot's warnings still hold.
+            printNotes(loaded.snapshot.diagnostics)
             return
         }
         for action in actions {
             Console.output(describe(action, before: loaded.view, after: result.snapshot.projection))
         }
         try rewriteExports(loaded.session)
-        printNotes(result.snapshot)
+        printNotes(result.snapshot.diagnostics)
     }
 
     /// Rewrites exports/ after a change was saved (the editor has released the speaker lock).
@@ -296,28 +298,10 @@ enum SpeakerCommand {
         "Your edited transcript.\(url.pathExtension) was kept as exports/\(url.lastPathComponent)."
     }
 
-    /// Warnings about the labels themselves, on stderr.
-    static func printNotes(_ snapshot: SpeakerSessionSnapshot) {
-        if let stale = snapshot.projection?.staleEdits.count, stale > 0 {
-            Console.error("\(stale) earlier speaker \(stale == 1 ? "change" : "changes") could not be applied "
-                          + "because the labels changed after \(stale == 1 ? "it was" : "they were") made.")
-        }
-        if snapshot.transcriptChanged {
-            Console.error("The transcript changed after speakers were labelled, so the exports show it without "
-                          + "speakers. Label speakers again with holos session diarize \(snapshot.session.path).")
-        }
-        // §1.6 rule 3: lines this build cannot read are skipped and reported.
-        let unreadable = snapshot.journal.unreadableLines
-        if unreadable > 0 {
-            let one = unreadable == 1
-            Console.error("\(unreadable) speaker \(one ? "change" : "changes") in this meeting could not be read "
-                          + "(damaged, or saved by a newer version of Holos) and \(one ? "was" : "were") skipped. "
-                          + "If you use a newer Holos elsewhere, update this one before editing speakers.")
-        }
-        if snapshot.journal.tornTail {
-            Console.error("The last speaker change in this meeting was cut off while it was being saved and was "
-                          + "skipped.")
-        }
+    /// Warnings about the labels themselves, on stderr: the one place every speaker and session command that shows or
+    /// writes speaker labels reports what its snapshot skipped, on every successful path.
+    static func printNotes(_ diagnostics: SpeakerSnapshotDiagnostics) {
+        for note in diagnostics.notes { Console.error(note) }
     }
 
     /// The applied lines of the view's newest batch, in journal order (what `undoLast` will revert).
