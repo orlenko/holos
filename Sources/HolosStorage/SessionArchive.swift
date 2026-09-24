@@ -1,6 +1,4 @@
 import Foundation
-import CryptoKit
-import AVFoundation
 import Darwin
 import os
 import HolosCore
@@ -616,17 +614,16 @@ public actor SessionArchive {
             let url = directory.appendingPathComponent(path)
             guard plainFile(url) else { unrecovered.append(path); continue }
             do {
-                let file = try AVAudioFile(forReading: url)
-                let actualRate = file.fileFormat.sampleRate
-                let actualChannels = Int(file.fileFormat.channelCount)
-                let frames = file.length
-                guard frames > 0, frames <= Int.max, actualRate == rate,
-                      actualChannels == channels else {
+                // Format, length, and hash all come from one descriptor opened through the folder chain, never
+                // from a path that a folder swapped for a link could redirect.
+                let chunk = try ChunkFile.read(at: url, sync: true)
+                let frames = chunk.frames
+                guard frames > 0, frames <= Int.max, chunk.sampleRate == rate, chunk.channels == channels else {
                     unrecovered.append(path); continue
                 }
                 let end = start + Double(frames) / rate
                 guard end.isFinite, end > start else { unrecovered.append(path); continue }
-                let digest = try hashChunk(at: url, sync: true)
+                let digest = chunk.sha256
                 let basename = String(url.deletingPathExtension().lastPathComponent)
                 var recoveredID = "recovered-\(track)-\(basename)"
                 if manifest.chunks.contains(where: { $0.id == recoveredID }) {
@@ -828,40 +825,8 @@ public actor SessionArchive {
         return fd
     }
 
+    /// Opened relative to its folder, which is opened without following a link (`ChunkFile`).
     private nonisolated static func hashChunk(at url: URL, sync: Bool = false) throws -> String {
-        let notAChunk = HolosError.invalidInput("Audio chunk is missing, empty, or not a regular file.")
-        // Opened relative to its folder, which is opened without following a link (`AtomicFile.openFolder`).
-        guard let (folder, name) = try AtomicFile.openParentIfPresent(of: url) else { throw notAChunk }
-        defer { Darwin.close(folder) }
-        let fd = openat(folder, name, O_RDONLY | O_NONBLOCK | O_CLOEXEC | O_NOFOLLOW)
-        guard fd >= 0 else {
-            let code = errno
-            if code == ENOENT || code == ELOOP { throw notAChunk }
-            throw HolosError.io("Cannot open audio chunk.")
-        }
-        defer { Darwin.close(fd) }
-        var opened = stat()
-        guard fstat(fd, &opened) == 0, (opened.st_mode & S_IFMT) == S_IFREG, opened.st_size > 0 else {
-            throw notAChunk
-        }
-        var hasher = SHA256()
-        var buffer = [UInt8](repeating: 0, count: 64 * 1024)
-        while true {
-            let count = buffer.withUnsafeMutableBytes { Darwin.read(fd, $0.baseAddress, $0.count) }
-            if count < 0 {
-                if errno == EINTR { continue }
-                throw HolosError.io("Cannot read audio chunk.")
-            }
-            if count == 0 { break }
-            hasher.update(data: Data(buffer[0..<count]))
-        }
-        var finished = stat()
-        guard fstat(fd, &finished) == 0, finished.st_size == opened.st_size,
-              finished.st_mtimespec.tv_sec == opened.st_mtimespec.tv_sec,
-              finished.st_mtimespec.tv_nsec == opened.st_mtimespec.tv_nsec else {
-            throw HolosError.incomplete("Audio chunk changed while hashing.")
-        }
-        if sync, fsync(fd) != 0 { throw HolosError.io("Cannot sync audio chunk.") }
-        return hasher.finalize().map { String(format: "%02x", $0) }.joined()
+        try ChunkFile.hash(at: url, sync: sync)
     }
 }

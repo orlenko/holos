@@ -10,11 +10,14 @@ import HolosCore
 /// same process conflicts with the first (locks are not re-entrant; docs/meeting-design.md §1.7).
 public final class ProcessingLease: Sendable {
     public let session: URL
+    /// The session folder the lease was taken in, from `fstat` of the descriptor its lock file was opened in.
+    let folder: FileIdentity
     /// The locked descriptor, or -1 once released.
     private let descriptor: Mutex<Int32>
 
-    init(session: URL, descriptor: Int32) {
+    init(session: URL, folder: FileIdentity, descriptor: Int32) {
         self.session = session
+        self.folder = folder
         self.descriptor = Mutex(descriptor)
     }
 
@@ -32,12 +35,16 @@ public final class ProcessingLease: Sendable {
 
     var isHeld: Bool { descriptor.withLock { $0 >= 0 } }
 
-    /// Throws `HolosError.invalidInput` unless this lease is held and was taken for `directory`.
+    /// Throws `HolosError.invalidInput` unless this lease is held and was taken for `directory`: the folder
+    /// `directory` opens to through `AtomicFile.openFolder` (never through a symbolic link in its place) must
+    /// have the device and inode (`fstat`) of the folder the lease was taken in.
     func require(for directory: URL) throws {
         guard isHeld else {
             throw HolosError.invalidInput("The processing lease was already released; acquire a new one.")
         }
-        guard SessionLockFile.sameFolder(session, directory) else {
+        let fd = try SessionLockFile.openSessionFolder(directory)
+        defer { Darwin.close(fd) }
+        guard try FileIdentity(descriptor: fd) == folder else {
             throw HolosError.invalidInput("The processing lease belongs to another session.")
         }
     }
@@ -48,10 +55,15 @@ extension SessionArchive {
     public nonisolated static func acquireProcessingLease(at session: URL,
                                                           retry: Duration = .seconds(1)) throws -> ProcessingLease {
         try SessionLockFile.requireSession(session)
-        guard let fd = try SessionLockFile.acquire(SessionLockFile.processing, in: session, timeout: retry) else {
+        // The lock file and the lease's folder identity come from one descriptor of the session folder.
+        let folder = try SessionLockFile.openSessionFolder(session)
+        defer { Darwin.close(folder) }
+        let identity = try FileIdentity(descriptor: folder)
+        guard let fd = try SessionLockFile.acquire(SessionLockFile.processing, inFolder: folder,
+                                                   timeout: retry) else {
             throw HolosError.unavailable("Another Holos process is processing this session.")
         }
-        return ProcessingLease(session: session, descriptor: fd)
+        return ProcessingLease(session: session, folder: identity, descriptor: fd)
     }
 
     /// True while some process holds the processing lease. A probe: it takes the lock without waiting and
@@ -91,7 +103,14 @@ enum SessionLockFile {
     /// 20 ms until `timeout`. Returns the locked descriptor (O_CLOEXEC), or nil when another holder kept the lock
     /// for the whole timeout. Always makes at least one attempt.
     static func acquire(_ name: String, in session: URL, timeout: Duration) throws -> Int32? {
-        guard let fd = try openLockFile(name, in: session, create: true) else {
+        let folder = try openSessionFolder(session)
+        defer { Darwin.close(folder) }
+        return try acquire(name, inFolder: folder, timeout: timeout)
+    }
+
+    /// Like `acquire(_:in:timeout:)`, in the open session folder `folder` (not closed).
+    static func acquire(_ name: String, inFolder folder: Int32, timeout: Duration) throws -> Int32? {
+        guard let fd = try openLockFile(name, inFolder: folder, create: true) else {
             throw HolosError.io("Cannot open the session lock: \(AtomicFile.errnoText(ENOENT)).")
         }
         let clock = ContinuousClock()
@@ -147,6 +166,10 @@ enum SessionLockFile {
     private static func openLockFile(_ name: String, in session: URL, create: Bool) throws -> Int32? {
         let folder = try openSessionFolder(session)
         defer { Darwin.close(folder) }
+        return try openLockFile(name, inFolder: folder, create: create)
+    }
+
+    private static func openLockFile(_ name: String, inFolder folder: Int32, create: Bool) throws -> Int32? {
         let flags = create ? O_CREAT | O_RDWR : O_RDONLY
         let fd = openat(folder, name, flags | O_NONBLOCK | O_CLOEXEC | O_NOFOLLOW, 0o600)
         guard fd >= 0 else {
@@ -192,16 +215,6 @@ enum SessionLockFile {
               (info.st_mode & S_IFMT) == S_IFREG else {
             throw HolosError.invalidInput("\(session.lastPathComponent) is not a Holos session folder.")
         }
-    }
-
-    /// Whether two URLs name the same folder (same device and inode), whatever their spelling.
-    static func sameFolder(_ first: URL, _ second: URL) -> Bool {
-        var a = stat()
-        var b = stat()
-        guard first.isFileURL, second.isFileURL, stat(first.path, &a) == 0, stat(second.path, &b) == 0 else {
-            return false
-        }
-        return a.st_dev == b.st_dev && a.st_ino == b.st_ino
     }
 
     private static func pause(_ duration: Duration) {

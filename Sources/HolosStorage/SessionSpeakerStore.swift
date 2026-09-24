@@ -175,9 +175,7 @@ public enum SessionSpeakerStore {
         try requireToken(data.runID, "run ID")
         try requireWritableSchema(data.schemaVersion, SchemaVersion.voiceData, "The voice data")
         try requireSameSession(data.sessionID, session: session, what: "The voice data")
-        let folder = SessionPaths.voiceDirectory(session)
-        try ensureSpeakerFolder(folder, session: session)
-        try excludeFromBackup(folder)
+        try ensureSpeakerFolder(SessionPaths.voiceDirectory(session), session: session, excludeFromBackup: true)
         try AtomicFile.writeJSON(data, to: SessionPaths.voiceData(data.runID, in: session))
     }
 
@@ -212,8 +210,9 @@ public enum SessionSpeakerStore {
 
     /// Creates `folder` (speakers/ or a folder under it) and speakers/ itself as 0700 in one `openat`/`mkdirat`
     /// chain from the session folder's descriptor, refusing a symbolic link or file at each level, even one
-    /// swapped in during the call. Nothing is checked by path first.
-    private static func ensureSpeakerFolder(_ folder: URL, session: URL) throws {
+    /// swapped in during the call. Nothing is checked by path first. With `excludeFromBackup`, the backup exclusion
+    /// is set on the descriptor that chain returned, so a link swapped in afterwards never redirects it.
+    private static func ensureSpeakerFolder(_ folder: URL, session: URL, excludeFromBackup: Bool = false) throws {
         let sessionComponents = session.standardizedFileURL.pathComponents
         let folderComponents = folder.standardizedFileURL.pathComponents
         guard folderComponents.count > sessionComponents.count,
@@ -226,7 +225,11 @@ public enum SessionSpeakerStore {
                                                  in: sessionFD, baseURL: session, create: true) else {
             throw HolosError.io("Cannot create folder \(folder.lastPathComponent).")
         }
-        Darwin.close(fd)
+        defer { Darwin.close(fd) }
+        if excludeFromBackup {
+            beforeBackupExclusion?(folder)
+            try Self.excludeFromBackup(fd, name: folder.lastPathComponent)
+        }
     }
 
     private static func repairTornTail(_ journal: URL, session: URL) throws {
@@ -238,16 +241,29 @@ public enum SessionSpeakerStore {
         log.notice("Repaired a torn speaker edit journal; dropped \(data.count - keep, privacy: .public) bytes after a backup")
     }
 
-    private static func excludeFromBackup(_ folder: URL) throws {
-        var url = folder
-        var values = URLResourceValues()
-        values.isExcludedFromBackup = true
-        do {
-            try url.setResourceValues(values)
-        } catch {
-            throw HolosError.io("Cannot exclude voice data from backups: \(error.localizedDescription)")
+    /// The extended attribute behind `URLResourceValues.isExcludedFromBackup`, and the value Foundation writes
+    /// for it: a binary property list holding the string "com.apple.backupd".
+    static let backupExclusionAttribute = "com.apple.metadata:com_apple_backup_excludeItem"
+    static let backupExclusionValue: Data = {
+        // Encoding a constant string cannot fail.
+        (try? PropertyListSerialization.data(fromPropertyList: "com.apple.backupd", format: .binary, options: 0))
+            ?? Data()
+    }()
+
+    /// Marks the open folder `fd` (named `name`) as excluded from backups with `fsetxattr`, the same attribute
+    /// and value `URLResourceValues.isExcludedFromBackup = true` writes, but on the descriptor, never by path.
+    static func excludeFromBackup(_ fd: Int32, name: String) throws {
+        let result = backupExclusionValue.withUnsafeBytes { bytes in
+            fsetxattr(fd, backupExclusionAttribute, bytes.baseAddress, bytes.count, 0, 0)
+        }
+        guard result == 0 else {
+            throw HolosError.io("Cannot exclude \(name) from backups: \(AtomicFile.errnoText()).")
         }
     }
+
+    /// Test hook: while set (a task-local value), called with the folder's URL after `ensureSpeakerFolder` has
+    /// opened it and just before it sets the backup exclusion, so tests can swap the folder for a link.
+    @TaskLocal static var beforeBackupExclusion: (@Sendable (URL) -> Void)? = nil
 }
 
 /// Splits an append-only journal into complete lines.

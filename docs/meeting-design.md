@@ -321,7 +321,11 @@ from the session folder down relative to the one above it (`openat` with `O_NOFO
 `write`, `create`, `append`, reads (`readJSON`), listings, `removeTree`, the lock files
 (`openat` on the session folder's descriptor), and `ensurePrivateDirectory` (each missing
 folder made with `mkdirat`, `fchmod` on its descriptor, parent fsync'd) all start from it; a
-link there, even one swapped in during the call, is refused with `invalidInput`. A `create` whose folder fsync fails removes the new
+link there, even one swapped in during the call, is refused with `invalidInput`. Nothing inside a
+session is then touched by path: the speakers/voice backup exclusion is `fsetxattr` on the chain's
+descriptor, `ProcessingLease` compares the device and inode (`fstat`) of the folder the chain opens,
+and recovery reads a chunk's format and hash from one descriptor opened through the chain
+(`ChunkFile`, `AudioFileOpenWithCallbacks`), refusing it when the path no longer leads to that file. A `create` whose folder fsync fails removes the new
 file, so a retry is not refused as "already exists".
 
 Locks are `flock` on files in the session folder, one open file description per holder.

@@ -156,6 +156,18 @@ extension AtomicFile {
         return entries
     }
 
+    /// The device and inode of the entry `name` in the open folder `parent`, not following a symbolic link; nil
+    /// when it does not exist.
+    static func identity(of name: String, in parent: Int32) throws -> FileIdentity? {
+        var info = stat()
+        guard fstatat(parent, name, &info, AT_SYMLINK_NOFOLLOW) == 0 else {
+            let code = errno
+            if code == ENOENT { return nil }
+            throw HolosError.io("Cannot inspect \(name): \(errnoText(code)).")
+        }
+        return FileIdentity(info)
+    }
+
     /// Whether `name` is a session folder name (`<id>.holos`).
     static func isSessionFolderName(_ name: String) -> Bool { name.count > 6 && name.hasSuffix(".holos") }
 
@@ -201,5 +213,23 @@ extension AtomicFile {
     private static func exists(_ path: String) -> Bool {
         var info = stat()
         return stat(path, &info) == 0 || errno != ENOENT
+    }
+}
+
+/// Which file an open descriptor or a folder entry is: its device and inode, whatever path reached it.
+struct FileIdentity: Equatable, Sendable {
+    let device: dev_t
+    let inode: ino_t
+
+    init(_ info: stat) {
+        device = info.st_dev
+        inode = info.st_ino
+    }
+
+    /// The identity of the open file `fd` (`fstat`).
+    init(descriptor fd: Int32) throws {
+        var info = stat()
+        guard fstat(fd, &info) == 0 else { throw HolosError.io("Cannot inspect an open file: \(AtomicFile.errnoText()).") }
+        self.init(info)
     }
 }
