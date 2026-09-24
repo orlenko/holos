@@ -102,7 +102,7 @@ actor RecorderWordSpeech: LiveSpeechSession {
     private(set) var fedSeconds = 0.0
     private(set) var firstFrameStart: Double?
     private var fedEnd = 0.0
-    private var blocked = false
+    private(set) var blocked = false
     private var reported = 0
     private(set) var cancelled = false
 
@@ -141,6 +141,9 @@ actor RecorderWordSpeech: LiveSpeechSession {
     }
 
     func cancel() async { cancelled = true }
+
+    /// Seconds of audio taken so far, and whether `append` is blocked at `blockAt`.
+    var progress: (fed: Double, blocked: Bool) { (fedSeconds, blocked) }
 
     /// Segment `index`: words at each whole second it covers (only those that end by `until`).
     private func segment(_ index: Int, until: Double = .infinity) -> TranscriptSegment {
