@@ -41,13 +41,20 @@ enum TimedOutcome<Value: Sendable>: Sendable {
 /// work that must finish either way, such as stopping capture.
 ///
 /// With `deadline`, the wait also times out once that deadline passes, including a deadline set after the wait began.
+///
+/// An operation that makes something the caller must release (a speech session, say) passes `discardingLate`: when
+/// the operation still succeeds after the wait gave up on it (a platform call that ignores cancellation), its value
+/// goes to `discardingLate` instead of being dropped, so it is cancelled or closed rather than left running.
 func awaitWithTimeout<Value: Sendable>(_ limit: Duration, cancellable: Bool = true, deadline: SharedDeadline? = nil,
+                                       discardingLate: (@Sendable (Value) async -> Void)? = nil,
                                        _ operation: @escaping @Sendable () async throws -> Value) async
     -> TimedOutcome<Value> {
     let gate = OutcomeGate<Value>()
     let work = Task {
-        do { gate.resolve(.finished(.success(try await operation()))) }
-        catch { gate.resolve(.finished(.failure(error))) }
+        do {
+            let value = try await operation()
+            if !gate.resolve(.finished(.success(value))), let discardingLate { await discardingLate(value) }
+        } catch { gate.resolve(.finished(.failure(error))) }
     }
     let timer = Task {
         try? await Task.sleep(for: limit)
@@ -141,14 +148,17 @@ private final class OutcomeGate<Value: Sendable>: Sendable {
 
     private let state = Mutex(State())
 
-    func resolve(_ outcome: TimedOutcome<Value>) {
-        let waiter = state.withLock { state -> CheckedContinuation<TimedOutcome<Value>, Never>? in
-            guard state.outcome == nil else { return nil }
+    /// True when `outcome` is the first, so `wait()` returns it.
+    @discardableResult
+    func resolve(_ outcome: TimedOutcome<Value>) -> Bool {
+        let (first, waiter) = state.withLock { state -> (Bool, CheckedContinuation<TimedOutcome<Value>, Never>?) in
+            guard state.outcome == nil else { return (false, nil) }
             state.outcome = outcome
             defer { state.waiter = nil }
-            return state.waiter
+            return (true, state.waiter)
         }
         waiter?.resume(returning: outcome)
+        return first
     }
 
     func wait() async -> TimedOutcome<Value> {

@@ -12,11 +12,16 @@ public struct CaptureRequest: Sendable, Equatable {
     /// Which input device the microphone track records (§4.12). A `source` of `.system` records no microphone: a call
     /// epoch started while the Mac has no input device.
     public var microphone: MicrophoneSelection
+    /// Host-clock seconds (`AudioCapture.hostSeconds()`) at which `timelineOffset` was taken from the session clock.
+    /// The capture anchors its origin there (`AudioCapture.timelineOrigin`), so the time it spends setting up is
+    /// part of the session timeline and of the gap before its first frame. Nil for epoch 0: the timeline starts when
+    /// its capture has started.
+    public var offsetHostTime: Double?
 
     public init(source: AudioSource, applicationBundleID: String? = nil, timelineOffset: Double = 0,
-                microphone: MicrophoneSelection = .systemDefault) {
+                microphone: MicrophoneSelection = .systemDefault, offsetHostTime: Double? = nil) {
         self.source = source; self.applicationBundleID = applicationBundleID; self.timelineOffset = timelineOffset
-        self.microphone = microphone
+        self.microphone = microphone; self.offsetHostTime = offsetHostTime
     }
 }
 
@@ -55,7 +60,8 @@ extension MeetingCapture {
 
     public func start(_ request: CaptureRequest) async throws {
         try await capture.start(source: request.source, applicationBundleID: request.applicationBundleID,
-                                timelineOffset: request.timelineOffset, microphone: request.microphone)
+                                timelineOffset: request.timelineOffset, microphone: request.microphone,
+                                timelineOffsetHostTime: request.offsetHostTime)
     }
 
     public func stop() async throws { try await capture.stop() }

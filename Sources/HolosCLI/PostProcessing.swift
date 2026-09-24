@@ -7,20 +7,21 @@ import HolosStorage
 
 /// The post-processor the CLI runs, after a recording and (from PR7b) for `holos session diarize`.
 ///
-/// The diarizer is `FluidDiarizer` with `options.engineOverrides` applied when the speaker models are verified
-/// (`FluidModels.status() == .verified`), else nil (speaker-less exports and the setup hint). Invalid engine
-/// overrides give a diarizer that fails with the reason, so the diarize stage records it.
+/// The diarizer is `makeDiarizer(engineOverrides: options.engineOverrides)`.
 func makeMeetingPostProcessor(options: PostProcessingOptions = .init()) -> MeetingPostProcessor {
     MeetingPostProcessor(diarizer: makeDiarizer(engineOverrides: options.engineOverrides), options: options)
 }
 
-/// `FluidDiarizer` over the installed models, or nil when they are not verified.
+/// `FluidDiarizer` over the installed models with `engineOverrides` applied (`FluidDiarizer.forInstalledModels`):
+/// nil only when the models are not installed (speaker-less exports and the setup hint). Damaged models give a
+/// diarizer that fails with "missing or damaged", and invalid engine overrides one that fails with the reason, so
+/// the diarize stage records the failure.
 func makeDiarizer(engineOverrides: [String: String]) -> (any SpeakerDiarizer)? {
-    guard FluidModels.status() == .verified else { return nil }
     do {
         let configuration = try FluidDiarizerConfiguration.default.overridden(by: engineOverrides)
-        return FluidDiarizer(configuration: configuration)
+        return FluidDiarizer.forInstalledModels(configuration: configuration)
     } catch {
+        guard FluidModels.status() != .notInstalled else { return nil }
         return RejectedSettingsDiarizer(error: error as? HolosError ?? .invalidInput(error.localizedDescription))
     }
 }

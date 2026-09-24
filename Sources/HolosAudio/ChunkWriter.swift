@@ -20,6 +20,8 @@ public actor AudioChunkWriter {
 
     private struct OpenChunk {
         var file: AVAudioFile?
+        /// The chunk written through its descriptor (`throughDescriptor`), in place of `file`.
+        var descriptorFile: DescriptorChunkFile?
         let relativePath: String
         let start: Double
         var end: Double
@@ -45,14 +47,19 @@ public actor AudioChunkWriter {
 
     private let archive: SessionArchive
     private let chunkDuration: Double
+    private let throughDescriptor: Bool
     private var current: [String: OpenChunk] = [:]
     private var sequence: [String: Int] = [:]
     private var tracks: [String: TrackState] = [:]
     /// Counters readable without waiting for the actor (a slow disk write must not delay a status update).
     private nonisolated let stats = WriterStats()
 
-    public init(archive: SessionArchive, chunkDuration: Double = 30) {
-        self.archive = archive; self.chunkDuration = chunkDuration
+    /// With `throughDescriptor`, each chunk is created with `AtomicFile.createForWriting` (through the session's
+    /// folder chain, or its pinned descriptor, `AtomicFile.pinSessionFolder`) and written and read back through
+    /// that file's descriptor, never by path (`DescriptorChunkFile`), so no chunk lands wherever the path leads
+    /// meanwhile. Without it (a recording), chunks are written with `AVAudioFile` at their path.
+    public init(archive: SessionArchive, chunkDuration: Double = 30, throughDescriptor: Bool = false) {
+        self.archive = archive; self.chunkDuration = chunkDuration; self.throughDescriptor = throughDescriptor
     }
 
     /// Writes `audio` and returns it as written: its start time snapped to the previous frame's end when it is
@@ -132,8 +139,14 @@ public actor AudioChunkWriter {
             }
         }
         if current[track] == nil { try await open(track: track, at: frame) }
-        guard var open = current[track], let file = open.file else { throw HolosError.io("Missing audio writer.") }
-        try file.write(from: PCMConversion.makeBuffer(frame))
+        guard var open = current[track] else { throw HolosError.io("Missing audio writer.") }
+        if let file = open.descriptorFile {
+            try file.write(from: PCMConversion.makeBuffer(frame))
+        } else if let file = open.file {
+            try file.write(from: PCMConversion.makeBuffer(frame))
+        } else {
+            throw HolosError.io("Missing audio writer.")
+        }
         open.frames += frame.frameCount
         open.end = open.start + Double(open.frames) / open.sampleRate
         current[track] = open
@@ -154,22 +167,29 @@ public actor AudioChunkWriter {
         for track in current.keys.sorted() { try await close(track: track) }
     }
 
-    /// Closes every open chunk; the next discontinuity event on each track carries `reason`, and the track's next
-    /// frame starts a new chunk at its own time.
+    /// Closes every open chunk; the next discontinuity event on each track carries `reason` (unless an `overflow` is
+    /// already pending there), and the track's next frame starts a new chunk at its own time.
     public func closeAll(expectingGap reason: GapReason) async throws {
-        for track in tracks.keys.sorted() {
-            tracks[track]?.pendingReason = reason.rawValue
-            tracks[track]?.boundary = true
-        }
+        for track in tracks.keys.sorted() { markGap(track: track, reason: reason) }
         try await finish()
     }
 
-    /// Sets the reason of the track's next `audioDiscontinuity` and makes its next frame start a new chunk at its own
-    /// time (audio was lost before it). Does nothing for a track with no audio yet.
+    /// Sets the reason of the track's next `audioDiscontinuity` (unless an `overflow` is already pending there) and
+    /// makes its next frame start a new chunk at its own time (audio was lost before it). Does nothing for a track
+    /// with no audio yet.
     public func noteGap(track: String, reason: GapReason) {
         guard tracks[track] != nil else { return }
-        tracks[track]?.pendingReason = reason.rawValue
-        tracks[track]?.boundary = true
+        markGap(track: track, reason: reason)
+    }
+
+    /// One discontinuity event covers everything between two frames, so one reason wins: a pending `overflow` is
+    /// kept over a later boundary (a pause, a restart, a sleep), since audio was lost there and the boundary has its
+    /// own journal event; any other pending reason gives way to the later one.
+    private func markGap(track: String, reason: GapReason) {
+        guard var state = tracks[track] else { return }
+        if state.pendingReason != GapReason.overflow.rawValue { state.pendingReason = reason.rawValue }
+        state.boundary = true
+        tracks[track] = state
     }
 
     /// Bytes of finalized chunks plus frames × channels × 2 of open chunks (the audio data, without file headers).
@@ -201,14 +221,28 @@ public actor AudioChunkWriter {
         sequence[track] = number
         let path = String(format: "audio/%@/%06d.caf", track, number)
         let url = archive.directory.appendingPathComponent(path)
-        guard !FileManager.default.fileExists(atPath: url.path) else {
-            throw HolosError.io("Refusing to overwrite existing audio chunk: \(path). Start a new recording session.")
-        }
+        let overwriting = HolosError.io(
+            "Refusing to overwrite existing audio chunk: \(path). Start a new recording session.")
+        // Through a descriptor, the exclusive create below refuses an existing chunk; nothing checks the path.
+        guard throughDescriptor || !FileManager.default.fileExists(atPath: url.path) else { throw overwriting }
         let buffer = try PCMConversion.makeBuffer(frame)
         try await archive.recordEvent(kind: MeetingEventKind.chunkOpened, details: [
             "track": track, "relativePath": path, "start": String(frame.startTime),
             "sampleRate": String(frame.sampleRate), "channels": String(frame.channels),
         ])
+        if throughDescriptor {
+            let fd: Int32
+            do {
+                fd = try AtomicFile.createForWriting(at: url)
+            } catch HolosError.invalidInput {
+                throw overwriting
+            }
+            let file = try DescriptorChunkFile(fd: fd, format: buffer.format)
+            current[track] = OpenChunk(descriptorFile: file, relativePath: path, start: frame.startTime,
+                                       end: frame.startTime, sampleRate: frame.sampleRate, channels: frame.channels,
+                                       frames: 0)
+            return
+        }
         var settings: [String: Any] = [
             AVFormatIDKey: kAudioFormatLinearPCM,
             AVSampleRateKey: frame.sampleRate,
@@ -227,14 +261,20 @@ public actor AudioChunkWriter {
 
     private func close(track: String) async throws {
         guard var open = current.removeValue(forKey: track) else { return }
-        open.file?.close()
-        open.file = nil
-        let file = try AVAudioFile(forReading: archive.directory.appendingPathComponent(open.relativePath))
-        guard file.length == Int64(open.frames), file.processingFormat.sampleRate == open.sampleRate,
-              file.processingFormat.channelCount == open.channels else {
-            throw HolosError.incomplete("Finalized audio does not match the recorded frames: \(open.relativePath).")
+        let mismatch = HolosError.incomplete("Finalized audio does not match the recorded frames: \(open.relativePath).")
+        if let file = open.descriptorFile {
+            open.descriptorFile = nil
+            let written = try file.close()
+            guard written.frames == Int64(open.frames), written.sampleRate == open.sampleRate,
+                  written.channels == open.channels else { throw mismatch }
+        } else {
+            open.file?.close()
+            open.file = nil
+            let file = try AVAudioFile(forReading: archive.directory.appendingPathComponent(open.relativePath))
+            guard file.length == Int64(open.frames), file.processingFormat.sampleRate == open.sampleRate,
+                  file.processingFormat.channelCount == open.channels else { throw mismatch }
+            file.close()
         }
-        file.close()
         try await archive.registerChunk(AudioChunkRecord(track: track, relativePath: open.relativePath,
             start: open.start, end: open.end, sampleRate: open.sampleRate, channels: open.channels, frameCount: open.frames))
         stats.finalized(track: track, bytes: Int64(open.frames) * Int64(open.channels) * 2)

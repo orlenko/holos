@@ -92,9 +92,17 @@ public struct CorrectionList: Codable, Sendable, Equatable {
     /// so "bull" → "pull" is learned as "bull request" → "pull request" rather than rewriting every "bull".
     public static func learn(original: String, corrected: String,
                              isDictionaryWord: (String) -> Bool = { _ in false }) -> [Correction] {
+        learnReportingDeclined(original: original, corrected: corrected, isDictionaryWord: isDictionaryWord).learned
+    }
+
+    /// Like `learn`, and also returns single dictionary-word swaps that were not learned because no
+    /// neighbouring word could anchor them, so the caller can explain why and offer to add them by hand.
+    public static func learnReportingDeclined(original: String, corrected: String,
+                                              isDictionaryWord: (String) -> Bool = { _ in false })
+        -> (learned: [Correction], declined: [Correction]) {
         let a = tokens(in: original)
         let b = tokens(in: corrected)
-        guard !a.isEmpty, !b.isEmpty, a.count <= 2_000, b.count <= 2_000 else { return [] }
+        guard !a.isEmpty, !b.isEmpty, a.count <= 2_000, b.count <= 2_000 else { return ([], []) }
         let aText = a.map { String(original[$0]) }
         let bText = b.map { String(corrected[$0]) }
 
@@ -119,6 +127,7 @@ public struct CorrectionList: Codable, Sendable, Equatable {
 
         let maximumTokens = 6
         var learned: [Correction] = []
+        var declined: [Correction] = []
         for (rangeA, rangeB) in hunks {
             guard !rangeA.isEmpty, !rangeB.isEmpty,
                   rangeA.count <= maximumTokens, rangeB.count <= maximumTokens,
@@ -134,14 +143,17 @@ public struct CorrectionList: Codable, Sendable, Equatable {
                     spanA = spanA.lowerBound - 1..<spanA.upperBound
                     spanB = spanB.lowerBound - 1..<spanB.upperBound
                 } else {
-                    continue // No neighbouring word: a bare dictionary-word rule would rewrite unrelated text.
+                    // No neighbouring word: a bare dictionary-word rule would rewrite unrelated text.
+                    let meant = corrected[b[rangeB.lowerBound].lowerBound..<b[rangeB.upperBound - 1].upperBound]
+                    declined.append(Correction(heard: aText[rangeA.lowerBound], meant: String(meant)))
+                    continue
                 }
             }
             let heard = String(original[a[spanA.lowerBound].lowerBound..<a[spanA.upperBound - 1].upperBound])
             let meant = String(corrected[b[spanB.lowerBound].lowerBound..<b[spanB.upperBound - 1].upperBound])
             learned.append(Correction(heard: heard, meant: meant))
         }
-        return learned
+        return (learned, declined)
     }
 
     public static func load(from url: URL) throws -> CorrectionList {
@@ -165,7 +177,7 @@ public struct CorrectionList: Codable, Sendable, Equatable {
         return try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive])
     }
 
-    private static func normalized(_ text: String) -> String {
+    static func normalized(_ text: String) -> String {
         text.lowercased().split(whereSeparator: \.isWhitespace).joined(separator: " ")
     }
 

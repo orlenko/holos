@@ -497,6 +497,41 @@ import HolosCore
         #expect(ModelInstallStatus.corrupt(files: ["a"]).summary == "damaged (1 file)")
         #expect(ModelInstallStatus.corrupt(files: ["a", "b"]).summary == "damaged (2 files)")
     }
+
+    /// Only models that are not installed give no diarizer (post-processing's "not set up", exit 0 for
+    /// `holos session import`). Damaged models give one that fails with "missing or damaged", so labelling is
+    /// recorded as failed (exit 3). Before, the CLI gave nil for every status but verified, so a damaged install
+    /// was reported as not installed and the import exited 0.
+    @Test func onlyUninstalledModelsGiveNoDiarizer() async throws {
+        let folder = try modelTemporaryFolder()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let directory = folder.appendingPathComponent("models")
+        let pinned = try modelWriteFakeModels(in: directory)
+        func diarizer() -> FluidDiarizer? {
+            FluidDiarizer.forInstalledModels(modelsDirectory: directory, configuration: .default, pinned: pinned)
+        }
+
+        let verified = try #require(diarizer())
+        #expect(try await verified.engineInfo().engine == FluidDiarizer.engineName)
+
+        let weights = FluidModels.repoFolder(in: directory).appendingPathComponent("Embedding.mlmodelc/weights/weight.bin")
+        var bytes = try Data(contentsOf: weights)
+        bytes[bytes.count / 2] ^= 0x01
+        try bytes.write(to: weights)
+        #expect(FluidModels.status(directory: directory, pinned: pinned)
+            == .corrupt(files: ["Embedding.mlmodelc/weights/weight.bin"]))
+        let damaged = try #require(diarizer())
+        do {
+            _ = try await damaged.engineInfo()
+            Issue.record("A diarizer over damaged models reported its engine")
+        } catch HolosError.unavailable(let message) {
+            #expect(message == FluidModels.missingModelsMessage)
+        }
+
+        try FileManager.default.removeItem(at: FluidModels.repoFolder(in: directory))
+        #expect(FluidModels.status(directory: directory, pinned: pinned) == .notInstalled)
+        #expect(diarizer() == nil)
+    }
 }
 
 // MARK: - Helpers (prefixed: other test files in this target may declare their own)
