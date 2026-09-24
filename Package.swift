@@ -18,6 +18,7 @@ let package = Package(
     ],
     dependencies: [
         .package(url: "https://github.com/apple/swift-argument-parser.git", from: "1.5.0"),
+        .package(url: "https://github.com/FluidInference/FluidAudio.git", exact: "0.17.1"),
     ],
     targets: [
         .target(name: "HolosCore"),
@@ -32,12 +33,15 @@ let package = Package(
         .target(name: "HolosMeeting", dependencies: [
             "HolosCore", "HolosStorage", "HolosAudio", "HolosSpeech", "HolosSpeakers",
         ]),
+        .target(name: "HolosDiarization", dependencies: [
+            "HolosCore", .product(name: "FluidAudio", package: "FluidAudio"),
+        ]),
         .executableTarget(name: "HolosApp", dependencies: [
             "HolosCore", "HolosAudio", "HolosSpeech", "HolosDesktop", "HolosDictation",
         ]),
         .executableTarget(name: "HolosCLI", dependencies: [
             "HolosCore", "HolosSpeech", "HolosSynthesis", "HolosStorage", "HolosAudio", "HolosContent",
-            "HolosMeeting",
+            "HolosMeeting", "HolosSpeakers", "HolosDiarization",
             .product(name: "ArgumentParser", package: "swift-argument-parser"),
         ], linkerSettings: [.unsafeFlags([
             "-Xlinker", "-sectcreate", "-Xlinker", "__TEXT", "-Xlinker", "__info_plist", "-Xlinker", cliInfoPlist,
@@ -53,6 +57,9 @@ let package = Package(
         .testTarget(name: "HolosSpeakersTests", dependencies: ["HolosSpeakers", "HolosCore"]),
         .testTarget(name: "HolosMeetingTests", dependencies: [
             "HolosMeeting", "HolosCore", "HolosStorage", "HolosAudio", "HolosSpeakers",
+        ]),
+        .testTarget(name: "HolosDiarizationTests", dependencies: [
+            "HolosDiarization", "HolosSpeakers", "HolosSynthesis", "HolosAudio", "HolosCore",
         ]),
     ],
     swiftLanguageModes: [.v6]
