@@ -18,8 +18,9 @@ final class CorrectionsWindow: NSObject, NSWindowDelegate, NSTextFieldDelegate {
     /// Adds a rule, with the edit of the declined swap it resolves (if any). False means not saved.
     private let onAdd: (Correction, DeclinedCorrectionQueue.PendingEdit?) -> Bool
     private let onRemove: (Correction) -> Bool
-    /// Replaces the first rule with the second in place. False means not saved.
-    private let onReplace: (Correction, Correction) -> Bool
+    /// Replaces the first rule with the second in place, with the edit of the declined swap it resolves (if any).
+    /// False means not saved.
+    private let onReplace: (Correction, Correction, DeclinedCorrectionQueue.PendingEdit?) -> Bool
     private let transcriptView: NSTextView
     private let learnButton = NSButton(title: "Learn Corrections", target: nil, action: nil)
     private let copyButton = NSButton(title: "Copy Text", target: nil, action: nil)
@@ -41,7 +42,7 @@ final class CorrectionsWindow: NSObject, NSWindowDelegate, NSTextFieldDelegate {
     init(onLearn: @escaping (String) -> LearnResult?,
          onAdd: @escaping (Correction, DeclinedCorrectionQueue.PendingEdit?) -> Bool,
          onRemove: @escaping (Correction) -> Bool,
-         onReplace: @escaping (Correction, Correction) -> Bool) {
+         onReplace: @escaping (Correction, Correction, DeclinedCorrectionQueue.PendingEdit?) -> Bool) {
         window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 560, height: 600),
                           styleMask: [.titled, .closable, .miniaturizable, .resizable],
                           backing: .buffered, defer: true)
@@ -316,6 +317,12 @@ final class CorrectionsWindow: NSObject, NSWindowDelegate, NSTextFieldDelegate {
     @objc private func editEntry(_ sender: NSButton) {
         guard shown.indices.contains(sender.tag) else { return }
         let correction = shown[sender.tag]
+        // Never drop unsaved changes to the rule being edited by loading another one over them.
+        if let current = editing, current != correction,
+           heardField.stringValue != current.heard || meantField.stringValue != current.meant {
+            feedbackLabel.stringValue = "Save or Cancel the change to \(current.heard) → \(current.meant) first."
+            return
+        }
         editing = correction
         heardField.stringValue = correction.heard
         meantField.stringValue = correction.meant
@@ -341,15 +348,20 @@ final class CorrectionsWindow: NSObject, NSWindowDelegate, NSTextFieldDelegate {
             feedbackLabel.stringValue = "The misheard and intended text are the same; change one, or Remove the rule."
             return
         }
-        guard changed != original else {
+        // An unchanged rule that is still listed needs no save; one removed or replaced meanwhile is saved again.
+        guard changed != original || !shown.contains(original) else {
             endEditing(["No change to \(original.heard) → \(original.meant)."])
             return
         }
         let replaced = CorrectionList(entries: shown).conflicts(replacing: original, with: changed)
-        guard onReplace(original, changed) else {
+        // Saving a rule a declined swap asks for resolves that swap, and keeps its edit, as Add does.
+        var remaining = declined
+        let resolved = remaining.resolve(added: changed)
+        guard onReplace(original, changed, resolved?.edit) else {
             feedbackLabel.stringValue = Self.saveFailure
             return
         }
+        declined = remaining
         var lines = ["Changed: \(original.heard) → \(original.meant) is now \(changed.heard) → \(changed.meant)."]
         if !replaced.isEmpty {
             lines.append("It replaces the other rule for the same phrase: \(Self.describe(replaced)).")
