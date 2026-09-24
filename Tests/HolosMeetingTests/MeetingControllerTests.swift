@@ -31,10 +31,11 @@ private func makeController(root: URL, launcher: FakeRecorderLauncher, probe: Co
                                                                  systemDefault: controllerBuiltIn),
                             vocabulary: [String] = [], vocabularyDirectory: URL? = nil,
                             maintenance: MaintenanceLauncher? = nil,
-                            modelsInstalled: Bool = false) -> MeetingController {
+                            modelsInstalled: Bool = false,
+                            now: @escaping @MainActor () -> Date = { Date() }) -> MeetingController {
     let controller = MeetingController(
         root: root, launcher: launcher, maintenance: maintenance, freeSpace: FixedFreeSpace(free),
-        findInputDevices: { devices }, vocabulary: { vocabulary }, modelsInstalled: { modelsInstalled },
+        findInputDevices: { devices }, vocabulary: { vocabulary }, modelsInstalled: { modelsInstalled }, now: now,
         onChange: { probe.states.append($0) }, onEffect: { probe.effects.append($0) })
     controller.tuning = MeetingControllerTuning(poll: .milliseconds(20), rescan: .milliseconds(40),
                                                 relabel: .seconds(3_600), ackTimeout: .milliseconds(200))
@@ -105,6 +106,29 @@ private func exists(_ url: URL) -> Bool {
     #expect(probe.dictation.isEmpty)
 }
 
+/// Rewrites a test recorder's status.json at most once a second, as the recorder's heartbeat does, so a status stays
+/// fresh however long a loaded machine takes to poll it.
+@MainActor
+private final class ControllerHeartbeat {
+    private let session: URL
+    var status: RecorderStatus
+    private var last: ContinuousClock.Instant?
+
+    init(session: URL, status: RecorderStatus) {
+        self.session = session
+        self.status = status
+    }
+
+    func beat(force: Bool = false) {
+        let now = ContinuousClock.now
+        guard force || last.map({ $0.duration(to: now) >= .seconds(1) }) ?? true else { return }
+        last = now
+        status.sequence += 1
+        status.updatedAt = Date()
+        try? AtomicFile.writeJSON(status, to: SessionPaths.status(session))
+    }
+}
+
 @Test @MainActor func controllerFindsTerminalMeetingAfterLaunch() async throws {
     let temp = try TemporaryDirectory("controller")
     defer { temp.remove() }
@@ -115,14 +139,18 @@ private func exists(_ url: URL) -> Bool {
     #expect(controller.state == .idle)
     // `holos record start` in a terminal, after the app launched.
     let archive = try liveSession(in: temp.url)
-    #expect(await eventually(timeout: .seconds(10)) {
+    let heartbeat = ControllerHeartbeat(session: archive.directory, status: meetingStatus(archive.id, phase: .recording))
+    #expect(await eventually(timeout: .seconds(60)) {
+        heartbeat.beat()
         if case .active(let id, _) = controller.state { return id == archive.id }
         return false
     })
     #expect(probe.dictation == [true])
     // It stops: capture ends, then the recorder exits.
-    try AtomicFile.writeJSON(meetingStatus(archive.id, phase: .transcribing), to: SessionPaths.status(archive.directory))
-    #expect(await eventually(timeout: .seconds(10)) {
+    heartbeat.status.phase = .transcribing
+    heartbeat.beat(force: true)
+    #expect(await eventually(timeout: .seconds(60)) {
+        heartbeat.beat()
         if case .finishing = controller.state { return true }
         return false
     })
@@ -131,7 +159,7 @@ private func exists(_ url: URL) -> Bool {
     let exit = RecorderExit(archiveStatus: ArchiveStatus.complete, reason: .requested)
     try AtomicFile.writeJSON(meetingStatus(archive.id, phase: .exited, exit: exit), to: SessionPaths.status(archive.directory))
     try await archive.finish(status: ArchiveStatus.complete)
-    #expect(await eventually(timeout: .seconds(10)) { controller.state == .idle })
+    #expect(await eventually(timeout: .seconds(60)) { controller.state == .idle })
     #expect(probe.effects.contains { if case .finished(archive.id, _, false) = $0 { true } else { false } })
 }
 
@@ -157,6 +185,74 @@ private func exists(_ url: URL) -> Bool {
     #expect((request.sentAtNanos ?? 0) >= before)
     #expect(request.schemaVersion == 1)
     try await archive.finish(status: ArchiveStatus.complete)
+}
+
+@Test @MainActor func transcribingRecorderIsFollowedAfterRelaunch() async throws {
+    let temp = try TemporaryDirectory("controller")
+    defer { temp.remove() }
+    let archive = try liveSession(in: temp.url, phase: .transcribing)
+    let probe = ControllerProbe()
+    let controller = makeController(root: temp.url, launcher: FakeRecorderLauncher(), probe: probe)
+    defer { controller.stopMonitoring() }
+    controller.attachOnLaunch()
+    guard case .finishing(let id, _) = controller.state else {
+        Issue.record("Expected finishing, got \(controller.state).")
+        return
+    }
+    #expect(id == archive.id)
+    #expect(probe.dictation.isEmpty, "Capture has stopped: dictation is not paused.")
+    #expect(throws: HolosError.self) { try controller.start(MeetingStartSettings(name: "Next", source: .microphone)) }
+    try await archive.finish(status: ArchiveStatus.complete)
+}
+
+@Test @MainActor func undeliveredStopIsAnnouncedAndCanBeRetried() async throws {
+    let temp = try TemporaryDirectory("controller")
+    defer { temp.remove() }
+    let archive = try liveSession(in: temp.url)
+    // A file where control/ belongs: no request can be published.
+    try Data().write(to: SessionPaths.controlDirectory(archive.directory))
+    let probe = ControllerProbe()
+    let launcher = FakeRecorderLauncher()
+    let controller = makeController(root: temp.url, launcher: launcher, probe: probe)
+    defer { controller.stopMonitoring() }
+    controller.attachOnLaunch()
+    controller.confirmStop()
+    controller.confirmStop()
+    let announcements = probe.effects.filter { if case .announce = $0 { true } else { false } }
+    #expect(announcements.count == 2, "Each failed stop is reported, and the second one was tried again.")
+    #expect(launcher.terminated == [archive.id, archive.id])
+    guard case .active = controller.state else {
+        Issue.record("The meeting is still recording.")
+        return
+    }
+    try await archive.finish(status: ArchiveStatus.complete)
+}
+
+@Test @MainActor func startAfterTimedOutStartWaitsForItsRecorder() async throws {
+    let temp = try TemporaryDirectory("controller")
+    defer { temp.remove() }
+    let launcher = FakeRecorderLauncher()
+    var clock = Date()
+    let controller = makeController(root: temp.url, launcher: launcher, probe: ControllerProbe(), now: { clock })
+    defer { controller.stopMonitoring() }
+    try controller.start(MeetingStartSettings(name: "Council", source: .microphone))
+    let id = try #require(launcher.launches.first?.sessionID)
+    // Its recorder is alive, still at a permission prompt, when the menu gives up on it 2 minutes later.
+    let archive = try liveSession(in: temp.url, id: id, phase: .starting)
+    clock = clock.addingTimeInterval(121)
+    try AtomicFile.writeJSON(meetingStatus(id, phase: .starting, updatedAt: clock), to: SessionPaths.status(archive.directory))
+    controller.poll()
+    #expect(launcher.terminated == [id])
+    guard case .failed(let failedID, _) = controller.state, failedID == id else {
+        Issue.record("Expected failed, got \(controller.state).")
+        return
+    }
+    #expect(throws: HolosError.self) { try controller.start(MeetingStartSettings(name: "Again", source: .microphone)) }
+    #expect(launcher.launches.count == 1)
+    // Once that recorder is gone, a new start goes ahead.
+    try await archive.finish(status: ArchiveStatus.failed)
+    try controller.start(MeetingStartSettings(name: "Again", source: .microphone))
+    #expect(launcher.launches.count == 2)
 }
 
 @Test @MainActor func startRefusedOnLowDisk() throws {
@@ -418,7 +514,15 @@ private func exists(_ url: URL) -> Bool {
     let controller = makeController(root: temp.url, launcher: FakeRecorderLauncher(), probe: probe,
                                     maintenance: MaintenanceLauncher(executable: script), modelsInstalled: true)
     defer { controller.stopMonitoring() }
+    // While the app runs a command for the meeting (Meetings window), the relabel leaves it alone.
+    controller.sessionsInUse = { [manifest.id] }
     controller.runAutoRelabel()
+    #expect(await eventually(timeout: .seconds(10)) { !controller.relabelling })
+    #expect(!exists(arguments))
+    #expect(probe.attempts.isEmpty)
+    controller.sessionsInUse = { [] }
+    controller.runAutoRelabel()
+    #expect(controller.relabelling)
     #expect(await eventually(timeout: .seconds(10)) { !controller.relabelling && exists(arguments) })
     let text = (try? String(contentsOf: arguments, encoding: .utf8)) ?? ""
     #expect(text == "session diarize \(session.path) --json\n")
@@ -431,4 +535,35 @@ private func exists(_ url: URL) -> Bool {
     #expect(probe.attempts[manifest.id] == 2)
     let lines = ((try? String(contentsOf: arguments, encoding: .utf8)) ?? "").split(separator: "\n")
     #expect(lines.count == 2)
+}
+
+@Test @MainActor func automaticRelabelNamesTheMeetingWhileItRuns() async throws {
+    let temp = try TemporaryDirectory("controller")
+    defer { temp.remove() }
+    let session = try await SessionFixtures.makeSession(
+        in: temp.url, mode: .inPerson,
+        transcript: SessionFixtures.transcript(SessionFixtures.alternatingSegments(track: "mic")))
+    let manifest = try SessionArchive.readManifest(at: session)
+    try AtomicFile.writeJSON(PostProcessingRecord(sessionID: manifest.id, state: .running, pid: Int32.max,
+                                                  startedAt: Date(), updatedAt: Date()),
+                             to: SessionPaths.postprocess(session))
+    // A labelling that runs until the test opens the gate (10 s at most).
+    let gate = temp.url.appendingPathComponent("gate")
+    let script = temp.url.appendingPathComponent("fake-holos.sh")
+    try Data("#!/bin/sh\ni=0\nwhile [ ! -e '\(gate.path)' ] && [ $i -lt 200 ]; do sleep 0.05; i=$((i+1)); done\n".utf8)
+        .write(to: script)
+    #expect(chmod(script.path, 0o700) == 0)
+    let probe = ControllerProbe()
+    let controller = makeController(root: temp.url, launcher: FakeRecorderLauncher(), probe: probe,
+                                    maintenance: MaintenanceLauncher(executable: script), modelsInstalled: true)
+    defer { controller.stopMonitoring() }
+    defer { try? Data().write(to: gate) }
+    #expect(controller.relabellingSessionID == nil)
+    controller.runAutoRelabel()
+    // While it runs, the app turns down Meetings commands for this meeting (they would contend for its lease).
+    #expect(await eventually(timeout: .seconds(10)) { controller.relabellingSessionID == manifest.id })
+    #expect(controller.relabelling)
+    try Data().write(to: gate)
+    #expect(await eventually(timeout: .seconds(10)) { !controller.relabelling })
+    #expect(controller.relabellingSessionID == nil)
 }

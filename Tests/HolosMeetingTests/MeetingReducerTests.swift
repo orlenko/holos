@@ -140,6 +140,24 @@ private func isFailed(_ state: MeetingState) -> String? {
     #expect(effects.contains(.setDictationPaused(false)))
 }
 
+@Test func stopDuringStartThatSavedNothingIsACancel() {
+    // The recorder answers the SIGTERM by finishing without capture (exited, startFailed) before the child's exit.
+    var reducer = startedReducer()
+    _ = reducer.reduce(.stopConfirmed)
+    let exit = RecorderExit(archiveStatus: ArchiveStatus.failed, reason: .startFailed, message: "Cancelled.")
+    let effects = reducer.reduce(read(.exited, after: 3, exit: exit, liveness: .exited))
+    #expect(reducer.state == .idle)
+    #expect(effects.contains(.announce("The recording was cancelled before it started.")))
+    #expect(effects.contains(.setDictationPaused(false)))
+}
+
+@Test func undeliveredStopCanBeRetried() {
+    var reducer = activeReducer()
+    #expect(reducer.reduce(.stopConfirmed) == [.send(.stop, label: nil, sessionID: reducerID)])
+    reducer.stopWasNotDelivered()
+    #expect(reducer.reduce(.stopConfirmed) == [.send(.stop, label: nil, sessionID: reducerID)])
+}
+
 @Test func captureStopResumesDictation() {
     var reducer = activeReducer()
     let event = read(.transcribing, after: 20)
@@ -311,6 +329,43 @@ private func isFailed(_ state: MeetingState) -> String? {
     #expect(reducer.state == .failed(sessionID: nil, message: "The holos tool is missing."))
     _ = reducer.reduce(.dismissFailure)
     #expect(reducer.state == .idle)
+}
+
+@Test func menuLayoutIgnoresTheClockButNotTheLines() {
+    let base = meetingStatus(reducerID, phase: .recording, updatedAt: reducerStart, elapsed: 60)
+    func layout(_ status: RecorderStatus) -> MeetingMenuLayout {
+        MeetingMenuLayout(.active(sessionID: reducerID, status: status))
+    }
+    // The next second's status: new clock, sizes, and free space, the same lines.
+    var later = base
+    later.sequence += 1
+    later.updatedAt = reducerStart.addingTimeInterval(1)
+    later.elapsedSeconds = 61
+    later.recordedSeconds = 61
+    later.bytesWritten = 5_000_000
+    later.freeBytes = 20_000_000_000
+    #expect(layout(later) == layout(base))
+    var paused = later
+    paused.phase = .paused
+    #expect(layout(paused) != layout(base), "Pause Recording becomes Resume Recording.")
+    var warned = later
+    warned.warnings = [RecorderWarning(code: .audioDropped, message: "Some audio was dropped.")]
+    #expect(layout(warned) != layout(base))
+    var behind = later
+    behind.tracks = [TrackStatus(track: "mic", transcription: .behind)]
+    #expect(layout(behind) != layout(base))
+    var otherMicrophone = later
+    otherMicrophone.microphoneName = "AirPods Pro"
+    #expect(layout(otherMicrophone) != layout(base))
+    // Saving: the progress line changes in place.
+    let transcribing = meetingStatus(reducerID, phase: .transcribing, updatedAt: reducerStart)
+    let labelling = meetingStatus(reducerID, phase: .postprocessing, updatedAt: reducerStart.addingTimeInterval(30))
+    #expect(MeetingMenuLayout(.finishing(sessionID: reducerID, status: transcribing))
+        == MeetingMenuLayout(.finishing(sessionID: reducerID, status: labelling)))
+    #expect(MeetingMenuLayout(.finishing(sessionID: reducerID, status: labelling)) != layout(base))
+    #expect(MeetingMenuLayout(.failed(sessionID: reducerID, message: "One."))
+        != MeetingMenuLayout(.failed(sessionID: reducerID, message: "Two.")))
+    #expect(MeetingMenuLayout(.idle) == MeetingMenuLayout(.idle))
 }
 
 @Test func defaultNameUsesTheLocalMinute() {

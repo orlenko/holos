@@ -460,3 +460,45 @@ public enum MeetingFormat {
         return gigabytes(bytes)
     }
 }
+
+/// What decides the meeting lines of the menu and which of them are enabled: the state without what the recorder
+/// rewrites every second (clock, sizes, free space, labelling progress). The app rebuilds the menu only when this
+/// changes, and otherwise retitles the clock and progress lines in place.
+public struct MeetingMenuLayout: Sendable, Equatable {
+    private enum Step: Sendable, Equatable { case idle, starting, active, finishing, failed }
+
+    private var step: Step
+    private var sessionID: String?
+    /// Active: the phase picks the headline, Pause or Resume, and what is enabled.
+    private var phase: RecorderPhase?
+    private var name: String?
+    private var source: AudioSource?
+    private var microphoneName: String?
+    private var transcription: [TranscriptionState] = []
+    private var warnings: [String] = []
+    /// Failed: the message line.
+    private var message: String?
+
+    public init(_ state: MeetingState) {
+        sessionID = state.sessionID
+        switch state {
+        case .idle:
+            step = .idle
+        case .starting:
+            step = .starting
+        case .active(_, let status):
+            step = .active
+            phase = status.phase
+            name = status.name
+            source = status.source
+            microphoneName = status.microphoneName
+            transcription = status.tracks.map(\.transcription)
+            warnings = status.warnings.map(\.message)
+        case .finishing:
+            step = .finishing
+        case .failed(_, let failure):
+            step = .failed
+            message = failure
+        }
+    }
+}

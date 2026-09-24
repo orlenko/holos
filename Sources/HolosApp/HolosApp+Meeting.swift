@@ -36,7 +36,7 @@ final class MeetingAppState {
     var liveTranscriptWindow: LiveTranscriptWindow?
     var savingWindow: NSWindow?
     /// `holos doctor --json` speakerModels ("verified", "notInstalled", "damaged"), "unavailable" when the holos tool
-    /// cannot run, nil while unknown.
+    /// cannot run, "unknown" when it ran but did not report them, nil before the first check.
     var speakerModels: String?
     var checkingSpeakerModels = false
     /// Progress of `holos setup --speakers` while it runs.
@@ -48,6 +48,8 @@ final class MeetingAppState {
     /// The status item's menu is open; per-second updates change its lines in place.
     var menuOpen = false
     var menuStale = false
+    /// The meeting layout the menu was last built for.
+    var menuLayout: MeetingMenuLayout?
     weak var headlineItem: NSMenuItem?
     weak var detailItem: NSMenuItem?
     /// Windows that give Holos a Dock icon while open.
@@ -96,10 +98,15 @@ extension HolosAppDelegate: NSMenuDelegate {
         let step = Self.step(state)
         if step != meeting.lastStep, ["active", "finishing", "failed"].contains(step) { meeting.notice = nil }
         meeting.lastStep = step
-        if meeting.menuOpen {
+        // The recorder rewrites its status every second. Only a change of the menu's lines rebuilds it (never while
+        // it is open, under the pointer); the clock and progress lines are retitled in place.
+        if MeetingMenuLayout(state) == meeting.menuLayout {
+            refreshMeetingItemsInPlace()
+            refreshStatusItem()
+        } else if meeting.menuOpen {
             refreshMeetingItemsInPlace()
             meeting.menuStale = true
-            updateStatusItemAppearance()
+            refreshStatusItem()
         } else {
             rebuildMenu()
         }
@@ -162,6 +169,7 @@ extension HolosAppDelegate: NSMenuDelegate {
         guard let controller = meeting.controller else { return }
         meeting.headlineItem = nil
         meeting.detailItem = nil
+        meeting.menuLayout = MeetingMenuLayout(controller.state)
         switch controller.state {
         case .idle:
             if let offer = meeting.namingOffer {
@@ -282,6 +290,12 @@ extension HolosAppDelegate: NSMenuDelegate {
     }
 
     // MARK: - Status item
+
+    /// The status item's symbol, clock, and tooltip, without rebuilding the menu.
+    private func refreshStatusItem() {
+        if let tip = meetingToolTip() { statusItem?.button?.toolTip = tip }
+        updateStatusItemAppearance()
+    }
 
     /// Idle: the waveform (with a dot while a naming offer waits). Recording: a red record symbol and the elapsed
     /// time; paused and waiting have their own symbols; "⚠" while a warning is present. Saving: the waveform and "…".

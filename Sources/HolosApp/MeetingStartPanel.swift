@@ -12,7 +12,8 @@ final class MeetingStartPanel: NSObject, NSWindowDelegate {
     struct Environment {
         var devices: InputDevices
         var freeBytes: Int64?
-        /// `holos doctor --json` speakerModels, "unavailable", or nil while unknown.
+        /// `holos doctor --json` speakerModels, "unavailable" when the holos tool cannot run, "unknown" when it ran
+        /// but did not report them, or nil before the first check.
         var speakerModels: String?
         var checking: Bool
         /// `holos setup --speakers` progress while it runs.
@@ -249,6 +250,12 @@ final class MeetingStartPanel: NSObject, NSWindowDelegate {
             case "unavailable":
                 speakersLabel.stringValue = "The holos tool is missing from Holos.app"
                 speakersLabel.textColor = .systemRed
+            case "unknown" where !current.checking:
+                // `holos doctor` ran but did not say: the models may still be missing, so Install stays offered.
+                speakersLabel.stringValue = current.installError.map { "Speaker models: the install failed: \($0)" }
+                    ?? "Could not check the speaker models"
+                speakersLabel.textColor = .systemOrange
+                installButton.isHidden = false
             default:
                 speakersLabel.stringValue = current.checking ? "Checking speaker models…" : "Speaker models: unknown"
                 speakersLabel.textColor = .secondaryLabelColor

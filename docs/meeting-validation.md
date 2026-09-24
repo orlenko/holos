@@ -81,7 +81,9 @@ button of "A meeting is recording.":
 
 With `meetingRecorderMode` set to `inProcess`: **Stop and Save** shows "Saving the meeting’s
 transcript…" and quits once the transcript is saved (speaker labelling continues in its own
-process); **Cancel** changes nothing.
+process); **Cancel** changes nothing. A meeting started with `holos record start` in a terminal is
+not recorded by Holos in either mode, so quitting during it offers all three buttons, as in child
+mode.
 
 Pass: each choice behaves as docs/meeting-design.md §5.8 says.
 

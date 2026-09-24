@@ -20,7 +20,8 @@ struct SetupState {
     /// A meeting is recording, so dictation is paused (docs/meeting-design.md §4.12).
     var dictationPausedForMeeting = false
     /// `holos doctor --json` speakerModels: "verified", "notInstalled", "damaged"; "installing" while
-    /// `holos setup --speakers` runs; "unavailable" when the holos tool cannot run; nil while unknown.
+    /// `holos setup --speakers` runs; "unavailable" when the holos tool cannot run; "unknown" when it ran but did not
+    /// report them; nil before the first check.
     var speakerModels: String?
     /// Install progress, or the last install's error.
     var speakerModelsDetail: String?
