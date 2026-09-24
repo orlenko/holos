@@ -132,6 +132,76 @@ private func controlFiles(_ session: URL) -> [String] {
     try await archive.finish(status: ArchiveStatus.complete)
 }
 
+/// The recorder exits between `send`'s checks and its publish: its last inbox poll and its removal of leftover
+/// requests are over, so nothing would ever read the request. `send` reads status.json again, withdraws the request,
+/// and refuses, so `--no-wait` never reports it as sent.
+@Test func sendWithdrawsARequestWhenTheRecorderExitsWhileItPublishes() async throws {
+    let temp = try TemporaryDirectory("channel")
+    defer { temp.remove() }
+    let archive = try SessionArchive.create(root: temp.url, name: "Council", source: .microphone, locale: "en-CA",
+                                            backend: .speech)
+    let session = archive.directory
+    try AtomicFile.writeJSON(channelStatus(archive.id, phase: .recording), to: SessionPaths.status(session))
+    for command in [ControlCommand.stop, .pause, .marker] {
+        do {
+            _ = try RecorderChannel.send(command, label: command == .marker ? "Vote" : nil, session: session,
+                                         sessionID: archive.id, sender: "cli", afterPublish: {
+                // The recorder's exit, after the publish: status says exited; its leftover sweep already ran.
+                #expect(controlFiles(session).count == 1)
+                try AtomicFile.writeJSON(channelStatus(archive.id, phase: .exited), to: SessionPaths.status(session))
+            })
+            Issue.record("\(command) must be refused once the recorder has exited.")
+        } catch HolosError.unavailable(let message) {
+            #expect(message.contains("already exited"))
+        }
+        #expect(controlFiles(session).isEmpty, "The request (and any marker label) is withdrawn.")
+        try AtomicFile.writeJSON(channelStatus(archive.id, phase: .recording), to: SessionPaths.status(session))
+    }
+    try await archive.finish(status: ArchiveStatus.complete)
+}
+
+/// A recorder that read the request and acknowledged it on its way out has answered it: `send` succeeds.
+@Test func sendKeepsARequestTheExitingRecorderAcknowledged() async throws {
+    let temp = try TemporaryDirectory("channel")
+    defer { temp.remove() }
+    let archive = try SessionArchive.create(root: temp.url, name: "Council", source: .microphone, locale: "en-CA",
+                                            backend: .speech)
+    let session = archive.directory
+    try AtomicFile.writeJSON(channelStatus(archive.id, phase: .stopping), to: SessionPaths.status(session))
+    let request = try RecorderChannel.send(.pause, session: session, sessionID: archive.id, sender: "cli",
+                                           afterPublish: {
+        // The recorder's last poll takes the request and answers it, then status says exited.
+        var inbox = ControlInbox(session: session, sessionID: archive.id)
+        guard case .request(let taken) = inbox.poll().first else {
+            Issue.record("The recorder should find the request.")
+            return
+        }
+        var status = channelStatus(archive.id, phase: .exited)
+        status.handledRequests = [ControlAck(id: taken.id, command: taken.command, result: .ignored,
+                                             message: RecorderMachine.alreadyStopping, handledAt: Date())]
+        try AtomicFile.writeJSON(status, to: SessionPaths.status(session))
+    })
+    #expect(await RecorderChannel.waitForAck(request, session: session, timeout: .seconds(1))?.result == .ignored)
+    try await archive.finish(status: ArchiveStatus.complete)
+}
+
+/// The recorder exits after `send` returned but without reading the request: the waiting sender withdraws it.
+@Test func waitForAckWithdrawsARequestTheRecorderExitedWithout() async throws {
+    let temp = try TemporaryDirectory("channel")
+    defer { temp.remove() }
+    let archive = try SessionArchive.create(root: temp.url, name: "Council", source: .microphone, locale: "en-CA",
+                                            backend: .speech)
+    let session = archive.directory
+    try AtomicFile.writeJSON(channelStatus(archive.id, phase: .recording), to: SessionPaths.status(session))
+    let request = try RecorderChannel.send(.marker, label: "Motion", session: session, sessionID: archive.id,
+                                           sender: "cli")
+    #expect(controlFiles(session) == ["\(request.id).json"])
+    try AtomicFile.writeJSON(channelStatus(archive.id, phase: .exited), to: SessionPaths.status(session))
+    #expect(await RecorderChannel.waitForAck(request, session: session, timeout: .seconds(1)) == nil)
+    #expect(controlFiles(session).isEmpty, "Nothing is left behind for a recorder that is gone.")
+    try await archive.finish(status: ArchiveStatus.complete)
+}
+
 @Test func livenessDistinguishesMaintenance() async throws {
     let temp = try TemporaryDirectory("channel")
     defer { temp.remove() }

@@ -536,8 +536,12 @@ diarization times (after the render time map, §4.7), markers, and gaps. An expo
   during sleep; host time does not, which is why later epochs take their offset from
   this clock. `ManualSessionClock` is the test double.
 - **Epochs.** Each capture start is an epoch with a fresh `MeetingCapture`.
-  `AudioCapture.start(…, timelineOffset:)` sets its host-time origin to
-  `hostNow − timelineOffset`, so frame times continue on the session timeline. Epoch
+  `AudioCapture.start(…, timelineOffset:, timelineOffsetHostTime:)` sets its host-time
+  origin to `offsetHostTime − timelineOffset`, where `offsetHostTime`
+  (`CaptureRequest.offsetHostTime`) is the host time at which the recorder read the
+  session clock for the offset (`hostNow` when nil, as for epoch 0). Frame times
+  continue on the session timeline, and the capture's own setup time (ScreenCaptureKit's
+  content query, the audio engine) is part of the gap before its first frame. Epoch
   k+1 uses `timelineOffset = max(clock.now(), lastFrameEnd + 0.01)`, where
   `lastFrameEnd` is the largest frame end on any track, so a new epoch never overlaps
   the previous one even if the audio clock ran ahead of the host clock.

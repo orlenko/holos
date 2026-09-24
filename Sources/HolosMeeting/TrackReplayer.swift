@@ -38,7 +38,8 @@ public enum TrackReplayer {
         let limits = ReplayLimits(timeouts: timeouts)
         let make: @Sendable () async throws -> ReplaySession = {
             let finals = LockedValue<[TranscriptSegment]>([])
-            let speech = try await limits.run(limits.step, "start") {
+            // A session the factory returns after the limit (it ignored cancellation) is cancelled, never left running.
+            let speech = try await limits.run(limits.step, "start", discardingLate: { await $0.cancel() }) {
                 try await factory(locale, backend, contextualStrings) { update in
                     if update.isFinal { finals.withLock { $0.append(update.segment) } }
                 }
@@ -179,11 +180,12 @@ private struct ReplayLimits: Sendable {
     func finish(_ fed: Double) -> Duration? { timeouts?.speechFinish(audioSeconds: fed) }
 
     /// Runs `operation` within `limit` (nil: no limit). A timeout throws `ReplayTimeout`; a cancelled caller
-    /// `CancellationError`.
+    /// `CancellationError`. A value that arrives after either goes to `discardingLate`.
     func run<Value: Sendable>(_ limit: Duration?, _ what: String,
+                              discardingLate: (@Sendable (Value) async -> Void)? = nil,
                               _ operation: @escaping @Sendable () async throws -> Value) async throws -> Value {
         guard let limit else { return try await operation() }
-        switch await awaitWithTimeout(limit, operation) {
+        switch await awaitWithTimeout(limit, discardingLate: discardingLate, operation) {
         case .finished(let result):
             return try result.get()
         case .timedOut:

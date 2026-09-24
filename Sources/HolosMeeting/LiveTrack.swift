@@ -339,6 +339,9 @@ final class LiveTrack: Sendable {
         return serial
     }
 
+    /// Makes a speech session and records it. One that arrives after the track or the calling task was cancelled (a
+    /// factory that ignored the cancellation, after `cancel()`, `finish()`, or a restart's time limit stopped waiting
+    /// for it) is cancelled at once and `CancellationError` thrown.
     private func makeSession() async throws -> Int {
         let serial = state.withLock { state -> Int in
             defer { state.nextSerial += 1 }
@@ -348,7 +351,16 @@ final class LiveTrack: Sendable {
             guard update.isFinal else { return }
             self?.finalized(update.segment, session: serial)
         }
-        state.withLock { $0.sessions[serial] = SessionRecord(session: session) }
+        let cancelled = Task.isCancelled
+        let kept = state.withLock { state -> Bool in
+            guard !state.cancelled, !cancelled else { return false }
+            state.sessions[serial] = SessionRecord(session: session)
+            return true
+        }
+        guard kept else {
+            await session.cancel()
+            throw CancellationError()
+        }
         return serial
     }
 

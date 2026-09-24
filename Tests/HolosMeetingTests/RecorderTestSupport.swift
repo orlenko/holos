@@ -158,6 +158,35 @@ actor RecorderWordSpeech: LiveSpeechSession {
     }
 }
 
+/// Waits `seconds` of wall time whether or not the calling task is cancelled, like a platform call that ignores
+/// cancellation.
+func recorderWaitIgnoringCancellation(_ seconds: Double) async {
+    await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+        DispatchQueue.global().asyncAfter(deadline: .now() + seconds) { continuation.resume() }
+    }
+}
+
+/// A `LiveSpeechFactory` that ignores cancellation: each call returns `speech`'s next session only after `seconds`.
+func recorderLateSpeechFactory(_ speech: FakeSpeechFactory, after seconds: Double) -> LiveSpeechFactory {
+    let factory = speech.factory
+    return { locale, backend, strings, onUpdate in
+        await recorderWaitIgnoringCancellation(seconds)
+        return try await factory(locale, backend, strings, onUpdate)
+    }
+}
+
+/// Polls the async `condition` every 5 ms until it holds or `timeout` passes, and returns its last value.
+@MainActor
+func recorderEventually(timeout: Duration = .seconds(30), _ condition: () async -> Bool) async -> Bool {
+    let clock = ContinuousClock()
+    let deadline = clock.now.advanced(by: timeout)
+    while clock.now < deadline {
+        if await condition() { return true }
+        try? await Task.sleep(for: .milliseconds(5))
+    }
+    return await condition()
+}
+
 /// A `LiveSpeechFactory` handing out the sessions `make` returns, in call order, and remembering them.
 final class RecorderSpeechFactory: Sendable {
     private let sessions = Mutex<[any LiveSpeechSession]>([])

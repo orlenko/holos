@@ -95,16 +95,32 @@ public final class AudioCapture {
                         microphone: .systemDefault)
     }
 
-    /// Starts capture. Frame times are `timelineOffset` plus the seconds since this call: the host-time origin is
-    /// set to now − `timelineOffset`, so a restarted capture continues a meeting's session timeline
-    /// (docs/meeting-design.md §2.3). System audio is captured mono. `microphone` is honoured from PR2b; until then
-    /// the microphone is always the system default input.
+    /// Host-clock seconds now: the clock capture timestamps and `hostTimeOrigin` are on.
+    public nonisolated static func hostSeconds() -> Double { CMClockGetTime(CMClockGetHostTimeClock()).seconds }
+
+    /// The host-time origin of a capture whose frames continue a session timeline at `timelineOffset`
+    /// (docs/meeting-design.md §2.3). `offsetHostTime` is the host time at which the session clock read
+    /// `timelineOffset`; the origin is anchored there, so the time the capture then takes to set up is part of the
+    /// timeline (and of the gap before its first frame). Nil anchors it at `now` (epoch 0, and dictation). An anchor
+    /// after `now` is taken as `now`, so no frame is stamped before the offset.
+    public nonisolated static func timelineOrigin(timelineOffset: Double, offsetHostTime: Double?,
+                                                  now: Double) -> Double {
+        min(offsetHostTime ?? now, now) - timelineOffset
+    }
+
+    /// Starts capture. Frame times are `timelineOffset` plus the host seconds since `timelineOffsetHostTime` (since
+    /// the origin is set, when nil): the host-time origin is `timelineOrigin(...)`, so a restarted capture continues a
+    /// meeting's session timeline, setup time included (docs/meeting-design.md §2.3). System audio is captured mono.
+    /// `microphone` is honoured from PR2b; until then the microphone is always the system default input.
     public func start(source: AudioSource, applicationBundleID: String?, timelineOffset: Double,
-                      microphone: MicrophoneSelection) async throws {
+                      microphone: MicrophoneSelection, timelineOffsetHostTime: Double? = nil) async throws {
         try Task.checkCancellation()
         guard !started else { throw HolosError.invalidInput("Capture is already running.") }
         guard timelineOffset.isFinite, timelineOffset >= 0 else {
             throw HolosError.invalidInput("The capture timeline offset must be a finite, non-negative number.")
+        }
+        if let timelineOffsetHostTime, !timelineOffsetHostTime.isFinite {
+            throw HolosError.invalidInput("The capture timeline offset's host time must be a finite number.")
         }
         if source != .system {
             let granted = await AVCaptureDevice.requestAccess(for: .audio)
@@ -136,7 +152,8 @@ public final class AudioCapture {
                         startTime: max(0, timestamp - receiver.origin)))
                 } catch { receiver.fail(error) }
             }
-            hostTimeOrigin = CMClockGetTime(CMClockGetHostTimeClock()).seconds - timelineOffset
+            hostTimeOrigin = Self.timelineOrigin(timelineOffset: timelineOffset, offsetHostTime: timelineOffsetHostTime,
+                                                 now: Self.hostSeconds())
             receiver.setOrigin(hostTimeOrigin)
             do { try audioEngine.start() }
             catch { input.removeTap(onBus: 0); throw error }
@@ -174,7 +191,8 @@ public final class AudioCapture {
             if config.captureMicrophone {
                 try captureStream.addStreamOutput(receiver, type: .microphone, sampleHandlerQueue: queue)
             }
-            hostTimeOrigin = CMClockGetTime(CMClockGetHostTimeClock()).seconds - timelineOffset
+            hostTimeOrigin = Self.timelineOrigin(timelineOffset: timelineOffset, offsetHostTime: timelineOffsetHostTime,
+                                                 now: Self.hostSeconds())
             receiver.setOrigin(hostTimeOrigin)
             try await captureStream.startCapture()
             stream = captureStream

@@ -75,6 +75,16 @@ public struct ControlInbox: Sendable {
         return removed
     }
 
+    /// Deletes the request file `<id>.json` from `control/`, if it is still there (a sender withdrawing a request no
+    /// recorder will read). True when it removed it.
+    @discardableResult
+    static func removeRequest(id: String, session: URL) -> Bool {
+        let name = "\(id).json"
+        guard isRequestFileName(name), case .opened(let folder) = openControlFolder(session) else { return false }
+        defer { Darwin.close(folder) }
+        return remove(name, in: folder)
+    }
+
     // MARK: - One file
 
     private enum Taken {

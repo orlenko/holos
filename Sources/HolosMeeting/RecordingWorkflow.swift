@@ -63,6 +63,9 @@ public struct RecordingDependencies: Sendable {
     var statusObserver: (@Sendable (RecorderStatus) -> Void)?
     /// Tests only: replaces the atomic write of status.json (to inject failures).
     var statusWrite: StatusWriter.FileWrite?
+    /// Host-clock seconds, sampled with the session clock when a restart's timeline offset is taken
+    /// (`CaptureRequest.offsetHostTime`). Tests pair it with a manual session clock.
+    var hostTime: @Sendable () -> Double = { AudioCapture.hostSeconds() }
 
     /// No hardware defaults: tests use `.testing(...)` (Fakes.swift). The defaults of the later parameters are
     /// inert: a clock that starts when epoch 0 starts, unlimited free space, and the standard timeouts.
@@ -609,7 +612,8 @@ private final class Recorder {
     }
 
     /// Starts epoch `epoch` (§2.3): the next speech sessions are ready first, then capture starts at
-    /// timelineOffset max(clock.now(), lastFrameEnd + 0.01). A start failure comes back as `startFailed`.
+    /// timelineOffset max(clock.now(), lastFrameEnd + 0.01), anchored at the host time the clock was read
+    /// (`CaptureRequest.offsetHostTime`). A start failure comes back as `startFailed`.
     ///
     /// Neither step can hold up the loop: a speech session not ready within `tuning.restartLimit` is made later by
     /// its live track, and a capture that has not started by then is abandoned (stopped once its start returns) and
@@ -632,7 +636,11 @@ private final class Recorder {
         // The offset follows both the last frame received and the last sample written (contiguous frames are written
         // back to back, which can run past their timestamps).
         let lastEnd = [monitor.lastFrameEnd(), writer.lastFrameEnd > 0 ? writer.lastFrameEnd : nil].compactMap { $0 }.max()
-        let offset = max(clock.now(), lastEnd.map { $0 + 0.01 } ?? 0)
+        // The offset is anchored to the host time at which the session clock was read, so the capture's own setup
+        // (ScreenCaptureKit's content query, the audio engine) stays on the timeline instead of vanishing from the gap.
+        let now = clock.now()
+        let offsetHostTime = dependencies.hostTime()
+        let offset = max(now, lastEnd.map { $0 + 0.01 } ?? 0)
         let capture = dependencies.makeCapture()
         self.capture = capture
         captureEpoch = epoch
@@ -640,7 +648,8 @@ private final class Recorder {
         lastCaptureDrops = 0
         monitor.begin(epoch: epoch)
         let request = CaptureRequest(source: options.source, applicationBundleID: options.applicationBundleID,
-                                     timelineOffset: offset, microphone: options.microphone)
+                                     timelineOffset: offset, microphone: options.microphone,
+                                     offsetHostTime: offsetHostTime)
         let starting = Task { @MainActor in try await capture.start(request) }
         switch await awaitWithTimeout(limit, { try await starting.value }) {
         case .finished(.success):
