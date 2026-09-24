@@ -408,6 +408,21 @@ struct MeetingControllerTuning: Sendable {
         }
     }
 
+    /// A maintenance command the app ran for the meeting in `session` (Recover, Label Speakers) ended with `code`.
+    /// When it ran to its end (0, or 3 with a warning) and the saved labels check out (`speakerLabelsReady`), the
+    /// meeting is offered for naming as a meeting that just ended is: the controller stays idle, and the automatic
+    /// relabel skips a labelled meeting, so nothing else would offer it. Returns whether the labels are ready.
+    @discardableResult
+    public func labellingCommandEnded(session: URL, sessionID: String, name: String, code: Int32) async -> Bool {
+        guard Self.ranToTheEnd(code) else { return false }
+        let ready = await Self.speakerLabelsReadyOffMain(session: session)
+        if ready { onEffect(.offerNaming(sessionID: sessionID, name: name)) }
+        return ready
+    }
+
+    /// `holos session diarize|recover` ended with its labels saved, perhaps with a warning (exit code 3: partial).
+    static func ranToTheEnd(_ code: Int32) -> Bool { code == 0 || code == 3 }
+
     /// Offers naming the speakers of `sessionID` once its saved labels are checked, if they are ready.
     private func offerNamingIfLabelled(sessionID: String, name: String) {
         let session = sessionURL(sessionID)
@@ -573,7 +588,7 @@ struct MeetingControllerTuning: Sendable {
                     self?.relabellingSessionID = nil
                     // Labelled in the background: offered for naming as a meeting that just ended is, once its
                     // labels check out (the controller stays idle, so nothing else would offer it).
-                    if code == 0 { self?.offerNamingIfLabelled(sessionID: pick.id, name: pick.name) }
+                    if Self.ranToTheEnd(code) { self?.offerNamingIfLabelled(sessionID: pick.id, name: pick.name) }
                 }
                 self.relabellingSessionID = pick.id
                 Self.log.notice("Session \(pick.id, privacy: .public): relabelling automatically (attempt \(attempts[pick.id] ?? 0, privacy: .public))")

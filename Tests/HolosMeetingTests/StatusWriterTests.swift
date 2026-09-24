@@ -211,6 +211,58 @@ func recorderReleasesItsLocksOnceALaterExitWriteLands(postProcess: Bool) async t
     #expect(RecorderChannel.liveness(session: session) == .exited)
 }
 
+/// In-process mode: while the exited status is still being retried (`ExitRetry`), the recording has not ended for the
+/// app. The launcher keeps it running (so a quit waits for it) and reports its exit only once status.json says
+/// exited, so the controller finishes it from that status. When the session folder disappears instead, the exit is
+/// reported as a failure.
+@Test(.timeLimit(.minutes(1)), arguments: [false, true]) @MainActor
+func inProcessRecordingEndsOnlyOnceItsExitedStatusIsWritten(folderRemoved: Bool) async throws {
+    let temp = try TemporaryDirectory()
+    defer { temp.remove() }
+    let failing = SharedValue(Int.max)
+    let failures = SharedValue(0)
+    let captures = FakeCaptureFactory([FakeCaptureScript(frames: FakeFrame.run(count: 2))])
+    let launcher = InProcessLauncher(executable: URL(fileURLWithPath: "/usr/bin/false"),
+                                     logDirectory: temp.url.appendingPathComponent("logs", isDirectory: true))
+    launcher.makeDependencies = { stop, _ in
+        var dependencies = recorderDependencies(captures: captures, stop: stop)
+        dependencies.statusWrite = exitedWriteFailing(failing, failures: failures)
+        return dependencies
+    }
+    let id = UUID().uuidString
+    let session = temp.url.appendingPathComponent("\(id).holos", isDirectory: true)
+    let exits = SharedValue<[(code: Int32, phase: RecorderPhase?)]>([])
+    launcher.onExit = { code, _ in
+        let phase = (try? RecorderChannel.readStatus(session: session))??.phase
+        exits.update { $0.append((code, phase)) }
+    }
+    _ = try launcher.launch(MeetingStartSettings(name: "Standup", source: .microphone), sessionID: id,
+                            root: temp.url, vocabularyFile: nil)
+    #expect(await eventually { (captures.captures.first?.consumedFrames ?? 0) >= 2 })
+    #expect(launcher.terminate(sessionID: id))
+    #expect(await eventually { launcher.isWritingExit })
+    #expect(failures.value >= StatusWriter.finishAttempts)
+    try await Task.sleep(for: .milliseconds(300))
+    #expect(exits.value.isEmpty, "No exit is reported while the exited status is being retried.")
+    #expect(launcher.isRecording, "A quit waits for it.")
+    #expect(try SessionArchive.isActive(at: session), "Its lock is still held.")
+
+    if folderRemoved {
+        try FileManager.default.removeItem(at: session)
+    } else {
+        failing.set(0)
+    }
+    #expect(await eventually { !exits.value.isEmpty })
+    #expect(exits.value.count == 1)
+    if folderRemoved {
+        #expect(exits.value.first?.code == 1, "The retry gave up: reported as a failure.")
+    } else {
+        #expect(exits.value.first?.phase == .exited, "The exit is reported once status.json says exited.")
+    }
+    #expect(!launcher.isRecording)
+    #expect(!launcher.isWritingExit)
+}
+
 /// Progress from post-processing reaches status.json in order, and nothing follows `exited` (§4.6 step 7).
 @Test(.timeLimit(.minutes(1))) @MainActor
 func progressIsMirroredInOrder() async throws {

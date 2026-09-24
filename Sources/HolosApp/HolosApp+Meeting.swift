@@ -632,17 +632,23 @@ extension HolosAppDelegate: NSMenuDelegate {
             return
         }
         let session = summary.directory
+        let controller = meeting.controller
         Task { [weak self] in
             // A run counts as labels only once the saved labels load as the catalog and the exports load them
-            // (`MeetingController.speakerLabelsReady`, off the main actor).
-            let labelled = action == .labelSpeakers && code == 0 && madeRun
-                ? await Task.detached { MeetingController.speakerLabelsReady(session: session) }.value
-                : false
+            // (`MeetingController.speakerLabelsReady`, off the main actor). A recovery or labelling that saved usable
+            // labels offers naming, as a meeting that just ended does.
+            let labels = action == .recover || (action == .labelSpeakers && madeRun)
+            var labelled = false
+            if labels, let controller {
+                labelled = await controller.labellingCommandEnded(session: session, sessionID: summary.id,
+                                                                  name: summary.name, code: code)
+            }
             let title: String = switch (action, code) {
             case (.recover, 0): "Recovered “\(name)”."
             case (.recover, 3): "Recovered “\(name)”, with a warning."
             case (.recover, _): "Holos could not recover “\(name)”."
             case (.labelSpeakers, 0) where labelled: "Labelled the speakers of “\(name)”."
+            case (.labelSpeakers, 3) where labelled: "Labelled the speakers of “\(name)”, with a warning."
             case (.labelSpeakers, 0), (.labelSpeakers, 3): "The speakers of “\(name)” were not labelled."
             case (.labelSpeakers, _): "Holos could not label the speakers of “\(name)”."
             case (.deleteAudio, _): "Holos could not delete the audio of “\(name)”."
@@ -836,8 +842,10 @@ extension HolosAppDelegate: NSMenuDelegate {
             return .terminateCancel
         case .idle, .finishing, .failed:
             // An in-process recording still saving its transcript (also one whose start timed out in the menu but
-            // that did start) is waited for; quitting would cut the save short.
-            guard inProcess, !Self.transcriptSaved(controller.status?.phase) else { return .terminateNow }
+            // that did start), or still retrying its exited status (`ExitRetry`), is waited for; quitting would cut
+            // the save short.
+            let writingExit = meeting.inProcess?.isWritingExit == true
+            guard inProcess, writingExit || !Self.transcriptSaved(controller.status?.phase) else { return .terminateNow }
             waitBeforeQuitting(inProcess: true)
             return .terminateLater
         }
@@ -865,7 +873,9 @@ extension HolosAppDelegate: NSMenuDelegate {
                     break
                 }
                 let recordingHere = self.meeting.inProcess?.isRecording == true
-                if Self.readyToQuit(controller, inProcess: inProcess, recordingHere: recordingHere) { break }
+                let writingExit = self.meeting.inProcess?.isWritingExit == true
+                if Self.readyToQuit(controller, inProcess: inProcess, recordingHere: recordingHere,
+                                    writingExit: writingExit) { break }
                 try? await Task.sleep(for: .milliseconds(200))
             }
             self?.meeting.savingWindow?.close()
@@ -885,8 +895,11 @@ extension HolosAppDelegate: NSMenuDelegate {
         return status.phase != .stopping && !controller.reducer.stopRequested
     }
 
-    /// Child mode: once capture stopped. In-process: once the recording in this process ended or saved its transcript.
-    private static func readyToQuit(_ controller: MeetingController, inProcess: Bool, recordingHere: Bool) -> Bool {
+    /// Child mode: once capture stopped. In-process: once the recording in this process ended or saved its transcript,
+    /// and is not retrying its exited status (`writingExit`: quitting would leave the status unfinished).
+    private static func readyToQuit(_ controller: MeetingController, inProcess: Bool, recordingHere: Bool,
+                                    writingExit: Bool) -> Bool {
+        if inProcess && writingExit { return false }
         if inProcess && !recordingHere { return true }
         switch controller.state {
         case .starting, .active:

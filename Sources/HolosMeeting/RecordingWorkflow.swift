@@ -73,6 +73,9 @@ public struct RecordingDependencies: Sendable {
     public var findInputDevices: @Sendable () -> InputDevices
     /// Device-list changes and screen unlocks, after which a waiting recorder retries at once (§4.2); nil: none.
     public var environmentEvents: AudioEnvironmentEvents?
+    /// A recorder running inside the app sets this to wait, after `run` returns, for an exited status that could not
+    /// be written at once (`ExitRetry`); nil (a child recorder): the process exit releases the locks instead.
+    public var exitStatusWait: ExitStatusWait?
     /// Loop cadence and queue sizes; tests shorten them.
     var tuning = RecorderTuning()
     /// Tests only: sees every status.json written, in order.
@@ -1396,6 +1399,7 @@ private final class Recorder {
                 retry.start(status: status, first: dependencies.tuning.exitRetry,
                             limit: dependencies.tuning.exitRetryLimit)
                 exitRetry = retry
+                dependencies.exitStatusWait?.track(retry)
             }
         }
     }
@@ -1436,6 +1440,10 @@ final class ExitRetry: Sendable {
         var exit: RecorderExit
         var archive: SessionArchive?
         var leases: [ProcessingLease] = []
+        /// status.json was made to say exited (false when the retry stopped because the folder is gone).
+        var written = false
+        /// Callers of `finished()` waiting for the retry to end.
+        var waiters: [CheckedContinuation<Bool, Never>] = []
     }
 
     private let session: URL
@@ -1489,6 +1497,7 @@ final class ExitRetry: Sendable {
                     Self.log.notice("Session \(self.sessionID, privacy: .public): wrote the exited status on a later try")
                     ControlInbox.removeLeftovers(session: session)
                     ControlInbox.removeClosedMarker(session: session)
+                    state.withLock { $0.written = true }
                     break
                 } catch {
                     delay = min(delay * 2, limit)
@@ -1498,19 +1507,55 @@ final class ExitRetry: Sendable {
         }
     }
 
+    /// Returns once the retry has ended and let the locks go: true when it wrote the exited status, false when it
+    /// stopped because the session folder is gone.
+    func finished() async -> Bool {
+        await withCheckedContinuation { continuation in
+            let result = state.withLock { value -> Bool? in
+                guard !value.done else { return value.written }
+                value.waiters.append(continuation)
+                return nil
+            }
+            if let result { continuation.resume(returning: result) }
+        }
+    }
+
+    /// Lets the held locks go, then tells the waiters (`finished()`) how the retry ended.
     private func releaseHeld() async {
-        let (archive, leases) = state.withLock { value -> (SessionArchive?, [ProcessingLease]) in
+        let (archive, leases, waiters, written) = state.withLock { value in
             value.done = true
-            defer { value.archive = nil; value.leases = [] }
-            return (value.archive, value.leases)
+            defer { value.archive = nil; value.leases = []; value.waiters = [] }
+            return (value.archive, value.leases, value.waiters, value.written)
         }
         await archive?.releaseLock()
         for lease in leases { lease.release() }
+        for waiter in waiters { waiter.resume(returning: written) }
     }
 
     private static func sessionExists(_ session: URL) -> Bool {
         var info = stat()
         return lstat(session.path, &info) == 0
+    }
+}
+
+/// Lets a recorder running inside the app (`InProcessLauncher`) wait, after `RecordingWorkflow.run` returns, for an
+/// exited status the recording could not write at once (`RecordingDependencies.exitStatusWait`): until then the
+/// recording has not ended, its locks are still held, and the app keeps following it and waits for it before quitting.
+public final class ExitStatusWait: Sendable {
+    private let retry = Mutex<ExitRetry?>(nil)
+
+    public init() {}
+
+    func track(_ retry: ExitRetry) { self.retry.withLock { $0 = retry } }
+
+    /// True when the exited status is being retried in the background.
+    public var retrying: Bool { retry.withLock { $0 != nil } }
+
+    /// Returns at once when no retry was started, else once it ends: true when the exited status is written (or was
+    /// never retried), false when the retry stopped because the session folder is gone.
+    public func finished() async -> Bool {
+        guard let retry = retry.withLock({ $0 }) else { return true }
+        return await retry.finished()
     }
 }
 

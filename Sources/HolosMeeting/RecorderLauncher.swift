@@ -145,9 +145,9 @@ import os
         let stop = ManualStopSource()
         let log = logDirectory.appendingPathComponent("recorder-\(sessionID).log", isDirectory: false)
         try? AtomicFile.ensurePrivateDirectory(logDirectory)
-        let dependencies = RecordingDependencies.live(
-            stop: stop, reporter: LoggingReporter(),
-            postProcess: Self.childPostProcessHook(executable: executable, log: log))
+        var dependencies = makeDependencies(stop, Self.childPostProcessHook(executable: executable, log: log))
+        let exitWait = ExitStatusWait()
+        dependencies.exitStatusWait = exitWait
         let exit = onExit
         let task = Task { @MainActor [weak self] in
             let activity = ProcessInfo.processInfo.beginActivity(
@@ -162,6 +162,18 @@ import os
                 code = 1
                 message = error.localizedDescription
             }
+            // The exited status could not be written yet (`ExitRetry`): the recording has not ended until it is, so
+            // it stays running here (the controller keeps following it, and a quit waits for it).
+            if exitWait.retrying {
+                self?.exitRetrying.insert(sessionID)
+                Self.log.notice("Session \(sessionID, privacy: .public): waiting for the exited status to be written")
+                let written = await exitWait.finished()
+                self?.exitRetrying.remove(sessionID)
+                if !written, code == 0 {
+                    code = 1
+                    message = "The meeting's folder disappeared before Holos could record that it ended."
+                }
+            }
             self?.running[sessionID] = nil
             Self.log.notice("Session \(sessionID, privacy: .public): in-process recording ended with \(code, privacy: .public)")
             exit?(code, message)
@@ -169,6 +181,19 @@ import os
         running[sessionID] = (task, stop)
         return nil
     }
+
+    /// The recording's dependencies from its stop source and post-process hook: the live ones (tests replace them).
+    var makeDependencies: @MainActor (ManualStopSource, @escaping PostProcessHook) -> RecordingDependencies = {
+        stop, hook in
+        RecordingDependencies.live(stop: stop, reporter: LoggingReporter(), postProcess: hook)
+    }
+
+    /// Recordings whose run returned but whose exited status is still being retried (`ExitRetry`).
+    private var exitRetrying: Set<String> = []
+
+    /// True while a recording here ended but could not yet write its exited status: its locks are held and it is
+    /// still retrying, so quitting now would cut that short.
+    public var isWritingExit: Bool { !exitRetrying.isEmpty }
 
     /// Like SIGTERM to a child: a graceful stop.
     @discardableResult
@@ -545,8 +570,12 @@ public enum ProcessSpawner {
 
     /// Removes the regular files in `folder` whose names start with `prefix` and that were last modified before
     /// `cutoff` (left by an app that crashed). Links, folders, newer files, and a file renamed onto a checked name
-    /// after the check are left alone.
+    /// after the check are left alone. Also finishes the removals of files in `folder` that a crash interrupted
+    /// (`AtomicFile.removeStrandedRemovalFolders`, for folders older than `AtomicFile.strandedRemovalGrace`): the
+    /// vocabulary and command-output files are removed there, by the app or the recorder.
     public static func removeStaleFiles(in folder: URL, prefix: String, suffix: String = "", olderThan cutoff: Date) {
+        AtomicFile.removeStrandedRemovalFolders(
+            in: folder, olderThan: Date().addingTimeInterval(-AtomicFile.strandedRemovalGrace))
         guard let names = try? FileManager.default.contentsOfDirectory(atPath: folder.path) else { return }
         for name in names where name.hasPrefix(prefix) && name.hasSuffix(suffix) {
             AtomicFile.removeRegularFile(folder.appendingPathComponent(name, isDirectory: false)) { info in

@@ -3658,9 +3658,17 @@ replay, rebuild, and import read `vocabulary.json`. Because the temporary file h
 names and correction terms, the app side owns cleanup too: `MeetingController` deletes it
 on `launchFailed`, when the child exits for any reason, and as soon as the first
 `status.json` for that session appears (the recorder has copied it by then). On launch the
-app also removes any `$TMPDIR/holos-vocabulary-*.json` older than one hour. Tests (PR4):
+app also removes any `$TMPDIR/holos-vocabulary-*.json` older than one hour. A hand-off
+file is removed by moving it into a new 0700 folder `.holos-remove-<device>.<inode>.<UUID>`
+beside it and unlinking it there (`AtomicFile.readAndRemove`, `removeRegularFile`), so a
+file renamed onto its name meanwhile is never deleted. If the process ends, or the unlink
+fails, after the move, the same launch sweep finishes it: in each such folder older than
+five minutes that is a real folder owned by this user with mode 0700, it removes `file`
+only if it is the regular file the folder's name records (same device and inode), then the
+folder if empty; anything else stays. Tests (PR4):
 `vocabularyFileRemovedOnLaunchFailure` (spawn fails), `vocabularyFileRemovedOnEarlyExit`
-(child exits before any status), `staleVocabularyFilesSwept`.
+(child exits before any status), `staleVocabularyFilesSwept`,
+`strandedRemovalFolderIsFinishedBySweep`, `strandedRemovalSweepRemovesOnlyTheRecordedFile`.
 
 ### 4.13 Retention and deletion
 
@@ -5408,7 +5416,8 @@ public enum AutoRelabelPolicy {
 - `statusRead` phase `transcribing`/`postprocessing` → `finishing`,
   `setDictationPaused(false)`.
 - `statusRead` phase `exited` → `idle`, `finished(id, summary, speakersReady)`, and
-  `offerNaming` when speakers are ready. Summary: "Saved Council meeting (2:58:12).
+  `offerNaming` when speakers are ready (post-processing `succeeded` or `partial`, then
+  checked against the saved labels by `MeetingController`). Summary: "Saved Council meeting (2:58:12).
   Speakers labelled." or the exit's post-processing message ("… No speaker labels:
   speaker models are not installed.").
 - `active` + (liveness `dead`, or `childExited` without an `exited` status) →
@@ -5510,8 +5519,11 @@ recording: Council meeting (1:12:40 saved)." `[Recover]` `[Later]`. Recover runs
 Automatic relabel: on launch and every 30 s while idle, `AutoRelabelPolicy.candidates`
 picks at most one session and `MaintenanceLauncher` runs `holos session diarize <path>
 --json`; attempts are counted in `UserDefaults "meeting.relabelAttempts"`. This covers a
-Mac shut down or put to sleep while labelling. A relabel that exits 0 and leaves usable
-labels emits the same `offerNaming` as a meeting that just ended, once.
+Mac shut down or put to sleep while labelling. A relabel that exits 0 (or 3, labelled with a
+warning) and leaves usable labels emits the same `offerNaming` as a meeting that just ended,
+once. So do Recover and Label Speakers run from the Meetings window or the interrupted
+prompt (`MeetingController.labellingCommandEnded`): the controller stays idle for them, and
+the automatic relabel skips a labelled meeting, so nothing else would offer it.
 
 Labels are ready (a finished meeting's `speakersReady`, `offerNaming`, the restored naming
 offer, the Label Speakers result) only when `SavedSpeakerState` finds them usable, the
@@ -5530,7 +5542,12 @@ Child mode: `[Stop and Save]` (send stop; `.terminateLater`; reply once the stat
 is `transcribing` or later, at most 10 s; the recorder finishes labelling on its own),
 `[Keep Recording]` (quit the app only), `[Cancel]`. In-process mode: `[Stop and Save]`
 shows progress and replies once the phase is `postprocessing` or later (the transcript
-is saved; labelling continues in its child), at most 10 minutes; `[Cancel]`.
+is saved; labelling continues in its child), at most 10 minutes; `[Cancel]`. An in-process
+recording whose exited status could not be written yet (`ExitRetry` still retrying it and
+holding the locks) has not ended: `InProcessLauncher` keeps it running, reports its exit
+only once `status.json` says exited (or the retry stops because the folder is gone, as a
+failure), and a quit waits for it the same way (`isWritingExit`). Test
+`inProcessRecordingEndsOnlyOnceItsExitedStatusIsWritten`.
 
 About Holos: `NSApp.orderFrontStandardAboutPanel(options: [.credits: …])` with the
 credits text of §4.8 embedded as a string constant (the app has no resource bundle).
