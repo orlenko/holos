@@ -51,20 +51,18 @@ public enum SessionSpeakerStore {
         guard run.id == id, SessionArchive.validToken(run.transcriptID) else {
             throw HolosError.invalidInput("speakers/runs/\(id).json does not describe run \(id).")
         }
+        try requireSameSession(run.sessionID, session: session, what: "speakers/runs/\(id).json")
         return run
     }
 
     /// IDs of every run file, sorted.
     public static func runIDs(session: URL) throws -> [String] {
         try SessionLockFile.requireSessionFolder(session)
-        let folder = SessionPaths.runs(session)
-        guard try folderExists(folder) else { return [] }
-        let names = try FileManager.default.contentsOfDirectory(atPath: folder.path)
-        return names.compactMap { name -> String? in
-            guard name.hasSuffix(".json") else { return nil }
-            let id = String(name.dropLast(5))
-            guard SessionArchive.validToken(id), isRegularFile(folder.appendingPathComponent(name)) else { return nil }
-            return id
+        guard let entries = try AtomicFile.listFolder(SessionPaths.runs(session)) else { return [] }
+        return entries.compactMap { entry -> String? in
+            guard entry.type == S_IFREG, entry.name.hasSuffix(".json") else { return nil }
+            let id = String(entry.name.dropLast(5))
+            return SessionArchive.validToken(id) ? id : nil
         }.sorted()
     }
 
@@ -85,7 +83,7 @@ public enum SessionSpeakerStore {
         try requireToken(head.runID, "run ID")
         try requireWritableSchema(head.schemaVersion, SchemaVersion.speakerHead, "The speaker head")
         try SessionLockFile.requireSessionFolder(session)
-        guard isRegularFile(SessionPaths.run(head.runID, in: session)) else {
+        guard try AtomicFile.entryType(at: SessionPaths.run(head.runID, in: session)) == S_IFREG else {
             throw HolosError.invalidInput("Speaker run \(head.runID) does not exist in this session.")
         }
         try ensureSpeakerFolder(SessionPaths.speakers(session), session: session)
@@ -168,6 +166,7 @@ public enum SessionSpeakerStore {
         let voice = try SchemaVersion.decode(SessionVoiceData.self, from: data,
                                              current: SchemaVersion.voiceData, name: name)
         guard voice.runID == runID else { throw HolosError.invalidInput("\(name) does not describe run \(runID).") }
+        try requireSameSession(voice.sessionID, session: session, what: name)
         return voice
     }
 
@@ -176,28 +175,15 @@ public enum SessionSpeakerStore {
         try requireToken(data.runID, "run ID")
         try requireWritableSchema(data.schemaVersion, SchemaVersion.voiceData, "The voice data")
         try requireSameSession(data.sessionID, session: session, what: "The voice data")
-        let folder = SessionPaths.voiceDirectory(session)
-        try ensureSpeakerFolder(folder, session: session)
-        try excludeFromBackup(folder)
+        try ensureSpeakerFolder(SessionPaths.voiceDirectory(session), session: session, excludeFromBackup: true)
         try AtomicFile.writeJSON(data, to: SessionPaths.voiceData(data.runID, in: session))
     }
 
-    /// Removes speakers/voice/ and everything in it. Nothing to remove is not an error.
+    /// Removes speakers/voice/ and everything in it. Nothing to remove is not an error. Refuses
+    /// (`invalidInput`) when speakers/ is a symbolic link or a file, so the delete never leaves the session.
     public static func deleteVoiceData(session: URL) throws {
         try SessionLockFile.requireSessionFolder(session)
-        let folder = SessionPaths.voiceDirectory(session)
-        var info = stat()
-        guard lstat(folder.path, &info) == 0 else {
-            if errno == ENOENT { return }
-            throw HolosError.io("Cannot inspect speakers/voice: \(AtomicFile.errnoText()).")
-        }
-        do {
-            // Removes a symlink itself, never its target.
-            try FileManager.default.removeItem(at: folder)
-        } catch {
-            throw HolosError.io("Cannot delete voice data: \(error.localizedDescription)")
-        }
-        try AtomicFile.syncDirectory(SessionPaths.speakers(session))
+        guard try AtomicFile.removeTree(["speakers", "voice"], in: session) else { return }
         log.info("Deleted session voice data")
     }
 
@@ -222,13 +208,27 @@ public enum SessionSpeakerStore {
         }
     }
 
-    /// Creates `folder` (a folder under speakers/) and speakers/ itself as 0700, refusing symlinks at each level.
-    private static func ensureSpeakerFolder(_ folder: URL, session: URL) throws {
-        try SessionLockFile.requireSessionFolder(session)
-        let speakers = SessionPaths.speakers(session)
-        try AtomicFile.ensurePrivateDirectory(speakers)
-        if folder.standardizedFileURL.path != speakers.standardizedFileURL.path {
-            try AtomicFile.ensurePrivateDirectory(folder)
+    /// Creates `folder` (speakers/ or a folder under it) and speakers/ itself as 0700 in one `openat`/`mkdirat`
+    /// chain from the session folder's descriptor, refusing a symbolic link or file at each level, even one
+    /// swapped in during the call. Nothing is checked by path first. With `excludeFromBackup`, the backup exclusion
+    /// is set on the descriptor that chain returned, so a link swapped in afterwards never redirects it.
+    private static func ensureSpeakerFolder(_ folder: URL, session: URL, excludeFromBackup: Bool = false) throws {
+        let sessionComponents = session.standardizedFileURL.pathComponents
+        let folderComponents = folder.standardizedFileURL.pathComponents
+        guard folderComponents.count > sessionComponents.count,
+              Array(folderComponents.prefix(sessionComponents.count)) == sessionComponents else {
+            throw HolosError.invalidInput("\(folder.lastPathComponent) is not a folder of this session.")
+        }
+        let sessionFD = try SessionLockFile.openSessionFolder(session)
+        defer { Darwin.close(sessionFD) }
+        guard let fd = try AtomicFile.openFolder(Array(folderComponents.dropFirst(sessionComponents.count)),
+                                                 in: sessionFD, baseURL: session, create: true) else {
+            throw HolosError.io("Cannot create folder \(folder.lastPathComponent).")
+        }
+        defer { Darwin.close(fd) }
+        if excludeFromBackup {
+            beforeBackupExclusion?(folder)
+            try Self.excludeFromBackup(fd, name: folder.lastPathComponent)
         }
     }
 
@@ -241,33 +241,29 @@ public enum SessionSpeakerStore {
         log.notice("Repaired a torn speaker edit journal; dropped \(data.count - keep, privacy: .public) bytes after a backup")
     }
 
-    private static func excludeFromBackup(_ folder: URL) throws {
-        var url = folder
-        var values = URLResourceValues()
-        values.isExcludedFromBackup = true
-        do {
-            try url.setResourceValues(values)
-        } catch {
-            throw HolosError.io("Cannot exclude voice data from backups: \(error.localizedDescription)")
+    /// The extended attribute behind `URLResourceValues.isExcludedFromBackup`, and the value Foundation writes
+    /// for it: a binary property list holding the string "com.apple.backupd".
+    static let backupExclusionAttribute = "com.apple.metadata:com_apple_backup_excludeItem"
+    static let backupExclusionValue: Data = {
+        // Encoding a constant string cannot fail.
+        (try? PropertyListSerialization.data(fromPropertyList: "com.apple.backupd", format: .binary, options: 0))
+            ?? Data()
+    }()
+
+    /// Marks the open folder `fd` (named `name`) as excluded from backups with `fsetxattr`, the same attribute
+    /// and value `URLResourceValues.isExcludedFromBackup = true` writes, but on the descriptor, never by path.
+    static func excludeFromBackup(_ fd: Int32, name: String) throws {
+        let result = backupExclusionValue.withUnsafeBytes { bytes in
+            fsetxattr(fd, backupExclusionAttribute, bytes.baseAddress, bytes.count, 0, 0)
+        }
+        guard result == 0 else {
+            throw HolosError.io("Cannot exclude \(name) from backups: \(AtomicFile.errnoText()).")
         }
     }
 
-    private static func folderExists(_ url: URL) throws -> Bool {
-        var info = stat()
-        guard lstat(url.path, &info) == 0 else {
-            if errno == ENOENT { return false }
-            throw HolosError.io("Cannot inspect \(url.lastPathComponent): \(AtomicFile.errnoText()).")
-        }
-        guard (info.st_mode & S_IFMT) == S_IFDIR else {
-            throw HolosError.invalidInput("\(url.lastPathComponent) must be a folder, not a file or a symbolic link.")
-        }
-        return true
-    }
-
-    private static func isRegularFile(_ url: URL) -> Bool {
-        var info = stat()
-        return lstat(url.path, &info) == 0 && (info.st_mode & S_IFMT) == S_IFREG
-    }
+    /// Test hook: while set (a task-local value), called with the folder's URL after `ensureSpeakerFolder` has
+    /// opened it and just before it sets the backup exclusion, so tests can swap the folder for a link.
+    @TaskLocal static var beforeBackupExclusion: (@Sendable (URL) -> Void)? = nil
 }
 
 /// Splits an append-only journal into complete lines.

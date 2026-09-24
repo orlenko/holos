@@ -15,15 +15,29 @@ public struct TranscriptPointer: Codable, Sendable, Equatable {
 extension TranscriptPointer {
     /// Reads the pointer of `session`; nil when the file does not exist.
     static func read(session: URL) throws -> TranscriptPointer? {
-        let url = SessionPaths.transcriptPointer(session)
+        try read(SessionPaths.transcriptPointer(session), name: "transcripts/current.json")
+    }
+
+    /// Reads `transcripts/current.pending` (same format): the revision a save started publishing; nil when
+    /// no save is pending.
+    static func readPending(session: URL) throws -> TranscriptPointer? {
+        try read(SessionPaths.pendingTranscript(session), name: "transcripts/current.pending")
+    }
+
+    private static func read(_ url: URL, name: String) throws -> TranscriptPointer? {
         guard let data = try AtomicFile.readIfPresent(url, maxBytes: 64 << 10) else { return nil }
         let pointer = try SchemaVersion.decode(TranscriptPointer.self, from: data,
-                                               current: SchemaVersion.transcriptPointer,
-                                               name: "transcripts/current.json")
-        guard SessionArchive.validToken(pointer.transcriptID) else {
-            throw HolosError.invalidInput("transcripts/current.json names an invalid transcript ID.")
+                                               current: SchemaVersion.transcriptPointer, name: name)
+        guard validTranscriptID(pointer.transcriptID) else {
+            throw HolosError.invalidInput("\(name) names an invalid transcript ID.")
         }
         return pointer
+    }
+
+    /// A token that is not "current" in any case: transcripts/current.json is the pointer, never a revision
+    /// (and the volume may be case-insensitive).
+    static func validTranscriptID(_ id: String) -> Bool {
+        SessionArchive.validToken(id) && id.lowercased() != "current"
     }
 }
 
