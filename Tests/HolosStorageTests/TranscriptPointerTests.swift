@@ -79,6 +79,36 @@ private func pointerTranscript(createdAt seconds: TimeInterval, text: String = "
     guard case .unavailable? = error else { Issue.record("Expected unavailable, got \(String(describing: error))"); return }
 }
 
+@Test func retryDoesNotOverwriteAnUnreadablePointer() async throws {
+    let root = try pointerTemporaryRoot()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let writer = try pointerArchive(in: root)
+    let a = pointerTranscript(createdAt: 1_790_000_000, text: "A")
+    let b = pointerTranscript(createdAt: 1_790_000_001, text: "B")
+    try await writer.saveTranscript(a, writeLegacyExports: false)
+    try await writer.saveTranscript(b, writeLegacyExports: false)
+    let pointerURL = SessionPaths.transcriptPointer(writer.directory)
+
+    // A pointer from a newer Holos: retrying A is refused as newer and leaves the pointer alone.
+    try AtomicFile.writeJSON(TranscriptPointer(schemaVersion: 2, transcriptID: b.id), to: pointerURL)
+    let newer = try Data(contentsOf: pointerURL)
+    let error = await #expect(throws: HolosError.self) { try await writer.saveTranscript(a, writeLegacyExports: false) }
+    guard case .unavailable? = error else { Issue.record("Expected unavailable, got \(String(describing: error))"); return }
+    #expect(try Data(contentsOf: pointerURL) == newer)
+
+    // A damaged pointer is refused too, not replaced.
+    let damaged = Data("{not json".utf8)
+    try AtomicFile.write(damaged, to: pointerURL)
+    await #expect(throws: HolosError.self) { try await writer.saveTranscript(a, writeLegacyExports: false) }
+    #expect(try Data(contentsOf: pointerURL) == damaged)
+
+    // A missing pointer still lets the retry finish.
+    try FileManager.default.removeItem(at: pointerURL)
+    try await writer.saveTranscript(a, writeLegacyExports: false)
+    #expect(try SessionArchive.currentTranscriptID(at: writer.directory) == a.id)
+    try await writer.finish(status: ArchiveStatus.complete)
+}
+
 @Test func pointerToAMissingRevisionIsReported() async throws {
     let root = try pointerTemporaryRoot()
     defer { try? FileManager.default.removeItem(at: root) }

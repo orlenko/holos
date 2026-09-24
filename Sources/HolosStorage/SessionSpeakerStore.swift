@@ -51,6 +51,7 @@ public enum SessionSpeakerStore {
         guard run.id == id, SessionArchive.validToken(run.transcriptID) else {
             throw HolosError.invalidInput("speakers/runs/\(id).json does not describe run \(id).")
         }
+        try requireSameSession(run.sessionID, session: session, what: "speakers/runs/\(id).json")
         return run
     }
 
@@ -168,6 +169,7 @@ public enum SessionSpeakerStore {
         let voice = try SchemaVersion.decode(SessionVoiceData.self, from: data,
                                              current: SchemaVersion.voiceData, name: name)
         guard voice.runID == runID else { throw HolosError.invalidInput("\(name) does not describe run \(runID).") }
+        try requireSameSession(voice.sessionID, session: session, what: name)
         return voice
     }
 

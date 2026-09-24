@@ -299,8 +299,9 @@ public actor SessionArchive {
         let encoded = try Self.encode(transcript)
         if let existing = try AtomicFile.readIfPresent(snapshot, maxBytes: Self.maxTranscriptBytes) {
             // The same bytes, not yet current, mean an earlier save of this transcript failed after creating
-            // the revision (for example while publishing the pointer); retrying finishes it.
-            let current = (try? TranscriptPointer.read(session: directory))?.transcriptID
+            // the revision (for example while publishing the pointer); retrying finishes it. Only a missing
+            // pointer counts as "not current": a damaged or newer pointer is refused, never overwritten.
+            let current = try TranscriptPointer.read(session: directory)?.transcriptID
             guard existing == encoded, current != transcript.id else {
                 throw HolosError.invalidInput("Transcript revision already exists.")
             }

@@ -238,6 +238,34 @@ private func isInvalidInput(_ error: HolosError?) -> Bool {
     try SessionSpeakerStore.deleteVoiceData(session: session)
 }
 
+@Test func runAndVoiceDataOfAnotherSessionAreRefusedOnRead() async throws {
+    let root = try storeTemporaryRoot()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let (session, _) = try await storeMakeSession(in: root)
+    let (other, otherID) = try await storeMakeSession(in: root)
+    // Files written into the other session, then copied here under the same names.
+    let run = storeRun(sessionID: otherID)
+    try SessionSpeakerStore.writeRun(run, session: other)
+    let voice = SessionVoiceData(runID: run.id, sessionID: otherID, createdAt: storeDate,
+                                 embeddingModel: EmbeddingModelID(id: "model", revision: "rev"),
+                                 centroids: [:], turnEmbeddings: [])
+    try SessionSpeakerStore.writeVoiceData(voice, session: other)
+    try FileManager.default.createDirectory(at: SessionPaths.runs(session), withIntermediateDirectories: true)
+    try FileManager.default.createDirectory(at: SessionPaths.voiceDirectory(session), withIntermediateDirectories: true)
+    try FileManager.default.copyItem(at: SessionPaths.run(run.id, in: other), to: SessionPaths.run(run.id, in: session))
+    try FileManager.default.copyItem(at: SessionPaths.voiceData(run.id, in: other),
+                                     to: SessionPaths.voiceData(run.id, in: session))
+
+    #expect(isInvalidInput(#expect(throws: HolosError.self) {
+        try SessionSpeakerStore.readRun(id: run.id, session: session)
+    }))
+    #expect(isInvalidInput(#expect(throws: HolosError.self) {
+        try SessionSpeakerStore.readVoiceData(runID: run.id, session: session)
+    }))
+    #expect(try SessionSpeakerStore.readRun(id: run.id, session: other) == run)
+    #expect(try SessionSpeakerStore.readVoiceData(runID: run.id, session: other) == voice)
+}
+
 @Test func recognitionIsReplacedAndReadBack() async throws {
     let root = try storeTemporaryRoot()
     defer { try? FileManager.default.removeItem(at: root) }
