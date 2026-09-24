@@ -285,22 +285,161 @@ private func editorRefusal(_ expected: String, _ body: () throws -> Void,
     let unnamed = try SessionFixtures.view(session)
     try SpeakerEditor.apply([.rename(speakerID: "system:S1", name: "A")], view: unnamed, session: session,
                             source: "cli", regenerateExports: false)
+    let renameA = try #require(try editorJournal(session).last?.id)
     // A line written by something other than the editor, made on the unnamed view: stale behind the rename.
-    let stale = SpeakerEditAction.rename(speakerID: "system:S1", name: "X")
+    let staleAction = SpeakerEditAction.rename(speakerID: "system:S1", name: "X")
+    let stale = SpeakerEdit(baseRunID: run.id, source: "cli", action: staleAction,
+                            expected: unnamed.fingerprint(for: staleAction))
     try SessionArchive.withSpeakerLock(at: session) {
-        try SessionSpeakerStore.appendEdits([SpeakerEdit(baseRunID: run.id, source: "cli", action: stale,
-                                                         expected: unnamed.fingerprint(for: stale))],
-                                            session: session)
+        try SessionSpeakerStore.appendEdits([stale], session: session)
     }
+    // A later, unrelated change, undone first: the stale line does not depend on it.
+    try SpeakerEditor.apply([.rename(speakerID: "system:S2", name: "B")], view: try SessionFixtures.view(session),
+                            session: session, source: "cli", regenerateExports: false)
+    try SpeakerEditor.undoLast(view: try SessionFixtures.view(session), session: session, source: "cli",
+                               regenerateExports: false)
     let view = try SessionFixtures.view(session)
-    #expect(view.staleEdits.count == 1)
+    #expect(view.staleEdits.map(\.editID) == [stale.id])
+    #expect(view.lastUndoableBatchID != nil)
+
+    // Undoing the rename to A would let the stale rename to X apply; the undo keeps it out in the same batch
+    // instead of refusing forever.
+    let result = try SpeakerEditor.undoLast(view: view, session: session, source: "cli", regenerateExports: false)
+    let lines = try editorJournal(session)
+    let undo = lines.suffix(2)
+    #expect(undo.map(\.action) == [.revert(editID: renameA), .revert(editID: stale.id)])
+    #expect(Set(undo.map(\.batchID)).count == 1)
+    let projection = try #require(result.snapshot.projection)
+    #expect(projection.appliedEditIDs.isEmpty)
+    #expect(projection.staleEdits.isEmpty)
+    #expect(Set(projection.revertedEditIDs).isSuperset(of: [renameA, stale.id]))
+    #expect(projection.speakers.first { $0.id == "system:S1" }?.label == "Speaker 1")
+    #expect(projection.lastUndoableBatchID == nil)
+
+    _ = editorRefusal("invalidInput") {
+        try SpeakerEditor.undoLast(view: projection, session: session, source: "cli", regenerateExports: false)
+    }
+}
+
+@Test func revertThatChangesALaterEditIsRefused() async throws {
+    let temp = try TemporaryDirectory("editor")
+    defer { temp.remove() }
+    let (session, _, _) = try await SessionFixtures.labelledSession(in: temp.url)
+    try SpeakerEditor.apply([.rename(speakerID: "system:S1", name: "A")], view: try SessionFixtures.view(session),
+                            session: session, source: "cli", regenerateExports: false)
+    let renameA = try #require(try editorJournal(session).last?.id)
+    // The rename to B was made on a view where S1 is A, so it stops applying if the rename to A is taken out.
+    try SpeakerEditor.apply([.rename(speakerID: "system:S1", name: "B")], view: try SessionFixtures.view(session),
+                            session: session, source: "cli", regenerateExports: false)
     let before = SessionFixtures.journalBytes(session)
 
     let message = editorRefusal("invalidInput") {
-        try SpeakerEditor.undoLast(view: view, session: session, source: "cli", regenerateExports: false)
+        try SpeakerEditor.apply([.revert(editID: renameA)], view: try SessionFixtures.view(session), session: session,
+                                source: "app", regenerateExports: false)
     }
-    #expect(message?.contains("bring back") == true)
+    #expect(message?.contains("Undo the newer changes first") == true)
     #expect(SessionFixtures.journalBytes(session) == before)
+    #expect(try SessionFixtures.view(session).speakers.first { $0.id == "system:S1" }?.label == "B")
+
+    // A revert nothing else depends on is saved.
+    try SpeakerEditor.apply([.rename(speakerID: "system:S2", name: "C")], view: try SessionFixtures.view(session),
+                            session: session, source: "cli", regenerateExports: false)
+    let renameC = try #require(try editorJournal(session).last?.id)
+    try SpeakerEditor.apply([.rename(speakerID: "system:S1", name: "D")], view: try SessionFixtures.view(session),
+                            session: session, source: "cli", regenerateExports: false)
+    let result = try SpeakerEditor.apply([.revert(editID: renameC)], view: try SessionFixtures.view(session),
+                                         session: session, source: "app", regenerateExports: false)
+    let projection = try #require(result.snapshot.projection)
+    #expect(projection.revertedEditIDs == [renameC])
+    #expect(projection.staleEdits.isEmpty)
+    #expect(projection.speakers.first { $0.id == "system:S1" }?.label == "D")
+    #expect(projection.speakers.first { $0.id == "system:S2" }?.label == "Speaker 2")
+}
+
+@Test func namesAreSavedOnOneLine() async throws {
+    #expect(SpeakerEditor.cleanName("  Jim\nSmith\t ") == "Jim Smith")
+    #expect(SpeakerEditor.cleanName("Jim \u{7}\u{2028} Smith") == "Jim Smith")
+    #expect(SpeakerEditor.cleanName("Ana María") == "Ana María")
+    #expect(SpeakerEditor.cleanName(" \n\u{7}") == nil)
+    #expect(SpeakerEditor.cleanName(nil) == nil)
+
+    let temp = try TemporaryDirectory("editor")
+    defer { temp.remove() }
+    let (session, _, _) = try await SessionFixtures.labelledSession(in: temp.url, speakers: ["S1", "S2", "S3"],
+                                                                     duration: 30)
+    let newSpeaker = "user:\(UUID().uuidString)"
+    let result = try SpeakerEditor.apply([.rename(speakerID: "system:S1", name: "Jim\nSmith"),
+                                          .newSpeaker(speakerID: newSpeaker, name: "Guest\r\nOne", turnIDs: ["T2"])],
+                                         view: try SessionFixtures.view(session), session: session, source: "cli",
+                                         regenerateExports: false)
+    #expect(try editorJournal(session).map(\.action) == [
+        .rename(speakerID: "system:S1", name: "Jim Smith"),
+        .newSpeaker(speakerID: newSpeaker, name: "Guest One", turnIDs: ["T2"]),
+    ])
+    let projection = try #require(result.snapshot.projection)
+    #expect(try SpeakerSelector.speaker("jim smith", in: projection) == .speaker("system:S1"))
+    #expect(try SpeakerSelector.speaker("guest one", in: projection) == .speaker(newSpeaker))
+}
+
+@Test func changesThatLeaveTheLabelsAsTheyAreAreDetected() async throws {
+    let temp = try TemporaryDirectory("editor")
+    defer { temp.remove() }
+    let (session, _, _) = try await SessionFixtures.labelledSession(in: temp.url)
+    try SpeakerEditor.apply([.rename(speakerID: "system:S2", name: "Maria"),
+                             .excludeFromEnrollment(turnIDs: ["T1"])],
+                            view: try SessionFixtures.view(session), session: session, source: "cli",
+                            regenerateExports: false)
+    let view = try SessionFixtures.view(session)
+
+    #expect(SpeakerEditor.changesNothing([.rename(speakerID: "system:S1", name: nil)], on: view))
+    #expect(SpeakerEditor.changesNothing([.rename(speakerID: "system:S2", name: " Maria\n")], on: view))
+    #expect(SpeakerEditor.changesNothing([.excludeFromEnrollment(turnIDs: ["T1"])], on: view))
+    #expect(SpeakerEditor.changesNothing([.reassignTurns(turnIDs: ["T1"], to: "system:S1")], on: view))
+
+    #expect(!SpeakerEditor.changesNothing([.rename(speakerID: "system:S1", name: "Jim")], on: view))
+    #expect(!SpeakerEditor.changesNothing([.rename(speakerID: "system:S2", name: nil)], on: view))
+    #expect(!SpeakerEditor.changesNothing([.excludeFromEnrollment(turnIDs: ["T2"])], on: view))
+    #expect(!SpeakerEditor.changesNothing([.reassignTurns(turnIDs: ["T1"], to: nil)], on: view))
+    // Invalid actions are left to apply, which says why.
+    #expect(!SpeakerEditor.changesNothing([.rename(speakerID: "system:S9", name: nil)], on: view))
+    // A batch that changes and changes back is still nothing.
+    #expect(SpeakerEditor.changesNothing([.rename(speakerID: "system:S1", name: "Jim"),
+                                          .rename(speakerID: "system:S1", name: nil)], on: view))
+}
+
+// MARK: - session export --output
+
+@Test func exportOutputFileIsNewAndPrivate() throws {
+    let temp = try TemporaryDirectory("editor")
+    defer { temp.remove() }
+    let folder = temp.url.appendingPathComponent("out")
+    try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: false)
+    let file = folder.appendingPathComponent("meeting.md")
+
+    try SessionExports.writeNewFile(Data("first".utf8), at: file)
+    #expect(SessionFixtures.text(file) == "first")
+    #expect(SessionFixtures.mode(file) == 0o600)
+
+    // Never replaced.
+    let message = editorRefusal("invalidInput") { try SessionExports.writeNewFile(Data("second".utf8), at: file) }
+    #expect(message?.contains("already exists") == true)
+    #expect(SessionFixtures.text(file) == "first")
+
+    // Not through a symbolic link either, even a dangling one.
+    let dangling = folder.appendingPathComponent("dangling.md")
+    try FileManager.default.createSymbolicLink(atPath: dangling.path, withDestinationPath: "nowhere.md")
+    _ = editorRefusal("invalidInput") { try SessionExports.writeNewFile(Data("x".utf8), at: dangling) }
+    #expect(!FileManager.default.fileExists(atPath: folder.appendingPathComponent("nowhere.md").path))
+
+    // A folder reached through a symbolic link (as /tmp is on macOS) is fine.
+    let linkedFolder = temp.url.appendingPathComponent("linked")
+    try FileManager.default.createSymbolicLink(at: linkedFolder, withDestinationURL: folder)
+    try SessionExports.writeNewFile(Data("third".utf8), at: linkedFolder.appendingPathComponent("other.md"))
+    #expect(SessionFixtures.text(folder.appendingPathComponent("other.md")) == "third")
+    _ = editorRefusal("invalidInput") {
+        try SessionExports.writeNewFile(Data("x".utf8), at: linkedFolder.appendingPathComponent("meeting.md"))
+    }
+    #expect(SessionFixtures.text(file) == "first")
 }
 
 @Test func concurrentEditorsSerialize() async throws {

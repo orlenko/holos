@@ -42,7 +42,11 @@ public enum SpeakerEditor {
     /// - Each line's `expected` is `fingerprint(for:)` of its action on the view with the batch's earlier actions
     ///   applied (`SpeakerProjection.applying`), which the current state must reproduce exactly. A `revert` has no
     ///   fingerprint; instead its target edit must be in the same state (applied, reverted, or refused) in the view
-    ///   and in the session.
+    ///   and in the session, and the revert must take out only its target: a revert that would make another edit
+    ///   stop applying, or bring back one that could not be applied, refuses the batch with `invalidInput` (undo
+    ///   the newer changes first).
+    /// - Names in `rename` and `newSpeaker` are saved as `cleanName` returns them (one line, no control
+    ///   characters), so every name can be typed back as the exports show it.
     /// - An action the projection would refuse on the current state (a speaker or turn that does not exist, a split
     ///   at a turn's first word, a merge of a speaker into itself, a `newSpeaker` ID that exists or does not start
     ///   with "user:", …) refuses the whole batch with `HolosError.invalidInput`, so no line is ever written stale.
@@ -65,7 +69,7 @@ public enum SpeakerEditor {
             let at = Date()
             var edits: [SpeakerEdit] = []
             edits.reserveCapacity(actions.count)
-            for action in actions {
+            for action in actions.map(cleaned) {
                 let expected = viewState.fingerprint(for: action)
                 guard expected == current.fingerprint(for: action) else { throw refusedStaleView(base.run) }
                 if case .revert(let target) = action,
@@ -76,6 +80,11 @@ public enum SpeakerEditor {
                 let next = current.applying(action, editID: id)
                 if let stale = next.staleEdits.first(where: { $0.editID == id }) {
                     throw refusal(action, reason: stale.reason, on: current)
+                }
+                if case .revert(let target) = action, !revertTakesOutOnly(target, from: current, giving: next) {
+                    throw HolosError.invalidInput("Undoing that change would also change which later speaker "
+                                                  + "changes apply, so nothing was undone. Undo the newer changes "
+                                                  + "first.")
                 }
                 edits.append(SpeakerEdit(id: id, baseRunID: base.run.id, at: at, source: source, action: action,
                                          expected: expected, batchID: batchID))
@@ -99,6 +108,11 @@ public enum SpeakerEditor {
     /// - Only the batch's lines in effect are reverted, in journal order, as one new batch; a revert carries no
     ///   fingerprint (§4.9). Reverts are never undone themselves (there is no redo), so repeated calls walk back
     ///   through earlier batches.
+    /// - No edit comes into effect through an undo. A line that could not be applied (stale) only because of the
+    ///   undone batch, for example a rename made on a view older than the batch, would start applying once the
+    ///   batch is reverted; such lines are reverted in the same new batch, so they stay out of effect and undo never
+    ///   gets stuck on them. After the newest batch only stale lines and reverts follow, so nothing else can change;
+    ///   if the replay shows otherwise, the undo is refused with `invalidInput`.
     @discardableResult
     public static func undoLast(view: SpeakerProjection, session: URL, source: String,
                                 regenerateExports: Bool = true) throws -> SpeakerEditResult {
@@ -117,28 +131,40 @@ public enum SpeakerEditor {
             guard !targets.isEmpty, targets == view.appliedEditIDs.filter(lines.contains) else {
                 throw refusedStaleView(base.run)
             }
+            let undone = Set(targets)
+            let kept = base.projection.appliedEditIDs.filter { !undone.contains($0) }
+            let keptSet = Set(kept)
             var current = base.projection
             let revertBatch = UUID().uuidString
             let at = Date()
             var edits: [SpeakerEdit] = []
             edits.reserveCapacity(targets.count)
-            for target in targets {
-                let action = SpeakerEditAction.revert(editID: target)
-                let id = UUID().uuidString
-                let next = current.applying(action, editID: id)
-                if let stale = next.staleEdits.first(where: { $0.editID == id }) {
-                    throw refusal(action, reason: stale.reason, on: current)
+            var pending = targets
+            // Each round reverts lines in effect that must not be; a reverted line never applies again, so this
+            // ends after at most one round per line of the run.
+            while !pending.isEmpty, edits.count <= base.projection.editCount {
+                for target in pending {
+                    let action = SpeakerEditAction.revert(editID: target)
+                    let id = UUID().uuidString
+                    let next = current.applying(action, editID: id)
+                    if let stale = next.staleEdits.first(where: { $0.editID == id }) {
+                        throw refusal(action, reason: stale.reason, on: current)
+                    }
+                    edits.append(SpeakerEdit(id: id, baseRunID: base.run.id, at: at, source: source, action: action,
+                                             expected: current.fingerprint(for: action), batchID: revertBatch))
+                    current = next
                 }
-                edits.append(SpeakerEdit(id: id, baseRunID: base.run.id, at: at, source: source, action: action,
-                                         expected: current.fingerprint(for: action), batchID: revertBatch))
-                current = next
+                // Lines that came into effect only because of these reverts (they were stale before).
+                pending = current.appliedEditIDs.filter { !keptSet.contains($0) }
             }
-            // Nothing applies after the newest batch, so undoing it can only take its own lines out; a line that
-            // could not be applied before must not come back into effect either.
-            let undone = Set(targets)
-            guard current.appliedEditIDs == base.projection.appliedEditIDs.filter({ !undone.contains($0) }) else {
-                throw HolosError.invalidInput("Undoing the last change would also bring back an earlier change that "
-                                              + "could not be applied, so nothing was undone.")
+            guard current.appliedEditIDs == kept else {
+                throw HolosError.invalidInput("Undoing the last change would also change which other speaker "
+                                              + "changes apply, so nothing was undone. Change the speakers directly "
+                                              + "instead (for example, rename one).")
+            }
+            let revived = edits.count - targets.count
+            if revived > 0 {
+                log.info("Session \(base.run.sessionID, privacy: .public): the undo also keeps \(revived, privacy: .public) earlier stale edits out of effect")
             }
             try SessionSpeakerStore.appendEdits(edits, session: session)
             log.info("Session \(base.run.sessionID, privacy: .public): undid batch \(batchID, privacy: .public) with \(edits.count, privacy: .public) reverts (batch \(revertBatch, privacy: .public))")
@@ -147,7 +173,65 @@ public enum SpeakerEditor {
         return try finish(saved, session: session, regenerateExports: regenerateExports, profileNames: [:])
     }
 
+    /// A speaker name as it is saved: runs of whitespace, line breaks, and control characters become one space and
+    /// the ends are trimmed (the rule the exports apply to labels). Nil when nothing printable is left, which
+    /// clears the name.
+    public static func cleanName(_ name: String?) -> String? {
+        guard let name else { return nil }
+        var result = String.UnicodeScalarView()
+        var pendingSpace = false
+        for scalar in name.unicodeScalars {
+            if scalar.properties.isWhitespace || scalar.properties.generalCategory == .control {
+                pendingSpace = !result.isEmpty
+                continue
+            }
+            if pendingSpace {
+                result.append(" ")
+                pendingSpace = false
+            }
+            result.append(scalar)
+        }
+        return result.isEmpty ? nil : String(result)
+    }
+
+    /// True when `actions`, applied in order on `view`, leave every speaker and turn as it is (a rename to the
+    /// current name, clearing a name that is not set, excluding turns already excluded, …). Such a batch would still
+    /// be saved and would use up an undo step, so callers say there is nothing to change instead. False when an
+    /// action is not valid on `view`, so `apply` reports why.
+    public static func changesNothing(_ actions: [SpeakerEditAction], on view: SpeakerProjection) -> Bool {
+        var next = view
+        for action in actions.map(cleaned) {
+            if case .revert = action { return false }
+            let id = UUID().uuidString
+            next = next.applying(action, editID: id)
+            if next.staleEdits.contains(where: { $0.editID == id }) { return false }
+        }
+        return next.speakers == view.speakers && next.turns == view.turns
+    }
+
     // MARK: - Private
+
+    /// `action` with its name cleaned (`cleanName`).
+    private static func cleaned(_ action: SpeakerEditAction) -> SpeakerEditAction {
+        switch action {
+        case .rename(let speakerID, let name):
+            .rename(speakerID: speakerID, name: cleanName(name))
+        case .newSpeaker(let speakerID, let name, let turnIDs):
+            .newSpeaker(speakerID: speakerID, name: cleanName(name), turnIDs: turnIDs)
+        case .linkProfile, .rejectProfile, .merge, .reassignTurns, .splitTurn, .excludeFromEnrollment, .revert:
+            action
+        }
+    }
+
+    /// Whether reverting `target` (giving `next`) took out only `target`: every other edit that applied still
+    /// applies and every other stale edit is still stale.
+    private static func revertTakesOutOnly(_ target: String, from current: SpeakerProjection,
+                                           giving next: SpeakerProjection) -> Bool {
+        let stale = { (projection: SpeakerProjection) in
+            Set(projection.staleEdits.map(\.editID)).subtracting([target])
+        }
+        return next.appliedEditIDs == current.appliedEditIDs.filter { $0 != target } && stale(next) == stale(current)
+    }
 
     /// The head run with its transcript and the current journal, read under the speaker lock.
     private struct Base {

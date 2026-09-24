@@ -146,6 +146,63 @@ public enum SpeakerSelector {
         return total
     }
 
+    /// The word that starts the second part of a split (`holos speakers split`): the turn's `atWord`-th word
+    /// (counting from 1, so at least 2), or, with `at`, the first word that begins at or after that time. Exactly one
+    /// of the two is given. Words are the turn's spans in order, timed with `WordTiming.effectiveWords`.
+    public static func splitWord(turnID: String, atWord: Int?, at: String?, in projection: SpeakerProjection,
+                                 transcript: Transcript) throws -> WordRef {
+        guard let turn = projection.turns.first(where: { $0.id == turnID }) else {
+            throw HolosError.invalidInput("There is no turn \(turnID).")
+        }
+        var segments: [String: TranscriptSegment] = [:]
+        for segment in transcript.segments where segments[segment.id] == nil {
+            segments[segment.id] = segment
+        }
+        var words: [(ref: WordRef, start: Double)] = []
+        for span in turn.spans {
+            let effective = segments[span.segmentID].map(WordTiming.effectiveWords(of:)) ?? []
+            for index in span.first..<max(span.first, span.end) where index >= 0 && index < effective.count {
+                words.append((WordRef(segmentID: span.segmentID, word: index), effective[index].start))
+            }
+        }
+        guard words.count >= 2 else {
+            let count = words.count == 1 ? "1 word" : "\(words.count) words"
+            throw HolosError.invalidInput("Turn \(turnID) has \(count); there is nothing to split.")
+        }
+        switch (atWord, at) {
+        case (let atWord?, nil):
+            guard (2...words.count).contains(atWord) else {
+                throw HolosError.invalidInput("Turn \(turnID) has \(words.count) words; --at-word takes 2 to "
+                                              + "\(words.count) (the word that starts the second part).")
+            }
+            return words[atWord - 1].ref
+        case (nil, let at?):
+            let seconds = try time(at)
+            guard let index = words.firstIndex(where: { $0.start >= seconds }) else {
+                throw HolosError.invalidInput(
+                    "No word of \(turnID) begins at or after \(TimeFormat.clock(seconds)); the turn runs "
+                        + "\(TimeFormat.clock(turn.start))–\(TimeFormat.clock(turn.end)).")
+            }
+            guard index > 0 else {
+                throw HolosError.invalidInput(
+                    "\(TimeFormat.clock(seconds)) is at or before the first word of \(turnID); pick a later time.")
+            }
+            return words[index].ref
+        default:
+            throw HolosError.invalidInput("Say where to split: --at-word N or --at TIME, not both.")
+        }
+    }
+
+    /// For `--to new` or `--to new:NAME` (any case): `.some(name)`, with a nil name for plain "new" or an empty
+    /// NAME; nil when `text` is not of that form (it names an existing speaker instead). The name is cleaned with
+    /// `SpeakerEditor.cleanName`.
+    public static func newSpeakerName(_ text: String) -> String?? {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.lowercased() == "new" { return .some(nil) }
+        guard trimmed.lowercased().hasPrefix("new:") else { return nil }
+        return .some(SpeakerEditor.cleanName(String(trimmed.dropFirst(4))))
+    }
+
     // MARK: - Private
 
     /// The one speaker in `matches`, nil when there is none; throws when there are several.

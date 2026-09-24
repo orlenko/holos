@@ -1,5 +1,4 @@
 import ArgumentParser
-import Darwin
 import Foundation
 import HolosCore
 import HolosMeeting
@@ -51,23 +50,8 @@ extension Session {
                 return
             }
             let url = fileURL(output)
-            let exists = HolosError.invalidInput(
-                "\(url.path) already exists; holos session export never replaces a file. Choose another name.")
-            guard !Self.entryExists(url) else { throw exists }
-            do {
-                // Private like every Holos file: the transcript may hold confidential speech. The file is created
-                // only if nothing has that name, even when another process makes one meanwhile.
-                try AtomicFile.create(data, at: url, permissions: 0o600)
-            } catch HolosError.invalidInput where Self.entryExists(url) {
-                throw exists
-            }
+            try SessionExports.writeNewFile(data, at: url)
             Console.output(url.path)
-        }
-
-        /// Whether anything, even a dangling symbolic link, has this path.
-        private static func entryExists(_ url: URL) -> Bool {
-            var info = stat()
-            return lstat(url.path, &info) == 0
         }
     }
 }

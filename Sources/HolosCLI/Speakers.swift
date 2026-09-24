@@ -64,17 +64,16 @@ struct Speakers: ParsableCommand {
 
         func validate() throws {
             if clear, name != nil { throw ValidationError("Give a name or --clear, not both.") }
-            if !clear {
-                guard let name, !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-                    throw ValidationError("Give the new name, or --clear to remove the name.")
-                }
+            if !clear, SpeakerEditor.cleanName(name) == nil {
+                throw ValidationError("Give the new name, or --clear to remove the name.")
             }
         }
 
         mutating func run() throws {
             let loaded = try SpeakerCommand.load(session)
             let speakerID = try SpeakerCommand.speakerID(speaker, in: loaded.view)
-            let clean = clear ? nil : name?.trimmingCharacters(in: .whitespacesAndNewlines)
+            // One line, as the exports show it: line breaks and control characters become spaces.
+            let clean = clear ? nil : SpeakerEditor.cleanName(name)
             try SpeakerCommand.save([.rename(speakerID: speakerID, name: clean)], loaded)
         }
     }
@@ -120,7 +119,7 @@ struct Speakers: ParsableCommand {
             let loaded = try SpeakerCommand.load(session)
             let turnIDs = try SpeakerCommand.turnIDs(turns, track: track, in: loaded.view)
             let action: SpeakerEditAction
-            if let name = SpeakerCommand.newSpeakerName(to) {
+            if let name = SpeakerSelector.newSpeakerName(to) {
                 action = .newSpeaker(speakerID: "user:\(UUID().uuidString)", name: name, turnIDs: turnIDs)
             } else {
                 switch try SpeakerSelector.speaker(to, in: loaded.view) {
@@ -160,7 +159,8 @@ struct Speakers: ParsableCommand {
         mutating func run() throws {
             let loaded = try SpeakerCommand.load(session)
             let turnID = try SpeakerSelector.turn(turn, track: track, in: loaded.view)
-            let word = try SpeakerCommand.splitWord(turnID: turnID, atWord: atWord, at: at, loaded)
+            let word = try SpeakerSelector.splitWord(turnID: turnID, atWord: atWord, at: at, in: loaded.view,
+                                                     transcript: loaded.snapshot.transcript)
             try SpeakerCommand.save([.splitTurn(turnID: turnID, at: word)], loaded)
         }
     }
@@ -206,6 +206,14 @@ struct Speakers: ParsableCommand {
             case 0: Console.output("Undid the last speaker change.")
             case 1: Console.output("Undid: \(descriptions[0])")
             default: Console.output("Undid \(descriptions.count) changes: " + descriptions.joined(separator: " "))
+            }
+            // Stale lines the undo would have brought back are reverted with it (SpeakerEditor.undoLast).
+            let keptOut = Set(loaded.view.staleEdits.map(\.editID))
+                .intersection(result.snapshot.projection?.revertedEditIDs ?? []).count
+            if keptOut > 0 {
+                Console.error("\(keptOut) earlier speaker \(keptOut == 1 ? "change" : "changes") that could not be "
+                              + "applied \(keptOut == 1 ? "stays" : "stay") out of effect; undo does not bring "
+                              + "\(keptOut == 1 ? "it" : "them") back.")
             }
             try SpeakerCommand.rewriteExports(loaded.session)
             SpeakerCommand.printNotes(result.snapshot)
@@ -253,59 +261,13 @@ enum SpeakerCommand {
             .filter { seen.insert($0).inserted }
     }
 
-    /// For `--to new` or `--to new:NAME`: `.some(name)` (nil name for plain "new"); nil when `text` names an
-    /// existing speaker instead.
-    static func newSpeakerName(_ text: String) -> String?? {
-        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        if trimmed.lowercased() == "new" { return .some(nil) }
-        guard trimmed.lowercased().hasPrefix("new:") else { return nil }
-        let name = trimmed.dropFirst(4).trimmingCharacters(in: .whitespacesAndNewlines)
-        return .some(name.isEmpty ? nil : name)
-    }
-
-    /// The word that starts the second part of a split: the turn's `atWord`-th word (from 1), or the first word
-    /// that begins at or after `at`.
-    static func splitWord(turnID: String, atWord: Int?, at: String?, _ loaded: LoadedSpeakers) throws -> WordRef {
-        guard let turn = loaded.view.turns.first(where: { $0.id == turnID }) else {
-            throw HolosError.invalidInput("There is no turn \(turnID).")
-        }
-        var segments: [String: TranscriptSegment] = [:]
-        for segment in loaded.snapshot.transcript.segments where segments[segment.id] == nil {
-            segments[segment.id] = segment
-        }
-        var words: [(ref: WordRef, start: Double)] = []
-        for span in turn.spans {
-            let effective = segments[span.segmentID].map(WordTiming.effectiveWords(of:)) ?? []
-            for index in span.first..<max(span.first, span.end) where index >= 0 && index < effective.count {
-                words.append((WordRef(segmentID: span.segmentID, word: index), effective[index].start))
-            }
-        }
-        guard words.count >= 2 else {
-            throw HolosError.invalidInput(
-                "Turn \(turnID) has \(count(words.count, "word")); there is nothing to split.")
-        }
-        if let atWord {
-            guard (2...words.count).contains(atWord) else {
-                throw HolosError.invalidInput("Turn \(turnID) has \(words.count) words; --at-word takes 2 to "
-                                              + "\(words.count) (the word that starts the second part).")
-            }
-            return words[atWord - 1].ref
-        }
-        let seconds = try SpeakerSelector.time(at ?? "")
-        guard let index = words.firstIndex(where: { $0.start >= seconds }) else {
-            throw HolosError.invalidInput(
-                "No word of \(turnID) begins at or after \(TimeFormat.clock(seconds)); the turn runs "
-                    + "\(TimeFormat.clock(turn.start))–\(TimeFormat.clock(turn.end)).")
-        }
-        guard index > 0 else {
-            throw HolosError.invalidInput("\(TimeFormat.clock(seconds)) is at or before the first word of \(turnID); "
-                                          + "pick a later time.")
-        }
-        return words[index].ref
-    }
-
-    /// Saves one change on the loaded view, prints what it did, and rewrites the exports.
+    /// Saves one change on the loaded view, prints what it did, and rewrites the exports. A change that would leave
+    /// the labels as they are is not saved (it would only use up an undo step).
     static func save(_ actions: [SpeakerEditAction], _ loaded: LoadedSpeakers) throws {
+        if SpeakerEditor.changesNothing(actions, on: loaded.view) {
+            Console.output("Nothing to change; the speaker labels already look like that.")
+            return
+        }
         let result = try SpeakerEditor.apply(actions, view: loaded.view, session: loaded.session, source: source,
                                              regenerateExports: false)
         for action in actions {
@@ -342,6 +304,18 @@ enum SpeakerCommand {
         if snapshot.transcriptChanged {
             Console.error("The transcript changed after speakers were labelled, so the exports show it without "
                           + "speakers. Label speakers again with holos session diarize \(snapshot.session.path).")
+        }
+        // §1.6 rule 3: lines this build cannot read are skipped and reported.
+        let unreadable = snapshot.journal.unreadableLines
+        if unreadable > 0 {
+            let one = unreadable == 1
+            Console.error("\(unreadable) speaker \(one ? "change" : "changes") in this meeting could not be read "
+                          + "(damaged, or saved by a newer version of Holos) and \(one ? "was" : "were") skipped. "
+                          + "If you use a newer Holos elsewhere, update this one before editing speakers.")
+        }
+        if snapshot.journal.tornTail {
+            Console.error("The last speaker change in this meeting was cut off while it was being saved and was "
+                          + "skipped.")
         }
     }
 
@@ -548,6 +522,10 @@ struct SpeakerListing: Encodable {
         var reverted: Int
         var stale: [Stale]
         var otherRuns: Int
+        /// Journal lines skipped because they are damaged or from a newer Holos (§1.6 rule 3).
+        var unreadable: Int
+        /// The journal's last line was cut off and skipped.
+        var tornTail: Bool
     }
 
     struct Stale: Encodable {
@@ -612,7 +590,8 @@ struct SpeakerListing: Encodable {
         engine = loaded.snapshot.run?.engine.map { "\($0.engine) \($0.engineVersion)" }
         edits = Edits(applied: view.appliedEditIDs.count, reverted: view.revertedEditIDs.count,
                       stale: view.staleEdits.map { Stale(editID: $0.editID, reason: $0.reason) },
-                      otherRuns: view.otherRunEditCount)
+                      otherRuns: view.otherRunEditCount, unreadable: loaded.snapshot.journal.unreadableLines,
+                      tornTail: loaded.snapshot.journal.tornTail)
         speakers = view.speakers.map { speaker in
             Speaker(id: speaker.id, ordinal: speaker.ordinal, name: speaker.name, label: speaker.label,
                     explicitName: speaker.explicitName, profileID: speaker.profileID, provenance: speaker.provenance,

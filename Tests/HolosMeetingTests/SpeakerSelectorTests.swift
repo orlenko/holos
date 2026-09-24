@@ -174,3 +174,78 @@ private func selectorError(_ body: () throws -> Void, sourceLocation: SourceLoca
         _ = selectorError { _ = try SpeakerSelector.time(text) }
     }
 }
+
+/// Three turns of one segment each: T1 (0–6 s) has three words starting at 0, 2, and 4 s; T2 (6–8 s) one word.
+private func splitMeeting() -> (projection: SpeakerProjection, transcript: Transcript) {
+    let segments = [
+        TranscriptSegment(
+            id: "seg-T1", start: 0, end: 6, text: "one two three",
+            words: [TimedWord(text: "one", start: 0, end: 2, utf16Offset: 0, utf16Length: 3),
+                    TimedWord(text: "two", start: 2, end: 4, utf16Offset: 4, utf16Length: 3),
+                    TimedWord(text: "three", start: 4, end: 6, utf16Offset: 8, utf16Length: 5)],
+            track: "system"),
+        TranscriptSegment(
+            id: "seg-T2", start: 6, end: 8, text: "four",
+            words: [TimedWord(text: "four", start: 6, end: 8, utf16Offset: 0, utf16Length: 4)], track: "system"),
+    ]
+    let transcript = Transcript(id: "TRANSCRIPT", createdAt: selectorDate, source: "fixture", locale: "en-CA",
+                                backend: .speech, segments: segments)
+    let run = DiarizationRun(
+        id: "RUN", sessionID: "SESSION", createdAt: selectorDate, transcriptID: "TRANSCRIPT", engine: nil,
+        alignment: AlignmentInfo(version: 1, parameters: .v1), tracks: [],
+        speakers: [selectorSpeaker("system:S1", 1)],
+        turns: [
+            SpeakerTurn(id: "T1", track: "system", start: 0, end: 6, speakerID: "system:S1", clusterID: "system:S1",
+                        spans: [WordSpan(segmentID: "seg-T1", first: 0, end: 3)], assignmentScore: 0.9,
+                        timing: .measured),
+            SpeakerTurn(id: "T2", track: "system", start: 6, end: 8, speakerID: "system:S1", clusterID: "system:S1",
+                        spans: [WordSpan(segmentID: "seg-T2", first: 0, end: 1)], assignmentScore: 0.9,
+                        timing: .measured),
+        ])
+    let projection = SpeakerProjection.make(run: run, transcript: transcript, edits: [], recognition: nil,
+                                            profileNames: [:])
+    return (projection, transcript)
+}
+
+@Test func splitWordCountsFromOneAndFindsTimes() throws {
+    let (projection, transcript) = splitMeeting()
+    func split(_ turn: String, atWord: Int? = nil, at: String? = nil) throws -> WordRef {
+        try SpeakerSelector.splitWord(turnID: turn, atWord: atWord, at: at, in: projection, transcript: transcript)
+    }
+
+    #expect(try split("T1", atWord: 2) == WordRef(segmentID: "seg-T1", word: 1))
+    #expect(try split("T1", atWord: 3) == WordRef(segmentID: "seg-T1", word: 2))
+    #expect(try split("T1", at: "2") == WordRef(segmentID: "seg-T1", word: 1))
+    #expect(try split("T1", at: "2.5") == WordRef(segmentID: "seg-T1", word: 2), "The first word at or after.")
+    #expect(try split("T1", at: "00:04") == WordRef(segmentID: "seg-T1", word: 2))
+
+    // The first word cannot start the second part, and the word must exist.
+    #expect(selectorError { _ = try split("T1", atWord: 1) }.contains("2 to 3"))
+    _ = selectorError { _ = try split("T1", atWord: 4) }
+    _ = selectorError { _ = try split("T1", atWord: 0) }
+    #expect(selectorError { _ = try split("T1", at: "0") }.contains("first word"))
+    _ = selectorError { _ = try split("T1", at: "5") }
+    _ = selectorError { _ = try split("T1", at: "later") }
+    #expect(selectorError { _ = try split("T2", atWord: 2) }.contains("nothing to split"))
+    _ = selectorError { _ = try split("T9", atWord: 2) }
+    _ = selectorError { _ = try split("T1") }
+    _ = selectorError { _ = try split("T1", atWord: 2, at: "2") }
+
+    // The word it returns is one the projection accepts as a split point.
+    let word = try split("T1", atWord: 2)
+    let after = projection.applying(.splitTurn(turnID: "T1", at: word), editID: "SPLIT")
+    #expect(after.staleEdits.isEmpty)
+    #expect(after.turns.first { $0.id == "T1/SPLIT" }?.start == 2)
+}
+
+@Test func newSpeakerNamesAreParsed() {
+    #expect(SpeakerSelector.newSpeakerName("new") == .some(nil))
+    #expect(SpeakerSelector.newSpeakerName(" NEW ") == .some(nil))
+    #expect(SpeakerSelector.newSpeakerName("new:") == .some(nil))
+    #expect(SpeakerSelector.newSpeakerName("new:  ") == .some(nil))
+    #expect(SpeakerSelector.newSpeakerName("new:Ana") == .some("Ana"))
+    #expect(SpeakerSelector.newSpeakerName("New: Ana\nMaría ") == .some("Ana María"))
+    #expect(SpeakerSelector.newSpeakerName("Ana") == nil)
+    #expect(SpeakerSelector.newSpeakerName("newton") == nil)
+    #expect(SpeakerSelector.newSpeakerName("system:S2") == nil)
+}
