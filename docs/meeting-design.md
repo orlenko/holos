@@ -2285,10 +2285,14 @@ public enum RecorderChannel {
     public static func readStatus(session: URL) throws -> RecorderStatus?
     /// Publishes one request atomically with `sentAtNanos` from mach_continuous_time; creates control/ (0700).
     /// Refuses (`unavailable`) when the session has no manifest yet (the recorder is still starting; stop it
-    /// with SIGTERM instead) or when status.json says exited.
+    /// with SIGTERM instead), when status.json says exited, or when only a maintenance command holds the
+    /// session (`maintenanceOnly`): no recorder would read or remove the request.
     @discardableResult
     public static func send(_ command: ControlCommand, label: String? = nil, session: URL,
                             sessionID: String, sender: String) throws -> ControlRequest
+    /// Liveness is `maintenance` and status.json is missing or exited, or names a process that is gone. A live
+    /// recorder with a stale status is not maintenance-only: it still answers `control/`.
+    public static func maintenanceOnly(session: URL, now: Date = Date()) -> Bool
     /// Polls status.json every 50 ms for the request's ack.
     public static func waitForAck(_ request: ControlRequest, session: URL, timeout: Duration) async -> ControlAck?
     /// "Fresh" means updatedAt less than 10 s before `now` and kill(pid, 0) == 0.
@@ -2458,13 +2462,17 @@ Rules the reducer encodes:
   `holdPowerAssertion(true)`, `startCapture(epoch+1)` → `recording`. A pause (including
   sleep while paused) lasting 6 h → `finish(pauseTimeout)`.
 - **Disk** (§4.5) and **watchdog** (below) are evaluated on every 1 s `tick` while
-  recording.
+  starting or recording (the watchdog once the epoch's capture has started), so an
+  epoch 0 that never delivers its first frame is flagged and restarted like any other
+  stall. The disk is also checked while waiting.
 - **Watchdog** (`TrackWatchdog`, held in the machine; PR2b). A track's stall timer starts
   at the epoch's start time and is reset by every `lastFrameAt` update. No frame for
   3 s → `recordEvent(trackStalled {track, silentSeconds})`, `warn(trackStalled)`.
   Frames again → `recordEvent(trackResumed)`, `clearWarning` when no track is stalled.
   A **microphone** track stalled for 10 s → `stopCapture(.captureRestarted)`,
-  `startCapture(epoch+1)`. The system track is never restarted for a stall
+  `startCapture(epoch+1)`; if the stalled epoch delivered no frame on any track, audio
+  counts as unavailable from then (`unavailableSince`), so the 600 s limit ends a
+  recording whose restarts never bring audio back. The system track is never restarted for a stall
   (ScreenCaptureKit may deliver nothing during silence, open question Q4). Arrival times
   come from the session clock, which starts at epoch 0's origin, so a slow startup or a
   permission prompt never looks like a stall.
@@ -2532,7 +2540,15 @@ AudioCapture callback ─yield─▶ frames stream (4,096 buffers; overflow drop
   100 ms. `canSleep` is allowed immediately by the monitor. `willSleep` is queued for
   the loop only while a loop is attached (`attach()` at loop start, `detach()` at loop
   exit); otherwise the monitor calls `IOAllowPowerChange` itself, so transcription and
-  post-processing never delay a lid close.
+  post-processing never delay a lid close. From the recorder's start until the loop
+  attaches (`observe()`: permission prompts, speech setup, capture start), `willSleep`
+  and `didWake` are still queued with their arrival times, and `willSleep` is allowed at
+  once; the loop drains them first, after `captureStarted(epoch 0)`, so a sleep during
+  the start stops epoch 0 and resumes in epoch 1, or ends the recording
+  (`sleepTimeout`) after 15 minutes. Such events have negative session times (before
+  epoch 0's origin); they are not clamped to 0, which would erase the sleep's length.
+  Device-list and screen-unlock events (§4.2) are buffered from the moment the
+  dependencies are made, so they have no such gap; the lid is polled, not observed.
 - On `willSleep` the loop executes `stopCapture(.sleep)` as: ask capture to stop (wait at
   most 5 s), close every open chunk, then `allowSleep`, even if the platform stop has
   not returned. Budget under 7 s; macOS allows 30 s.
@@ -2589,6 +2605,11 @@ public enum DiskPolicy {
 }
 ```
 
+The budget holds whatever the microphone delivers: AVAudioEngine keeps the input device's
+format (a stereo or 96 kHz interface), so the recorder's frame consumer converts every
+track to 48 kHz mono (`RecordingFormatConverter` in HolosAudio: channels averaged, one
+resampler per track and epoch) before the pump and the live tracks.
+
 Worked values: mic 4 h budget = 4 × 460.8 MB + 2 GB = 3.84 GB, 8 h = 5.69 GB;
 mic+system 4 h = 4 × (691.2 + 230.4) MB + 2 GB = 5.69 GB, 8 h = 9.37 GB. A 3 h
 in-person meeting is about 1.04 GB, a 3 h call about 2.07 GB (it was 3.1 GB with stereo
@@ -2607,12 +2628,15 @@ After `finish(reason)` the loop exits and `RecordingWorkflow.run` does, in order
    let the pump drain into the writer, then `writer.closeAll`.
 2. Phase `stopping` → `transcribing`. **Finish live speech** per track with a timeout of
    30 s + 0.05 × the seconds fed to its current speech session. On timeout, cancel that
-   session; segments it already finalized are kept.
+   session; segments it already finalized are kept. The same deadline also ends the finishes of
+   earlier sessions (an epoch or gap that ended just before the stop) that are still running.
 3. **Coverage.** For each track, `TranscriptCoverage.coverageEnd` (below). A track whose
    live transcription never fell behind keeps its live segments. Otherwise
    `TrackReplayer.replay(from: max(0, coverageEnd − 2))` transcribes only the rest, and
    `TranscriptCoverage.merge` joins the two at word level. Hours of live words are never
-   thrown away because of one dropped frame. `--record-only`: no transcript.
+   thrown away because of one dropped frame. A replay that times out or fails after partial
+   progress keeps the segments of its finished sessions and the finals the failed session
+   reported; the track is recorded as a transcription error. `--record-only`: no transcript.
 4. `archive.saveTranscript(transcript, writeLegacyExports: false)` (updates
    `transcripts/current.json`).
 5. If a post-process hook is set, **acquire the processing lease** (retry 1 s) while

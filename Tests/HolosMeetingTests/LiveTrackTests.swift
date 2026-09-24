@@ -40,9 +40,10 @@ private func liveFrame(_ start: Double, seconds: Double = 0.1) throws -> PCMFram
 }
 
 private func liveTrack(_ speech: @escaping LiveSpeechFactory, log: LiveEventLog, reporter: CollectingReporter = CollectingReporter(),
-                       journalCapacity: Int = LiveTrack.journalCapacity) -> LiveTrack {
+                       journalCapacity: Int = LiveTrack.journalCapacity,
+                       timeouts: StopTimeouts = .standard) -> LiveTrack {
     LiveTrack(track: "mic", locale: "en-CA", backend: .speech, contextualStrings: ["Strata"], makeSpeech: speech,
-              events: log.sink, reporter: reporter, journalCapacity: journalCapacity)
+              events: log.sink, reporter: reporter, timeouts: timeouts, journalCapacity: journalCapacity)
 }
 
 @Test(.timeLimit(.minutes(1))) func liveTrackRestartsSpeechAtBoundary() async throws {
@@ -166,6 +167,110 @@ private func liveTrack(_ speech: @escaping LiveSpeechFactory, log: LiveEventLog,
     #expect(result.behindFrom == 42)
     #expect(log.events(MeetingEventKind.transcriptionBehind).first?["from"] == "42.0")
     #expect(reporter.messages.contains { $0.hasPrefix("Live mic transcription could not restart: No assets.") })
+}
+
+/// A session whose finish began before the stop (its epoch ended first) still ends by the stop budget of `finish()`,
+/// not by its own, longer timeout.
+@Test(.timeLimit(.minutes(1))) func stopBudgetCutsShortASessionFinishThatBeganEarlier() async throws {
+    let speech = FakeSpeechFactory([
+        FakeSpeechScript(segments: [TranscriptSegment(start: 0, end: 0.1, text: "Opening")], finishHangs: true),
+    ])
+    // The session's own limit for 1 s of audio: 0.3 s + 30 s = 30.3 s. The stop budget with no session open: 0.3 s.
+    let timeouts = StopTimeouts(speechFinishBase: .milliseconds(300), speechFinishPerAudioSecond: 30)
+    let track = liveTrack(speech.factory, log: LiveEventLog(), timeouts: timeouts)
+    try await track.prepareSession(epoch: 0, epochStart: 0)
+    for index in 0..<10 { track.push(try liveFrame(Double(index) / 10), epoch: 0) }
+    track.boundary()
+    let session = try #require(speech.sessions.first)
+    var finishing = false
+    for _ in 0..<2_000 where !finishing {
+        finishing = await session.finishCalls == 1
+        if !finishing { try await Task.sleep(for: .milliseconds(5)) }
+    }
+    #expect(finishing, "The session's finish began before the stop.")
+    let clock = ContinuousClock()
+    let stopped = clock.now
+    let result = await track.finish()
+    let elapsed = stopped.duration(to: clock.now)
+    #expect(elapsed < .seconds(5), "finish() waited \(elapsed) for a finish that began before it.")
+    #expect(await session.cancelled, "The hung session is cancelled at the stop deadline.")
+    #expect(result.segments.map(\.text) == ["Opening"], "Its finalized text is kept.")
+    #expect(result.behindFrom == 0.1, "The rest of its audio is replayed.")
+}
+
+@Test(.timeLimit(.minutes(1))) func appendFailureKeepsFinalizedText() async throws {
+    let speech = FakeSpeechFactory([
+        FakeSpeechScript(segments: [TranscriptSegment(start: 0, end: 0.1, text: "Roll call"),
+                                    TranscriptSegment(start: 0.4, end: 0.5, text: "Never reached")],
+                         appendError: .io("The speech service stopped."), appendErrorAfter: 0.3),
+    ])
+    let track = liveTrack(speech.factory, log: LiveEventLog())
+    try await track.prepareSession(epoch: 0, epochStart: 0)
+    for index in 0..<5 { track.push(try liveFrame(Double(index) / 10), epoch: 0) }
+    let result = await track.finish()
+    #expect(result.segments.map(\.text) == ["Roll call"])
+    let from = try #require(result.behindFrom)
+    #expect(abs(from - 0.3) < 1e-9, "Behind from the frame that failed (\(from)).")
+}
+
+@Test(.timeLimit(.minutes(1))) func finishFailureKeepsFinalizedText() async throws {
+    let speech = FakeSpeechFactory([
+        FakeSpeechScript(segments: [TranscriptSegment(start: 0, end: 0.1, text: "Roll call"),
+                                    TranscriptSegment(start: 0.25, end: 0.5, text: "Carried")],
+                         finishError: .io("Recognition failed.")),
+    ])
+    let track = liveTrack(speech.factory, log: LiveEventLog())
+    try await track.prepareSession(epoch: 0, epochStart: 0)
+    for index in 0..<3 { track.push(try liveFrame(Double(index) / 10), epoch: 0) }
+    let result = await track.finish()
+    #expect(result.segments.map(\.text) == ["Roll call"])
+    #expect(result.behindFrom == 0.1, "Behind from the end of its last finalized segment.")
+}
+
+/// Counts the speech sessions still in memory: made and not yet deallocated.
+private final class SessionCensus: Sendable {
+    private let alive = Mutex(0)
+    private let made = Mutex(0)
+    var count: Int { alive.withLock { $0 } }
+    var total: Int { made.withLock { $0 } }
+    func born() { alive.withLock { $0 += 1 }; made.withLock { $0 += 1 } }
+    func died() { alive.withLock { $0 -= 1 } }
+
+    var factory: LiveSpeechFactory {
+        { _, _, _, _ in CensusSpeech(census: self) }
+    }
+}
+
+/// A speech session that finishes at once with one segment and reports its own deallocation.
+private final class CensusSpeech: LiveSpeechSession {
+    let census: SessionCensus
+    init(census: SessionCensus) { self.census = census; census.born() }
+    deinit { census.died() }
+    func append(_ frame: PCMFrame) async throws {}
+    func finish() async throws -> [TranscriptSegment] { [TranscriptSegment(start: 0, end: 0.1, text: "Item")] }
+    func cancel() async {}
+}
+
+@Test(.timeLimit(.minutes(1))) func finishedSpeechSessionsAreReleased() async throws {
+    // A long recording: 40 epochs, each with a gap over 1 s inside, so 80 speech sessions. Each keeps an analyzer,
+    // a converter, and tasks while it lives; only its segments may outlast it.
+    let census = SessionCensus()
+    let track = liveTrack(census.factory, log: LiveEventLog())
+    for epoch in 0..<40 {
+        let start = Double(epoch) * 10
+        try await track.prepareSession(epoch: epoch, epochStart: start)
+        track.push(try liveFrame(start), epoch: epoch)
+        track.push(try liveFrame(start + 3), epoch: epoch)
+        track.boundary()
+    }
+    let fed = await eventuallyAsync { census.total >= 80 && census.count <= 2 }
+    #expect(fed, "\(census.count) of \(census.total) speech sessions are still in memory after they finished.")
+    let result = await track.finish()
+    #expect(census.total == 80)
+    #expect(result.segments.count == 80, "Every session's segments are kept.")
+    #expect(result.segments.first?.start == 0)
+    #expect(result.segments.last?.start == 393)
+    #expect(census.count == 0)
 }
 
 /// Polls `condition` every 5 ms for up to 10 s (outside the main actor).

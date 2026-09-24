@@ -237,6 +237,30 @@ private func waitingMachine(at: Double) -> RecorderMachine {
     monitor.stop()
 }
 
+/// While the recorder starts (observing), sleep and wake are queued for the loop that will attach, but the Mac is let
+/// sleep at once; attaching keeps them, and detaching drops them (review finding on PR #14).
+@Test func monitorQueuesWhileObserving() {
+    let acknowledged = SharedValue<[Int]>([])
+    let monitor = SystemPowerMonitor(acknowledge: { token in acknowledged.update { $0.append(token) } })
+    monitor.observe()
+    monitor.deliver(SystemPowerMonitor.systemWillSleep, argument: 4)
+    #expect(acknowledged.value == [4], "Observing: the sleep is allowed at once.")
+    monitor.deliver(SystemPowerMonitor.systemHasPoweredOn, argument: 0)
+    monitor.attach()
+    #expect(monitor.pendingEvents() == [.willSleep(token: 4), .didWake], "Attaching keeps what was queued.")
+    monitor.allowPowerChange(token: 4)
+    #expect(acknowledged.value == [4], "The loop's acknowledgement of an allowed sleep is not sent twice.")
+    monitor.detach()
+    monitor.observe()
+    monitor.deliver(SystemPowerMonitor.systemWillSleep, argument: 5)
+    monitor.detach()
+    #expect(acknowledged.value == [4, 5])
+    #expect(monitor.pendingEvents().isEmpty, "Detaching drops what the loop never drained.")
+    monitor.deliver(SystemPowerMonitor.systemHasPoweredOn, argument: 0)
+    #expect(monitor.pendingEvents().isEmpty, "Detached: nothing is queued.")
+    monitor.stop()
+}
+
 /// Events carry their arrival time: drained late, they still tell how long ago they happened.
 @Test func monitorTimesEventsByArrival() {
     let monitor = SystemPowerMonitor(acknowledge: { _ in })
@@ -297,7 +321,113 @@ extension RecorderEnvironmentLoopTests {
         #expect(slept.details["phaseBeforeSleep"] == "recording")
         #expect(try recorderEvents(outcome.directory, MeetingEventKind.captureFailed).first?.details["error"]?
             .hasPrefix("Capture did not stop within") == true)
-        #expect(!power.attached, "The loop detaches when it ends, so later sleeps are not delayed.")
+        #expect(!power.listening, "The loop detaches when it ends, so later sleeps are not delayed.")
+    }
+
+    /// The Mac sleeps for 2 minutes while epoch 0's capture start waits (a permission prompt), before the loop runs
+    /// (review finding on PR #14): the sleep is allowed at once, and once the loop runs it stops epoch 0 at a sleep
+    /// boundary and resumes in epoch 1.
+    @Test(.timeLimit(.minutes(1)))
+    func sleepWhileCaptureStartWaitsResumesInANewEpoch() async throws {
+        let temp = try TemporaryDirectory()
+        defer { temp.remove() }
+        let acknowledged = SharedValue<[Int]>([])
+        let monitor = SystemPowerMonitor(acknowledge: { token in acknowledged.update { $0.append(token) } })
+        defer { monitor.stop() }
+        let captures = FakeCaptureFactory([FakeCaptureScript(frames: FakeFrame.run(count: 3)),
+                                           FakeCaptureScript(frames: FakeFrame.run(count: 3))])
+        let gate = SharedValue(false)
+        let waiting = SharedValue(false)
+        let makeCapture: @MainActor @Sendable () -> any MeetingCapture = {
+            let capture = captures.make()
+            guard captures.captures.count == 1, let fake = capture as? FakeCapture else { return capture }
+            return RecorderGatedCapture(fake, gate: gate, waiting: waiting)
+        }
+        let stop = ManualStopSource()
+        var dependencies = recorderDependencies(captures: captures, stop: stop, clock: ManualSessionClock(5),
+                                                makeCapture: makeCapture)
+        dependencies.power = monitor
+        let run = recorderRecordOnly(temp.url, dependencies)
+        #expect(await eventually { waiting.value })
+        monitor.deliver(SystemPowerMonitor.systemWillSleep, argument: 11, nanosecondsAgo: 120_000_000_000)
+        #expect(acknowledged.value == [11], "A waiting start does not hold the Mac awake.")
+        monitor.deliver(SystemPowerMonitor.systemHasPoweredOn, argument: 0)
+        gate.set(true)
+        #expect(await eventually { captures.captures.count == 2 && captures.captures[1].consumedFrames >= 3 })
+        stop.requestStop()
+        let outcome = try await run.value
+        #expect(outcome.stopReason == .requested)
+        #expect(acknowledged.value == [11], "Allowed once.")
+        #expect(captures.requests.map(\.timelineOffset) == [0, 5])
+        let slept = try #require(try recorderEvents(outcome.directory, MeetingEventKind.systemWillSleep).first)
+        #expect(slept.details["phaseBeforeSleep"] == "recording")
+        let woke = try #require(try recorderEvents(outcome.directory, MeetingEventKind.didWake).first)
+        #expect(woke.details["action"] == "resume")
+        let sleptSeconds = try #require(woke.details["sleptSeconds"].flatMap(Double.init))
+        #expect(sleptSeconds >= 120 && sleptSeconds < 130, "Timed by arrival, not clamped to the session start.")
+        let restarted = try #require(try recorderEvents(outcome.directory, MeetingEventKind.captureRestarted).first)
+        #expect(restarted.details["reason"] == GapReason.sleep.rawValue)
+    }
+
+    /// The Mac sleeps for 20 minutes while the live speech session is being set up, before capture starts (review
+    /// finding on PR #14): once the loop runs, the recording ends at the sleep point.
+    @Test(.timeLimit(.minutes(1)))
+    func longSleepDuringSpeechSetupEndsTheRecording() async throws {
+        let temp = try TemporaryDirectory()
+        defer { temp.remove() }
+        let acknowledged = SharedValue<[Int]>([])
+        let monitor = SystemPowerMonitor(acknowledge: { token in acknowledged.update { $0.append(token) } })
+        defer { monitor.stop() }
+        let gate = SharedValue(false)
+        let waiting = SharedValue(false)
+        let speech = RecorderSpeechFactory { _, onUpdate in
+            waiting.set(true)
+            while !gate.value { try await Task.sleep(for: .milliseconds(10)) }
+            return RecorderWordSpeech(prefix: "w", onUpdate: onUpdate)
+        }
+        let captures = FakeCaptureFactory([FakeCaptureScript(frames: FakeFrame.run(count: 3))])
+        var dependencies = recorderDependencies(captures: captures, speech: speech.factory,
+                                                clock: ManualSessionClock(5))
+        dependencies.power = monitor
+        let run = Task { @MainActor in
+            try await RecordingWorkflow.run(.testing(root: temp.url), dependencies: dependencies)
+        }
+        #expect(await eventually { waiting.value })
+        #expect(captures.captures.isEmpty, "Capture has not started yet.")
+        monitor.deliver(SystemPowerMonitor.systemWillSleep, argument: 12, nanosecondsAgo: 1_200_000_000_000)
+        #expect(acknowledged.value == [12], "Speech setup does not hold the Mac awake.")
+        monitor.deliver(SystemPowerMonitor.systemHasPoweredOn, argument: 0)
+        gate.set(true)
+        let session = try #require(await recorderSession(in: temp.url))
+        let ended = await eventually { recorderStatus(session)?.exit != nil }
+        // Without the sleep the recording would run on: cancel it so the test fails instead of hanging.
+        if !ended { run.cancel() }
+        #expect(ended, "The sleep during speech setup ended the recording.")
+        let outcome = try await run.value
+        #expect(outcome.stopReason == .sleepTimeout)
+        #expect(captures.captures.count == 1, "No capture after the sleep.")
+        #expect(acknowledged.value == [12], "Allowed once.")
+        let woke = try #require(try recorderEvents(outcome.directory, MeetingEventKind.didWake).first)
+        #expect(woke.details["action"] == "finalize")
+        #expect(recorderStatus(outcome.directory)?.exit?.reason == .sleepTimeout)
+        // Finished: later sleeps are neither queued nor held.
+        monitor.deliver(SystemPowerMonitor.systemWillSleep, argument: 13)
+        #expect(acknowledged.value == [12, 13])
+        #expect(monitor.pendingEvents().isEmpty)
+    }
+
+    /// A start that fails detaches the monitor: later sleeps are neither queued nor held.
+    @Test(.timeLimit(.minutes(1)))
+    func failedStartDetachesThePowerMonitor() async throws {
+        let temp = try TemporaryDirectory()
+        defer { temp.remove() }
+        let power = RecorderFakePower()
+        let captures = FakeCaptureFactory([FakeCaptureScript(startError: .unavailable("No permission."))])
+        var dependencies = recorderDependencies(captures: captures, clock: ManualSessionClock(0))
+        dependencies.power = power
+        let run = recorderRecordOnly(temp.url, dependencies)
+        await #expect(throws: HolosError.self) { try await run.value }
+        #expect(!power.listening)
     }
 
     /// Lid closed on power for 2 minutes (H5): capture resumes in the same session, the gap is marked `sleep`, and the
@@ -477,4 +607,29 @@ extension RecorderEnvironmentLoopTests {
         stop.requestStop()
         #expect(try await run.value.stopReason == .requested)
     }
+}
+
+/// A capture whose `start` waits until `gate` opens, like a start held by a permission prompt, and then records as
+/// the `FakeCapture` it wraps.
+@MainActor
+private final class RecorderGatedCapture: MeetingCapture {
+    nonisolated let frames: AsyncThrowingStream<CapturedAudio, Error>
+    private let inner: FakeCapture
+    private let gate: SharedValue<Bool>
+    private let waiting: SharedValue<Bool>
+
+    init(_ inner: FakeCapture, gate: SharedValue<Bool>, waiting: SharedValue<Bool>) {
+        self.inner = inner; self.gate = gate; self.waiting = waiting
+        frames = inner.frames
+    }
+
+    var hostTimeOrigin: Double { inner.hostTimeOrigin }
+
+    func start(_ request: CaptureRequest) async throws {
+        waiting.set(true)
+        while !gate.value { try await Task.sleep(for: .milliseconds(10)) }
+        try await inner.start(request)
+    }
+
+    func stop() async throws { try await inner.stop() }
 }

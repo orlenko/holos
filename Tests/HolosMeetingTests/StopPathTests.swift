@@ -119,6 +119,35 @@ func hungReplayFinishTimesOut() async throws {
     #expect(try !SessionArchive.isActive(at: outcome.directory))
 }
 
+/// A replay that fails for any reason after partial progress (here: the speech session after the gap cannot be made)
+/// keeps the text it already transcribed, like a timeout does.
+@Test(.timeLimit(.minutes(1))) @MainActor
+func failedReplayKeepsTextBeforeTheFailure() async throws {
+    let temp = try TemporaryDirectory()
+    defer { temp.remove() }
+    let speech = FakeSpeechFactory([
+        FakeSpeechScript(makeError: .unavailable("Live speech is unavailable.")),
+        FakeSpeechScript(segments: [TranscriptSegment(start: 0, end: 0.2, text: "Before the gap")]),
+        FakeSpeechScript(makeError: .unavailable("Speech assets were removed.")),
+    ])
+    let frames = FakeFrame.run(count: 3) + FakeFrame.run(from: 2, count: 3)
+    let captures = FakeCaptureFactory([FakeCaptureScript(frames: frames)])
+    let stop = ManualStopSource()
+    let run = Task {
+        try await RecordingWorkflow.run(.testing(root: temp.url),
+            dependencies: recorderDependencies(captures: captures, speech: speech.factory, stop: stop))
+    }
+    #expect(await eventually { (captures.captures.first?.consumedFrames ?? 0) >= 6 })
+    stop.requestStop()
+    let outcome = try await run.value
+    #expect(speech.calls.count == 3)
+    #expect(outcome.archiveStatus == ArchiveStatus.transcriptionIncomplete)
+    #expect(outcome.transcriptErrors == ["mic: \(HolosError.unavailable("Speech assets were removed.").localizedDescription)"])
+    let transcript = try AtomicFile.readJSON(Transcript.self, from: SessionPaths.transcript(
+        try #require(outcome.transcriptID), in: outcome.directory))
+    #expect(transcript.segments.map(\.text) == ["Before the gap"], "Text replayed before the failure is kept.")
+}
+
 @Test(.timeLimit(.minutes(1))) @MainActor
 func leaseTakenBeforeFinish() async throws {
     let temp = try TemporaryDirectory()

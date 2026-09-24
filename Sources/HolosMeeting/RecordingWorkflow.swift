@@ -417,6 +417,12 @@ private final class Recorder {
         // The Mac does not idle-sleep from start to exit, except while paused (§4.4).
         holdPower(true)
         defer { holdPower(false) }
+        // Sleep and wake during the start (a permission prompt, speech setup) are queued for the loop, which drains
+        // them first; the monitor lets the Mac sleep at once meanwhile (§4.4). A failed start detaches here; a
+        // finished loop has detached already.
+        let power = dependencies.power
+        power?.observe()
+        defer { power?.detach() }
         await archive.setJournalSync(.interval(seconds: 1))
         try await start()
         Self.log.notice("Session \(self.archive.id, privacy: .public) started recording (\(self.options.source.rawValue, privacy: .public))")
@@ -512,7 +518,8 @@ private final class Recorder {
     }
 
     /// Consumes one epoch's frames off the main actor. It never waits for the disk or speech: it only stamps arrival
-    /// times and hands frames to the pump and the live tracks (§4.3).
+    /// times, brings frames to 48 kHz mono (a microphone keeps its device's format, §4.5), and hands them to the pump
+    /// and the live tracks (§4.3).
     private func startConsumer(_ capture: any MeetingCapture, epoch: Int) {
         let frames = capture.frames
         let monitor = self.monitor
@@ -520,19 +527,33 @@ private final class Recorder {
         let feeds = live
         let clock = self.clock
         consumer = Task.detached(priority: .userInitiated) {
-            do {
-                for try await audio in frames {
-                    monitor.received(epoch: epoch, audio: audio, at: clock.now())
-                    if audio.followsDrop {
-                        // The capture queue was full just before this frame: the gap is marked right here.
-                        pump.noteGap(track: audio.track, reason: .overflow)
-                        monitor.noteDrop()
-                    }
-                    if !pump.push(audio) { monitor.noteDrop() }
-                    feeds[audio.track]?.push(audio.frame, epoch: epoch)
+            let format = RecordingFormatConverter()
+            func deliver(_ audio: CapturedAudio) {
+                if audio.followsDrop {
+                    // The capture queue was full just before this frame: the gap is marked right here.
+                    pump.noteGap(track: audio.track, reason: .overflow)
+                    monitor.noteDrop()
                 }
+                if !pump.push(audio) { monitor.noteDrop() }
+                feeds[audio.track]?.push(audio.frame, epoch: epoch)
+            }
+            /// The resamplers' last few milliseconds, before the end is reported.
+            func flush() {
+                do { for audio in try format.flush() { deliver(audio) } } catch {
+                    Logger(subsystem: "ca.orlenko.holos.app", category: "recorder").error("Cannot flush converted audio: \(error.localizedDescription, privacy: .public)")
+                }
+            }
+            do {
+                for try await captured in frames {
+                    // Nil while the resampler holds this frame's samples for the next one.
+                    let audio = try format.convert(captured)
+                    monitor.received(epoch: epoch, audio: audio ?? captured, at: clock.now())
+                    if let audio { deliver(audio) }
+                }
+                flush()
                 monitor.ended(epoch: epoch, error: nil, at: clock.now())
             } catch {
+                flush()
                 monitor.ended(epoch: epoch, error: error, at: clock.now())
             }
         }
@@ -546,6 +567,7 @@ private final class Recorder {
         var nextTick = wall.now
         let stopRequest = archive.directory.appendingPathComponent("stop.request")
         // Sleep waits for the loop only while it runs; before and after, the monitor lets the Mac sleep at once (§4.4).
+        // Events queued since `observe()` in `run()` stay and are drained first.
         let power = dependencies.power
         power?.attach()
         defer {
@@ -563,10 +585,11 @@ private final class Recorder {
             // Power first: a sleep is acknowledged within seconds, and a capture end it causes is then ignored. Each
             // event is timed by its arrival, not by this drain: after a restart that held the loop past macOS's 30 s
             // limit, willSleep and didWake come in together after the wake, and only their arrival tells the length
-            // of the sleep.
+            // of the sleep. An event from before epoch 0's capture started (queued during the start) is at a negative
+            // session time: clamping it to 0 would shorten a sleep that began and ended during the start to nothing.
             let drained = clock.now()
             for timed in power?.pendingTimedEvents() ?? [] {
-                let at = max(0, drained - max(0, timed.secondsAgo))
+                let at = drained - max(0, timed.secondsAgo)
                 switch timed.event {
                 case .willSleep(let token):
                     pendingSleepTokens.append(token)
@@ -581,7 +604,7 @@ private final class Recorder {
             for event in monitor.drain() { await apply(event) }
             for reason in dependencies.environmentEvents?.pendingReasons() ?? [] {
                 // A call recording without the microphone restarts only when an input device is back.
-                if machine.phase == .recording, machine.microphoneMissing,
+                if machine.phase == .recording || machine.phase == .starting, machine.microphoneMissing,
                    EpochPlan.make(options, devices: dependencies.findInputDevices())?.tracks.contains("mic") != true {
                     continue
                 }
@@ -1077,7 +1100,7 @@ private final class Recorder {
                     locale: options.locale, backend: options.backend, contextualStrings: options.vocabulary,
                     from: max(0, coverage - 2), makeSpeech: dependencies.makeSpeech, timeouts: dependencies.timeouts)
             } catch let partial as ReplayIncomplete {
-                // Speech stopped answering: keep what it returned; the track is incomplete.
+                // Speech stopped answering or failed: keep what it transcribed; the track is incomplete.
                 replayed = partial.segments
                 transcriptErrors.append("\(track): \(partial.localizedDescription)")
             } catch {
@@ -1314,10 +1337,16 @@ final class EpochMonitor: Sendable {
         state.withLock { state in
             state.epoch = epoch
             state.sawFrame = false
+            // A stop requested after its epoch's stream had already ended is never matched; an older epoch's end
+            // is stale for the machine anyway.
+            state.stopRequested = state.stopRequested.filter { $0 >= epoch }
         }
     }
 
     func requestStop(epoch: Int) { state.withLock { _ = $0.stopRequested.insert(epoch) } }
+
+    /// Tests only: stop requests not yet matched with their epoch's end.
+    var pendingStopRequests: Int { state.withLock { $0.stopRequested.count } }
 
     func received(epoch: Int, audio: CapturedAudio, at: Double) {
         state.withLock { state in
@@ -1341,7 +1370,8 @@ final class EpochMonitor: Sendable {
     func ended(epoch: Int, error: Error?, at: Double) {
         state.withLock { state in
             let end: CaptureEnd
-            if state.stopRequested.contains(epoch) {
+            // An epoch's stream ends once: its entry goes, so restarts over a long recording do not pile up.
+            if state.stopRequested.remove(epoch) != nil {
                 end = .requested
             } else if let interruption = error as? CaptureInterruption {
                 end = interruption == .userStoppedSharing ? .userStoppedSharing : .configurationChanged

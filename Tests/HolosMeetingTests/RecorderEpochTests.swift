@@ -315,3 +315,28 @@ private final class RecorderHungStartCapture: MeetingCapture {
     let marked = machine.handle(.control(marker, at: 3))
     #expect(RecorderMachine.acknowledgingFirst(marked) == marked)
 }
+
+@Test func epochMonitorForgetsStopRequestsOfEndedEpochs() {
+    // Hours of restarts (pauses, device changes, retries while waiting) must not pile up per-epoch state.
+    let monitor = EpochMonitor()
+    for epoch in 0..<500 {
+        monitor.begin(epoch: epoch)
+        if epoch.isMultiple(of: 2) {
+            // Stopped by the loop: the request is matched with the end.
+            monitor.requestStop(epoch: epoch)
+            monitor.ended(epoch: epoch, error: nil, at: Double(epoch))
+        } else {
+            // Failed first; the loop's stop comes after the stream already ended.
+            monitor.ended(epoch: epoch, error: HolosError.incomplete("Gone."), at: Double(epoch))
+            monitor.requestStop(epoch: epoch)
+        }
+    }
+    monitor.begin(epoch: 500)
+    #expect(monitor.pendingStopRequests == 0)
+    let ends = monitor.drain().compactMap { input -> CaptureEnd? in
+        if case .captureEnded(_, let end, _) = input { return end }
+        return nil
+    }
+    #expect(ends.count == 500)
+    #expect(ends.enumerated().allSatisfy { index, end in index.isMultiple(of: 2) == (end == .requested) })
+}

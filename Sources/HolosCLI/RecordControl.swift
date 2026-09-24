@@ -71,6 +71,9 @@ enum RecorderControl {
             }
             throw HolosError.unavailable("The recorder has already exited.")
         case .capturing, .processing, .maintenance:
+            // `send` refuses a session that only a maintenance command holds (recovery, rebuild, `session diarize`,
+            // deletion): nothing would answer or remove the request. A live recorder whose status is stale still
+            // gets it. Both `--no-wait` and the waiting form go through `send` first.
             break
         }
         let request = try RecorderChannel.send(command, label: label, session: session, sessionID: id, sender: "cli")

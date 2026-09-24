@@ -36,8 +36,12 @@ public protocol SystemPowerEvents: Sendable {
     func allowPowerChange(token: Int)
     /// AppleClamshellState from IOPMrootDomain; true when the property is absent.
     func isLidOpen() -> Bool
-    /// While detached, the monitor acknowledges willSleep itself.
+    /// From the recorder's start until its loop attaches: sleep and wake are queued for the loop, but willSleep is
+    /// acknowledged at once (nothing is recording yet, and the Mac is never held awake by a start that is waiting).
+    func observe()
+    /// The loop acknowledges willSleep itself, after closing its chunks. Events queued while observing are kept.
     func attach()
+    /// Neither observing nor attached: the monitor acknowledges willSleep itself and queues nothing.
     func detach()
 }
 
@@ -47,8 +51,10 @@ extension SystemPowerEvents {
 
 /// `IORegisterForSystemPower` on a private dispatch queue (docs/meeting-design.md §4.4). Events are buffered in a
 /// `Mutex` for the loop. "Can sleep" queries are allowed at once. "Will sleep" is handed to the loop only while one is
-/// attached, and the loop acknowledges it after closing its chunks; while detached (before the loop starts, and during
-/// transcription and post-processing) the monitor acknowledges it itself, so Holos never delays a lid close.
+/// attached, and the loop acknowledges it after closing its chunks. While the recorder starts (`observe()`), sleep and
+/// wake are queued for the loop that will attach, but the monitor acknowledges "will sleep" itself; while detached
+/// (during transcription and post-processing) it acknowledges and queues nothing. Holos never delays a lid close
+/// except to close the chunks of a running loop.
 public final class SystemPowerMonitor: SystemPowerEvents {
     private static let log = Logger(subsystem: "ca.orlenko.holos.app", category: "power")
 
@@ -111,7 +117,9 @@ public final class SystemPowerMonitor: SystemPowerEvents {
 
     /// Tests only: handles `message` as if IOKit had sent it, `nanosecondsAgo` before now.
     func deliver(_ message: UInt32, argument: Int, nanosecondsAgo: UInt64 = 0) {
-        core.receive(message: message, argument: argument, at: PowerEventCore.continuousNanoseconds() - nanosecondsAgo)
+        // Saturate: shortly after boot, continuous time can be smaller than the requested age.
+        let now = PowerEventCore.continuousNanoseconds()
+        core.receive(message: message, argument: argument, at: now > nanosecondsAgo ? now - nanosecondsAgo : 0)
     }
 
     public func pendingEvents() -> [PowerEvent] { core.pendingTimedEvents().map(\.event) }
@@ -125,6 +133,8 @@ public final class SystemPowerMonitor: SystemPowerEvents {
         if let lidState { return lidState() }
         return registration?.isLidOpen() ?? true
     }
+
+    public func observe() { core.observe() }
 
     public func attach() { core.attach() }
 
@@ -144,6 +154,8 @@ public final class SystemPowerMonitor: SystemPowerEvents {
 final class PowerEventCore: Sendable {
     private struct State {
         var attached = false
+        /// Queueing for a loop that has not attached yet; willSleep is acknowledged at once.
+        var observing = false
         var stopped = false
         /// Events with their arrival in `mach_continuous_time` nanoseconds.
         var events: [(event: PowerEvent, at: UInt64)] = []
@@ -163,16 +175,17 @@ final class PowerEventCore: Sendable {
             // Idle sleep is prevented by the power assertion, not by vetoing here.
             acknowledge(argument)
         case SystemPowerMonitor.systemWillSleep:
-            let queued = state.withLock { state -> Bool in
-                guard state.attached, !state.stopped else { return false }
-                state.outstanding.insert(argument)
+            let held = state.withLock { state -> Bool in
+                guard !state.stopped, state.attached || state.observing else { return false }
                 state.events.append((.willSleep(token: argument), at))
+                guard state.attached else { return false }
+                state.outstanding.insert(argument)
                 return true
             }
-            if !queued { acknowledge(argument) }
+            if !held { acknowledge(argument) }
         case SystemPowerMonitor.systemHasPoweredOn:
             state.withLock { state in
-                if state.attached, !state.stopped { state.events.append((.didWake, at)) }
+                if !state.stopped, state.attached || state.observing { state.events.append((.didWake, at)) }
             }
         default:
             break
@@ -209,12 +222,16 @@ final class PowerEventCore: Sendable {
         if pending { acknowledge(token) }
     }
 
+    func observe() { state.withLock { if !$0.stopped { $0.observing = true } } }
+
+    /// Queued events (from observing) stay for the loop.
     func attach() { state.withLock { if !$0.stopped { $0.attached = true } } }
 
     /// Stops queueing, drops queued events, and acknowledges every willSleep the loop has not.
     func detach() {
         let tokens = state.withLock { state -> [Int] in
             state.attached = false
+            state.observing = false
             state.events.removeAll()
             defer { state.outstanding.removeAll() }
             return state.outstanding.sorted()
