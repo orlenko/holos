@@ -2304,10 +2304,21 @@ consumed off the main actor (§1.3), and the launcher holds
 while recording so App Nap and timer coalescing do not apply. The recorder code writes
 the same `status.json` and reads the same `control/`, so `MeetingController` does not
 know which launcher is used. Post-processing still runs in a child, keeping FluidAudio
-out of the app: the in-process `PostProcessHook` (§4.6) releases the lease, spawns
-`holos session diarize <path> --after-recording --json` (which takes the lease), mirrors
-the child's `postprocess.json` progress into `status.json`, and returns its final
-record. The mode is `UserDefaults "meetingRecorderMode"` = `child` (default) or
+out of the app: the in-process `PostProcessHook` (§4.6) hands the processing lease to a
+child without ever releasing it. It spawns
+`holos session diarize <path> --after-recording --json --lease-fd 3` with a
+`posix_spawn_file_actions_adddup2` that places the lease's lock descriptor at fd 3 in the
+child (dup2 clears close-on-exec on the copy; `flock` locks belong to the open file
+description, so the child now co-owns the held lock). Only after `posix_spawn` succeeds does
+the parent close its own descriptor; the lock stays held by the child until it exits. With
+`--lease-fd`, the child adopts that descriptor as its `ProcessingLease` instead of acquiring
+one, and refuses to run if fd 3 is not a lock on this session's lease file. If the spawn
+fails, the parent still holds the lease and records the failure itself. There is therefore
+no moment when neither the writer lock nor the lease is held, so `liveness` never reads a
+fresh `postprocessing` session as `dead`, and recovery, deletion, or relabelling cannot slip
+in. The hook mirrors the child's `postprocess.json` progress into `status.json` and returns
+its final record. Test `inProcessLeaseHandoffHasNoGap` (PR4): a probe polling
+`SessionLocks.isProcessing` throughout the handoff never sees `false`. The mode is `UserDefaults "meetingRecorderMode"` = `child` (default) or
 `inProcess`; S2 decides the default.
 
 ### 4.2 Recorder state machine
@@ -3224,7 +3235,10 @@ public struct SpeakerProfileDatabase: Codable, Sendable, Equatable {
     from this call, never from automatic matches (decision 2).
   - `confirmAll(session:view:learnVoices:store:)`: links every current suggestion in one
     batch, so one undo reverts it.
-  - `markSelf(session:speakerID:view:store:)`: "This is me".
+  - `markSelf(session:speakerID:view:learnVoice:store:)`: "This is me". Like `link`, it
+    enrolls a voice sample only when `learnVoice` is true (the Review footer's
+    `ReviewSession.learnVoices`, and Remember voices on); otherwise it only records the
+    `isSelf` link. Test `markSelfHonoursLearnVoice` (PR10).
   - `reject(session:speakerID:profileID:view:)`.
   - `refreshSamples(session:store:)`: after any edit in a session that contributed
     samples, recompute them; remove a sample when no qualifying turns remain.
@@ -3436,8 +3450,14 @@ carries them; `TrackReplayer.replay`, `TranscriptRebuilder.rebuild`, and
 `CorrectionList.vocabulary` (PR4) plus known people's names (PR10), at most 1,000
 entries of at most 100 characters, writes it 0600 to
 `$TMPDIR/holos-vocabulary-<id>.json`, and passes `--vocabulary-file`. The recorder copies
-it to `vocabulary.json` and deletes the temporary file; replay, rebuild, and import read
-`vocabulary.json`.
+it to `vocabulary.json` before its first `status.json` write and deletes the temporary file;
+replay, rebuild, and import read `vocabulary.json`. Because the temporary file holds private
+names and correction terms, the app side owns cleanup too: `MeetingController` deletes it
+on `launchFailed`, when the child exits for any reason, and as soon as the first
+`status.json` for that session appears (the recorder has copied it by then). On launch the
+app also removes any `$TMPDIR/holos-vocabulary-*.json` older than one hour. Tests (PR4):
+`vocabularyFileRemovedOnLaunchFailure` (spawn fails), `vocabularyFileRemovedOnEarlyExit`
+(child exits before any status), `staleVocabularyFilesSwept`.
 
 ### 4.13 Retention and deletion
 
@@ -5347,7 +5367,7 @@ public enum VoiceProfileService {
     public static func confirmAll(session: URL, view: SpeakerProjection, learnVoices: Bool,
                                   store: SpeakerProfileStore) throws -> SpeakerSessionSnapshot
     public static func markSelf(session: URL, speakerID: String, view: SpeakerProjection,
-                                store: SpeakerProfileStore) throws -> SpeakerSessionSnapshot
+                                learnVoice: Bool, store: SpeakerProfileStore) throws -> SpeakerSessionSnapshot
     public static func reject(session: URL, speakerID: String, profileID: String,
                               view: SpeakerProjection) throws -> SpeakerSessionSnapshot
     public static func refreshSamples(session: URL, store: SpeakerProfileStore) throws
@@ -5498,7 +5518,7 @@ speakers, undo, export.
     public func undo() async throws                                           // this window's newest batch
     public func link(speakerID: String, to target: ProfileTarget) async throws   // learnVoice: learnVoices
     public func confirmAllSuggestions() async throws
-    public func markSelf(speakerID: String) async throws
+    public func markSelf(speakerID: String) async throws   // passes learnVoices to VoiceProfileService.markSelf
     public func rejectSuggestion(speakerID: String) async throws
     /// `holos session diarize --force --min-speakers <current + 1>`; names carry over (§4.9).
     public func findMoreSpeakers() async throws
@@ -5945,3 +5965,11 @@ reprocessing" in `docs/contracts.md`).
 | B28 | minor | Losing the call-mode microphone ends the whole recording | Accepted: restart without the microphone, warn, retry with it on a device change. Test `callWithoutAnyInputRecordsSystemOnly`. |
 | B29 | minor | `ReviewSession` edits are synchronous on the main actor | Merged into C26. |
 | S1 | — | Fold spike S1 into PR7 | Done in §4.8: the FluidAudio API actually used, configuration, cache layout and pinning, memory (one pass per track, tracks in sequence, no block-wise fallback), embeddings (segment embedding = centroid; chunk embeddings for turns; persisted only as opt-in voice data), accuracy to expect, and the license and citation text for `THIRD_PARTY_NOTICES.md` and the About panel. |
+
+### 10.1 Codex review of the design (PR #4)
+
+| Comment | Disposition |
+|---|---|
+| In-process mode released the lease before spawning the diarizer, leaving a window with no lock | Accepted. The lease descriptor is inherited by the child at fd 3 (`--lease-fd 3`) and the parent closes its copy only after a successful spawn (§4.1). Test `inProcessLeaseHandoffHasNoGap`. |
+| The vocabulary temp file leaked when launch failed or the child exited early | Accepted. `MeetingController` deletes it on launch failure, child exit, and first status; stale files are swept at launch (§4.12). Three PR4 tests. |
+| `markSelf` had no consent flag for voice learning | Accepted. `learnVoice:` added to `VoiceProfileService.markSelf`; `ReviewSession.markSelf` passes `learnVoices` (§4.10, PR10). Test `markSelfHonoursLearnVoice`. |
