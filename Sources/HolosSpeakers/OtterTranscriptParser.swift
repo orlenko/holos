@@ -1,0 +1,91 @@
+import Foundation
+
+/// One speaker turn of a reference transcript. The text is counted, never kept, so evaluation code can hold
+/// references without holding what was said (docs/meeting-design.md §1.9).
+public struct ReferenceTurn: Sendable, Equatable {
+    public var speaker: String
+    /// Seconds from the start of the recording.
+    public var start: Double
+    /// The next turn's start; nil for the last turn.
+    public var end: Double?
+    /// Words in the turn's text lines.
+    public var wordCount: Int
+
+    public init(speaker: String, start: Double, end: Double? = nil, wordCount: Int = 0) {
+        self.speaker = speaker; self.start = start; self.end = end; self.wordCount = wordCount
+    }
+}
+
+/// Reads Otter's plain-text export (and Holos's `transcript.txt`, which uses the same layout).
+public enum OtterTranscriptParser {
+    /// Header lines "Name  mm:ss" or "Name  h:mm:ss" start turns; the footer "Transcribed by https://otter.ai" is
+    /// ignored.
+    ///
+    /// A header is exactly a line the evaluator's regex `^\s*\S.*\s{2,}\d{1,2}:\d{2}(?::\d{2})?\s*$` accepts
+    /// (scripts/evaluate-references.swift): the name is the text before the last run of two or more whitespace
+    /// characters, trimmed, and the time after it is minutes and seconds, or hours, minutes, and seconds. The footer
+    /// is the evaluator's case-insensitive `Transcribed by http(s)://otter.ai` line. Any other line adds its words
+    /// (whitespace-separated tokens with at least one letter or digit) to the current turn; lines before the first
+    /// header belong to no turn. Turns keep file order; `end` is the next turn's start as written. A leading
+    /// byte-order mark is dropped, so it never becomes part of the first speaker's name.
+    public static func parse(_ text: String) -> [ReferenceTurn] {
+        guard let header = try? NSRegularExpression(pattern: headerPattern),
+              let footer = try? NSRegularExpression(pattern: footerPattern) else { return [] }
+        let text = text.first == "\u{FEFF}" ? String(text.dropFirst()) : text
+        var turns: [ReferenceTurn] = []
+        for line in text.components(separatedBy: .newlines) {
+            let range = NSRange(line.startIndex..<line.endIndex, in: line)
+            if let match = header.firstMatch(in: line, range: range), let turn = turn(from: match, in: line) {
+                turns.append(turn)
+                continue
+            }
+            if footer.firstMatch(in: line, range: range) != nil { continue }
+            guard !turns.isEmpty else { continue }
+            turns[turns.count - 1].wordCount += wordCount(line)
+        }
+        for index in turns.indices.dropLast() {
+            turns[index].end = turns[index + 1].start
+        }
+        return turns
+    }
+
+    /// The evaluator's header regex with capture groups: name, then hours or minutes, minutes or seconds, and
+    /// optional seconds. Lazy and greedy name matches accept the same lines; the time must end the line either way.
+    static let headerPattern = #"^\s*(\S.*?)\s{2,}(\d{1,2}):(\d{2})(?::(\d{2}))?\s*$"#
+    static let footerPattern = #"(?i)^\s*transcribed by\s+https?://otter\.ai/?\s*$"#
+
+    private static func turn(from match: NSTextCheckingResult, in line: String) -> ReferenceTurn? {
+        func group(_ index: Int) -> Substring? {
+            guard let range = Range(match.range(at: index), in: line) else { return nil }
+            return line[range]
+        }
+        guard let name = group(1), let first = group(2).flatMap(number), let second = group(3).flatMap(number) else {
+            return nil
+        }
+        let seconds: Int
+        if let third = group(4).flatMap(number) {
+            seconds = first * 3_600 + second * 60 + third
+        } else {
+            seconds = first * 60 + second
+        }
+        let speaker = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !speaker.isEmpty else { return nil }
+        return ReferenceTurn(speaker: speaker, start: Double(seconds))
+    }
+
+    /// The value of one to two decimal digits (`\d` also matches non-ASCII digits).
+    private static func number(_ digits: Substring) -> Int? {
+        var value = 0
+        for character in digits {
+            guard let digit = character.wholeNumberValue, (0...9).contains(digit) else { return nil }
+            value = value * 10 + digit
+        }
+        return value
+    }
+
+    private static func wordCount(_ line: String) -> Int {
+        line.split(whereSeparator: \.isWhitespace)
+            .filter { $0.contains { $0.isLetter || $0.isNumber } }
+            .count
+    }
+}
