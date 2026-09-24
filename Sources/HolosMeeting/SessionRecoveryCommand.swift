@@ -79,11 +79,21 @@ public enum SessionRecoveryCommand {
     /// status or `transcriptRebuilt` could not be recorded goes to the rebuild again, which finishes recording it.
     static func rebuilds(status: String, stoppedCapturing: Bool = false, events: [ArchiveEvent] = [],
                          session: URL) throws -> Bool {
+        try rebuilds(status: status, stoppedCapturing: stoppedCapturing, events: events) {
+            try SessionFiles.readableCurrentTranscriptID(session: session)
+        }
+    }
+
+    /// `rebuilds` with the readable current transcript given by `current` (nil: none, or missing or damaged), read
+    /// only when the status keeps a saved transcript. The Meetings window's Recover button asks this with the
+    /// catalog's transcript (`MeetingActionPolicy.recovers`), so the button and the command decide alike.
+    static func rebuilds(status: String, stoppedCapturing: Bool = false, events: [ArchiveEvent] = [],
+                         current: () throws -> String?) rethrows -> Bool {
         let keepsSavedTranscript = rebuiltWithoutTranscriptStatuses.contains(status)
             || (status == ArchiveStatus.interrupted && stoppedCapturing)
         if !keepsSavedTranscript, rebuiltStatuses.contains(status) { return true }
         guard keepsSavedTranscript else { return false }
-        guard let current = try SessionFiles.readableCurrentTranscriptID(session: session) else { return true }
+        guard let current = try current() else { return true }
         return TranscriptRebuilder.rebuildSaved(current, events: events)
     }
 

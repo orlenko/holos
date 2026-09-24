@@ -36,6 +36,17 @@ struct MeetingControllerTuning: Sendable {
     /// UserDefaults key: recorder children launched by this app, or by an earlier run of it, whose exit was not seen,
     /// per session ID: [pid, start time in microseconds since 1970].
     static let launchedRecordersKey = "meeting.launchedRecorders"
+    /// What the automatic relabel is doing, as `sessionsInUse` shows it.
+    public static let relabelDoing = "Labelling speakers automatically…"
+    /// UserDefaults key: naming offers the user opened, per session ID: the run they were for.
+    static let dismissedOffersKey = "meeting.namingOffersDismissed"
+
+    /// A meeting offered for naming: its labels are those of run `runID`.
+    public struct NamingOffer: Sendable, Equatable {
+        public var sessionID: String
+        public var name: String
+        public var runID: String
+    }
 
     public private(set) var reducer = MeetingReducer()
     public var state: MeetingState { reducer.state }
@@ -54,9 +65,18 @@ struct MeetingControllerTuning: Sendable {
     public private(set) var relabelling = false
     /// The meeting the automatic relabel is labelling, while it runs.
     public private(set) var relabellingSessionID: String?
-    /// Meetings the app is running a maintenance command for (Meetings window, interrupted prompt); the automatic
-    /// relabel skips them.
-    public var sessionsInUse: @MainActor () -> Set<String> = { [] }
+    /// The meetings the app is working on, by session ID: what it is doing ("Recovering…"). Every operation of the
+    /// app that takes a meeting's processing lease, or reads the meeting for the user, holds its entry while it runs
+    /// (`beginUsing`, `endUsing`): the automatic relabel, Recover (Meetings window and the interrupted prompt), Label
+    /// Speakers, Delete Audio, Delete Meeting, Clean Up, and Save Transcript As…. The automatic relabel skips these
+    /// meetings and every Meetings action refuses them, so two of them never contend for one lease (the loser fails,
+    /// and a relabel would use up an attempt).
+    public private(set) var sessionsInUse: [String: String] = [:]
+    /// Called after `sessionsInUse` changed.
+    public var onSessionsInUseChanged: @MainActor () -> Void = {}
+    /// The "Name Speakers — <name>…" offer, derived from saved state (`NamingOfferPolicy`) by `refreshNamingOffer`.
+    /// Each change is reported once, as `offerNaming` or `clearNamingOffer`.
+    public private(set) var namingOffer: NamingOffer?
 
     public let root: URL
     private let launcher: any RecorderLauncher
@@ -89,6 +109,14 @@ struct MeetingControllerTuning: Sendable {
     var saveLaunchedRecorders: @MainActor ([String: [Int]]) -> Void = {
         UserDefaults.standard.set($0, forKey: MeetingController.launchedRecordersKey)
     }
+    /// Where dismissed naming offers are kept: UserDefaults "meeting.namingOffersDismissed" (tests keep them in memory).
+    var loadDismissedOffers: @MainActor () -> [String: String] = {
+        (UserDefaults.standard.dictionary(forKey: MeetingController.dismissedOffersKey) ?? [:])
+            .compactMapValues { $0 as? String }
+    }
+    var saveDismissedOffers: @MainActor ([String: String]) -> Void = {
+        UserDefaults.standard.set($0, forKey: MeetingController.dismissedOffersKey)
+    }
 
     private var lastStatus: RecorderStatus?
     /// Recorders this controller launched whose end the launcher has not reported yet. A start the menu gave up on
@@ -105,6 +133,8 @@ struct MeetingControllerTuning: Sendable {
     /// Control requests waiting for the previous request's acknowledgement.
     private var pendingSends: [(command: ControlCommand, label: String?, sessionID: String)] = []
     private var awaitingAck: Task<Void, Never>?
+    /// Counts `refreshNamingOffer` calls and dismissals: a listing read before the latest one is dropped.
+    private var offerGeneration = 0
 
     public init(root: URL = HolosPaths.sessions, launcher: any RecorderLauncher, maintenance: MaintenanceLauncher?,
                 freeSpace: any FreeSpaceProvider, findInputDevices: @escaping @Sendable () -> InputDevices,
@@ -120,13 +150,15 @@ struct MeetingControllerTuning: Sendable {
     // MARK: - Public API
 
     /// Finds a live meeting (§4.1), then polls its status every second; while idle, rescans every 3 s and runs
-    /// the automatic relabel every 30 s.
+    /// the automatic relabel every 30 s. Derives the naming offer, which covers meetings labelled while Holos was not
+    /// running.
     public func attachOnLaunch() {
         sweepStaleVocabularyFiles()
         // Forgets the saved recorders of an earlier run that have ended.
         _ = launchedRecordersStillRun()
         rescan()
         lastRescan = clock.now
+        refreshNamingOffer()
         runAutoRelabel()
         guard loop == nil else { return }
         loop = Task { [weak self] in
@@ -350,24 +382,7 @@ struct MeetingControllerTuning: Sendable {
 
     private func dispatch(_ event: MeetingEvent, forceChange: Bool = false) {
         let before = reducer.state
-        let effects = reducer.reduce(event)
-        for effect in effects {
-            switch effect {
-            case .finished(let sessionID, let summary, true):
-                // Its naming offer is sent with it, once the labels were checked.
-                let name = effects.lazy.compactMap { other -> String? in
-                    if case .offerNaming(sessionID, let name) = other { name } else { nil }
-                }.first
-                Self.log.notice("Session \(sessionID, privacy: .public): finished")
-                finishOnceLabelsChecked(sessionID: sessionID, summary: summary, offering: name)
-            case .offerNaming(let sessionID, _) where effects.contains(where: {
-                if case .finished(sessionID, _, true) = $0 { true } else { false }
-            }):
-                continue
-            default:
-                perform(effect)
-            }
-        }
+        for effect in reducer.reduce(event) { perform(effect) }
         if forceChange || reducer.state != before { onChange(reducer.state) }
     }
 
@@ -385,51 +400,111 @@ struct MeetingControllerTuning: Sendable {
             Self.log.notice("Session \(sessionID, privacy: .public): finished")
             guard ready else {
                 onEffect(effect)
+                refreshNamingOffer()
                 return
             }
-            finishOnceLabelsChecked(sessionID: sessionID, summary: summary, offering: nil)
-        case .offerNaming(let sessionID, let name):
-            offerNamingIfLabelled(sessionID: sessionID, name: name)
-        case .announce, .setDictationPaused, .clearNamingOffer:
+            finishOnceLabelsChecked(sessionID: sessionID, summary: summary)
+        case .offerNaming:
+            // The reducer's offer for a meeting that just ended: the offer is derived from saved state instead
+            // (`refreshNamingOffer`, run once the finish is reported), whatever path labelled the meeting.
+            break
+        case .clearNamingOffer(let sessionID):
+            dismissNamingOffer(sessionID: sessionID)
+        case .announce, .setDictationPaused:
             onEffect(effect)
         }
     }
 
-    /// Reports a meeting whose post-processing succeeded, with `speakersReady` from its saved labels, and offers
-    /// naming when a name is given and the labels are ready: post-processing can succeed without labels (speaker
-    /// models not installed), and saved labels can be damaged.
-    private func finishOnceLabelsChecked(sessionID: String, summary: String, offering name: String?) {
+    /// Reports a meeting whose post-processing succeeded, with `speakersReady` from its saved labels (post-processing
+    /// can succeed without labels, when the speaker models are not installed, and saved labels can be damaged), then
+    /// derives the naming offer again.
+    private func finishOnceLabelsChecked(sessionID: String, summary: String) {
         let session = sessionURL(sessionID)
         Task { [weak self] in
             let ready = await Self.speakerLabelsReadyOffMain(session: session)
             guard let self else { return }
             self.onEffect(.finished(sessionID: sessionID, summary: summary, speakersReady: ready))
-            if ready, let name { self.onEffect(.offerNaming(sessionID: sessionID, name: name)) }
+            self.refreshNamingOffer()
         }
     }
 
     /// A maintenance command the app ran for the meeting in `session` (Recover, Label Speakers) ended with `code`.
-    /// When it ran to its end (0, or 3 with a warning) and the saved labels check out (`speakerLabelsReady`), the
-    /// meeting is offered for naming as a meeting that just ended is: the controller stays idle, and the automatic
-    /// relabel skips a labelled meeting, so nothing else would offer it. Returns whether the labels are ready.
-    @discardableResult
-    public func labellingCommandEnded(session: URL, sessionID: String, name: String, code: Int32) async -> Bool {
+    /// Returns whether it ran to its end (0, or 3 with a warning) and left labels that check out
+    /// (`speakerLabelsReady`), for the app's result alert. The naming offer is derived again when the command's use of
+    /// the meeting ends (`endUsing`).
+    public func labellingCommandEnded(session: URL, code: Int32) async -> Bool {
         guard Self.ranToTheEnd(code) else { return false }
-        let ready = await Self.speakerLabelsReadyOffMain(session: session)
-        if ready { onEffect(.offerNaming(sessionID: sessionID, name: name)) }
-        return ready
+        return await Self.speakerLabelsReadyOffMain(session: session)
     }
 
     /// `holos session diarize|recover` ended with its labels saved, perhaps with a warning (exit code 3: partial).
     static func ranToTheEnd(_ code: Int32) -> Bool { code == 0 || code == 3 }
 
-    /// Offers naming the speakers of `sessionID` once its saved labels are checked, if they are ready.
-    private func offerNamingIfLabelled(sessionID: String, name: String) {
-        let session = sessionURL(sessionID)
+    // MARK: - Naming offer
+
+    /// Derives the naming offer from saved state (`NamingOfferPolicy`): lists the sessions off the main actor, then
+    /// reports a change as `offerNaming` or `clearNamingOffer`. Runs on launch, when a followed recording finishes,
+    /// and when any use of a meeting ends (`endUsing`: a Meetings command, the interrupted prompt's Recover, Clean Up,
+    /// Save Transcript As…, the automatic relabel), so the offer survives quits and relaunches and does not depend on
+    /// which path labelled the meeting. A listing that a later refresh or a dismissal overtook is dropped.
+    public func refreshNamingOffer() {
+        offerGeneration += 1
+        let generation = offerGeneration
+        let root = self.root
+        let at = now()
         Task { [weak self] in
-            guard await Self.speakerLabelsReadyOffMain(session: session), let self else { return }
-            self.onEffect(.offerNaming(sessionID: sessionID, name: name))
+            let listed = await Task.detached { SessionCatalog.list(root: root, now: at) }.value
+            guard let self, generation == self.offerGeneration else { return }
+            let dismissed = self.loadDismissedOffers()
+            let kept = NamingOfferPolicy.pruned(dismissed, listed: listed)
+            if kept != dismissed { self.saveDismissedOffers(kept) }
+            let offer = NamingOfferPolicy.offer(listed, dismissed: kept, now: at).flatMap { summary in
+                summary.runID.map { NamingOffer(sessionID: summary.id, name: summary.name, runID: $0) }
+            }
+            self.setNamingOffer(offer)
         }
+    }
+
+    /// The user opened the offer of `sessionID` (Name Speakers): it is dismissed for its labels, also across relaunches.
+    private func dismissNamingOffer(sessionID: String) {
+        guard let offer = namingOffer, offer.sessionID == sessionID else { return }
+        var dismissed = loadDismissedOffers()
+        dismissed[sessionID] = offer.runID
+        saveDismissedOffers(dismissed)
+        // A listing read before the dismissal would bring the offer back.
+        offerGeneration += 1
+        setNamingOffer(nil)
+    }
+
+    /// The one place the offer changes and is reported.
+    private func setNamingOffer(_ offer: NamingOffer?) {
+        guard offer != namingOffer else { return }
+        let previous = namingOffer
+        namingOffer = offer
+        if let offer {
+            onEffect(.offerNaming(sessionID: offer.sessionID, name: offer.name))
+        } else if let previous {
+            onEffect(.clearNamingOffer(sessionID: previous.sessionID))
+        }
+    }
+
+    // MARK: - Meetings in use
+
+    /// Registers the app's use of `sessionID` for `doing` ("Recovering…"); false, with nothing registered, while the
+    /// app already uses it (`sessionsInUse`).
+    public func beginUsing(_ sessionID: String, for doing: String) -> Bool {
+        guard sessionsInUse[sessionID] == nil else { return false }
+        sessionsInUse[sessionID] = doing
+        onSessionsInUseChanged()
+        return true
+    }
+
+    /// Ends the app's use of `sessionID`, then derives the naming offer again: the use may have labelled, deleted, or
+    /// changed the meeting.
+    public func endUsing(_ sessionID: String) {
+        guard sessionsInUse.removeValue(forKey: sessionID) != nil else { return }
+        onSessionsInUseChanged()
+        refreshNamingOffer()
     }
 
     /// `speakerLabelsReady` off the main actor: it loads the session's speaker snapshot (§1.3).
@@ -565,10 +640,9 @@ struct MeetingControllerTuning: Sendable {
             let listed = await Task.detached { SessionCatalog.list(root: root, now: at) }.value
             guard let self else { return }
             let active: Bool = if case .idle = self.state { false } else { true }
-            // A meeting the app is recovering, labelling, or deleting right now is left alone: two commands would
-            // contend for its processing lease, and the loser would fail (and here, use up an attempt).
-            let inUse = self.sessionsInUse()
-            let summaries = listed.filter { !inUse.contains($0.id) }
+            // A meeting the app uses right now (`sessionsInUse`) is left alone: two commands would contend for its
+            // processing lease, and the loser would fail (and here, use up an attempt).
+            let summaries = listed.filter { self.sessionsInUse[$0.id] == nil }
             var attempts = self.loadRelabelAttempts()
             guard let pick = AutoRelabelPolicy.candidates(summaries, attempts: attempts,
                                                           modelsInstalled: self.modelsInstalled(),
@@ -583,14 +657,19 @@ struct MeetingControllerTuning: Sendable {
             // missing for a moment) labelled nothing and must not use up one of `AutoRelabelPolicy.maxAttempts`. The
             // count is saved before this main-actor task yields, so the command's exit never runs ahead of it.
             defer { self.saveRelabelAttempts(attempts) }
+            // Registered before the command starts, on the main actor, so no Meetings action can take the meeting
+            // between the check above and the spawn.
+            guard self.beginUsing(pick.id, for: Self.relabelDoing) else {
+                self.relabelling = false
+                return
+            }
             do {
                 try maintenance.run(["session", "diarize", pick.directory.path, "--json"]) { [weak self] code in
                     Self.log.notice("Session \(pick.id, privacy: .public): automatic relabel ended with \(code, privacy: .public)")
                     self?.relabelling = false
                     self?.relabellingSessionID = nil
-                    // Labelled in the background: offered for naming as a meeting that just ended is, once its
-                    // labels check out (the controller stays idle, so nothing else would offer it).
-                    if Self.ranToTheEnd(code) { self?.offerNamingIfLabelled(sessionID: pick.id, name: pick.name) }
+                    // Labelled in the background: the naming offer is derived again as the use ends.
+                    self?.endUsing(pick.id)
                 }
                 attempts[pick.id, default: 0] += 1
                 self.relabellingSessionID = pick.id
@@ -598,6 +677,7 @@ struct MeetingControllerTuning: Sendable {
             } catch {
                 Self.log.error("Session \(pick.id, privacy: .public): automatic relabel could not start (\(ProcessSpawner.logCategory(error), privacy: .public)): \(error.localizedDescription, privacy: .private)")
                 self.relabelling = false
+                self.endUsing(pick.id)
             }
         }
     }

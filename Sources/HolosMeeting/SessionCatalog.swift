@@ -43,9 +43,15 @@ public struct SessionSummary: Codable, Sendable, Equatable, Identifiable {
     /// Why the current transcript cannot be read (the pointer or revision is missing, damaged, holds another ID, or
     /// was written by a newer Holos); nil when it can, or when the session has none.
     public var transcriptProblem: String?
+    /// The current transcript cannot be read for a reason other than damage: written by a newer Holos, or an I/O
+    /// error. Recovery and labelling refuse such a session (`SessionFiles.isDamage` tells the two apart).
+    public var transcriptRefused: Bool
     public var speakerState: SpeakerLabelState
     public var labelMessage: String?
     public var runID: String?
+    /// When the head's run was made, while the saved labels are usable (`SavedSpeakerState.labelsReady`, the one test
+    /// for "labels are ready"); nil otherwise.
+    public var labelsReadyAt: Date?
     public var hasSpeakerEdits: Bool
     public var phase: RecorderPhase?
     public var pid: Int32?
@@ -57,15 +63,17 @@ public struct SessionSummary: Codable, Sendable, Equatable, Identifiable {
     public init(id: String, directory: URL, name: String, createdAt: Date, source: AudioSource,
                 origin: MeetingOrigin = .recorded, state: SessionState, manifestStatus: String,
                 savedSeconds: Double = 0, chunkCount: Int = 0, transcriptID: String? = nil,
-                transcriptProblem: String? = nil, speakerState: SpeakerLabelState = .none,
-                labelMessage: String? = nil, runID: String? = nil,
+                transcriptProblem: String? = nil, transcriptRefused: Bool = false,
+                speakerState: SpeakerLabelState = .none, labelMessage: String? = nil, runID: String? = nil,
+                labelsReadyAt: Date? = nil,
                 hasSpeakerEdits: Bool = false, phase: RecorderPhase? = nil, pid: Int32? = nil,
                 liveness: RecorderLiveness, bytes: Int64 = 0, derivedBytes: Int64 = 0, audioDeleted: Bool = false) {
         self.id = id; self.directory = directory; self.name = name; self.createdAt = createdAt
         self.source = source; self.origin = origin; self.state = state; self.manifestStatus = manifestStatus
         self.savedSeconds = savedSeconds; self.chunkCount = chunkCount; self.transcriptID = transcriptID
-        self.transcriptProblem = transcriptProblem
+        self.transcriptProblem = transcriptProblem; self.transcriptRefused = transcriptRefused
         self.speakerState = speakerState; self.labelMessage = labelMessage; self.runID = runID
+        self.labelsReadyAt = labelsReadyAt
         self.hasSpeakerEdits = hasSpeakerEdits; self.phase = phase; self.pid = pid; self.liveness = liveness
         self.bytes = bytes; self.derivedBytes = derivedBytes; self.audioDeleted = audioDeleted
     }
@@ -118,19 +126,22 @@ public enum SessionCatalog {
         // as the session's transcript.
         var transcriptID: String?
         var transcriptProblem: String?
+        var transcriptRefused = false
         do {
             transcriptID = try SessionFiles.currentTranscript(session: session)?.id
         } catch {
             log.error("Session \(manifest.id, privacy: .public): current transcript unreadable: \(error.localizedDescription, privacy: .private)")
             transcriptProblem = error.localizedDescription
+            transcriptRefused = !SessionFiles.isDamage(error)
         }
         return SessionSummary(
             id: manifest.id, directory: session, name: manifest.name, createdAt: manifest.createdAt,
             source: manifest.source, origin: origin,
             state: state(manifestStatus: manifest.status, liveness: liveness), manifestStatus: manifest.status,
             savedSeconds: manifest.savedSeconds, chunkCount: manifest.chunks.count, transcriptID: transcriptID,
-            transcriptProblem: transcriptProblem, speakerState: speakers.state, labelMessage: speakers.message,
-            runID: speakers.runID,
+            transcriptProblem: transcriptProblem, transcriptRefused: transcriptRefused,
+            speakerState: speakers.state, labelMessage: speakers.message,
+            runID: speakers.runID, labelsReadyAt: speakers.readyAt,
             hasSpeakerEdits: hasSpeakerEdits(session), phase: phase, pid: pid, liveness: liveness,
             bytes: sizes.bytes, derivedBytes: sizes.derived,
             audioDeleted: audioDeleted(session, sessionID: manifest.id))
@@ -196,16 +207,18 @@ public enum SessionCatalog {
     /// exists but cannot be read (damaged, of another session, written by a newer Holos, an I/O error), the head's run
     /// or its transcript is missing or damaged, a span does not fit that transcript, or the record names a run while
     /// the head is missing, the state is `unreadable` with why, never the state of a session without that file; the
-    /// run is the head's, else the record's.
+    /// run is the head's, else the record's. `readyAt` is the head run's creation time while
+    /// `SavedSpeakerState.labelsReady`.
     static func speakerLabels(_ session: URL, liveness: RecorderLiveness)
-        -> (state: SpeakerLabelState, message: String?, runID: String?) {
+        -> (state: SpeakerLabelState, message: String?, runID: String?, readyAt: Date?) {
         let saved = SavedSpeakerState.read(session: session)
         guard saved.problems.isEmpty else {
             let message = saved.problems.map(\.localizedDescription).joined(separator: " ")
             log.error("Cannot read the speaker state: \(message, privacy: .private)")
-            return (.unreadable, message, saved.head?.runID ?? saved.record?.runID)
+            return (.unreadable, message, saved.head?.runID ?? saved.record?.runID, nil)
         }
-        return speakerState(record: saved.record, headRunID: saved.head?.runID, liveness: liveness)
+        let state = speakerState(record: saved.record, headRunID: saved.head?.runID, liveness: liveness)
+        return (state.state, state.message, state.runID, saved.labelsReady ? saved.headRun?.createdAt : nil)
     }
 
     /// Whether the speaker edit journal holds any edit, including lines this build cannot read and a partial last

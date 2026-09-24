@@ -5505,7 +5505,14 @@ failed, interrupted; runs `holos session diarize <path>`), `Show in Finder`,
 `Save Transcript As…` (NSSavePanel: md or txt), `Delete Audio…`, `Delete Meeting…`, and
 `Clean Up` when `derivedBytes > 0`. Footer: "Meetings use 12.4 GB · 21.3 GB free".
 Double-click opens the Quick Look preview (PR9 changes it to Review). Refreshes every
-2 s while visible.
+2 s while visible. Button enablement is `MeetingActionPolicy.enabled`, the rules of the
+commands behind the buttons: Recover when `SessionRecoveryCommand.rebuilds` would rebuild
+(asked with the catalog's readable transcript, so a `transcriptionIncomplete` or `incomplete`
+meeting whose transcript cannot be read qualifies) or the meeting is interrupted, never for a
+damaged manifest or a transcript from a newer Holos; Label Speakers for speaker state none,
+notLabelled, failed, or interrupted with a readable transcript and audio, not interrupted. No
+lease-taking action while the app uses the meeting or another process holds it (liveness
+capturing, processing, maintenance).
 
 Live transcript window: read-only text view with the last 500 `transcriptFinalized`
 events from `events.jsonl`, `[01:02:03] Mic: …`, refreshed every second, scrolled to the
@@ -5519,17 +5526,31 @@ recording: Council meeting (1:12:40 saved)." `[Recover]` `[Later]`. Recover runs
 Automatic relabel: on launch and every 30 s while idle, `AutoRelabelPolicy.candidates`
 picks at most one session and `MaintenanceLauncher` runs `holos session diarize <path>
 --json`; attempts are counted in `UserDefaults "meeting.relabelAttempts"`. This covers a
-Mac shut down or put to sleep while labelling. A relabel that exits 0 (or 3, labelled with a
-warning) and leaves usable labels emits the same `offerNaming` as a meeting that just ended,
-once. So do Recover and Label Speakers run from the Meetings window or the interrupted
-prompt (`MeetingController.labellingCommandEnded`): the controller stays idle for them, and
-the automatic relabel skips a labelled meeting, so nothing else would offer it.
+Mac shut down or put to sleep while labelling.
 
-Labels are ready (a finished meeting's `speakersReady`, `offerNaming`, the restored naming
-offer, the Label Speakers result) only when `SavedSpeakerState` finds them usable, the
-validation the catalog, recovery, and the exports share
-(`MeetingController.speakerLabelsReady`, run off the main actor); `speakers/head.json`
-alone is not enough.
+Naming offer: derived from saved state, never emitted per path
+(`MeetingController.refreshNamingOffer`, rule `NamingOfferPolicy.offer`). Among recorded
+meetings with liveness exited or dead whose labels are ready and were made in the last 7 days
+(`SessionSummary.labelsReadyAt`, the head run's `createdAt`), the one labelled last is offered,
+unless its speakers were edited or the user opened the offer for that run (UserDefaults
+`meeting.namingOffersDismissed`, session ID → run ID; another run of the meeting is offered
+again). It is derived on launch, when a followed recording finishes, and whenever the app's use
+of a meeting ends (`endUsing`: a Meetings command, the interrupted prompt's Recover, Clean Up,
+Save Transcript As…, the automatic relabel), so a meeting labelled after Holos quit, by a
+command in a terminal, or by any of those paths is offered, also after a relaunch. Each change
+is reported once, as `offerNaming` or `clearNamingOffer`; `reviewOpened` dismisses it.
+
+Meetings in use: `MeetingController.sessionsInUse` (session ID → what the app is doing) is the
+one set of meetings the app works on. Every operation of the app that takes a meeting's
+processing lease, or reads it for the user, holds an entry while it runs (`beginUsing` refuses a
+second one): Recover, Label Speakers, Delete Audio, Delete Meeting, the interrupted prompt's
+Recover, Clean Up, Save Transcript As…, and the automatic relabel. The relabel skips these
+meetings, every Meetings action refuses them, and the State column shows what is running.
+
+Labels are ready (a finished meeting's `speakersReady`, the naming offer, the Label Speakers
+result) only when `SavedSpeakerState` finds them usable, the validation the catalog, recovery,
+and the exports share (`MeetingController.speakerLabelsReady`, run off the main actor);
+`speakers/head.json` alone is not enough.
 
 Launched recorders: the pid and start time of each recorder child are kept in
 `UserDefaults "meeting.launchedRecorders"` until its exit is seen. A start timed out while a
