@@ -165,6 +165,10 @@ func recorderKeepsItsLastLockWhenExitCannotBeWritten(postProcess: Bool) async th
         : try SessionArchive.isActive(at: outcome.directory)
     #expect(held, "The last lock is not released while status.json does not say exited.")
     #expect(RecorderChannel.liveness(session: outcome.directory) != .dead)
+    // Requests stay closed: nothing would answer one.
+    #expect(throws: HolosError.self) {
+        try RecorderChannel.send(.pause, session: outcome.directory, sessionID: outcome.sessionID, sender: "cli")
+    }
 }
 
 /// Progress from post-processing reaches status.json in order, and nothing follows `exited` (§4.6 step 7).

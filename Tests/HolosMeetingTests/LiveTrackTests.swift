@@ -14,6 +14,8 @@ private final class LiveEventLog: Sendable {
         var events: [(kind: String, details: [String: String])] = []
         var calls = 0
         var held = false
+        /// Writes of each kind still to fail, like a full disk.
+        var failures: [String: Int] = [:]
     }
 
     private let state = Mutex(State())
@@ -22,11 +24,19 @@ private final class LiveEventLog: Sendable {
         { kind, details in
             self.state.withLock { $0.calls += 1 }
             while self.state.withLock({ $0.held }) { try await Task.sleep(for: .milliseconds(2)) }
+            let fails = self.state.withLock { state -> Bool in
+                guard let left = state.failures[kind], left > 0 else { return false }
+                state.failures[kind] = left - 1
+                return true
+            }
+            if fails { throw HolosError.io("The disk is full.") }
             self.state.withLock { $0.events.append((kind, details)) }
         }
     }
 
     func hold(_ held: Bool) { state.withLock { $0.held = held } }
+    /// The next `times` writes of `kind` fail.
+    func fail(_ kind: String, times: Int) { state.withLock { $0.failures[kind] = times } }
     var calls: Int { state.withLock { $0.calls } }
     func events(_ kind: String) -> [[String: String]] {
         state.withLock { $0.events.filter { $0.kind == kind }.map(\.details) }
@@ -150,6 +160,51 @@ private func liveTrack(_ speech: @escaping LiveSpeechFactory, log: LiveEventLog,
     #expect(behind["from"] == "0.3", "From the start of the first dropped segment.")
     #expect(behind["reason"] == "journalFull")
     #expect(log.kinds.last == MeetingEventKind.transcriptionBehind, "Recorded once the queue drained.")
+}
+
+/// The journal-hole marker cannot be written when the queue first drains: the hole stays noted and is recorded by a
+/// later attempt, so recovery still knows where replay must begin.
+@Test(.timeLimit(.minutes(1))) func journalHoleIsKeptUntilItsMarkerIsWritten() async throws {
+    let segments = (0..<5).map { TranscriptSegment(start: Double($0) / 10, end: Double($0 + 1) / 10, text: "s\($0)") }
+    let speech = FakeSpeechFactory([FakeSpeechScript(segments: segments)])
+    let log = LiveEventLog()
+    let reporter = CollectingReporter()
+    let track = liveTrack(speech.factory, log: log, reporter: reporter, journalCapacity: 2)
+    log.fail(MeetingEventKind.transcriptionBehind, times: 1)
+    log.hold(true)
+    try await track.prepareSession(epoch: 0, epochStart: 0)
+    track.push(try liveFrame(0), epoch: 0)
+    #expect(await eventuallyAsync { log.calls == 1 })
+    for index in 1..<5 { track.push(try liveFrame(Double(index) / 10), epoch: 0) }
+    #expect(await eventuallyAsync { reporter.phrases.count == 5 })
+    log.hold(false)
+    // The queue drains and the marker's first write fails.
+    #expect(await eventuallyAsync { log.calls == 4 })
+    #expect(log.events(MeetingEventKind.transcriptionBehind).isEmpty)
+    _ = await track.finish()
+    let behind = log.events(MeetingEventKind.transcriptionBehind)
+    #expect(behind.count == 1)
+    #expect(behind.first?["from"] == "0.3", "From the start of the first dropped segment.")
+    #expect(behind.first?["reason"] == "journalFull")
+    #expect(reporter.messages.contains { $0.contains("Could not persist live text") })
+}
+
+/// A finalized segment whose journal write fails leaves a hole like a dropped one: it is recorded as
+/// `transcriptionBehind` from that segment's start.
+@Test(.timeLimit(.minutes(1))) func failedFinalizedWriteRecordsAHole() async throws {
+    let segments = (0..<3).map { TranscriptSegment(start: Double($0) / 10, end: Double($0 + 1) / 10, text: "s\($0)") }
+    let speech = FakeSpeechFactory([FakeSpeechScript(segments: segments)])
+    let log = LiveEventLog()
+    let track = liveTrack(speech.factory, log: log)
+    log.fail(MeetingEventKind.transcriptFinalized, times: 1)
+    try await track.prepareSession(epoch: 0, epochStart: 0)
+    for index in 0..<3 { track.push(try liveFrame(Double(index) / 10), epoch: 0) }
+    let result = await track.finish()
+    #expect(result.segments.map(\.text) == ["s0", "s1", "s2"], "Live text itself is complete.")
+    #expect(log.events(MeetingEventKind.transcriptFinalized).map { $0["text"] } == ["s1", "s2"])
+    let behind = try #require(log.events(MeetingEventKind.transcriptionBehind).first)
+    #expect(behind["from"] == "0.0")
+    #expect(behind["reason"] == "journalWriteFailed")
 }
 
 @Test(.timeLimit(.minutes(1))) func failedSessionCreationFallsBehindFromTheEpochStart() async throws {

@@ -202,6 +202,118 @@ private func controlFiles(_ session: URL) -> [String] {
     try await archive.finish(status: ArchiveStatus.complete)
 }
 
+/// Rewrites status.json in place, without a temporary file or fsync: the interleaving test writes it thousands of
+/// times, and nothing reads it concurrently there.
+private func writeStatusUnsynced(_ status: RecorderStatus, session: URL) throws {
+    try HolosJSON.encoder().encode(status).write(to: SessionPaths.status(session))
+}
+
+/// The exiting recorder's steps, in the order `Recorder.exitStatus` takes them, driven one at a time.
+private final class ExitingRecorder {
+    enum Step: CaseIterable { case close, poll, answer, exited, sweep, reopen }
+
+    let session: URL
+    let sessionID: String
+    /// For each step, the send slot after which it runs (0: before `send`; 1…5: after each `SendStep`; 6: after).
+    let placement: [Int]
+    private var inbox: ControlInbox
+    private(set) var taken: [ControlRequest] = []
+    private var done = 0
+
+    init(session: URL, sessionID: String, placement: [Int]) {
+        self.session = session; self.sessionID = sessionID; self.placement = placement
+        inbox = ControlInbox(session: session, sessionID: sessionID)
+    }
+
+    static func slot(_ step: RecorderChannel.SendStep) -> Int {
+        switch step {
+        case .checked: 1
+        case .published: 2
+        case .checkedPublication: 3
+        case .checkedStatus: 4
+        case .withdrew: 5
+        }
+    }
+
+    /// Runs every step placed at or before `slot` that has not run yet.
+    func run(through slot: Int) throws {
+        let steps = Step.allCases
+        while done < steps.count, placement[done] <= slot {
+            switch steps[done] {
+            case .close:
+                #expect(ControlInbox.closePublication(session: session))
+            case .poll:
+                for item in inbox.poll() { if case .request(let request) = item { taken.append(request) } }
+            case .answer:
+                var status = try #require(try RecorderChannel.readStatus(session: session))
+                status.handledRequests += taken.map {
+                    ControlAck(id: $0.id, command: $0.command, result: .ignored, message: RecorderMachine.alreadyStopping,
+                               handledAt: Date())
+                }
+                try writeStatusUnsynced(status, session: session)
+            case .exited:
+                var status = try #require(try RecorderChannel.readStatus(session: session))
+                status.phase = .exited
+                try writeStatusUnsynced(status, session: session)
+            case .sweep:
+                ControlInbox.removeLeftovers(session: session)
+            case .reopen:
+                ControlInbox.removeClosedMarker(session: session)
+            }
+            done += 1
+        }
+    }
+}
+
+/// Every way to place the recorder's exit steps (close requests, last poll, answers, exited, leftover sweep, marker
+/// removal) around `send`'s steps: a send that succeeds is answered by the recorder, a refused one is never handled,
+/// and nothing is left in `control/` (docs/meeting-design.md §4.6).
+@Test func sendAndRecorderExitAgreeInEveryInterleaving() async throws {
+    let temp = try TemporaryDirectory("channel")
+    defer { temp.remove() }
+    let archive = try SessionArchive.create(root: temp.url, name: "Council", source: .microphone, locale: "en-CA",
+                                            backend: .speech)
+    let session = archive.directory
+    let stepCount = ExitingRecorder.Step.allCases.count
+    var placements: [[Int]] = [[]]
+    for _ in 0..<stepCount {
+        placements = placements.flatMap { prefix in ((prefix.last ?? 0)...6).map { prefix + [$0] } }
+    }
+    #expect(placements.count == 924)
+    var sent = 0
+    var refused = 0
+    for placement in placements {
+        // Emptied, not removed: making control/ again would fsync the session folder every time.
+        ControlInbox.removeLeftovers(session: session)
+        ControlInbox.removeClosedMarker(session: session)
+        try writeStatusUnsynced(channelStatus(archive.id, phase: .stopping), session: session)
+        let recorder = ExitingRecorder(session: session, sessionID: archive.id, placement: placement)
+        try recorder.run(through: 0)
+        let outcome = Result {
+            try RecorderChannel.send(.pause, session: session, sessionID: archive.id, sender: "cli", step: { step in
+                try recorder.run(through: ExitingRecorder.slot(step))
+            })
+        }
+        try recorder.run(through: 6)
+        let status = try #require(try RecorderChannel.readStatus(session: session))
+        #expect(status.phase == .exited)
+        switch outcome {
+        case .success(let request):
+            sent += 1
+            #expect(recorder.taken.map(\.id) == [request.id], "Sent, so the last poll took it: \(placement)")
+            #expect(status.handledRequests.map(\.id) == [request.id], "Sent, so it was answered: \(placement)")
+        case .failure(let error):
+            refused += 1
+            #expect(error is HolosError, "\(placement): \(error)")
+            #expect(recorder.taken.isEmpty, "Refused, so the recorder never handled it: \(placement)")
+            #expect(status.handledRequests.isEmpty, "\(placement)")
+        }
+        #expect(controlFiles(session).isEmpty, "Nothing is left in control/: \(placement)")
+    }
+    #expect(sent > 0 && refused > 0)
+    try await archive.finish(status: ArchiveStatus.complete)
+}
+
 @Test func livenessDistinguishesMaintenance() async throws {
     let temp = try TemporaryDirectory("channel")
     defer { temp.remove() }

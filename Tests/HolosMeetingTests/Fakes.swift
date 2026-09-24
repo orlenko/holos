@@ -114,16 +114,18 @@ struct FakeCaptureScript: Sendable {
     var failure: HolosError
     /// `start` throws this.
     var startError: HolosError?
+    /// `start` throws `CancellationError` (without the calling task being cancelled).
+    var startCancels: Bool
     /// `stop()` takes this long before the stream finishes, like a platform stop that hangs.
     var stopDelay: Duration?
     var hostTimeOrigin: Double
 
     init(frames: [FakeFrame] = [], continuous: FakeFrame? = nil, failAfterFrames: Int? = nil,
          failure: HolosError = .incomplete("The fake capture failed."), startError: HolosError? = nil,
-         stopDelay: Duration? = nil, hostTimeOrigin: Double = 1_000) {
+         stopDelay: Duration? = nil, hostTimeOrigin: Double = 1_000, startCancels: Bool = false) {
         self.frames = frames; self.continuous = continuous; self.failAfterFrames = failAfterFrames
         self.failure = failure; self.startError = startError; self.stopDelay = stopDelay
-        self.hostTimeOrigin = hostTimeOrigin
+        self.hostTimeOrigin = hostTimeOrigin; self.startCancels = startCancels
     }
 }
 
@@ -157,6 +159,7 @@ final class FakeCapture: MeetingCapture {
     func start(_ request: CaptureRequest) async throws {
         requests.append(request)
         if let error = script.startError { throw error }
+        if script.startCancels { throw CancellationError() }
         state.start(offset: request.timelineOffset)
     }
 

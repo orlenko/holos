@@ -29,8 +29,8 @@ struct LiveTrackResult: Sendable, Equatable {
 /// time is recorded as `transcriptionBehind {track, from}`, live speech stops for the rest of the recording, and
 /// every segment already finalized is kept; the stop path transcribes the rest from disk. Each finalized segment is
 /// journaled as `transcriptFinalized` with `segmentID` and `words`, through a queue of 4,096 segments; segments that
-/// do not fit are recorded as `transcriptionBehind` once the queue drains, so recovery knows where the journal has a
-/// hole.
+/// do not fit, or whose write fails, are recorded as `transcriptionBehind` once the queue drains, so recovery knows
+/// where the journal has a hole. A hole is kept until its event is written.
 final class LiveTrack: Sendable {
     private static let log = Logger(subsystem: "ca.orlenko.holos.app", category: "recorder")
     static let queueSeconds = 30.0
@@ -91,8 +91,10 @@ final class LiveTrack: Sendable {
         var behindFrom: Double?
         /// End of the last frame fed to speech.
         var lastFedEnd: Double?
-        /// The earliest segment the journal queue dropped, recorded once the queue drains.
-        var journalDroppedFrom: Double?
+        /// Journal holes not yet recorded, by `transcriptionBehind` reason: the earliest session time from which the
+        /// journal lacks events for that reason (a segment the queue dropped, a finalized segment or a behind marker
+        /// whose write failed). Each is recorded once the queue drains, and stays here until that write succeeds.
+        var unjournaled: [String: Double] = [:]
         var lastFinalized: Double?
         var lastPhrase: String?
         var cancelled = false
@@ -469,9 +471,11 @@ final class LiveTrack: Sendable {
             return shifted
         }
         if showPhrases { reporter.phrase(absolute, track: track) }
-        if !journal.push(.finalized(absolute)) {
-            state.withLock { $0.journalDroppedFrom = min($0.journalDroppedFrom ?? absolute.start, absolute.start) }
-        }
+        if !journal.push(.finalized(absolute)) { noteJournalHole(from: absolute.start, reason: "journalFull") }
+    }
+
+    private func noteJournalHole(from: Double, reason: String) {
+        state.withLock { $0.unjournaled[reason] = min($0.unjournaled[reason] ?? from, from) }
     }
 
     /// Records the first (or an earlier) point from which live transcription is incomplete, and stops live speech.
@@ -488,34 +492,60 @@ final class LiveTrack: Sendable {
         input.close(discardingQueued: true)
     }
 
+    /// Writes the journal queue in order. A write that fails leaves a hole, which is noted like a dropped segment;
+    /// holes are recorded as `transcriptionBehind` whenever the queue drains (and once more when it closes), and a
+    /// hole whose event cannot be written is tried again at the next drain.
     private func runJournal() async {
         var reportedFailure = false
+        func failed(_ error: Error) {
+            guard !reportedFailure else { return }
+            reportedFailure = true
+            reporter.message("Could not persist live text: \(error.localizedDescription).")
+        }
         while let item = await journal.next() {
-            do {
-                switch item {
-                case .finalized(let segment):
-                    var details = ["track": track, "text": segment.text, "start": String(segment.start),
-                                   "end": String(segment.end), "segmentID": segment.id]
-                    if let words = try? HolosJSON.encoder(pretty: false).encode(segment.words) {
-                        details["words"] = String(decoding: words, as: UTF8.self)
-                    }
-                    try await events(MeetingEventKind.transcriptFinalized, details)
-                case .behind(let from, let reason):
+            switch item {
+            case .finalized(let segment):
+                var details = ["track": track, "text": segment.text, "start": String(segment.start),
+                               "end": String(segment.end), "segmentID": segment.id]
+                if let words = try? HolosJSON.encoder(pretty: false).encode(segment.words) {
+                    details["words"] = String(decoding: words, as: UTF8.self)
+                }
+                do { try await events(MeetingEventKind.transcriptFinalized, details) } catch {
+                    failed(error)
+                    noteJournalHole(from: segment.start, reason: "journalWriteFailed")
+                }
+            case .behind(let from, let reason):
+                do {
                     try await events(MeetingEventKind.transcriptionBehind,
                                      ["track": track, "from": String(from), "reason": reason])
-                }
-            } catch {
-                if !reportedFailure {
-                    reportedFailure = true
-                    reporter.message("Could not persist live text: \(error.localizedDescription).")
+                } catch {
+                    failed(error)
+                    noteJournalHole(from: from, reason: reason)
                 }
             }
-            if journal.isEmpty,
-               let from = state.withLock({ state -> Double? in defer { state.journalDroppedFrom = nil }; return state.journalDroppedFrom }) {
-                try? await events(MeetingEventKind.transcriptionBehind,
-                                  ["track": track, "from": String(from), "reason": "journalFull"])
+            if journal.isEmpty, let error = await recordJournalHoles() { failed(error) }
+        }
+        if let error = await recordJournalHoles() { failed(error) }
+    }
+
+    /// Records every noted journal hole as `transcriptionBehind`, earliest first. A hole is forgotten only once its
+    /// event is written, and not when an earlier one was noted for the same reason meanwhile. Returns the last error.
+    private func recordJournalHoles() async -> Error? {
+        let holes = state.withLock { $0.unjournaled }.sorted { ($0.value, $0.key) < ($1.value, $1.key) }
+        var failure: Error?
+        for (reason, from) in holes {
+            do {
+                try await events(MeetingEventKind.transcriptionBehind,
+                                 ["track": track, "from": String(from), "reason": reason])
+            } catch {
+                failure = error
+                continue
+            }
+            state.withLock { state in
+                if let pending = state.unjournaled[reason], pending >= from { state.unjournaled[reason] = nil }
             }
         }
+        return failure
     }
 
     private func result() -> LiveTrackResult {

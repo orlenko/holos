@@ -189,6 +189,41 @@ func cancelWhileCaptureStopsPublishesNoTranscript() async throws {
     try expectReleased(directory)
 }
 
+// MARK: - While restarting capture
+
+/// A capture restart's `start` throws `CancellationError` while the run's own task is not cancelled: the run stops
+/// as a cancellation and keeps the saved audio, instead of taking it for an audio outage and waiting to retry.
+@Test(.timeLimit(.minutes(3))) @MainActor
+func cancelledRestartStopsTheRunAsCancelled() async throws {
+    let temp = try TemporaryDirectory()
+    defer { temp.remove() }
+    let captures = FakeCaptureFactory([
+        FakeCaptureScript(frames: FakeFrame.run(count: 3), failAfterFrames: 3, failure: .io("Device lost.")),
+        FakeCaptureScript(startCancels: true),
+    ])
+    let stop = ManualStopSource()
+    let run = Task {
+        try await RecordingWorkflow.run(.testing(root: temp.url, recordOnly: true),
+                                        dependencies: recorderDependencies(captures: captures, stop: stop))
+    }
+    let directory = try #require(await recorderSession(in: temp.url))
+    let ended = await eventually(timeout: patience) {
+        (try? RecorderChannel.readStatus(session: directory))?.phase == .exited
+    }
+    #expect(ended, "The run ends by itself, without a stop request.")
+    if !ended { stop.requestStop() }
+    await expectCancellation(run)
+    #expect(captures.captures.count == 2, "Capture is not restarted again after the cancelled start.")
+    #expect(captures.captures.last?.stopCalls == 1, "The capture whose start was cancelled is released.")
+    let manifest = try SessionArchive.readManifest(at: directory)
+    #expect(manifest.status == ArchiveStatus.audioOnly)
+    #expect(manifest.chunks.count == 1, "The saved audio is kept.")
+    let journal = try events(directory)
+    #expect(!journal.contains { $0.kind == MeetingEventKind.captureWaiting }, "Not an audio outage.")
+    #expect(journal.first { $0.kind == MeetingEventKind.captureStopped }?.details["cancelled"] == "true")
+    try expectReleased(directory)
+}
+
 // MARK: - While transcribing
 
 /// Cancelled while the live speech session finishes, with a session that ignores task cancellation. Neither the

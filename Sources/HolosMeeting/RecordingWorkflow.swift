@@ -613,7 +613,9 @@ private final class Recorder {
 
     /// Starts epoch `epoch` (§2.3): the next speech sessions are ready first, then capture starts at
     /// timelineOffset max(clock.now(), lastFrameEnd + 0.01), anchored at the host time the clock was read
-    /// (`CaptureRequest.offsetHostTime`). A start failure comes back as `startFailed`.
+    /// (`CaptureRequest.offsetHostTime`). A start failure comes back as `startFailed`; a `CancellationError` from the
+    /// start, or any error once the run is cancelled, marks the run cancelled instead (the loop then takes the
+    /// cancellation stop path).
     ///
     /// Neither step can hold up the loop: a speech session not ready within `tuning.restartLimit` is made later by
     /// its live track, and a capture that has not started by then is abandoned (stopped once its start returns) and
@@ -655,6 +657,17 @@ private final class Recorder {
         case .finished(.success):
             break
         case .finished(.failure(let error)):
+            if error is CancellationError || Task.isCancelled {
+                // A cancellation, not an audio outage: the run stops as cancelled and keeps the audio it saved. The
+                // capture is released before the stop path runs.
+                captureStopped = true
+                _ = await awaitWithTimeout(dependencies.timeouts.captureStop, cancellable: false) {
+                    try await capture.stop()
+                }
+                cancelled = true
+                Self.log.notice("Session \(self.archive.id, privacy: .public): epoch \(epoch, privacy: .public) start was cancelled")
+                return nil
+            }
             Self.log.error("Session \(self.archive.id, privacy: .public): epoch \(epoch, privacy: .public) failed to start")
             return .captureEnded(epoch: epoch, .startFailed(message: error.localizedDescription), at: clock.now())
         case .timedOut, .cancelled:
@@ -1083,6 +1096,11 @@ private final class Recorder {
     /// lease stay held until this process exits (`holdsLocksUntilExit`), so the session reads as busy rather than
     /// dead while this process still runs; once it has exited, recovery finds the status unfinished as for any
     /// recorder that ended without saying so.
+    ///
+    /// Requests are closed before the last answer (`ControlInbox.closePublication`): a sender that publishes after
+    /// that withdraws its request (`RecorderChannel.send`), so the last poll sees every request that will not be
+    /// withdrawn. Leftovers are deleted, and the marker removed, only once status.json says exited, which refuses
+    /// requests by itself from then on.
     private func exitStatus(_ exit: RecorderExit) async {
         if !exited {
             exited = true
@@ -1091,11 +1109,15 @@ private final class Recorder {
                 await stoppedInbox.value
                 self.stoppedInbox = nil
             }
+            ControlInbox.closePublication(session: archive.directory)
             await answerStoppedRequests()
             await writeExit(exit)
-            ControlInbox.removeLeftovers(session: archive.directory)
         } else if !exitWritten {
             await writeExit(exit)
+        }
+        if exitWritten {
+            ControlInbox.removeLeftovers(session: archive.directory)
+            ControlInbox.removeClosedMarker(session: archive.directory)
         }
         await releaseWriterLock()
     }

@@ -2662,6 +2662,16 @@ While steps 1–9 run, `ControlInbox` keeps polling once a second and acknowledg
 request `ignored` ("The recorder is already stopping."). A stop during post-processing
 does not cancel it.
 
+Requests are closed before the last poll. Right before step 8 the recorder creates
+`control/.closed`, polls one last time (answering `ignored`), writes `exited`, and only
+once `exited` is written deletes leftover requests and removes the marker.
+`RecorderChannel.send` refuses when the marker exists; after publishing, it checks the
+marker and then `status.json`. Either one makes it withdraw its request: a request it
+removes is refused; one the recorder already took is answered by the last poll (or,
+if `status.json` already says exited without its answer, was a deleted leftover and is
+refused). The request file belongs to whoever unlinks it, so the inbox never handles a
+request its sender withdrew.
+
 **`StatusWriter` heartbeat.** The actor starts a 1 s timer at launch (phase `starting`)
 and rewrites `status.json` every second until `exited`, independent of the loop, so
 status stays fresh through transcription and post-processing.

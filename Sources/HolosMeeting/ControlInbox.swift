@@ -1,6 +1,7 @@
 import Darwin
 import Foundation
 import HolosCore
+import HolosStorage
 import os
 
 /// The recorder's side of `control/` (docs/meeting-design.md §4.1): reads and removes request files published by
@@ -11,11 +12,13 @@ import os
 /// deleted once read. A file that does not decode, has a `schemaVersion` other than 1, belongs to another session,
 /// names an unknown command, or whose ID is not its file name is rejected. Labels are cut to 200 characters. The
 /// session folder and `control/` are opened without following a symbolic link, and every file is reached relative
-/// to them.
+/// to them. A request belongs to whoever unlinks its file: this inbox, or its sender withdrawing it.
 public struct ControlInbox: Sendable {
     private static let log = Logger(subsystem: "ca.orlenko.holos.app", category: "recorder")
     static let maxRequestBytes = 4_096
     static let maxLabelLength = 200
+    /// Made in `control/` by the exiting recorder before its last poll (`closePublication`).
+    static let closedMarker = ".closed"
 
     public enum Item: Sendable, Equatable {
         case request(ControlRequest)
@@ -75,6 +78,42 @@ public struct ControlInbox: Sendable {
         return removed
     }
 
+    /// Closes `control/` to new requests before the recorder's last poll (docs/meeting-design.md §4.6): creates
+    /// `control/.closed` (and `control/` itself, 0700, if missing). A sender that finds it after publishing withdraws
+    /// its request, so every request is either taken by that last poll or withdrawn by its sender. False (logged) when
+    /// the marker could not be made.
+    @discardableResult
+    static func closePublication(session: URL) -> Bool {
+        do { try AtomicFile.ensurePrivateDirectory(SessionPaths.controlDirectory(session)) } catch {
+            log.error("Cannot create the control folder to close it: \(error.localizedDescription, privacy: .public)")
+            return false
+        }
+        guard case .opened(let folder) = openControlFolder(session) else { return false }
+        defer { Darwin.close(folder) }
+        let fd = openat(folder, closedMarker, O_WRONLY | O_CREAT | O_NOFOLLOW | O_CLOEXEC, 0o600)
+        guard fd >= 0 else {
+            log.error("Cannot close control requests: \(String(cString: strerror(errno)), privacy: .public)")
+            return false
+        }
+        Darwin.close(fd)
+        return true
+    }
+
+    /// `control/.closed` exists: the recorder is exiting (or has exited) and takes no new requests.
+    static func isPublicationClosed(session: URL) -> Bool {
+        guard case .opened(let folder) = openControlFolder(session) else { return false }
+        defer { Darwin.close(folder) }
+        var info = stat()
+        return fstatat(folder, closedMarker, &info, AT_SYMLINK_NOFOLLOW) == 0
+    }
+
+    /// Removes `control/.closed` once status.json says exited, which refuses requests from then on by itself.
+    static func removeClosedMarker(session: URL) {
+        guard case .opened(let folder) = openControlFolder(session) else { return }
+        defer { Darwin.close(folder) }
+        remove(closedMarker, in: folder)
+    }
+
     /// Deletes the request file `<id>.json` from `control/`, if it is still there (a sender withdrawing a request no
     /// recorder will read). True when it removed it.
     @discardableResult
@@ -115,7 +154,11 @@ public struct ControlInbox: Sendable {
             Self.remove(name, in: folder)
             return .rejected(problem.reason)
         }
-        Self.remove(name, in: folder)
+        // Whoever unlinks a request owns it: one its sender withdrew after it was read here is not handled.
+        if unlinkat(folder, name, 0) != 0 {
+            if errno == ENOENT { return .gone }
+            Self.remove(name, in: folder)
+        }
         return decode(data, fileName: name)
     }
 
