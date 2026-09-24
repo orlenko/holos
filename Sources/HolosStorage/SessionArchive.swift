@@ -119,10 +119,18 @@ public actor SessionArchive {
     private var lockFD: Int32
     private var closed = false
 
+    // Group commit keeps one invariant after every transition (append, immediate sync, `setJournalSync`, a
+    // flush firing or failing, `finish`): a dirty, open, interval-mode journal has exactly one pending flush, due
+    // one interval after `lastJournalSync` (or after `journalFlushFailedAt`, once a flush has failed since);
+    // any other journal has none. Every successful sync goes through `journalSynced(at:)`, which drops the
+    // pending flush.
     private var journalSync: JournalSync = .everyEvent
     private var lastJournalSync: ContinuousClock.Instant?
     private var journalDirty = false
     private var journalFlushTask: Task<Void, Never>?
+    private var journalFlushDeadline: ContinuousClock.Instant?
+    /// When the last scheduled flush failed; the retry is due one interval later. Cleared by a successful sync.
+    private var journalFlushFailedAt: ContinuousClock.Instant?
     /// Bumped whenever a flush is scheduled or cancelled; a flush runs only for the current generation.
     private var journalFlushGeneration: UInt64 = 0
     /// Set by `openForMaintenance` when the journal ends with a partial line; repaired before the first append.
@@ -259,17 +267,11 @@ public actor SessionArchive {
     /// one longer than `maxJournalSyncInterval` is shortened to it.
     /// A change replaces any pending flush, so the new interval sets the next deadline.
     public func setJournalSync(_ mode: JournalSync) {
-        let previous = journalSync
         if case .interval(let seconds) = mode, seconds.isFinite, seconds > 0 {
-            let clamped = min(seconds, Self.maxJournalSyncInterval)
-            journalSync = .interval(seconds: clamped)
-            guard journalSync != previous else { return }
-            cancelJournalFlush()
-            if journalDirty, !closed {
-                let interval = Duration.seconds(clamped)
-                let elapsed = lastJournalSync.map { $0.duration(to: .now) } ?? interval
-                scheduleJournalFlush(after: interval - elapsed)
-            }
+            let updated = JournalSync.interval(seconds: min(seconds, Self.maxJournalSyncInterval))
+            guard updated != journalSync else { return }
+            journalSync = updated
+            rescheduleJournalFlush()
         } else {
             journalSync = .everyEvent
             cancelJournalFlush()
@@ -301,13 +303,12 @@ public actor SessionArchive {
             let due = lastJournalSync.map { $0.duration(to: now) >= interval } ?? true
             if due || Self.immediateSyncKinds.contains(kind) {
                 try AtomicFile.append(line, to: journal, sync: true)
-                journalDirty = false
-                lastJournalSync = now
+                journalSynced(at: now)
             } else {
                 try AtomicFile.append(line, to: journal, sync: false)
                 journalDirty = true
-                let elapsed = lastJournalSync.map { $0.duration(to: now) } ?? .zero
-                scheduleJournalFlush(after: interval - elapsed)
+                // A flush already pending keeps its deadline: nothing it depends on changed.
+                if journalFlushTask == nil { rescheduleJournalFlush() }
             }
         }
         nextSequence += 1
@@ -377,6 +378,7 @@ public actor SessionArchive {
         try Self.writeManifest(updated, in: directory)
         manifest = updated
         closed = true
+        cancelJournalFlush()
         SessionLockFile.unlockAndClose(lockFD)
         lockFD = -1
     }
@@ -397,16 +399,29 @@ public actor SessionArchive {
 
     private func syncJournal() throws {
         try AtomicFile.sync(SessionPaths.events(directory))
-        journalDirty = false
-        lastJournalSync = .now
+        journalSynced(at: .now)
     }
 
-    private func scheduleJournalFlush(after delay: Duration) {
-        guard journalFlushTask == nil else { return }
+    /// Records a successful fsync of the whole journal and drops the pending flush, whose deadline was
+    /// measured from the previous sync.
+    private func journalSynced(at instant: ContinuousClock.Instant) {
+        journalDirty = false
+        lastJournalSync = instant
+        journalFlushFailedAt = nil
+        cancelJournalFlush()
+    }
+
+    /// Replaces any pending flush with the one the invariant (see `journalSync`) calls for.
+    private func rescheduleJournalFlush() {
+        cancelJournalFlush()
+        guard journalDirty, !closed, case .interval(let seconds) = journalSync else { return }
+        let base = journalFlushFailedAt ?? lastJournalSync ?? .now
+        let deadline = base + Duration.seconds(seconds)
         journalFlushGeneration &+= 1
         let generation = journalFlushGeneration
+        journalFlushDeadline = deadline
         journalFlushTask = Task { [weak self] in
-            do { try await Task.sleep(for: max(delay, .zero)) } catch { return }
+            do { try await Task.sleep(until: deadline, clock: .continuous) } catch { return }
             await self?.flushJournalIfDirty(generation: generation)
         }
     }
@@ -415,17 +430,48 @@ public actor SessionArchive {
     private func cancelJournalFlush() {
         journalFlushTask?.cancel()
         journalFlushTask = nil
+        journalFlushDeadline = nil
         journalFlushGeneration &+= 1
     }
 
     private func flushJournalIfDirty(generation: UInt64) {
         guard generation == journalFlushGeneration else { return }
         journalFlushTask = nil
+        journalFlushDeadline = nil
         guard journalDirty, !closed else { return }
         do { try syncJournal() } catch {
-            // Stays dirty: the next event or `finish` syncs again.
+            // Stays dirty; retried one interval later, and the next event (already due) or `finish` syncs too.
+            journalFlushFailedAt = .now
+            rescheduleJournalFlush()
             Self.log.error("Cannot sync the event journal: \(String(describing: error), privacy: .public)")
         }
+    }
+
+    /// Tests only: the group-commit state.
+    struct JournalSchedule: Sendable {
+        var dirty: Bool
+        var closed: Bool
+        var interval: Duration?
+        var lastSync: ContinuousClock.Instant?
+        var failedAt: ContinuousClock.Instant?
+        var pendingDeadline: ContinuousClock.Instant?
+        var pending: Bool
+    }
+
+    /// Tests only.
+    func journalScheduleForTesting() -> JournalSchedule {
+        var interval: Duration?
+        if case .interval(let seconds) = journalSync { interval = .seconds(seconds) }
+        return JournalSchedule(dirty: journalDirty, closed: closed, interval: interval, lastSync: lastJournalSync,
+                               failedAt: journalFlushFailedAt, pendingDeadline: journalFlushDeadline,
+                               pending: journalFlushTask != nil)
+    }
+
+    /// Tests only: runs the pending flush now, as if its deadline had come.
+    func runPendingJournalFlushForTesting() {
+        guard let task = journalFlushTask else { return }
+        task.cancel()
+        flushJournalIfDirty(generation: journalFlushGeneration)
     }
 
     private func repairJournalIfNeeded() throws {

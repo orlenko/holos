@@ -540,6 +540,106 @@ private func journalSyncs(_ counter: FileSyncCounter) -> Int { counter.count("ev
     #expect(try SessionArchive.readEvents(at: writer.directory).events.count == 2)
 }
 
+/// One step of `groupCommitSchedulerKeepsItsInvariant`.
+private enum JournalStep {
+    case interval(Double), everyEvent, everyEventFailing
+    case append(String), appendFailing(String)
+    case flush, flushFailing
+    case wait(milliseconds: Int)
+    case finish
+}
+
+/// The group-commit invariant: a dirty, open, interval-mode journal has exactly one pending flush, due one
+/// interval after the last sync (or after the last failed flush since); any other journal has none.
+private func journalInvariantViolation(_ state: SessionArchive.JournalSchedule) -> String? {
+    guard state.dirty, !state.closed, let interval = state.interval else {
+        return state.pending || state.pendingDeadline != nil ? "a flush is pending for a clean, closed, or every-event journal" : nil
+    }
+    guard state.pending, let deadline = state.pendingDeadline else { return "a dirty journal has no pending flush" }
+    guard let base = state.failedAt ?? state.lastSync else { return "a dirty journal was never synced" }
+    return deadline == base + interval ? nil : "the pending flush is not due one interval after the last sync"
+}
+
+@Test func groupCommitSchedulerKeepsItsInvariant() async throws {
+    let root = try temporaryRoot()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let writer = try archive(in: root)
+    let journal = SessionPaths.events(writer.directory)
+    let moved = journal.appendingPathExtension("moved")
+    // Hides the journal from `AtomicFile.sync` (it opens the file by name), so a sync fails as an I/O error would.
+    func withoutJournal<T>(_ body: () async throws -> T) async throws -> T {
+        try FileManager.default.moveItem(at: journal, to: moved)
+        defer { try? FileManager.default.moveItem(at: moved, to: journal) }
+        return try await body()
+    }
+    // (step, dirty after, flush pending after). The invariant is checked after every step as well.
+    let steps: [(JournalStep, Bool, Bool)] = [
+        (.interval(3_600), false, false),
+        (.append("first"), false, false),            // never synced: due at once
+        (.append("tick"), true, true),               // deferred: flush due one interval after "first"
+        (.append("tick"), true, true),               // keeps the same deadline
+        (.appendFailing("tick"), true, true),        // a failed append changes nothing
+        (.append(MeetingEventKind.captureStopped), false, false), // immediate sync drops the pending flush
+        (.append("tick"), true, true),               // new deadline: one interval after captureStopped
+        (.appendFailing(MeetingEventKind.captureStopped), true, true),
+        (.interval(3_600), true, true),              // unchanged mode: nothing moves
+        (.interval(1_800), true, true),              // shorter interval: rescheduled from the last sync
+        (.interval(7_200), true, true),              // longer interval: rescheduled from the last sync
+        (.flush, false, false),
+        (.flush, false, false),                      // nothing pending: no-op
+        (.append("tick"), true, true),
+        (.flushFailing, true, true),                 // retry one interval after the failure
+        (.append("tick"), true, true),               // keeps the retry deadline
+        (.flush, false, false),                      // the retry succeeds and clears the failure
+        (.append("tick"), true, true),
+        (.everyEventFailing, true, false),           // every-event mode never schedules a flush
+        (.interval(3_600), true, true),
+        (.everyEvent, false, false),                 // syncs the dirty journal
+        (.append("tick"), false, false),
+        (.interval(0.05), false, false),
+        (.wait(milliseconds: 100), false, false),
+        (.append("tick"), false, false),             // an interval has passed since the last sync: due
+        (.interval(3_600), false, false),
+        (.append("tick"), true, true),
+        (.finish, false, false),                     // syncs and drops the pending flush
+        (.interval(60), false, false),               // closed: never schedules
+    ]
+    for (index, (step, dirty, pending)) in steps.enumerated() {
+        let before = await writer.journalScheduleForTesting()
+        switch step {
+        case .interval(let seconds): await writer.setJournalSync(.interval(seconds: seconds))
+        case .everyEvent: await writer.setJournalSync(.everyEvent)
+        case .everyEventFailing: try await withoutJournal { await writer.setJournalSync(.everyEvent) }
+        case .append(let kind): try await writer.recordEvent(kind: kind, details: [:])
+        case .appendFailing(let kind):
+            await #expect(throws: (any Error).self) {
+                try await AtomicFile.$appendFailureAfterBytes.withValue(0) {
+                    try await writer.recordEvent(kind: kind, details: [:])
+                }
+            }
+        case .flush: await writer.runPendingJournalFlushForTesting()
+        case .flushFailing: try await withoutJournal { await writer.runPendingJournalFlushForTesting() }
+        case .wait(let milliseconds): try await Task.sleep(for: .milliseconds(milliseconds))
+        case .finish: try await writer.finish(status: ArchiveStatus.complete)
+        }
+        let after = await writer.journalScheduleForTesting()
+        let label = "step \(index): \(step)"
+        #expect(after.dirty == dirty, "\(label)")
+        #expect(after.pending == pending, "\(label)")
+        #expect(journalInvariantViolation(after) == nil, "\(label)")
+        switch step {
+        case .append, .appendFailing, .interval, .flushFailing, .everyEventFailing, .wait:
+            // Only a successful sync moves the last sync.
+            if after.dirty { #expect(after.lastSync == before.lastSync, "\(label)") }
+        default: break
+        }
+        if case .flushFailing = step { #expect(after.failedAt != nil, "\(label)") }
+        if case .flush = step, before.pending { #expect(after.failedAt == nil && after.lastSync != before.lastSync, "\(label)") }
+    }
+    // Eleven appends succeeded; the two failed ones left nothing behind.
+    #expect(try SessionArchive.readEvents(at: writer.directory).events.map(\.sequence) == Array(1...11))
+}
+
 @Test func saveTranscriptCanBeRetriedAfterThePointerFails() async throws {
     let root = try temporaryRoot()
     defer { try? FileManager.default.removeItem(at: root) }

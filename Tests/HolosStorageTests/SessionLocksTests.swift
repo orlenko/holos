@@ -100,11 +100,17 @@ private func isCloseOnExec(_ fd: Int32) -> Bool {
     let fd = Darwin.open(path, O_CREAT | O_RDWR | O_CLOEXEC, 0o600)
     try #require(fd >= 0)
     try #require(flock(fd, LOCK_EX | LOCK_NB) == 0)
-    DispatchQueue.global().asyncAfter(deadline: .now() + .milliseconds(200)) {
-        flock(fd, LOCK_UN)
-        Darwin.close(fd)
+    // The holder lets go 200 ms after the acquisition first finds the lock held, so the acquisition always polls
+    // a held lock and then takes it once free. It cannot succeed without that contention: this descriptor keeps
+    // the lock until then. The generous retry keeps a late release under load from failing the test.
+    let lease = try SessionLockFile.$onContention.withValue({
+        DispatchQueue.global().asyncAfter(deadline: .now() + .milliseconds(200)) {
+            flock(fd, LOCK_UN)
+            Darwin.close(fd)
+        }
+    }) {
+        try SessionArchive.acquireProcessingLease(at: session, retry: .seconds(30))
     }
-    let lease = try SessionArchive.acquireProcessingLease(at: session)
     #expect(try SessionArchive.isProcessing(at: session))
     lease.release()
 }
