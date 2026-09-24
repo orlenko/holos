@@ -1,0 +1,495 @@
+import Darwin
+import Foundation
+import HolosAudio
+import HolosCore
+@testable import HolosMeeting
+import HolosSpeakers
+import HolosStorage
+import Testing
+
+// SessionCatalog (docs/meeting-design.md §5.6 PR3): state mapping, sizes, and speaker-label state.
+
+// MARK: - Helpers
+
+/// The recording rate of the fixture audio.
+private let catalogRate = 16_000.0
+
+private func catalogStatus(_ sessionID: String, phase: RecorderPhase, updatedAt: Date = Date(),
+                           pid: Int32 = getpid()) -> RecorderStatus {
+    RecorderStatus(sessionID: sessionID, name: "Council", pid: pid, phase: phase, sequence: 9,
+                   startedAt: updatedAt.addingTimeInterval(-60), updatedAt: updatedAt, source: .microphone)
+}
+
+/// Appends `seconds` of quiet audio at `catalogRate` to `track` from `start`, one frame per 30 s chunk.
+private func catalogAudio(_ writer: AudioChunkWriter, track: String, from start: Double, seconds: Double) async throws {
+    var at = start
+    while start + seconds - at > 1e-9 {
+        let length = min(30, start + seconds - at)
+        let samples = [Float](repeating: 0.01, count: Int((length * catalogRate).rounded()))
+        try await writer.append(CapturedAudio(track: track, frame: try PCMFrame(samples: samples, sampleRate: catalogRate,
+                                                                              channels: 1, startTime: at)))
+        at += length
+    }
+}
+
+/// A recorder that died while recording: the manifest says recording and no lock is held.
+private func catalogDeadRecording(in root: URL) throws -> URL {
+    let archive = try SessionArchive.create(root: root, name: "Council", source: .microphone, locale: "en-CA",
+                                            backend: .speech)
+    return archive.directory
+    // The archive is released here, which lets its writer lock go without finishing it.
+}
+
+/// Rewrites the manifest's creation date (the catalog orders by it).
+private func catalogSetCreated(_ session: URL, _ date: Date) throws {
+    var manifest = try SessionArchive.readManifest(at: session)
+    manifest.createdAt = date
+    try AtomicFile.writeJSON(manifest, to: SessionPaths.manifest(session))
+}
+
+// MARK: - State
+
+@Test func catalogMarksDeadRecorderInterrupted() throws {
+    let temp = try TemporaryDirectory("catalog")
+    defer { temp.remove() }
+    let session = try catalogDeadRecording(in: temp.url)
+    let id = session.deletingPathExtension().lastPathComponent
+    try AtomicFile.writeJSON(catalogStatus(id, phase: .recording, updatedAt: Date().addingTimeInterval(-60)),
+                             to: SessionPaths.status(session))
+    let summary = SessionCatalog.summary(session: session)
+    #expect(summary.state == .interrupted)
+    #expect(summary.manifestStatus == ArchiveStatus.recording)
+    #expect(summary.liveness == .dead)
+    #expect(summary.phase == nil && summary.pid == nil, "A dead recorder's stale phase is not reported.")
+    #expect(summary.id == id)
+    #expect(summary.name == "Council")
+    #expect(summary.speakerState == .none)
+    #expect(!FileManager.default.fileExists(atPath: session.appendingPathComponent(".processing.lock").path),
+            "Reading the catalog creates no lock file.")
+}
+
+@Test func catalogShowsMaintenanceAsProcessing() async throws {
+    let temp = try TemporaryDirectory("catalog")
+    defer { temp.remove() }
+    // A maintenance command holds the writer lock of a `processing` archive; status.json is a minute old.
+    let archive = try SessionArchive.create(root: temp.url, name: "Council", source: .microphone, locale: "en-CA",
+                                            backend: .speech)
+    try await archive.setStatus(ArchiveStatus.processing)
+    try AtomicFile.writeJSON(catalogStatus(archive.id, phase: .transcribing, updatedAt: Date().addingTimeInterval(-60)),
+                             to: SessionPaths.status(archive.directory))
+    let summary = SessionCatalog.summary(session: archive.directory)
+    #expect(summary.state == .processing)
+    #expect(summary.liveness == .maintenance)
+    #expect(summary.phase == nil)
+
+    // With a fresh status the same archive is being recorded.
+    try AtomicFile.writeJSON(catalogStatus(archive.id, phase: .recording), to: SessionPaths.status(archive.directory))
+    let live = SessionCatalog.summary(session: archive.directory)
+    #expect(live.state == .recording)
+    #expect(live.phase == .recording && live.pid == getpid())
+    try await archive.finish(status: ArchiveStatus.complete)
+}
+
+@Test func catalogStateMapping() {
+    let all: [RecorderLiveness] = [.capturing, .processing, .maintenance, .exited, .dead]
+    for status in [ArchiveStatus.recording, ArchiveStatus.processing] {
+        #expect(all.map { SessionCatalog.state(manifestStatus: status, liveness: $0) }
+            == [.recording, .processing, .processing, .interrupted, .interrupted])
+    }
+    let direct: [(String, SessionState)] = [
+        (ArchiveStatus.complete, .complete), (ArchiveStatus.audioOnly, .audioOnly),
+        (ArchiveStatus.transcriptionIncomplete, .transcriptionIncomplete), (ArchiveStatus.incomplete, .incomplete),
+        (ArchiveStatus.failed, .failed), (ArchiveStatus.interrupted, .interrupted),
+        (ArchiveStatus.recovered, .recovered), ("somethingNewer", .incomplete),
+    ]
+    for (status, state) in direct {
+        #expect(all.allSatisfy { SessionCatalog.state(manifestStatus: status, liveness: $0) == state })
+    }
+}
+
+// MARK: - Sizes and speakers
+
+@Test func catalogReportsSavedDurationSizeAndSpeakerState() async throws {
+    let temp = try TemporaryDirectory("catalog")
+    defer { temp.remove() }
+    let archive = try SessionArchive.create(root: temp.url, name: "Council", source: .microphoneAndSystem,
+                                            locale: "en-CA", backend: .speech)
+    let session = archive.directory
+    try AtomicFile.writeJSON(MeetingInfo(sessionID: archive.id, mode: .call, othersInRoom: false),
+                             to: SessionPaths.meetingInfo(session))
+    let writer = AudioChunkWriter(archive: archive)
+    try await catalogAudio(writer, track: "mic", from: 0, seconds: 60)
+    try await catalogAudio(writer, track: "system", from: 0, seconds: 30)
+    try await writer.finish()
+    let transcript = SessionFixtures.transcript(SessionFixtures.alternatingSegments(track: "system", duration: 30))
+    try await archive.saveTranscript(transcript, writeLegacyExports: false)
+    try await archive.finish(status: ArchiveStatus.complete)
+    let run = try SessionFixtures.writeHeadRun(
+        session: session, transcript: transcript,
+        outputs: ["system": SessionFixtures.alternatingOutput(duration: 30)])
+
+    let summary = SessionCatalog.summary(session: session)
+    #expect(summary.chunkCount == 3)
+    let chunks = try SessionArchive.readManifest(at: session).chunks
+    let spans: [String] = chunks.map { "\($0.track) \($0.start)-\($0.end)" }.sorted()
+    #expect(spans == ["mic 0.0-30.0", "mic 30.0-60.0", "system 0.0-30.0"])
+    #expect(summary.savedSeconds == 60)
+    #expect(summary.state == .complete)
+    #expect(summary.source == .microphoneAndSystem)
+    #expect(summary.origin == .recorded)
+    #expect(summary.transcriptID == transcript.id)
+    #expect(summary.speakerState == .labelled, "A head run without a post-processing record is labelled.")
+    #expect(summary.runID == run.id)
+    #expect(!summary.hasSpeakerEdits)
+    #expect(summary.bytes > Int64(3 * 30 * catalogRate * 2), "Three 30 s chunks of 16-bit audio, and the rest.")
+    #expect(summary.derivedBytes == 0)
+    #expect(!summary.audioDeleted)
+    #expect(summary.liveness == .exited || summary.liveness == .dead)
+
+    // A render left in derived/ is counted on its own too.
+    try AtomicFile.ensurePrivateDirectory(SessionPaths.derived(session))
+    try Data(repeating: 1, count: 5_000).write(to: SessionPaths.render(track: "system", in: session))
+    let withRender = SessionCatalog.summary(session: session)
+    #expect(withRender.derivedBytes == 5_000)
+    #expect(withRender.bytes == summary.bytes + 5_000)
+
+    // An edit makes the labels edited.
+    try SessionFixtures.appendEdits([.rename(speakerID: "system:S1", name: "Jim")], session: session)
+    #expect(SessionCatalog.summary(session: session).hasSpeakerEdits)
+}
+
+@Test func catalogCountsATornOrUnreadableEditJournalAsEdited() throws {
+    let temp = try TemporaryDirectory("catalog")
+    defer { temp.remove() }
+    let session = try catalogDeadRecording(in: temp.url)
+    #expect(!SessionCatalog.hasSpeakerEdits(session), "No journal: no edits.")
+    let journal = SessionPaths.edits(session)
+    try AtomicFile.ensurePrivateDirectory(journal.deletingLastPathComponent())
+    // A crash cut the first edit short: no complete line, only a partial one.
+    try Data(#"{"schemaVersion":1,"id":"E1","#.utf8).write(to: journal)
+    let torn = try SessionSpeakerStore.readEdits(session: session)
+    #expect(torn.edits.isEmpty && torn.unreadableLines == 0 && torn.tornTail)
+    #expect(SessionCatalog.hasSpeakerEdits(session))
+    #expect(SessionCatalog.summary(session: session).hasSpeakerEdits)
+    // A complete line this build cannot read counts too.
+    try Data("not an edit\n".utf8).write(to: journal)
+    #expect(SessionCatalog.hasSpeakerEdits(session))
+}
+
+@Test(.timeLimit(.minutes(1)))
+func catalogReportsNotLabelledWithMessage() async throws {
+    let temp = try TemporaryDirectory("catalog")
+    defer { temp.remove() }
+    let transcript = SessionFixtures.transcript(SessionFixtures.alternatingSegments(track: "mic"))
+    let session = try await SessionFixtures.makeSession(in: temp.url, mode: .inPerson, transcript: transcript)
+    let record = try await MeetingPostProcessor(diarizer: nil, freeSpace: FixedFreeSpace(.max))
+        .run(session: session, lease: nil)
+    #expect(record.state == .succeeded)
+    let summary = SessionCatalog.summary(session: session)
+    #expect(summary.speakerState == .notLabelled)
+    #expect(summary.labelMessage?.contains("holos setup --speakers") == true)
+    #expect(summary.runID == nil)
+}
+
+@Test func catalogSpeakerStateFollowsThePostProcessingRecord() {
+    let running = PostProcessingRecord(sessionID: "S", state: .running,
+                                       progress: PostProcessingProgress(stage: .diarize, message: "Labelling speakers…"),
+                                       pid: 1, startedAt: Date(), updatedAt: Date())
+    var finished = running
+    finished.state = .partial
+    finished.progress = nil
+    finished.runID = "RUN"
+    finished.message = "Speaker labels were edited; relabel with --force (names carry over)."
+    var failed = running
+    failed.state = .failed
+    failed.message = "Speaker labelling failed."
+
+    func state(_ record: PostProcessingRecord?, head: String? = nil, _ liveness: RecorderLiveness = .exited)
+        -> (SpeakerLabelState, String?, String?) {
+        let result = SessionCatalog.speakerState(record: record, headRunID: head, liveness: liveness)
+        return (result.state, result.message, result.runID)
+    }
+    #expect(state(nil) == (.none, nil, nil))
+    #expect(state(nil, head: "HEAD") == (.labelled, nil, "HEAD"))
+    #expect(state(running, .processing) == (.running, "Labelling speakers…", nil))
+    #expect(state(running, .maintenance).0 == .running)
+    #expect(state(running, .dead).0 == .interrupted)
+    #expect(state(running, .exited).0 == .interrupted)
+    #expect(state(failed, head: "HEAD") == (.failed, "Speaker labelling failed.", "HEAD"))
+    #expect(state(finished, head: "HEAD") == (.labelled, finished.message, "HEAD"))
+    finished.runID = nil
+    #expect(state(finished).0 == .notLabelled)
+}
+
+@Test(.timeLimit(.minutes(1)))
+func catalogReportsDeletedAudio() async throws {
+    let temp = try TemporaryDirectory("catalog")
+    defer { temp.remove() }
+    let (session, _, _) = try await SessionFixtures.labelledSession(in: temp.url)
+    try AtomicFile.ensurePrivateDirectory(SessionPaths.derived(session))
+    try Data(repeating: 1, count: 1_000).write(to: SessionPaths.render(track: "system", in: session))
+    let before = SessionCatalog.summary(session: session)
+    #expect(!before.audioDeleted && before.derivedBytes == 1_000)
+
+    let lease = try SessionArchive.acquireProcessingLease(at: session)
+    try SessionDeletion.deleteAudio(session: session, lease: lease)
+    lease.release()
+    let after = SessionCatalog.summary(session: session)
+    #expect(after.audioDeleted)
+    #expect(after.derivedBytes == 0)
+    #expect(after.bytes < before.bytes - 20 * 16_000 * 2)
+    #expect(after.state == .complete)
+    #expect(after.savedSeconds == before.savedSeconds, "The manifest still says what was recorded.")
+    #expect(after.speakerState == .labelled)
+    #expect(after.transcriptID == before.transcriptID)
+    #expect(!(try SessionArchive.inspectRecovery(at: session).needsAttention))
+}
+
+/// Replaces the file at `url` (some session files are read-only) with `data`.
+private func catalogReplace(_ url: URL, with data: Data) throws {
+    try? FileManager.default.removeItem(at: url)
+    try data.write(to: url)
+}
+
+/// `data`, a JSON object, as a newer Holos writes it: `schemaVersion` 2 and a field this build does not know.
+private func catalogNewer(_ data: Data) throws -> Data {
+    var object = try #require(try JSONSerialization.jsonObject(with: data) as? [String: Any])
+    object["schemaVersion"] = 2
+    object["newerField"] = "kept"
+    return try JSONSerialization.data(withJSONObject: object)
+}
+
+@Test(.timeLimit(.minutes(1)))
+func catalogReportsUnreadableSpeakerFilesAndTranscripts() async throws {
+    let temp = try TemporaryDirectory("catalog")
+    defer { temp.remove() }
+    let (session, transcript, run) = try await SessionFixtures.labelledSession(in: temp.url)
+    let record = PostProcessingRecord(sessionID: try SessionArchive.readManifest(at: session).id, state: .succeeded,
+                                      runID: run.id, pid: 1, startedAt: Date(), updatedAt: Date())
+    try AtomicFile.writeJSON(record, to: SessionPaths.postprocess(session))
+    let before = SessionCatalog.summary(session: session)
+    #expect(before.speakerState == .labelled && before.runID == run.id)
+    #expect(before.transcriptID == transcript.id && before.transcriptProblem == nil)
+
+    // postprocess.json and speakers/head.json: newer or damaged is unreadable, never "none" or "labelled".
+    for url in [SessionPaths.postprocess(session), SessionPaths.head(session)] {
+        let original = try Data(contentsOf: url)
+        try catalogReplace(url, with: try catalogNewer(original))
+        let newer = SessionCatalog.summary(session: session)
+        #expect(newer.speakerState == .unreadable, "\(url.lastPathComponent) from a newer Holos")
+        #expect(newer.labelMessage?.contains("newer Holos") == true, "\(url.lastPathComponent)")
+        try catalogReplace(url, with: Data("not json".utf8))
+        #expect(SessionCatalog.summary(session: session).speakerState == .unreadable,
+                "\(url.lastPathComponent) damaged")
+        try catalogReplace(url, with: original)
+        #expect(SessionCatalog.summary(session: session).speakerState == .labelled)
+    }
+
+    // The run the head names is read: missing, damaged, or newer is unreadable, never "labelled".
+    let runURL = SessionPaths.run(run.id, in: session)
+    let savedRun = try Data(contentsOf: runURL)
+    let runDamages = [("damaged", Data("not json".utf8), "speaker labels are missing or damaged"),
+                      ("newer", try catalogNewer(savedRun), "newer Holos")]
+    for (damage, data, message) in runDamages {
+        try catalogReplace(runURL, with: data)
+        let summary = SessionCatalog.summary(session: session)
+        #expect(summary.speakerState == .unreadable, "head run \(damage)")
+        #expect(summary.labelMessage?.contains(message) == true, "head run \(damage)")
+    }
+    try FileManager.default.removeItem(at: runURL)
+    #expect(SessionCatalog.summary(session: session).speakerState == .unreadable, "head run missing")
+    try catalogReplace(runURL, with: savedRun)
+    #expect(SessionCatalog.summary(session: session).speakerState == .labelled)
+
+    // postprocess.json names a run, but the head the labels load through is missing: unreadable, never "labelled".
+    let headURL = SessionPaths.head(session)
+    let savedHead = try Data(contentsOf: headURL)
+    try FileManager.default.removeItem(at: headURL)
+    let headless = SessionCatalog.summary(session: session)
+    #expect(headless.speakerState == .unreadable)
+    #expect(headless.labelMessage?.contains("speakers/head.json is missing") == true)
+    #expect(headless.runID == run.id)
+    try catalogReplace(headURL, with: savedHead)
+    #expect(SessionCatalog.summary(session: session).speakerState == .labelled)
+
+    // The current revision is read: truncated, mislabelled, or newer is not listed as the transcript.
+    let revision = SessionPaths.transcript(transcript.id, in: session)
+    let saved = try Data(contentsOf: revision)
+    var mislabelled = transcript
+    mislabelled.id = UUID().uuidString
+    let damages: [(String, Data)] = [
+        ("truncated", saved.prefix(saved.count / 2)),
+        ("mislabelled", try HolosJSON.encoder().encode(mislabelled)),
+        ("newer", try catalogNewer(saved)),
+    ]
+    for (damage, data) in damages {
+        try catalogReplace(revision, with: data)
+        let summary = SessionCatalog.summary(session: session)
+        #expect(summary.transcriptID == nil, "\(damage)")
+        #expect(summary.transcriptProblem != nil, "\(damage)")
+    }
+    #expect(SessionCatalog.summary(session: session).transcriptProblem?.contains("newer Holos") == true)
+    try catalogReplace(SessionPaths.transcriptPointer(session),
+                       with: try catalogNewer(try Data(contentsOf: SessionPaths.transcriptPointer(session))))
+    #expect(SessionCatalog.summary(session: session).transcriptProblem?.contains("newer Holos") == true,
+            "A newer pointer is reported, not read as no transcript.")
+}
+
+/// The catalog's speaker state and label message, and whether the snapshot loader (the exports and speaker commands)
+/// uses the head's run: a nil run when `load` refuses (`error`).
+private func catalogLabels(_ session: URL) -> (state: SpeakerLabelState, message: String?, loadedRun: String?,
+                                               error: (any Error)?) {
+    let summary = SessionCatalog.summary(session: session)
+    do {
+        let snapshot = try SpeakerSessionSnapshot.load(session: session)
+        return (summary.speakerState, summary.labelMessage, snapshot.run?.id, nil)
+    } catch {
+        return (summary.speakerState, summary.labelMessage, nil, error)
+    }
+}
+
+@Test(.timeLimit(.minutes(1)))
+func catalogCallsLabelsLabelledOnlyWhenTheSnapshotLoadsThem() async throws {
+    let temp = try TemporaryDirectory("catalog")
+    defer { temp.remove() }
+    let (session, transcript, run) = try await SessionFixtures.labelledSession(in: temp.url)
+    // A newer transcript is current, so the snapshot has one to fall back to when the run's own cannot be used.
+    try await SessionFixtures.saveTranscript(
+        SessionFixtures.transcript(SessionFixtures.alternatingSegments(track: "system")), in: session)
+    let labelled = catalogLabels(session)
+    #expect(labelled.state == .labelled && labelled.loadedRun == run.id)
+
+    // The transcript revision the head's run was built from: missing, damaged, or of another ID. The exports leave
+    // the labels out, so the catalog never calls them labelled.
+    let revision = SessionPaths.transcript(transcript.id, in: session)
+    let saved = try Data(contentsOf: revision)
+    var other = transcript
+    other.id = UUID().uuidString
+    let damages: [(String, Data?)] = [
+        ("missing", nil), ("truncated", saved.prefix(saved.count / 2)),
+        ("of another ID", try HolosJSON.encoder().encode(other)),
+    ]
+    for (damage, data) in damages {
+        try? FileManager.default.removeItem(at: revision)
+        if let data { try data.write(to: revision) }
+        let labels = catalogLabels(session)
+        #expect(labels.error == nil && labels.loadedRun == nil, "The snapshot leaves the labels out: \(damage).")
+        #expect(labels.state == .unreadable, "The run's transcript is \(damage).")
+        #expect(labels.message == "The transcript the speaker labels were made from is missing or damaged.",
+                "\(damage)")
+    }
+    // A newer one is refused by both.
+    try catalogReplace(revision, with: try catalogNewer(saved))
+    let newer = catalogLabels(session)
+    #expect(newer.error.map { "\($0)".contains("newer Holos") } == true)
+    #expect(newer.state == .unreadable && newer.message?.contains("newer Holos") == true)
+    try catalogReplace(revision, with: saved)
+    #expect(catalogLabels(session).state == .labelled)
+
+    // A head run with a span outside its transcript.
+    var bad = run
+    bad.id = UUID().uuidString
+    bad.turns[1].spans[0].end = 999
+    try SessionArchive.withSpeakerLock(at: session) {
+        try SessionSpeakerStore.writeRun(bad, session: session)
+        try SessionSpeakerStore.writeHead(SpeakerHead(runID: bad.id), session: session)
+    }
+    let outside = catalogLabels(session)
+    #expect(outside.error == nil && outside.loadedRun == nil)
+    #expect(outside.state == .unreadable)
+    #expect(outside.message == "Speaker labels do not match the transcript (turn T2).")
+    #expect(SessionCatalog.summary(session: session).runID == bad.id)
+}
+
+@Test(.timeLimit(.minutes(1)))
+func catalogTreatsAPostProcessingRecordOfAnotherSessionAsUnreadable() async throws {
+    let temp = try TemporaryDirectory("catalog")
+    defer { temp.remove() }
+    let (session, transcript, run) = try await SessionFixtures.labelledSession(in: temp.url)
+    let foreign = PostProcessingRecord(sessionID: UUID().uuidString, state: .failed, runID: UUID().uuidString,
+                                       transcriptID: transcript.id, pid: 1, startedAt: Date(), updatedAt: Date(),
+                                       message: "Foreign failure.")
+    try AtomicFile.writeJSON(foreign, to: SessionPaths.postprocess(session))
+    let summary = SessionCatalog.summary(session: session)
+    #expect(summary.speakerState == .unreadable, "Never the foreign record's failed state.")
+    #expect(summary.labelMessage == "postprocess.json belongs to another session.")
+    #expect(summary.runID == run.id, "Never the foreign record's run.")
+    #expect(isDamageError { try SessionFiles.postProcessingRecord(session: session) })
+}
+
+@Test(.timeLimit(.minutes(1)))
+func catalogReadsTheAudioDeletionMarker() async throws {
+    let temp = try TemporaryDirectory("catalog")
+    defer { temp.remove() }
+    let (session, _, _) = try await SessionFixtures.labelledSession(in: temp.url)
+    let marker = SessionPaths.audioDeleted(session)
+    let own = try HolosJSON.encoder().encode(AudioDeletedRecord(
+        sessionID: try SessionArchive.readManifest(at: session).id, chunkCount: 1, seconds: 20))
+    try catalogReplace(marker, with: own)
+    #expect(SessionCatalog.summary(session: session).audioDeleted)
+    #expect(try SpeakerSessionSnapshot.load(session: session).audioDeleted)
+
+    let foreign = try HolosJSON.encoder().encode(AudioDeletedRecord(sessionID: UUID().uuidString, chunkCount: 1,
+                                                                    seconds: 20))
+    for (damage, data) in [("damaged", Data("not json".utf8)), ("of another session", foreign),
+                           ("version 0", Data(#"{"schemaVersion":0,"deletedAt":"2026-09-24T00:00:00Z","chunkCount":1,"seconds":1}"#.utf8))] {
+        try catalogReplace(marker, with: data)
+        #expect(!SessionCatalog.summary(session: session).audioDeleted, "A \(damage) marker is not deleted audio.")
+        #expect(try !SpeakerSessionSnapshot.load(session: session).audioDeleted, "\(damage)")
+    }
+    try catalogReplace(marker, with: try catalogNewer(own))
+    #expect(!SessionCatalog.summary(session: session).audioDeleted)
+    #expect(throws: HolosError.self, "The snapshot refuses a newer marker.") {
+        try SpeakerSessionSnapshot.load(session: session)
+    }
+}
+
+/// Whether `body` throws damage (`SessionFiles.isDamage`).
+private func isDamageError(_ body: () throws -> Any?) -> Bool {
+    do {
+        _ = try body()
+        return false
+    } catch {
+        return SessionFiles.isDamage(error)
+    }
+}
+
+// MARK: - Listing
+
+@Test func catalogListsNewestFirstAndReportsDamagedFolders() async throws {
+    let temp = try TemporaryDirectory("catalog")
+    defer { temp.remove() }
+    let root = temp.url
+    let older = try await SessionFixtures.makeSession(in: root, name: "Older", audioSeconds: ["mic": 1], transcript: nil)
+    let newer = try await SessionFixtures.makeSession(in: root, name: "Newer", audioSeconds: ["mic": 1], transcript: nil)
+    try catalogSetCreated(older, Date(timeIntervalSince1970: 1_790_000_000))
+    try catalogSetCreated(newer, Date(timeIntervalSince1970: 1_790_000_600))
+
+    // A session folder whose manifest is damaged, and things that are not sessions.
+    let damagedID = UUID().uuidString
+    let damaged = root.appendingPathComponent("\(damagedID).holos", isDirectory: true)
+    try FileManager.default.createDirectory(at: damaged, withIntermediateDirectories: true)
+    try Data("{ not a manifest".utf8).write(to: SessionPaths.manifest(damaged))
+    try Data(repeating: 2, count: 300).write(to: damaged.appendingPathComponent("stray.bin"))
+    try Data("x".utf8).write(to: root.appendingPathComponent("file.holos"))
+    try FileManager.default.createSymbolicLink(at: root.appendingPathComponent("link.holos"), withDestinationURL: older)
+    try FileManager.default.createDirectory(at: root.appendingPathComponent(".import-\(UUID().uuidString).holos"),
+                                            withIntermediateDirectories: true)
+    try FileManager.default.createDirectory(at: root.appendingPathComponent("notes"), withIntermediateDirectories: true)
+
+    let summaries = SessionCatalog.list(root: root)
+    #expect(summaries.map(\.name).filter { $0 != "\(damagedID).holos" } == ["Newer", "Older"])
+    #expect(summaries.count == 3)
+    let broken = try #require(summaries.first { $0.state == .damaged })
+    #expect(broken.id == damagedID)
+    #expect(broken.name == "\(damagedID).holos")
+    #expect(broken.directory.lastPathComponent == "\(damagedID).holos")
+    #expect(broken.manifestStatus == "")
+    #expect(broken.bytes == 300 + Int64("{ not a manifest".utf8.count))
+    #expect(SessionCatalog.list(root: root.appendingPathComponent("missing")).isEmpty)
+
+    // The JSON form round-trips (`holos session list --json`).
+    let decoded = try HolosJSON.decoder().decode([SessionSummary].self, from: HolosJSON.encoder().encode(summaries))
+    #expect(decoded.map(\.id) == summaries.map(\.id))
+    #expect(decoded.map(\.liveness) == summaries.map(\.liveness))
+}

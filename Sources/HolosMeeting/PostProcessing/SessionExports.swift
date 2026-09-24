@@ -193,10 +193,9 @@ public enum SessionExports {
         guard let data = try AtomicFile.readIfPresent(SessionPaths.generatedExports(session), maxBytes: 1 << 20) else {
             return nil
         }
-        try SessionFiles.checkVersion(data, current: 1, name: name)
         do {
-            return try HolosJSON.decoder().decode(GeneratedRecord.self, from: data)
-        } catch {
+            return try SessionFiles.decode(GeneratedRecord.self, from: data, current: 1, name: name)
+        } catch let error where SessionFiles.isDamage(error) {
             log.error("\(name, privacy: .public) is damaged; every edited export will be moved aside")
             return GeneratedRecord(files: [:])
         }

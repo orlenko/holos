@@ -17,8 +17,8 @@ Hardware-facing and cross-app acceptance remain pending.
   audio without recognition. `status` and `stop` inspect/request graceful stop;
   Ctrl-C finalizes capture and saves audio before transcription drains.
   `pause`, `resume`, and `marker` control a running recording by session ID.
-- `session inspect`, `recover`, and `retranscribe` validate/recover archived audio
-  and write a new transcript revision to a separately named JSON file. Audio and
+- `session inspect`, `recover`, and `retranscribe` validate/recover archived audio;
+  `retranscribe` writes a new transcript to a separately named JSON file. Audio and
   existing archive revisions are retained.
 - Session archives (meeting-recording wave 0): a failed journal append is truncated
   back instead of leaving a partial line; a corrupt journal line is skipped and
@@ -91,6 +91,41 @@ Hardware-facing and cross-app acceptance remain pending.
   and prints numbers only (hashed labels with `--json`).
   `scripts/evaluate-references.swift --speakers --calibrate` runs both over the private
   Otter recordings; see the results below.
+- Recovery, session list, and deletion (wave 3): `session recover` finishes a session
+  whose recorder died. Under one processing lease it indexes the saved audio, rebuilds
+  the transcript from the phrases live transcription journaled (with their word
+  times and IDs; older journals give untimed phrases), transcribes only the audio
+  after the last saved phrase or after a point where live transcription fell behind,
+  joining the two at word level, and labels the speakers. The rebuild is idempotent
+  (a second `recover` changes nothing; `--force` rebuilds again); a failed or
+  timed-out transcription publishes nothing and leaves the recovered archive, and
+  `--no-transcribe` rebuilds from the saved phrases only. A session that was not
+  interrupted keeps its transcript (one whose transcription did not finish keeps the
+  transcript saved at stop, and is rebuilt only when it has none). `recover` exits 3 when speaker labelling failed
+  or was skipped for a reason other than missing speaker models, and 1 when recovery
+  or the rebuild failed or some saved audio could not be recovered. `session list`
+  (also used by `record status`) shows each session's state (`recording`,
+  `processing`, `interrupted` for a dead recorder, the saved status, or `damaged`
+  for an unreadable manifest), saved audio, size, and speaker-label state. `session delete --yes` moves a session to
+  the Trash and deletes its recorder log (a `damaged` folder too, even one left
+  without a manifest); `--audio-only` deletes the audio, renders,
+  and any voice data for good and writes `audio-deleted.json`, keeping the
+  transcript, speaker labels, and exports (the session still inspects clean, and
+  labelling it again says the audio was deleted). Deletes never follow a symbolic
+  link out of the session. `inspect`, `recover`, and `session list` report skipped
+  journal lines.
+- Speaker editing (wave 3): `speakers list <session> [--turns] [--json]` shows the
+  labels; `rename`, `merge`, `assign` (to a speaker, `unknown`, or `new[:NAME]`),
+  `split` (`--at-word` or `--at`), `exclude`, and `undo` correct them. `<session>` is a
+  `.holos` path or a session ID; speakers are chosen by ID, engine label, number, or
+  name, and turns by ID or by a time inside them. Each edit is appended to the
+  session's edit journal only if the labels it was made against are still current
+  (otherwise it exits 1 with a reload message and writes nothing), and the exports
+  are rewritten afterwards, keeping a hand-edited copy under a new name. A command
+  that would change nothing says so and saves nothing. `undo` walks back one command
+  at a time; there is no redo. `session export <session> --format md|json|txt
+  [--output FILE]` renders the labelled transcript (`--output` creates a new 0600 file
+  and never replaces one), and `--all` rewrites `exports/`.
 - `voices list` and `say` provide native voice discovery, playback, and `.m4a`,
   `.wav`, or `.caf` export. Text comes from arguments or UTF-8 stdin.
 - `read` renders a local UTF-8 text/Markdown file or stdin as an ordered AAC
@@ -142,8 +177,13 @@ what live speech missed; the stall watchdog; microphone selection), speaker labe
 end to end with a fake diarizer on generated audio (rendering and gap compression,
 the post-processing stages, protected exports, the disk-space skip, the inherited
 lease), speaker-model verification on fake files, `session import` and
-`session score`, and the speaker algorithms (alignment, edit projection, carry-over,
-exporters, scoring) on synthetic data; run them with
+`session score`, speaker editing (stale views refused, batches, undo, concurrent
+editors, selectors), recovery (journal rebuild, torn and corrupt journal lines,
+coverage and word-level replay, idempotence, the one-lease recover → rebuild →
+label chain), the session catalog's states and sizes, Delete Audio and Delete
+Meeting (including symbolic links in place of session folders), and the speaker
+algorithms (alignment, edit projection, carry-over, exporters, scoring) on synthetic
+data; run them with
 `./scripts/test.sh`, which keeps `HOLOS_DATA_DIR` and `HOLOS_SUPPORT_DIR` in a
 temporary folder. The opt-in native fixture was exercised separately for both
 recognizers. WAV, CAF, and M4A synthesis/export were exercised without audible
@@ -184,8 +224,9 @@ Still requiring real-machine or user-data validation:
 - Validate the menu bar app's permission/setup flow, live microphone dictation,
   hotkey behavior, focus guard, and direct insertion across target applications.
   Neither `--check` nor unit tests exercise those interactions.
-- Exercise capture failure/relaunch/recovery on hardware and run multi-hour soak
-  tests for memory growth, drift, interruptions, and audio continuity. The
+- Exercise capture failure/relaunch/recovery on hardware (`kill -9` a recorder, then
+  `session recover`: the loss should be at most one 30 s chunk) and run multi-hour
+  soak tests for memory growth, drift, interruptions, and audio continuity. The
   lid-close, sleep, screen-lock, AirPods, small-disk, and 3 h checks for long
   recordings are listed in the [live-recording checklist](hardware-validation.md)
   ("Long recordings") and have not been run.
@@ -206,11 +247,12 @@ Still requiring real-machine or user-data validation:
   when explicitly chosen from the menu.
 - Correction memory, correction management, or Foundation Models-assisted
   correction. No correction or speaker database workflow is present.
-- Speaker names and edits: labels are "Speaker N" until they can be renamed, merged,
-  or reassigned (`holos speakers …` and the review window are later waves), and voices
-  are not remembered across meetings. Speaker counts are approximate: quieter or
-  briefer speakers can merge into others. The menu bar app has no meeting controls
-  yet.
+- Speaker names and edits: labels are "Speaker N" until renamed with `holos speakers`
+  (the review window is a later wave), and names and voices are not remembered across
+  meetings. Speaker counts are approximate: quieter or briefer speakers can merge into
+  others. The menu bar app has no meeting controls, Meetings window, or automatic
+  recovery yet; `session list`, `recover`, and `delete` are command-line only.
+  Nothing deletes old meetings automatically.
 - URL/article extraction, PDF text extraction, and OCR. `read` supports local
   UTF-8 text/Markdown and stdin only.
 - Broader install/update/uninstall packaging and the T14 acceptance run.

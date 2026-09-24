@@ -52,6 +52,7 @@ enum SchemaVersion {
     static let speakerEdit = 1
     static let recognition = 1
     static let voiceData = 1
+    static let audioDeleted = 1
 
     private struct Probe: Decodable {
         var schemaVersion: Int

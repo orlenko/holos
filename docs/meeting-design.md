@@ -2790,7 +2790,8 @@ public struct MeetingPostProcessor: Sendable {
                 freeSpace: any FreeSpaceProvider = VolumeFreeSpace())
     /// Runs every stage for one finished session under `lease` (nil: acquire one, retry 1 s) and returns the
     /// final postprocess.json record. Throws only when it cannot start (still recording, lease held elsewhere,
-    /// unreadable manifest); stage failures are recorded in the returned record.
+    /// unreadable manifest, a postprocess.json written by a newer Holos); stage failures are recorded in the
+    /// returned record.
     public func run(session: URL, lease: ProcessingLease?,
                     progress: @escaping @Sendable (PostProcessingProgress) -> Void = { _ in })
         async throws -> PostProcessingRecord
@@ -2805,7 +2806,7 @@ Stages (PR7b):
 
 | # | Stage | Does | On failure or not applicable |
 |---|---|---|---|
-| 0 | — | refuse if `SessionArchive.isActive` ("still recording"); use the given lease or acquire one; `RecorderChannel.markDeadRecorderExited`; delete leftover `derived/`; write `postprocess.json` `{state: running}` | throw |
+| 0 | — | refuse if `SessionArchive.isActive` ("still recording"); use the given lease or acquire one; refuse (`unavailable`) an existing `postprocess.json` written by a newer Holos, never overwriting it (a damaged one is replaced); `RecorderChannel.markDeadRecorderExited`; delete leftover `derived/`; write `postprocess.json` `{state: running}` | throw |
 | 1 | `transcript` | load the current transcript (`transcripts/current.json`, §2.4) | none → `skipped`, no exports; state `skipped` |
 | 2 | — | track policies from `meeting.json` (or `MeetingInfo.inferred`), with `options.othersInRoom` overriding: a track is `diarized` if it is `system`, or the mode is `inPerson`, or others are in the room; otherwise `channel("mic:me", "Me")`; tracks without words are `skipped` | — |
 | 3 | — | if a head run exists, was built from the current transcript, has applied edits, and `!force`: skip 4–7 with "Speaker labels were edited; relabel with --force (names carry over)". If the head was built from another transcript, relabel. | stages `skipped` |
@@ -3668,9 +3669,18 @@ Nothing expired meetings before; a 3 h call is about 2 GB even with mono system 
 - **Storage (PR3, `Sources/HolosStorage/SessionDeletion.swift`).**
   `SessionDeletion.deleteAudio(session:lease:)` requires the lease and no writer, removes
   `audio/`, `derived/`, and `speakers/voice/`, and writes `audio-deleted.json`
-  `{schemaVersion, deletedAt, chunkCount, seconds}`. Transcript, runs, edits, and exports
+  `{schemaVersion, sessionID, deletedAt, chunkCount, seconds}` (`sessionID` optional:
+  markers written before it are accepted). The marker is decoded wherever it is read
+  (`AudioDeletedRecord.read`/`isDeleted`): one from a newer Holos is refused; a damaged one,
+  or another session's, does not count as deleted audio, and Delete Audio replaces it.
+  Transcript, runs, edits, and exports
   stay. `SessionDeletion.moveToTrash(session:lease:)` moves the folder to the Trash
   (`FileManager.trashItem`) and deletes `~/Library/Logs/Holos/recorder-<id>.log`.
+  Both hold the writer lock (retry 1 s; held means a recorder is running, so they refuse)
+  for the whole deletion rather than probing it, because `SessionArchive.open(at:)` does
+  not consult the lease; `moveToTrash` also holds the speaker lock from the voice data
+  through the trash, so a speaker edit or export regeneration never runs in a folder being
+  moved. Lock order: processing → writer → speakers.
   Every delete inside a session folder (these, PR7b's `derived/`, `current.pending`,
   `deleteVoiceData`) goes through `AtomicFile.removeTree(_:in:)` (PR6), never
   `FileManager.removeItem`: it opens each folder on the way with `O_NOFOLLOW`, so a
@@ -4960,6 +4970,8 @@ public enum SpeakerLabelState: String, Codable, Sendable {
     case notLabelled
     case failed
     case interrupted
+    /// postprocess.json or speakers/head.json cannot be read (damaged, newer Holos, I/O); see `labelMessage`.
+    case unreadable
 }
 
 public struct SessionSummary: Codable, Sendable, Equatable, Identifiable {
@@ -4974,7 +4986,10 @@ public struct SessionSummary: Codable, Sendable, Equatable, Identifiable {
     /// Longest track's total chunk duration.
     public var savedSeconds: Double
     public var chunkCount: Int
+    /// Set once the current revision was read and holds this ID.
     public var transcriptID: String?
+    /// Why the current transcript cannot be read (missing, damaged, other ID, newer Holos).
+    public var transcriptProblem: String?
     public var speakerState: SpeakerLabelState
     public var labelMessage: String?
     public var runID: String?
@@ -5018,13 +5033,21 @@ public enum SessionDeletion {
 4. If `transcribe`: `TrackReplayer.replay(from: max(0, coverageEnd − 2))` with the
    session vocabulary; `TranscriptCoverage.merge` keeps journal words before coverage and
    replayed words from it on, cutting segments at word boundaries.
-5. Sort by `(start, track)`; `openForMaintenance(at:lease:)`;
-   `saveTranscript(_:writeLegacyExports: false)` (pointer updated); append
-   `transcriptRebuilt {transcriptID, journalSegments, replayedSeconds}`; set status
-   `recovered`; `finish`.
+5. Sort by `(start, track)`; `openForMaintenance(at:lease:)`; append
+   `transcriptRebuilding` with the details `transcriptRebuilt` will have (so a transcript
+   a rebuild made current is never taken for one the recorder saved at stop);
+   `saveTranscript(_:writeLegacyExports: false)` (pointer updated); set status
+   `recovered`; append `transcriptRebuilt {transcriptID, journalSegments,
+   replayedSeconds}`; `finish`. A failure after the save is reported, not thrown; the next
+   rebuild (and recover, even for a session that keeps its saved transcript) finds the
+   `transcriptRebuilding` naming the current transcript and finishes writing the missing
+   status and event instead of rebuilding again.
 6. Idempotence by sequence numbers, not dates: if a `transcriptRebuilt` event exists with
    a higher `sequence` than the last `archiveRecovered` event, its `transcriptID` is the
-   current pointer, and `!force`, return it with `reused: true` and change nothing.
+   current pointer, that revision decodes and holds its own ID, and `!force`, return it
+   with `reused: true` and change nothing. A truncated, damaged, or mislabelled current
+   revision is rebuilt. A current pointer or revision, or a `vocabulary.json` the replay
+   would use, written by a newer Holos is refused (`unavailable`), even with `force`.
 
 **State mapping (`SessionCatalog`).** Unreadable manifest → `damaged`. Manifest
 `recording`/`processing`: liveness `capturing` → `recording`; `processing` or
@@ -5032,7 +5055,27 @@ public enum SessionDeletion {
 Speaker state: `postprocess.json` `running` with liveness `processing` or `maintenance`
 → `running`; `running` otherwise → `interrupted`; `failed` → `failed`; a finished record
 with a run → `labelled`; a finished record without a run → `notLabelled` with the record's
-message; no record → `none`.
+message; no record → `none`. A head counts as labels only when
+`SpeakerSessionSnapshot.load` (the loader the exports and speaker commands use) loads its
+run: the run and the transcript revision it was built from exist and decode, and every
+span fits that transcript. A postprocess.json, speakers/head.json, head run, or run
+transcript that exists but cannot be read (damaged, of another session, written by a
+newer Holos, I/O), a head whose run or run transcript is missing, a span outside that
+transcript, or a record that names a run while the head is missing → `unreadable` with
+why, never the state of a session without it. `recover` validates the same files the same
+way (one shared reader, `SavedSpeakerState`, which delegates to the snapshot loader)
+before it decides to post-process, and refuses (`unavailable`) when one was written by a
+newer Holos.
+
+**Saved files are read, never only found.** Every versioned file recover, the catalog,
+delete, relabel, and the exports read (meeting.json, vocabulary.json, postprocess.json,
+`transcripts/current.json` and revisions, `speakers/head.json`, runs, recognition results,
+`audio-deleted.json`, `exports/.generated.json`) is decoded with its version checked
+first: newer → `unavailable`; a version below 1 or data that does not decode → damage,
+never present-and-authoritative. A record that names a session (meeting.json,
+postprocess.json, runs, voice data, and `audio-deleted.json` when it names one) is
+checked against the manifest's ID; another session's is damage.
+`manifest.json` stays strictly version 1 (schema rule 4).
 
 **CLI.**
 
