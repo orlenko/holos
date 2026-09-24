@@ -135,3 +135,121 @@ func compositionWithoutAudioIsRefused() async throws {
         _ = try await SessionAudioComposition.make(session: session, manifest: compositionManifest([record]))
     }
 }
+
+// MARK: - Placement against the audio actually inserted
+
+/// A manifest record for `plan` (no file): `seconds` of 8 kHz audio at `start`.
+private func compositionRecord(_ name: String, track: String = "mic", start: Double,
+                               seconds: Double) -> AudioChunkRecord {
+    AudioChunkRecord(id: name, track: track, relativePath: "audio/\(track)/\(name).caf", start: start,
+                     end: start + seconds, sampleRate: compositionRate, channels: 1,
+                     frameCount: Int((seconds * compositionRate).rounded()))
+}
+
+private func compositionFrames(_ seconds: Double) -> Int { Int((seconds * compositionRate).rounded()) }
+
+@Test func compositionPlanTrimsOnlyAgainstAudioInserted() {
+    let first = compositionRecord("a", start: 0, seconds: 30)
+    let second = compositionRecord("b", start: 10, seconds: 30)
+    let manifest = compositionManifest([first, second])
+    let whole: (AudioChunkRecord) -> Range<Int>? = { 0..<$0.frameCount }
+
+    // Both readable: the second loses the 20 s already heard.
+    let both = SessionAudioComposition.plan(manifest, available: whole)
+    #expect(both.count == 1 && both[0].pieces.count == 2)
+    #expect(both[0].pieces[1].skipFrames == compositionFrames(20))
+    #expect(compositionClose(both[0].pieces[1].start, 30))
+
+    // The first cannot be played: nothing precedes the second, which keeps all of its audio from 10 s.
+    let missing = SessionAudioComposition.plan(manifest) { $0.id == "a" ? nil : 0..<$0.frameCount }
+    #expect(missing[0].pieces.count == 1)
+    let only = missing[0].pieces[0]
+    #expect(only.chunk.id == "b" && only.skipFrames == 0 && only.frames == compositionFrames(30))
+    #expect(compositionClose(only.start, 10))
+
+    // The first holds only 5 s of its declared 30: the second is trimmed by nothing (5 s < 10 s).
+    let short = SessionAudioComposition.plan(manifest) { $0.id == "a" ? 0..<compositionFrames(5) : 0..<$0.frameCount }
+    #expect(short[0].pieces.map(\.frames) == [compositionFrames(5), compositionFrames(30)])
+    #expect(short[0].pieces[1].skipFrames == 0 && compositionClose(short[0].pieces[1].start, 10))
+
+    // The first holds 15 s: the second loses only the 5 s actually heard twice.
+    let partial = SessionAudioComposition.plan(manifest) {
+        $0.id == "a" ? 0..<compositionFrames(15) : 0..<$0.frameCount
+    }
+    #expect(partial[0].pieces[1].skipFrames == compositionFrames(5))
+    #expect(compositionClose(partial[0].pieces[1].start, 15))
+
+    // An empty file is left out like a missing one.
+    let empty = SessionAudioComposition.plan(manifest) { $0.id == "a" ? 0..<0 : 0..<$0.frameCount }
+    #expect(empty[0].pieces.map(\.chunk.id) == ["b"] && empty[0].pieces[0].skipFrames == 0)
+}
+
+@Test func compositionPlanUsesOnlyFramesTheFileHoldsWithinTheManifest() {
+    let chunk = compositionRecord("a", start: 5, seconds: 10)
+    let manifest = compositionManifest([chunk])
+    // More frames than the manifest records: only the recorded ones are placed.
+    let long = SessionAudioComposition.plan(manifest) { _ in 0..<compositionFrames(20) }
+    #expect(long[0].pieces[0].frames == compositionFrames(10))
+    // Audio starting late in the file: placed at its own session time.
+    let late = SessionAudioComposition.plan(manifest) { _ in compositionFrames(2)..<compositionFrames(10) }
+    #expect(late[0].pieces[0].skipFrames == compositionFrames(2))
+    #expect(late[0].pieces[0].frames == compositionFrames(8))
+    #expect(compositionClose(late[0].pieces[0].start, 7))
+    // A range entirely outside the recorded frames is no audio.
+    let outside = SessionAudioComposition.plan(manifest) { _ in compositionFrames(10)..<compositionFrames(12) }
+    #expect(outside[0].pieces.isEmpty)
+}
+
+@Test(.timeLimit(.minutes(1)))
+func compositionDoesNotTrimAfterAMissingOrShortChunk() async throws {
+    let temp = try TemporaryDirectory("composition")
+    defer { temp.remove() }
+    let session = temp.url.appendingPathComponent("\(UUID().uuidString).holos", isDirectory: true)
+    // mic: a missing 0–30 s chunk, then a readable 10–40 s one.
+    let missing = try compositionChunk(session, track: "mic", name: "000001", start: 0, seconds: 30)
+    try FileManager.default.removeItem(at: session.appendingPathComponent(missing.relativePath))
+    let micNext = try compositionChunk(session, track: "mic", name: "000002", start: 10, seconds: 30)
+    // system: a chunk the manifest says is 30 s but whose file holds 5 s, then a readable 10–40 s one.
+    var short = try compositionChunk(session, track: "system", name: "000001", start: 0, seconds: 5)
+    short.frameCount = compositionFrames(30)
+    short.end = 30
+    let systemNext = try compositionChunk(session, track: "system", name: "000002", start: 10, seconds: 30)
+    let composition = try await SessionAudioComposition.make(
+        session: session, manifest: compositionManifest([missing, micNext, short, systemNext]))
+
+    #expect(composition.tracks.count == 2)
+    let mic = compositionSegments(composition.tracks[0])
+    #expect(mic.count == 1)
+    #expect(compositionClose(mic[0].at, 10) && compositionClose(mic[0].from, 0) && compositionClose(mic[0].seconds, 30),
+            "Nothing was inserted before it, so none of its audio is trimmed.")
+    let system = compositionSegments(composition.tracks[1])
+    #expect(system.count == 2)
+    #expect(compositionClose(system[0].at, 0) && compositionClose(system[0].seconds, 5))
+    #expect(compositionClose(system[1].at, 10) && compositionClose(system[1].from, 0)
+            && compositionClose(system[1].seconds, 30))
+    #expect(compositionClose(composition.duration.seconds, 40))
+}
+
+@Test(.timeLimit(.minutes(1)))
+func compositionLeavesUnreadableChunksSilent() async throws {
+    let temp = try TemporaryDirectory("composition")
+    defer { temp.remove() }
+    let session = temp.url.appendingPathComponent("\(UUID().uuidString).holos", isDirectory: true)
+    let good = try compositionChunk(session, track: "mic", name: "000001", start: 0, seconds: 10)
+    // Not audio at all.
+    let garbage = try compositionChunk(session, track: "mic", name: "000002", start: 10, seconds: 10)
+    try Data(repeating: 0x5a, count: 4_096).write(to: session.appendingPathComponent(garbage.relativePath))
+    // A real chunk cut off inside its header.
+    let truncated = try compositionChunk(session, track: "mic", name: "000003", start: 20, seconds: 10)
+    let truncatedURL = session.appendingPathComponent(truncated.relativePath)
+    try Data(try Data(contentsOf: truncatedURL).prefix(24)).write(to: truncatedURL)
+    let last = try compositionChunk(session, track: "mic", name: "000004", start: 30, seconds: 10)
+    let composition = try await SessionAudioComposition.make(
+        session: session, manifest: compositionManifest([good, garbage, truncated, last]))
+
+    let mic = compositionSegments(try #require(composition.tracks.first))
+    #expect(mic.count == 2)
+    #expect(compositionClose(mic[0].at, 0) && compositionClose(mic[0].seconds, 10))
+    #expect(compositionClose(mic[1].at, 30) && compositionClose(mic[1].seconds, 10))
+    #expect(compositionClose(composition.duration.seconds, 40))
+}

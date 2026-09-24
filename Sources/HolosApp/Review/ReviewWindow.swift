@@ -42,7 +42,8 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate {
     private var problem: String?
     private var query = ""
     private var positioned = false
-    private var playerWasReady = false
+    /// The player state the sidebar and the footer last showed.
+    private var shownPlayerState = StateChangeTracker<ReviewPlayer.State>()
     private var resignedKeyAt: Date?
     private var closeTask: Task<Void, Never>?
     private var splitSheet: SplitSheet?
@@ -339,8 +340,9 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate {
         playButton.image = NSImage(systemSymbolName: symbol, accessibilityDescription: player.isPlaying ? "Pause" : "Play")
         playButton.isEnabled = player.isReady
         timeLabel.stringValue = TimeFormat.clock(player.currentTime) + " / " + TimeFormat.duration(review.durationSeconds)
-        if player.isReady != playerWasReady {
-            playerWasReady = player.isReady
+        // Every change of the player's state (loading, ready, off and why) redraws what depends on it: the sidebar's
+        // play buttons and the footer's "Playback is off" notice.
+        if shownPlayerState.update(player.state) {
             sidebar.update(rows: sidebarRows(), people: review.knownPeople(), editable: review.isEditable,
                            suggestions: review.projection.speakers.filter { $0.suggestion != nil }.count)
             refreshFooter()
@@ -412,6 +414,10 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate {
         var lines: [Notice] = []
         if let reason = review.pauseReason {
             lines.append(Notice(text: reason + " " + ReviewSession.pausedSuffix, color: .systemOrange))
+        }
+        if let reloadProblem = review.reloadProblem {
+            lines.append(Notice(text: "⚠ " + reloadProblem, color: .systemRed, button: "Reread",
+                                action: #selector(rereadLabels)))
         }
         if let problem { lines.append(Notice(text: "⚠ " + problem, color: .systemRed)) }
         if let runProblem = review.snapshot.runProblem { lines.append(Notice(text: "⚠ " + runProblem, color: .systemRed)) }
@@ -612,6 +618,11 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate {
 
     @objc private func labelAgain() {
         perform { review in try await review.labelAgain() }
+    }
+
+    /// The labels could not be reread after a change (`ReviewSession.reloadProblem`): try again.
+    @objc private func rereadLabels() {
+        perform { review in await review.reload() }
     }
 
     @objc private func showStaleEdits() {

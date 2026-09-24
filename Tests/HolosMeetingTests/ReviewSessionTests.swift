@@ -819,3 +819,204 @@ func sessionWithoutLabelsDoesNotOpen() async throws {
                                                         mode: .call, transcript: transcript)
     await #expect(throws: HolosError.self) { _ = try await reviewOpen(session) }
 }
+
+// MARK: - Failed saves and rereads
+
+/// Makes `url` read-only (a journal that cannot be appended to) or writable again.
+private func reviewSetWritable(_ url: URL, _ writable: Bool) {
+    try? FileManager.default.setAttributes([.posixPermissions: writable ? 0o600 : 0o400], ofItemAtPath: url.path)
+}
+
+/// Makes the session's event journal unreadable (read when labels are loaded, not when a change is saved), so a
+/// change is saved and its labels cannot be reread; or readable again.
+private func reviewBlockRereads(_ session: URL, _ blocked: Bool) {
+    let events = SessionPaths.events(session)
+    var isFolder: ObjCBool = false
+    let exists = FileManager.default.fileExists(atPath: events.path, isDirectory: &isFolder)
+    if blocked {
+        if exists {
+            try? FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: events.path)
+        } else {
+            try? FileManager.default.createDirectory(at: events, withIntermediateDirectories: false)
+        }
+    } else if exists {
+        if isFolder.boolValue {
+            try? FileManager.default.removeItem(at: events)
+        } else {
+            try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: events.path)
+        }
+    }
+}
+
+@Test(.timeLimit(.minutes(1))) @MainActor
+func failedUndoKeepsTheChangeUndoable() async throws {
+    let temp = try TemporaryDirectory("review")
+    defer { temp.remove() }
+    let fixture = try await SessionFixtures.labelledSession(in: temp.url)
+    let journal = SessionPaths.edits(fixture.session)
+    let review = try await reviewOpen(fixture.session)
+    try await review.apply([.rename(speakerID: "system:S1", name: "Ann")])
+    try await review.apply([.rename(speakerID: "system:S2", name: "Bob")])
+
+    // The journal cannot be written for a moment: the undo saves nothing.
+    reviewSetWritable(journal, false)
+    await #expect(throws: HolosError.self) { try await review.undo() }
+    reviewSetWritable(journal, true)
+    #expect(try reviewJournal(fixture.session).count == 2)
+    #expect(reviewName(review, "system:S2") == "Bob", "The change is still saved, so it is still shown.")
+    #expect(review.canUndo, "and it can still be undone.")
+    #expect(review.snapshot.projection == review.projection)
+
+    // Undo takes back the same change, then the one before it, in order.
+    try await review.undo()
+    #expect(reviewName(review, "system:S2") == "Speaker 2")
+    #expect(reviewName(review, "system:S1") == "Ann")
+    try await review.undo()
+    #expect(reviewName(review, "system:S1") == "Speaker 1")
+    #expect(!review.canUndo)
+}
+
+@Test(.timeLimit(.minutes(1))) @MainActor
+func failedUndoOfATwoBatchChangeCanBeFinished() async throws {
+    let temp = try TemporaryDirectory("review")
+    defer { temp.remove() }
+    let store = reviewStore(temp)
+    try store.update { $0.profiles = [SpeakerProfile(id: "MARIA", displayName: "Maria")] }
+    let fixture = try await SessionFixtures.labelledSession(in: temp.url)
+    let journal = SessionPaths.edits(fixture.session)
+    let review = try await reviewOpen(fixture.session, store: store)
+    // One change, two batches: a new speaker for T2, then its link to Maria.
+    try await review.assign(["T2"], to: .person(profileID: "MARIA"))
+    #expect(Set(try reviewJournal(fixture.session).compactMap(\.batchID)).count == 2)
+
+    // The first revert is saved; the journal then refuses the second.
+    let saves = SharedValue(0)
+    review.beforeEdit = {
+        if saves.update({ $0 += 1; return $0 }) == 2 { reviewSetWritable(journal, false) }
+    }
+    await #expect(throws: HolosError.self) { try await review.undo() }
+    reviewSetWritable(journal, true)
+    review.beforeEdit = nil
+    #expect(!review.projection.speakers.contains { $0.profileID == "MARIA" }, "The link was taken back.")
+    #expect(review.turn("T2")?.speakerID?.hasPrefix("user:") == true, "The new speaker is still saved.")
+    #expect(review.canUndo)
+    #expect(review.snapshot.projection == review.projection)
+
+    // Undo finishes the job.
+    try await review.undo()
+    #expect(review.turn("T2")?.speakerID == "system:S2")
+    #expect(!review.projection.speakers.contains { $0.id.hasPrefix("user:") })
+    #expect(!review.canUndo)
+}
+
+@Test(.timeLimit(.minutes(1))) @MainActor
+func failedUndoOfASavingChangeShowsItAgain() async throws {
+    let temp = try TemporaryDirectory("review")
+    defer { temp.remove() }
+    let fixture = try await SessionFixtures.labelledSession(in: temp.url)
+    let journal = SessionPaths.edits(fixture.session)
+    let review = try await reviewOpen(fixture.session)
+    // The change is held back while saving; the undo made meanwhile then cannot write its revert.
+    let (stream, release) = AsyncStream<Void>.makeStream()
+    let saves = SharedValue(0)
+    review.beforeEdit = {
+        let call = saves.update { $0 += 1; return $0 }
+        if call == 1 { for await _ in stream {} }
+        if call == 2 { reviewSetWritable(journal, false) }
+    }
+
+    let edit = Task { @MainActor in try await review.apply([.rename(speakerID: "system:S1", name: "Ann")]) }
+    #expect(await eventually { saves.value == 1 })
+    let undo = Task { @MainActor in try await review.undo() }
+    #expect(await eventually { reviewName(review, "system:S1") == "Speaker 1" })
+    release.finish()
+    try await edit.value
+    await #expect(throws: HolosError.self) { try await undo.value }
+    reviewSetWritable(journal, true)
+    review.beforeEdit = nil
+
+    #expect(try reviewJournal(fixture.session).map(\.action) == [.rename(speakerID: "system:S1", name: "Ann")])
+    #expect(reviewName(review, "system:S1") == "Ann", "The saved change is shown again.")
+    #expect(review.canUndo)
+    try await review.undo()
+    #expect(reviewName(review, "system:S1") == "Speaker 1")
+    #expect(!review.canUndo)
+}
+
+@Test(.timeLimit(.minutes(1))) @MainActor
+func savedChangeThatCannotBeRereadMakesTheReviewReadOnly() async throws {
+    let temp = try TemporaryDirectory("review")
+    defer { temp.remove() }
+    let fixture = try await SessionFixtures.labelledSession(in: temp.url)
+    let session = fixture.session
+    let review = try await reviewOpen(session)
+    // Rereads fail from just before the save: the line is appended, and the labels cannot be reread.
+    review.beforeEdit = { reviewBlockRereads(session, true) }
+    defer { reviewBlockRereads(session, false) }
+
+    let failure = await #expect(throws: HolosError.self) {
+        try await review.apply([.rename(speakerID: "system:S1", name: "Ann")])
+    }
+    review.beforeEdit = nil
+    if case .incomplete? = failure {} else { Issue.record("Expected incomplete, got \(String(describing: failure))") }
+    #expect(try reviewJournal(fixture.session).map(\.action) == [.rename(speakerID: "system:S1", name: "Ann")])
+    #expect(reviewName(review, "system:S1") == "Ann", "The saved change stays shown.")
+    #expect(review.snapshot.projection?.speakers.first { $0.id == "system:S1" }?.name == "Speaker 1")
+    #expect(review.reloadProblem != nil)
+    #expect(!review.isEditable)
+    await #expect(throws: HolosError.self) { try await review.apply([.rename(speakerID: "system:S2", name: "Bob")]) }
+    await #expect(throws: HolosError.self) { try await review.undo() }
+
+    // A reread that fails keeps it read-only.
+    await review.reload()
+    #expect(review.reloadProblem != nil)
+    #expect(reviewName(review, "system:S1") == "Ann")
+
+    // A reread that works shows the saved labels, and the change is the window's again.
+    reviewBlockRereads(session, false)
+    await review.reload()
+    #expect(review.reloadProblem == nil)
+    #expect(review.isEditable)
+    #expect(review.snapshot.projection == review.projection)
+    #expect(reviewName(review, "system:S1") == "Ann")
+    #expect(review.changeCount == 1)
+    #expect(review.canUndo)
+    try await review.undo()
+    #expect(reviewName(review, "system:S1") == "Speaker 1")
+    #expect(!review.canUndo)
+}
+
+// MARK: - People renamed while the review is open
+
+@Test(.timeLimit(.minutes(1))) @MainActor
+func reloadsRereadPeopleBeforeTheLabels() async throws {
+    let temp = try TemporaryDirectory("review")
+    defer { temp.remove() }
+    let store = reviewStore(temp)
+    try store.update { $0.profiles = [SpeakerProfile(id: "JIM", displayName: "Jim")] }
+    let fixture = try await SessionFixtures.labelledSession(in: temp.url)
+    try SessionArchive.withSpeakerLock(at: fixture.session) {
+        try SessionSpeakerStore.writeRecognition(
+            RecognitionResult(runID: fixture.run.id, embeddingModel: DiarizationEngineInfo.fake.embeddingModel,
+                              thresholds: SpeakerRecognizer.defaultThresholds,
+                              matches: [SpeakerMatch(speakerID: "system:S1", profileID: "JIM", profileName: "Jim",
+                                                     distance: 0.1, tier: .likely)]),
+            session: fixture.session)
+    }
+    let review = try await reviewOpen(fixture.session, store: store)
+    #expect(review.speaker("system:S1")?.name == "Jim")
+
+    // The People window renames him; the review rereads (a reload from Meetings).
+    try store.update { $0.profiles = [SpeakerProfile(id: "JIM", displayName: "James")] }
+    await review.reload()
+    #expect(review.knownPeople().map(\.displayName) == ["James"])
+    #expect(review.speaker("system:S1")?.name == "James", "The automatic name follows the people just reread.")
+    #expect(review.speaker("system:S1")?.isAutomatic == true)
+
+    // Renamed again: the labels a saved change brings back are built with the new name too.
+    try store.update { $0.profiles = [SpeakerProfile(id: "JIM", displayName: "Jimmy")] }
+    try await review.apply([.rename(speakerID: "system:S2", name: "Bob")])
+    #expect(review.knownPeople().map(\.displayName) == ["Jimmy"])
+    #expect(review.speaker("system:S1")?.name == "Jimmy")
+    #expect(review.snapshot.projection == review.projection)
+}

@@ -5798,6 +5798,29 @@ public enum SessionAudioComposition {
   transcript.md was kept as edited-20260923-171200.md", "The transcript changed after
   speakers were labelled. [Label Again]", and "Audio deleted; playback is off."
 - Heavy work (snapshot load, edits, export regeneration) runs off the main actor (§1.3).
+- The footer is redrawn on every change of the player's state (loading, ready, off and
+  why), so "Playback is off: …" shows as soon as a first build fails.
+
+**Saving, undo, and rereading** (`ReviewSession`): what the window shows always matches
+the disk.
+
+- An undo takes its change off the undo list at once and puts it back in its place when
+  it saves nothing (a journal that cannot be written, a refusal). An undo of a change
+  that saved two batches and failed after the first is put back whole; the next undo
+  reverts what is still in effect. An undo of a change still saving that fails shows the
+  change again and keeps it undoable.
+- A change whose lines were saved but whose labels could not be reread stays shown, and
+  the review turns read-only with a banner ("The change was saved, but the window could
+  not reread the speaker labels: … [Reread]") until a reread works; that reread finds the
+  change's lines and makes it undoable. The same holds when a relabel, or labels changed
+  elsewhere, cannot be reread.
+- Every reread of the labels (a reload, a refusal, a relabel, a saved change's result)
+  rereads the people first and builds the labels with their names, so automatic names
+  and the name list agree after a rename in People or the CLI.
+- Playback composition: overlaps between chunks are trimmed against the audio actually
+  inserted (`TrackPlacement`), so a chunk that is missing, unreadable, shorter than the
+  manifest says, whose track or time range cannot be loaded, or that AVFoundation
+  refuses leaves only its own time silent and never shortens the next chunk.
 
 **Reviews and maintenance** (`ReviewMaintenance`, one rule for every command on a meeting
 whose review is open or still opening):
@@ -5845,6 +5868,15 @@ whose review is open or still opening):
 | `exportsNotWrittenAtCloseStayPendingForTheNextReview` | exports blocked at close | `exportsPending` after close; the next review rewrites them |
 | `clearingAnAutomaticNameRejectsItsPerson` | empty name on "Jim (auto)" | rename nil + rejectProfile Jim, one batch |
 | `waitAtMostReturnsWithoutAwaitingWorkThatHangs` | work that never ends, 0.1 s | returns false; work not cancelled |
+| `failedUndoKeepsTheChangeUndoable` | two edits; undo with the journal read-only | throws; newest still shown and undone next |
+| `failedUndoOfATwoBatchChangeCanBeFinished` | assign to a person; second revert refused | link reverted; next undo removes the speaker |
+| `failedUndoOfASavingChangeShowsItAgain` | undo while saving; its revert refused | change shown again and undoable |
+| `savedChangeThatCannotBeRereadMakesTheReviewReadOnly` | line saved; rereads fail | change shown; read-only until a reread works; then undoable |
+| `reloadsRereadPeopleBeforeTheLabels` | person renamed; reload; then an edit | automatic name follows the new name each time |
+| `compositionPlanTrimsOnlyAgainstAudioInserted` | missing, 5 s, or 15 s of a 0–30 chunk; 10–40 next | next trimmed by nothing, nothing, 5 s |
+| `compositionDoesNotTrimAfterAMissingOrShortChunk` | files as above | next chunk placed whole at 10 s |
+| `compositionLeavesUnreadableChunksSilent` | garbage and truncated chunks between good ones | only their time silent |
+| `trackerReportsEveryPlaybackStateTransition` | loading → off → other reason → ready | every change reported |
 
 **Manual.** H14 and H20 in §7.
 

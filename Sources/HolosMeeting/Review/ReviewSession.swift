@@ -78,6 +78,9 @@ public struct ReviewWord: Sendable, Equatable {
     public private(set) var exportsPending = false
     /// Why the last export regeneration failed, until one succeeds.
     public private(set) var exportProblem: String?
+    /// The labels on disk may differ from the ones shown (a change was saved, or they changed elsewhere, and they
+    /// could not be reread), so the review is read-only until `reload` rereads them. Nil otherwise.
+    public private(set) var reloadProblem: String?
 
     /// Test seam: awaited off the main actor before each change is written, so a test can hold a save back.
     var beforeEdit: (@Sendable () async -> Void)?
@@ -92,7 +95,13 @@ public struct ReviewWord: Sendable, Equatable {
     private var queue: [Operation] = []
     private var draining = false
     /// Saved batches this window can undo, oldest first; one entry per user change (a change may save two batches).
-    private var undoStack: [[String]] = []
+    /// An undo takes its entry off at once and puts it back in its place when it saves nothing.
+    private var undoStack: [UndoEntry] = []
+    /// `UndoEntry.order` of the next entry.
+    private var undoOrder = 0
+    /// Changes whose lines were saved but whose labels could not be reread (`reloadProblem`), oldest first: still
+    /// shown on the saved labels, and claimed (their batches found, their undo entry made) by the next labels read.
+    private var unreloaded: [Operation] = []
     /// Bumped whenever `snapshot` is replaced.
     private var savedVersion = 0
     /// The last `savedVersion` that brought changes not made by this window's queue (a reload, a relabel, another
@@ -147,9 +156,11 @@ public struct ReviewWord: Sendable, Equatable {
         max(snapshot.manifest.chunks.map(\.end).max() ?? 0, projection.turns.map(\.end).max() ?? 0)
     }
 
-    /// Edits can be made: the labels are usable, no relabel is queued or running, no maintenance command holds the
-    /// review (`pause`), and the window is open.
-    public var isEditable: Bool { !closed && snapshot.projection != nil && !isRelabelling && pauses.isEmpty }
+    /// Edits can be made: the labels are usable and known to be the saved ones (`reloadProblem`), no relabel is queued
+    /// or running, no maintenance command holds the review (`pause`), and the window is open.
+    public var isEditable: Bool {
+        !closed && snapshot.projection != nil && reloadProblem == nil && !isRelabelling && pauses.isEmpty
+    }
 
     /// Why the review is read-only while a maintenance command works on the meeting (`pause`), nil otherwise.
     public var pauseReason: String? { pauses.last?.reason }
@@ -341,10 +352,11 @@ public struct ReviewWord: Sendable, Equatable {
             try await enqueue(.undo(.operation(op)), optimistic: [])
             return
         }
-        guard let batches = undoStack.popLast() else {
+        // Put back (`restoreUndo`) when the undo saves nothing.
+        guard let entry = undoStack.popLast() else {
             throw HolosError.invalidInput("There is no change in this window to undo.")
         }
-        try await enqueue(.undo(.batches(batches)), optimistic: [])
+        try await enqueue(.undo(.saved(entry)), optimistic: [])
     }
 
     /// Links the speaker to a known person or a new one; the person's name becomes the speaker's. Learns the voice
@@ -550,8 +562,9 @@ public struct ReviewWord: Sendable, Equatable {
         return try await Self.detached { try SessionExports.render(format, session: session, profileNames: names) }
     }
 
-    /// Rereads the labels from disk (after a change made elsewhere, such as Delete Audio or a relabel from
-    /// Meetings). Changes still queued in this window that were made on the older labels are refused.
+    /// Rereads the people and then the labels from disk (after a change made elsewhere, such as Delete Audio or a
+    /// relabel from Meetings, or to leave the read-only state of `reloadProblem`). Changes still queued in this window
+    /// that were made on the older labels are refused.
     public func reload() async {
         guard !closed else { return }
         try? await enqueue(.reload, optimistic: [])
@@ -624,11 +637,18 @@ public struct ReviewWord: Sendable, Equatable {
 
     // MARK: - Queue
 
+    /// One change of the window's undo: the batches it saved, newest last. `order` keeps entries in the order their
+    /// changes were saved when one is put back.
+    private struct UndoEntry {
+        let order: Int
+        let batches: [String]
+    }
+
     /// One queued change or task.
     @MainActor private final class Operation {
         enum UndoTarget {
-            /// Saved batches of this window, newest last.
-            case batches([String])
+            /// An entry taken off the undo stack.
+            case saved(UndoEntry)
             /// Whatever an earlier queued change saves.
             case operation(Operation)
         }
@@ -649,6 +669,8 @@ public struct ReviewWord: Sendable, Equatable {
         let kind: Kind
         /// `savedVersion` when the change was made.
         let basis: Int
+        /// The head run of the saved labels when the change was made.
+        let runID: String?
         /// Actions shown at once (turn IDs as the window had them) and their optimistic edit IDs.
         let optimistic: [SpeakerEditAction]
         let optimisticIDs: [String]
@@ -661,11 +683,16 @@ public struct ReviewWord: Sendable, Equatable {
         var finished = false
         /// Batches it saved.
         var batches: [String] = []
+        /// It saved lines that could not be reread: kept in `unreloaded` until labels read from disk show them.
+        var savedUnreloaded = false
+        /// How to find the batches it saved but could not reread (`adopt`).
+        var claims: [([SpeakerEdit]) -> Bool] = []
         var continuation: CheckedContinuation<Void, any Error>?
 
-        init(kind: Kind, basis: Int, optimistic: [SpeakerEditAction]) {
+        init(kind: Kind, basis: Int, runID: String?, optimistic: [SpeakerEditAction]) {
             self.kind = kind
             self.basis = basis
+            self.runID = runID
             self.optimistic = optimistic
             optimisticIDs = optimistic.map { _ in UUID().uuidString }
         }
@@ -686,7 +713,7 @@ public struct ReviewWord: Sendable, Equatable {
     }
 
     private func enqueue(_ kind: Operation.Kind, optimistic: [SpeakerEditAction]) async throws {
-        let op = Operation(kind: kind, basis: savedVersion, optimistic: optimistic)
+        let op = Operation(kind: kind, basis: savedVersion, runID: snapshot.run?.id, optimistic: optimistic)
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, any Error>) in
             op.continuation = continuation
             queue.append(op)
@@ -716,13 +743,49 @@ public struct ReviewWord: Sendable, Equatable {
                 result = .failure(error)
             }
             queue.removeAll { $0 === op }
-            if op.isUndoable, !op.undone, !op.batches.isEmpty { undoStack.append(op.batches) }
+            if op.savedUnreloaded {
+                // Still shown; its undo entry is made once labels read from disk show what it saved (`adopt`).
+                unreloaded.append(op)
+            } else if op.isUndoable, !op.undone, !op.batches.isEmpty {
+                pushUndo(op.batches)
+            }
+            if case .failure(let error) = result { restoreUndo(after: op, error: error) }
             op.finish(result)
             recomputeProjection()
             updateActivity()
             notify()
         }
         draining = false
+    }
+
+    private func pushUndo(_ batches: [String]) {
+        undoStack.append(UndoEntry(order: undoOrder, batches: batches))
+        undoOrder += 1
+    }
+
+    /// An undo that failed: what it was to take back is undoable again, unless it saved its reverts (`incomplete`:
+    /// the reverts are on disk) or the labels were replaced by a new labelling meanwhile (undo does not reach past
+    /// one). A multi-batch entry is put back whole; batches it did revert are no longer in effect and are skipped by
+    /// the next undo.
+    private func restoreUndo(after op: Operation, error: any Error) {
+        guard case .undo(let target) = op.kind, !op.savedUnreloaded, !Self.isIncomplete(error) else { return }
+        switch target {
+        case .saved(let entry):
+            guard snapshot.run?.id == op.runID else { return }
+            let index = undoStack.firstIndex { $0.order > entry.order } ?? undoStack.endIndex
+            undoStack.insert(entry, at: index)
+        case .operation(let earlier):
+            // The earlier change stays in effect on disk, so it is shown again and can be undone again.
+            earlier.undone = false
+            guard !earlier.savedUnreloaded, !earlier.batches.isEmpty, snapshot.run?.id == op.runID else { return }
+            pushUndo(earlier.batches)
+        }
+        Self.log.info("Session \(self.sessionID, privacy: .public): an undo failed; the change can be undone again")
+    }
+
+    private nonisolated static func isIncomplete(_ error: any Error) -> Bool {
+        if case .incomplete? = error as? HolosError { return true }
+        return false
     }
 
     private func run(_ op: Operation) async throws {
@@ -772,8 +835,12 @@ public struct ReviewWord: Sendable, Equatable {
         case .undo(let target):
             let batches: [String]
             switch target {
-            case .batches(let saved): batches = saved
-            case .operation(let earlier): batches = earlier.batches
+            case .saved(let entry): batches = entry.batches
+            case .operation(let earlier):
+                // Its lines are saved but not reread yet, so which lines to revert is not known: refused, and the
+                // change is shown again (`restoreUndo`).
+                if earlier.savedUnreloaded { throw HolosError.unavailable(reloadProblem ?? Self.notReread) }
+                batches = earlier.batches
             }
             for batch in batches.reversed() {
                 try await undoBatch(batch, op: op)
@@ -781,9 +848,8 @@ public struct ReviewWord: Sendable, Equatable {
         case .relabel(let arguments):
             try await runRelabel(arguments)
         case .reload:
-            let fresh = try await loadSnapshot()
-            await reloadPeople()
-            adopt(fresh, op: nil, matching: nil)
+            // `loadSnapshot` rereads the people first, so the labels are built with their current names.
+            adopt(try await loadSnapshot(), op: nil, matching: nil)
         case .exports:
             try await regenerateExports()
         }
@@ -791,9 +857,11 @@ public struct ReviewWord: Sendable, Equatable {
 
     // MARK: - Saving
 
-    /// Saves `actions` with `SpeakerEditor` on the saved labels, then adopts the result.
+    /// Saves `actions` with `SpeakerEditor` on the saved labels, then adopts the result (built with the people's
+    /// names as reread just before).
     private func saveEdit(_ actions: [SpeakerEditAction], op: Operation,
                           matching: @escaping ([SpeakerEdit]) -> Bool) async throws {
+        await reloadPeople()
         let view = savedProjection
         let session = self.session
         let names = profileNames
@@ -851,7 +919,14 @@ public struct ReviewWord: Sendable, Equatable {
                                matching: @escaping ([SpeakerEdit]) -> Bool) async throws {
         if error is CancellationError { throw error }
         if case .incomplete? = error as? HolosError {
-            if let fresh = try? await loadSnapshot() { adopt(fresh, op: op, matching: matching) }
+            do {
+                adopt(try await loadSnapshot(), op: op, matching: matching)
+            } catch let reread {
+                // The lines are saved but cannot be shown as saved: the change stays shown and the review is
+                // read-only until the labels are reread.
+                holdUnreread(matching: matching, problem: "The change was saved, but the window could not reread "
+                             + "the speaker labels: \(reread.localizedDescription)")
+            }
             changesSaved(exportsWritten: false)
             Self.log.error("Session \(self.sessionID, privacy: .public): a change was saved, then failed (\(ProcessSpawner.logCategory(error), privacy: .public))")
             if refreshSamples, let store = profiles {
@@ -867,18 +942,47 @@ public struct ReviewWord: Sendable, Equatable {
             throw error
         }
         Self.log.notice("Session \(self.sessionID, privacy: .public): a change was refused (\(ProcessSpawner.logCategory(error), privacy: .public)); reloading")
-        if let fresh = try? await loadSnapshot() {
-            adopt(fresh, op: nil, matching: nil, external: true)
-        }
+        let stale: Bool
         if case .unavailable(let message)? = error as? HolosError, message == SpeakerEditor.changedMessage {
-            throw HolosError.unavailable(Self.changedElsewhere)
+            stale = true
+        } else {
+            stale = false
         }
+        do {
+            adopt(try await loadSnapshot(), op: nil, matching: nil, external: true)
+        } catch let reread where stale {
+            // Known to be out of date and not rereadable: nothing more is saved on these labels.
+            holdUnreread(matching: nil, problem: "The speaker labels changed outside this window, and the window "
+                         + "could not reread them: \(reread.localizedDescription)")
+        } catch {
+            // Nothing was saved and nothing says the labels changed: the window keeps showing them.
+            Self.log.error("Session \(self.sessionID, privacy: .public): labels not reread after a refusal (\(ProcessSpawner.logCategory(error), privacy: .public))")
+        }
+        if stale { throw HolosError.unavailable(Self.changedElsewhere) }
         throw error
     }
+
+    /// The labels on disk may differ from the ones shown and could not be reread: the review is read-only
+    /// (`reloadProblem`) until labels are read from disk again. `matching`: the running change saved lines that
+    /// batch finds; it stays shown (`unreloaded`) until then.
+    private func holdUnreread(matching: (([SpeakerEdit]) -> Bool)?, problem: String) {
+        if let matching, let running = queue.first, running.started {
+            running.savedUnreloaded = true
+            running.claims.append(matching)
+        }
+        reloadProblem = problem + " " + Self.rereadSuffix
+        notify()
+        Self.log.error("Session \(self.sessionID, privacy: .public): labels could not be reread; review read-only until they are")
+    }
+
+    /// Follows `reloadProblem`.
+    public nonisolated static let rereadSuffix = "The review is read-only until they are reread."
+    private static let notReread = "The speaker labels could not be reread. " + rereadSuffix
 
     /// Reverts one saved batch of this window: `undoLast` when it is the newest batch, else reverts of its lines in
     /// effect (refused when that would change other edits).
     private func undoBatch(_ batch: String, op: Operation) async throws {
+        await reloadPeople()
         let view = savedProjection
         let lines = snapshot.journal.edits
             .filter { $0.baseRunID == view.runID && ($0.batchID ?? $0.id) == batch }.map(\.id)
@@ -941,44 +1045,71 @@ public struct ReviewWord: Sendable, Equatable {
         }
     }
 
-    /// Replaces the saved labels with `fresh`. The window's own batch (the newest new batch `matching` accepts) is
-    /// recorded on `op`, with the saved IDs of turns its splits made; any other new line, or a new head run, is a
-    /// change made elsewhere. Returns whether the window's batch was found.
+    /// Replaces the saved labels with `fresh` (read from disk, so `reloadProblem` ends). The window's own batch (the
+    /// newest new batch `matching` accepts) is recorded on `op`, with the saved IDs of turns its splits made, and so
+    /// are the batches of changes saved but not reread (`unreloaded`), which get their undo entries here; any other
+    /// new line, or a new head run, is a change made elsewhere. Returns whether the window's batch was found.
     @discardableResult
     private func adopt(_ fresh: SpeakerSessionSnapshot, op: Operation?, matching: (([SpeakerEdit]) -> Bool)?,
                        external forced: Bool = false) -> Bool {
         let known = Set(snapshot.journal.edits.map(\.id))
         let added = fresh.journal.edits.filter { !known.contains($0.id) }
-        var ours: [SpeakerEdit] = []
-        if let matching {
-            var groups: [[SpeakerEdit]] = []
-            var keys: [String] = []
-            for edit in added {
-                let key = edit.batchID ?? edit.id
-                if let index = keys.firstIndex(of: key) {
-                    groups[index].append(edit)
-                } else {
-                    keys.append(key)
-                    groups.append([edit])
-                }
-            }
-            // The window writes with source "app"; `VoiceProfileService` names its own ("app" inside Holos.app).
-            let sources: Set<String> = [Self.source, VoiceProfileService.editSource]
-            if let batch = groups.last(where: { $0.allSatisfy { sources.contains($0.source) } && matching($0) }) {
-                ours = batch
-                if let op, let first = batch.first {
-                    op.batches.append(first.batchID ?? first.id)
-                    recordSplits(of: op, lines: batch)
-                }
+        var groups: [[SpeakerEdit]] = []
+        var keys: [String] = []
+        for edit in added {
+            let key = edit.batchID ?? edit.id
+            if let index = keys.firstIndex(of: key) {
+                groups[index].append(edit)
+            } else {
+                keys.append(key)
+                groups.append([edit])
             }
         }
+        // The window writes with source "app"; `VoiceProfileService` names its own ("app" inside Holos.app).
+        let sources: Set<String> = [Self.source, VoiceProfileService.editSource]
+        var claimed = Set<Int>()
+        /// The newest unclaimed group `matching` accepts, claimed.
+        func claim(_ matching: ([SpeakerEdit]) -> Bool) -> [SpeakerEdit]? {
+            guard let index = groups.indices.last(where: { index in
+                !claimed.contains(index) && groups[index].allSatisfy { sources.contains($0.source) }
+                    && matching(groups[index])
+            }) else { return nil }
+            claimed.insert(index)
+            return groups[index]
+        }
+        let rereadOps = unreloaded
+        unreloaded.removeAll()
+        for pending in rereadOps {
+            pending.savedUnreloaded = false
+            for matching in pending.claims {
+                guard let batch = claim(matching), let first = batch.first else { continue }
+                pending.batches.append(first.batchID ?? first.id)
+                recordSplits(of: pending, lines: batch)
+            }
+            pending.claims.removeAll()
+        }
+        var ours: [SpeakerEdit] = []
+        if let matching, let batch = claim(matching) {
+            ours = batch
+            if let op, let first = batch.first {
+                op.batches.append(first.batchID ?? first.id)
+                recordSplits(of: op, lines: batch)
+            }
+        }
+        let windowLines = claimed.reduce(0) { $0 + groups[$1].count }
         if let running = queue.first, running.started { running.superseded = true }
         let headChanged = fresh.run?.id != snapshot.run?.id
-        let external = forced || headChanged || added.count > ours.count
+        let external = forced || headChanged || added.count > windowLines
         let transcriptChanged = fresh.transcript.id != snapshot.transcript.id
         snapshot = fresh
         if let projection = fresh.projection { savedProjection = projection }
         savedVersion += 1
+        reloadProblem = nil
+        if !headChanged {
+            for pending in rereadOps where pending.isUndoable && !pending.undone && !pending.batches.isEmpty {
+                pushUndo(pending.batches)
+            }
+        }
         if transcriptChanged {
             segments = Self.segmentIndex(fresh.transcript)
             textCache.removeAll()
@@ -992,7 +1123,7 @@ public struct ReviewWord: Sendable, Equatable {
         if external {
             externalVersion = savedVersion
             refuseStaleQueuedChanges()
-            Self.log.info("Session \(self.sessionID, privacy: .public): labels changed elsewhere (\(added.count - ours.count, privacy: .public) other lines, head changed: \(headChanged, privacy: .public))")
+            Self.log.info("Session \(self.sessionID, privacy: .public): labels changed elsewhere (\(added.count - windowLines, privacy: .public) other lines, head changed: \(headChanged, privacy: .public))")
         }
         recomputeProjection()
         notify()
@@ -1049,8 +1180,12 @@ public struct ReviewWord: Sendable, Equatable {
         }
         let message = Self.commandMessage(output: output, errors: errors)
         Self.log.notice("Session \(self.sessionID, privacy: .public): relabel ended with \(code, privacy: .public)")
-        if let fresh = try? await loadSnapshot() {
-            adopt(fresh, op: nil, matching: nil, external: true)
+        do {
+            adopt(try await loadSnapshot(), op: nil, matching: nil, external: true)
+        } catch {
+            // The command may have labelled the meeting again: nothing more is saved on the labels shown.
+            holdUnreread(matching: nil, problem: "The window could not reread the speaker labels after labelling "
+                         + "them again: \(error.localizedDescription)")
         }
         // 0 and 3 rewrote the exports from the labels now saved; any other code wrote none, so a change of this
         // window still waiting for its exports keeps waiting (they follow `exportDelay` later, or at `close`).
@@ -1142,10 +1277,14 @@ public struct ReviewWord: Sendable, Equatable {
     private func recomputeProjection() {
         var display = savedProjection
         var owners: [String: ObjectIdentifier] = [:]
-        for op in queue {
+        for op in unreloaded + queue {
             let owner = ObjectIdentifier(op)
             for (action, id) in displayActions(op) {
-                display = display.applying(action, editID: id)
+                let next = display.applying(action, editID: id)
+                // A change saved but not reread may be partly shown already (a first batch that was reread): what
+                // the saved labels already show is not applied twice.
+                if op.savedUnreloaded, next.staleEdits.contains(where: { $0.editID == id }) { continue }
+                display = next
                 owners[id] = owner
             }
         }
@@ -1156,10 +1295,12 @@ public struct ReviewWord: Sendable, Equatable {
     /// What a queued change shows: its actions (with turn IDs of saved splits resolved), nothing once undone, and for
     /// an undo the reverts of the batches it takes back.
     private func displayActions(_ op: Operation) -> [(SpeakerEditAction, String)] {
-        guard !op.superseded else { return [] }
+        // A change saved but not reread is shown until labels read from disk show it, even after an earlier batch
+        // of it was reread.
+        guard !op.superseded || op.savedUnreloaded else { return [] }
         switch op.kind {
-        case .undo(.batches(let batches)):
-            return reverts(of: batches).map { ($0, UUID().uuidString) }
+        case .undo(.saved(let entry)):
+            return reverts(of: entry.batches).map { ($0, UUID().uuidString) }
         case .undo(.operation(let earlier)):
             // Until the earlier change is saved its effect is simply not shown (it is `undone`).
             guard earlier.finished || earlier.superseded else { return [] }
@@ -1267,6 +1408,7 @@ public struct ReviewWord: Sendable, Equatable {
         guard snapshot.projection != nil else {
             throw HolosError.unavailable(snapshot.runProblem ?? "This meeting's speaker labels cannot be used.")
         }
+        if let reloadProblem { throw HolosError.unavailable(reloadProblem) }
         guard !isRelabelling else {
             throw HolosError.unavailable("Holos is labelling this meeting's speakers again; wait until it finishes.")
         }
@@ -1307,10 +1449,19 @@ public struct ReviewWord: Sendable, Equatable {
 
     private func notify() { onChange?() }
 
+    /// Rereads the people, then the labels built with their names, in one step off the main actor (every reload of
+    /// the labels goes through here). The window's people are replaced with them, so the labels adopted next and the
+    /// names the window offers agree; when reading fails, neither changes.
     private func loadSnapshot() async throws -> SpeakerSessionSnapshot {
         let session = self.session
-        let names = profileNames
-        return try await Self.detached { try SpeakerSessionSnapshot.load(session: session, profileNames: names) }
+        let store = profiles
+        let loaded = try await Self.detached { try Self.load(session: session, profiles: store) }
+        if store != nil {
+            people = loaded.people
+            profileNames = loaded.profileNames
+            rememberVoices = loaded.rememberVoices
+        }
+        return loaded.snapshot
     }
 
     private func reloadPeople() async {
