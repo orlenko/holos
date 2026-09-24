@@ -37,6 +37,7 @@ public struct AlignedWord: Sendable, Equatable {
 /// 4. Flicker smoothing (`smoothFlicker`).
 /// 5. Turns (`buildTurns`).
 /// 6. `channel` policy: every word gets the channel speaker, no overlap, score 1. `skipped`: no words.
+///    `assignWords` applies it to words and `buildTurns(_:parameters:policy:)` to turns (clusterID nil).
 public enum SpeakerAlignment {
     /// `estimateOffset` returns 0 with fewer measured words than this.
     static let minimumOffsetWords = 50
@@ -60,10 +61,16 @@ public enum SpeakerAlignment {
                     parameters: parameters)
     }
 
-    /// Step 5. Turns get placeholder IDs; the run builder renumbers them. A turn's `clusterID` is its label;
-    /// the run builder clears it for channel tracks.
-    public static func buildTurns(_ words: [AlignedWord], parameters: AlignmentParameters) -> [SpeakerTurn] {
-        buildTurns(words, parameters: parameters, channel: false)
+    /// Step 5, plus step 6 for `policy`. Turns get placeholder IDs; the run builder renumbers them.
+    /// `.diarized` (the default): a turn's `clusterID` is its label. `.channel`: `clusterID` nil, no overlap,
+    /// score 1. `.skipped`: no turns. Pass the policy the words were assigned with.
+    public static func buildTurns(_ words: [AlignedWord], parameters: AlignmentParameters,
+                                  policy: TrackPolicy = .diarized) -> [SpeakerTurn] {
+        switch policy {
+        case .diarized: buildTurns(words, parameters: parameters, channel: false)
+        case .channel: buildTurns(words, parameters: parameters, channel: true)
+        case .skipped: []
+        }
     }
 
     // MARK: - Step 0: offset
@@ -89,7 +96,8 @@ public enum SpeakerAlignment {
         var bestCoverage = base
         // Candidates in order of increasing |offset|; only a strictly larger coverage replaces the best,
         // so ties keep the smallest |offset|.
-        let steps = min(Int((search / step + 1e-9).rounded(.down)), 100_000)
+        // Capped while still a Double: a tiny step would otherwise overflow the conversion to Int.
+        let steps = Int(min((search / step + 1e-9).rounded(.down), 100_000))
         if steps > 0 {
             for index in 1...steps {
                 for sign in [-1.0, 1.0] {
@@ -283,7 +291,8 @@ public enum SpeakerAlignment {
 
     // MARK: - Step 5: turns
 
-    static func buildTurns(_ words: [AlignedWord], parameters: AlignmentParameters, channel: Bool) -> [SpeakerTurn] {
+    private static func buildTurns(_ words: [AlignedWord], parameters: AlignmentParameters,
+                                   channel: Bool) -> [SpeakerTurn] {
         var turns: [SpeakerTurn] = []
         var group: [AlignedWord] = []
         var groupEnd = -Double.infinity

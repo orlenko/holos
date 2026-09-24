@@ -262,6 +262,22 @@ private func turns(_ segments: [TranscriptSegment], _ diarization: TrackDiarizat
     #expect(skipped.isEmpty)
 }
 
+@Test func channelPolicyTurnsHaveNoClusterAndFullScore() {
+    // Includes a zero-length word, whose covered share would be 0/0 without step 6.
+    let segment = seg(0, 1, ("a", 0, 0.4), ("b", 0.5, 0.5), ("c", 0.6, 1.0), track: "mic")
+    let policy = TrackPolicy.channel(speakerID: "mic:me", displayName: "Me")
+    let words = SpeakerAlignment.assignWords(segments: [segment], track: "mic",
+                                             diarization: TrackDiarization(track: "mic", policy: policy),
+                                             parameters: .v1)
+    let built = SpeakerAlignment.buildTurns(words, parameters: .v1, policy: policy)
+    #expect(built.count == 1)
+    #expect(built.first?.speakerID == "mic:me")
+    #expect(built.first?.clusterID == nil)
+    #expect(built.first?.overlap == false)
+    #expect(built.first?.assignmentScore == 1)
+    #expect(SpeakerAlignment.buildTurns(words, parameters: .v1, policy: .skipped(reason: "no audio")).isEmpty)
+}
+
 // MARK: - Offset
 
 /// 200 measured words in 40 speech intervals of 5 words ([7k, 7k + 4.8)), speakers alternating; the engine's
@@ -325,4 +341,15 @@ private func shiftedSpeech(intervals: Int, shift: Double) -> (segments: [Transcr
     #expect(SpeakerAlignment.estimateOffset(
         segments: shifted.segments, track: "system",
         diarization: DiarizationNormalizer.normalize(shifted.output, track: "system"), parameters: disabled) == 0)
+}
+
+@Test func offsetWithTinyStepDoesNotTrap() {
+    // search / step overflows Int; the step count is capped before the conversion.
+    let speech = shiftedSpeech(intervals: 12, shift: 0.2)   // 60 measured words
+    var tiny = AlignmentParameters.v1
+    tiny.offsetStepSeconds = 1e-300
+    let offset = SpeakerAlignment.estimateOffset(
+        segments: speech.segments, track: "system",
+        diarization: DiarizationNormalizer.normalize(speech.output, track: "system"), parameters: tiny)
+    #expect(offset.isFinite)
 }

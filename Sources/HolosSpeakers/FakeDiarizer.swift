@@ -46,11 +46,15 @@ public struct FakeDiarizer: SpeakerDiarizer {
             axis[index % dimension] = 1
             output.centroids[speaker] = FloatVector(axis)
         }
+        // The turn count comes from one division with a tolerance, so a duration that is a multiple of
+        // `turnSeconds` in decimal (2.1 / 0.7) gets no extra sliver turn from floating-point sums. The last
+        // turn ends at `duration`.
+        let count = max(1, (duration / turnSeconds - 1e-9).rounded(.up))
         var turn = 0
-        while Double(turn) * turnSeconds < duration {
+        while Double(turn) < count {
             let speaker = speakers[turn % speakers.count]
             let start = Double(turn) * turnSeconds
-            let end = min(Double(turn + 1) * turnSeconds, duration)
+            let end = Double(turn + 1) < count ? Double(turn + 1) * turnSeconds : duration
             output.segments.append(RawDiarizationSegment(speaker: speaker, start: start, end: end))
             if let centroid = output.centroids[speaker] {
                 output.windows.append(EmbeddingWindow(speaker: speaker, start: start, end: end, vector: centroid))

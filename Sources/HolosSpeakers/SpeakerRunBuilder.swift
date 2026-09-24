@@ -68,7 +68,7 @@ public enum SpeakerRunBuilder {
                 let words = SpeakerAlignment.assignWords(segments: transcript.segments, track: input.track,
                                                          includeUntracked: includeUntracked,
                                                          diarization: diarization, parameters: parameters)
-                turns += SpeakerAlignment.buildTurns(words, parameters: parameters, channel: true)
+                turns += SpeakerAlignment.buildTurns(words, parameters: parameters, policy: input.policy)
                 trackDiarizations.append(diarization)
                 if !channelSpeakers.contains(where: { $0.id == speakerID }) {
                     channelSpeakers.append((speakerID, displayName))
@@ -86,7 +86,7 @@ public enum SpeakerRunBuilder {
                 let words = SpeakerAlignment.assignWords(segments: transcript.segments, track: input.track,
                                                          includeUntracked: includeUntracked,
                                                          diarization: diarization, parameters: parameters)
-                turns += SpeakerAlignment.buildTurns(words, parameters: parameters, channel: false)
+                turns += SpeakerAlignment.buildTurns(words, parameters: parameters, policy: input.policy)
                 trackDiarizations.append(diarization)
                 for window in shifted.windows {
                     let clusterID = DiarizationNormalizer.clusterID(track: input.track, speaker: window.speaker)

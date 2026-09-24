@@ -39,6 +39,14 @@ private final class ProgressLog: Sendable {
     #expect(FakeDiarizer.alternating(speakers: [], turnSeconds: 5, duration: 20).segments.isEmpty)
 }
 
+@Test func fakeAlternatingOutputHasNoSliverTurn() {
+    // 3 × 0.7 is 2.0999999999999996 in binary floating point, just under 2.1.
+    let output = FakeDiarizer.alternating(speakers: ["S1", "S2"], turnSeconds: 0.7, duration: 2.1)
+    #expect(output.segments.map(\.speaker) == ["S1", "S2", "S1"])
+    #expect(output.segments.last?.end == 2.1)
+    #expect(output.windows.count == 3)
+}
+
 @Test func fakeDiarizerReturnsTrackOutputAndReportsProgress() async throws {
     let system = FakeDiarizer.alternating(speakers: ["S1"], turnSeconds: 5, duration: 5)
     let diarizer = FakeDiarizer(outputs: ["system": system])
