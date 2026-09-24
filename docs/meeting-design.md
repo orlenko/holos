@@ -3071,9 +3071,10 @@ Application order in `make`:
    `channelAssumption`; else `diarizer`.
 
 Fingerprints use only state derived from the run and the journal (never recognition).
-This is the format implemented in PR5b (`SpeakerProjection.State.fingerprint(for:)`); the
-encoding is injective per action and self-describing, so a stale edit can never compare
-equal to the current state:
+This is the format implemented in PR5b (`SpeakerProjection.State.fingerprint(for:)`). The
+raw encoding is injective per action and self-describing, so an unhashed stale fingerprint
+never compares equal to the current state; hashed fingerprints (below) are
+collision-resistant rather than injective:
 
 | Action | Fingerprint |
 |---|---|
@@ -3098,7 +3099,9 @@ equal to the current state:
   so a reassignment or merge made before another window split a turn is refused.
 - A fingerprint longer than 256 Unicode scalars is replaced by
   `fp1:sha256:<64 hex digits of the SHA-256 of its UTF-8 bytes>`, which can never equal an
-  unhashed fingerprint.
+  unhashed fingerprint. Two different long states could in principle hash alike; with
+  SHA-256 that is negligible, so hashed fingerprints are collision-resistant, not injective.
+  The property test samples states and does not prove global injectivity.
 
 Every action that changes speaker assignment, turn boundaries, names, links, rejections,
 or enrollment therefore carries all the state it reads or discards. Tests (PR5b):
