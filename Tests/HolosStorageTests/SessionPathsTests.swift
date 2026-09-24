@@ -19,6 +19,7 @@ import Testing
         (SessionPaths.transcripts(session), "transcripts"),
         (SessionPaths.transcript("T1", in: session), "transcripts/T1.json"),
         (SessionPaths.transcriptPointer(session), "transcripts/current.json"),
+        (SessionPaths.pendingTranscript(session), "transcripts/current.pending"),
         (SessionPaths.runs(session), "speakers/runs"),
         (SessionPaths.run("R1", in: session), "speakers/runs/R1.json"),
         (SessionPaths.head(session), "speakers/head.json"),

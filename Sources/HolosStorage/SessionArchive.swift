@@ -1,6 +1,4 @@
 import Foundation
-import CryptoKit
-import AVFoundation
 import Darwin
 import os
 import HolosCore
@@ -59,8 +57,8 @@ public struct EventJournal: Sendable, Equatable {
     public var events: [ArchiveEvent]
     /// The file does not end with "\n"; the partial last line was skipped.
     public var tornTail: Bool
-    /// Complete lines skipped because they do not decode, or because their sequence is lower than the
-    /// previous readable event's.
+    /// Complete lines skipped because they do not decode, because their sequence is outside
+    /// 1...`Int.max - 1`, or because their sequence is lower than the previous readable event's.
     public var unreadableLines: Int
 
     public init(events: [ArchiveEvent] = [], tornTail: Bool = false, unreadableLines: Int = 0) {
@@ -107,19 +105,32 @@ public actor SessionArchive {
         MeetingEventKind.captureStopped, MeetingEventKind.archiveRecovered, MeetingEventKind.transcriptRebuilt,
     ]
     private static let maxJournalBytes = 1 << 30
+    /// The highest event sequence a reader accepts or a writer assigns, so "last + 1" never overflows.
+    static let maxEventSequence = Int.max - 1
     /// The longest group-commit interval; also keeps `Duration.seconds` from overflowing.
     static let maxJournalSyncInterval: Double = 3_600
     private static let maxTranscriptBytes = 256 << 20
+    private static let maxManifestBytes = 256 << 20
 
     private var manifest: SessionManifest
     private var nextSequence: Int
     private var lockFD: Int32
     private var closed = false
 
+    // Group commit keeps one invariant after every transition (append, immediate sync, `setJournalSync`, a
+    // flush firing or failing, `finish`): a dirty, open, interval-mode journal has exactly one pending flush, due
+    // one interval after `lastJournalSync` (or after `journalFlushFailedAt`, once a flush has failed since);
+    // any other journal has none. Every successful sync goes through `journalSynced(at:)`, which drops the
+    // pending flush.
     private var journalSync: JournalSync = .everyEvent
     private var lastJournalSync: ContinuousClock.Instant?
     private var journalDirty = false
-    private var journalFlushScheduled = false
+    private var journalFlushTask: Task<Void, Never>?
+    private var journalFlushDeadline: ContinuousClock.Instant?
+    /// When the last scheduled flush failed; the retry is due one interval later. Cleared by a successful sync.
+    private var journalFlushFailedAt: ContinuousClock.Instant?
+    /// Bumped whenever a flush is scheduled or cancelled; a flush runs only for the current generation.
+    private var journalFlushGeneration: UInt64 = 0
     /// Set by `openForMaintenance` when the journal ends with a partial line; repaired before the first append.
     private var journalNeedsRepair: Bool
 
@@ -149,20 +160,24 @@ public actor SessionArchive {
             if code == EEXIST { throw HolosError.invalidInput("A session with ID \(id) already exists.") }
             throw HolosError.io("Cannot create the session folder: \(AtomicFile.errnoText(code)).")
         }
-        guard chmod(directory.path, 0o700) == 0 else {
+        // The folders inside are made relative to the session folder's descriptor (`mkdirat`, O_NOFOLLOW, 0700),
+        // never by path. A failed creation leaves its distinct directory for inspection; never delete user data.
+        let sessionFD = try SessionLockFile.openSessionFolder(directory)
+        defer { Darwin.close(sessionFD) }
+        guard fchmod(sessionFD, 0o700) == 0 else {
             throw HolosError.io("Cannot make session directory private.")
         }
-        // A failed creation leaves its distinct directory for inspection; never delete user data.
-        for path in ["audio/mic", "audio/system", "transcripts", "exports"] {
-            let child = directory.appendingPathComponent(path, isDirectory: true)
-            try FileManager.default.createDirectory(at: child, withIntermediateDirectories: true)
-            guard chmod(child.path, 0o700) == 0 else {
-                throw HolosError.io("Cannot make archive directory private.")
+        for path in [["audio", "mic"], ["audio", "system"], ["transcripts"], ["exports"]] {
+            guard let fd = try AtomicFile.openFolder(path, in: sessionFD, baseURL: directory, create: true,
+                                                     syncParents: false) else {
+                throw HolosError.io("Cannot create archive directory \(path.joined(separator: "/")).")
             }
+            Darwin.close(fd)
         }
-        guard chmod(directory.appendingPathComponent("audio").path, 0o700) == 0 else {
-            throw HolosError.io("Cannot make audio directory private.")
-        }
+        // Publish the new folders durably: audio/ holds mic/ and system/, and the root holds the session folder.
+        // The session folder itself is fsync'd once its files exist.
+        try AtomicFile.syncDirectory(directory.appendingPathComponent("audio", isDirectory: true))
+        try AtomicFile.syncDirectory(root)
         let fd = try acquireLock(directory)
         do {
             let manifest = SessionManifest(id: id, name: name, createdAt: Date(),
@@ -179,14 +194,16 @@ public actor SessionArchive {
     }
 
     /// Reopens an unfinished archive after a process exits; refuses a second active writer.
+    /// The manifest and journal are read only once the writer lock is held (retry 1 s), so a writer that
+    /// registered chunks or finished while this call waited is never overwritten with an older manifest.
     public static func open(at directory: URL) throws -> SessionArchive {
         try requireSafeLayout(directory)
-        let manifest = try readManifest(at: directory)
-        guard manifest.status == ArchiveStatus.recording else {
-            throw HolosError.invalidInput("Only a recording archive can be reopened.")
-        }
         let fd = try acquireLock(directory)
         do {
+            let manifest = try readManifest(at: directory)
+            guard manifest.status == ArchiveStatus.recording else {
+                throw HolosError.invalidInput("Only a recording archive can be reopened.")
+            }
             let report = try inspectRecovery(at: directory)
             guard report.manifestError == nil, !report.tornFinalJournalLine else {
                 throw HolosError.incomplete("Repair the journal before reopening this archive.")
@@ -205,7 +222,9 @@ public actor SessionArchive {
     /// (truncates to the last newline, keeping a backup) before the first append.
     public static func openForMaintenance(at directory: URL, lease: ProcessingLease) throws -> SessionArchive {
         try requireMaintenanceLayout(directory)
-        try lease.require(for: directory)
+        // The lease stays locked, even across a concurrent `release()`, until the writer lock is held or refused.
+        try lease.beginUse(for: directory)
+        defer { lease.endUse() }
         let fd = try acquireLock(directory)
         do {
             let manifest = try readManifest(at: directory)
@@ -246,11 +265,16 @@ public actor SessionArchive {
 
     /// Chooses when `events.jsonl` is fsync'd. An interval that is not a positive number means `everyEvent`;
     /// one longer than `maxJournalSyncInterval` is shortened to it.
+    /// A change replaces any pending flush, so the new interval sets the next deadline.
     public func setJournalSync(_ mode: JournalSync) {
         if case .interval(let seconds) = mode, seconds.isFinite, seconds > 0 {
-            journalSync = .interval(seconds: min(seconds, Self.maxJournalSyncInterval))
+            let updated = JournalSync.interval(seconds: min(seconds, Self.maxJournalSyncInterval))
+            guard updated != journalSync else { return }
+            journalSync = updated
+            rescheduleJournalFlush()
         } else {
             journalSync = .everyEvent
+            cancelJournalFlush()
             if journalDirty, !closed {
                 do { try syncJournal() } catch {
                     Self.log.error("Cannot sync the event journal: \(String(describing: error), privacy: .public)")
@@ -263,6 +287,9 @@ public actor SessionArchive {
     public func recordEvent(kind: String, details: [String: String]) throws {
         try ensureOpen()
         guard !kind.isEmpty else { throw HolosError.invalidInput("Event kind is empty.") }
+        guard nextSequence <= Self.maxEventSequence else {
+            throw HolosError.incomplete("The event journal has no sequence numbers left.")
+        }
         try repairJournalIfNeeded()
         let event = ArchiveEvent(sequence: nextSequence, at: Date(), kind: kind, details: details)
         let line = try HolosJSON.line(event)
@@ -276,52 +303,73 @@ public actor SessionArchive {
             let due = lastJournalSync.map { $0.duration(to: now) >= interval } ?? true
             if due || Self.immediateSyncKinds.contains(kind) {
                 try AtomicFile.append(line, to: journal, sync: true)
-                journalDirty = false
-                lastJournalSync = now
+                journalSynced(at: now)
             } else {
                 try AtomicFile.append(line, to: journal, sync: false)
                 journalDirty = true
-                let elapsed = lastJournalSync.map { $0.duration(to: now) } ?? .zero
-                scheduleJournalFlush(after: interval - elapsed)
+                // A flush already pending keeps its deadline: nothing it depends on changed.
+                if journalFlushTask == nil { rescheduleJournalFlush() }
             }
         }
         nextSequence += 1
     }
 
-    /// Saves an immutable transcript revision, then points `transcripts/current.json` at it.
-    /// `writeLegacyExports: false` skips the speaker-less `exports/transcript.{txt,md}` (new code passes false).
+    /// Saves an immutable transcript revision and the legacy exports, then points `transcripts/current.json`
+    /// at it. `writeLegacyExports: false` skips the speaker-less `exports/transcript.{txt,md}` (new code passes
+    /// false).
     public func saveTranscript(_ transcript: Transcript, writeLegacyExports: Bool = true) throws {
         try ensureOpen()
-        guard Self.validToken(transcript.id), transcript.id.lowercased() != "current" else {
+        guard TranscriptPointer.validTranscriptID(transcript.id) else {
             throw HolosError.invalidInput("Invalid transcript ID.")
         }
         let snapshot = SessionPaths.transcript(transcript.id, in: directory)
         let encoded = try Self.encode(transcript)
+        let pending = SessionPaths.pendingTranscript(directory)
         if let existing = try AtomicFile.readIfPresent(snapshot, maxBytes: Self.maxTranscriptBytes) {
-            // The same bytes, not yet current, mean an earlier save of this transcript failed after creating
-            // the revision (for example while publishing the pointer); retrying finishes it.
-            let current = (try? TranscriptPointer.read(session: directory))?.transcriptID
-            guard existing == encoded, current != transcript.id else {
+            // A retry finishes only the save that `current.pending` names: the same bytes, left by a save that
+            // failed after creating the revision. The pointer may already name it (the save failed while
+            // fsyncing transcripts/ after publishing it), so the retry publishes it again and fsyncs. Any other
+            // existing revision is refused, so a finished older revision can never be republished over a newer
+            // one: `current.pending` is removed once a save finishes, and the next save replaces it. A damaged
+            // or newer pointer is refused, never overwritten.
+            _ = try TranscriptPointer.read(session: directory)
+            guard existing == encoded,
+                  try TranscriptPointer.readPending(session: directory)?.transcriptID == transcript.id else {
                 throw HolosError.invalidInput("Transcript revision already exists.")
             }
+            // The earlier attempt may have left the revision without a durable folder entry (its folder fsync
+            // failed and the file could not be removed); make it durable before anything points at it.
+            try AtomicFile.syncDirectory(SessionPaths.transcripts(directory))
         } else {
+            // Written first, so a revision is never left without it; a later save replaces it, which abandons
+            // this one.
+            try AtomicFile.writeJSON(TranscriptPointer(transcriptID: transcript.id), to: pending)
             try AtomicFile.create(encoded, at: snapshot)
+        }
+        if writeLegacyExports {
+            // Before the pointer: a failed export leaves the revision not current, so a retry rewrites both.
+            let text = transcript.text + "\n"
+            try AtomicFile.write(Data(text.utf8), to: SessionPaths.export("txt", in: directory))
+            var markdown = "# \(manifest.name)\n\n"
+            for segment in transcript.segments {
+                let source = segment.track ?? "unknown source"
+                markdown += "### [\(Self.timestamp(segment.start))–\(Self.timestamp(segment.end))] Source: \(source)\n\n"
+                if let speakerID = segment.speakerID {
+                    markdown += "Speaker label (not verified identity): \(speakerID)\n\n"
+                }
+                markdown += "\(segment.text)\n\n"
+            }
+            try AtomicFile.write(Data(markdown.utf8), to: SessionPaths.export("md", in: directory))
         }
         try AtomicFile.writeJSON(TranscriptPointer(transcriptID: transcript.id),
                                  to: SessionPaths.transcriptPointer(directory))
-        guard writeLegacyExports else { return }
-        let text = transcript.text + "\n"
-        try AtomicFile.write(Data(text.utf8), to: SessionPaths.export("txt", in: directory))
-        var markdown = "# \(manifest.name)\n\n"
-        for segment in transcript.segments {
-            let source = segment.track ?? "unknown source"
-            markdown += "### [\(Self.timestamp(segment.start))–\(Self.timestamp(segment.end))] Source: \(source)\n\n"
-            if let speakerID = segment.speakerID {
-                markdown += "Speaker label (not verified identity): \(speakerID)\n\n"
-            }
-            markdown += "\(segment.text)\n\n"
+        // The save is finished. A marker left behind names the current revision: saving it again only
+        // republishes the same pointer and exports and removes the marker, and the next save replaces it.
+        do {
+            try AtomicFile.removeTree(["transcripts", "current.pending"], in: directory)
+        } catch {
+            Self.log.error("Cannot remove transcripts/current.pending: \(error.localizedDescription, privacy: .public)")
         }
-        try AtomicFile.write(Data(markdown.utf8), to: SessionPaths.export("md", in: directory))
     }
 
     public func finish(status: String) throws {
@@ -335,6 +383,7 @@ public actor SessionArchive {
         try Self.writeManifest(updated, in: directory)
         manifest = updated
         closed = true
+        cancelJournalFlush()
         SessionLockFile.unlockAndClose(lockFD)
         lockFD = -1
     }
@@ -355,26 +404,79 @@ public actor SessionArchive {
 
     private func syncJournal() throws {
         try AtomicFile.sync(SessionPaths.events(directory))
-        journalDirty = false
-        lastJournalSync = .now
+        journalSynced(at: .now)
     }
 
-    private func scheduleJournalFlush(after delay: Duration) {
-        guard !journalFlushScheduled else { return }
-        journalFlushScheduled = true
-        Task { [weak self] in
-            try? await Task.sleep(for: max(delay, .zero))
-            await self?.flushJournalIfDirty()
+    /// Records a successful fsync of the whole journal and drops the pending flush, whose deadline was
+    /// measured from the previous sync.
+    private func journalSynced(at instant: ContinuousClock.Instant) {
+        journalDirty = false
+        lastJournalSync = instant
+        journalFlushFailedAt = nil
+        cancelJournalFlush()
+    }
+
+    /// Replaces any pending flush with the one the invariant (see `journalSync`) calls for.
+    private func rescheduleJournalFlush() {
+        cancelJournalFlush()
+        guard journalDirty, !closed, case .interval(let seconds) = journalSync else { return }
+        let base = journalFlushFailedAt ?? lastJournalSync ?? .now
+        let deadline = base + Duration.seconds(seconds)
+        journalFlushGeneration &+= 1
+        let generation = journalFlushGeneration
+        journalFlushDeadline = deadline
+        journalFlushTask = Task { [weak self] in
+            do { try await Task.sleep(until: deadline, clock: .continuous) } catch { return }
+            await self?.flushJournalIfDirty(generation: generation)
         }
     }
 
-    private func flushJournalIfDirty() {
-        journalFlushScheduled = false
+    /// Drops the pending flush; one already past its sleep sees a newer generation and does nothing.
+    private func cancelJournalFlush() {
+        journalFlushTask?.cancel()
+        journalFlushTask = nil
+        journalFlushDeadline = nil
+        journalFlushGeneration &+= 1
+    }
+
+    private func flushJournalIfDirty(generation: UInt64) {
+        guard generation == journalFlushGeneration else { return }
+        journalFlushTask = nil
+        journalFlushDeadline = nil
         guard journalDirty, !closed else { return }
         do { try syncJournal() } catch {
-            // Stays dirty: the next event or `finish` syncs again.
+            // Stays dirty; retried one interval later, and the next event (already due) or `finish` syncs too.
+            journalFlushFailedAt = .now
+            rescheduleJournalFlush()
             Self.log.error("Cannot sync the event journal: \(String(describing: error), privacy: .public)")
         }
+    }
+
+    /// Tests only: the group-commit state.
+    struct JournalSchedule: Sendable {
+        var dirty: Bool
+        var closed: Bool
+        var interval: Duration?
+        var lastSync: ContinuousClock.Instant?
+        var failedAt: ContinuousClock.Instant?
+        var pendingDeadline: ContinuousClock.Instant?
+        var pending: Bool
+    }
+
+    /// Tests only.
+    func journalScheduleForTesting() -> JournalSchedule {
+        var interval: Duration?
+        if case .interval(let seconds) = journalSync { interval = .seconds(seconds) }
+        return JournalSchedule(dirty: journalDirty, closed: closed, interval: interval, lastSync: lastJournalSync,
+                               failedAt: journalFlushFailedAt, pendingDeadline: journalFlushDeadline,
+                               pending: journalFlushTask != nil)
+    }
+
+    /// Tests only: runs the pending flush now, as if its deadline had come.
+    func runPendingJournalFlushForTesting() {
+        guard let task = journalFlushTask else { return }
+        task.cancel()
+        flushJournalIfDirty(generation: journalFlushGeneration)
     }
 
     private func repairJournalIfNeeded() throws {
@@ -393,10 +495,10 @@ public actor SessionArchive {
 
     public nonisolated static func readManifest(at directory: URL) throws -> SessionManifest {
         guard directory.isFileURL, plainDirectory(directory),
-              plainFile(SessionPaths.manifest(directory)) else {
+              plainFile(SessionPaths.manifest(directory)),
+              let data = try AtomicFile.readIfPresent(SessionPaths.manifest(directory), maxBytes: maxManifestBytes) else {
             throw HolosError.invalidInput("Archive or manifest is not a regular path.")
         }
-        let data = try Data(contentsOf: SessionPaths.manifest(directory))
         let manifest = try HolosJSON.decoder().decode(SessionManifest.self, from: data)
         guard manifest.schemaVersion == 1, validToken(manifest.id),
               directory.lastPathComponent == "\(manifest.id).holos",
@@ -416,7 +518,8 @@ public actor SessionArchive {
     }
 
     /// Reads `events.jsonl` only (no chunk hashing). A partial last line is reported as `tornTail`; a complete
-    /// line that fails to decode, or whose sequence is lower than the previous event's, is skipped and counted.
+    /// line that fails to decode, whose sequence is outside 1...`maxEventSequence`, or whose sequence is lower
+    /// than the previous event's, is skipped and counted.
     /// A missing journal is empty.
     public nonisolated static func readEvents(at directory: URL) throws -> EventJournal {
         guard directory.isFileURL, plainDirectory(directory) else {
@@ -432,7 +535,8 @@ public actor SessionArchive {
         for line in lines {
             // `>=`: older builds reused a sequence after an append whose fsync failed; both lines are real.
             guard let event = try? decoder.decode(ArchiveEvent.self, from: line), !event.kind.isEmpty,
-                  event.sequence >= 1, event.sequence >= (events.last?.sequence ?? 0) else {
+                  event.sequence >= 1, event.sequence <= maxEventSequence,
+                  event.sequence >= (events.last?.sequence ?? 0) else {
                 unreadable += 1
                 continue
             }
@@ -481,7 +585,9 @@ public actor SessionArchive {
     /// of that are expected once `audio-deleted.json` exists.
     public nonisolated static func recover(at directory: URL, lease: ProcessingLease) async throws -> RecoveryReport {
         try requireMaintenanceLayout(directory)
-        try lease.require(for: directory)
+        // The lease stays locked, even across a concurrent `release()`, until the recovery ends.
+        try lease.beginUse(for: directory)
+        defer { lease.endUse() }
         let fd = try acquireLock(directory)
         defer { SessionLockFile.unlockAndClose(fd) }
         let before = try inspectRecovery(at: directory)
@@ -512,17 +618,16 @@ public actor SessionArchive {
             let url = directory.appendingPathComponent(path)
             guard plainFile(url) else { unrecovered.append(path); continue }
             do {
-                let file = try AVAudioFile(forReading: url)
-                let actualRate = file.fileFormat.sampleRate
-                let actualChannels = Int(file.fileFormat.channelCount)
-                let frames = file.length
-                guard frames > 0, frames <= Int.max, actualRate == rate,
-                      actualChannels == channels else {
+                // Format, length, and hash all come from one descriptor opened through the folder chain, never
+                // from a path that a folder swapped for a link could redirect.
+                let chunk = try ChunkFile.read(at: url, sync: true)
+                let frames = chunk.frames
+                guard frames > 0, frames <= Int.max, chunk.sampleRate == rate, chunk.channels == channels else {
                     unrecovered.append(path); continue
                 }
                 let end = start + Double(frames) / rate
                 guard end.isFinite, end > start else { unrecovered.append(path); continue }
-                let digest = try hashChunk(at: url, sync: true)
+                let digest = chunk.sha256
                 let basename = String(url.deletingPathExtension().lastPathComponent)
                 var recoveredID = "recovered-\(track)-\(basename)"
                 if manifest.chunks.contains(where: { $0.id == recoveredID }) {
@@ -553,13 +658,21 @@ public actor SessionArchive {
                 "unrecovered": unrecovered.joined(separator: ","),
                 "previousStatus": before.manifest?.status ?? "unknown",
             ]
-            if before.tornFinalJournalLine || before.events.last?.kind != MeetingEventKind.archiveRecovered ||
+            // Readable sequences stop at `maxEventSequence`, so `+ 1` cannot overflow; an exhausted journal
+            // gets no recovery event rather than one that would read back as unreadable.
+            let sequence = (before.events.last?.sequence ?? 0) + 1
+            if sequence <= maxEventSequence, before.tornFinalJournalLine ||
+                before.events.last?.kind != MeetingEventKind.archiveRecovered ||
                 before.events.last?.details != details {
-                let event = ArchiveEvent(sequence: (before.events.last?.sequence ?? 0) + 1,
+                let event = ArchiveEvent(sequence: sequence,
                                          at: Date(), kind: MeetingEventKind.archiveRecovered, details: details)
                 try AtomicFile.append(try HolosJSON.line(event), to: journal)
             }
             try writeManifest(manifest, in: directory)
+        } else {
+            // An earlier recovery may have replaced the journal or manifest and then failed to fsync the session
+            // folder; this retry finds nothing to change, so it finishes that fsync.
+            try AtomicFile.syncDirectory(directory)
         }
         let after = try inspectRecovery(at: directory)
         return RecoveryReport(manifest: after.manifest, manifestError: after.manifestError,
@@ -590,7 +703,9 @@ public actor SessionArchive {
                 corrupt.append(chunk.relativePath); continue
             }
             let url = directory.appendingPathComponent(chunk.relativePath)
-            if !FileManager.default.fileExists(atPath: url.path) {
+            let type: mode_t?
+            do { type = try AtomicFile.entryType(at: url) } catch { corrupt.append(chunk.relativePath); continue }
+            if type == nil {
                 if !audioDeleted { missing.append(chunk.relativePath) }
                 continue
             }
@@ -602,9 +717,8 @@ public actor SessionArchive {
         var unindexed: [String] = []
         for track in ["mic", "system"] {
             let trackURL = directory.appendingPathComponent("audio/\(track)")
-            guard plainDirectory(trackURL) else { continue }
-            for url in (try? FileManager.default.contentsOfDirectory(at: trackURL, includingPropertiesForKeys: nil)) ?? [] {
-                let path = "audio/\(track)/\(url.lastPathComponent)"
+            for entry in (try? AtomicFile.listFolder(trackURL)) ?? [] {
+                let path = "audio/\(track)/\(entry.name)"
                 if validChunkPath(path, track: track), !indexed.contains(path) { unindexed.append(path) }
             }
         }
@@ -626,13 +740,13 @@ public actor SessionArchive {
 
     private nonisolated static func legacyCurrentTranscriptID(at directory: URL) throws -> String? {
         let folder = SessionPaths.transcripts(directory)
-        guard plainDirectory(folder) else { return nil }
+        guard plainDirectory(folder), let entries = try AtomicFile.listFolder(folder) else { return nil }
         struct Header: Decodable { var id: String; var createdAt: Date }
         var newest: Header?
         var count = 0
-        for name in try FileManager.default.contentsOfDirectory(atPath: folder.path) where name.hasSuffix(".json") {
+        for (name, _) in entries where name.hasSuffix(".json") {
             let id = String(name.dropLast(5))
-            guard validToken(id), id.lowercased() != "current",
+            guard TranscriptPointer.validTranscriptID(id),
                   let header = try? AtomicFile.readJSON(Header.self, from: folder.appendingPathComponent(name)),
                   header.id == id else { continue }
             count += 1
@@ -656,14 +770,14 @@ public actor SessionArchive {
         return String(format: "%02d:%02d:%02d.%03d", hours, minutes, remainder, milliseconds % 1_000)
     }
 
+    /// Whether `url` is a real folder, reached without following a symbolic link (`AtomicFile.entryType`).
     private nonisolated static func plainDirectory(_ url: URL) -> Bool {
-        var info = stat()
-        return lstat(url.path, &info) == 0 && (info.st_mode & S_IFMT) == S_IFDIR
+        (try? AtomicFile.entryType(at: url)) == S_IFDIR
     }
 
+    /// Whether `url` is a regular file, reached without following a symbolic link (`AtomicFile.entryType`).
     private nonisolated static func plainFile(_ url: URL) -> Bool {
-        var info = stat()
-        return lstat(url.path, &info) == 0 && (info.st_mode & S_IFMT) == S_IFREG
+        (try? AtomicFile.entryType(at: url)) == S_IFREG
     }
 
     private nonisolated static func requireSafeLayout(_ directory: URL) throws {
@@ -681,9 +795,13 @@ public actor SessionArchive {
         guard directory.isFileURL, plainDirectory(directory),
               ["transcripts", "exports"].allSatisfy({ plainDirectory(directory.appendingPathComponent($0)) }),
               ["audio", "audio/mic", "audio/system"].allSatisfy({ path in
-                  var info = stat()
-                  guard lstat(directory.appendingPathComponent(path).path, &info) == 0 else { return errno == ENOENT }
-                  return (info.st_mode & S_IFMT) == S_IFDIR
+                  // Missing is fine; a symbolic link or file here, or on the way, is not.
+                  do {
+                      let type = try AtomicFile.entryType(at: directory.appendingPathComponent(path))
+                      return type == nil || type == S_IFDIR
+                  } catch {
+                      return false
+                  }
               }) else {
             throw HolosError.invalidInput("Archive contains an unsafe or incomplete directory layout.")
         }
@@ -711,37 +829,8 @@ public actor SessionArchive {
         return fd
     }
 
+    /// Opened relative to its folder, which is opened without following a link (`ChunkFile`).
     private nonisolated static func hashChunk(at url: URL, sync: Bool = false) throws -> String {
-        var info = stat()
-        guard lstat(url.path, &info) == 0, (info.st_mode & S_IFMT) == S_IFREG, info.st_size > 0 else {
-            throw HolosError.invalidInput("Audio chunk is missing, empty, or not a regular file.")
-        }
-        let fd = Darwin.open(url.path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW)
-        guard fd >= 0 else { throw HolosError.io("Cannot open audio chunk.") }
-        defer { Darwin.close(fd) }
-        var opened = stat()
-        guard fstat(fd, &opened) == 0, (opened.st_mode & S_IFMT) == S_IFREG,
-              opened.st_ino == info.st_ino else {
-            throw HolosError.invalidInput("Audio chunk changed while opening.")
-        }
-        var hasher = SHA256()
-        var buffer = [UInt8](repeating: 0, count: 64 * 1024)
-        while true {
-            let count = buffer.withUnsafeMutableBytes { Darwin.read(fd, $0.baseAddress, $0.count) }
-            if count < 0 {
-                if errno == EINTR { continue }
-                throw HolosError.io("Cannot read audio chunk.")
-            }
-            if count == 0 { break }
-            hasher.update(data: Data(buffer[0..<count]))
-        }
-        var finished = stat()
-        guard fstat(fd, &finished) == 0, finished.st_size == opened.st_size,
-              finished.st_mtimespec.tv_sec == opened.st_mtimespec.tv_sec,
-              finished.st_mtimespec.tv_nsec == opened.st_mtimespec.tv_nsec else {
-            throw HolosError.incomplete("Audio chunk changed while hashing.")
-        }
-        if sync, fsync(fd) != 0 { throw HolosError.io("Cannot sync audio chunk.") }
-        return hasher.finalize().map { String(format: "%02x", $0) }.joined()
+        try ChunkFile.hash(at: url, sync: sync)
     }
 }

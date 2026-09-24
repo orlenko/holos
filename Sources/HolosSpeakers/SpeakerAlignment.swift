@@ -245,11 +245,14 @@ public enum SpeakerAlignment {
                   let a = words[runStart - 1].label, words[runEnd].label == a, a != runLabel,
                   runEnd - runStart <= parameters.flickerMaxWords else { continue }
             let run = words[runStart..<runEnd]
+            // R's extent (for its span and the boundary checks) is the hull of its words; the pauses are between
+            // adjacent words, so overlapping timings inside R cannot shorten them.
             let first = run.map(\.start).min() ?? words[runStart].start
             let last = run.map(\.end).max() ?? words[runEnd - 1].end
             guard last - first <= parameters.flickerMaxSeconds + timeEpsilon,
-                  first - words[runStart - 1].end <= parameters.flickerMaxGapSeconds + timeEpsilon,
-                  words[runEnd].start - last <= parameters.flickerMaxGapSeconds + timeEpsilon else { continue }
+                  words[runStart].start - words[runStart - 1].end <= parameters.flickerMaxGapSeconds + timeEpsilon,
+                  words[runEnd].start - words[runEnd - 1].end <= parameters.flickerMaxGapSeconds + timeEpsilon
+            else { continue }
             let aTimeline = timelines[a]
             if let b = runLabel {
                 guard let aTimeline, let bTimeline = timelines[b],
@@ -295,7 +298,6 @@ public enum SpeakerAlignment {
                                    channel: Bool) -> [SpeakerTurn] {
         var turns: [SpeakerTurn] = []
         var group: [AlignedWord] = []
-        var groupEnd = -Double.infinity
 
         func flush() {
             guard let first = group.first else { return }
@@ -330,11 +332,12 @@ public enum SpeakerAlignment {
         }
 
         for word in words {
+            // The pause is measured from the immediately previous word, not the latest end in the turn: with
+            // overlapping word timings an early long word must not hide a long pause after a later short one.
             if let previous = group.last,
-               word.label != previous.label || word.start - groupEnd > parameters.turnPauseSeconds + timeEpsilon {
+               word.label != previous.label || word.start - previous.end > parameters.turnPauseSeconds + timeEpsilon {
                 flush()
             }
-            if group.isEmpty { groupEnd = word.end } else { groupEnd = max(groupEnd, word.end) }
             group.append(word)
         }
         flush()
