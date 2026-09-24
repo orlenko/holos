@@ -32,12 +32,12 @@ extension AtomicFile {
     /// its parent (a folder that cannot be removed has its parent fsync'd then, or on the next open).
     static func openFolder(_ url: URL, create: Bool = false) throws -> Int32? {
         guard url.isFileURL else { throw HolosError.invalidInput("Folder path must be a file URL.") }
-        let components = url.standardizedFileURL.pathComponents
+        let components = canonicalComponents(url)
         guard components.first == "/",
               !components.dropFirst().contains(where: { $0.isEmpty || $0 == "." || $0 == ".." }) else {
             throw HolosError.invalidInput("Invalid folder path.")
         }
-        if let (pinned, sessionURL, below) = try pinnedSessionFolder(for: url) {
+        if let (pinned, sessionURL, below) = try pinnedSessionFolder(for: components) {
             // A pinned session folder is never reached by path: everything below it is opened from its descriptor.
             defer { Darwin.close(pinned) }
             return try openFolder(below, in: pinned, baseURL: sessionURL, create: create)
@@ -117,22 +117,39 @@ extension AtomicFile {
     /// Opens the folder holding the file `url` (see `openFolder(_:)`) and returns it with the file name; nil
     /// when that folder does not exist. The caller closes the descriptor.
     static func openParentIfPresent(of url: URL) throws -> (fd: Int32, name: String)? {
-        let standardized = url.standardizedFileURL
-        let name = standardized.lastPathComponent
-        guard url.isFileURL, !name.isEmpty, name != "/", name != ".", name != ".." else {
+        let components = canonicalComponents(url)
+        guard url.isFileURL, components.count > 1, let name = components.last, !name.isEmpty, name != "/",
+              name != ".", name != ".." else {
             throw HolosError.invalidInput("Invalid file path.")
         }
-        guard let fd = try openFolder(standardized.deletingLastPathComponent()) else { return nil }
+        let parent = URL(fileURLWithPath: NSString.path(withComponents: Array(components.dropLast())),
+                         isDirectory: true)
+        guard let fd = try openFolder(parent) else { return nil }
         return (fd, name)
     }
 
     /// Like `openParentIfPresent`, but a missing folder is an error.
     static func openParent(of url: URL) throws -> (fd: Int32, name: String) {
         guard let opened = try openParentIfPresent(of: url) else {
-            let folder = url.standardizedFileURL.deletingLastPathComponent().lastPathComponent
+            let folder = canonicalComponents(url).dropLast().last ?? "/"
             throw HolosError.io("Cannot open folder \(folder): \(errnoText(ENOENT)).")
         }
         return opened
+    }
+
+    /// The path components of the file URL `url` in the one form Holos opens, compares, and keys paths in a session
+    /// by (the pins of `pinSessionFolder` above all): "." and ".." removed (`URL.standardized`), and a leading
+    /// "/private" dropped before "tmp", "var", or "etc", where the macOS links /tmp, /var, and /etc lead. The same
+    /// folder named either way therefore has one form. `standardizedFileURL` drops "/private" only when the shorter
+    /// path exists, so it gives an existing file and a file about to be made in the same folder different forms;
+    /// this never looks at the file system.
+    static func canonicalComponents(_ url: URL) -> [String] {
+        var components = url.standardized.pathComponents
+        if components.count > 2, components[0] == "/", components[1] == "private",
+           ["tmp", "var", "etc"].contains(components[2]) {
+            components.remove(at: 1)
+        }
+        return components
     }
 
     /// The file type (`S_IFMT` bits) of the entry at `url`, which is not followed if it is a symbolic link;
@@ -196,14 +213,16 @@ extension AtomicFile {
     /// the speaker store, the transcript pointer) works in `folder` even after another program renames the folder,
     /// or one holding it, away and puts a different folder at that path; the one at the path is never touched.
     ///
-    /// For a session made in a folder the caller holds open (an import's staging folder). The path is compared after
-    /// removing "." and ".." only (`URL.standardized`), so pass the URL the writes use. Throws `invalidInput` for a
-    /// path that is not a session folder or is already pinned, `io` when the descriptor cannot be duplicated.
+    /// For a session made in a folder the caller holds open (an import's staging folder). The pin is keyed, and every
+    /// path looked up in it, by `canonicalComponents`, the form `openFolder` and `openParentIfPresent` work in, so a
+    /// path under /private/tmp or /private/var is covered however it is named (with or without "/private"), and
+    /// whether the file it names exists yet or not. Throws `invalidInput` for a path that is not a session folder
+    /// or is already pinned, `io` when the descriptor cannot be duplicated.
     public static func pinSessionFolder(_ folder: Int32, at directory: URL) throws -> SessionFolderPin {
         guard directory.isFileURL, isSessionFolderName(directory.lastPathComponent) else {
             throw HolosError.invalidInput("Only a session folder can be pinned.")
         }
-        let key = pinKey(directory.standardized.pathComponents)
+        let key = pinKey(canonicalComponents(directory))
         let copy = fcntl(folder, F_DUPFD_CLOEXEC, 0)
         guard copy >= 0 else { throw HolosError.io("Cannot keep the session folder open: \(errnoText()).") }
         let token = UUID()
@@ -231,7 +250,7 @@ extension AtomicFile {
 
     /// Whether a pin covers `url` (for tests).
     static func isPinned(_ url: URL) -> Bool {
-        guard let fd = try? pinnedSessionFolder(for: url)?.fd else { return false }
+        guard let fd = try? pinnedSessionFolder(for: canonicalComponents(url))?.fd else { return false }
         Darwin.close(fd)
         return true
     }
@@ -239,10 +258,11 @@ extension AtomicFile {
     /// Session folder paths (`pinKey`) bound to an open descriptor (`pinSessionFolder`), with the pin's token.
     private static let pinnedFolders = Mutex<[String: (fd: Int32, token: UUID)]>([:])
 
-    /// For `url` at or below a pinned session folder: a duplicate of the pinned descriptor (the caller closes it),
-    /// the session folder's URL, and the names from it down to `url`. Nil when no pin covers `url`.
-    private static func pinnedSessionFolder(for url: URL) throws -> (fd: Int32, sessionURL: URL, below: [String])? {
-        let components = url.standardized.pathComponents
+    /// For the path `components` (`canonicalComponents`) at or below a pinned session folder: a duplicate of the
+    /// pinned descriptor (the caller closes it), the session folder's URL, and the names from it down to the path.
+    /// Nil when no pin covers the path.
+    private static func pinnedSessionFolder(for components: [String]) throws
+        -> (fd: Int32, sessionURL: URL, below: [String])? {
         let found = pinnedFolders.withLock { pins -> (fd: Int32, errno: Int32, key: String, index: Int)? in
             guard !pins.isEmpty else { return nil }
             for index in components.indices.reversed() where isSessionFolderName(components[index]) {

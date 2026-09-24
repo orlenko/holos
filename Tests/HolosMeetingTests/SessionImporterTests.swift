@@ -582,9 +582,11 @@ private func sessionImporterFinishedStaging(in root: URL) async throws -> (Impor
 }
 
 /// When the sessions root is renamed, or a link to it retargeted, while the session is published, the session lands
-/// in the folder `create` opened, and `publish` returns where that folder is now rather than the stale `root` path.
+/// in the folder `create` opened. `publish` never returns a location other than `publishedURL` (the one the import
+/// persists as `Transcript.source`): it throws, naming where the session is now, and leaves the published session
+/// alone. Before, it returned the root's current path from `F_GETPATH` while the transcript named the old one.
 @Test(arguments: [false, true])
-func publishReturnsWhereTheOpenedRootIsNow(throughLink: Bool) async throws {
+func publishFailsClearlyWhenTheOpenedRootMoved(throughLink: Bool) async throws {
     let temp = try TemporaryDirectory("import")
     defer { temp.remove() }
     let fm = FileManager.default
@@ -598,25 +600,44 @@ func publishReturnsWhereTheOpenedRootIsNow(throughLink: Bool) async throws {
     let root = throughLink ? link : real
     let (staging, _, sessionName) = try await sessionImporterFinishedStaging(in: root)
 
-    let result = try staging.publish(sessionName, after: { step in
-        guard step == .moved else { return }
-        do {
-            if throughLink {
-                try fm.removeItem(at: link)
-                try fm.createSymbolicLink(at: link, withDestinationURL: other)
-            } else {
-                try fm.moveItem(at: real, to: renamed)
+    var message = ""
+    do {
+        let result = try staging.publish(sessionName, after: { step in
+            guard step == .moved else { return }
+            do {
+                if throughLink {
+                    try fm.removeItem(at: link)
+                    try fm.createSymbolicLink(at: link, withDestinationURL: other)
+                } else {
+                    try fm.moveItem(at: real, to: renamed)
+                }
+            } catch {
+                Issue.record("Cannot move the root: \(error)")
             }
-        } catch {
-            Issue.record("Cannot move the root: \(error)")
-        }
-    })
-    let expected = (throughLink ? real : renamed).appendingPathComponent(sessionName, isDirectory: true)
-    #expect(result.resolvingSymlinksInPath().path == expected.resolvingSymlinksInPath().path)
-    #expect(fm.fileExists(atPath: result.appendingPathComponent("manifest.json").path))
+        })
+        Issue.record("publish returned \(result.path) although the root moved")
+    } catch HolosError.io(let text) {
+        message = text
+    }
+    let actual = (throughLink ? real : renamed).appendingPathComponent(sessionName, isDirectory: true)
+    #expect(message.contains(sessionName))
+    #expect(message.contains("It is now in"))
+    #expect(message.contains((throughLink ? real : renamed).lastPathComponent))
+    #expect(fm.fileExists(atPath: actual.appendingPathComponent("manifest.json").path))
     #expect(staging.published)
     #expect(staging.discard() == nil)
-    #expect(fm.fileExists(atPath: result.appendingPathComponent("manifest.json").path))
+    #expect(fm.fileExists(atPath: actual.appendingPathComponent("manifest.json").path))
+}
+
+/// While the root stays put, `publish` returns exactly `publishedURL`, the location the import persists.
+@Test func publishReturnsThePublishedURL() async throws {
+    let temp = try TemporaryDirectory("import")
+    defer { temp.remove() }
+    let root = temp.url.appendingPathComponent("Sessions", isDirectory: true)
+    let (staging, _, sessionName) = try await sessionImporterFinishedStaging(in: root)
+    let result = try staging.publish(sessionName)
+    #expect(result == staging.publishedURL(sessionName))
+    #expect(FileManager.default.fileExists(atPath: result.appendingPathComponent("manifest.json").path))
 }
 
 /// A cancel before `start` is kept: the work starts cancelled and none of it runs, so interrupt handling installed

@@ -480,7 +480,7 @@ public enum AtomicFile {
     /// folder by path, so a sessions root reached through a symbolic link still works.
     static func syncDirectory(_ url: URL) throws {
         let fd: Int32
-        if url.standardizedFileURL.pathComponents.contains(where: isSessionFolderName) {
+        if canonicalComponents(url).contains(where: isSessionFolderName) {
             guard let opened = try openFolder(url) else {
                 throw HolosError.io("Cannot open folder \(url.lastPathComponent): \(errnoText(ENOENT)).")
             }
@@ -741,5 +741,7 @@ final class FaultPlan: Sendable {
 
     func synced(_ folder: URL) { state.withLock { $0.log.append((Self.key(folder), nil)) } }
 
-    private static func key(_ folder: URL) -> String { folder.standardizedFileURL.path }
+    private static func key(_ folder: URL) -> String {
+        NSString.path(withComponents: AtomicFile.canonicalComponents(folder))
+    }
 }

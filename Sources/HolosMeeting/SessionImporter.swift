@@ -131,9 +131,12 @@ public enum SessionImporter {
             lease = held
             try await archive.finish(status: status)
             try Task.checkCancellation()
-            // Once published, the session is the caller's; `publish` throws after its rename only when the sessions
-            // folder can no longer be found, and says so (the catch below leaves the published session alone).
+            // Once published, the session is the caller's; `publish` throws after its rename only when `root` no
+            // longer leads to the sessions folder it was published in, so the location it would return is never one
+            // other than `publishedDirectory`, which the transcript names (the catch below leaves the published
+            // session alone).
             let published = try staging.publish(directory.lastPathComponent)
+            assert(published == publishedDirectory)
             meter.report(1)
             log.notice("Session \(archive.id, privacy: .public): imported \(seconds, privacy: .public) s of audio, \(segmentCount, privacy: .public) segments, as \(status, privacy: .public)")
             return ImportedSession(directory: published, lease: held)
@@ -528,9 +531,12 @@ final class ImportStaging {
     /// rename itself names its source by name, so the published entry is checked again after it: a folder swapped in
     /// between the check and the rename is moved back into the staging folder and the call throws.
     ///
-    /// Returns where the session is: `<root>/<sessionName>` while `root` still leads to the folder `create` opened,
-    /// else that folder's current path. Throws when neither can be told (the session is published all the same,
-    /// and `published` is true).
+    /// Returns where the session is, `publishedURL(sessionName)`, the one location the import names in what it
+    /// persists (`Transcript.source`). When `root` no longer leads to the folder `create` opened (the root was
+    /// renamed, or a link to it retargeted, during the import), it throws instead, naming where the session is now
+    /// when that can be found: the session is published all the same (`published` is true), but no location that
+    /// disagrees with the persisted one is ever returned as the import's result (§1.7 threat model: fail clearly
+    /// when the folder changes under Holos).
     func publish(_ sessionName: String, beforeMove: () -> Void = {},
                  after: (Step) -> Void = { _ in }) throws -> URL {
         let stagingFD = folderFD
@@ -574,12 +580,14 @@ final class ImportStaging {
         closeLock()
         after(.unlocked)
         Self.removeIfEmpty(stagingFD, named: name, in: rootFD)
-        guard let location = publishedLocation(sessionName) else {
-            throw HolosError.io("The session was imported as \(sessionName), but the sessions folder was moved or "
-                                + "replaced during the import, so where it is now cannot be told. Look for "
-                                + "\(sessionName) where \(root.path) was.")
+        guard rootStillNamed() else {
+            let whereNow = Self.currentPath(of: rootFD).map {
+                "It is now in \(URL(fileURLWithPath: $0).appendingPathComponent(sessionName).path)."
+            } ?? "Look for \(sessionName) where \(root.path) was."
+            throw HolosError.io("The session was imported as \(sessionName), but the sessions folder \(root.path) "
+                                + "was moved or replaced during the import, so the session is not in it. \(whereNow)")
         }
-        return location
+        return publishedURL(sessionName)
     }
 
     /// Where `publish(sessionName)` puts the session: `<root>/<sessionName>`.
@@ -587,19 +595,13 @@ final class ImportStaging {
         root.appendingPathComponent(sessionName, isDirectory: true)
     }
 
-    /// Where the session published as `sessionName` in the open root is now: `publishedURL(sessionName)` while
-    /// `root` still leads to the folder open as `rootFD` (device and inode, links followed as `create` followed them);
-    /// else the path the system reports for that folder, when it still names it (the root was renamed, or a link to
-    /// it retargeted, during the import). Nil when neither holds.
-    private func publishedLocation(_ sessionName: String) -> URL? {
+    /// Whether `root` still leads to the folder open as `rootFD` (device and inode, links followed as `create`
+    /// followed them).
+    private func rootStillNamed() -> Bool {
         var opened = stat()
         var named = stat()
-        if fstat(rootFD, &opened) == 0, stat(root.path, &named) == 0,
-           named.st_dev == opened.st_dev, named.st_ino == opened.st_ino {
-            return publishedURL(sessionName)
-        }
-        guard let path = Self.currentPath(of: rootFD) else { return nil }
-        return URL(fileURLWithPath: path, isDirectory: true).appendingPathComponent(sessionName, isDirectory: true)
+        return fstat(rootFD, &opened) == 0 && stat(root.path, &named) == 0
+            && named.st_dev == opened.st_dev && named.st_ino == opened.st_ino
     }
 
     /// The path of the open folder `folder`, when the path the system reports for it (`F_GETPATH`) still names it.
