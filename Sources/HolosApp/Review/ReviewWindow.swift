@@ -105,16 +105,16 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate {
 
     /// A maintenance command is about to work on the meeting (`ReviewMaintenance`): the window turns read-only with
     /// `banner`, playback stops and lets go of the audio, and this returns once the window's changes are saved.
-    func pauseForMaintenance(key: String, banner: String) async {
+    func pauseForMaintenance(_ hold: ReviewMaintenance.Hold, banner: String) async {
         player.invalidate()
         refresh()
-        await review.pause(key, reason: banner)
+        await review.pause(hold, reason: banner)
     }
 
     /// The command ended: the transcript, the labels, and playback are read again from disk, and the window is
-    /// editable again.
-    func resumeAfterMaintenance(key: String) async {
-        await review.resume(key)
+    /// editable again (unless another command run holds it meanwhile).
+    func resumeAfterMaintenance(_ hold: ReviewMaintenance.Hold) async {
+        await review.resume(hold)
         guard !isClosing, review.pauseReason == nil else { return }
         reloadPlayback()
         refresh()

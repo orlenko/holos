@@ -725,8 +725,9 @@ func maintenancePauseSavesEarlierChangesAndRefusesNewOnes() async throws {
     let edit = Task { @MainActor in try await review.apply([.rename(speakerID: "system:S1", name: "Jim")]) }
     #expect(await eventually { gate.entered.value == 1 })
     let paused = SharedValue(false)
+    let hold = ReviewMaintenance.Hold(.labelSpeakers)
     let pause = Task { @MainActor in
-        await review.pause(ReviewMaintenance.commandKey, reason: "Holos is labelling this meeting's speakers.")
+        await review.pause(hold, reason: "Holos is labelling this meeting's speakers.")
         paused.update { $0 = true }
     }
     // Read-only at once: a new change is refused, whatever the timing.
@@ -748,8 +749,8 @@ func maintenancePauseSavesEarlierChangesAndRefusesNewOnes() async throws {
     #expect(!review.exportsPending)
 
     // Pausing again for the same command changes nothing; its end makes the review editable.
-    await review.pause(ReviewMaintenance.commandKey, reason: "again")
-    await review.resume(ReviewMaintenance.commandKey)
+    await review.pause(hold, reason: "again")
+    await review.resume(hold)
     #expect(review.pauseReason == nil)
     #expect(review.isEditable)
     try await review.apply([.rename(speakerID: "system:S2", name: "Bob")])
@@ -766,7 +767,8 @@ func resumeRereadsTranscriptAndLabels() async throws {
     #expect(review.canUndo)
     #expect(review.words(of: "T1").count == 6)
 
-    await review.pause(ReviewMaintenance.commandKey, reason: "Holos is recovering this meeting.")
+    let hold = ReviewMaintenance.Hold(.recover)
+    await review.pause(hold, reason: "Holos is recovering this meeting.")
     // Recover rebuilds the transcript and labels the speakers again, as `holos session recover` would.
     let rebuilt = SessionFixtures.transcript(SessionFixtures.alternatingSegments(track: "system", wordsPerTurn: 4))
     try await SessionFixtures.saveTranscript(rebuilt, in: fixture.session)
@@ -775,12 +777,75 @@ func resumeRereadsTranscriptAndLabels() async throws {
     // Nothing is reread while the command runs.
     #expect(review.projection.runID == fixture.run.id)
 
-    await review.resume(ReviewMaintenance.commandKey)
+    await review.resume(hold)
     #expect(review.projection.runID == newer.id)
     #expect(review.snapshot.transcript.id == rebuilt.id)
     #expect(review.words(of: "T1").count == 4)
     #expect(!review.canUndo, "Undo does not reach past a new labelling.")
     #expect(review.isEditable)
+}
+
+@Test(.timeLimit(.minutes(1))) @MainActor
+func eachCommandRunHoldsTheReviewUntilItsOwnResume() async throws {
+    let temp = try TemporaryDirectory("review")
+    defer { temp.remove() }
+    let fixture = try await SessionFixtures.labelledSession(in: temp.url)
+    let review = try await reviewOpen(fixture.session)
+
+    // Two runs of the same command overlap: the second starts before the first one's end is handled.
+    let first = ReviewMaintenance.Hold(.labelSpeakers)
+    let second = ReviewMaintenance.Hold(.labelSpeakers)
+    await review.pause(first, reason: "first")
+    await review.pause(second, reason: "second")
+    await review.resume(first)
+    #expect(review.pauseReason == "second", "The first run's end does not release the second run.")
+    #expect(!review.isEditable)
+    await #expect(throws: HolosError.self) {
+        try await review.apply([.rename(speakerID: "system:S1", name: "Jim")])
+    }
+    await review.resume(first)
+    #expect(!review.isEditable, "Resuming a run twice changes nothing.")
+    await review.resume(second)
+    #expect(review.pauseReason == nil)
+    #expect(review.isEditable)
+
+    // The next run starts while the previous run's resume is still rereading the meeting.
+    let third = ReviewMaintenance.Hold(.recover)
+    let fourth = ReviewMaintenance.Hold(.deleteAudio)
+    await review.pause(third, reason: "third")
+    let resuming = Task { @MainActor in await review.resume(third) }
+    // Lets the resume start its reread (it waits off the main actor) before the next run pauses.
+    for _ in 0..<5 { await Task.yield() }
+    await review.pause(fourth, reason: "fourth")
+    await resuming.value
+    #expect(review.pauseReason == "fourth")
+    #expect(!review.isEditable, "A run started during an earlier run's resume keeps the review read-only.")
+    await review.resume(fourth)
+    #expect(review.isEditable)
+    try await review.apply([.rename(speakerID: "system:S1", name: "Jim")])
+    #expect(reviewName(review, "system:S1") == "Jim")
+}
+
+@Test func peopleComeFromOneReadOfTheStore() {
+    let older = SpeakerProfileDatabase(rememberVoices: false, profiles: [SpeakerProfile(id: "P1", displayName: "Old")])
+    let newer = SpeakerProfileDatabase(rememberVoices: true, profiles: [
+        SpeakerProfile(id: "P1", displayName: "New"), SpeakerProfile(id: "P2", displayName: "Other"),
+    ])
+    // Every further read sees the store as rewritten meanwhile (by People or the CLI).
+    var reads = 0
+    let known = ReviewSession.people {
+        reads += 1
+        return reads == 1 ? older : newer
+    }
+    #expect(reads == 1)
+    #expect(known.people.map(\.id) == ["P1"])
+    #expect(known.people.map(\.displayName) == ["Old"])
+    #expect(known.names == ["P1": "Old"])
+    #expect(!known.remember)
+
+    struct Unreadable: Error {}
+    let none = ReviewSession.people { throw Unreadable() }
+    #expect(none.people.isEmpty && none.names.isEmpty && !none.remember)
 }
 
 @Test(.timeLimit(.minutes(1))) @MainActor

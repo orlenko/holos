@@ -30,10 +30,17 @@ public enum ReviewMaintenance {
         case close
     }
 
-    /// `ReviewSession.pause` key of commands the app runs from Meetings or the interrupted-recording prompt.
-    public static let commandKey = "command"
-    /// `ReviewSession.pause` key of the automatic relabel.
-    public static let automaticKey = "automatic"
+    /// One run of a maintenance command holding a review read-only (`ReviewSession.pause` and `resume`). Every run
+    /// gets its own, even of the same command: a command started while the previous one's `resume` still rereads
+    /// the meeting keeps the review read-only until it ends.
+    public struct Hold: Hashable, Sendable {
+        public let command: Command
+        private let id = UUID()
+
+        public init(_ command: Command) {
+            self.command = command
+        }
+    }
 
     public static func response(to command: Command) -> Response {
         switch command {
@@ -43,11 +50,6 @@ public enum ReviewMaintenance {
         case .labelSpeakers, .automaticRelabel: .readOnly(banner: "Holos is labelling this meeting's speakers.")
         case .deleteAudio: .readOnly(banner: "Holos is deleting this meeting's audio.")
         }
-    }
-
-    /// `ReviewSession.pause` key of `command`.
-    public static func pauseKey(_ command: Command) -> String {
-        command == .automaticRelabel ? automaticKey : commandKey
     }
 
     /// Meetings the automatic relabel leaves alone: those a command runs for, and those with a review open, opening,

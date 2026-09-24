@@ -114,7 +114,7 @@ public struct ReviewWord: Sendable, Equatable {
     private var exportTimer: Task<Void, Never>?
     private var closed = false
     /// Maintenance commands holding the review read-only, by `pause` key, oldest first.
-    private var pauses: [(key: String, reason: String)] = []
+    private var pauses: [(hold: ReviewMaintenance.Hold, reason: String)] = []
 
     // MARK: - Opening
 
@@ -572,12 +572,12 @@ public struct ReviewWord: Sendable, Equatable {
 
     /// A maintenance command is about to work on the meeting (`ReviewMaintenance`): the review turns read-only at
     /// once (`pauseReason` says why; changes are refused), and this returns once every change made before is saved
-    /// and the transcript files are written, so the command starts from them. `key` names the command; pausing again
-    /// with a key already held only waits for those saves.
-    public func pause(_ key: String, reason: String) async {
+    /// and the transcript files are written, so the command starts from them. `hold` is this run of the command (each
+    /// run has its own); pausing again with a hold already held only waits for those saves.
+    public func pause(_ hold: ReviewMaintenance.Hold, reason: String) async {
         guard !closed else { return }
-        if !pauses.contains(where: { $0.key == key }) {
-            pauses.append((key, reason))
+        if !pauses.contains(where: { $0.hold == hold }) {
+            pauses.append((hold, reason))
             exportTimer?.cancel()
             exportTimer = nil
             notify()
@@ -586,12 +586,13 @@ public struct ReviewWord: Sendable, Equatable {
         try? await enqueue(.exports, optimistic: [])
     }
 
-    /// The command `key` paused for has ended: the review rereads the transcript, the labels, and the people, then is
-    /// editable again (when nothing else holds it). Transcript files still waiting are written `exportDelay` later.
-    public func resume(_ key: String) async {
-        guard pauses.contains(where: { $0.key == key }) else { return }
+    /// The command run `hold` paused for has ended: the review rereads the transcript, the labels, and the people, then
+    /// is editable again when no other hold remains (a command started while this reread runs keeps its own).
+    /// Transcript files still waiting are written `exportDelay` later.
+    public func resume(_ hold: ReviewMaintenance.Hold) async {
+        guard pauses.contains(where: { $0.hold == hold }) else { return }
         if !closed { try? await enqueue(.reload, optimistic: []) }
-        pauses.removeAll { $0.key == key }
+        pauses.removeAll { $0.hold == hold }
         if exportsPending, pauses.isEmpty { scheduleExports() }
         notify()
         Self.log.info("Session \(self.sessionID, privacy: .public): review resumed after a maintenance command")
@@ -1529,14 +1530,21 @@ public struct ReviewWord: Sendable, Equatable {
 
     private nonisolated static func people(store: SpeakerProfileStore)
         -> (people: [SpeakerProfile], names: [String: String], remember: Bool) {
-        let remember: Bool
+        people(loading: store.load)
+    }
+
+    /// The people offered, their names, and Remember voices, all from one read of the store, so a rewrite of
+    /// `profiles.json` in between cannot mix two versions. Nothing (and Remember voices off) when it cannot be read.
+    nonisolated static func people(loading load: () throws -> SpeakerProfileDatabase)
+        -> (people: [SpeakerProfile], names: [String: String], remember: Bool) {
         do {
-            remember = try store.load().rememberVoices
+            let database = try load()
+            return (VoiceProfileService.knownPeople(in: database), VoiceProfileService.profileNames(in: database),
+                    database.rememberVoices)
         } catch {
-            log.error("Cannot read Remember voices: \(ProcessSpawner.logCategory(error), privacy: .public)")
-            remember = false
+            log.error("Cannot read people: \(ProcessSpawner.logCategory(error), privacy: .public)")
+            return ([], [:], false)
         }
-        return (VoiceProfileService.knownPeople(store: store), VoiceProfileService.profileNames(store: store), remember)
     }
 
     /// Names of the hand-edited exports moved aside so far (`exports/edited-*`).

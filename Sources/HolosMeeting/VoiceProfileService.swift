@@ -288,29 +288,38 @@ public enum VoiceProfileService {
     /// Current names, for SpeakerProjection.make(profileNames:). Empty (and logged) when the store cannot be read.
     public static func profileNames(store: SpeakerProfileStore = SpeakerProfileStore()) -> [String: String] {
         do {
-            return Dictionary(try store.load().profiles.map { ($0.id, $0.displayName) },
-                              uniquingKeysWith: { first, _ in first })
+            return profileNames(in: try store.load())
         } catch {
             log.error("Cannot read people: \(ProcessSpawner.logCategory(error), privacy: .public)")
             return [:]
         }
     }
 
+    /// `profileNames(store:)` of a database already read, so several views of the people agree.
+    public static func profileNames(in database: SpeakerProfileDatabase) -> [String: String] {
+        Dictionary(database.profiles.map { ($0.id, $0.displayName) }, uniquingKeysWith: { first, _ in first })
+    }
+
     /// Most recently used first; for the review window's name combo box. Empty (and logged) when the store cannot
     /// be read.
     public static func knownPeople(store: SpeakerProfileStore = SpeakerProfileStore()) -> [SpeakerProfile] {
         do {
-            return try store.load().profiles.sorted { left, right in
-                if left.lastUsedAt != right.lastUsedAt { return left.lastUsedAt > right.lastUsedAt }
-                switch left.displayName.localizedCaseInsensitiveCompare(right.displayName) {
-                case .orderedAscending: return true
-                case .orderedDescending: return false
-                case .orderedSame: return left.id < right.id
-                }
-            }
+            return knownPeople(in: try store.load())
         } catch {
             log.error("Cannot read people: \(ProcessSpawner.logCategory(error), privacy: .public)")
             return []
+        }
+    }
+
+    /// `knownPeople(store:)` of a database already read, so several views of the people agree.
+    public static func knownPeople(in database: SpeakerProfileDatabase) -> [SpeakerProfile] {
+        database.profiles.sorted { left, right in
+            if left.lastUsedAt != right.lastUsedAt { return left.lastUsedAt > right.lastUsedAt }
+            switch left.displayName.localizedCaseInsensitiveCompare(right.displayName) {
+            case .orderedAscending: return true
+            case .orderedDescending: return false
+            case .orderedSame: return left.id < right.id
+            }
         }
     }
 

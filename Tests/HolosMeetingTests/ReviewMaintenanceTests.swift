@@ -18,9 +18,11 @@ import Testing
         }
         #expect(!banner.isEmpty)
     }
-    // The automatic relabel and a Meetings command hold a review separately.
-    #expect(ReviewMaintenance.pauseKey(.automaticRelabel) != ReviewMaintenance.pauseKey(.recover))
-    #expect(ReviewMaintenance.pauseKey(.recover) == ReviewMaintenance.pauseKey(.deleteAudio))
+    // Every run holds a review separately, even two runs of the same command.
+    let first = ReviewMaintenance.Hold(.labelSpeakers)
+    #expect(first == first)
+    #expect(first != ReviewMaintenance.Hold(.labelSpeakers))
+    #expect(first.command == .labelSpeakers)
 }
 
 @Test func meetingsWithReviewsAreInUse() {
