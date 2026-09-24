@@ -31,7 +31,7 @@ final class PeopleWindowController: NSObject, NSWindowDelegate, NSTableViewDataS
     private let mergePopUp = NSPopUpButton(frame: .zero, pullsDown: true)
     private let forgetPersonButton = NSButton(title: "Forget…", target: nil, action: nil)
     private let forgetAllButton = NSButton(title: "Forget All Voices…", target: nil, action: nil)
-    private let statusLabel = NSTextField(labelWithString: "")
+    private let statusLabel = NSTextField(wrappingLabelWithString: "")
     private var database = SpeakerProfileDatabase()
     private var people: [SpeakerProfile] = []
     private var busy = false
@@ -139,7 +139,6 @@ final class PeopleWindowController: NSObject, NSWindowDelegate, NSTableViewDataS
         footer.alignment = .centerY
         statusLabel.textColor = .secondaryLabelColor
         statusLabel.font = .systemFont(ofSize: 12)
-        statusLabel.lineBreakMode = .byTruncatingTail
 
         let stack = NSStackView(views: [rememberBox, explanation, split, footer, statusLabel])
         stack.orientation = .vertical
@@ -198,6 +197,11 @@ final class PeopleWindowController: NSObject, NSWindowDelegate, NSTableViewDataS
                 return
             }
             let selected = self.selectedPerson?.id
+            if self.statusLabel.stringValue.isEmpty, !database.isCalibrated, database.calibrationResetAt != nil {
+                // Also when the samples changed elsewhere (the review window, the CLI).
+                self.statusLabel.stringValue = "Automatic names are off: the calibration was reset when the voice "
+                    + "samples changed."
+            }
             self.database = database
             self.people = people
             self.peopleTable.reloadData()
@@ -418,17 +422,20 @@ final class PeopleWindowController: NSObject, NSWindowDelegate, NSTableViewDataS
         let store = self.store
         let root = sessionsRoot
         Task { [weak self] in
-            let failure = await Task.detached { () -> String? in
+            let (failure, reset) = await Task.detached { () -> (String?, String?) in
+                // A change to the voice samples resets the calibration in its store write; say so.
+                let before = try? store.load()
+                var failure: String?
                 do {
                     try change(store, root)
-                    return nil
                 } catch {
-                    return error.localizedDescription
+                    failure = error.localizedDescription
                 }
+                return (failure, VoiceProfileService.calibrationResetNote(before: before, after: try? store.load()))
             }.value
             guard let self else { return }
             self.busy = false
-            self.statusLabel.stringValue = failure ?? done ?? ""
+            self.statusLabel.stringValue = [failure ?? done, reset].compactMap { $0 }.joined(separator: " ")
             self.refresh()
         }
     }

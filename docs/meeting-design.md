@@ -337,7 +337,7 @@ Locks are `flock` on files in the session folder, one open file description per 
 | `.writer.lock` | recorder's `SessionArchive` actor; `SessionArchive.recover`; `openForMaintenance` | capture start → `finish`; maintenance: one save | `LOCK_EX\|LOCK_NB`, retried every 20 ms for up to 1 s |
 | `.processing.lock` (the processing lease) | recorder from just before `finish` until exit (§4.6); `holos session diarize`, `recover`, `delete`; the app's automatic relabel runs the CLI | one post-processing, rebuild, or deletion | `LOCK_EX\|LOCK_NB`, retried every 20 ms for up to 1 s |
 | `.speakers.lock` | `SpeakerEditor`; `SessionExports.regenerate`; post-processor while publishing run, head, voice data, recognition | one write (milliseconds) | polled every 20 ms up to 2 s |
-| `<support>/Speakers/profiles.lock` | `SpeakerProfileStore.update` | one read-modify-write | polled every 20 ms up to 2 s (PR10) |
+| `<support>/Speakers/profiles.lock` | `SpeakerProfileStore.update`; `withLockedDatabase` (recognition's saved comparison, a forget's per-meeting clean-up), always inside the speaker lock when both are held | one read-modify-write, or one read and the session write made from it | polled every 20 ms up to 2 s (PR10) |
 
 Rules:
 
@@ -3273,6 +3273,8 @@ public struct SpeakerProfileDatabase: Codable, Sendable, Equatable {
     /// The embedding model the thresholds were measured on; set with them.
     public var calibratedModel: EmbeddingModelID?
     public var profiles: [SpeakerProfile]
+    /// When a change to the samples last cleared the calibration; nil after `calibrate --apply`.
+    public var calibrationResetAt: Date?
 }
 ```
 
@@ -3286,12 +3288,25 @@ public struct SpeakerProfileDatabase: Codable, Sendable, Equatable {
   range, `likely ≤ possible`, with a margin of 0 … 2, a non-negative minimum length,
   and a calibrated model only with thresholds), and writes atomically; `load()` applies
   the same validation and refuses a damaged store. Centroids are computed, never stored.
+  When the write changes the sample population (a sample learned, refreshed into another
+  vector, moved by a merge, or forgotten in any scope, or a person's embedding model), the
+  same write clears `calibratedThresholds` and `calibratedModel` and sets
+  `calibrationResetAt` (`SpeakerProfileDatabase.resetCalibrationIfSamplesChanged`), unless
+  the write saved new thresholds itself; `holos people list`, the People window, and the
+  CLI commands that changed samples say the calibration was reset.
+  `withLockedDatabase(_:)` takes `profiles.lock`, reads, and runs its body with the lock
+  held, writing nothing to the store: for a write elsewhere made from the people.
 - **Snapshot, then write.** Every operation that computes from an unlocked read and then
   writes either computes inside the locked update (merge, rename, suggestions, `calibrate
   --apply`, the store step of every forget) or checks under the lock that its inputs are
   unchanged and otherwise starts again: enrollment and refresh publish only when the
   speaker generation is unchanged and the store still gives the same sample plan;
-  recognition compares again under the speaker lock with the people read then. The first
+  recognition compares again and writes its result while holding the speaker lock and then
+  `profiles.lock` (`withLockedDatabase`, the §1.7 order), so every store change (a
+  suggestion or Remember voices setting, a merge, a forget, a sample, a calibration) is
+  either reflected in the result or made after it is written; a forget's per-meeting
+  clean-up reads the people the same way. Nothing takes a speaker lock while holding
+  `profiles.lock` (a forget releases it before cleaning meetings). The first
   run of a forget removes every sample matching its scope at its store write (`.all`:
   every sample; `.session`: every sample of the meeting; `.profile`: the person;
   `.sample`: the sample).
@@ -3408,7 +3423,9 @@ public struct SpeakerProfileDatabase: Codable, Sendable, Equatable {
   meetings with confirmed links and at least 2 people with samples from 2 or more
   meetings, all samples of one embedding model (distances of different models are not
   comparable; each model is reported separately), and computes the thresholds inside the
-  store's locked update.
+  store's locked update. The thresholds hold only for the population they were measured
+  on: any later change to the samples resets them in that change's store write (see
+  **Store**), and automatic names stay off until `--apply` is run again.
 - **Enrollment** (`VoiceEnrollment.sample`, HolosSpeakers, pure): qualifying turns are
   the linked speakers' projected turns that are not reassigned, not `modified`, not
   overlapped, at least 2 s long, not excluded, and get a turn embedding from

@@ -246,10 +246,26 @@ public enum VoiceProfileService {
             }
             database.calibratedThresholds = calibration.thresholds
             database.calibratedModel = calibration.model
+            database.calibrationResetAt = nil
             return calibration
         }
         log.notice("Saved calibrated recognition thresholds")
         return calibration
+    }
+
+    /// Said when a change to the voice samples reset the calibration (`SpeakerProfileStore.update` clears it in the
+    /// same write that changes the samples).
+    public static let calibrationResetNote = "The voice samples changed, so the calibration was reset: new meetings "
+        + "only suggest names, and name nobody automatically, until you calibrate again (holos people calibrate "
+        + "--apply)."
+
+    /// `calibrationResetNote` when `before` (read before a change) was calibrated and `after` was reset since then,
+    /// else nil.
+    public static func calibrationResetNote(before: SpeakerProfileDatabase?,
+                                            after: SpeakerProfileDatabase?) -> String? {
+        guard let before, let after, before.isCalibrated, after.calibratedThresholds == nil,
+              let reset = after.calibrationResetAt, reset != before.calibrationResetAt else { return nil }
+        return calibrationResetNote
     }
 
     // MARK: - Forgetting
@@ -887,25 +903,30 @@ public enum VoiceProfileService {
                 return !recognition.runIDs.isEmpty || recognition.other
             }
             guard let profileID else { return false }
-            let known = Set(try store.load().profiles.map(\.id))
-            let isThePerson: (String?) -> Bool = { linked in
-                guard let linked else { return false }
-                return linked == profileID || !known.contains(linked)
-            }
-            var changed = false
-            if kind == .profile {
-                changed = try removeMatches(isThePerson, files: recognition, session: session)
-            }
-            let voice = try SessionSpeakerStore.voiceDataFiles(session: session)
-            if voice.other {
-                log.error("Deleted a meeting's voice data that holds unexpected files")
-                try SessionSpeakerStore.deleteVoiceData(session: session)
-            } else {
-                for runID in voice.runIDs {
-                    guard try removeVoiceEntries(isThePerson, runID: runID, session: session) else { break }
+            // Like recognition (`RecognizeStage`), the rewrite is made from the people read under `profiles.lock`,
+            // held until it is written (taken after the speaker lock, the §1.7 order), so no store change lands in
+            // between.
+            return try store.withLockedDatabase { database -> Bool in
+                let known = Set(database.profiles.map(\.id))
+                let isThePerson: (String?) -> Bool = { linked in
+                    guard let linked else { return false }
+                    return linked == profileID || !known.contains(linked)
                 }
+                var changed = false
+                if kind == .profile {
+                    changed = try removeMatches(isThePerson, files: recognition, session: session)
+                }
+                let voice = try SessionSpeakerStore.voiceDataFiles(session: session)
+                if voice.other {
+                    log.error("Deleted a meeting's voice data that holds unexpected files")
+                    try SessionSpeakerStore.deleteVoiceData(session: session)
+                } else {
+                    for runID in voice.runIDs {
+                        guard try removeVoiceEntries(isThePerson, runID: runID, session: session) else { break }
+                    }
+                }
+                return changed
             }
-            return changed
         }
         guard changedRecognition else { return }
         do {

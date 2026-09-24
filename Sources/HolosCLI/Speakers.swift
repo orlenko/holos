@@ -410,6 +410,9 @@ struct LoadedSpeakers {
     let store: SpeakerProfileStore
     /// Profile ID → name.
     let people: [String: String]
+    /// The people store as read when the session was loaded (nil when it could not be read), to tell whether a
+    /// change reset the calibration.
+    let peopleBefore: SpeakerProfileDatabase?
 }
 
 enum SpeakerCommand {
@@ -424,13 +427,15 @@ enum SpeakerCommand {
     static func load(_ text: String) throws -> LoadedSpeakers {
         let session = try SessionLocator.resolve(text)
         let store = SpeakerProfileStore()
+        let peopleBefore = try? store.load()
         let people = VoiceProfileService.profileNames(store: store)
         let snapshot = try SpeakerSessionSnapshot.load(session: session, profileNames: people)
         guard let view = snapshot.projection else {
             throw HolosError.unavailable(snapshot.runProblem
                 ?? "This meeting has no speaker labels yet. Label them with holos session diarize \(session.path).")
         }
-        return LoadedSpeakers(session: session, snapshot: snapshot, view: view, store: store, people: people)
+        return LoadedSpeakers(session: session, snapshot: snapshot, view: view, store: store, people: people,
+                              peopleBefore: peopleBefore)
     }
 
     /// A listed speaker (never "unknown", which only a turn can have).
@@ -536,8 +541,10 @@ enum SpeakerCommand {
             .map { ($0.id, $0.displayName) }, uniquingKeysWith: { first, _ in first })
     }
 
-    /// On stderr, for each person in `before` who no longer has a sample from this meeting.
+    /// On stderr, for each person in `before` who no longer has a sample from this meeting, and when a sample
+    /// change reset the calibration.
     static func noteRemovedSamples(_ before: [String: String], _ loaded: LoadedSpeakers) {
+        PeopleCommand.noteCalibrationReset(before: loaded.peopleBefore, store: loaded.store)
         guard !before.isEmpty else { return }
         let after = sampleOwners(loaded)
         for (profileID, name) in before.sorted(by: { $0.value < $1.value }) where after[profileID] == nil {

@@ -89,13 +89,17 @@ public struct SpeakerProfileDatabase: Codable, Sendable, Equatable {
     /// compared). Set with them; thresholds without it (saved before it existed) are never applied.
     public var calibratedModel: EmbeddingModelID?
     public var profiles: [SpeakerProfile]
+    /// When a change to the voice samples last cleared the calibration (`resetCalibrationIfSamplesChanged`); nil
+    /// once `holos people calibrate --apply` saves new thresholds. `holos people list` says the calibration was reset
+    /// while this is set and nothing is calibrated.
+    public var calibrationResetAt: Date?
 
     public init(schemaVersion: Int = SpeakerProfileDatabase.currentSchemaVersion, rememberVoices: Bool = false,
                 calibratedThresholds: RecognitionThresholds? = nil, calibratedModel: EmbeddingModelID? = nil,
-                profiles: [SpeakerProfile] = []) {
+                profiles: [SpeakerProfile] = [], calibrationResetAt: Date? = nil) {
         self.schemaVersion = schemaVersion; self.rememberVoices = rememberVoices
         self.calibratedThresholds = calibratedThresholds; self.calibratedModel = calibratedModel
-        self.profiles = profiles
+        self.profiles = profiles; self.calibrationResetAt = calibrationResetAt
     }
 
     /// The calibrated thresholds for a run of `model`: nil unless they were measured on that model.
@@ -112,6 +116,43 @@ public struct SpeakerProfileDatabase: Codable, Sendable, Equatable {
 
     /// Sessions that contributed at least one sample.
     public var sampleSessionIDs: Set<String> { Set(profiles.flatMap { $0.samples.map(\.sessionID) }) }
+
+    /// One stored sample as calibration sees it: whose it is, of which model, from which meeting, and its vector.
+    public struct CalibrationSample: Hashable, Sendable {
+        public var profileID: String
+        public var model: EmbeddingModelID?
+        public var sampleID: String
+        public var sessionID: String
+        public var embedding: [Float]
+    }
+
+    /// The population calibration is measured on (`RecognitionCalibration`): every sample, grouped by person, with
+    /// its person's embedding model. Names, settings, and people without samples are not part of it.
+    public var calibrationPopulation: Set<CalibrationSample> {
+        Set(profiles.flatMap { profile in
+            profile.samples.map {
+                CalibrationSample(profileID: profile.id, model: profile.embeddingModel, sampleID: $0.id,
+                                  sessionID: $0.sessionID, embedding: $0.embedding.values)
+            }
+        })
+    }
+
+    /// Clears the calibration (`calibratedThresholds`, `calibratedModel`) when the sample population differs from
+    /// `before`'s: a sample learned, refreshed, moved by a merge, or forgotten, or a model changed. Thresholds
+    /// measured on another population no longer keep their false-accept budget. Sets `calibrationResetAt` to `now`.
+    /// A change that saved new thresholds itself (`calibrate --apply`) is left alone. Returns whether it cleared
+    /// anything. `SpeakerProfileStore.update` calls this on every write, inside the same locked update.
+    @discardableResult
+    public mutating func resetCalibrationIfSamplesChanged(since before: SpeakerProfileDatabase,
+                                                          now: Date = Date()) -> Bool {
+        guard calibratedThresholds != nil || calibratedModel != nil,
+              calibratedThresholds == before.calibratedThresholds, calibratedModel == before.calibratedModel,
+              calibrationPopulation != before.calibrationPopulation else { return false }
+        calibratedThresholds = nil
+        calibratedModel = nil
+        calibrationResetAt = now
+        return true
+    }
 }
 
 // Voiceprints are biometric: printing a sample, a profile, or the database (`print`, `dump`, string interpolation,
@@ -158,5 +199,20 @@ extension SpeakerProfileDatabase: CustomStringConvertible, CustomDebugStringConv
     public var customMirror: Mirror {
         Mirror(self, children: ["rememberVoices": rememberVoices, "calibrated": isCalibrated,
                                 "profiles": profiles.count, "samples": sampleCount], displayStyle: .struct)
+    }
+}
+
+extension SpeakerProfileDatabase.CalibrationSample: CustomStringConvertible, CustomDebugStringConvertible,
+    CustomReflectable {
+    public var description: String {
+        "CalibrationSample(profileID: \(profileID), sampleID: \(sampleID), sessionID: \(sessionID), "
+            + "dimension: \(embedding.count))"
+    }
+
+    public var debugDescription: String { description }
+
+    public var customMirror: Mirror {
+        Mirror(self, children: ["profileID": profileID, "sampleID": sampleID, "sessionID": sessionID,
+                                "dimension": embedding.count], displayStyle: .struct)
     }
 }

@@ -19,6 +19,10 @@ enum RecognizeStage {
     /// that is saved.
     @TaskLocal static var beforeSaving: (@Sendable () throws -> Void)? = nil
 
+    /// Test hook: while set (a task-local value), called with the speaker lock and `profiles.lock` held, after the
+    /// people are read again and before the comparison is written.
+    @TaskLocal static var whileSaving: (@Sendable () throws -> Void)? = nil
+
     enum Outcome: Equatable {
         /// An expected skip: it never makes the record `partial`.
         case skipped(String)
@@ -46,19 +50,26 @@ enum RecognizeStage {
         let result: RecognitionResult
         do {
             try beforeSaving?()
-            // The comparison that is saved is made again under the speaker lock from the people as they are then
-            // (the recognizer is pure and cheap), never from the earlier read: a sample forgotten, refreshed, or
-            // learned, a person forgotten, suggestions turned off, a model change, or a new calibration meanwhile is
-            // reflected in what is written. A forget whose store update comes later cleans this file after the lock
-            // is released (it takes the speaker lock per meeting after its store update).
+            // The comparison that is saved is made again from the people as they are then (the recognizer is pure
+            // and cheap), never from the earlier read, and it is written while the speaker lock and then
+            // `profiles.lock` are held (the §1.7 order: speakers → profiles, as every other holder of both takes
+            // them; a forget releases `profiles.lock` before it takes any speaker lock). Every change to the people
+            // (`SpeakerProfileStore.update` takes `profiles.lock`) therefore lands either before the read, and is
+            // reflected in what is written (a sample forgotten, refreshed, or learned, a person forgotten or merged,
+            // suggestions or Remember voices turned off, a model change, a calibration saved or reset), or after
+            // the write, as for a meeting processed earlier. A forget whose store update comes later cleans this
+            // file afterwards (it takes the speaker lock per meeting after its store update).
             let written = try SessionArchive.withSpeakerLock(at: session) { () throws -> RecognitionResult? in
-                let current = try store.load()
-                guard current.rememberVoices,
-                      let fresh = SpeakerRecognizer.recognize(run: run, voiceData: voiceData, database: current) else {
-                    return nil
+                try store.withLockedDatabase { current -> RecognitionResult? in
+                    guard current.rememberVoices,
+                          let fresh = SpeakerRecognizer.recognize(run: run, voiceData: voiceData,
+                                                                  database: current) else {
+                        return nil
+                    }
+                    try whileSaving?()
+                    try SessionSpeakerStore.writeRecognition(fresh, session: session)
+                    return fresh
                 }
-                try SessionSpeakerStore.writeRecognition(fresh, session: session)
-                return fresh
             }
             guard let written else { return .skipped(rememberOff) }
             result = written

@@ -215,6 +215,72 @@ func profileStoreIsPrivateLockedAndNotBackedUp() async throws {
     #expect(throws: HolosError.self) { try store.load() }
 }
 
+@Test func calibrationIsResetInTheWriteThatChangesTheSamples() throws {
+    let root = try profileRoot()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let store = SpeakerProfileStore(directory: root.appendingPathComponent("Speakers"))
+    let thresholds = RecognitionThresholds(likelyMaxDistance: 0.2, likelyMinMargin: 0.1, possibleMaxDistance: 0.4,
+                                           minSampleSeconds: 20)
+    let jim = SpeakerProfile(id: "JIM", displayName: "Jim", embeddingModel: profileModel, samples: [profileSample()])
+    // Samples and calibration saved together: the calibration is the write's own, so it stays.
+    try store.update {
+        $0.profiles = [jim]
+        $0.calibratedThresholds = thresholds
+        $0.calibratedModel = profileModel
+    }
+    #expect(try store.load().isCalibrated)
+
+    // Names, settings, and people without samples are not part of the population.
+    try store.update {
+        $0.rememberVoices = true
+        $0.profiles[0].displayName = "James"
+        $0.profiles[0].recognitionEnabled = false
+        $0.profiles.append(SpeakerProfile(id: "MARIA", displayName: "Maria"))
+    }
+    #expect(try store.load().isCalibrated)
+    #expect(try store.load().calibrationResetAt == nil)
+
+    // A sample added, changed, moved to another person, or removed, or a model change: reset in the same write.
+    let recalibrate = { try store.update { $0.calibratedThresholds = thresholds; $0.calibratedModel = profileModel } }
+    let changes: [(inout SpeakerProfileDatabase) -> Void] = [
+        { $0.profiles[1].samples = [profileSample()]; $0.profiles[1].embeddingModel = profileModel },
+        { $0.profiles[0].samples[0].embedding = FloatVector([0, 1, 0]) },
+        { $0.profiles[0].samples += $0.profiles[1].samples; $0.profiles[1].samples = [] },
+        { $0.profiles[0].samples.removeLast() },
+        { $0.profiles[0].embeddingModel = EmbeddingModelID(id: "other", revision: "2") },
+    ]
+    for change in changes {
+        try recalibrate()
+        let before = try store.load()
+        #expect(before.isCalibrated)
+        try store.update(change)
+        let after = try store.load()
+        #expect(after.calibratedThresholds == nil)
+        #expect(after.calibratedModel == nil)
+        #expect(after.calibrationResetAt != nil)
+    }
+
+    // A store saved before `calibrationResetAt` existed still loads.
+    let old = Data(#"{"schemaVersion": 1, "rememberVoices": true, "profiles": []}"#.utf8)
+    try AtomicFile.write(old, to: store.databaseURL)
+    #expect(try store.load().calibrationResetAt == nil)
+}
+
+@Test(.timeLimit(.minutes(1)))
+func lockedReadHoldsTheLockUntilItsWriteIsDone() throws {
+    let root = try profileRoot()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let store = SpeakerProfileStore(directory: root.appendingPathComponent("Speakers"))
+    try store.update { $0.rememberVoices = true }
+    let seen = try store.withLockedDatabase { database -> Bool in
+        // Any store change waits for the locked read to finish (and gives up after 2 s).
+        #expect(throws: HolosError.self) { try store.update { $0.rememberVoices = false } }
+        return database.rememberVoices
+    }
+    #expect(seen)
+    #expect(try store.load().rememberVoices, "Nothing is written by a locked read or the refused update.")
+}
+
 @Test func newerStoreIsRefusedAndNeverOverwritten() throws {
     let root = try profileRoot()
     defer { try? FileManager.default.removeItem(at: root) }

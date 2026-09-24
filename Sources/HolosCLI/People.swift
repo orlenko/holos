@@ -48,6 +48,10 @@ struct People: AsyncParsableCommand {
             let database = try store.load()
             Console.output("Remember voices: \(database.rememberVoices ? "on" : "off")"
                            + (database.isCalibrated ? " · automatic names: on (calibrated)" : ""))
+            if !database.isCalibrated, database.calibrationResetAt != nil {
+                Console.output("Automatic names: off; the calibration was reset when the voice samples changed "
+                               + "(calibrate again with holos people calibrate --apply).")
+            }
             let people = VoiceProfileService.sortedPeople(database.profiles)
             guard !people.isEmpty else {
                 Console.output("No people yet. Link a speaker to a person with holos speakers link.")
@@ -101,6 +105,7 @@ struct People: AsyncParsableCommand {
             case .off:
                 let forgotten = try VoiceProfileService.setRemember(false, forgetExisting: forget, store: store)
                 Console.output("Remember voices: off.")
+                PeopleCommand.noteCalibrationReset(before: before, store: store)
                 if forget {
                     Console.output("Forgot \(PeopleCommand.count(forgotten, "voice sample")) and the voice data of "
                                    + "every meeting in \(HolosPaths.sessions.path). Names are kept.")
@@ -148,9 +153,11 @@ struct People: AsyncParsableCommand {
             let store = SpeakerProfileStore()
             let source = try PeopleCommand.profileID(person, store: store)
             let target = try PeopleCommand.profileID(into, store: store)
+            let before = try? store.load()
             try VoiceProfileService.merge(profileID: source, into: target, store: store)
             let name = try store.load().profiles.first { $0.id == target }?.displayName ?? target
             Console.output("Merged \(person) into \(name).")
+            PeopleCommand.noteCalibrationReset(before: before, store: store)
         }
     }
 
@@ -184,6 +191,7 @@ struct People: AsyncParsableCommand {
         mutating func run() throws {
             let store = SpeakerProfileStore()
             let database = try store.load()
+            defer { PeopleCommand.noteCalibrationReset(before: database, store: store) }
             if all {
                 let count = try VoiceProfileService.forgetAll(store: store)
                 Console.output("Forgot \(PeopleCommand.count(count, "voice sample")) and the voice data of every "
@@ -355,6 +363,14 @@ enum PeopleCommand {
         }
         let manifest = try SessionArchive.readManifest(at: try SessionLocator.resolve(trimmed))
         return (manifest.id, manifest.name)
+    }
+
+    /// On stderr, when the calibration saved in `before` (read before a change) has been reset since
+    /// (`VoiceProfileService.calibrationResetNote`).
+    static func noteCalibrationReset(before: SpeakerProfileDatabase?, store: SpeakerProfileStore) {
+        if let note = VoiceProfileService.calibrationResetNote(before: before, after: try? store.load()) {
+            Console.error(note)
+        }
     }
 
     /// "Jim", or "Maria (you)".

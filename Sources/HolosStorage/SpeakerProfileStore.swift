@@ -55,9 +55,11 @@ public struct ForgetRecord: Codable, Sendable, Equatable {
 /// (0700) that is excluded from Time Machine, `profiles.lock`, and `forget-journal.jsonl` (0600).
 ///
 /// Reads take no lock (`profiles.json` is replaced atomically). Every write is a read-modify-write under
-/// `profiles.lock` (`update`), polled every 20 ms for up to 2 s. The lock is not re-entrant: never call `update` or a
-/// journal method from inside `update`. When a caller also needs a session's speaker lock, it takes that lock first
-/// (§1.7 order: speakers → profiles).
+/// `profiles.lock` (`update`), polled every 20 ms for up to 2 s; a read whose result is written elsewhere
+/// (recognition results, forget clean-up) holds it through that write (`withLockedDatabase`). The lock is not
+/// re-entrant: never call `update`, `withLockedDatabase`, or a journal method from inside either. When a caller also
+/// needs a session's speaker lock, it takes that lock first (§1.7 order: speakers → profiles), and nothing takes a
+/// speaker lock while holding `profiles.lock`.
 public struct SpeakerProfileStore: Sendable {
     private static let log = Logger(subsystem: "ca.orlenko.holos.app", category: "storage")
     static let databaseName = "profiles.json"
@@ -101,17 +103,35 @@ public struct SpeakerProfileStore: Sendable {
     /// Takes `profiles.lock` (2 s), reads the database (`load`, so a damaged one is refused even when `body` changes
     /// nothing), lets `body` change it, validates the result (`validate`), and writes it atomically when it changed.
     /// Nothing is written when the read, `body`, or the validation throws.
+    ///
+    /// When `body` changed the voice-sample population (a sample learned, refreshed, merged, or forgotten, or a
+    /// model changed), the calibration is cleared in this same write
+    /// (`SpeakerProfileDatabase.resetCalibrationIfSamplesChanged`): thresholds measured on other samples no longer
+    /// keep their false-accept budget.
     public func update<T>(_ body: (inout SpeakerProfileDatabase) throws -> T) throws -> T {
         try withLock {
             var database = try load()
             let before = database
             let result = try body(&database)
+            if database.resetCalibrationIfSamplesChanged(since: before) {
+                Self.log.notice("The voice samples changed, so the recognition calibration was reset")
+            }
             guard database != before else { return result }
             try Self.validate(database)
             try AtomicFile.writeJSON(database, to: databaseURL)
             Self.log.info("Saved the people store: \(database.profiles.count, privacy: .public) people, \(database.sampleCount, privacy: .public) voice samples")
             return result
         }
+    }
+
+    /// Takes `profiles.lock` (2 s), reads the database (`load`), and runs `body` with it while the lock is held;
+    /// writes nothing to the store. For a caller that writes something else (a recognition result) from the people as
+    /// they are: no store change can land between its read and its write, so a change is either seen or made after
+    /// the write. A caller that also holds a session's speaker lock took that first (§1.7 order: speakers →
+    /// profiles). `body` must not call `update`, `withLockedDatabase`, or a journal method (the lock is not
+    /// re-entrant).
+    public func withLockedDatabase<T>(_ body: (SpeakerProfileDatabase) throws -> T) throws -> T {
+        try withLock { try body(try load()) }
     }
 
     /// The rules every saved database meets: schema version 1; calibrated thresholds pass

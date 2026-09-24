@@ -1412,8 +1412,120 @@ func applyCalibrationStoresItsModelAndRefusesMixedModels() throws {
                                        speechSeconds: 60, embedding: FloatVector(profileAxis(6)), condition: .call,
                                        weak: false)]))
     }
+    // Adding Sam's samples reset the calibration; it is restored by hand to check that a refusal keeps it.
+    #expect(try store.load().calibratedThresholds == nil)
+    try store.update { $0.calibratedThresholds = calibration.thresholds; $0.calibratedModel = profileModel }
     #expect(throws: HolosError.self) { try VoiceProfileService.applyCalibration(store: store) }
     #expect(try store.load().calibratedThresholds == calibration.thresholds)
+}
+
+@Test(.timeLimit(.minutes(1)))
+func calibrationIsResetWhenTheSamplesItWasMeasuredOnChange() async throws {
+    let temp = try TemporaryDirectory("profiles")
+    defer { temp.remove() }
+    let store = profileStore(temp)
+    func person(_ id: String, _ samples: [(String, [Float])]) -> SpeakerProfile {
+        SpeakerProfile(id: id, displayName: id, embeddingModel: profileModel, samples: samples.map { session, vector in
+            VoiceprintSample(sessionID: session, sessionName: "Meeting", speakerIDs: ["system:S1"], speechSeconds: 60,
+                             embedding: FloatVector(profileUnit(vector)), condition: .call, weak: false)
+        })
+    }
+    let (m1, m2, m3) = (UUID().uuidString, UUID().uuidString, UUID().uuidString)
+    try store.update {
+        $0.rememberVoices = true
+        $0.profiles = [person("JIM", [(m1, profileAxis(0)), (m2, [1, 0.1, 0, 0, 0, 0, 0, 0]),
+                                      (m3, [1, 0, 0.1, 0, 0, 0, 0, 0])]),
+                       person("MARIA", [(m1, profileAxis(3)), (m3, [0, 0, 0, 1, 0.1, 0, 0, 0])]),
+                       person("SAM", [(m2, profileAxis(6))]),
+                       SpeakerProfile(id: "ANNA", displayName: "Anna")]
+    }
+    /// Calibrates, runs `change`, and returns whether the calibration was reset (and the note says so).
+    func resets(_ change: () async throws -> Void) async throws -> Bool {
+        try VoiceProfileService.applyCalibration(store: store)
+        let before = try store.load()
+        #expect(before.isCalibrated && before.calibrationResetAt == nil)
+        try await change()
+        let after = try store.load()
+        let note = VoiceProfileService.calibrationResetNote(before: before, after: after)
+        #expect((note != nil) == (after.calibratedThresholds == nil))
+        return after.calibratedThresholds == nil && after.calibratedModel == nil && after.calibrationResetAt != nil
+    }
+
+    // Names, settings, and people without samples leave it.
+    #expect(try await !resets { try VoiceProfileService.rename(profileID: "JIM", to: "James", store: store) })
+    #expect(try await !resets { try VoiceProfileService.setSuggestions(false, profileID: "JIM", store: store) })
+    #expect(try await !resets {
+        try VoiceProfileService.setRemember(false, forgetExisting: false, store: store, sessionsRoot: temp.url)
+        try VoiceProfileService.setRemember(true, forgetExisting: false, store: store, sessionsRoot: temp.url)
+    })
+    #expect(try await !resets { try VoiceProfileService.forget(profileID: "ANNA", store: store, sessionsRoot: temp.url) })
+
+    // A merge regroups samples: reset.
+    #expect(try await resets { try VoiceProfileService.merge(profileID: "SAM", into: "MARIA", store: store) })
+
+    // A voice learned from a meeting (enrollment): reset.
+    let (session, _) = try await profileSession(in: temp)
+    #expect(try await resets {
+        _ = try await VoiceProfileService.link(
+            session: session, speakerID: "system:S1", to: .existing(profileID: "JIM"),
+            view: try SessionFixtures.view(session), learnVoice: true, extractor: ProfileFakeExtractor(), store: store)
+    })
+    // That sample recomputed after an edit (refresh) into another voiceprint: reset.
+    try SessionFixtures.appendEdits([.excludeFromEnrollment(turnIDs: ["T3"])], session: session)
+    let refreshed = ProfileFakeExtractor(fallback: profileUnit([0.8, 0.6, 0, 0, 0, 0, 0, 0]))
+    #expect(try await resets {
+        try await VoiceProfileService.refreshSamples(session: session, extractor: refreshed, store: store)
+    })
+    #expect(refreshed.requests.count == 1)
+    // One sample forgotten: reset.
+    let sample = try #require(try store.load().profiles.first { $0.id == "JIM" }?.samples.first)
+    #expect(try await resets {
+        try VoiceProfileService.forget(sampleID: sample.id, store: store, sessionsRoot: temp.url)
+    })
+    // The samples of one meeting forgotten (Delete Meeting's "Also forget voice samples"): reset.
+    #expect(try await resets {
+        try VoiceProfileService.perform(ForgetRecord(kind: .session, sampleIDs: [], sessionIDs: [m2]), store: store,
+                                        sessionsRoot: temp.url, initial: true)
+    })
+    // Every voice forgotten: reset (a model change is covered by the store's own test).
+    #expect(try await resets { try VoiceProfileService.forgetAll(store: store, sessionsRoot: temp.url) })
+}
+
+@Test(.timeLimit(.minutes(1)))
+func recognitionIsWrittenWhileNoPeopleChangeCanLand() async throws {
+    let temp = try TemporaryDirectory("profiles")
+    defer { temp.remove() }
+    let store = profileStore(temp)
+    let (session, record) = try await profileProcessedSession(in: temp, store: nil, forceVoiceData: true)
+    let runID = try #require(record.runID)
+    let run = try SessionSpeakerStore.readRun(id: runID, session: session)
+    let voiceData = try SessionSpeakerStore.readVoiceData(runID: runID, session: session)
+    try store.update {
+        $0.rememberVoices = true
+        $0.profiles = [profilePerson("JIM", "Jim", vector: profileAxis(0))]
+    }
+
+    // Jim's suggestions are turned off between the people's last read and the write of the comparison: the change
+    // waits for the write (and here gives up after 2 s), so it can never be lost behind a stale comparison.
+    let outcome = RecognizeStage.$whileSaving.withValue({
+        #expect(throws: HolosError.self) {
+            try VoiceProfileService.setSuggestions(false, profileID: "JIM", store: store)
+        }
+    }) {
+        RecognizeStage.run(run, voiceData: voiceData, session: session, store: store)
+    }
+    guard case .recognized(let result) = outcome else {
+        Issue.record("Expected a recognition result, got \(outcome)")
+        return
+    }
+    #expect(result.matches.map(\.profileID) == ["JIM"])
+    #expect(try store.load().profiles.first?.recognitionEnabled == true, "The refused change wrote nothing.")
+    // Once the comparison is written the change goes through, and the next meeting uses it.
+    try VoiceProfileService.setSuggestions(false, profileID: "JIM", store: store)
+    guard case .skipped = RecognizeStage.run(run, voiceData: voiceData, session: session, store: store) else {
+        Issue.record("Nobody is left to suggest.")
+        return
+    }
 }
 
 // MARK: - Export
