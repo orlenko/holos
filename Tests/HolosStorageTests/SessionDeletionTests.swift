@@ -294,6 +294,124 @@ private final class SharedURLs: Sendable {
     withExtendedLifetime(recorder) {}
 }
 
+/// A session lock file held from a descriptor of its own, as another process would hold it. `letGo()` is idempotent.
+private final class DeletionLockHolder: Sendable {
+    private let fd: Mutex<Int32>
+
+    init(_ name: String, in session: URL) throws {
+        let fd = Darwin.open(session.appendingPathComponent(name).path, O_CREAT | O_RDWR | O_CLOEXEC, 0o600)
+        try #require(fd >= 0)
+        try #require(flock(fd, LOCK_EX | LOCK_NB) == 0)
+        self.fd = Mutex(fd)
+    }
+
+    func letGo() {
+        let fd = self.fd.withLock { value -> Int32 in
+            let current = value
+            value = -1
+            return current
+        }
+        if fd >= 0 {
+            flock(fd, LOCK_UN)
+            Darwin.close(fd)
+        }
+    }
+}
+
+/// Answers seen from inside a deletion.
+private final class DeletionProbes: Sendable {
+    private let values = Mutex<[Bool]>([])
+    func append(_ value: Bool) { values.withLock { $0.append(value) } }
+    var all: [Bool] { values.withLock { $0 } }
+}
+
+@Test func moveToTrashHoldsTheSpeakerLockThroughTheTrash() async throws {
+    let root = try deletionRoot()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let session = try await deletionSession(in: root).session
+    let lease = try SessionArchive.acquireProcessingLease(at: session)
+    defer { lease.release() }
+    var speakerLockHeld: Bool?
+    var editRefused = false
+    try SessionDeletion.moveToTrash(session: session, lease: lease, logDirectory: root) { url in
+        speakerLockHeld = try SessionLockFile.isHeld(SessionLockFile.speakers, in: url)
+        // A speaker edit or export regeneration (which take only the speaker lock) cannot start meanwhile.
+        do {
+            try SessionArchive.withSpeakerLock(at: url, timeout: .zero) {}
+        } catch HolosError.unavailable {
+            editRefused = true
+        }
+    }
+    #expect(speakerLockHeld == true, "The speaker lock is held while the folder is handed to the Trash.")
+    #expect(editRefused)
+    #expect(try !SessionLockFile.isHeld(SessionLockFile.speakers, in: session), "It is released afterwards.")
+
+    // The same for a folder without a manifest.
+    let bare = root.appendingPathComponent("\(UUID().uuidString).holos", isDirectory: true)
+    try FileManager.default.createDirectory(at: bare, withIntermediateDirectories: true)
+    var bareSpeakerLockHeld: Bool?
+    try SessionDeletion.moveToTrashWithoutManifest(session: bare, logDirectory: root) { url in
+        bareSpeakerLockHeld = try SessionLockFile.isHeld(SessionLockFile.speakers, in: url)
+    }
+    #expect(bareSpeakerLockHeld == true)
+    #expect(try !SessionLockFile.isHeld(SessionLockFile.speakers, in: bare))
+}
+
+@Test func moveToTrashWithoutManifestWaitsForTheSpeakerLock() async throws {
+    let root = try deletionRoot()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let bare = root.appendingPathComponent("\(UUID().uuidString).holos", isDirectory: true)
+    try FileManager.default.createDirectory(at: bare, withIntermediateDirectories: true)
+    let holder = try DeletionLockHolder(SessionLockFile.speakers, in: bare)
+    defer { holder.letGo() }
+    let trashed = SharedURLs()
+    #expect(isUnavailable(#expect(throws: HolosError.self) {
+        try SessionDeletion.moveToTrashWithoutManifest(session: bare, logDirectory: root) { trashed.append($0) }
+    }))
+    #expect(trashed.urls.isEmpty)
+}
+
+@Test func deletionKeepsARecorderFromReopeningTheSession() async throws {
+    let root = try deletionRoot()
+    defer { try? FileManager.default.removeItem(at: root) }
+    // A `recording` archive whose recorder is gone: its writer lock is free, so `SessionArchive.open` could reopen it.
+    func staleSession() throws -> URL {
+        let session = try SessionArchive.create(root: root, name: "Stale", source: .microphone, locale: "en-CA",
+                                                backend: .speech).directory
+        try Data(repeating: 1, count: 1_024).write(to: session.appendingPathComponent("audio/mic/000001.caf"))
+        #expect(try !SessionArchive.isActive(at: session))
+        return session
+    }
+    let session = try staleSession()
+    let lease = try SessionArchive.acquireProcessingLease(at: session)
+    defer { lease.release() }
+
+    // Delete Audio: seen from the moment it waits for a busy speaker lock, the writer lock is held.
+    let speakers = try DeletionLockHolder(SessionLockFile.speakers, in: session)
+    defer { speakers.letGo() }
+    let probes = DeletionProbes()
+    try SessionLockFile.$onContention.withValue({
+        probes.append((try? SessionArchive.isActive(at: session)) ?? false)
+        speakers.letGo()
+    }) {
+        try SessionDeletion.deleteAudio(session: session, lease: lease)
+    }
+    #expect(probes.all == [true], "No recorder can reopen the session while its audio is deleted.")
+    #expect(try !SessionArchive.isActive(at: session), "The writer lock is released afterwards.")
+
+    // Delete Meeting: a recorder that tries to reopen the session while it is handed to the Trash is refused. (A
+    // second stale session: the first has no audio/ folder now, which `open` refuses for its layout alone.)
+    let other = try staleSession()
+    let otherLease = try SessionArchive.acquireProcessingLease(at: other)
+    defer { otherLease.release() }
+    var reopenError: HolosError?
+    try SessionDeletion.moveToTrash(session: other, lease: otherLease, logDirectory: root) { url in
+        reopenError = #expect(throws: HolosError.self) { try SessionArchive.open(at: url) }
+    }
+    #expect(isUnavailable(reopenError))
+    #expect(try !SessionArchive.isActive(at: other))
+}
+
 @Test func moveToTrashKeepsTheFolderWhenTrashFails() async throws {
     let root = try deletionRoot()
     defer { try? FileManager.default.removeItem(at: root) }

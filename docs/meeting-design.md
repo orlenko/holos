@@ -3621,6 +3621,11 @@ Nothing expired meetings before; a 3 h call is about 2 GB even with mono system 
   `{schemaVersion, deletedAt, chunkCount, seconds}`. Transcript, runs, edits, and exports
   stay. `SessionDeletion.moveToTrash(session:lease:)` moves the folder to the Trash
   (`FileManager.trashItem`) and deletes `~/Library/Logs/Holos/recorder-<id>.log`.
+  Both hold the writer lock (retry 1 s; held means a recorder is running, so they refuse)
+  for the whole deletion rather than probing it, because `SessionArchive.open(at:)` does
+  not consult the lease; `moveToTrash` also holds the speaker lock from the voice data
+  through the trash, so a speaker edit or export regeneration never runs in a folder being
+  moved. Lock order: processing → writer → speakers.
   Every delete inside a session folder (these, PR7b's `derived/`, `current.pending`,
   `deleteVoiceData`) goes through `AtomicFile.removeTree(_:in:)` (PR6), never
   `FileManager.removeItem`: it opens each folder on the way with `O_NOFOLLOW`, so a

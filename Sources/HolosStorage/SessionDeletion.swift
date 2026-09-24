@@ -45,7 +45,9 @@ extension SessionManifest {
 }
 
 /// Delete Audio and Delete Meeting (docs/meeting-design.md §4.13). Both run under the caller's processing lease and
-/// refuse while a recorder holds the session's writer lock.
+/// hold the session's writer lock from the start to the end, so they refuse while a recorder holds it and no
+/// recorder can reopen the session (`SessionArchive.open(at:)`, which does not consult the lease) while they run.
+/// Locks are taken in the order processing → writer → speakers.
 ///
 /// Every delete inside the session folder goes through `AtomicFile.removeTree`, which opens each folder on the way
 /// with O_NOFOLLOW: a symbolic link in place of `audio/`, `derived/`, or `speakers/` is refused (or, as the last
@@ -72,13 +74,14 @@ public enum SessionDeletion {
     /// part-way never leaves chunks missing without it; calling again finishes the job and keeps the first marker.
     ///
     /// Throws `HolosError.invalidInput` when the lease is released or belongs to another session, or the manifest
-    /// cannot be read, and `HolosError.unavailable` while a recorder holds the writer lock or another process holds
-    /// the speaker lock for more than 2 s.
+    /// cannot be read, and `HolosError.unavailable` while a recorder holds the writer lock (for more than 1 s) or
+    /// another process holds the speaker lock for more than 2 s.
     public static func deleteAudio(session: URL, lease: ProcessingLease) throws {
         // The lease stays locked, even across a concurrent `release()`, until the deletion ends.
         try lease.beginUse(for: session)
         defer { lease.endUse() }
-        try requireNoWriter(session, action: "deleting its audio")
+        let writer = try holdWriterLock(session, action: "deleting its audio")
+        defer { SessionLockFile.unlockAndClose(writer) }
         let manifest = try SessionArchive.readManifest(at: session)
 
         // Voice data is only for evaluation sessions; it goes first and is never left behind by a later failure.
@@ -97,10 +100,12 @@ public enum SessionDeletion {
 
     /// §4.13. `trash` defaults to FileManager.trashItem; `logDirectory` to ~/Library/Logs/Holos (tests inject both).
     ///
-    /// Removes `speakers/voice/` first (under the speaker lock), so no voice data waits in the Trash, then hands the
-    /// session folder to `trash`, then deletes `<logDirectory>/recorder-<SESSION-UUID>.log`. The session ID comes from
-    /// the manifest, or from the folder name when the manifest cannot be read, so a damaged session can be deleted
-    /// too. A log that cannot be deleted is logged, not thrown: the meeting is already in the Trash by then.
+    /// Removes `speakers/voice/` first, so no voice data waits in the Trash, then hands the session folder to
+    /// `trash`, then deletes `<logDirectory>/recorder-<SESSION-UUID>.log`. The speaker lock is held from the voice
+    /// data through `trash`, so a speaker edit or export regeneration (which take only that lock) either finishes
+    /// before the folder moves or is refused until it has. The session ID comes from the manifest, or from the folder
+    /// name when the manifest cannot be read, so a damaged session can be deleted too. A log that cannot be deleted
+    /// is logged, not thrown: the meeting is already in the Trash by then.
     ///
     /// Throws, with the folder left in place, when the lease is released or belongs to another session, while a
     /// recorder holds the writer lock, when the speaker lock stays busy, or when `trash` fails.
@@ -109,12 +114,13 @@ public enum SessionDeletion {
                                    trash: (URL) throws -> Void = SessionDeletion.systemTrash) throws {
         try lease.beginUse(for: session)
         defer { lease.endUse() }
-        try requireNoWriter(session, action: "deleting it")
+        let writer = try holdWriterLock(session, action: "deleting it")
+        defer { SessionLockFile.unlockAndClose(writer) }
         let sessionID = self.sessionID(of: session)
         try SessionArchive.withSpeakerLock(at: session) {
             try SessionSpeakerStore.deleteVoiceData(session: session)
+            try trash(session)
         }
-        try trash(session)
         log.notice("Session \(sessionID ?? "unknown", privacy: .public): moved to the Trash")
         if let sessionID { removeRecorderLog(sessionID: sessionID, in: logDirectory) }
     }
@@ -131,11 +137,12 @@ public enum SessionDeletion {
     /// Delete Meeting for a `.holos` folder with no `manifest.json` file (`lacksManifest`), which
     /// `acquireProcessingLease` refuses. Takes `.processing.lock` and then `.writer.lock` itself (each retried for up
     /// to 1 s, the order maintenance uses), so no Holos command or recorder works in the folder meanwhile; checks
-    /// again that it has no manifest, removes `speakers/voice/`, hands the folder to `trash`, and deletes the
-    /// recorder log of the `<UUID>` the folder is named after.
+    /// again that it has no manifest, takes `.speakers.lock` (up to 2 s) and holds it through `trash`, removes
+    /// `speakers/voice/`, hands the folder to `trash`, and deletes the recorder log of the `<UUID>` the folder is
+    /// named after.
     ///
     /// Throws `HolosError.invalidInput` for a folder not named `<something>.holos` or one that has a manifest (delete
-    /// it with `moveToTrash(session:lease:)`), and `HolosError.unavailable` when either lock stays held.
+    /// it with `moveToTrash(session:lease:)`), and `HolosError.unavailable` when any of the locks stays held.
     public static func moveToTrashWithoutManifest(session: URL,
                                                   logDirectory: URL = SessionDeletion.defaultLogDirectory,
                                                   trash: (URL) throws -> Void = SessionDeletion.systemTrash) throws {
@@ -158,6 +165,13 @@ public enum SessionDeletion {
             throw HolosError.invalidInput("\(session.lastPathComponent) has a manifest; delete it as a session.")
         }
         let sessionID = self.sessionID(of: session)
+        // Held through `trash`, as in `moveToTrash`, so a holder of the speaker lock never works in a folder that
+        // is being moved.
+        guard let speakers = try SessionLockFile.acquire(SessionLockFile.speakers, inFolder: folder,
+                                                         timeout: .seconds(2)) else {
+            throw HolosError.unavailable("Speaker labels are being saved by another Holos window or command; try again.")
+        }
+        defer { SessionLockFile.unlockAndClose(speakers) }
         try SessionSpeakerStore.deleteVoiceData(session: session)
         try trash(session)
         log.notice("Session \(sessionID ?? "unknown", privacy: .public): folder without a manifest moved to the Trash")
@@ -177,10 +191,14 @@ public enum SessionDeletion {
         return (info.st_mode & S_IFMT) == S_IFREG
     }
 
-    private static func requireNoWriter(_ session: URL, action: String) throws {
-        guard try !SessionArchive.isActive(at: session) else {
+    /// Takes the session's writer lock, retried for up to 1 s (as `SessionArchive.open(at:)` does, so a concurrent
+    /// `isActive` probe cannot make it fail), and returns the locked descriptor for the caller to unlock when the
+    /// deletion ends. Holding it, not probing it, keeps a recorder from reopening the session meanwhile.
+    private static func holdWriterLock(_ session: URL, action: String) throws -> Int32 {
+        guard let fd = try SessionLockFile.acquire(SessionLockFile.writer, in: session, timeout: .seconds(1)) else {
             throw HolosError.unavailable("This meeting is still recording. Stop it before \(action).")
         }
+        return fd
     }
 
     /// The manifest's session ID, else the folder's `<UUID>` when it names one; nil otherwise.

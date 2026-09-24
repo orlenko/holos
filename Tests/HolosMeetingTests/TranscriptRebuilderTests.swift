@@ -526,6 +526,57 @@ func recoverTwiceChangesNothing() async throws {
 }
 
 @Test(.timeLimit(.minutes(1)))
+func recoverRelabelsWhenTheSavedLabelsAreUnusable() async throws {
+    let temp = try TemporaryDirectory("rebuild")
+    defer { temp.remove() }
+    let session = try await rebuilderDeadMeeting(in: temp.url)
+    let request = SessionRecoveryCommand.Request(session: session)
+    let first = try await SessionRecoveryCommand.run(request, diarizer: rebuilderDiarizer(),
+                                                     makeSpeech: FakeSpeechFactory().factory,
+                                                     freeSpace: FixedFreeSpace(.max))
+    let transcriptID = try #require(first.rebuild?.transcriptID)
+    #expect(first.postProcessing?.runID != nil)
+
+    // postprocess.json still says the labels of this transcript succeeded, but the saved labels are not usable.
+    let damages: [(String, () throws -> Void)] = [
+        ("the head is missing", {
+            try FileManager.default.removeItem(at: SessionPaths.head(session))
+        }),
+        ("the head's run file is damaged", {
+            let runID = try #require(try SessionSpeakerStore.readHead(session: session)?.runID)
+            let url = SessionPaths.run(runID, in: session)
+            try FileManager.default.removeItem(at: url)
+            try Data("not json".utf8).write(to: url)
+        }),
+        ("the head's run belongs to another transcript", {
+            let runID = try #require(try SessionSpeakerStore.readHead(session: session)?.runID)
+            var other = try SessionSpeakerStore.readRun(id: runID, session: session)
+            other.id = UUID().uuidString
+            other.transcriptID = UUID().uuidString
+            try SessionArchive.withSpeakerLock(at: session) {
+                try SessionSpeakerStore.writeRun(other, session: session)
+                try SessionSpeakerStore.writeHead(SpeakerHead(runID: other.id), session: session)
+            }
+        }),
+    ]
+    for (damage, apply) in damages {
+        try apply()
+        let steps = SharedValue<[SessionRecoveryCommand.Step]>([])
+        let outcome = try await SessionRecoveryCommand.run(request, diarizer: rebuilderDiarizer(),
+                                                           makeSpeech: FakeSpeechFactory().factory,
+                                                           freeSpace: FixedFreeSpace(.max),
+                                                           step: { step in steps.update { $0.append(step) } })
+        #expect(outcome.rebuild?.reused == true, "\(damage)")
+        #expect(steps.value == [.recovered, .rebuilt, .postProcessed], "\(damage): the speakers are labelled again.")
+        #expect(!outcome.summary.contains("up to date"), "\(damage)")
+        #expect(outcome.summary.hasSuffix("Speaker labels: 2 speakers."), "\(damage)")
+        let head = try #require(try SessionSpeakerStore.readHead(session: session), "\(damage)")
+        #expect(try SessionSpeakerStore.readRun(id: head.runID, session: session).transcriptID == transcriptID,
+                "\(damage): the new head labels the current transcript.")
+    }
+}
+
+@Test(.timeLimit(.minutes(1)))
 func recoverLeavesACompleteSessionAlone() async throws {
     let temp = try TemporaryDirectory("rebuild")
     defer { temp.remove() }

@@ -245,14 +245,21 @@ public enum SessionRecoveryCommand {
     }
 
     /// The last post-processing record when it succeeded for `transcriptID`, so a rebuild that changed nothing does
-    /// not diarize the meeting again (and recover run twice changes nothing). A success without labels (speaker
-    /// models were not installed) counts only while nothing can label (`canLabel` false). Anything else (no record,
-    /// a run that was interrupted or failed, labels possible now) gives nil: post-processing runs again.
+    /// not diarize the meeting again (and recover run twice changes nothing). A record that names a run counts only
+    /// while the saved labels are usable for `transcriptID`: `speakers/head.json` is readable and its run is readable,
+    /// was built from that transcript, and its spans fit it (`SpeakerAnalysis.HeadState.usableRunID`); a missing,
+    /// damaged, or other transcript's head is replaced by post-processing instead of being called up to date. A
+    /// success without labels (speaker models were not installed) counts only while nothing can label (`canLabel`
+    /// false). Anything else (no record, a run that was interrupted or failed, labels possible now) gives nil:
+    /// post-processing runs again.
     private static func currentLabels(_ session: URL, transcriptID: String, canLabel: Bool) -> PostProcessingRecord? {
         guard let record = try? AtomicFile.readJSON(PostProcessingRecord.self, from: SessionPaths.postprocess(session),
                                                     maxBytes: 1 << 20),
-              record.state == .succeeded, record.transcriptID == transcriptID,
-              record.runID != nil || !canLabel else { return nil }
+              record.state == .succeeded, record.transcriptID == transcriptID else { return nil }
+        guard record.runID != nil else { return canLabel ? nil : record }
+        guard let transcript = try? SessionFiles.transcript(id: transcriptID, session: session),
+              let head = try? SpeakerAnalysis.headState(session: session, transcript: transcript),
+              head.usableRunID != nil else { return nil }
         return record
     }
 }
