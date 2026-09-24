@@ -595,6 +595,10 @@ diarization times (after the render time map, §4.7), markers, and gaps. An expo
   PY
   ```
 
+- The `// MARK: - Voice data` comment in `SpeakerModels.swift` says voice data is
+  "written only while Remember voices is on". That comment predates the privacy fix and is
+  kept only to preserve the frozen digest. §4.10 governs: normal post-processing never
+  writes `speakers/voice/`; only hidden evaluation runs (`forceVoiceData`) do.
 - After wave 0 a contract file changes only additively: a new optional field (with a
   default in the initializer) or a new static constant of an open code, made by the PR
   that needs it and stated in its description. Anything else is a design change: stop
@@ -2700,7 +2704,8 @@ public struct MeetingPostProcessor: Sendable {
 ```
 
 PR10 adds one initializer parameter, `profiles: SpeakerProfileStore? = nil`; with a
-store whose `rememberVoices` is on, stage 6 writes voice data and stage 7 runs.
+store whose `rememberVoices` is on, stage 7 runs on the in-memory voice data. Stage 6
+never writes voice data for normal meetings (only with hidden `forceVoiceData`, §4.10).
 
 Stages (PR7b):
 
@@ -3052,7 +3057,20 @@ Fingerprints use only state derived from the run and the journal (never recognit
 | `rename(s, _)` | current explicit name of `s`, or `""` |
 | `linkProfile(s, _)` | profile `s` is linked to by edits, or `""` |
 | `reassignTurns(ids, _)` | current speaker of each id joined by `,`, `?` for unknown |
-| all others | `nil` |
+| `rejectProfile(s, p)` | `link=<profile s is linked to, or "">;rejected=<1 if p already rejected for s, else 0>` |
+| `merge(from, into)` | for `from` then `into`: `<speaker>:<linked profile or "">:<sorted IDs of its current turns>` joined by `|` |
+| `splitTurn(t, at)` | `<current speaker of t>:<t's segment ID>[<first word>..<last word>]` |
+| `newSpeaker(_, _, ids)` | for each id: `<current speaker>:<segment ID>[<first>..<last>]:<excluded 0/1>`, joined by `,` |
+| `excludeFromEnrollment(ids)` | same as `newSpeaker` for `ids` |
+| `revert(editID)` | `nil` (revert staleness is decided in step 3) |
+
+  Fingerprint strings longer than 256 characters are replaced by the first 32 hex digits of
+  their SHA-256. Every action that changes speaker assignment, turn boundaries, or
+  enrollment therefore carries the state it was made against, so a stale window's edit is
+  refused instead of acting on a turn that another window split or reassigned. Tests
+  (PR5b): `staleExcludeAfterSplitIsRefused` (window A splits T5; window B's
+  `excludeFromEnrollment([T5])` made before the split is stale),
+  `staleMergeAfterReassignIsRefused`, `staleRejectAfterRelinkIsRefused`.
 
 Action semantics:
 
@@ -3197,8 +3215,14 @@ public struct SpeakerProfileDatabase: Codable, Sendable, Equatable {
 
   `FluidVoiceSampleExtractor` (HolosDiarization, PR10) renders the track with
   `TrackRenderer`, runs FluidAudio's embedding extraction (`prepare()` with
-  `exposeChunkEmbeddings`, same model as the run), keeps windows inside the requested
-  turns, averages them per turn, and deletes the render. The app never links FluidAudio:
+  `exposeChunkEmbeddings`, same model as the run), and for each requested turn takes every
+  window that overlaps it, weighted by the overlap seconds, exactly as
+  `TurnEmbeddings.compute` does (FluidAudio's windows are about 10 s, longer than most
+  2–9 s conversational turns, so containment would leave ordinary turns without an
+  embedding). A window that overlaps a turn of another speaker by more than its overlap
+  with the requested turn is skipped. The extractor then deletes the render. Test (PR10):
+  `extractorUsesOverlappingWindowsForShortTurns` (a 3 s turn inside a 10 s window gets
+  an embedding). The app never links FluidAudio:
   its extractor runs the hidden `holos speakers enroll <session> <speakerID> --profile
   <id> [--json]` child, which extracts and upserts the sample itself. Extraction needs the
   session's audio: after Delete Audio, linking keeps the name and says "The recording's
@@ -3226,15 +3250,19 @@ public struct SpeakerProfileDatabase: Codable, Sendable, Equatable {
      profile's non-weak samples of the same condition. If there are none, use its other
      samples and cap the tier at `possible`.
   4. Thresholds: `database.calibratedThresholds ?? SpeakerRecognizer.defaultThresholds`.
-     The default has `likelyMaxDistance = 0`, so **v1 only suggests** (`possible`, shown
-     as "Maybe Jim — Confirm"); nothing is applied automatically until calibrated.
+     **`likely` is possible only when `database.calibratedThresholds != nil`.** With the
+     default thresholds the recognizer never produces `likely`, whatever the distance
+     (an identical vector has distance 0, so a zero threshold alone would not prevent it).
+     So **v1 only suggests** (`possible`, shown as "Maybe Jim — Confirm"); nothing is
+     applied automatically until calibrated. `defaultThresholds.likelyMaxDistance` stays 0
+     only as a stored value.
      `possibleMaxDistance` comes from PR7c's cross-recording measurement (below); until
      PR10 sets it from those numbers, use 0.40. `likelyMinMargin` 0.10,
      `minSampleSeconds` 20. FluidAudio's 0.65 (`SpeakerManager.speakerThreshold`) does
      not apply: it belongs to the streaming pipeline and an older embedding model, and
      the offline clustering threshold of 0.6 Euclidean on unit vectors is about 0.18
      cosine distance.
-  5. `likely` requires distance ≤ `likelyMaxDistance`, the next-best profile at least
+  5. `likely` requires calibrated thresholds, distance ≤ `likelyMaxDistance`, the next-best profile at least
      `likelyMinMargin` farther, and an uncapped tier.
   6. One-to-one greedy assignment in ascending distance (ties by speakerID, profileID).
      Another speaker within `possibleMaxDistance` of an assigned profile →
@@ -5488,11 +5516,12 @@ setting.
 | `twoSpeakersOneProfileSuggestMerge` | S1 0.2, S2 0.3 to Jim | merge suggestion [S1, S2] |
 | `crossModelProfilesSkipped` | profile with another embedding model | in `skippedProfiles` |
 | `profilesWithoutSamplesAreNotCandidates` | Sam with no samples | never matched; not in `skippedProfiles` |
+| `identicalVectorIsOnlyPossibleUntilCalibrated` | uncalibrated; cluster centroid identical to a sample (distance 0) | `possible`, never `likely` |
 | `weakOrOtherConditionCapsAtPossible` | calibrated; only weak samples at 0.2; only call samples for a room speaker | possible |
 | `rememberOffMeansNoVoiceDataAndNoRecognition` | Remember off; post-process | no `speakers/voice/`, no recognition file |
 | `enrollExtractsOnlyTheConfirmedSpeaker` | `FakeVoiceSampleExtractor`; link S2 to Jim with learnVoice | extractor asked only for S2's qualifying turns; one sample for (Jim, session); no other embeddings written |
 | `enrollWithoutAudioKeepsNameOnly` | session after Delete Audio; link with learnVoice | profile linked, no sample, message "…audio was deleted…" |
-| `rememberOnWritesVoiceDataAndRecognition` | Remember on; a profile with samples | voice file and recognition file (no vectors in it) |
+| `rememberOnWritesRecognitionOnly` | Remember on; a profile with samples | recognition file (distances only, no vectors); **no** `speakers/voice/` file |
 | `sampleUsesOnlyQualifyingTurns` | 8 turns: reassigned, modified, overlapped, 1.5 s, excluded, no embedding, + 2 qualifying | vector from the 2 qualifying turns |
 | `splitThenReassignKeepsOtherVoiceOut` | split T5, reassign the tail to Maria, link T5's speaker to Jim | Jim's sample uses no window from T5 |
 | `mergeKeepsTurnsInSample` | merge S3 into S1, link S1 to Jim | S3's turns count |
@@ -6025,3 +6054,7 @@ reprocessing" in `docs/contracts.md`).
 | (second pass) A crash during Forget could strand voice data with no way to retry | Accepted. Forget writes a tombstone to `forget-journal.jsonl` before touching the store; `resumePendingForgets` finishes pending work at app launch and CLI start (§4.10). Tests `forgetResumesAfterCrashBetweenStoreAndSessions`, `forgetJournalReplayIsIdempotent`. |
 | (second pass) note | The contract file comment on `SessionVoiceData` (§3) still says "written only while Remember voices is on". Contract files are frozen by their §3.0 digests and wave 0 already copied them, so the comment is left as is; the rules in §4.10 govern. |
 | (second pass) The diarize command did not accept the inherited lease | Accepted. Hidden `--lease-fd N` with descriptor validation (§5.5 PR7b CLI). Tests `diarizeAdoptsInheritedLease`, `diarizeRefusesForeignLeaseFd`. |
+| (third pass) A PR10 test and the initializer note still required voice files when Remember voices is on | Accepted. Test renamed `rememberOnWritesRecognitionOnly` (no voice file); initializer note corrected; §3.0 notes the frozen contract comment is superseded by §4.10. |
+| (third pass) Most edit actions had no fingerprint, so stale edits could act on split or reassigned turns | Accepted. Fingerprints for reject, merge, split, newSpeaker, and excludeFromEnrollment (§4.9 table). Tests `staleExcludeAfterSplitIsRefused`, `staleMergeAfterReassignIsRefused`, `staleRejectAfterRelinkIsRefused`. |
+| (third pass) On-demand extraction kept only windows contained in a turn, so short turns never enrolled | Accepted. Overlap-weighted selection as in `TurnEmbeddings.compute` (§4.10). Test `extractorUsesOverlappingWindowsForShortTurns`. |
+| (third pass) A zero `likelyMaxDistance` still allowed `likely` at distance 0 | Accepted. `likely` requires `calibratedThresholds != nil` (§4.10 step 4–5). Test `identicalVectorIsOnlyPossibleUntilCalibrated`. |
