@@ -78,6 +78,7 @@ extension HolosAppDelegate: NSMenuDelegate {
             modelsInstalled: { [weak self] in self?.meeting.speakerModels == "verified" },
             onChange: { [weak self] state in self?.meetingStateChanged(state) },
             onEffect: { [weak self] effect in self?.handleMeetingEffect(effect) })
+        controller.sessionsInUse = { [weak self] in Set(self?.meeting.runningCommands.keys.map { $0 } ?? []) }
         meeting.controller = controller
         meeting.maintenance = maintenance
         restoreNamingOffer()
@@ -539,6 +540,11 @@ extension HolosAppDelegate: NSMenuDelegate {
     /// Recover…, Label Speakers, Delete Audio…, and Delete Meeting… run `holos` maintenance commands (§5.8).
     private func performMeetingAction(_ action: MeetingsWindow.Action, _ summary: SessionSummary) {
         guard let maintenance = meeting.maintenance, meeting.runningCommands[summary.id] == nil else { return }
+        guard meeting.controller?.relabellingSessionID != summary.id else {
+            showMeetingAlert("Holos is labelling the speakers of “\(Self.short(summary.name))”.",
+                             "Try again when it finishes; the Meetings list shows when it is done.")
+            return
+        }
         let name = Self.short(summary.name)
         let path = summary.directory.path
         let arguments: [String]
@@ -673,7 +679,8 @@ extension HolosAppDelegate: NSMenuDelegate {
     }
 
     private func runRecovery(_ summary: SessionSummary) {
-        guard let maintenance = meeting.maintenance, meeting.runningCommands[summary.id] == nil else { return }
+        guard let maintenance = meeting.maintenance, meeting.runningCommands[summary.id] == nil,
+              meeting.controller?.relabellingSessionID != summary.id else { return }
         let output = Self.temporaryFile("out")
         let errors = Self.temporaryFile("err")
         meeting.runningCommands[summary.id] = "Recovering…"
@@ -685,6 +692,7 @@ extension HolosAppDelegate: NSMenuDelegate {
             }
         } catch {
             meeting.runningCommands[summary.id] = nil
+            meeting.meetingsWindow?.update(running: meeting.runningCommands)
             Self.removeFile(output)
             Self.removeFile(errors)
             showMeetingAlert("Holos could not recover “\(Self.short(summary.name))”.", error.localizedDescription)
@@ -772,7 +780,9 @@ extension HolosAppDelegate: NSMenuDelegate {
     /// minutes for the transcript) or Cancel. An in-process meeting that is still saving its transcript is waited for.
     func meetingShouldTerminate() -> NSApplication.TerminateReply {
         guard let controller = meeting.controller else { return .terminateNow }
-        let inProcess = meeting.inProcess != nil
+        // Whether this process runs the recording, not which launcher is configured: in in-process mode Holos can
+        // still follow a meeting started in a terminal, which quitting does not end.
+        let inProcess = meeting.inProcess?.isRecording == true
         switch controller.state {
         case .active, .starting:
             let alert = NSAlert()
@@ -794,11 +804,12 @@ extension HolosAppDelegate: NSMenuDelegate {
             }
             if !inProcess, response == .alertSecondButtonReturn { return .terminateNow }
             return .terminateCancel
-        case .finishing(_, let status) where inProcess && !Self.transcriptSaved(status?.phase):
+        case .idle, .finishing, .failed:
+            // An in-process recording still saving its transcript (also one whose start timed out in the menu but
+            // that did start) is waited for; quitting would cut the save short.
+            guard inProcess, !Self.transcriptSaved(controller.status?.phase) else { return .terminateNow }
             waitBeforeQuitting(inProcess: true)
             return .terminateLater
-        default:
-            return .terminateNow
         }
     }
 
@@ -816,7 +827,8 @@ extension HolosAppDelegate: NSMenuDelegate {
             let deadline = clock.now.advanced(by: limit)
             while clock.now < deadline {
                 guard let self, let controller = self.meeting.controller else { break }
-                if Self.readyToQuit(controller, inProcess: inProcess) { break }
+                let recordingHere = self.meeting.inProcess?.isRecording == true
+                if Self.readyToQuit(controller, inProcess: inProcess, recordingHere: recordingHere) { break }
                 try? await Task.sleep(for: .milliseconds(200))
             }
             self?.meeting.savingWindow?.close()
@@ -824,14 +836,14 @@ extension HolosAppDelegate: NSMenuDelegate {
         }
     }
 
-    private static func readyToQuit(_ controller: MeetingController, inProcess: Bool) -> Bool {
+    /// Child mode: once capture stopped. In-process: once the recording in this process ended or saved its transcript.
+    private static func readyToQuit(_ controller: MeetingController, inProcess: Bool, recordingHere: Bool) -> Bool {
+        if inProcess && !recordingHere { return true }
         switch controller.state {
-        case .idle, .failed:
-            return true
         case .starting, .active:
             return false
-        case .finishing(_, let status):
-            return inProcess ? transcriptSaved(status?.phase) : true
+        case .idle, .failed, .finishing:
+            return inProcess ? transcriptSaved(controller.status?.phase) : true
         }
     }
 
@@ -899,31 +911,12 @@ extension HolosAppDelegate: NSMenuDelegate {
 
     /// Removes command outputs an app that quit or crashed left behind (older than an hour).
     private static func sweepCommandOutputs() {
-        let folder = FileManager.default.temporaryDirectory
-        guard let names = try? FileManager.default.contentsOfDirectory(atPath: folder.path) else { return }
-        let cutoff = Date().addingTimeInterval(-3_600)
-        for name in names where name.hasPrefix("holos-command-") {
-            let url = folder.appendingPathComponent(name, isDirectory: false)
-            var info = stat()
-            guard lstat(url.path, &info) == 0, (info.st_mode & S_IFMT) == S_IFREG,
-                  Date(timeIntervalSince1970: TimeInterval(info.st_mtimespec.tv_sec)) < cutoff else { continue }
-            removeFile(url)
-        }
+        ProcessSpawner.removeStaleFiles(in: FileManager.default.temporaryDirectory, prefix: "holos-command-",
+                                        olderThan: Date().addingTimeInterval(-3_600))
     }
 
-    private static func removeFile(_ url: URL) {
-        var info = stat()
-        guard lstat(url.path, &info) == 0, (info.st_mode & S_IFMT) == S_IFREG else { return }
-        unlink(url.path)
-    }
+    private static func removeFile(_ url: URL) { ProcessSpawner.removeRegularFile(url) }
 
-    /// The last non-empty line of a small output file, without ArgumentParser's "Error: ".
-    private static func lastLine(_ url: URL) -> String? {
-        guard let data = try? AtomicFile.readIfPresent(url, maxBytes: 4 << 20) else { return nil }
-        let text = String(decoding: data.suffix(4_096), as: UTF8.self)
-        guard var line = text.split(whereSeparator: \.isNewline)
-            .map({ $0.trimmingCharacters(in: .whitespaces) }).last(where: { !$0.isEmpty }) else { return nil }
-        if line.hasPrefix("Error: ") { line = String(line.dropFirst(7)) }
-        return line
-    }
+    /// The last non-empty line of a command's output, without ArgumentParser's "Error: ".
+    private static func lastLine(_ url: URL) -> String? { ProcessSpawner.lastLine(of: url) }
 }

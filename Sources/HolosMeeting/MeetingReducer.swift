@@ -172,6 +172,13 @@ public struct MeetingReducer: Sendable, Equatable {
         return effects
     }
 
+    /// A stop request could not be published and no signal reached the recorder: the meeting is still recording, so
+    /// Stop, Pause, Resume, and Add Marker work again.
+    mutating func stopWasNotDelivered() {
+        guard case .active = state else { return }
+        stopRequested = false
+    }
+
     // MARK: - Events
 
     private mutating func startRequested(_ settings: MeetingStartSettings, sessionID: String,
@@ -263,6 +270,10 @@ public struct MeetingReducer: Sendable, Equatable {
         }
         if savedNothing(status) {
             switch state {
+            case .starting where stopRequested:
+                // The user cancelled before capture started: nothing to save, and nothing failed.
+                state = .idle
+                return [.announce(Self.cancelledBeforeStart)]
             case .starting, .active, .finishing:
                 return fail(sessionID, status.exit?.message ?? Self.stoppedBeforeRecording, keepSession: false)
             case .idle, .failed:

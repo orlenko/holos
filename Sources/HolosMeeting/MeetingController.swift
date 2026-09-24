@@ -49,6 +49,11 @@ struct MeetingControllerTuning: Sendable {
     public var dictationShouldPause: Bool { reducer.dictationShouldPause }
     /// True while an automatic relabel runs.
     public private(set) var relabelling = false
+    /// The meeting the automatic relabel is labelling, while it runs.
+    public private(set) var relabellingSessionID: String?
+    /// Meetings the app is running a maintenance command for (Meetings window, interrupted prompt); the automatic
+    /// relabel skips them.
+    public var sessionsInUse: @MainActor () -> Set<String> = { [] }
 
     public let root: URL
     private let launcher: any RecorderLauncher
@@ -126,7 +131,14 @@ struct MeetingControllerTuning: Sendable {
     /// panel's error text.
     public func start(_ settings: MeetingStartSettings) throws {
         switch state {
-        case .idle, .failed: break
+        case .idle, .failed(nil, _): break
+        case .failed(let failedID?, _):
+            // A start that timed out may still have a recorder behind it (it was only slow); it is followed again as
+            // soon as its status is fresh, and a second recorder must not take the microphone meanwhile.
+            let liveness = sessionLiveness(failedID, at: now())
+            if liveness == .capturing || liveness == .processing {
+                throw HolosError.unavailable(MeetingReducer.stillSaving)
+            }
         case .finishing: throw HolosError.unavailable(MeetingReducer.stillSaving)
         case .starting, .active: throw HolosError.unavailable(MeetingReducer.alreadyRecording)
         }
@@ -230,9 +242,7 @@ struct MeetingControllerTuning: Sendable {
         let session = sessionURL(sessionID)
         let at = now()
         let status = (try? RecorderChannel.readStatus(session: session)).flatMap { $0.sessionID == sessionID ? $0 : nil }
-        var isFolder: ObjCBool = false
-        let exists = FileManager.default.fileExists(atPath: session.path, isDirectory: &isFolder) && isFolder.boolValue
-        let liveness: RecorderLiveness = exists ? RecorderChannel.liveness(session: session, now: at) : .dead
+        let liveness = sessionLiveness(sessionID, at: at)
         let changed = status != nil && status != lastStatus
         if let status {
             // The recorder copied the vocabulary into the session before its first status (§4.12).
@@ -245,9 +255,20 @@ struct MeetingControllerTuning: Sendable {
         dispatch(.tick(at: at))
     }
 
+    /// `RecorderChannel.liveness`, or `dead` when the session folder does not exist (yet): liveness counts a lock it
+    /// cannot read as held, which a missing folder must not look like.
+    private func sessionLiveness(_ sessionID: String, at: Date) -> RecorderLiveness {
+        let session = sessionURL(sessionID)
+        var isFolder: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: session.path, isDirectory: &isFolder), isFolder.boolValue else {
+            return .dead
+        }
+        return RecorderChannel.liveness(session: session, now: at)
+    }
+
     /// Looks for a live meeting under the root (§4.1 "Reattach"): a `status.json` modified in the last 10 s, fresh,
-    /// liveness capturing or processing, and phase `isMeetingActive` or `postprocessing`. A recording meeting wins
-    /// over one being labelled.
+    /// liveness capturing or processing, and phase `isMeetingActive`, `transcribing`, or `postprocessing`. A recording
+    /// meeting wins over one being saved.
     func rescan() {
         switch state {
         case .idle, .failed: break
@@ -271,8 +292,10 @@ struct MeetingControllerTuning: Sendable {
             }
             let modified = Date(timeIntervalSince1970: TimeInterval(info.st_mtimespec.tv_sec))
             guard now.timeIntervalSince(modified) < MeetingReducer.freshSeconds else { continue }
+            // A recorder still transcribing after a stop is followed too, so the menu shows it saving and a second
+            // meeting cannot start meanwhile.
             guard let status = try? RecorderChannel.readStatus(session: session),
-                  status.phase.isMeetingActive || status.phase == .postprocessing,
+                  status.phase.isMeetingActive || status.phase == .transcribing || status.phase == .postprocessing,
                   session.deletingPathExtension().lastPathComponent == status.sessionID else { continue }
             let liveness = RecorderChannel.liveness(session: session, now: now)
             guard MeetingReducer.isFresh(status, liveness: liveness, at: now) else { continue }
@@ -349,8 +372,10 @@ struct MeetingControllerTuning: Sendable {
         if command == .stop {
             // The recorder is already on its way out: nothing to do.
             if [RecorderChannel.exitedMessage, RecorderChannel.exitingMessage].contains(message) { return }
-            // A recorder this app started stops gracefully on SIGTERM too.
+            // A recorder this app started stops gracefully on SIGTERM too. One it only found (a terminal or an earlier
+            // app) gets no signal, so the controls must work again: Stop can be tried once more.
             launcher.terminate(sessionID: sessionID)
+            reducer.stopWasNotDelivered()
         }
         onEffect(.announce("Could not ask the recorder to \(command.rawValue): \(message)"))
     }
@@ -391,15 +416,8 @@ struct MeetingControllerTuning: Sendable {
 
     /// Removes `holos-vocabulary-*.json` files older than an hour: left by an app that crashed before cleaning up.
     func sweepStaleVocabularyFiles() {
-        guard let names = try? FileManager.default.contentsOfDirectory(atPath: vocabularyDirectory.path) else { return }
-        let cutoff = now().addingTimeInterval(-Self.staleVocabularyAge)
-        for name in names where name.hasPrefix(Self.vocabularyPrefix) && name.hasSuffix(".json") {
-            let url = vocabularyDirectory.appendingPathComponent(name, isDirectory: false)
-            var info = stat()
-            guard lstat(url.path, &info) == 0, (info.st_mode & S_IFMT) == S_IFREG else { continue }
-            let modified = Date(timeIntervalSince1970: TimeInterval(info.st_mtimespec.tv_sec))
-            if modified < cutoff { ProcessSpawner.removeRegularFile(url) }
-        }
+        ProcessSpawner.removeStaleFiles(in: vocabularyDirectory, prefix: Self.vocabularyPrefix, suffix: ".json",
+                                        olderThan: now().addingTimeInterval(-Self.staleVocabularyAge))
     }
 
     // MARK: - Automatic relabel
@@ -414,9 +432,13 @@ struct MeetingControllerTuning: Sendable {
         let root = self.root
         let at = now()
         Task { [weak self] in
-            let summaries = await Task.detached { SessionCatalog.list(root: root, now: at) }.value
+            let listed = await Task.detached { SessionCatalog.list(root: root, now: at) }.value
             guard let self else { return }
             let active: Bool = if case .idle = self.state { false } else { true }
+            // A meeting the app is recovering, labelling, or deleting right now is left alone: two commands would
+            // contend for its processing lease, and the loser would fail (and here, use up an attempt).
+            let inUse = self.sessionsInUse()
+            let summaries = listed.filter { !inUse.contains($0.id) }
             var attempts = self.loadRelabelAttempts()
             guard let pick = AutoRelabelPolicy.candidates(summaries, attempts: attempts,
                                                           modelsInstalled: self.modelsInstalled(),
@@ -426,14 +448,16 @@ struct MeetingControllerTuning: Sendable {
             }
             attempts[pick.id, default: 0] += 1
             // Forget meetings too old to be picked again.
-            let recent = Set(summaries.filter { at.timeIntervalSince($0.createdAt) <= AutoRelabelPolicy.maxAge }.map(\.id))
+            let recent = Set(listed.filter { at.timeIntervalSince($0.createdAt) <= AutoRelabelPolicy.maxAge }.map(\.id))
             attempts = attempts.filter { recent.contains($0.key) }
             self.saveRelabelAttempts(attempts)
             do {
                 try maintenance.run(["session", "diarize", pick.directory.path, "--json"]) { [weak self] code in
                     Self.log.notice("Session \(pick.id, privacy: .public): automatic relabel ended with \(code, privacy: .public)")
                     self?.relabelling = false
+                    self?.relabellingSessionID = nil
                 }
+                self.relabellingSessionID = pick.id
                 Self.log.notice("Session \(pick.id, privacy: .public): relabelling automatically (attempt \(attempts[pick.id] ?? 0, privacy: .public))")
             } catch {
                 Self.log.error("Session \(pick.id, privacy: .public): automatic relabel could not start: \(error.localizedDescription, privacy: .public)")

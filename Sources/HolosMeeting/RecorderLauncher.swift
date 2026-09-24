@@ -349,8 +349,8 @@ private struct LoggingReporter: RecordingReporter {
 /// The one `posix_spawn` helper for every child the app starts (docs/meeting-design.md §1.7 rule 4, §4.1):
 /// `POSIX_SPAWN_CLOEXEC_DEFAULT` so a child inherits no descriptor but fds 0–2 and the ones named, default signal
 /// handlers and an empty signal mask, and (by default) `POSIX_SPAWN_SETSID`, so the child gets no terminal SIGHUP and
-/// no signal sent to the app's process group.
-enum ProcessSpawner {
+/// no signal sent to the app's process group. The file helpers are public for the app's command outputs.
+public enum ProcessSpawner {
     private static let log = Logger(subsystem: "ca.orlenko.holos.app", category: "meeting")
 
     enum Output: Sendable, Equatable {
@@ -461,7 +461,7 @@ enum ProcessSpawner {
 
     /// The last non-empty line of a log (from its last 4 KiB), without ArgumentParser's "Error: " prefix, at most 300
     /// characters. Nil when there is none.
-    static func lastLine(of url: URL) -> String? {
+    public static func lastLine(of url: URL) -> String? {
         let fd = Darwin.open(url.path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK)
         guard fd >= 0 else { return nil }
         defer { Darwin.close(fd) }
@@ -480,11 +480,24 @@ enum ProcessSpawner {
     }
 
     /// Removes `url` if it is a regular file (never following a link, never a folder).
-    static func removeRegularFile(_ url: URL) {
+    public static func removeRegularFile(_ url: URL) {
         var info = stat()
         guard lstat(url.path, &info) == 0, (info.st_mode & S_IFMT) == S_IFREG else { return }
         if unlink(url.path) != 0, errno != ENOENT {
             log.error("Cannot delete \(url.lastPathComponent, privacy: .private): \(String(cString: strerror(errno)), privacy: .public)")
+        }
+    }
+
+    /// Removes the regular files in `folder` whose names start with `prefix` and that were last modified before
+    /// `cutoff` (left by an app that crashed). Links, folders, and newer files are left alone.
+    public static func removeStaleFiles(in folder: URL, prefix: String, suffix: String = "", olderThan cutoff: Date) {
+        guard let names = try? FileManager.default.contentsOfDirectory(atPath: folder.path) else { return }
+        for name in names where name.hasPrefix(prefix) && name.hasSuffix(suffix) {
+            let url = folder.appendingPathComponent(name, isDirectory: false)
+            var info = stat()
+            guard lstat(url.path, &info) == 0, (info.st_mode & S_IFMT) == S_IFREG,
+                  Date(timeIntervalSince1970: TimeInterval(info.st_mtimespec.tv_sec)) < cutoff else { continue }
+            removeRegularFile(url)
         }
     }
 }
