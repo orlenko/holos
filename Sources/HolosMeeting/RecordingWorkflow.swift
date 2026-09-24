@@ -847,7 +847,7 @@ private final class Recorder {
                     locale: options.locale, backend: options.backend, contextualStrings: options.vocabulary,
                     from: max(0, coverage - 2), makeSpeech: dependencies.makeSpeech, timeouts: dependencies.timeouts)
             } catch let partial as ReplayIncomplete {
-                // Speech stopped answering: keep what it returned; the track is incomplete.
+                // Speech stopped answering or failed: keep what it transcribed; the track is incomplete.
                 replayed = partial.segments
                 transcriptErrors.append("\(track): \(partial.localizedDescription)")
             } catch {

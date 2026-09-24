@@ -51,6 +51,8 @@ final class LiveTrack: Sendable {
     private let journal: WorkQueue<JournalItem>
     private let state = Mutex(State())
     private let tasks = Mutex(Tasks())
+    /// Set by `finish()`: every session finish, including those already running, ends by it.
+    private let stopDeadline = SharedDeadline()
 
     enum LiveInput: Sendable {
         /// A frame of capture epoch `epoch`.
@@ -94,8 +96,6 @@ final class LiveTrack: Sendable {
         var lastFinalized: Double?
         var lastPhrase: String?
         var cancelled = false
-        /// Set by `finish()`: sessions finished after it share its budget.
-        var finishDeadline: ContinuousClock.Instant?
     }
 
     private struct Tasks {
@@ -199,8 +199,8 @@ final class LiveTrack: Sendable {
         let (speech, fed) = (tasks.withLock { $0.speech }, currentFed())
         // One budget for the whole finish (§4.6): draining the queue and finishing the sessions that are still open.
         let limit = timeouts.speechFinish(audioSeconds: fed + input.load)
-        let deadline = ContinuousClock.now.advanced(by: limit)
-        state.withLock { $0.finishDeadline = deadline }
+        // Also cuts short the finishes of sessions that ended before the stop and are still running.
+        stopDeadline.set(ContinuousClock.now.advanced(by: limit))
         await withTaskCancellationHandler {
             if let speech {
                 if case .timedOut = await awaitWithTimeout(limit, { await speech.value }) {
@@ -365,8 +365,8 @@ final class LiveTrack: Sendable {
 
     // MARK: - Finishing sessions
 
-    /// Finishes `serial` in the background, within its timeout, and no later than the deadline of `finish()` once
-    /// that has started.
+    /// Finishes `serial` in the background, within its timeout, and no later than the deadline of `finish()`, even
+    /// when that deadline is set after this finish began.
     private func finishLater(_ serial: Int) {
         // Registered under the lock the task takes to remove itself, so a quick task never outlives its entry.
         tasks.withLock { tasks in
@@ -378,13 +378,11 @@ final class LiveTrack: Sendable {
     }
 
     private func finishSession(_ serial: Int) async {
-        guard let (session, fed, deadline) = state.withLock({ state -> (any LiveSpeechSession, Double, ContinuousClock.Instant?)? in
+        guard let (session, fed) = state.withLock({ state -> (any LiveSpeechSession, Double)? in
             guard let record = state.sessions[serial], let session = record.session else { return nil }
-            return (session, record.fed, state.finishDeadline)
+            return (session, record.fed)
         }) else { return }
-        var limit = timeouts.speechFinish(audioSeconds: fed)
-        if let deadline { limit = min(limit, max(.zero, ContinuousClock.now.duration(to: deadline))) }
-        let outcome = await awaitWithTimeout(limit) {
+        let outcome = await awaitWithTimeout(timeouts.speechFinish(audioSeconds: fed), deadline: stopDeadline) {
             try await session.finish()
         }
         switch outcome {
@@ -401,7 +399,7 @@ final class LiveTrack: Sendable {
                 Self.log.error("Live \(self.track, privacy: .public) transcription failed to finish: \(error.localizedDescription, privacy: .public)")
             }
         case .timedOut:
-            Self.log.error("Live \(self.track, privacy: .public) transcription did not finish within its timeout; cancelled")
+            Self.log.error("Live \(self.track, privacy: .public) transcription did not finish within its timeout or by the stop deadline; cancelled")
         case .cancelled:
             break
         }

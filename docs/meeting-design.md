@@ -2616,12 +2616,15 @@ After `finish(reason)` the loop exits and `RecordingWorkflow.run` does, in order
    let the pump drain into the writer, then `writer.closeAll`.
 2. Phase `stopping` → `transcribing`. **Finish live speech** per track with a timeout of
    30 s + 0.05 × the seconds fed to its current speech session. On timeout, cancel that
-   session; segments it already finalized are kept.
+   session; segments it already finalized are kept. The same deadline also ends the finishes of
+   earlier sessions (an epoch or gap that ended just before the stop) that are still running.
 3. **Coverage.** For each track, `TranscriptCoverage.coverageEnd` (below). A track whose
    live transcription never fell behind keeps its live segments. Otherwise
    `TrackReplayer.replay(from: max(0, coverageEnd − 2))` transcribes only the rest, and
    `TranscriptCoverage.merge` joins the two at word level. Hours of live words are never
-   thrown away because of one dropped frame. `--record-only`: no transcript.
+   thrown away because of one dropped frame. A replay that times out or fails after partial
+   progress keeps the segments of its finished sessions and the finals the failed session
+   reported; the track is recorded as a transcription error. `--record-only`: no transcript.
 4. `archive.saveTranscript(transcript, writeLegacyExports: false)` (updates
    `transcripts/current.json`).
 5. If a post-process hook is set, **acquire the processing lease** (retry 1 s) while

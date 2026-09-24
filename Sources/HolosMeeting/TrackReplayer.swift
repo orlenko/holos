@@ -20,8 +20,12 @@ public enum TrackReplayer {
     ///
     /// With `timeouts` (the recorder's stop path, docs/meeting-design.md §1.3, §4.6), creating a session and each
     /// `append` may take at most `speechFinishBase`, and each `finish` at most `speechFinish(audioSeconds:)` of the audio
-    /// that session was fed. When one does not return in time, the session is cancelled and the replay throws
-    /// `ReplayIncomplete`, which carries the segments already returned.
+    /// that session was fed. When one does not return in time, the session is cancelled.
+    ///
+    /// Once the first session exists, any failure other than cancellation (a timeout, a speech error, a session that
+    /// cannot be made after a gap, an unreadable chunk) throws `ReplayIncomplete`, which carries the segments of the
+    /// sessions that finished and the final results the failed session had already reported. A cancelled replay
+    /// throws `CancellationError` and returns no segments.
     public static func replay(directory: URL, track: String, locale: String, backend: SpeechBackend,
                               contextualStrings: [String] = [], from start: Double = 0,
                               makeSpeech: LiveSpeechFactory? = nil,
@@ -32,27 +36,33 @@ public enum TrackReplayer {
         let chunks = manifest.chunks.filter { $0.track == track && $0.end > from }.sorted { $0.start < $1.start }
         let factory = makeSpeech ?? appleSpeechFactory
         let limits = ReplayLimits(timeouts: timeouts)
-        let make: @Sendable () async throws -> any LiveSpeechSession = {
-            try await limits.run(limits.step, "start") { try await factory(locale, backend, contextualStrings) { _ in } }
+        let make: @Sendable () async throws -> ReplaySession = {
+            let finals = LockedValue<[TranscriptSegment]>([])
+            let speech = try await limits.run(limits.step, "start") {
+                try await factory(locale, backend, contextualStrings) { update in
+                    if update.isFinal { finals.withLock { $0.append(update.segment) } }
+                }
+            }
+            return ReplaySession(speech: speech, finals: finals)
         }
-        let first: any LiveSpeechSession
+        let first: ReplaySession
         do { first = try await make() } catch let timeout as ReplayTimeout {
             throw ReplayIncomplete(segments: [], message: timeout.message)
         }
-        let current = LockedValue<(any LiveSpeechSession)?>(first)
+        let current = LockedValue<ReplaySession?>(first)
         // Cancelling the task cancels the session too: a speech framework's `append` or `finish` may not
         // observe task cancellation, and a cancelled replay returns no segments.
         return try await withTaskCancellationHandler {
             try await feed(chunks: chunks, directory: directory, track: track, from: from, make: make,
                            current: current, limits: limits)
         } onCancel: {
-            if let session = current.value { Task { await session.cancel() } }
+            if let session = current.value?.speech { Task { await session.cancel() } }
         }
     }
 
     private static func feed(chunks: [AudioChunkRecord], directory: URL, track: String, from: Double,
-                             make: @Sendable () async throws -> any LiveSpeechSession,
-                             current: LockedValue<(any LiveSpeechSession)?>,
+                             make: @Sendable () async throws -> ReplaySession,
+                             current: LockedValue<ReplaySession?>,
                              limits: ReplayLimits) async throws -> [TranscriptSegment] {
         var segments: [TranscriptSegment] = []
         /// Session time of the current session's first frame.
@@ -72,7 +82,6 @@ public enum TrackReplayer {
                 if let end = expected, base != nil, max(chunk.start, firstNeeded) - end > sessionGapSeconds {
                     segments += try await finishCurrent(current, base: base, track: track, fed: fed, limits: limits)
                     try Task.checkCancellation()
-                    current.withLock { $0 = nil }
                     let next = try await make()
                     current.withLock { $0 = next }
                     base = nil
@@ -96,7 +105,7 @@ public enum TrackReplayer {
                     let origin = base ?? time
                     base = origin
                     let frame = try PCMConversion.copy(buffer, startTime: max(0, time - origin))
-                    guard let session = current.value else { throw CancellationError() }
+                    guard let session = current.value?.speech else { throw CancellationError() }
                     try await limits.run(limits.step, "append") { try await session.append(frame) }
                     offset += AVAudioFramePosition(buffer.frameLength)
                     fed += frame.duration
@@ -107,28 +116,48 @@ public enum TrackReplayer {
             segments += try await finishCurrent(current, base: base ?? from, track: track, fed: fed, limits: limits)
             try Task.checkCancellation()
             return segments
-        } catch let timeout as ReplayTimeout {
-            // The session may be stuck in the call that timed out: cancel it without waiting.
-            if let session = current.value { Task { await session.cancel() } }
-            throw ReplayIncomplete(segments: segments, message: timeout.message)
         } catch {
-            if let session = current.value { await session.cancel() }
-            throw error
+            let failed = current.value
+            if error is CancellationError || Task.isCancelled {
+                if let session = failed?.speech { await session.cancel() }
+                throw error
+            }
+            if let session = failed?.speech {
+                if error is ReplayTimeout {
+                    // The session may be stuck in the call that timed out: cancel it without waiting.
+                    Task { await session.cancel() }
+                } else {
+                    await session.cancel()
+                }
+            }
+            // The failed session's own final results so far are kept too.
+            let reported = failed?.finals.value.map { LiveTrack.shifted($0, by: base ?? from, track: track) } ?? []
+            throw ReplayIncomplete(segments: segments + reported,
+                                   message: (error as? ReplayTimeout)?.message ?? error.localizedDescription)
         }
     }
 
-    /// Finishes the current session and moves its segments to the session timeline.
-    private static func finishCurrent(_ current: LockedValue<(any LiveSpeechSession)?>, base: Double?,
+    /// Finishes the current session, moves its segments to the session timeline, and clears it, so its final updates
+    /// are never counted again.
+    private static func finishCurrent(_ current: LockedValue<ReplaySession?>, base: Double?,
                                       track: String, fed: Double, limits: ReplayLimits) async throws
         -> [TranscriptSegment] {
-        guard let session = current.value else { throw CancellationError() }
+        guard let session = current.value?.speech else { throw CancellationError() }
         let segments = try await limits.run(limits.finish(fed), "finish") { try await session.finish() }
+        current.withLock { $0 = nil }
         return segments.map { LiveTrack.shifted($0, by: base ?? 0, track: track) }
     }
 }
 
-/// A replay that stopped because speech did not answer in time (`TrackReplayer.replay` with timeouts). `segments`
-/// are those already returned, on the session timeline; the rest of the track is not transcribed.
+/// One replay speech session and the final updates it reported, on its own timeline. `finish()` returns them again,
+/// so they are used only when the session fails.
+private struct ReplaySession: Sendable {
+    let speech: any LiveSpeechSession
+    let finals: LockedValue<[TranscriptSegment]>
+}
+
+/// A replay that stopped before the end of the track (`TrackReplayer.replay`): speech did not answer in time, or
+/// failed. `segments` are those already transcribed, on the session timeline; the rest of the track is not.
 struct ReplayIncomplete: LocalizedError, Sendable {
     var segments: [TranscriptSegment]
     var message: String

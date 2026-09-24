@@ -39,7 +39,9 @@ enum TimedOutcome<Value: Sendable>: Sendable {
 /// waiting task is cancelled, it stops waiting at once: the operation's task is cancelled and abandoned, even if it
 /// never returns (a hung platform call). With `cancellable: false` a cancelled caller still waits up to `limit`, for
 /// work that must finish either way, such as stopping capture.
-func awaitWithTimeout<Value: Sendable>(_ limit: Duration, cancellable: Bool = true,
+///
+/// With `deadline`, the wait also times out once that deadline passes, including a deadline set after the wait began.
+func awaitWithTimeout<Value: Sendable>(_ limit: Duration, cancellable: Bool = true, deadline: SharedDeadline? = nil,
                                        _ operation: @escaping @Sendable () async throws -> Value) async
     -> TimedOutcome<Value> {
     let gate = OutcomeGate<Value>()
@@ -51,14 +53,83 @@ func awaitWithTimeout<Value: Sendable>(_ limit: Duration, cancellable: Bool = tr
         try? await Task.sleep(for: limit)
         gate.resolve(.timedOut)
     }
+    let cutoff = deadline.map { deadline in
+        Task {
+            await deadline.wait()
+            if !Task.isCancelled { gate.resolve(.timedOut) }
+        }
+    }
     let outcome = await withTaskCancellationHandler {
         await gate.wait()
     } onCancel: {
         if cancellable { gate.resolve(.cancelled) }
     }
     timer.cancel()
+    cutoff?.cancel()
     if case .finished = outcome {} else { work.cancel() }
     return outcome
+}
+
+/// A deadline that may be set after the waits it limits have begun: the stop deadline of a live track's `finish()`,
+/// which also cuts short the session finishes already running (docs/meeting-design.md §4.6).
+final class SharedDeadline: Sendable {
+    private struct State {
+        var instant: ContinuousClock.Instant?
+        var waiters: [Int: CheckedContinuation<ContinuousClock.Instant?, Never>] = [:]
+        /// Waits cancelled before they registered.
+        var cancelled: Set<Int> = []
+        var nextID = 0
+    }
+
+    private let state = Mutex(State())
+
+    init() {}
+
+    var instant: ContinuousClock.Instant? { state.withLock { $0.instant } }
+
+    /// Sets the deadline and wakes every wait. Only the first call counts.
+    func set(_ instant: ContinuousClock.Instant) {
+        let waiters = state.withLock { state -> [CheckedContinuation<ContinuousClock.Instant?, Never>] in
+            guard state.instant == nil else { return [] }
+            state.instant = instant
+            defer { state.waiters.removeAll() }
+            return Array(state.waiters.values)
+        }
+        for waiter in waiters { waiter.resume(returning: instant) }
+    }
+
+    /// Returns once the deadline is set and has passed, or as soon as the calling task is cancelled.
+    func wait() async {
+        guard let instant = await whenSet(), !Task.isCancelled else { return }
+        try? await Task.sleep(until: instant, clock: .continuous)
+    }
+
+    /// The deadline once it is set; nil when the calling task is cancelled first.
+    private func whenSet() async -> ContinuousClock.Instant? {
+        let id = state.withLock { state -> Int in
+            defer { state.nextID += 1 }
+            return state.nextID
+        }
+        return await withTaskCancellationHandler {
+            await withCheckedContinuation { (continuation: CheckedContinuation<ContinuousClock.Instant?, Never>) in
+                let ready = state.withLock { state -> ContinuousClock.Instant?? in
+                    if state.cancelled.remove(id) != nil { return .some(nil) }
+                    if let instant = state.instant { return .some(instant) }
+                    state.waiters[id] = continuation
+                    return .none
+                }
+                if case .some(let instant) = ready { continuation.resume(returning: instant) }
+            }
+        } onCancel: {
+            let waiter = state.withLock { state -> CheckedContinuation<ContinuousClock.Instant?, Never>? in
+                if let waiter = state.waiters.removeValue(forKey: id) { return waiter }
+                // Not registered yet; once the deadline is set, registering returns at once anyway.
+                if state.instant == nil { state.cancelled.insert(id) }
+                return nil
+            }
+            waiter?.resume(returning: nil)
+        }
+    }
 }
 
 /// The first outcome wins; `wait()` returns it.

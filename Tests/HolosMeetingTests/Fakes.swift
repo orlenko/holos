@@ -267,17 +267,23 @@ struct FakeSpeechScript: Sendable {
     var segments: [TranscriptSegment]
     /// The factory throws this instead of creating the session.
     var makeError: HolosError?
-    /// `append` throws this.
+    /// `append` throws this…
     var appendError: HolosError?
+    /// …once this many seconds of audio were fed (nil: from the first frame).
+    var appendErrorAfter: Double?
     /// `finish()` waits this long first.
     var finishDelay: Duration?
     /// `finish()` does not return until `cancel()`; it then throws `CancellationError`.
     var finishHangs: Bool
+    /// `finish()` throws this, without reporting the segments not yet reported.
+    var finishError: HolosError?
 
     init(segments: [TranscriptSegment] = [], makeError: HolosError? = nil, appendError: HolosError? = nil,
-         finishDelay: Duration? = nil, finishHangs: Bool = false) {
+         finishDelay: Duration? = nil, finishHangs: Bool = false, appendErrorAfter: Double? = nil,
+         finishError: HolosError? = nil) {
         self.segments = segments; self.makeError = makeError; self.appendError = appendError
         self.finishDelay = finishDelay; self.finishHangs = finishHangs
+        self.appendErrorAfter = appendErrorAfter; self.finishError = finishError
     }
 }
 
@@ -305,7 +311,7 @@ actor FakeSpeech: LiveSpeechSession {
 
     func append(_ frame: PCMFrame) async throws {
         if cancelled { throw CancellationError() }
-        if let error = script.appendError { throw error }
+        if let error = script.appendError, fedSeconds >= (script.appendErrorAfter ?? 0) - 1e-9 { throw error }
         frameStarts.append(frame.startTime)
         fedSeconds += frame.duration
         let base = firstStart ?? frame.startTime
@@ -320,6 +326,7 @@ actor FakeSpeech: LiveSpeechSession {
             while !cancelled { try await Task.sleep(for: .milliseconds(5)) }
         }
         if cancelled { throw CancellationError() }
+        if let error = script.finishError { throw error }
         report(through: .infinity)
         return script.segments
     }
