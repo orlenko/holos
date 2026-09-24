@@ -288,8 +288,9 @@ public actor SessionArchive {
         nextSequence += 1
     }
 
-    /// Saves an immutable transcript revision, then points `transcripts/current.json` at it.
-    /// `writeLegacyExports: false` skips the speaker-less `exports/transcript.{txt,md}` (new code passes false).
+    /// Saves an immutable transcript revision and the legacy exports, then points `transcripts/current.json`
+    /// at it. `writeLegacyExports: false` skips the speaker-less `exports/transcript.{txt,md}` (new code passes
+    /// false).
     public func saveTranscript(_ transcript: Transcript, writeLegacyExports: Bool = true) throws {
         try ensureOpen()
         guard Self.validToken(transcript.id), transcript.id.lowercased() != "current" else {
@@ -308,21 +309,23 @@ public actor SessionArchive {
         } else {
             try AtomicFile.create(encoded, at: snapshot)
         }
+        if writeLegacyExports {
+            // Before the pointer: a failed export leaves the revision not current, so a retry rewrites both.
+            let text = transcript.text + "\n"
+            try AtomicFile.write(Data(text.utf8), to: SessionPaths.export("txt", in: directory))
+            var markdown = "# \(manifest.name)\n\n"
+            for segment in transcript.segments {
+                let source = segment.track ?? "unknown source"
+                markdown += "### [\(Self.timestamp(segment.start))–\(Self.timestamp(segment.end))] Source: \(source)\n\n"
+                if let speakerID = segment.speakerID {
+                    markdown += "Speaker label (not verified identity): \(speakerID)\n\n"
+                }
+                markdown += "\(segment.text)\n\n"
+            }
+            try AtomicFile.write(Data(markdown.utf8), to: SessionPaths.export("md", in: directory))
+        }
         try AtomicFile.writeJSON(TranscriptPointer(transcriptID: transcript.id),
                                  to: SessionPaths.transcriptPointer(directory))
-        guard writeLegacyExports else { return }
-        let text = transcript.text + "\n"
-        try AtomicFile.write(Data(text.utf8), to: SessionPaths.export("txt", in: directory))
-        var markdown = "# \(manifest.name)\n\n"
-        for segment in transcript.segments {
-            let source = segment.track ?? "unknown source"
-            markdown += "### [\(Self.timestamp(segment.start))–\(Self.timestamp(segment.end))] Source: \(source)\n\n"
-            if let speakerID = segment.speakerID {
-                markdown += "Speaker label (not verified identity): \(speakerID)\n\n"
-            }
-            markdown += "\(segment.text)\n\n"
-        }
-        try AtomicFile.write(Data(markdown.utf8), to: SessionPaths.export("md", in: directory))
     }
 
     public func finish(status: String) throws {

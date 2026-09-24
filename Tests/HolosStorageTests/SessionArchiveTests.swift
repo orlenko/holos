@@ -462,6 +462,33 @@ private func journalSyncs(_ counter: FileSyncCounter) -> Int { counter.count("ev
     try await writer.finish(status: ArchiveStatus.complete)
 }
 
+@Test func saveTranscriptCanBeRetriedAfterALegacyExportFails() async throws {
+    let root = try temporaryRoot()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let writer = try archive(in: root)
+    let first = Transcript(source: "mic", locale: "en-CA", backend: .speech,
+                           segments: [.init(start: 0, end: 1, text: "First")])
+    try await writer.saveTranscript(first)
+    let markdown = SessionPaths.export("md", in: writer.directory)
+    try FileManager.default.removeItem(at: markdown)
+    try FileManager.default.createDirectory(at: markdown, withIntermediateDirectories: false)
+
+    let second = Transcript(source: "mic", locale: "en-CA", backend: .speech,
+                            segments: [.init(start: 0, end: 1, text: "Second")])
+    await #expect(throws: (any Error).self) { try await writer.saveTranscript(second) }
+    // The pointer does not advance past exports that were not written.
+    #expect(try SessionArchive.currentTranscriptID(at: writer.directory) == first.id)
+
+    try FileManager.default.removeItem(at: markdown)
+    try await writer.saveTranscript(second)
+    #expect(try SessionArchive.currentTranscriptID(at: writer.directory) == second.id)
+    let text = try String(contentsOf: SessionPaths.export("txt", in: writer.directory), encoding: .utf8)
+    #expect(text.contains("Second"))
+    let rendered = try String(contentsOf: markdown, encoding: .utf8)
+    #expect(rendered.contains("Second"))
+    try await writer.finish(status: ArchiveStatus.complete)
+}
+
 @Test func interruptedSessionWithDeletedAudioRecovers() async throws {
     let root = try temporaryRoot()
     defer { try? FileManager.default.removeItem(at: root) }
