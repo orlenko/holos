@@ -472,7 +472,7 @@ private func turn(_ projection: SpeakerProjection, _ id: String) -> ProjectedTur
 
 @Test func fingerprintIgnoresRecognition() {
     let projection = project(recognition: recognition([likelyJim]), names: people)
-    #expect(projection.fingerprint(for: .linkProfile(speakerID: "system:S1", profileID: "P-JIM")) == "")
+    #expect(projection.fingerprint(for: .linkProfile(speakerID: "system:S1", profileID: "P-JIM")) == "link=;rejected=0")
     #expect(projection.fingerprint(for: .rename(speakerID: "system:S1", name: "Jim")) == "")
     #expect(projection.fingerprint(for: .rejectProfile(speakerID: "system:S1", profileID: "P-JIM")) == "link=;rejected=0")
     #expect(projection.fingerprint(for: .merge(from: "system:S1", into: "system:S2"))
@@ -549,13 +549,18 @@ private func turn(_ projection: SpeakerProjection, _ id: String) -> ProjectedTur
     let view = journal.view
     #expect(view.fingerprint(for: .rename(speakerID: "system:S1", name: "X")) == "Jim")
     #expect(view.fingerprint(for: .rename(speakerID: "system:S9", name: "X")) == "")
-    #expect(view.fingerprint(for: .linkProfile(speakerID: "system:S1", profileID: "P")) == "P-JIM")
+    #expect(view.fingerprint(for: .linkProfile(speakerID: "system:S1", profileID: "P")) == "link=P-JIM;rejected=0")
+    #expect(view.fingerprint(for: .linkProfile(speakerID: "system:S2", profileID: "P-BOB")) == "link=;rejected=1")
     #expect(view.fingerprint(for: .reassignTurns(turnIDs: ["T1", "T6", "T8", "T99"], to: "system:S2"))
         == "system:S1:seg-T1[0..5],?:seg-T6[0..5],mic:me:seg-T8[0..5],")
     #expect(view.fingerprint(for: .rejectProfile(speakerID: "system:S1", profileID: "P-BOB")) == "link=P-JIM;rejected=0")
     #expect(view.fingerprint(for: .rejectProfile(speakerID: "system:S2", profileID: "P-BOB")) == "link=;rejected=1")
     #expect(view.fingerprint(for: .merge(from: "system:S3", into: "system:S1"))
-        == "system:S3::T3|system:S1:P-JIM:T1,T4,T7")
+        == "system:S3:name=0:;link=;rejected=;turns=T3=seg-T3[0..5]:0"
+            + "|system:S1:name=3:Jim;link=P-JIM;rejected=;turns=T1=seg-T1[0..5]:0,T4=seg-T4[0..5]:0,T7=seg-T7[0..5]:0")
+    #expect(view.fingerprint(for: .merge(from: "system:S2", into: "system:S3"))
+        == "system:S2:name=0:;link=;rejected=P-BOB;turns=T2=seg-T2[0..5]:1,T5=seg-T5[0..5]:0"
+            + "|system:S3:name=0:;link=;rejected=;turns=T3=seg-T3[0..5]:0")
     #expect(view.fingerprint(for: .splitTurn(turnID: "T5", at: WordRef(segmentID: "seg-T5", word: 3)))
         == "system:S2:seg-T5[0..5]")
     #expect(view.fingerprint(for: .newSpeaker(speakerID: "user:X", name: nil, turnIDs: ["T2", "T6"]))
@@ -649,6 +654,66 @@ private func turn(_ projection: SpeakerProjection, _ id: String) -> ProjectedTur
     #expect(speaker(projection, "system:S3") != nil)
     #expect(turn(projection, "T6")?.speakerID == "system:S3")
     #expect(turn(projection, "T3")?.speakerID == "system:S2")
+}
+
+@Test func staleMergeAfterChangeToEitherSpeakerIsRefused() throws {
+    let split = { (turnID: String) -> [SpeakerEditAction] in
+        // The speaker keeps the same turn IDs, but one of them now covers fewer words.
+        [.splitTurn(turnID: turnID, at: WordRef(segmentID: "seg-\(turnID)", word: 3)),
+         .reassignTurns(turnIDs: ["\(turnID)/C0"], to: "system:S2")]
+    }
+    // Window B, still showing the run as made, merges S3 into S1 after window A changed one of them.
+    let concurrent: [(String, [SpeakerEditAction])] = [
+        ("rename from", [.rename(speakerID: "system:S3", name: "Ann")]),
+        ("link from", [.linkProfile(speakerID: "system:S3", profileID: "P-JIM")]),
+        ("reject from", [.rejectProfile(speakerID: "system:S3", profileID: "P-JIM")]),
+        ("exclude from's turn", [.excludeFromEnrollment(turnIDs: ["T3"])]),
+        ("shrink from's turn", split("T3")),
+        ("rename into", [.rename(speakerID: "system:S1", name: "Jim")]),
+        ("link into", [.linkProfile(speakerID: "system:S1", profileID: "P-JIM")]),
+        ("reject into", [.rejectProfile(speakerID: "system:S1", profileID: "P-BOB")]),
+        ("exclude into's turn", [.excludeFromEnrollment(turnIDs: ["T1"])]),
+        ("shrink into's turn", split("T1")),
+    ]
+    let merge = SpeakerEditAction.merge(from: "system:S3", into: "system:S1")
+    for (label, actions) in concurrent {
+        let older = project()
+        var journal = Journal()
+        for (index, action) in actions.enumerated() { journal.append(action, id: "C\(index)") }
+        let changed = journal.view
+        journal.append(merge, id: "M", madeOn: older)
+        let projection = journal.view
+        #expect(projection.staleEdits == [StaleEdit(editID: "M", reason: "changed since the edit was made")], "\(label)")
+        #expect(projection.appliedEditIDs == actions.indices.map { "C\($0)" }, "\(label)")
+        #expect(projection.speakers == changed.speakers && projection.turns == changed.turns, "\(label)")
+        // Made on the current view, the same merge applies.
+        journal.append(merge, id: "M2")
+        #expect(journal.view.appliedEditIDs.last == "M2", "\(label)")
+        #expect(speaker(journal.view, "system:S3") == nil, "\(label)")
+    }
+    // A change to a third speaker leaves the merge valid.
+    let older = project()
+    var journal = Journal()
+    journal.append(.rename(speakerID: "system:S2", name: "Bob"), id: "C0")
+    journal.append(merge, id: "M", madeOn: older)
+    #expect(journal.view.appliedEditIDs == ["C0", "M"])
+}
+
+@Test func staleLinkAfterRejectionIsRefused() throws {
+    var journal = Journal(names: people)
+    let older = journal.view
+    // Window A says S1 is "Not Jim"; window B, still showing no rejection, links S1 to Jim.
+    journal.append(.rejectProfile(speakerID: "system:S1", profileID: "P-JIM"), id: "E1")
+    journal.append(.linkProfile(speakerID: "system:S1", profileID: "P-JIM"), id: "E2", madeOn: older)
+    let projection = journal.view
+    #expect(projection.staleEdits == [StaleEdit(editID: "E2", reason: "changed since the edit was made")])
+    let s1 = try #require(speaker(projection, "system:S1"))
+    #expect(s1.profileID == nil)
+    #expect(s1.rejectedProfileIDs == ["P-JIM"])
+    // Made on the current view, the link applies and lifts the rejection.
+    journal.append(.linkProfile(speakerID: "system:S1", profileID: "P-JIM"), id: "E3")
+    let linked = try #require(speaker(journal.view, "system:S1"))
+    #expect(linked.profileID == "P-JIM" && linked.rejectedProfileIDs.isEmpty)
 }
 
 @Test func staleRejectAfterRelinkIsRefused() throws {
