@@ -31,7 +31,8 @@ public enum AtomicFile {
     @TaskLocal static var failFolderSync = false
 
     /// Test hook: while set (a task-local value), every fsync, rename, and unlink that publishes or removes an
-    /// entry is numbered, and the one the plan names fails as an I/O error would (`FaultPlan`).
+    /// entry, and the reopen of a folder just made, is numbered, and the ones the plan names fail as an I/O error
+    /// would (`FaultPlan`).
     @TaskLocal static var faultPlan: FaultPlan? = nil
 
     /// Writes a same-directory temporary file (O_CREAT|O_EXCL|O_CLOEXEC, `permissions`), fsyncs it,
@@ -485,12 +486,12 @@ final class FileSyncCounter: Sendable {
     func count(_ name: String) -> Int { counts.withLock { $0[name] ?? 0 } }
 }
 
-/// Fault injection for tests (`AtomicFile.faultPlan`). Numbers every fsync, rename, and unlink step from 0 and fails
-/// the one at `failAt`, until `disarm()`. Also records each entry a step added, replaced, or removed and each
-/// successful folder fsync, so a test can check that every change was made durable.
+/// Fault injection for tests (`AtomicFile.faultPlan`). Numbers every fsync, rename, unlink, and new-folder reopen
+/// step from 0 and fails the ones at `failAt`, until `disarm()`. Also records each entry a step added, replaced, or
+/// removed and each successful folder fsync, so a test can check that every change was made durable.
 final class FaultPlan: Sendable {
     private struct State {
-        var failAt: Int?
+        var failAt: Set<Int>
         var steps: [String] = []
         /// In order: a changed entry (folder path, name) or a folder fsync (folder path, nil).
         var log: [(folder: String, entry: String?)] = []
@@ -498,13 +499,15 @@ final class FaultPlan: Sendable {
 
     private let state: Mutex<State>
 
-    init(failAt: Int? = nil) { state = Mutex(State(failAt: failAt)) }
+    init(failAt: Int? = nil) { state = Mutex(State(failAt: failAt.map { [$0] } ?? [])) }
+
+    init(failAt: Set<Int>) { state = Mutex(State(failAt: failAt)) }
 
     /// The steps seen so far, in order.
     var steps: [String] { state.withLock { $0.steps } }
 
     /// Stops failing; later steps are still numbered and recorded.
-    func disarm() { state.withLock { $0.failAt = nil } }
+    func disarm() { state.withLock { $0.failAt = [] } }
 
     /// Changed entries ("folder/name") that no later successful fsync of their folder covers, except names in
     /// `ignoring`.
@@ -525,7 +528,7 @@ final class FaultPlan: Sendable {
     func shouldFail(_ step: String) -> Bool {
         state.withLock { state in
             defer { state.steps.append(step) }
-            return state.steps.count == state.failAt
+            return state.failAt.contains(state.steps.count)
         }
     }
 
