@@ -31,7 +31,7 @@ struct Doctor: AsyncParsableCommand {
             speechAssetStatus: (try? await AppleSpeechEngine.assetStatus(locale: locale, backend: .speech)) ?? "unsupported",
             dictationAssetStatus: (try? await AppleSpeechEngine.assetStatus(locale: locale, backend: .dictation)) ?? "unsupported",
             sessionsDirectory: HolosPaths.sessions.path,
-            speakerModels: speakerModels.doctorValue)
+            speakerModels: speakerModels)
         if json { try Console.json(report); return }
         Console.output("Holos — local capability report")
         Console.output("macOS: \(report.os)")
@@ -65,8 +65,8 @@ private struct DoctorReport: Encodable {
     var speechAssetStatus: String
     var dictationAssetStatus: String
     var sessionsDirectory: String
-    /// "verified", "notInstalled", or "damaged" (`ModelInstallStatus.doctorValue`).
-    var speakerModels: String
+    /// Encodes as "verified", "notInstalled", or "damaged" (`ModelInstallStatus.doctorValue`).
+    var speakerModels: ModelInstallStatus
 }
 
 struct Setup: AsyncParsableCommand {
@@ -74,14 +74,22 @@ struct Setup: AsyncParsableCommand {
         abstract: "Install Apple's on-device transcription assets for a locale, or the speaker models.",
         discussion: """
             --speakers downloads the speaker-labelling models (about 21 MB, pinned and checked by SHA-256) \
-            into Holos's Application Support folder instead of installing transcription assets.
+            into Holos's Application Support folder instead of installing transcription assets. Installed models \
+            that are verified and load on this Mac are kept; models that fail either check are downloaded again. \
+            --force downloads them again in any case.
             """)
     @OptionGroup var recognition: RecognitionOptions
     @Flag(help: "Download and verify the speaker models used to label speakers (network).") var speakers = false
+    @Flag(help: "With --speakers: download and install the speaker models again even when they are verified.")
+    var force = false
+
+    func validate() throws {
+        if force && !speakers { throw ValidationError("--force applies only with --speakers.") }
+    }
 
     mutating func run() async throws {
         if speakers {
-            try await SpeakerModelSetup.run()
+            try await SpeakerModelSetup.run(force: force)
             return
         }
         Console.error("Preparing \(recognition.backend.rawValue) assets for \(recognition.locale)…")
@@ -92,7 +100,7 @@ struct Setup: AsyncParsableCommand {
 
 /// `holos setup --speakers` (docs/meeting-design.md §5.5 PR7a).
 enum SpeakerModelSetup {
-    static func run() async throws {
+    static func run(force: Bool) async throws {
         let directory = FluidModels.defaultDirectory
         let source = "\(FluidModels.repository)@\(FluidModels.revision.prefix(12))"
         let progress = ProgressPrinter()
@@ -104,17 +112,8 @@ enum SpeakerModelSetup {
             Console.error("\(files.count) files; tree digest \(ModelTreeDigest.digest(of: files)).")
             return
         }
-        let status = FluidModels.status(directory: directory)
-        switch status {
-        case .verified:
-            Console.error("Speaker models are already installed and verified.")
-        case .notInstalled:
-            Console.error("Downloading speaker models (\(source), about 21 MB)…")
-            try await FluidModels.install(directory: directory, progress: progress.report)
-        case .corrupt:
-            Console.error("The installed speaker models are \(status.summary); downloading them again…")
-            try await FluidModels.install(directory: directory, progress: progress.report)
-        }
+        try await FluidModels.setUp(directory: directory, force: force, notice: { Console.error($0) },
+                                    progress: progress.report)
         Console.output(FluidModels.readyMessage)
         Console.output(FluidModels.creditsLine)
     }

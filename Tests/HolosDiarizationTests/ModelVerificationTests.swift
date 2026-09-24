@@ -69,6 +69,44 @@ import HolosCore
         #expect(FluidModels.status(directory: directory, pinned: pinned) == .verified)
     }
 
+    @Test func linkedFoldersAndShadowingFilesAreCorrupt() throws {
+        let folder = try modelTemporaryFolder()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let directory = folder.appendingPathComponent("models")
+        let pinned = try modelWriteFakeModels(in: directory)
+        let repo = FluidModels.repoFolder(in: directory)
+        let bundle = repo.appendingPathComponent("Embedding.mlmodelc")
+        let bundleFiles = pinned.map(\.relativePath).filter { $0.hasPrefix("Embedding.mlmodelc/") }
+
+        // A linked bundle folder with intact files inside.
+        let elsewhere = folder.appendingPathComponent("Embedding-elsewhere.mlmodelc")
+        try FileManager.default.moveItem(at: bundle, to: elsewhere)
+        try FileManager.default.createSymbolicLink(at: bundle, withDestinationURL: elsewhere)
+        #expect(FluidModels.status(directory: directory, pinned: pinned) == .corrupt(files: bundleFiles))
+        try FileManager.default.removeItem(at: bundle)
+        try FileManager.default.moveItem(at: elsewhere, to: bundle)
+        #expect(FluidModels.status(directory: directory, pinned: pinned) == .verified)
+
+        // A linked marker.
+        let marker = repo.appendingPathComponent(".fluidaudio-revision")
+        let markerCopy = folder.appendingPathComponent("marker")
+        try FileManager.default.moveItem(at: marker, to: markerCopy)
+        try FileManager.default.createSymbolicLink(at: marker, withDestinationURL: markerCopy)
+        #expect(FluidModels.status(directory: directory, pinned: pinned) == .corrupt(files: [".fluidaudio-revision"]))
+        try FileManager.default.removeItem(at: marker)
+        try FileManager.default.moveItem(at: markerCopy, to: marker)
+
+        // FluidAudio reads <directory>/plda-parameters.json before the pinned copy.
+        let shadow = directory.appendingPathComponent("plda-parameters.json")
+        try Data("garbage".utf8).write(to: shadow)
+        #expect(FluidModels.status(directory: directory, pinned: pinned)
+            == .corrupt(files: ["../plda-parameters.json"]))
+        try FileManager.default.removeItem(at: shadow)
+        // Its later fallbacks are never read while the pinned file exists.
+        try modelWrite("{}", to: directory.appendingPathComponent("speaker-diarization-offline/plda-parameters.json"))
+        #expect(FluidModels.status(directory: directory, pinned: pinned) == .verified)
+    }
+
     @Test func unsafePinnedPathsAndAnEmptyListNeverVerify() throws {
         let folder = try modelTemporaryFolder()
         defer { try? FileManager.default.removeItem(at: folder) }
@@ -279,6 +317,64 @@ import HolosCore
         #expect(FluidModels.status(directory: directory, pinned: pinned) == .verified)
     }
 
+    @Test func setUpKeepsModelsThatLoadAndReinstallsModelsThatDoNot() async throws {
+        let folder = try modelTemporaryFolder()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let directory = folder.appendingPathComponent("Models/speaker-diarization-coreml@test")
+        let pinned = try modelWriteFakeModels(in: directory)
+        // Marks the installed copy, so a reinstall (which replaces the whole folder) is visible.
+        let sentinel = directory.appendingPathComponent("installed-copy")
+        try modelWrite("old", to: sentinel)
+        let downloads = Mutex(0)
+        let checked = Mutex<[String]>([])
+        let notices = Mutex<[String]>([])
+        let download: FluidModels.Download = { partial, _ in
+            downloads.withLock { $0 += 1 }
+            _ = try modelWriteFakeModels(in: partial)
+        }
+        func setUp(force: Bool, loads: @escaping @Sendable (URL) -> Bool) async throws {
+            try await FluidModels.setUp(
+                directory: directory, pinned: pinned, force: force, download: download,
+                check: { folder in
+                    checked.withLock { $0.append(folder.lastPathComponent) }
+                    if !loads(folder) { throw HolosError.unavailable("Core ML refused the model.") }
+                },
+                notice: { line in notices.withLock { $0.append(line) } },
+                progress: { _ in })
+        }
+
+        // Verified and loads: kept, nothing downloaded.
+        try await setUp(force: false, loads: { _ in true })
+        #expect(downloads.withLock { $0 } == 0)
+        #expect(checked.withLock { $0 } == [directory.lastPathComponent])
+        #expect(notices.withLock { $0.last }?.contains("already installed") == true)
+        #expect(FileManager.default.fileExists(atPath: sentinel.path))
+
+        // Verified but fails to load in place: downloaded again, and the fresh copy passes its own load check.
+        try await setUp(force: false, loads: { $0.lastPathComponent != directory.lastPathComponent })
+        #expect(downloads.withLock { $0 } == 1)
+        #expect(notices.withLock { $0.last }?.contains("could not be loaded") == true)
+        #expect(!FileManager.default.fileExists(atPath: sentinel.path))
+        #expect(FluidModels.status(directory: directory, pinned: pinned) == .verified)
+
+        // --force: downloaded again without a load check of the installed copy.
+        try modelWrite("old", to: sentinel)
+        checked.withLock { $0 = [] }
+        try await setUp(force: true, loads: { _ in true })
+        #expect(downloads.withLock { $0 } == 2)
+        #expect(checked.withLock { $0 }.allSatisfy { $0.hasPrefix(directory.lastPathComponent + ".partial-") })
+        #expect(!FileManager.default.fileExists(atPath: sentinel.path))
+
+        // A shadowing file makes the install damaged; setup replaces the folder and the file goes with it.
+        let shadow = directory.appendingPathComponent("plda-parameters.json")
+        try modelWrite("garbage", to: shadow)
+        try await setUp(force: false, loads: { _ in true })
+        #expect(downloads.withLock { $0 } == 3)
+        #expect(!FileManager.default.fileExists(atPath: shadow.path))
+        #expect(FluidModels.status(directory: directory, pinned: pinned) == .verified)
+        #expect(try modelSiblings(of: directory).isEmpty)
+    }
+
     @Test func recordManifestInstallsNothing() async throws {
         let folder = try modelTemporaryFolder()
         defer { try? FileManager.default.removeItem(at: folder) }
@@ -339,6 +435,8 @@ import HolosCore
         #expect(info.configuration["exclusiveSegments"] == "true")
         #expect(info.configuration["exposeChunkEmbeddings"] == "true")
         #expect(info.configuration["clusteringThreshold"] == "0.6")
+        #expect(info.configuration["computeUnits"] == "all")
+        #expect(info.configuration["fbankComputeUnits"] == "cpuOnly")
     }
 
     @Test func configurationOverridesParse() throws {
@@ -386,10 +484,13 @@ import HolosCore
 
         let status = FluidModels.status(directory: directory)
         #expect(status == .notInstalled)
-        struct DoctorFields: Encodable { var speakerModels: String }
-        let json = String(decoding: try HolosJSON.encoder().encode(DoctorFields(speakerModels: status.doctorValue)),
-                          as: UTF8.self)
+        // `DoctorReport.speakerModels` holds the status itself, so this is the encoding `holos doctor --json` writes.
+        let json = String(decoding: try HolosJSON.encoder().encode(["speakerModels": status]), as: UTF8.self)
         #expect(json.contains(#""speakerModels" : "notInstalled""#))
+        for (value, text) in [(ModelInstallStatus.verified, "verified"), (.corrupt(files: ["a"]), "damaged")] {
+            #expect(String(decoding: try HolosJSON.encoder().encode([value]), as: UTF8.self)
+                .contains("\"\(text)\""))
+        }
         #expect(status.summary == "not installed")
         #expect(ModelInstallStatus.verified.doctorValue == "verified")
         #expect(ModelInstallStatus.corrupt(files: ["a"]).doctorValue == "damaged")

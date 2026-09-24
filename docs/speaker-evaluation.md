@@ -281,4 +281,6 @@ under 0.25 s bridged); DER uses a 0.25 s collar. Debug test build.
 The two female compact voices (Samantha, Karen) merged into one cluster, so the
 fixture picks a female voice, a male voice, and a second male voice from another
 English locale. FluidAudio's `totalProcessingSeconds`, which includes the model
-load time, was 1.1 s per run.
+load time, was 1.1 s per run. It adds that load time on every call, even when the
+models are cached, so `FluidDiarizer` records its own wall time as
+`processingSeconds` instead (the load counts only on the call that loads).

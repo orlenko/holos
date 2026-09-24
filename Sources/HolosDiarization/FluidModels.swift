@@ -25,6 +25,15 @@ public enum ModelInstallStatus: Sendable, Equatable {
     case corrupt(files: [String])
 }
 
+/// Encodes as its `doctorValue` string; `holos doctor --json` stores the status itself in `speakerModels`, so the
+/// tests check the same encoding the report uses.
+extension ModelInstallStatus: Encodable {
+    public func encode(to encoder: any Encoder) throws {
+        var container = encoder.singleValueContainer()
+        try container.encode(doctorValue)
+    }
+}
+
 extension ModelInstallStatus {
     /// The `speakerModels` value of `holos doctor --json`: "verified", "notInstalled", or "damaged".
     public var doctorValue: String {
@@ -134,11 +143,19 @@ public enum FluidModels {
 
     // MARK: - Status
 
+    /// Files next to `speaker-diarization/` that FluidAudio would read instead of a pinned file, relative to the
+    /// directory passed to it. `OfflineDiarizerModels.loadPLDAPsi` (FluidAudio 0.17.1) tries
+    /// `<directory>/plda-parameters.json` before `<directory>/speaker-diarization/plda-parameters.json`; its other
+    /// fallbacks come after the pinned path, so they are never read while the pinned file exists.
+    static let shadowingPaths = ["plda-parameters.json"]
+
     /// No network. Checks `.fluidaudio-revision` == revision and every pinned file's size and SHA-256.
     ///
-    /// `notInstalled` when neither the marker nor any pinned file is present; `verified` when the marker matches
-    /// and every pinned file is a regular file (not a link) of the pinned size and digest; otherwise `corrupt`
-    /// with the marker (listed first) and the files that failed. Files that are not pinned are ignored.
+    /// `notInstalled` when neither the marker nor any pinned file is present; `verified` when the marker matches,
+    /// every pinned file is a regular file of the pinned size and digest reached without following a symbolic link
+    /// at any level below `directory`, and nothing FluidAudio would read in place of a pinned file
+    /// (`shadowingPaths`) exists; otherwise `corrupt` with the marker (listed first), the files that failed, and
+    /// each shadowing file as "../<name>". Other files that are not pinned are ignored.
     public static func status(directory: URL = defaultDirectory,
                               pinned: [PinnedFile] = PinnedModels.files) -> ModelInstallStatus {
         let repo = repoFolder(in: directory)
@@ -163,7 +180,7 @@ public enum FluidModels {
                 damaged.append(file.relativePath)
                 continue
             }
-            switch FileDigest.inspect(repo.appendingPathComponent(file.relativePath), expectedSize: file.size) {
+            switch FileDigest.inspect(file.relativePath, in: repo, expectedSize: file.size) {
             case .missing:
                 damaged.append(file.relativePath)
             case .unusable:
@@ -172,6 +189,12 @@ public enum FluidModels {
             case .present(_, let sha256):
                 present += 1
                 if sha256 != file.sha256.lowercased() { damaged.append(file.relativePath) }
+            }
+        }
+        for name in shadowingPaths {
+            var shadow = stat()
+            if lstat(directory.appendingPathComponent(name).path, &shadow) == 0 || errno != ENOENT {
+                damaged.append("../" + name)
             }
         }
         if present == 0 { return .notInstalled }
@@ -193,6 +216,45 @@ public enum FluidModels {
                                progress: @escaping @Sendable (Double) -> Void) async throws {
         try await install(directory: directory, pinned: pinned, download: fluidDownload, check: fluidLoadCheck,
                           progress: progress)
+    }
+
+    /// `holos setup --speakers`. Models that are verified and load on this Mac (checked offline, as a fresh install
+    /// is) are left in place unless `force`; anything else (missing, damaged, verified but failing to load, or
+    /// `force`) is installed again through `install`, whose rename replaces the whole folder. `notice` receives one
+    /// line for stderr saying which case applies. The same network and lock rules as `install`.
+    public static func setUp(directory: URL = defaultDirectory, force: Bool,
+                             notice: @Sendable (String) -> Void,
+                             progress: @escaping @Sendable (Double) -> Void) async throws {
+        try await setUp(directory: directory, pinned: PinnedModels.files, force: force, download: fluidDownload,
+                        check: fluidLoadCheck, notice: notice, progress: progress)
+    }
+
+    static func setUp(directory: URL, pinned: [PinnedFile], force: Bool, download: Download, check: Check,
+                      notice: @Sendable (String) -> Void,
+                      progress: @escaping @Sendable (Double) -> Void) async throws {
+        let source = "\(repository)@\(revision.prefix(12)), about 21 MB"
+        let status = status(directory: directory, pinned: pinned)
+        switch status {
+        case .verified where !force:
+            do {
+                try await check(directory)
+                notice("Speaker models are already installed, verified, and load on this Mac.")
+                return
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                log.error("Verified speaker models failed to load; reinstalling")
+                notice("The installed speaker models could not be loaded (\(error.localizedDescription)); "
+                    + "downloading them again (\(source))…")
+            }
+        case .verified:
+            notice("Downloading the speaker models again (\(source))…")
+        case .notInstalled:
+            notice("Downloading speaker models (\(source))…")
+        case .corrupt:
+            notice("The installed speaker models are \(status.summary); downloading them again (\(source))…")
+        }
+        try await install(directory: directory, pinned: pinned, download: download, check: check, progress: progress)
     }
 
     /// Network. Downloads the pinned revision into a temporary folder next to `directory`, lists every file with
@@ -302,7 +364,7 @@ public enum FluidModels {
         } catch {
             if error is CancellationError || Task.isCancelled { throw CancellationError() }
             throw HolosError.unavailable(
-                "The speaker models were downloaded and verified but could not be loaded on this Mac "
+                "The speaker models are verified but could not be loaded on this Mac "
                     + "(\(error.localizedDescription)).")
         }
     }
@@ -312,9 +374,8 @@ public enum FluidModels {
     enum MarkerState: Equatable { case missing, matches, differs }
 
     static func readMarker(in repo: URL) -> MarkerState {
-        let url = repo.appendingPathComponent(revisionMarkerName)
-        let fd = open(url.path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK)
-        guard fd >= 0 else { return errno == ENOENT ? .missing : .differs }
+        let (fd, code) = FileDigest.openBeneath(repo, relativePath: revisionMarkerName)
+        guard fd >= 0 else { return code == ENOENT ? .missing : .differs }
         defer { close(fd) }
         var info = stat()
         guard fstat(fd, &info) == 0, (info.st_mode & S_IFMT) == S_IFREG, info.st_size <= 1024 else { return .differs }
@@ -418,10 +479,50 @@ enum FileDigest {
         case present(size: Int, sha256: String)
     }
 
-    /// `expectedSize` short-cuts the hash when the size already differs.
+    /// `expectedSize` short-cuts the hash when the size already differs. Only the last path component is opened
+    /// without following links; `inspect(_:in:expectedSize:)` refuses links at every level.
     static func inspect(_ url: URL, expectedSize: Int?) -> Inspection {
         let fd = open(url.path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK)
         guard fd >= 0 else { return errno == ENOENT ? .missing : .unusable }
+        return inspect(descriptor: fd, expectedSize: expectedSize)
+    }
+
+    /// The file at `relativePath` under `root`, reached through `openBeneath`: a symbolic link at any level makes
+    /// it `unusable`.
+    static func inspect(_ relativePath: String, in root: URL, expectedSize: Int?) -> Inspection {
+        let (fd, code) = openBeneath(root, relativePath: relativePath)
+        guard fd >= 0 else { return code == ENOENT ? .missing : .unusable }
+        return inspect(descriptor: fd, expectedSize: expectedSize)
+    }
+
+    /// Opens `relativePath` (no empty, ".", or ".." component) under the folder `root` one component at a time with
+    /// `openat` and `O_NOFOLLOW`, so neither `root` nor any folder or file below it may be a symbolic link. Returns
+    /// the read-only descriptor of the last component and 0, or -1 and the errno of the first failure (ENOENT when
+    /// a component is missing; ELOOP or ENOTDIR for a link).
+    static func openBeneath(_ root: URL, relativePath: String) -> (fd: Int32, code: Int32) {
+        var current = open(root.path, O_RDONLY | O_CLOEXEC | O_DIRECTORY | O_NOFOLLOW)
+        guard current >= 0 else { return (-1, errno) }
+        let components = relativePath.split(separator: "/", omittingEmptySubsequences: false).map(String.init)
+        for (index, component) in components.enumerated() {
+            guard !component.isEmpty, component != ".", component != ".." else {
+                close(current)
+                return (-1, EINVAL)
+            }
+            let isLast = index == components.count - 1
+            let flags = isLast
+                ? O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK
+                : O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_DIRECTORY
+            let next = openat(current, component, flags)
+            let code = errno
+            close(current)
+            guard next >= 0 else { return (-1, code) }
+            current = next
+        }
+        return (current, 0)
+    }
+
+    /// Takes ownership of `fd` and closes it.
+    private static func inspect(descriptor fd: Int32, expectedSize: Int?) -> Inspection {
         defer { close(fd) }
         var info = stat()
         guard fstat(fd, &info) == 0, (info.st_mode & S_IFMT) == S_IFREG else { return .unusable }

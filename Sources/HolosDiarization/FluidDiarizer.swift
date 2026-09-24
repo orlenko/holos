@@ -84,7 +84,9 @@ public struct FluidDiarizerConfiguration: Sendable, Equatable {
         let config = offlineConfig(speakers: nil)
         return [
             "clusteringThreshold": String(describing: config.clustering.threshold),
+            // FluidAudio 0.17.1 loads segmentation, embedding, and PLDA with `.all` and always keeps FBank on the CPU.
             "computeUnits": "all",
+            "fbankComputeUnits": "cpuOnly",
             "embeddingExcludeOverlap": String(config.embedding.excludeOverlap),
             "exclusiveSegments": String(config.postProcessing.exclusiveSegments),
             "exposeChunkEmbeddings": String(config.exposeChunkEmbeddings),
@@ -156,11 +158,14 @@ public actor FluidDiarizer: SpeakerDiarizer {
         try Task.checkCancellation()
         try verifyModels()
         let source = try Int16CAFSampleSource(url: request.audio)
+        // Timed from here, so only the call that loads (or waits for) the models counts the load.
+        let started = ContinuousClock.now
         let models = try await loadedModels()
         try Task.checkCancellation()
         let config = configuration.offlineConfig(speakers: request.speakers)
         progress(0)
-        let output = try await Self.process(source: source, models: models, config: config, progress: progress)
+        let output = try await Self.process(source: source, models: models, config: config, started: started,
+                                            progress: progress)
         try Task.checkCancellation()
         Self.log.info("""
             Diarized track \(request.track, privacy: .public): \(source.sampleCount / 16_000, privacy: .public) s of \
@@ -217,11 +222,10 @@ public actor FluidDiarizer: SpeakerDiarizer {
     /// One pass over one track in a local, non-Sendable `OfflineDiarizerManager` that never leaves this function.
     @concurrent
     private static func process(source: Int16CAFSampleSource, models: OfflineDiarizerModels,
-                                config: OfflineDiarizerConfig,
+                                config: OfflineDiarizerConfig, started: ContinuousClock.Instant,
                                 progress: @escaping @Sendable (Double) -> Void) async throws -> DiarizerOutput {
         let manager = OfflineDiarizerManager(config: config)
         manager.initialize(models: models)
-        let started = ContinuousClock.now
         let result: DiarizationResult
         do {
             // Segmentation reports (windows done, total) per 10 s window; the rest (embeddings finishing,
@@ -240,13 +244,17 @@ public actor FluidDiarizer: SpeakerDiarizer {
                 "Speaker labelling failed (\(error.localizedDescription)). Try again; if it keeps failing, "
                     + "reinstall the speaker models with holos setup --speakers.")
         }
-        return output(from: result, measuredSeconds: seconds(since: started))
+        return output(from: result, processingSeconds: seconds(since: started))
     }
 
     /// FluidAudio's result as the engine-neutral output: segments with their quality, centroids from the speaker
-    /// database (raw WeSpeaker space), one window per chunk embedding, and FluidAudio's total processing time
-    /// (`PipelineTimings.totalProcessingSeconds`, which includes the models' load time as FluidAudio recorded it).
-    static func output(from result: DiarizationResult, measuredSeconds: Double) -> DiarizerOutput {
+    /// database (raw WeSpeaker space), one window per chunk embedding, and `processingSeconds`.
+    ///
+    /// `processingSeconds` is the wall time `diarize` measured, including the model load only on the call that
+    /// loaded them. FluidAudio's `PipelineTimings.totalProcessingSeconds` (the §4.8 mapping) is not used: it adds
+    /// `OfflineDiarizerModels.compilationDuration` on every call, so cached models counted their one-time load on
+    /// every track.
+    static func output(from result: DiarizationResult, processingSeconds: Double) -> DiarizerOutput {
         let segments = result.segments.map { segment in
             let quality = Double(segment.qualityScore)
             return RawDiarizationSegment(speaker: segment.speakerId, start: Double(segment.startTimeSeconds),
@@ -258,7 +266,7 @@ public actor FluidDiarizer: SpeakerDiarizer {
                             vector: FloatVector(chunk.embedding256))
         }
         return DiarizerOutput(segments: segments, centroids: centroids, windows: windows,
-                              processingSeconds: result.timings?.totalProcessingSeconds ?? measuredSeconds)
+                              processingSeconds: processingSeconds)
     }
 
     private static func seconds(since start: ContinuousClock.Instant) -> Double {
