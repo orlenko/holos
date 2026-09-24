@@ -54,12 +54,13 @@ public struct ArchiveEvent: Codable, Sendable, Equatable {
 
 /// The event journal (`events.jsonl`) as read by `SessionArchive.readEvents(at:)`.
 public struct EventJournal: Sendable, Equatable {
-    /// Readable events in file order; sequences strictly increase.
+    /// Readable events in file order; sequences never decrease. Builds before PR6 could repeat a sequence
+    /// after a failed fsync, so two events may share one; this build never writes a repeat.
     public var events: [ArchiveEvent]
     /// The file does not end with "\n"; the partial last line was skipped.
     public var tornTail: Bool
-    /// Complete lines skipped because they do not decode, or because their sequence does not follow the
-    /// previous readable event.
+    /// Complete lines skipped because they do not decode, or because their sequence is lower than the
+    /// previous readable event's.
     public var unreadableLines: Int
 
     public init(events: [ArchiveEvent] = [], tornTail: Bool = false, unreadableLines: Int = 0) {
@@ -106,6 +107,9 @@ public actor SessionArchive {
         MeetingEventKind.captureStopped, MeetingEventKind.archiveRecovered, MeetingEventKind.transcriptRebuilt,
     ]
     private static let maxJournalBytes = 1 << 30
+    /// The longest group-commit interval; also keeps `Duration.seconds` from overflowing.
+    static let maxJournalSyncInterval: Double = 3_600
+    private static let maxTranscriptBytes = 256 << 20
 
     private var manifest: SessionManifest
     private var nextSequence: Int
@@ -240,10 +244,11 @@ public actor SessionArchive {
         manifest = updated
     }
 
-    /// Chooses when `events.jsonl` is fsync'd. An interval that is not a positive number means `everyEvent`.
+    /// Chooses when `events.jsonl` is fsync'd. An interval that is not a positive number means `everyEvent`;
+    /// one longer than `maxJournalSyncInterval` is shortened to it.
     public func setJournalSync(_ mode: JournalSync) {
         if case .interval(let seconds) = mode, seconds.isFinite, seconds > 0 {
-            journalSync = mode
+            journalSync = .interval(seconds: min(seconds, Self.maxJournalSyncInterval))
         } else {
             journalSync = .everyEvent
             if journalDirty, !closed {
@@ -291,10 +296,17 @@ public actor SessionArchive {
             throw HolosError.invalidInput("Invalid transcript ID.")
         }
         let snapshot = SessionPaths.transcript(transcript.id, in: directory)
-        guard !FileManager.default.fileExists(atPath: snapshot.path) else {
-            throw HolosError.invalidInput("Transcript revision already exists.")
+        let encoded = try Self.encode(transcript)
+        if let existing = try AtomicFile.readIfPresent(snapshot, maxBytes: Self.maxTranscriptBytes) {
+            // The same bytes, not yet current, mean an earlier save of this transcript failed after creating
+            // the revision (for example while publishing the pointer); retrying finishes it.
+            let current = (try? TranscriptPointer.read(session: directory))?.transcriptID
+            guard existing == encoded, current != transcript.id else {
+                throw HolosError.invalidInput("Transcript revision already exists.")
+            }
+        } else {
+            try AtomicFile.create(encoded, at: snapshot)
         }
-        try AtomicFile.create(try Self.encode(transcript), at: snapshot)
         try AtomicFile.writeJSON(TranscriptPointer(transcriptID: transcript.id),
                                  to: SessionPaths.transcriptPointer(directory))
         guard writeLegacyExports else { return }
@@ -404,7 +416,7 @@ public actor SessionArchive {
     }
 
     /// Reads `events.jsonl` only (no chunk hashing). A partial last line is reported as `tornTail`; a complete
-    /// line that fails to decode, or whose sequence does not follow the previous event, is skipped and counted.
+    /// line that fails to decode, or whose sequence is lower than the previous event's, is skipped and counted.
     /// A missing journal is empty.
     public nonisolated static func readEvents(at directory: URL) throws -> EventJournal {
         guard directory.isFileURL, plainDirectory(directory) else {
@@ -418,8 +430,9 @@ public actor SessionArchive {
         var events: [ArchiveEvent] = []
         var unreadable = 0
         for line in lines {
+            // `>=`: older builds reused a sequence after an append whose fsync failed; both lines are real.
             guard let event = try? decoder.decode(ArchiveEvent.self, from: line), !event.kind.isEmpty,
-                  event.sequence > (events.last?.sequence ?? 0) else {
+                  event.sequence >= 1, event.sequence >= (events.last?.sequence ?? 0) else {
                 unreadable += 1
                 continue
             }
@@ -456,15 +469,18 @@ public actor SessionArchive {
     /// Repairs only a stale, structurally valid archive. Raw audio and damaged finalized chunks are never
     /// rewritten. Takes the processing lease itself (retry 1 s), so it refuses while another process holds it.
     public nonisolated static func recover(at directory: URL) async throws -> RecoveryReport {
+        // Check the layout first, so a folder that is not a session never gets a lock file.
+        try requireMaintenanceLayout(directory)
         let lease = try acquireProcessingLease(at: directory)
         defer { lease.release() }
         return try await recover(at: directory, lease: lease)
     }
 
     /// The existing recovery, run under the caller's lease. `recover(at:)` keeps its signature and
-    /// takes a lease itself.
+    /// takes a lease itself. Audio folders may be absent (Delete Audio removes them); chunks missing because
+    /// of that are expected once `audio-deleted.json` exists.
     public nonisolated static func recover(at directory: URL, lease: ProcessingLease) async throws -> RecoveryReport {
-        try requireSafeLayout(directory)
+        try requireMaintenanceLayout(directory)
         try lease.require(for: directory)
         let fd = try acquireLock(directory)
         defer { SessionLockFile.unlockAndClose(fd) }

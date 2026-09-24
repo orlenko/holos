@@ -330,13 +330,159 @@ private func abandonedRecording(in root: URL, events: Int) async throws -> URL {
     defer { try? FileManager.default.removeItem(at: root) }
     let directory = try await abandonedRecording(in: root, events: 2)
     let journal = SessionPaths.events(directory)
-    // A duplicated sequence number decodes but cannot follow event 2.
-    try appendRaw(String(decoding: try HolosJSON.line(ArchiveEvent(sequence: 2, at: Date(timeIntervalSince1970: 0),
-                                                                   kind: "duplicate", details: [:])), as: UTF8.self),
-                  to: journal)
+    func line(_ sequence: Int, _ kind: String) throws -> String {
+        String(decoding: try HolosJSON.line(ArchiveEvent(sequence: sequence, at: Date(timeIntervalSince1970: 0),
+                                                         kind: kind, details: [:])), as: UTF8.self)
+    }
+    // A lower sequence number decodes but cannot follow event 2.
+    try appendRaw(try line(1, "backwards"), to: journal)
     let read = try SessionArchive.readEvents(at: directory)
     #expect(read.events.map(\.kind) == ["tick", "tick"])
     #expect(read.unreadableLines == 1)
+}
+
+@Test func repeatedSequenceFromAnOlderBuildIsKept() async throws {
+    let root = try temporaryRoot()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let directory = try await abandonedRecording(in: root, events: 1)
+    let journal = SessionPaths.events(directory)
+    // Builds before PR6 reused a sequence after an append whose fsync failed; both lines are real events.
+    try appendRaw(String(decoding: try HolosJSON.line(ArchiveEvent(
+        sequence: 1, at: Date(timeIntervalSince1970: 0), kind: MeetingEventKind.chunkOpened,
+        details: ["relativePath": "audio/mic/000001.caf"])), as: UTF8.self), to: journal)
+    let read = try SessionArchive.readEvents(at: directory)
+    #expect(read.events.map(\.sequence) == [1, 1])
+    #expect(read.events.map(\.kind) == ["tick", MeetingEventKind.chunkOpened])
+    #expect(read.unreadableLines == 0)
+
+    let reopened = try SessionArchive.open(at: directory)
+    try await reopened.recordEvent(kind: "after", details: [:])
+    try await reopened.finish(status: ArchiveStatus.complete)
+    #expect(try SessionArchive.readEvents(at: directory).events.map(\.sequence) == [1, 1, 2])
+}
+
+/// Journal fsyncs (`events.jsonl`) counted by the AtomicFile test hook.
+private func journalSyncs(_ counter: FileSyncCounter) -> Int { counter.count("events.jsonl") }
+
+@Test func groupCommitSyncsOnlyWhenDue() async throws {
+    let root = try temporaryRoot()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let writer = try archive(in: root)
+    let counter = FileSyncCounter()
+    try await AtomicFile.$fileSyncCounter.withValue(counter) {
+        await writer.setJournalSync(.interval(seconds: 60))
+        try await writer.recordEvent(kind: "first", details: [:])
+        #expect(journalSyncs(counter) == 1)
+        for index in 1...3 { try await writer.recordEvent(kind: "tick", details: ["index": "\(index)"]) }
+        #expect(journalSyncs(counter) == 1)
+        try await writer.recordEvent(kind: MeetingEventKind.captureStopped, details: [:])
+        #expect(journalSyncs(counter) == 2)
+        try await writer.recordEvent(kind: MeetingEventKind.archiveRecovered, details: [:])
+        try await writer.recordEvent(kind: MeetingEventKind.transcriptRebuilt, details: [:])
+        #expect(journalSyncs(counter) == 4)
+        try await writer.recordEvent(kind: "late", details: [:])
+        #expect(journalSyncs(counter) == 4)
+        try await writer.finish(status: ArchiveStatus.complete)
+        #expect(journalSyncs(counter) == 5)
+    }
+}
+
+@Test func everyEventModeSyncsEachEvent() async throws {
+    let root = try temporaryRoot()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let writer = try archive(in: root)
+    let counter = FileSyncCounter()
+    try await AtomicFile.$fileSyncCounter.withValue(counter) {
+        for index in 1...3 { try await writer.recordEvent(kind: "tick", details: ["index": "\(index)"]) }
+        #expect(journalSyncs(counter) == 3)
+        try await writer.finish(status: ArchiveStatus.complete)
+        #expect(journalSyncs(counter) == 3)
+    }
+}
+
+@Test func groupCommitSyncsAfterTheInterval() async throws {
+    let root = try temporaryRoot()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let writer = try archive(in: root)
+    let counter = FileSyncCounter()
+    try await AtomicFile.$fileSyncCounter.withValue(counter) {
+        await writer.setJournalSync(.interval(seconds: 0.5))
+        try await writer.recordEvent(kind: "first", details: [:])
+        try await writer.recordEvent(kind: "second", details: [:])
+        #expect(journalSyncs(counter) == 1)
+        // The scheduled flush syncs the dirty journal without another event.
+        let deadline = ContinuousClock.now + .seconds(5)
+        while journalSyncs(counter) < 2, ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        #expect(journalSyncs(counter) == 2)
+        try await writer.finish(status: ArchiveStatus.complete)
+        // Nothing was dirty at finish.
+        #expect(journalSyncs(counter) == 2)
+    }
+}
+
+@Test func hugeGroupCommitIntervalIsClamped() async throws {
+    let root = try temporaryRoot()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let writer = try archive(in: root)
+    let counter = FileSyncCounter()
+    try await AtomicFile.$fileSyncCounter.withValue(counter) {
+        await writer.setJournalSync(.interval(seconds: 1e300))
+        try await writer.recordEvent(kind: "first", details: [:])
+        try await writer.recordEvent(kind: "second", details: [:])
+        #expect(journalSyncs(counter) == 1)
+        try await writer.finish(status: ArchiveStatus.complete)
+        #expect(journalSyncs(counter) == 2)
+    }
+    #expect(try SessionArchive.readEvents(at: writer.directory).events.count == 2)
+}
+
+@Test func saveTranscriptCanBeRetriedAfterThePointerFails() async throws {
+    let root = try temporaryRoot()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let writer = try archive(in: root)
+    let first = Transcript(source: "mic", locale: "en-CA", backend: .speech)
+    try await writer.saveTranscript(first, writeLegacyExports: false)
+    let pointer = SessionPaths.transcriptPointer(writer.directory)
+    try FileManager.default.removeItem(at: pointer)
+    try FileManager.default.createDirectory(at: pointer, withIntermediateDirectories: false)
+
+    let second = Transcript(source: "mic", locale: "en-CA", backend: .speech,
+                            segments: [.init(start: 0, end: 1, text: "Hi")])
+    await #expect(throws: HolosError.self) { try await writer.saveTranscript(second, writeLegacyExports: false) }
+    try FileManager.default.removeItem(at: pointer)
+    try await writer.saveTranscript(second, writeLegacyExports: false)
+    #expect(try SessionArchive.currentTranscriptID(at: writer.directory) == second.id)
+    // Once current, the same revision is refused; a different one with the same ID always is.
+    await #expect(throws: HolosError.self) { try await writer.saveTranscript(second, writeLegacyExports: false) }
+    var changed = second
+    changed.segments = []
+    await #expect(throws: HolosError.self) { try await writer.saveTranscript(changed, writeLegacyExports: false) }
+    try await writer.finish(status: ArchiveStatus.complete)
+}
+
+@Test func interruptedSessionWithDeletedAudioRecovers() async throws {
+    let root = try temporaryRoot()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let directory = try await abandonedRecording(in: root, events: 1)
+    try FileManager.default.removeItem(at: directory.appendingPathComponent("audio"))
+    try AtomicFile.writeJSON(["schemaVersion": 1], to: SessionPaths.audioDeleted(directory))
+
+    let report = try await SessionArchive.recover(at: directory)
+    #expect(report.manifest?.status == ArchiveStatus.interrupted)
+    #expect(!report.needsAttention)
+    let lease = try SessionArchive.acquireProcessingLease(at: directory)
+    let maintenance = try SessionArchive.openForMaintenance(at: directory, lease: lease)
+    try await maintenance.finish(status: ArchiveStatus.recovered)
+    lease.release()
+}
+
+@Test func recoverLeavesNoLockFileInAFolderThatIsNotASession() async throws {
+    let root = try temporaryRoot()
+    defer { try? FileManager.default.removeItem(at: root) }
+    await #expect(throws: HolosError.self) { try await SessionArchive.recover(at: root) }
+    #expect(try FileManager.default.contentsOfDirectory(atPath: root.path).isEmpty)
 }
 
 @Test func groupCommitKeepsEveryEvent() async throws {

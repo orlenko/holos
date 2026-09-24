@@ -33,7 +33,7 @@ public enum SessionSpeakerStore {
     public static func writeRun(_ run: DiarizationRun, session: URL) throws {
         try requireToken(run.id, "run ID")
         try requireToken(run.transcriptID, "transcript ID")
-        try requireWritableSchema(run.schemaVersion, "The run")
+        try requireWritableSchema(run.schemaVersion, SchemaVersion.diarizationRun, "The run")
         try requireSameSession(run.sessionID, session: session, what: "The run")
         try ensureSpeakerFolder(SessionPaths.runs(session), session: session)
         let data = try HolosJSON.encoder().encode(run)
@@ -46,8 +46,8 @@ public enum SessionSpeakerStore {
         guard let data = try AtomicFile.readIfPresent(url, maxBytes: maxRunBytes) else {
             throw HolosError.invalidInput("Speaker run \(id) does not exist in this session.")
         }
-        let run = try AtomicFile.decode(DiarizationRun.self, from: data, name: "speakers/runs/\(id).json")
-        try SchemaVersion.check(run.schemaVersion, file: "speakers/runs/\(id).json")
+        let run = try SchemaVersion.decode(DiarizationRun.self, from: data, current: SchemaVersion.diarizationRun,
+                                           name: "speakers/runs/\(id).json")
         guard run.id == id, SessionArchive.validToken(run.transcriptID) else {
             throw HolosError.invalidInput("speakers/runs/\(id).json does not describe run \(id).")
         }
@@ -74,8 +74,8 @@ public enum SessionSpeakerStore {
         guard let data = try AtomicFile.readIfPresent(SessionPaths.head(session), maxBytes: 64 << 10) else {
             return nil
         }
-        let head = try AtomicFile.decode(SpeakerHead.self, from: data, name: "speakers/head.json")
-        try SchemaVersion.check(head.schemaVersion, file: "speakers/head.json")
+        let head = try SchemaVersion.decode(SpeakerHead.self, from: data, current: SchemaVersion.speakerHead,
+                                            name: "speakers/head.json")
         try requireToken(head.runID, "run ID in speakers/head.json")
         return head
     }
@@ -83,7 +83,7 @@ public enum SessionSpeakerStore {
     /// Replaces speakers/head.json. Refuses a runID with no run file.
     public static func writeHead(_ head: SpeakerHead, session: URL) throws {
         try requireToken(head.runID, "run ID")
-        try requireWritableSchema(head.schemaVersion, "The speaker head")
+        try requireWritableSchema(head.schemaVersion, SchemaVersion.speakerHead, "The speaker head")
         try SessionLockFile.requireSessionFolder(session)
         guard isRegularFile(SessionPaths.run(head.runID, in: session)) else {
             throw HolosError.invalidInput("Speaker run \(head.runID) does not exist in this session.")
@@ -105,8 +105,8 @@ public enum SessionSpeakerStore {
         var unreadable = 0
         let decoder = HolosJSON.decoder()
         for line in lines {
-            guard let probe = try? decoder.decode(SchemaProbe.self, from: line),
-                  probe.schemaVersion == SchemaVersion.current,
+            guard let version = SchemaVersion.probe(line),
+                  SchemaVersion.readable(version, current: SchemaVersion.speakerEdit),
                   let edit = try? decoder.decode(SpeakerEdit.self, from: line),
                   SessionArchive.validToken(edit.id), SessionArchive.validToken(edit.baseRunID),
                   edit.batchID.map(SessionArchive.validToken) ?? true else {
@@ -125,7 +125,7 @@ public enum SessionSpeakerStore {
             try requireToken(edit.id, "edit ID")
             try requireToken(edit.baseRunID, "run ID")
             if let batchID = edit.batchID { try requireToken(batchID, "batch ID") }
-            try requireWritableSchema(edit.schemaVersion, "The speaker edit")
+            try requireWritableSchema(edit.schemaVersion, SchemaVersion.speakerEdit, "The speaker edit")
             guard !edit.source.isEmpty else { throw HolosError.invalidInput("A speaker edit needs a source.") }
         }
         guard !edits.isEmpty else { return }
@@ -144,8 +144,8 @@ public enum SessionSpeakerStore {
         let name = "speakers/recognition/\(runID).json"
         guard let data = try AtomicFile.readIfPresent(SessionPaths.recognition(runID, in: session),
                                                       maxBytes: maxRunBytes) else { return nil }
-        let result = try AtomicFile.decode(RecognitionResult.self, from: data, name: name)
-        try SchemaVersion.check(result.schemaVersion, file: name)
+        let result = try SchemaVersion.decode(RecognitionResult.self, from: data,
+                                              current: SchemaVersion.recognition, name: name)
         guard result.runID == runID else { throw HolosError.invalidInput("\(name) does not describe run \(runID).") }
         return result
     }
@@ -153,7 +153,7 @@ public enum SessionSpeakerStore {
     /// Replaces the recognition result of `result.runID`.
     public static func writeRecognition(_ result: RecognitionResult, session: URL) throws {
         try requireToken(result.runID, "run ID")
-        try requireWritableSchema(result.schemaVersion, "The recognition result")
+        try requireWritableSchema(result.schemaVersion, SchemaVersion.recognition, "The recognition result")
         try ensureSpeakerFolder(SessionPaths.recognitionDirectory(session), session: session)
         try AtomicFile.writeJSON(result, to: SessionPaths.recognition(result.runID, in: session))
     }
@@ -165,8 +165,8 @@ public enum SessionSpeakerStore {
         let name = "speakers/voice/\(runID).json"
         guard let data = try AtomicFile.readIfPresent(SessionPaths.voiceData(runID, in: session),
                                                       maxBytes: maxRunBytes) else { return nil }
-        let voice = try AtomicFile.decode(SessionVoiceData.self, from: data, name: name)
-        try SchemaVersion.check(voice.schemaVersion, file: name)
+        let voice = try SchemaVersion.decode(SessionVoiceData.self, from: data,
+                                             current: SchemaVersion.voiceData, name: name)
         guard voice.runID == runID else { throw HolosError.invalidInput("\(name) does not describe run \(runID).") }
         return voice
     }
@@ -174,7 +174,7 @@ public enum SessionSpeakerStore {
     /// Replaces; creates speakers/voice (0700) with isExcludedFromBackup = true.
     public static func writeVoiceData(_ data: SessionVoiceData, session: URL) throws {
         try requireToken(data.runID, "run ID")
-        try requireWritableSchema(data.schemaVersion, "The voice data")
+        try requireWritableSchema(data.schemaVersion, SchemaVersion.voiceData, "The voice data")
         try requireSameSession(data.sessionID, session: session, what: "The voice data")
         let folder = SessionPaths.voiceDirectory(session)
         try ensureSpeakerFolder(folder, session: session)
@@ -203,19 +203,15 @@ public enum SessionSpeakerStore {
 
     // MARK: - Private
 
-    private struct SchemaProbe: Decodable {
-        var schemaVersion: Int
-    }
-
     private static func requireToken(_ value: String, _ what: String) throws {
         guard SessionArchive.validToken(value) else {
             throw HolosError.invalidInput("Invalid \(what): use letters, digits, '-' or '_'.")
         }
     }
 
-    private static func requireWritableSchema(_ version: Int, _ what: String) throws {
-        guard version == SchemaVersion.current else {
-            throw HolosError.invalidInput("\(what) has schema version \(version); this Holos writes version \(SchemaVersion.current).")
+    private static func requireWritableSchema(_ version: Int, _ current: Int, _ what: String) throws {
+        guard version == current else {
+            throw HolosError.invalidInput("\(what) has schema version \(version); this Holos writes version \(current).")
         }
     }
 

@@ -1,6 +1,7 @@
 import Foundation
 import Darwin
 import os
+import Synchronization
 import HolosCore
 
 /// Crash-safe file writes shared by every Holos file (docs/meeting-design.md §1.7).
@@ -14,6 +15,10 @@ public enum AtomicFile {
     /// Test hook: while set (a task-local value), an append writes at most this many bytes and then fails
     /// as a full disk would, so tests can check that a failed append leaves no partial line.
     @TaskLocal static var appendFailureAfterBytes: Int? = nil
+
+    /// Test hook: while set (a task-local value, inherited by tasks created inside), counts each successful
+    /// fsync of a file by `append` or `sync`, keyed by file name.
+    @TaskLocal static var fileSyncCounter: FileSyncCounter? = nil
 
     /// Writes a same-directory temporary file (O_CREAT|O_EXCL|O_CLOEXEC, `permissions`), fsyncs it,
     /// renames it over `url`, and fsyncs the directory. Leaves no temporary file on failure.
@@ -45,6 +50,7 @@ public enum AtomicFile {
                 guard fsync(fd) == 0 else {
                     throw HolosError.io("Cannot save \(url.lastPathComponent): \(errnoText()).")
                 }
+                fileSyncCounter?.record(url)
                 if created { try syncDirectory(url.deletingLastPathComponent()) }
             }
         } catch {
@@ -178,6 +184,7 @@ public enum AtomicFile {
         guard fd >= 0 else { throw HolosError.io("Cannot open \(url.lastPathComponent): \(errnoText()).") }
         defer { Darwin.close(fd) }
         guard fsync(fd) == 0 else { throw HolosError.io("Cannot save \(url.lastPathComponent): \(errnoText()).") }
+        fileSyncCounter?.record(url)
     }
 
     static func syncDirectory(_ url: URL) throws {
@@ -316,4 +323,15 @@ public enum AtomicFile {
             return "unreadable JSON"
         }
     }
+}
+
+/// Counts file fsyncs for tests (`AtomicFile.fileSyncCounter`).
+final class FileSyncCounter: Sendable {
+    private let counts = Mutex<[String: Int]>([:])
+
+    init() {}
+
+    func record(_ url: URL) { counts.withLock { $0[url.lastPathComponent, default: 0] += 1 } }
+
+    func count(_ name: String) -> Int { counts.withLock { $0[name] ?? 0 } }
 }

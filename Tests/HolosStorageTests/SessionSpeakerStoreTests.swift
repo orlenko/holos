@@ -271,3 +271,103 @@ private func isInvalidInput(_ error: HolosError?) -> Bool {
     let error = #expect(throws: HolosError.self) { try SessionSpeakerStore.readRun(id: run.id, session: session) }
     guard case .unavailable? = error else { Issue.record("Expected unavailable, got \(String(describing: error))"); return }
 }
+
+private func isUnavailable(_ error: HolosError?) -> Bool {
+    if case .unavailable? = error { return true }
+    return false
+}
+
+/// Encodes `value`, lets `change` edit the JSON object, and writes the result to `url`.
+private func storeWriteEdited<T: Encodable>(_ value: T, to url: URL,
+                                            _ change: (inout [String: Any]) -> Void) throws {
+    var object = try #require(try JSONSerialization.jsonObject(with: HolosJSON.encoder().encode(value)) as? [String: Any])
+    change(&object)
+    try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys]).write(to: url)
+}
+
+@Test func newerRunWithAnUnknownCaseIsRefusedAsNewer() async throws {
+    let root = try storeTemporaryRoot()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let (session, sessionID) = try await storeMakeSession(in: root)
+    let run = storeRun(sessionID: sessionID)
+    try AtomicFile.ensurePrivateDirectory(session.appendingPathComponent("speakers"))
+    try AtomicFile.ensurePrivateDirectory(SessionPaths.runs(session))
+    let url = SessionPaths.run(run.id, in: session)
+    func withUnknownProvenance(version: Int) -> (inout [String: Any]) -> Void {
+        { object in
+            object["schemaVersion"] = version
+            var speakers = object["speakers"] as? [[String: Any]] ?? []
+            speakers[0]["provenance"] = ["importedFromOtter": [String: Any]()]
+            object["speakers"] = speakers
+        }
+    }
+
+    // A version 2 run may use enum cases this build does not know: that means "update Holos".
+    try storeWriteEdited(run, to: url, withUnknownProvenance(version: 2))
+    #expect(isUnavailable(#expect(throws: HolosError.self) {
+        try SessionSpeakerStore.readRun(id: run.id, session: session)
+    }))
+    // The same content claiming version 1 is damaged.
+    try storeWriteEdited(run, to: url, withUnknownProvenance(version: 1))
+    #expect(isInvalidInput(#expect(throws: HolosError.self) {
+        try SessionSpeakerStore.readRun(id: run.id, session: session)
+    }))
+}
+
+@Test func newerRecognitionHeadAndVoiceDataAreRefusedAsNewer() async throws {
+    let root = try storeTemporaryRoot()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let (session, sessionID) = try await storeMakeSession(in: root)
+    let runID = UUID().uuidString
+    let thresholds = RecognitionThresholds(likelyMaxDistance: 0, likelyMinMargin: 0.1, possibleMaxDistance: 0.4,
+                                           minSampleSeconds: 20)
+    let result = RecognitionResult(runID: runID, createdAt: storeDate,
+                                   embeddingModel: EmbeddingModelID(id: "model", revision: "rev"),
+                                   thresholds: thresholds,
+                                   matches: [SpeakerMatch(speakerID: "system:S1", profileID: "P1", profileName: "Jim",
+                                                          distance: 0.2, tier: .possible)])
+    try SessionSpeakerStore.writeRecognition(result, session: session)
+    try storeWriteEdited(result, to: SessionPaths.recognition(runID, in: session)) { object in
+        object["schemaVersion"] = 2
+        var matches = object["matches"] as? [[String: Any]] ?? []
+        matches[0]["tier"] = "certain"
+        object["matches"] = matches
+    }
+    #expect(isUnavailable(#expect(throws: HolosError.self) {
+        try SessionSpeakerStore.readRecognition(runID: runID, session: session)
+    }))
+
+    // A version 2 head that renamed a field this build requires.
+    try AtomicFile.ensurePrivateDirectory(SessionPaths.speakers(session))
+    try storeWriteEdited(SpeakerHead(runID: runID, updatedAt: storeDate), to: SessionPaths.head(session)) { object in
+        object["schemaVersion"] = 2
+        object["currentRun"] = object.removeValue(forKey: "runID")
+    }
+    #expect(isUnavailable(#expect(throws: HolosError.self) { try SessionSpeakerStore.readHead(session: session) }))
+
+    let voice = SessionVoiceData(runID: runID, sessionID: sessionID, createdAt: storeDate,
+                                 embeddingModel: EmbeddingModelID(id: "model", revision: "rev"),
+                                 centroids: [:], turnEmbeddings: [])
+    try SessionSpeakerStore.writeVoiceData(voice, session: session)
+    try storeWriteEdited(voice, to: SessionPaths.voiceData(runID, in: session)) { object in
+        object["schemaVersion"] = 3
+        object["centroids"] = "moved elsewhere"
+    }
+    #expect(isUnavailable(#expect(throws: HolosError.self) {
+        try SessionSpeakerStore.readVoiceData(runID: runID, session: session)
+    }))
+
+    // A file with no readable schemaVersion is damaged, not newer.
+    try Data("{}".utf8).write(to: SessionPaths.head(session))
+    #expect(isInvalidInput(#expect(throws: HolosError.self) { try SessionSpeakerStore.readHead(session: session) }))
+}
+
+@Test func speakerLockRefusesAFolderThatIsNotASession() throws {
+    let root = try storeTemporaryRoot()
+    defer { try? FileManager.default.removeItem(at: root) }
+    #expect(isInvalidInput(#expect(throws: HolosError.self) { try SessionArchive.withSpeakerLock(at: root) {} }))
+    #expect(isInvalidInput(#expect(throws: HolosError.self) {
+        try SessionArchive.acquireProcessingLease(at: root, retry: .zero)
+    }))
+    #expect(try FileManager.default.contentsOfDirectory(atPath: root.path).isEmpty)
+}

@@ -47,6 +47,7 @@ extension SessionArchive {
     /// Throws `HolosError.unavailable("Another Holos process is processing this session.")` after `retry`.
     public nonisolated static func acquireProcessingLease(at session: URL,
                                                           retry: Duration = .seconds(1)) throws -> ProcessingLease {
+        try SessionLockFile.requireSession(session)
         guard let fd = try SessionLockFile.acquire(SessionLockFile.processing, in: session, timeout: retry) else {
             throw HolosError.unavailable("Another Holos process is processing this session.")
         }
@@ -64,6 +65,7 @@ extension SessionArchive {
     /// Not re-entrant: never call it, or anything that takes the speaker lock, from inside `body`.
     public nonisolated static func withSpeakerLock<T>(at session: URL, timeout: Duration = .seconds(2),
                                                       _ body: () throws -> T) throws -> T {
+        try SessionLockFile.requireSession(session)
         guard let fd = try SessionLockFile.acquire(SessionLockFile.speakers, in: session, timeout: timeout) else {
             throw HolosError.unavailable("Speaker labels are being saved by another Holos window or command; try again.")
         }
@@ -144,6 +146,16 @@ enum SessionLockFile {
         var info = stat()
         guard session.isFileURL, lstat(session.path, &info) == 0, (info.st_mode & S_IFMT) == S_IFDIR else {
             throw HolosError.invalidInput("The session folder is missing or is not a regular folder.")
+        }
+    }
+
+    /// Like `requireSessionFolder`, and the folder must hold a plain `manifest.json`, so taking a lease or the
+    /// speaker lock never leaves a lock file in a folder that is not a session.
+    static func requireSession(_ session: URL) throws {
+        try requireSessionFolder(session)
+        var info = stat()
+        guard lstat(SessionPaths.manifest(session).path, &info) == 0, (info.st_mode & S_IFMT) == S_IFREG else {
+            throw HolosError.invalidInput("\(session.lastPathComponent) is not a Holos session folder.")
         }
     }
 
