@@ -213,13 +213,16 @@ public final class AudioCapture {
                     }
                 }
             }
+            // Kept before it starts: a configuration change can be delivered while `start()` runs, and restarting
+            // in place needs the engine.
+            engine = audioEngine
             do { try audioEngine.start() }
             catch {
+                engine = nil
                 removeConfigurationWatchers()
                 input.removeTap(onBus: 0)
                 throw error
             }
-            engine = audioEngine
         } else {
             let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: false)
             try Task.checkCancellation()
