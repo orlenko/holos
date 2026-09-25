@@ -217,7 +217,7 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
             // A meeting is recording: this line replaces the dictation block (§4.12), except a result kept from
             // before the meeting, which stays reachable because nothing copies it to the clipboard on its own.
             addDictationPausedLine(to: menu)
-            if !resultText.isEmpty { addResultItems(to: menu) }
+            if !resultText.isEmpty || !resultOriginal.isEmpty { addResultItems(to: menu) }
         } else {
             let status = NSMenuItem(title: message, action: nil, keyEquivalent: "")
             status.isEnabled = false
