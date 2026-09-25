@@ -100,7 +100,11 @@ public struct RenderedAudio: Codable, Sendable, Equatable {
                                         output: output, fileExtension: ext)
         return try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { continuation in
-                guard operation.start(continuation: continuation) else { return }
+                guard operation.start(continuation: continuation) else {
+                    // Cancelled before write: AVFoundation holds no work for this synthesizer.
+                    operation.releaseSynthesizer()
+                    return
+                }
                 synthesizer.write(utterance) { [weak operation] buffer in
                     operation?.accept(buffer)
                 }
@@ -117,26 +121,52 @@ private final class RenderDelegate: NSObject, AVSpeechSynthesizerDelegate {
 
     init(operation: RenderOperation) { self.operation = operation }
 
+    // didFinish and didCancel are the synthesizer's terminal callbacks. Release it on a later
+    // main-actor turn, never from inside the callback that is still messaging this delegate.
     func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer,
                            didFinish utterance: AVSpeechUtterance) {
         let operation = self.operation
-        Task { @MainActor in operation.finish() }
+        Task { @MainActor in
+            operation.finish()
+            operation.releaseSynthesizer()
+        }
     }
 
     func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer,
                            didCancel utterance: AVSpeechUtterance) {
         let operation = self.operation
-        Task { @MainActor in operation.cancel() }
+        Task { @MainActor in
+            operation.cancel()
+            operation.releaseSynthesizer()
+        }
     }
 }
 
 /// AVFoundation callbacks may arrive outside the main actor. This lock owns all writer and
 /// continuation state; AVSpeechSynthesizer itself is only touched on the main actor.
-private final class RenderOperation: @unchecked Sendable {
+///
+/// Completing the render (success, failure, or cancellation) resumes the caller but does not
+/// release the synthesizer, its utterance, or its delegate. `AVSpeechSynthesizer.delegate` does
+/// not retain the delegate, so this operation's strong reference is all that keeps it alive, and
+/// the synthesizer's pointer is not safely zeroed when it is freed. TextToSpeech keeps main-queue
+/// work in flight that messages the delegate after a cancel: a stopped buffer render still runs
+/// to the end of the utterance, then reports didFinish. Freeing the delegate at cancellation
+/// crashed in `objc_retain`. They are released, and the operation <-> delegate cycle broken,
+/// only by `releaseSynthesizer()`, which clears `synthesizer.delegate` first: after the terminal
+/// didFinish or didCancel callback, or by the idle safety net that `stopSynthesizer()` arms in
+/// case neither arrives.
+final class RenderOperation: @unchecked Sendable {
+    /// How long a stopped synthesizer must go without any callback before the safety net
+    /// releases it. It only bounds a leak when no terminal callback ever arrives, so it is
+    /// generous; any buffer callback restarts the wait.
+    static let terminalCallbackGrace: Duration = .seconds(60)
+
     private let lock = NSLock()
     private var synthesizer: AVSpeechSynthesizer?
-    private let utterance: AVSpeechUtterance
+    private var utterance: AVSpeechUtterance?
     private var delegate: RenderDelegate?
+    private var callbacks: UInt64 = 0
+    private var stopping = false
     private var continuation: CheckedContinuation<RenderedAudio, Error>?
     private var writer: AVAudioFile?
     private var sampleRate: Double = 0
@@ -172,12 +202,15 @@ private final class RenderOperation: @unchecked Sendable {
     }
 
     func accept(_ audioBuffer: AVAudioBuffer) {
+        lock.lock()
+        callbacks &+= 1
+        lock.unlock()
         guard let buffer = audioBuffer as? AVAudioPCMBuffer else {
             fail(HolosError.io("Speech renderer emitted an unsupported buffer type."))
             return
         }
-        // The zero-frame sentinel can precede the synthesizer's didFinish callback.
-        // Keep its synthesizer, utterance, and delegate alive until that callback.
+        // The zero-frame sentinel can precede the synthesizer's didFinish callback, so it is
+        // not terminal: the synthesizer, utterance, and delegate stay alive until that callback.
         if buffer.frameLength == 0 { return }
         lock.lock()
         guard !completed else { lock.unlock(); return }
@@ -241,7 +274,6 @@ private final class RenderOperation: @unchecked Sendable {
         self.continuation = nil
         writer?.close()
         writer = nil
-        delegate = nil
         let frames = frameCount
         let rate = sampleRate
         var resultError = error
@@ -270,12 +302,49 @@ private final class RenderOperation: @unchecked Sendable {
                                                              frameCount: frames, sampleRate: rate)) }
     }
 
+    /// Stops speech but keeps the synthesizer and delegate alive for the terminal callback.
     @MainActor func stopSynthesizer() {
         lock.lock()
         let active = synthesizer
-        synthesizer = nil
+        let first = !stopping
+        stopping = true
         lock.unlock()
-        _ = active?.stopSpeaking(at: .immediate)
+        guard let active, first else { return }
+        _ = active.stopSpeaking(at: .immediate)
+        releaseWhenIdle()
+    }
+
+    /// Safety net: release once no callback has arrived for `terminalCallbackGrace`.
+    @MainActor private func releaseWhenIdle() {
+        lock.lock()
+        let seen = callbacks
+        lock.unlock()
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(for: Self.terminalCallbackGrace)
+            self?.releaseIfIdle(since: seen)
+        }
+    }
+
+    @MainActor private func releaseIfIdle(since seen: UInt64) {
+        lock.lock()
+        let retained = synthesizer != nil
+        let idle = callbacks == seen
+        lock.unlock()
+        guard retained else { return }
+        if idle { releaseSynthesizer() } else { releaseWhenIdle() }
+    }
+
+    /// Breaks the operation <-> delegate cycle once AVFoundation is done with the synthesizer.
+    @MainActor func releaseSynthesizer() {
+        lock.lock()
+        let active = synthesizer
+        let delegate = self.delegate
+        synthesizer = nil
+        utterance = nil
+        self.delegate = nil
+        lock.unlock()
+        active?.delegate = nil
+        withExtendedLifetime(delegate) {} // Deallocate outside the lock.
     }
 
     private func encodeM4A(from pcmURL: URL, to encodedURL: URL,
