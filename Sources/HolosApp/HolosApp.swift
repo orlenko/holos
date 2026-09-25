@@ -579,14 +579,16 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
         await pipeline.idle()
         guard fixPipeline === pipeline else { return }
         var fixedRest: String?
+        // A closing mark held back from the last chunk that could not be written after it.
+        var unwrittenClosing: String?
         let writable = enabled && insertionBlockReason == nil && target != nil
         if writable, let rest = TextInsertion.unwritten(text, after: insertedText) {
             if !rest.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 fixedRest = await pipeline.fix(rest, isFinal: true).text
                 guard fixPipeline === pipeline else { return }
-            } else if let closing = pipeline.withheldClosing, writeFixed("", as: closing) {
+            } else if let closing = pipeline.withheldClosing {
                 // Everything was committed before release, so the last chunk ended the dictation after all.
-                pipeline.didWrite("", as: closing)
+                if writeFixed("", as: closing) { pipeline.didWrite("", as: closing) } else { unwrittenClosing = closing }
             }
         }
         fixPipeline = nil
@@ -600,8 +602,15 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
         }
         let written = finish(text, into: destination, writing: attempted == unwritten ? nil : attempted)
         let rest = TextInsertion.unwritten(text, after: pipeline.writtenOriginal) ?? ""
-        let fixed = pipeline.written + (fixedRest ?? rest)
-        if written, fixed != text {
+        let fixed = pipeline.written + (fixedRest ?? rest) + (unwrittenClosing ?? "")
+        if unwrittenClosing != nil {
+            // The words are in the field; only the mark is missing. Copy Result has the whole fixed text.
+            resultText = fixed
+            resultOriginal = heard
+            resultNeedsAttention = true
+            message += " The closing punctuation could not be added; Copy Result has Apple Intelligence's fix, "
+                + "Copy Original has what was heard."
+        } else if written, fixed != text {
             resultText = fixed
             resultOriginal = heard
             message += " Apple Intelligence fixed misheard words; Copy Original has what was heard."
