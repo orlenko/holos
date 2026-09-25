@@ -15,22 +15,36 @@ Recorder output goes to `~/Library/Logs/Holos/recorder-<SESSION-UUID>.log`.
 
 ### H1: Permissions and the start panel
 
-1. Choose **Start Meeting Recording…**. The panel shows the name, what will be recorded
+Starting a meeting never asks for System audio: without that permission the meeting records the
+microphone alone (H16b). The permission is granted from Setup; the only prompt a start can show is
+the microphone's.
+
+1. Start from a clean permission state (`tccutil reset Microphone ca.orlenko.holos.app` and
+   `tccutil reset ScreenCapture ca.orlenko.holos.app`), then open Voice is Local.
+2. Open **Setup…** and choose **Open Settings** on the "System audio" row. Note which app macOS
+   names in the screen and system audio prompt, turn Voice is Local on under Screen & System Audio
+   Recording, and quit and reopen Voice is Local. The System audio row now shows the granted mark.
+3. Choose **Start Meeting Recording…**. The panel shows the name, what will be recorded
    ("Microphone and the computer's audio"), the microphone (the system default input), the disk
    estimate, the speaker-model state, and the consent reminder. There is no meeting type to choose
    and no warning about recording both.
-2. Start a recording. Note which app macOS names in the microphone prompt and the screen and
-   system audio prompt. While a prompt is open, the menu must say "Waiting for permission…" after
+4. Start a recording. Note which app macOS names in the microphone prompt; no screen or system
+   audio prompt appears. While the prompt is open, the menu must say "Waiting for permission…" after
    about 5 seconds.
-3. After approving, the status item shows a red record symbol and the elapsed time; the menu shows
-   the recording lines (time, disk used and free, microphone, transcription state).
-4. Stop and save, rebuild the app, and repeat. Note whether the permission survives a rebuild.
-5. If a prompt still appears (for example after a rebuild), choose **Stop Recording** while it is
-   open. The menu says the recorder stops once the prompt is answered, and no "did not start within
-   2 minutes" failure appears even after 2 minutes. Then answer the prompt.
+5. After approving, the status item shows a red record symbol and the elapsed time; the menu shows
+   the recording lines (time, disk used and free, microphone, transcription state) and no line about
+   recording the microphone only.
+6. Stop and save, rebuild the app, and repeat steps 3 to 5. Note whether each permission survives a
+   rebuild; if System audio did not, the panel says "Recording the microphone only — allow System
+   audio in Setup to include the computer's sound." and the start records the microphone alone
+   (H16b).
+7. If the microphone prompt still appears (for example after a rebuild), choose **Stop Recording**
+   while it is open. The menu says the recorder stops once the prompt is answered, and no "did not
+   start within 2 minutes" failure appears even after 2 minutes. Then answer the prompt.
 
-Pass: the prompts name Voice is Local; "Waiting for permission…" appears while a prompt is open; recording
-works; a recording stopped at the prompt ends with "The recording was stopped before it started."
+Pass: the prompts name Voice is Local; the System audio prompt comes from Setup, never from a start;
+"Waiting for permission…" appears while the microphone prompt is open; recording works; a recording
+stopped at the prompt ends with "The recording was stopped before it started."
 
 Result: Pending.
 
@@ -267,7 +281,8 @@ Result: Pending.
 
 1. Open **Setup…**. The "System audio" row says meetings record the computer's audio; without the
    permission it shows the pending mark (not the orange problem mark) and **Open Settings**.
-   Expand **Advanced**: "Record the computer's audio (system sound) in meetings" is checked.
+   **Advanced** is collapsed. Expand it: "Record the computer's audio (system sound) in meetings" is
+   checked. Close Setup and open it again: Advanced is collapsed again.
 2. Uncheck it. The System audio row says it is not needed while the setting is off. Open **Start
    Meeting Recording…**: the panel says "Microphone only — the computer's audio is off in Setup ›
    Advanced." Record a short meeting with a video playing: the menu shows no line about the
@@ -277,7 +292,9 @@ Result: Pending.
    Recording, and quit and reopen Voice is Local. Open **Start Meeting Recording…**: the panel says
    "Recording the microphone only — allow System audio in Setup to include the computer's sound."
    Start: no permission prompt appears, the recording starts, and the menu shows the same line
-   under the recording lines until the meeting ends. The session records only `mic`.
+   under the recording lines until the meeting ends. While it records, `kill -9` the Voice is Local
+   app (as in H2) and open it again: the relaunched menu follows the meeting and still shows the
+   line. The session records only `mic`.
 4. Turn the permission back on, quit and reopen, and start a meeting: the panel and the recording
    are back to the microphone and the computer's audio, with no line about it in the menu.
 

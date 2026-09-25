@@ -32,8 +32,10 @@ final class MeetingAppState {
     /// The latest `announce` text, shown under the meeting's first menu line.
     var notice: String?
     /// The meeting started from the app that records the microphone alone because System audio was not allowed,
-    /// and the menu line saying so (`MeetingStartSettings.sourceNotice`).
-    var sourceNotice: (sessionID: String, text: String)?
+    /// and the menu line saying so. Saved in UserDefaults, so a relaunch that follows the same meeting shows it again.
+    var sourceNotice: MeetingSourceNotice? = MeetingSourceNotice.load(from: .standard) {
+        didSet { MeetingSourceNotice.save(sourceNotice, to: .standard) }
+    }
     /// The case of the last meeting state seen ("idle", "starting", …).
     var lastStep = "idle"
     /// How the last meeting ended, until the next one starts.
@@ -422,8 +424,7 @@ extension HolosAppDelegate: NSMenuDelegate {
 
     /// The menu line of the followed meeting when it records the microphone alone for want of the permission.
     private func sourceNotice(_ controller: MeetingController) -> String? {
-        guard let notice = meeting.sourceNotice, notice.sessionID == controller.state.sessionID else { return nil }
-        return notice.text
+        meeting.sourceNotice?.text(for: controller.state.sessionID)
     }
 
     /// "1:23:45 · 0.9 GB used · 22.8 GB free".
@@ -496,10 +497,8 @@ extension HolosAppDelegate: NSMenuDelegate {
         } catch {
             return error.localizedDescription
         }
-        meeting.sourceNotice = controller.state.sessionID.flatMap { id in
-            MeetingStartSettings.sourceNotice(settings, recordSystemAudio: MeetingAppState.recordSystemAudio)
-                .map { (id, $0) }
-        }
+        meeting.sourceNotice = MeetingSourceNotice.started(settings, sessionID: controller.state.sessionID,
+                                                           recordSystemAudio: MeetingAppState.recordSystemAudio)
         var remembered = settings
         remembered.name = ""
         if let data = try? HolosJSON.encoder().encode(remembered) {

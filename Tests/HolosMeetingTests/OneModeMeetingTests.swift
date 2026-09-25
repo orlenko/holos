@@ -57,6 +57,36 @@ private let oneModeID = "3F2A9C1E-0000-4000-8000-000000000002"
         == MeetingStartSettings.systemAudioNotAllowedNotice)
 }
 
+/// The fallback notice names its meeting and survives a relaunch of the app: a new app reading the same defaults
+/// shows it for that meeting only, and a later meeting without one removes it.
+@Test func sourceNoticeSurvivesARelaunchForItsMeetingOnly() throws {
+    let suite = "holos.tests.sourceNotice.\(UUID().uuidString)"
+    let defaults = try #require(UserDefaults(suiteName: suite))
+    defer { defaults.removePersistentDomain(forName: suite) }
+    #expect(MeetingSourceNotice.load(from: defaults) == nil)
+
+    let fallback = MeetingStartSettings.app(name: "Board", recordSystemAudio: true, systemAudioAllowed: false)
+    let notice = try #require(MeetingSourceNotice.started(fallback, sessionID: oneModeID, recordSystemAudio: true))
+    #expect(notice.text == MeetingStartSettings.systemAudioNotAllowedNotice)
+    MeetingSourceNotice.save(notice, to: defaults)
+
+    let reattached = try #require(MeetingSourceNotice.load(from: defaults))
+    #expect(reattached == notice)
+    #expect(reattached.text(for: oneModeID) == MeetingStartSettings.systemAudioNotAllowedNotice)
+    #expect(reattached.text(for: "ANOTHER-SESSION") == nil, "A meeting started elsewhere does not show it.")
+    #expect(reattached.text(for: nil) == nil)
+
+    // Nothing to explain: the setting is off, the permission is there, or the start gave no session.
+    let off = MeetingStartSettings.app(name: "Board", recordSystemAudio: false, systemAudioAllowed: false)
+    #expect(MeetingSourceNotice.started(off, sessionID: oneModeID, recordSystemAudio: false) == nil)
+    let both = MeetingStartSettings.app(name: "Call", recordSystemAudio: true, systemAudioAllowed: true)
+    #expect(MeetingSourceNotice.started(both, sessionID: oneModeID, recordSystemAudio: true) == nil)
+    #expect(MeetingSourceNotice.started(fallback, sessionID: nil, recordSystemAudio: true) == nil)
+
+    MeetingSourceNotice.save(nil, to: defaults)
+    #expect(MeetingSourceNotice.load(from: defaults) == nil, "A meeting started without one replaces it.")
+}
+
 /// Settings saved by the app before the microphone choice existed still decode, with the recorder's own choice.
 @Test func savedSettingsWithoutAMicrophoneStillDecode() throws {
     let old = Data(#"{"name":"","source":"mic","othersInRoom":false}"#.utf8)

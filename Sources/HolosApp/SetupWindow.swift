@@ -233,7 +233,17 @@ final class SetupWindow: NSObject, NSWindowDelegate {
 
     @objc private func advancedToggled(_ sender: NSButton) {
         advancedContent?.isHidden = sender.state != .on
-        // Keep the top edge where it is while the window grows or shrinks.
+        fitKeepingTopEdge()
+    }
+
+    /// Collapses Advanced, as the window is specified to open (the window is reused after it closes).
+    private func collapseAdvanced() {
+        advancedDisclosure.state = .off
+        advancedContent?.isHidden = true
+    }
+
+    /// Resizes the window to its content, keeping the top edge where it is while the window grows or shrinks.
+    private func fitKeepingTopEdge() {
         var frame = window.frame
         let size = window.frameRect(forContentRect: NSRect(origin: .zero,
                                                            size: window.contentView?.fittingSize ?? frame.size)).size
@@ -263,6 +273,11 @@ final class SetupWindow: NSObject, NSWindowDelegate {
             window.setContentSize(window.contentView?.fittingSize ?? window.frame.size)
             window.center()
             positioned = true
+        } else if !window.isVisible, advancedDisclosure.state == .on {
+            // Reopened after the user expanded Advanced: it opens collapsed again. Left alone while the window is
+            // already showing.
+            collapseAdvanced()
+            fitKeepingTopEdge()
         }
         NSApplication.shared.activate()
         window.makeKeyAndOrderFront(nil)

@@ -1,3 +1,4 @@
+import Foundation
 import HolosAudio
 import HolosCore
 
@@ -34,6 +35,49 @@ extension MeetingStartSettings {
     /// on, but the meeting records the microphone alone (the permission was missing at start). Nil otherwise.
     public static func sourceNotice(_ settings: MeetingStartSettings, recordSystemAudio: Bool) -> String? {
         recordSystemAudio && settings.source == .microphone ? systemAudioNotAllowedNotice : nil
+    }
+}
+
+/// The source notice of the meeting the app last started (`MeetingStartSettings.sourceNotice`), kept in UserDefaults so
+/// an app that relaunches while its recorder goes on (a crash, a quit mid-meeting) shows it again once it follows that
+/// meeting. It names its session: a meeting started elsewhere (the CLI) or later never shows it.
+public struct MeetingSourceNotice: Codable, Sendable, Equatable {
+    public static let defaultsKey = "meeting.sourceNotice"
+
+    public var sessionID: String
+    public var text: String
+
+    public init(sessionID: String, text: String) {
+        self.sessionID = sessionID
+        self.text = text
+    }
+
+    /// The notice of a meeting just started from the app, or nil when it records what the setting asks for.
+    public static func started(_ settings: MeetingStartSettings, sessionID: String?,
+                               recordSystemAudio: Bool) -> MeetingSourceNotice? {
+        guard let sessionID,
+              let text = MeetingStartSettings.sourceNotice(settings, recordSystemAudio: recordSystemAudio) else {
+            return nil
+        }
+        return MeetingSourceNotice(sessionID: sessionID, text: text)
+    }
+
+    /// The menu line for the followed meeting, nil when the notice belongs to another one.
+    public func text(for followedSessionID: String?) -> String? {
+        followedSessionID == sessionID ? text : nil
+    }
+
+    public static func load(from defaults: UserDefaults) -> MeetingSourceNotice? {
+        defaults.data(forKey: defaultsKey).flatMap { try? JSONDecoder().decode(MeetingSourceNotice.self, from: $0) }
+    }
+
+    /// Saves the notice, or removes the saved one for nil (a meeting started without one replaces it).
+    public static func save(_ notice: MeetingSourceNotice?, to defaults: UserDefaults) {
+        if let notice, let data = try? JSONEncoder().encode(notice) {
+            defaults.set(data, forKey: defaultsKey)
+        } else {
+            defaults.removeObject(forKey: defaultsKey)
+        }
     }
 }
 

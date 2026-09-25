@@ -189,7 +189,9 @@ Hardware-facing and cross-app acceptance remain pending.
   ordinary step (pending until granted, never marked as a problem). Without the
   permission when a meeting starts, the meeting records the microphone only (no prompt,
   no refusal) and the menu says "Recording the microphone only — allow System audio in
-  Setup to include the computer's sound." Setup's collapsed Advanced section has "Record
+  Setup to include the computer's sound." (UserDefaults `meeting.sourceNotice` keeps it
+  with the session ID, so a relaunched app following that meeting shows it again.)
+  Setup's Advanced section, collapsed each time the window opens, has "Record
   the computer's audio (system sound) in meetings" (UserDefaults
   `meetingRecordSystemAudio`, on by default); off, meetings record the microphone only.
   A microphone-only meeting records the system default input, labels speakers on it, and
