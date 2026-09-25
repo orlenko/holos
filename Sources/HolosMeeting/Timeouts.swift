@@ -77,6 +77,14 @@ func awaitWithTimeout<Value: Sendable>(_ limit: Duration, cancellable: Bool = tr
     return outcome
 }
 
+/// Waits for `task` at most `limit` and returns whether it finished in time. When the limit passes first, it returns
+/// at once without awaiting the task any further; the task itself is not cancelled and keeps running (review windows
+/// still saving when Holos quits, for example, go on until the process ends).
+public func waitAtMost(_ limit: Duration, for task: Task<Void, Never>) async -> Bool {
+    if case .finished = await awaitWithTimeout(limit, cancellable: false, { await task.value }) { return true }
+    return false
+}
+
 /// A deadline that may be set after the waits it limits have begun: the stop deadline of a live track's `finish()`,
 /// which also cuts short the session finishes already running (docs/meeting-design.md §4.6).
 final class SharedDeadline: Sendable {
