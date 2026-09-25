@@ -219,7 +219,10 @@ Hardware-facing and cross-app acceptance remain pending.
   terminal reports a per-session element (expected for Terminal and iTerm2; not yet
   checked against live terminals). A terminal reporting only its window is tracked by
   window, so a pane switch inside that window goes undetected; one reporting neither is
-  tracked by staying frontmost only. Secure fields and Secure Keyboard Entry are refused.
+  tracked by staying frontmost only. Key-down reads the terminal's focus until two
+  consecutive reads agree (at most four reads); if they never agree, as when focus
+  moves during the capture, that dictation is not typed and is kept for Copy Result.
+  Secure fields and Secure Keyboard Entry are refused.
   It never synthesizes Return and never pastes. Text it could not write (target
   changed, safety check failed, unverified write, forced stop) is kept for Copy Result
   or Discard in the menu; it is never put on the clipboard automatically, since

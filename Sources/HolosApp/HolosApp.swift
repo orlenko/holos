@@ -435,7 +435,20 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
             originFocus = TextInsertion.currentFocus()
             typedAppName = nil
             if let app = NSWorkspace.shared.frontmostApplication { TextInsertion.enableAccessibility(for: app) }
-            if let terminal = KeystrokeTarget.captureTerminal() {
+            let terminal: KeystrokeTarget?
+            var terminalRefusal: String?
+            do {
+                terminal = try KeystrokeTarget.captureTerminal()
+            } catch {
+                terminal = nil
+                terminalRefusal = error.localizedDescription
+            }
+            if let terminalRefusal {
+                // Focus moved while it was captured; the text is kept for Copy Result, never typed.
+                target = nil
+                insertionBlockReason = "The terminal's focus changed as dictation started; use Copy Result."
+                log.notice("No target: \(terminalRefusal, privacy: .public)")
+            } else if let terminal {
                 target = .keystrokes(terminal)
                 typedAppName = terminal.appName
                 log.notice("Target: terminal \(terminal.appName, privacy: .public)")

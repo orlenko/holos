@@ -108,12 +108,19 @@ struct TerminalFocus<Handle: Equatable>: Equatable {
 
     var tracking: Tracking { element != nil ? .session : window != nil ? .window : .app }
 
-    /// Keeps only what two reads taken one after the other agree on. An app that hands out a new identity on
-    /// every read would otherwise look like it changed focus at the first check and stop typing at once.
-    func keepingStable(_ again: TerminalFocus) -> TerminalFocus {
-        TerminalFocus(pid: pid,
-                      window: pid == again.pid && window == again.window ? window : nil,
-                      element: pid == again.pid && element == again.element ? element : nil)
+    /// The focus at key-down: the first of two consecutive reads that agree, taking the first read and up to
+    /// `retries` more. Nil when no two consecutive reads agree: focus moved while it was being captured (or the
+    /// terminal hands out a new identity on every read), so which session was focused at key-down is unknown.
+    /// A disagreement never weakens tracking, since typing into an app-only target could reach the session the
+    /// user just switched away from.
+    static func settled(retries: Int = 3, _ read: () -> TerminalFocus) -> TerminalFocus? {
+        var previous = read()
+        for _ in 0..<max(retries, 1) {
+            let next = read()
+            if next == previous { return previous }
+            previous = next
+        }
+        return nil
     }
 
     /// Whether keystrokes may still go to the focus captured at key-down (`self`): the same process, and every
@@ -123,6 +130,13 @@ struct TerminalFocus<Handle: Equatable>: Equatable {
         if let window, live.window != window { return false }
         if let element, live.element != element { return false }
         return true
+    }
+
+    /// `admits`, reading only the identities this focus tracks: `read` is asked for the live focus at `tracking`
+    /// and is not called at all for app-only tracking, whose process is already checked against the frontmost app.
+    /// Each Accessibility read can wait out its timeout, so reading what `admits` would ignore only stalls typing.
+    func stillAdmitted(_ read: (Tracking) -> TerminalFocus) -> Bool {
+        tracking == .app || admits(read(tracking))
     }
 }
 
@@ -307,8 +321,10 @@ struct AXHandle: Equatable {
     }
 
     /// The terminal's focused window and element right now; either is nil when the app does not report it.
-    static func terminalFocus(pid: pid_t) -> TerminalFocus<AXHandle> {
-        guard AXIsProcessTrusted() else { return TerminalFocus(pid: pid) }
+    /// `tracking` limits what is read: `.window` skips the focused element and `.app` reads nothing.
+    static func terminalFocus(pid: pid_t,
+                              reading tracking: TerminalFocus<AXHandle>.Tracking = .session) -> TerminalFocus<AXHandle> {
+        guard tracking != .app, AXIsProcessTrusted() else { return TerminalFocus(pid: pid) }
         let app = AXUIElementCreateApplication(pid)
         AXUIElementSetMessagingTimeout(app, 0.4)
         func handle(_ key: String) -> AXHandle? {
@@ -317,7 +333,7 @@ struct AXHandle: Equatable {
             return AXHandle(element: value as! AXUIElement)
         }
         return TerminalFocus(pid: pid, window: handle(kAXFocusedWindowAttribute),
-                             element: handle(kAXFocusedUIElementAttribute))
+                             element: tracking == .session ? handle(kAXFocusedUIElementAttribute) : nil)
     }
 
     private static func readSnapshot(_ element: AXUIElement) throws -> InsertionSnapshot {
@@ -424,11 +440,16 @@ struct AXHandle: Equatable {
 
     /// A target when the frontmost app is a known terminal; nil otherwise. Typing stops when the terminal's
     /// focused window or session (tab or pane) changes, as far as the terminal reports them to Accessibility.
-    public static func captureTerminal() -> KeystrokeTarget? {
+    /// Throws when the terminal's focus kept changing while it was captured: the session focused at key-down is
+    /// unknown, so this dictation must not be typed anywhere.
+    public static func captureTerminal() throws -> KeystrokeTarget? {
         guard let app = NSWorkspace.shared.frontmostApplication,
               let bundleID = app.bundleIdentifier, terminalBundleIDs.contains(bundleID) else { return nil }
         let pid = app.processIdentifier
-        let focus = TextInsertion.terminalFocus(pid: pid).keepingStable(TextInsertion.terminalFocus(pid: pid))
+        guard let focus = TerminalFocus.settled({ TextInsertion.terminalFocus(pid: pid) }) else {
+            log.notice("Terminal \(bundleID, privacy: .public) focus changed during capture; typing refused")
+            throw TextInsertionError.unsupported("The terminal's focus changed as dictation started.")
+        }
         log.notice("Terminal \(bundleID, privacy: .public) focus tracked by \(String(describing: focus.tracking), privacy: .public)")
         return KeystrokeTarget(pid: pid, appName: app.localizedName ?? bundleID, terminalFocus: focus)
     }
@@ -451,7 +472,9 @@ struct AXHandle: Equatable {
 
     private func stillTargeted() -> Bool {
         guard NSWorkspace.shared.frontmostApplication?.processIdentifier == pid else { return false }
-        if let terminalFocus { return terminalFocus.admits(TextInsertion.terminalFocus(pid: pid)) }
+        if let terminalFocus {
+            return terminalFocus.stillAdmitted { TextInsertion.terminalFocus(pid: pid, reading: $0) }
+        }
         guard let element else { return true }
         guard let focused = try? TextInsertion.focusedElement() else { return false }
         return CFEqual(focused, element)
