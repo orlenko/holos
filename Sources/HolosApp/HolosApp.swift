@@ -98,6 +98,10 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
         get { UserDefaults.standard.object(forKey: "removeFillers") as? Bool ?? true }
         set { UserDefaults.standard.set(newValue, forKey: "removeFillers") }
     }
+    /// Fixes each chunk with Apple's on-device model before it is written (Setup option); nil when off.
+    private var fixPipeline: DictationFixPipeline?
+    /// The last result as recognized, when the on-device fix changed what was written; for Copy Original.
+    private var resultOriginal = ""
     var corrections = CorrectionList()
     /// False when an existing corrections file could not be read, so it is never overwritten.
     private var correctionsWritable = true
@@ -174,6 +178,7 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
 
     private var isBusy: Bool {
         guard let controller else { return false }
+        if fixPipeline?.finishing == true { return true }
         return [.preparing, .listening, .finalizing].contains(controller.status.phase)
     }
 
@@ -215,6 +220,9 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
             let copy = item("Copy Result", #selector(copyResult))
             copy.isEnabled = !resultText.isEmpty
             menu.addItem(copy)
+            if !resultOriginal.isEmpty {
+                menu.addItem(item("Copy Original (Before Apple Intelligence Fix)", #selector(copyOriginal)))
+            }
             let discard = item("Discard Result", #selector(discardResult))
             discard.isEnabled = !resultText.isEmpty && !isBusy
             menu.addItem(discard)
@@ -309,6 +317,7 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
         enabled = false
         target = nil
         monitor?.stop(); monitor = nil
+        fixPipeline?.cancel(); fixPipeline = nil
         controller.cancel()
         if persist { UserDefaults.standard.set(false, forKey: "dictationEnabled") }
         show("Disabled — \(shortcutTitle) is available to other apps")
@@ -379,12 +388,17 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
             }
             expiryTask?.cancel()
             resultText = ""
+            resultOriginal = ""
             if controller.begin() {
                 // A pending opacity sample must not hide this dictation's own preview or result.
                 // A rejected begin leaves the timer running so the sample still hides on time.
                 opacitySampleTask?.cancel()
                 opacitySampleTask = nil
                 sampleToken = nil
+                fixPipeline?.cancel()
+                fixPipeline = DictationFixPipeline.make(corrections: corrections) { [weak self] chunk, text in
+                    self?.writeFixed(chunk, as: text) ?? false
+                }
             } else {
                 target = nil
                 show("Previous dictation is still stopping; release and try again shortly.")
@@ -432,21 +446,24 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
             if !update.committedText.isEmpty { latestCommitted = update.committedText }
             stream(cleanedForStreaming(update.committedText))
         case .result:
-            let destination = target
-            target = nil // No callback or retry can write to this target again.
             let recognized = withoutFillers(update.text).trimmingCharacters(in: .whitespacesAndNewlines)
             let text = corrections.apply(to: recognized)
             if !text.isEmpty {
                 lastTranscript = text
                 lastRecognized = recognized
             }
-            finish(text, into: destination)
-            if let forced = forcedStopMessage, !message.hasPrefix(forced) { message = forced + " " + message }
-            if showPreview || resultNeedsAttention {
-                overlay.show(title: message, text: resultText, attention: resultNeedsAttention)
+            if let pipeline = fixPipeline {
+                // Earlier chunks may still be waiting for their fix; the target stays until they are written.
+                pipeline.finishing = true
+                Task { [weak self] in await self?.finishFixing(text, with: pipeline) }
+                break
             }
-            scheduleExpiry()
+            let destination = target
+            target = nil // No callback or retry can write to this target again.
+            finish(text, into: destination)
+            presentResult()
         case .failed:
+            fixPipeline?.cancel(); fixPipeline = nil
             target = nil
             message = update.message ?? "Dictation failed; no text was inserted."
             if !insertedText.isEmpty { message += " Text inserted before the failure stays in the field." }
@@ -496,20 +513,37 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
     /// the rest of the utterance, and the unwritten remainder is offered through Copy Result.
     private func stream(_ committed: String) {
         guard enabled, insertionBlockReason == nil, let destination = target else { return }
-        guard let chunk = TextInsertion.unwritten(committed, after: insertedText) else {
+        // With on-device fixing, text handed to the pipeline counts as written: it is written once fixed.
+        guard let chunk = TextInsertion.unwritten(committed, after: fixPipeline?.submitted ?? insertedText) else {
             target = nil
             insertionBlockReason = "The recognizer revised text that was already inserted; check the field."
             log.notice("Stream stopped: committed text no longer extends the inserted prefix")
             return
         }
         guard !chunk.isEmpty else { return }
-        let outcome = write(chunk, to: destination)
-        log.notice("Stream chunk of \(chunk.utf16.count) units: \(String(describing: outcome), privacy: .public)")
+        if let fixPipeline {
+            fixPipeline.submit(chunk)
+            return
+        }
+        writeStreamed(chunk, as: chunk, to: destination)
+    }
+
+    /// Writes a chunk the fix pipeline is done with; false when streaming has stopped meanwhile.
+    private func writeFixed(_ chunk: String, as text: String) -> Bool {
+        guard enabled, insertionBlockReason == nil, let destination = target else { return false }
+        return writeStreamed(chunk, as: text, to: destination)
+    }
+
+    /// Writes `text` (the recognized `chunk`, or its on-device fix) and moves past it. False when the write failed.
+    @discardableResult
+    private func writeStreamed(_ chunk: String, as text: String, to destination: Destination) -> Bool {
+        let outcome = write(text, to: destination)
+        log.notice("Stream chunk of \(text.utf16.count) units: \(String(describing: outcome), privacy: .public)")
         switch outcome {
         case .inserted:
-            insertedText = committed
+            insertedText += chunk
             if case .field(let field) = destination {
-                if let next = TextInsertion.advance(field, past: chunk) { target = .field(next) }
+                if let next = TextInsertion.advance(field, past: text) { target = .field(next) }
                 else {
                     target = nil
                     insertionBlockReason = "The field changed after the last insertion."
@@ -517,14 +551,44 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
                     log.notice("Stream stopped: field did not match the expected state after insertion")
                 }
             }
+            return true
         case .typed:
-            insertedText = committed
+            insertedText += chunk
+            return true
         case .needsCopy(let reason), .unverified(let reason), .targetChanged(let reason):
             if case .unverified = outcome { streamUnverified = true }
             if case .targetChanged = outcome { targetMoved = true }
             target = nil
             insertionBlockReason = reason
+            return false
         }
+    }
+
+    /// The end of a dictation with on-device fixing: waits for the chunks still being fixed, fixes the rest, then
+    /// finishes as without it. Cancelling or disabling dictation meanwhile drops the pipeline and ends this.
+    private func finishFixing(_ text: String, with pipeline: DictationFixPipeline) async {
+        await pipeline.idle()
+        guard fixPipeline === pipeline else { return }
+        var fixedRest: String?
+        if enabled, insertionBlockReason == nil, target != nil,
+           let rest = TextInsertion.unwritten(text, after: insertedText),
+           !rest.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            fixedRest = await pipeline.fix(rest, isFinal: true)
+            guard fixPipeline === pipeline else { return }
+        }
+        fixPipeline = nil
+        let destination = target
+        target = nil // No callback or retry can write to this target again.
+        let written = finish(text, into: destination, writing: fixedRest)
+        let rest = TextInsertion.unwritten(text, after: pipeline.writtenOriginal) ?? ""
+        let fixed = pipeline.written + (fixedRest ?? rest)
+        if written, fixed != text {
+            resultText = fixed
+            resultOriginal = text
+            message += " Apple Intelligence fixed misheard words; Copy Original has them as heard."
+        }
+        presentResult()
+        rebuildMenu()
     }
 
     /// Writes whatever the final transcript adds beyond the streamed prefix, in a single attempt.
@@ -543,41 +607,54 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
             to: removeFillers ? FillerWords.removeWithholdingTrailingComma(from: text) : text)
     }
 
-    private func finish(_ text: String, into destination: Destination?) {
+    /// `fixed` is the on-device fix of the part not yet written, written in its place. True when the whole
+    /// transcript is now in the target.
+    @discardableResult
+    private func finish(_ text: String, into destination: Destination?, writing fixed: String? = nil) -> Bool {
         resultText = text
         guard !insertedText.isEmpty else {
             guard !text.isEmpty else {
                 message = "No speech recognized"
                 resultNeedsAttention = true  // shown even with the preview off, so it is not mistaken for success
-                return
+                return false
             }
             let outcome: InsertionOutcome = if enabled, insertionBlockReason == nil, let destination {
-                write(text, to: destination)
+                write(fixed ?? text, to: destination)
             } else {
                 blockedOutcome(default: "No writable target.")
             }
             log.notice("Nothing streamed; whole result of \(text.utf16.count) units: \(String(describing: outcome), privacy: .public)")
             conclude(outcome, unwritten: text, partial: false)
-            return
+            return outcome == .inserted || outcome == .typed
         }
         guard let rest = TextInsertion.unwritten(text, after: insertedText) else {
             message = "Text was inserted while you spoke, but the final transcript differs. Check the field; Copy Result copies the full transcript."
             resultNeedsAttention = true
-            return
+            return false
         }
         let remainder = rest.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !remainder.isEmpty else {
             message = outcomeMessage(typedAppName == nil ? .inserted : .typed)
-            return
+            return true
         }
         let outcome: InsertionOutcome = if enabled, insertionBlockReason == nil, let destination {
-            write(rest, to: destination)
+            write(fixed ?? rest, to: destination)
         } else {
             blockedOutcome(default: "Insertion stopped.")
         }
         log.notice("Final chunk of \(rest.utf16.count) units: \(String(describing: outcome), privacy: .public)")
         // Keep the leading space so pasting after the inserted prefix does not join words.
         conclude(outcome, unwritten: rest.trimmingCharacters(in: .newlines), partial: true)
+        return outcome == .inserted || outcome == .typed
+    }
+
+    /// Shows the result of a finished dictation, and a forced stop that ended it.
+    private func presentResult() {
+        if let forced = forcedStopMessage, !message.hasPrefix(forced) { message = forced + " " + message }
+        if showPreview || resultNeedsAttention {
+            overlay.show(title: message, text: resultText, attention: resultNeedsAttention)
+        }
+        scheduleExpiry()
     }
 
     private func blockedOutcome(default reason: String) -> InsertionOutcome {
@@ -748,6 +825,7 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
     @objc private func cancelDictation() {
         target = nil
         insertionBlockReason = "Cancelled"
+        fixPipeline?.cancel(); fixPipeline = nil
         controller.cancel()
         overlay.hide()
     }
@@ -758,10 +836,17 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
         show(copied ? "Copied — paste where you choose" : "Clipboard write failed; result is still available")
     }
 
+    @objc private func copyOriginal() {
+        guard !resultOriginal.isEmpty else { return }
+        let copied = copyToClipboard(resultOriginal)
+        show(copied ? "Copied the text as heard, before the fix" : "Clipboard write failed; the original is still available")
+    }
+
     @objc private func discardResult() {
         guard !isBusy else { return }
         expiryTask?.cancel(); expiryTask = nil
         resultText = ""
+        resultOriginal = ""
         controller.reset()
         overlay.hide()
         rebuildMenu()
@@ -832,7 +917,8 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
             message: meeting.dictationPaused ? "Dictation paused during meeting recording" : message,
             dictationPausedForMeeting: meeting.dictationPaused,
             speakerModels: speakerLabels.status, speakerModelsDetail: speakerLabels.detail,
-            speakerModelsBusy: speakerLabels.busy))
+            speakerModelsBusy: speakerLabels.busy,
+            aiFix: AIFixSetting.isOn, aiFixUnavailable: AIFixSetting.unavailableReason))
     }
 
     private func refreshAssetState() {
@@ -867,6 +953,9 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
             showPreview.toggle()
             // Anything that does not need the user goes away at once, during or after a dictation.
             if !showPreview && !overlay.showingAttention { overlay.hide() }
+            updateSetupWindow()
+        case .toggleAIFix:
+            AIFixSetting.isOn.toggle()  // takes effect from the next dictation
             updateSetupWindow()
         case .speakerModels:
             installSpeakerModels()
