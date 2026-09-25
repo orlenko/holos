@@ -38,6 +38,7 @@ struct Record: AsyncParsableCommand {
             """)
         var source: AudioSource = .microphoneAndSystem
         @OptionGroup var recognition: RecognitionOptions
+        @OptionGroup var meetingLanguages: MeetingLanguageOptions
         @Option(help: "Session output root (default: HOLOS_DATA_DIR or Application Support/Holos/Sessions).") var directory: String?
         @Option(help: "Automatically stop after this many seconds.") var duration: Double?
         @Flag(help: "Save audio without running speech recognition.") var recordOnly = false
@@ -74,6 +75,7 @@ struct Record: AsyncParsableCommand {
             if let expectedSpeakers, !(1...20).contains(expectedSpeakers) {
                 throw ValidationError("--expected-speakers must be between 1 and 20.")
             }
+            try meetingLanguages.validate(with: recognition)
         }
 
         @MainActor mutating func run() async throws {
@@ -81,14 +83,16 @@ struct Record: AsyncParsableCommand {
             // Decision 9 (docs/meeting-design.md §4.12): mic records the built-in microphone (unless --microphone
             // default) and refuses to start without it ("The built-in microphone is unavailable. Open the lid and try
             // again."); mic+system records the system default input, and without any input device system audio alone.
-            let locale = await recognition.resolvedLocale()
+            // With --languages, the first is transcribed live, and every one again after the recording (§4.14).
+            let (locale, languages) = await meetingLanguages.resolved(recognition)
             let options = RecordingOptions(name: name, source: source, locale: locale,
                                            backend: recognition.backend, root: directory.map(fileURL) ?? HolosPaths.sessions,
                                            duration: duration, recordOnly: recordOnly, applicationBundleID: app,
                                            vocabulary: vocabulary, sessionID: sessionId, othersInRoom: othersInRoom,
                                            expectedSpeakers: expectedSpeakers, liveText: !noLiveText,
                                            microphone: microphone.flatMap(MicrophoneSelection.init(argument:))
-                                               ?? RecordingOptions.microphone(for: source))
+                                               ?? RecordingOptions.microphone(for: source),
+                                           languages: languages)
             let dependencies = RecordingDependencies.live(stop: SignalStopController(), reporter: ConsoleReporter(),
                 postProcess: noPostprocess || recordOnly ? nil : recordingPostProcessHook())
             let outcome = try await RecordingWorkflow.run(options, dependencies: dependencies)

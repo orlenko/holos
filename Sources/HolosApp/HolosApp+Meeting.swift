@@ -453,6 +453,7 @@ extension HolosAppDelegate: NSMenuDelegate {
         guard let progress = status.progress else { return "Saving \(meetingName)…" }
         let percent = progress.fraction.map { " \(Int((min(1, max(0, $0)) * 100).rounded()))%" } ?? ""
         let what = switch progress.stage {
+        case .languages: "detecting languages"
         case .render, .diarize, .align, .recognize: "labelling speakers"
         case .export: "writing transcript files"
         default: "reading the transcript"

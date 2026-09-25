@@ -76,7 +76,11 @@ public enum AppleSpeechEngine {
         }
     }
 
-    fileprivate static func makeModule(locale: String, backend: SpeechBackend) async throws -> Module {
+    /// `accurate` (speech backend only): final results only, without `fastResults`, for saved audio transcribed after
+    /// a meeting, where nothing waits for the words (docs/meeting-design.md §4.14). Otherwise the progressive preset,
+    /// whose fast, volatile results a live transcript needs.
+    fileprivate static func makeModule(locale: String, backend: SpeechBackend,
+                                       accurate: Bool = false) async throws -> Module {
         guard !locale.isEmpty else { throw HolosError.invalidInput("Locale must not be empty.") }
         let requested = Locale(identifier: locale)
         switch backend {
@@ -84,6 +88,10 @@ public enum AppleSpeechEngine {
             guard SpeechTranscriber.isAvailable,
                   let supported = await SpeechTranscriber.supportedLocale(equivalentTo: requested) else {
                 throw HolosError.unavailable("Speech transcription does not support \(locale).")
+            }
+            if accurate {
+                return .speech(SpeechTranscriber(locale: supported, transcriptionOptions: [], reportingOptions: [],
+                                                 attributeOptions: [.audioTimeRange, .transcriptionConfidence]))
             }
             let preset = SpeechTranscriber.Preset.timeIndexedProgressiveTranscription
             return .speech(SpeechTranscriber(
@@ -103,8 +111,9 @@ public enum AppleSpeechEngine {
         }
     }
 
-    fileprivate static func installedModule(locale: String, backend: SpeechBackend) async throws -> Module {
-        let module = try await makeModule(locale: locale, backend: backend)
+    fileprivate static func installedModule(locale: String, backend: SpeechBackend,
+                                            accurate: Bool = false) async throws -> Module {
+        let module = try await makeModule(locale: locale, backend: backend, accurate: accurate)
         guard await AssetInventory.status(forModules: [module.module]) == .installed else {
             throw HolosError.unavailable("Speech assets for \(locale) are missing. Run setup first.")
         }
@@ -133,9 +142,12 @@ public actor AppleSpeechSession {
         self.resultTask = resultTask
     }
 
+    /// `accurate`: final results only, without the progressive preset's fast results (speech backend), for saved
+    /// audio transcribed after a meeting (docs/meeting-design.md §4.14).
     public static func make(locale: String, backend: SpeechBackend, contextualStrings: [String] = [],
+                            accurate: Bool = false,
                             onUpdate: @escaping @Sendable (TranscriptUpdate) -> Void) async throws -> AppleSpeechSession {
-        let module = try await AppleSpeechEngine.installedModule(locale: locale, backend: backend)
+        let module = try await AppleSpeechEngine.installedModule(locale: locale, backend: backend, accurate: accurate)
         let converter = try await AnalyzerInputConverter.converter(compatibleWith: [module.module])
         let input = BoundedInput<AnalyzerInput>()
         let collector = ResultCollector(onUpdate: onUpdate)

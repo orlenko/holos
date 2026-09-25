@@ -39,10 +39,12 @@ public enum SessionDiarizeCommand {
     /// `leaseDescriptor` is not this session's processing lease ("The inherited lock is not this session's
     /// processing lease."), `diarizer` is nil without `afterRecording` (the setup hint), the session is still
     /// recording, or another process holds the lease. An adopted lease is released (its descriptor closed) when the
-    /// run ends. `profiles` is passed to the post-processor (voice suggestions, PR10).
+    /// run ends. `profiles` is passed to the post-processor (voice suggestions, PR10), and `languages` too (a meeting
+    /// in several languages, §4.14).
     public static func run(_ request: Request, diarizer: (any SpeakerDiarizer)?,
                            freeSpace: any FreeSpaceProvider = VolumeFreeSpace(),
                            profiles: SpeakerProfileStore? = nil,
+                           languages: LanguageDetectionDependencies = .live,
                            progress: @escaping @Sendable (PostProcessingProgress) -> Void = { _ in })
         async throws -> Outcome {
         let session = request.session
@@ -59,7 +61,7 @@ public enum SessionDiarizeCommand {
             lease = try SessionArchive.acquireProcessingLease(at: session)
         }
         let processor = MeetingPostProcessor(diarizer: diarizer, options: request.options, freeSpace: freeSpace,
-                                             profiles: profiles)
+                                             profiles: profiles, languages: languages)
         let record = try await processor.run(session: session, lease: lease, progress: progress)
         return Outcome(record: record, exitCode: exitCode(record.state),
                        summary: summary(record, session: session))

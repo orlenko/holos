@@ -215,6 +215,27 @@ Hardware-facing and cross-app acceptance remain pending.
   computer's audio alone and that warning, and a microphone-only meeting waits with "The
   built-in microphone is off. Open the lid to continue recording." An external default
   input keeps recording.
+- Meeting languages: the start panel's Language pop-up (the dictation languages, the last
+  choice remembered in `meetingLocales`) sets the language a meeting is transcribed in
+  live (`record start --locale`); "Also detect" adds up to two more, for meetings that mix
+  languages. Their speech models are checked in the panel and installed only on Install….
+  With several, meeting.json records them (`languages`), and post-processing (stage
+  `languages`, before the speakers) transcribes the saved audio again in each language
+  (final results only; the live transcript stands in for its language only when that
+  fails), keeps each transcription as a transcript revision that is not current
+  (`languagePass` in the journal), and merges them: words in 3 s passages, each passage in
+  the language whose words score higher (mean word confidence plus the on-device language
+  identifier's probability that the text is in that language), switching only when two
+  passages in a row agree. The merged transcript becomes current (`languagesDetected`),
+  names each segment's language, and speakers are labelled on it. It is resumable (saved
+  transcriptions are reused), does nothing on a second run, and fails soft: a language
+  whose speech model is missing, or whose transcription fails, is left out and the result
+  is partial with the reason (exit 3), the transcript staying as it was when fewer than
+  two languages remain. `record start` and `session import` take `--languages fr-CA,en-CA`;
+  `session languages <session> --languages …` detects the languages of a saved or
+  imported session and labels its speakers again (`--force` over edited labels). The
+  Markdown export lists the languages in its header and the JSON export each turn's.
+  Dictation stays in one language.
 - Review window (wave 5): Review… in Meetings (or double-click, or the "Name Speakers —
   …" menu line after a meeting, which then goes away) opens a window to name a labelled
   meeting's speakers: a name field per speaker that links or creates a person (a known
@@ -332,7 +353,11 @@ distances but no vectors), online calls (the echo filter and hidden echo-only mi
 speakers, end to end on a call and a hybrid call), the one meeting mode (the start
 settings with the computer's audio on, off, or not allowed; the launcher arguments; the
 microphone-only start check; meeting.json of a recording; the track plans of in-person,
-call, and hybrid sessions), the review window's model (changes
+call, and hybrid sessions), meeting languages (the passage-by-passage choice and its
+smoothing on synthetic transcriptions; the language stage with scripted speech: the merge
+made current, transcriptions reused and never redone, a missing speech model or a failed
+transcription keeping the transcript, edited labels needing `--force`, cancellation, and
+languages recorded by a recording and an import), the review window's model (changes
 shown before they are saved, saved in order, refused and reloaded when the labels changed
 elsewhere, including changes queued behind a refused one; undo of saved, saving, and
 queued changes; turns made by a pending split; Confirm All as one undo; exports rewritten
@@ -361,6 +386,15 @@ aggregate-only probe found the sparse output already in the native Dictation fin
 results, rather than lost by the collector; why the native backends differed on
 that recording remains undetermined.
 See the [reference comparison](reference-evaluation.md) for scoring rules and results.
+
+Meeting languages were run end to end (`session import`, then `session languages
+--languages fr-CA,en-CA`) on the user's private 3 h 43 min bilingual (French and English)
+recording, in a temporary sessions folder: 37.4 % word error rate against Otter, against
+46.5 % for French alone and 77.0 % for English alone (the spike that chose the method
+measured 37.5 %), and 19.7 % on turns that mix the two languages (French alone: 35.1 %). The
+stage took about 4 minutes. On an English-only 20-minute control, recorded as French with
+English detected, it kept no passage in French and matched English alone (10.9 %). Otter is
+another recognizer, not ground truth; see docs/meeting-design.md §4.14.
 
 Speaker labels were run end to end (`session import`, `session diarize`,
 `session score`) on the three private Otter recordings (7, 20, and 89 minutes).
@@ -411,6 +445,10 @@ Still requiring real-machine or user-data validation:
   while the user enables that shortcut; unrelated typing cancels dictation and
   may be consumed until the key is released. The clipboard is written only when the
   user chooses Copy Result or Copy Original.
+- Meeting languages: the review window shows the merged transcript but cannot change a
+  turn's language; `session languages` redoes the whole meeting. The live transcript stays
+  in the first language. Where two passages in different languages meet, a word can appear
+  twice or not at all.
 - Speaker names and edits: labels are "Speaker N" until named in the review window or
   with `voiceislocal speakers`. The review window has no redo, and its undo does not reach past
   a relabel (Find More Speakers keeps names, not turn-level changes). Find More Speakers is

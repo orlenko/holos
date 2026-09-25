@@ -52,6 +52,8 @@ stops and reports it; it does not edit a file owned by another PR.
 | PR11 | 5 | Online-call refinements: echo filter, headphone warning | — |
 
 `→` means stacked (the later PR branches from the earlier one); `∥` means parallel.
+Meeting languages came after wave 5, outside this map: one language per meeting (LANG1),
+then several detected after the recording (LANG2); §4.14 describes both.
 Spike S1 finished with verdict "go" (§4.8 uses its API facts and measurements). Spike S2
 (recorder process and platform) is pending; it picks the default launcher and runs the
 hardware checks in §7.2. S2 does not change any interface: the `waiting` phase (§4.2)
@@ -471,7 +473,7 @@ extension SessionArchive {
   postprocess.json                         PR7b                         PostProcessingRecord
   audio/{mic,system}/NNNNNN.caf            AudioChunkWriter             Int16 from PR2a, system audio mono; Float32 still readable
   audio-deleted.json                       PR3                          written by Delete Audio; chunks are intentionally absent
-  transcripts/<TRANSCRIPT-UUID>.json       SessionArchive               immutable revisions
+  transcripts/<TRANSCRIPT-UUID>.json       SessionArchive               immutable revisions (also one per language, never current, §4.14)
   transcripts/current.json                 PR6 (saveTranscript)         TranscriptPointer: which revision is current
   transcripts/current.pending              PR6 (saveTranscript)         TranscriptPointer: the revision a save is publishing; removed when done
   speakers/runs/<RUN-UUID>.json            PR6 API, PR7b writes         immutable DiarizationRun; no voice embeddings
@@ -3990,6 +3992,200 @@ Nothing expired meetings before; a 3 h call is about 2 GB even with mono system 
   `transcripts/*.json` revision (write a new one without those words), the head run (a
   new run, names carried over), `exports/`, and `status.json` `lastPhrase`. Until then,
   the remedy for an unpaused in-camera item is Delete Meeting (open question Q7).
+
+### 4.14 Multi-language meetings (LANG1, LANG2)
+
+Added after wave 5, outside the PR plan. The user's request: "we should be able to specify
+(in phase 1) a single language for the dictation and meetings; and in phase 2, a list of
+languages that are detected automatically, so that mixed meetings (e.g. montreal
+English+French mix or other multilingual environments) can be transcribed correctly,
+through post-processing. It's ok if post-processing takes a while, we don't care about
+instantaneous meeting feedback. The dictation stays monolingual."
+
+**Phase 1 (LANG1, PR #43).** The start panel's Language pop-up (the dictation languages,
+`DictationLanguage.groups`) sets the meeting language; UserDefaults `meetingLocales` keeps
+a list, the first used; `MeetingStartSettings.locales`; the recorder gets
+`--locale=<first>`; the manifest records one `locale`.
+
+**Phase 2 (LANG2).** A meeting may name up to three languages (`DictationLanguage.
+maximumMeetingLanguages`), each a different language (`sameLanguage`: language and script;
+"fr-CA" and "fr-FR" are one language, "zh-CN" and "zh-TW" two). The first is transcribed
+live, exactly as before; after the recording, post-processing transcribes the saved audio
+again in each language, merges the transcriptions passage by passage, and makes the merge
+the current transcript before speakers are labelled, so speaker labels, exports, and the
+review window use it.
+
+*Evidence (spike on the user's private 3 h 43 min bilingual board meeting against Otter,
+numbers only).* Both SpeechTranscribers ran over the same audio at about 100× real time
+each; every word has a time and a confidence (`transcriptionConfidence`). Choosing the
+language per fixed 3 s window with the sum rule below, and switching only after 2 windows
+agree, gave 37.5 % WER against 46.5 % for French alone; 19.8 % on turns that mix languages
+against 34.9 %; an English-only control meeting stayed at 10.9 % with no window chosen
+French. Choosing per turn gave 41.8 %; splitting at pauses did not help.
+
+**Contract additions** (§3.0 allows new optional fields and open-code constants; the
+digests describe the wave-0 text):
+
+- `MeetingInfo.languages: [String]?` (meeting.json), the recording's own locale first,
+  written only when there are several; nil in older sessions and for one language.
+- `PostProcessingStage.languages`.
+- `MeetingEventKind.languagePass` (`transcriptID, language, tracks, seconds`) and
+  `MeetingEventKind.languagesDetected` (`transcriptID, base, languages, requested,
+  source.<language>, windows, windows.<language>, switches`).
+
+Outside the frozen files: `Transcript.languages: [String]?` and `TranscriptSegment.language:
+String?` in `Models.swift` (optional, left out of the JSON when nil, so older transcripts
+and single-language ones encode byte for byte as before); `SessionArchive.
+saveTranscriptRevision(_:)` (HolosStorage), which saves an immutable revision without
+making it current and, in an archive from before `transcripts/current.json`, writes the
+pointer first so the new revision never becomes current by being the newest;
+`AppleSpeechSession.make(…, accurate:)` (final results only, no `fastResults`).
+
+**Session folder.** Each language's transcription is a revision `transcripts/<UUID>.json`
+(`locale` its language, `languages` nil) that is never current, journaled as
+`languagePass`. The merge is a revision with `languages` set and each segment's
+`language`, journaled as `languagesDetected` before it is saved as current.
+
+**Stage 1b `languages`** (`Sources/HolosMeeting/PostProcessing/LanguageStage.swift`), after
+stage 1 and before the speaker stages, in every caller of `MeetingPostProcessor` (the
+recorder, `session diarize`, `recover`, `import`, the app's relabels):
+
+1. *Which languages.* `PostProcessingOptions.languages` when given (`session languages`);
+   else meeting.json's `languages` (two or more) while the current transcript is not
+   merged, or when it was merged automatically from them (`requested` of its
+   `languagesDetected`) but missed one (a speech model installed since). A transcript
+   merged from languages named on the command line is never replaced automatically. A
+   meeting in one language records no stage at all, so its `postprocess.json` is unchanged.
+2. *Done already.* A current transcript merged from exactly these languages (or, for one
+   language, the recording's own) is kept: `succeeded`, "The transcript was already made
+   from …".
+3. *Edited labels.* When the head run was built from the current transcript and has
+   applied edits, the stage is `skipped` without `force` ("Speaker labels were edited;
+   detect languages with --force (names carry over)."), checked again just before the
+   merge is published.
+4. *Transcriptions.* For each language: the last `languagePass` after the last
+   `archiveRecovered` whose revision reads (resumable); else a new one, one language after
+   another, every track through `TrackReplayer` (the session vocabulary, the stop path's
+   time limits, progress "Transcribing the meeting in French (Canada)…") with
+   `AppleSpeechSession.make(accurate: true)`, saved with `saveTranscriptRevision` and
+   `languagePass` under the writer lock (held only for the save). The recorded transcript
+   (the base: the current one, or the one a merge's event names) stands in for its own
+   language only when that language cannot be transcribed again, and never when the
+   manifest says `transcriptionIncomplete`. Speech models are checked first
+   (`assetStatus`, only `installed` transcribes) and nothing is transcribed when the
+   languages that could be had would not make a merge.
+5. *Fail soft.* A language that cannot be had (its model not installed, "downloading", or
+   unsupported; a speech error or time-out; deleted audio) is left out with the reason. The
+   merge needs the first language and, when several were asked for, two. Otherwise the
+   current transcript stays (`failed`, "Kept the transcript as it was. English (Canada) was
+   not transcribed: its speech model is not installed. Install it from the meeting start
+   panel or with voiceislocal setup --locale en-CA, then detect the languages again."). A
+   missing language makes the post-processing `partial` (exit 3) with that reason first in
+   the message; speakers are still labelled.
+6. *Merge and publish.* `LanguageMerge.merge` (pure), then, under the writer lock,
+   `languagesDetected` and `saveTranscript(merged)`. The stage message: "Kept French
+   (Canada) in 61 % of the passages and English (Canada) in 39 %, with 171 switches."; the
+   record's message (and so the app's finished message) starts "Transcribed in French
+   (Canada) and English (Canada)." Speaker
+   labelling then sees a new transcript and relabels (names carry over, §4.9). A
+   cancellation publishes nothing; saved transcriptions stay for the next run.
+
+**The merge** (`LanguageMerge`, `Sources/HolosMeeting/PostProcessing/LanguageMerge.swift`,
+pure; `NaturalLanguageScorer` in `LanguageIdentification.swift` is the live scorer):
+
+1. Per track, words go into fixed 3 s windows of session time from 0 by their middle
+   ((start + end) / 2); a segment without timed words moves as one unit.
+2. A window where one language has words takes it. Where several do, each scores its
+   words' mean confidence (0 without any) plus the probability that its text there is in
+   its own language, from `NLLanguageRecognizer` with `languageConstraints` set to the
+   candidates' languages and the hypotheses normalized over them; the highest wins, a tie
+   the language listed first.
+3. Over the windows with words, the language changes only where 2 consecutive windows
+   choose the same new one, at the first of them; the track starts in the language of the
+   first such run (so a lone first window does not set it); windows without words keep the
+   previous choice and do not break a run.
+4. A window keeps its language's words only. A segment whose words are all kept is kept
+   whole; a run of kept words from part of a segment becomes a segment `<id>/<first word>`
+   cut from the text at the recognizer's UTF-16 offsets (the words' own texts joined with
+   spaces when the offsets do not fit). IDs stay unique (`<id>/<language>` on a collision).
+   Where two languages meet, a word can be kept twice or not at all; the measured error
+   includes that.
+
+**Surfaces.**
+
+- *Start panel (PR4's panel).* Under Language, "Also detect": a pull-down of the same
+  languages with a checkmark on each chosen one ("None" by default; the meeting language's
+  other regions and a fourth language disabled; "None" clears). The speech-model line names
+  the first chosen language whose model is not ready ("Speech model for English (Canada) not
+  installed: English (Canada) will not be detected." with Install…); installing is only
+  ever on Install…. `meetingLocales` keeps the whole list. `MeetingStartSettings.
+  normalized()` keeps three different languages. The menu's saving line reads "detecting
+  languages". Dictation keeps its one language.
+- *Recorder.* `ChildProcessLauncher` passes `--languages=<a>,<b>` for several (else
+  `--locale=`); `RecordingOptions.languages` (validated: a meeting's languages, first equal
+  to `locale`) goes to meeting.json. Live transcription is unchanged.
+- *CLI.* `record start` and `session import` take `--languages fr-CA,en-CA` instead of
+  `--locale`; `session languages <session> --languages … [--force] [--json]`
+  (`SessionLanguagesCommand`) runs the post-processor with those languages (one language
+  makes the transcript that language's alone): exit 0 done (also without speaker models),
+  3 partial, 1 failed.
+- *Exports.* Markdown adds "- Languages: French (Canada), English (Canada)" (English names)
+  to the header of a transcript merged from several; the text carries no language marks,
+  because the language changes every few seconds, often inside a sentence, and marks would
+  break the text up. JSON adds top-level `languages` and each turn's `languages` (those of
+  its words in order), only for a merged transcript. Text is unchanged.
+- *Review window.* It shows the merged transcript (the head run's). Changing a turn's
+  language there is a follow-up: it would need a per-turn override stored beside the
+  transcriptions and a new merge, then a relabel.
+
+**Tests.** `LanguageMergeTests` (pure French kept whole; the English control never
+switches, with made-up French words at the start and in a pause; alternating passages;
+a switch needs two windows; a lone window smoothed away; windows without words carry and
+do not break a run; a window heard only in one language takes it; a lone window heard only
+in the other keeps nothing; ties; tracks apart; three languages; one candidate; word
+middles; cuts at recognizer offsets and the fallback; untimed segments; unique IDs;
+determinism; smoothing cases; the NaturalLanguage scorer), `LanguageStageTests` (merged,
+kept, and labelled end to end with scripted speech; one language records nothing; a second
+run and a resumed run transcribe nothing again; a missing model or a failed transcription
+keeps the transcript and says why; the recorded transcript stands in, but never an
+incomplete one; a language added once its model is installed; cancellation; `session
+languages` with order, one language, and invalid lists; edited labels and `--force` with
+names carried; `session import --languages`), `MeetingLanguageTests` (meeting.json from a
+recording, refused lists, launcher arguments, start settings), `MeetingLanguagesTests`
+(HolosCore lists and optional fields), `TranscriptRevisionTests`, `LanguageExportTests`.
+
+**Validation on the user's data** (private recordings in `.local/bilingual-probe/`,
+imported into a temporary sessions folder, WER per Otter turn as the spike computed it;
+Otter is another recognizer, not ground truth):
+
+| Transcript | All | French turns | English turns | Mixed turns |
+|---|---|---|---|---|
+| Live preset, French alone (the import) | 49.7 | 38.9 | 69.4 | 37.9 |
+| Accurate, French alone | 46.5 | 37.1 | 63.6 | 35.1 |
+| Accurate, English alone | 77.0 | 90.9 | 48.5 | 59.9 |
+| Merge of live-preset French and English passes | 39.9 | 38.1 | 40.1 | 20.8 |
+| Merge of the live French transcript and an accurate English pass | 38.3 | 36.5 | 39.6 | 20.0 |
+| Merge of accurate passes (shipped) | 37.4 | 35.2 | 39.5 | 19.7 |
+| Spike, 3 s windows with the 2-window switch | 37.5 | – | – | 19.8 |
+
+The live transcriber's `fastResults` cost about 3 points per language, which is why every
+language is transcribed again with final results only, one more pass than reusing the live
+transcript would take: the stage took 245 s for both passes and the merge of the 3 h 43 min
+meeting. The final run was the one the product does: `session import --locale fr-CA`, then
+`session languages --languages fr-CA,en-CA`; running it again transcribed nothing. The
+English-only control (20 minutes), imported with `--languages fr-CA,en-CA` (French live,
+English detected): 10.9 % (the spike's 10.9 %; French alone 64.5 %), no passage kept in
+French (0 of 399), no switch.
+
+**Deviations from the validated spike, and why.** Every language is transcribed again,
+including the live one (above). The smoothing starts a track in the first agreeing run's
+language instead of the first window's, so a lone first window cannot set it either (it
+affects at most one window per track). `Models.swift` gained two optional fields: the
+language of each segment has to live in the transcript that exports and speaker runs
+read.
+
+**Follow-ups.** A per-turn language override in the review window; the live transcript in
+several languages; a Markdown option to mark language switches.
 
 ## 5. PRs
 

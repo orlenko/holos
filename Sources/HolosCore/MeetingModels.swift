@@ -127,6 +127,12 @@ public enum MeetingEventKind {
     /// The details `transcriptRebuilt` will have, journaled before the rebuilt transcript is saved, so a rebuild whose
     /// status or `transcriptRebuilt` could not be recorded is told from a transcript the recorder saved (PR3)
     public static let transcriptRebuilding = "transcriptRebuilding"
+    /// transcriptID, language, tracks, seconds: the saved audio was transcribed again in `language` and kept as a
+    /// revision that is not current (LANG2, §4.14)
+    public static let languagePass = "languagePass"
+    /// transcriptID, base, languages, source.<language>, windows, windows.<language>, switches: journaled before the
+    /// transcript merged from one transcription per language is saved as current (LANG2, §4.14)
+    public static let languagesDetected = "languagesDetected"
 }
 
 // MARK: - Meeting setup (meeting.json, vocabulary.json)
@@ -159,14 +165,19 @@ public struct MeetingInfo: Codable, Sendable, Equatable {
     /// Number of people the user expects, passed to the diarizer as a hint (optional).
     public var expectedSpeakers: Int?
     public var createdAt: Date
+    /// The meeting's languages when there are several, the recording's own (the manifest locale) first:
+    /// post-processing transcribes the saved audio again in each and keeps, passage by passage, the language that
+    /// fits (LANG2, §4.14). Nil for one language and in older sessions.
+    public var languages: [String]?
 
     public init(schemaVersion: Int = 1, sessionID: String, mode: MeetingMode, othersInRoom: Bool,
                 applicationBundleID: String? = nil, origin: MeetingOrigin = .recorded,
-                importedFileName: String? = nil, expectedSpeakers: Int? = nil, createdAt: Date = Date()) {
+                importedFileName: String? = nil, expectedSpeakers: Int? = nil, createdAt: Date = Date(),
+                languages: [String]? = nil) {
         self.schemaVersion = schemaVersion; self.sessionID = sessionID; self.mode = mode
         self.othersInRoom = othersInRoom; self.applicationBundleID = applicationBundleID
         self.origin = origin; self.importedFileName = importedFileName
-        self.expectedSpeakers = expectedSpeakers; self.createdAt = createdAt
+        self.expectedSpeakers = expectedSpeakers; self.createdAt = createdAt; self.languages = languages
     }
 
     /// Settings assumed for archives created before meeting.json existed.
@@ -251,6 +262,8 @@ public struct PostProcessingStage: OpenStringCode {
     public init(rawValue: String) { self.rawValue = rawValue }
 
     public static let transcript = PostProcessingStage("transcript")
+    /// A meeting in several languages: the audio transcribed again in each, and the transcript merged (LANG2, §4.14).
+    public static let languages = PostProcessingStage("languages")
     public static let render = PostProcessingStage("render")
     public static let diarize = PostProcessingStage("diarize")
     public static let align = PostProcessingStage("align")

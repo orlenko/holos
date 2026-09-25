@@ -34,17 +34,23 @@ public struct RecordingOptions: Sendable, Equatable {
     /// and the system default input for `mic+system` (the device the call app uses). Meetings from the app record
     /// the system default input either way (`MeetingStartSettings.app`, `--microphone default`).
     public var microphone: MicrophoneSelection
+    /// The meeting's languages, `locale` first (docs/meeting-design.md §4.14). Live transcription uses `locale` only;
+    /// with more than one, meeting.json records them and post-processing transcribes the audio again in each and
+    /// merges the transcript. Empty: `locale` only.
+    public var languages: [String]
 
     /// `microphone` nil chooses it from `source`: `.builtIn` for `mic`, `.systemDefault` otherwise.
     public init(name: String, source: AudioSource, locale: String, backend: SpeechBackend, root: URL,
                 duration: Double? = nil, recordOnly: Bool = false, applicationBundleID: String? = nil,
                 vocabulary: [String] = [], sessionID: String? = nil, othersInRoom: Bool = false,
-                expectedSpeakers: Int? = nil, liveText: Bool = true, microphone: MicrophoneSelection? = nil) {
+                expectedSpeakers: Int? = nil, liveText: Bool = true, microphone: MicrophoneSelection? = nil,
+                languages: [String] = []) {
         self.name = name; self.source = source; self.locale = locale; self.backend = backend; self.root = root
         self.duration = duration; self.recordOnly = recordOnly; self.applicationBundleID = applicationBundleID
         self.vocabulary = vocabulary; self.sessionID = sessionID; self.othersInRoom = othersInRoom
         self.expectedSpeakers = expectedSpeakers; self.liveText = liveText
         self.microphone = microphone ?? Self.microphone(for: source)
+        self.languages = languages
     }
 
     /// Decision 9: in person records the built-in microphone; a call records the system default input.
@@ -288,6 +294,16 @@ public enum RecordingWorkflow {
         if let expected = options.expectedSpeakers, !(1...20).contains(expected) {
             throw HolosError.invalidInput("The expected number of speakers must be between 1 and 20.")
         }
+        if !options.languages.isEmpty {
+            if let problem = DictationLanguage.meetingLanguagesProblem(options.languages) {
+                throw HolosError.invalidInput(problem)
+            }
+            options.languages = DictationLanguage.meetingLanguages(options.languages)
+            guard options.languages.first == DictationLanguage.identifier(options.locale) else {
+                throw HolosError.invalidInput(
+                    "The meeting's first language must be the one it is transcribed in live (\(options.locale)).")
+            }
+        }
         if let id = options.sessionID {
             guard let uuid = UUID(uuidString: id) else {
                 throw HolosError.invalidInput("A session ID must be a UUID, like \(UUID().uuidString).")
@@ -454,7 +470,8 @@ private final class Recorder {
         let directory = archive.directory
         let info = MeetingInfo(sessionID: archive.id, mode: options.source == .microphone ? .inPerson : .call,
                                othersInRoom: options.othersInRoom, applicationBundleID: options.applicationBundleID,
-                               expectedSpeakers: options.expectedSpeakers)
+                               expectedSpeakers: options.expectedSpeakers,
+                               languages: options.languages.count > 1 ? options.languages : nil)
         try AtomicFile.create(try HolosJSON.encoder().encode(info), at: SessionPaths.meetingInfo(directory))
         if !options.vocabulary.isEmpty {
             try AtomicFile.create(try HolosJSON.encoder().encode(MeetingVocabulary(strings: options.vocabulary)),

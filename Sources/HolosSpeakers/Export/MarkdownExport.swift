@@ -10,6 +10,7 @@ import HolosCore
 /// - Date: 2026-09-23
 /// - Started: 14:00
 /// - Duration: 2:58:12
+/// - Languages: French (Canada), English (Canada)
 /// - Participants: Jim (41:12), Speaker 2 (22:03), Me (15:40)
 ///
 /// **Jim** · 00:12:03
@@ -25,7 +26,8 @@ import HolosCore
 /// _[Marker 01:02:03: Budget vote]_
 /// ```
 ///
-/// Date and start time are `metadata.createdAt` in `metadata.timeZone`. Participants are the projection's speakers
+/// Date and start time are `metadata.createdAt` in `metadata.timeZone`. The Languages line appears only for a
+/// transcript merged from several languages (§4.14). Participants are the projection's speakers
 /// with turns, by talk time descending (ties in speaker order); the line is left out without a projection. A gap or
 /// marker line at the same time as a block comes before it; repeated identical lines print once, adjacent or not.
 /// Names, labels, the title, and a block's text are kept on one line with every character that can start inline
@@ -40,6 +42,9 @@ enum MarkdownExport {
         text += "- Date: \(date)\n"
         text += "- Started: \(time)\n"
         text += "- Duration: \(TimeFormat.duration(metadata.durationSeconds))\n"
+        if let languages = languages(content.document.transcript) {
+            text += "- Languages: \(languages)\n"
+        }
         if let participants = participants(content.projection) {
             text += "- Participants: \(participants)\n"
         }
@@ -121,6 +126,17 @@ enum MarkdownExport {
         return speakers.map {
             "\(escapeInline(ExportText.headerLabel($0.label))) (\(TimeFormat.duration($0.talkSeconds)))"
         }.joined(separator: ", ")
+    }
+
+    /// "French (Canada), English (Canada)" (English names, as the rest of the header) for a transcript merged from
+    /// several languages (docs/meeting-design.md §4.14); nil for one language. The text itself carries no language
+    /// marks: the language changes every few seconds, often inside a sentence, and marks there would break it up; the
+    /// JSON export names each turn's languages.
+    private static func languages(_ transcript: Transcript) -> String? {
+        guard let languages = transcript.languages, languages.count > 1 else { return nil }
+        let english = Locale(identifier: "en_US")
+        return languages.map { escapeInline(ExportText.singleLine(DictationLanguage.name(of: $0, in: english))) }
+            .joined(separator: ", ")
     }
 
     /// ("2026-09-23", "14:00") in the Gregorian calendar.

@@ -4,10 +4,10 @@ import HolosCore
 import HolosMeeting
 
 /// "New Meeting Recording" (docs/meeting-design.md §5.8): name, what will be recorded (the system default input and
-/// the computer's audio, `MeetingStartSettings.app`), the disk estimate, the speaker models, the meeting language and
-/// its speech model, and the consent reminder. Start is disabled when the disk policy refuses, nothing could be
-/// recorded (no microphone, and no computer's audio), or the meeting language is not known yet. An ordinary window,
-/// like Setup.
+/// the computer's audio, `MeetingStartSettings.app`), the disk estimate, the speaker models, the meeting language, up
+/// to two more languages to detect after the recording (§4.14), their speech models, and the consent reminder. Start
+/// is disabled when the disk policy refuses, nothing could be recorded (no microphone, and no computer's audio), or
+/// the meeting language is not known yet. An ordinary window, like Setup.
 @MainActor
 final class MeetingStartPanel: NSObject, NSWindowDelegate {
     /// What the panel shows besides the user's choices; read every 2 s while it is open.
@@ -55,13 +55,18 @@ final class MeetingStartPanel: NSObject, NSWindowDelegate {
     private let speakersLabel = NSTextField(wrappingLabelWithString: "")
     private let installButton = NSButton(title: "Install…", target: nil, action: nil)
     private let languagePopup = NSPopUpButton()
+    /// "Also detect": a pull-down of the other languages, each with a checkmark when chosen.
+    private let alsoDetectPopup = NSPopUpButton(frame: .zero, pullsDown: true)
     private let speechLabel = NSTextField(wrappingLabelWithString: "")
     private let speechInstallButton = NSButton(title: "Install…", target: nil, action: nil)
-    /// The popup's languages as last filled, so a refresh never replaces its menu while it is open.
+    /// The popups' languages as last filled, so a refresh never replaces their menus while one is open.
     private var shownLanguages: [[String]] = []
-    /// The chosen meeting languages: exactly one, from the popup, today.
+    private var shownAlsoDetect: [[String]] = []
+    /// The chosen meeting languages: the popup's first, then the ones to detect too (at most two).
     private var chosenLocales: [String] = []
-    /// The user picked the language in the popup since the panel opened.
+    /// The language whose model the Install… button installs: the first chosen one whose model is not ready.
+    private var installTarget: String?
+    /// The user picked a language in either popup since the panel opened.
     private var languagePicked = false
     private let consentLabel = NSTextField(labelWithString: "ⓘ Tell everyone you are recording.")
     private let consentCheckbox = NSButton(checkboxWithTitle: "Don't show this again", target: nil, action: nil)
@@ -104,9 +109,15 @@ final class MeetingStartPanel: NSObject, NSWindowDelegate {
         languagePopup.target = self
         languagePopup.action = #selector(languageChanged)
         languagePopup.toolTip = "The language the meeting is transcribed in. Voice is Local remembers it for the next meeting."
+        alsoDetectPopup.target = self
+        alsoDetectPopup.action = #selector(alsoDetectChanged)
+        alsoDetectPopup.menu?.autoenablesItems = false
+        alsoDetectPopup.toolTip = "Other languages spoken in the meeting. After the recording, Voice is Local "
+            + "transcribes the audio again in each and keeps, every few seconds, the language that fits; this takes "
+            + "a few extra minutes. The live transcript stays in the meeting language."
         speechInstallButton.target = self
         speechInstallButton.action = #selector(installSpeechModel)
-        speechInstallButton.toolTip = "Downloads Apple's on-device speech model for this language."
+        speechInstallButton.toolTip = "Downloads Apple's on-device speech model for the language named."
         for button in [installButton, speechInstallButton] {
             button.bezelStyle = .push
             button.controlSize = .small
@@ -133,6 +144,7 @@ final class MeetingStartPanel: NSObject, NSWindowDelegate {
             [Self.title("Disk"), diskLabel],
             [Self.title("Speakers"), speakers],
             [Self.title("Language"), languagePopup],
+            [Self.title("Also detect"), alsoDetectPopup],
             [NSGridCell.emptyContentView, speech],
         ])
         grid.rowSpacing = 10
@@ -178,9 +190,9 @@ final class MeetingStartPanel: NSObject, NSWindowDelegate {
     func show(name: String, saved: MeetingStartSettings?, locales: [String], consentDismissed: Bool) {
         if !window.isVisible {
             nameField.stringValue = name
-            chosenLocales = locales
+            chosenLocales = DictationLanguage.meetingLanguages(locales)
             languagePicked = false
-            if let locale = locales.first { onCheckSpeechModel(locale) }
+            for locale in chosenLocales { onCheckSpeechModel(locale) }
             consentCheckbox.state = .off
             consentRow?.isHidden = consentDismissed
             errorLabel.stringValue = ""
@@ -301,12 +313,14 @@ final class MeetingStartPanel: NSObject, NSWindowDelegate {
         startButton.isEnabled = allowed
     }
 
-    /// The language popup, and whether the chosen language's speech model is installed. A missing model does not
-    /// block Start (the audio is still saved); it is installed only when the user clicks Install. False while there is
-    /// no language yet (the app is still finding the default one).
+    /// The language popups, and whether the chosen languages' speech models are installed: the line names the first
+    /// chosen language whose model is not ready, and Install… installs that one. A missing model does not block Start
+    /// (the audio is still saved; a language to detect is left out afterwards, and the finished message says so); it
+    /// is installed only when the user clicks Install. False while there is no language yet (the app is still finding
+    /// the default one).
     private func refreshLanguage(_ current: Environment) -> Bool {
         var groups = current.languages
-        if let chosen = chosenLocales.first, !groups.joined().contains(chosen) { groups.insert([chosen], at: 0) }
+        for chosen in chosenLocales.reversed() where !groups.joined().contains(chosen) { groups.insert([chosen], at: 0) }
         if groups != shownLanguages {
             shownLanguages = groups
             languagePopup.removeAllItems()
@@ -319,52 +333,103 @@ final class MeetingStartPanel: NSObject, NSWindowDelegate {
                 }
             }
         }
+        refreshAlsoDetect(groups)
+        installTarget = nil
+        speechInstallButton.isHidden = true
         guard let locale = chosenLocales.first else {
             speechLabel.stringValue = "Finding the meeting language…"
             speechLabel.textColor = .secondaryLabelColor
-            speechInstallButton.isHidden = true
             return false
         }
         if languagePopup.selectedItem?.representedObject as? String != locale {
             languagePopup.selectItem(at: languagePopup.indexOfItem(withRepresentedObject: locale))
         }
-        let name = DictationLanguage.name(of: locale)
-        speechInstallButton.isHidden = true
         speechInstallButton.isEnabled = current.speechInstalling == nil
         speechLabel.textColor = .systemOrange
-        if current.speechInstalling == locale {
-            speechLabel.stringValue = "Installing the speech model for \(name)…"
+        if let installing = current.speechInstalling, chosenLocales.contains(installing) {
+            speechLabel.stringValue = "Installing the speech model for \(DictationLanguage.name(of: installing))…"
             speechLabel.textColor = .secondaryLabelColor
             speechInstallButton.isHidden = false
             return true
         }
-        let state = current.speechModels[locale]
-        if state != "installed", state != nil, let error = current.speechInstallErrors[locale] {
-            speechLabel.stringValue = "Speech model not installed: \(error)"
-            speechInstallButton.isHidden = false
+        for (index, language) in chosenLocales.enumerated() {
+            let state = current.speechModels[language]
+            guard state != "installed" else { continue }
+            let name = DictationLanguage.name(of: language)
+            // What is lost without the model: the transcript for the meeting language, the detection for another.
+            let loss = index == 0 ? "the audio is saved, but not transcribed." : "\(name) will not be detected."
+            installTarget = language
+            if state != nil, let error = current.speechInstallErrors[language] {
+                speechLabel.stringValue = "Speech model for \(name) not installed: \(error)"
+                speechInstallButton.isHidden = false
+                return true
+            }
+            switch state {
+            case "supported":
+                speechLabel.stringValue = "Speech model for \(name) not installed: \(loss)"
+                speechInstallButton.isHidden = false
+            case "downloading":
+                speechLabel.stringValue = "The speech model for \(name) is downloading."
+                speechLabel.textColor = .secondaryLabelColor
+            case "unsupported":
+                speechLabel.stringValue = index == 0 ? "\(name) cannot be transcribed on this Mac."
+                    : "\(name) cannot be detected on this Mac."
+                speechLabel.textColor = .systemRed
+            case let other?:
+                speechLabel.stringValue = "Could not check the speech model for \(name) (\(other))."
+                speechInstallButton.isHidden = false
+            case nil:
+                speechLabel.stringValue = chosenLocales.count > 1 ? "Checking the speech models…"
+                    : "Checking the speech model…"
+                speechLabel.textColor = .secondaryLabelColor
+            }
             return true
         }
-        switch state {
-        case "installed":
-            speechLabel.stringValue = "Speech model ready"
-            speechLabel.textColor = .labelColor
-        case "supported":
-            speechLabel.stringValue = "Speech model for \(name) not installed: the audio is saved, but not transcribed."
-            speechInstallButton.isHidden = false
-        case "downloading":
-            speechLabel.stringValue = "The speech model for \(name) is downloading."
-            speechLabel.textColor = .secondaryLabelColor
-        case "unsupported":
-            speechLabel.stringValue = "\(name) cannot be transcribed on this Mac."
-            speechLabel.textColor = .systemRed
-        case let other?:
-            speechLabel.stringValue = "Could not check the speech model for \(name) (\(other))."
-            speechInstallButton.isHidden = false
-        case nil:
-            speechLabel.stringValue = "Checking the speech model…"
-            speechLabel.textColor = .secondaryLabelColor
-        }
+        speechLabel.stringValue = chosenLocales.count > 1 ? "Speech models ready" : "Speech model ready"
+        speechLabel.textColor = .labelColor
         return true
+    }
+
+    /// The "Also detect" pull-down: its title names the languages chosen to detect ("None" without any), and its menu
+    /// the same languages as the Language pop-up, a checkmark on each chosen one. Another region of a chosen language
+    /// (the meeting language included) cannot be chosen, nor more than two.
+    private func refreshAlsoDetect(_ groups: [[String]]) {
+        guard let menu = alsoDetectPopup.menu else { return }
+        if groups != shownAlsoDetect {
+            shownAlsoDetect = groups
+            menu.removeAllItems()
+            menu.addItem(NSMenuItem(title: "None", action: nil, keyEquivalent: ""))
+            let none = NSMenuItem(title: "None", action: nil, keyEquivalent: "")
+            none.representedObject = ""
+            menu.addItem(none)
+            for group in groups {
+                menu.addItem(.separator())
+                for locale in group {
+                    let item = NSMenuItem(title: DictationLanguage.name(of: locale), action: nil, keyEquivalent: "")
+                    item.representedObject = locale
+                    menu.addItem(item)
+                }
+            }
+        }
+        let primary = chosenLocales.first
+        let extras = Array(chosenLocales.dropFirst())
+        let full = chosenLocales.count >= DictationLanguage.maximumMeetingLanguages
+        let title = extras.isEmpty ? "None" : extras.map { DictationLanguage.name(of: $0) }.joined(separator: ", ")
+        menu.items.first?.title = title
+        alsoDetectPopup.setTitle(title)
+        for item in menu.items.dropFirst() {
+            guard let locale = item.representedObject as? String else { continue }
+            if locale.isEmpty {
+                item.state = extras.isEmpty ? .on : .off
+                item.isEnabled = true
+                continue
+            }
+            let chosen = extras.contains(locale)
+            item.state = chosen ? .on : .off
+            item.isEnabled = primary != nil
+                && (chosen || (!full && !chosenLocales.contains { DictationLanguage.sameLanguage($0, locale) }))
+        }
+        alsoDetectPopup.isEnabled = primary != nil
     }
 
     @objc private func install() {
@@ -375,23 +440,45 @@ final class MeetingStartPanel: NSObject, NSWindowDelegate {
     /// The meeting languages the app would now show: they change when the supported languages load after `show` and
     /// the default language turns out to be another. A language the user picked in the popup is kept.
     func languagesChanged(to locales: [String]) {
+        let locales = DictationLanguage.meetingLanguages(locales)
         guard window.isVisible, !languagePicked, !locales.isEmpty, locales != chosenLocales else { return }
         chosenLocales = locales
-        if let locale = locales.first { onCheckSpeechModel(locale) }
+        for locale in locales { onCheckSpeechModel(locale) }
         refresh()
     }
 
+    /// A new meeting language keeps the languages to detect, except one that is now the same language.
     @objc private func languageChanged() {
         guard let locale = languagePopup.selectedItem?.representedObject as? String,
               locale != chosenLocales.first else { return }
         languagePicked = true
-        chosenLocales = [locale]
+        chosenLocales = DictationLanguage.meetingLanguages([locale] + chosenLocales.dropFirst())
         onCheckSpeechModel(locale)
         refresh()
     }
 
+    /// Checks or unchecks the language picked in "Also detect" ("None" unchecks them all).
+    @objc private func alsoDetectChanged() {
+        guard let primary = chosenLocales.first,
+              let locale = alsoDetectPopup.selectedItem?.representedObject as? String else { return }
+        languagePicked = true
+        var extras = Array(chosenLocales.dropFirst())
+        if locale.isEmpty {
+            extras = []
+        } else if let index = extras.firstIndex(of: locale) {
+            extras.remove(at: index)
+        } else {
+            extras.append(locale)
+            onCheckSpeechModel(locale)
+        }
+        chosenLocales = DictationLanguage.meetingLanguages([primary] + extras)
+        refresh()
+        // The title can be longer or shorter now.
+        window.setContentSize(window.contentView?.fittingSize ?? window.frame.size)
+    }
+
     @objc private func installSpeechModel() {
-        guard let locale = chosenLocales.first else { return }
+        guard let locale = installTarget ?? chosenLocales.first else { return }
         onInstallSpeechModel(locale)
         refresh()
     }

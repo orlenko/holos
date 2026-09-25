@@ -138,6 +138,42 @@ installed only on Install…; the recording is transcribed in the chosen languag
 
 Result: Pending.
 
+### Meeting languages: French and English in one meeting
+
+docs/meeting-design.md §4.14. Use a real meeting where people switch between French and English,
+some of them within a turn, at least 10 minutes long, with the consent it needs.
+
+1. Open the start panel. Set Language to French (Canada) and, under **Also detect**, check English
+   (Canada). French (France) and the other French regions are dimmed; once two languages are
+   checked, the rest are dimmed too. If English's speech model is not installed, the line below
+   says "Speech model for English (Canada) not installed: English (Canada) will not be detected."
+   and offers **Install…**; nothing downloads until you click it.
+2. Record the meeting and stop it. During the meeting the live transcript is French only. While it
+   records, `pgrep -lf "voiceislocal record start"` shows `--languages=fr-CA,en-CA`.
+3. While it saves, the menu reads "Saving … — detecting languages" with a percentage (a few minutes
+   for a long meeting), then "labelling speakers".
+4. The finished message starts "Transcribed in French (Canada) and English (Canada)." Open the
+   transcript: English passages are in English and French ones in French, including switches inside
+   a turn; the Markdown header has "- Languages: French (Canada), English (Canada)". Review shows the
+   same text.
+5. Check the session: `meeting.json` has `"languages": ["fr-CA", "en-CA"]`; `postprocess.json` has a
+   `languages` stage `succeeded` with the share of each language; `events.jsonl` has two
+   `languagePass` lines and one `languagesDetected`.
+6. Run `voiceislocal session languages <session> --languages fr-CA,en-CA`: it says the transcript was
+   already made from both languages and exits 0 without transcribing anything.
+7. Record a short English-only meeting with the same settings: the transcript is all English, and
+   `languagesDetected` shows `windows.fr-CA` 0 or close to it.
+8. Check Spanish (Spain) (or another language whose model you do not install) and record a short
+   meeting: the finished message says Spanish was not transcribed because its speech model is not
+   installed, and French and English are still detected.
+9. The next start panel shows the same three languages; dictation still uses its own one language.
+
+Pass: languages are chosen and their models installed only from the panel; the transcript follows
+each passage's language, the English-only meeting stays English, a language without a model is left
+out with a clear message, and a second run changes nothing.
+
+Result: Pending.
+
 ### H19: Speaker models installed from the app
 
 1. With no speaker models installed (move
