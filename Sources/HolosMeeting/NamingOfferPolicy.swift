@@ -15,6 +15,8 @@ public enum NamingOfferPolicy {
     /// for. New labels for that meeting (another run) are offered again.
     ///
     /// Only the latest labels are offered: once the user names or dismisses them, older meetings are not brought up.
+    /// A run's `createdAt` is saved to the whole second, so meetings labelled in the same second are all the latest:
+    /// the first of them by ID that is neither edited nor dismissed is offered.
     public static func offer(_ summaries: [SessionSummary], dismissed: [String: String], now: Date) -> SessionSummary? {
         let labelled = summaries.filter { summary in
             guard let readyAt = summary.labelsReadyAt else { return false }
@@ -22,12 +24,10 @@ public enum NamingOfferPolicy {
                 && (summary.liveness == .exited || summary.liveness == .dead)
                 && now.timeIntervalSince(readyAt) <= maxAge
         }
-        guard let latest = labelled.max(by: { left, right in
-            let (a, b) = (left.labelsReadyAt ?? .distantPast, right.labelsReadyAt ?? .distantPast)
-            return a != b ? a < b : left.id > right.id
-        }) else { return nil }
-        guard !latest.hasSpeakerEdits, dismissed[latest.id] != latest.runID else { return nil }
-        return latest
+        guard let latestAt = labelled.compactMap(\.labelsReadyAt).max() else { return nil }
+        return labelled
+            .filter { $0.labelsReadyAt == latestAt && !$0.hasSpeakerEdits && dismissed[$0.id] != $0.runID }
+            .min { $0.id < $1.id }
     }
 
     /// The dismissals worth keeping: those of meetings still listed. An empty listing (the folder could not be read)
