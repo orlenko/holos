@@ -20,7 +20,8 @@ public struct RecorderWarningCode: OpenStringCode {
     public static let deviceChanged = RecorderWarningCode("deviceChanged")
     /// Live transcription fell behind; the rest is transcribed from saved audio after stop.
     public static let transcriptionBehind = RecorderWarningCode("transcriptionBehind")
-    /// Laptop speakers are the output during a call, so remote voices reach the microphone (PR11).
+    /// Laptop speakers are the output during a call, so remote voices reach the microphone (PR11). No longer
+    /// written: recorders before the one-mode change set it; the app does not show it.
     public static let echoRisk = RecorderWarningCode("echoRisk")
     /// Audio capture is not running and the recorder is retrying (phase `waiting`).
     public static let audioUnavailable = RecorderWarningCode("audioUnavailable")

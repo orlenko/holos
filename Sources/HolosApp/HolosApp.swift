@@ -1023,6 +1023,7 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
         setupWindow.update(SetupState(
             microphone: AudioCapture.microphonePermission, accessibility: AXIsProcessTrusted(),
             inputMonitoring: CGPreflightListenEventAccess(), systemAudio: CGPreflightScreenCaptureAccess(),
+            recordSystemAudio: MeetingAppState.recordSystemAudio,
             assets: assetState, installingAssets: installingAssets,
             dictationEnabled: enabled, enabling: enabling, busy: isBusy, shortcutTitle: shortcutTitle,
             removeFillers: removeFillers, showPreview: showPreview, previewOpacity: previewOpacity,
@@ -1074,6 +1075,10 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
             updateSetupWindow()
         case .toggleAIFix:
             AIFixSetting.isOn.toggle()  // takes effect from the next dictation
+            updateSetupWindow()
+        case .toggleRecordSystemAudio:
+            MeetingAppState.recordSystemAudio.toggle()  // takes effect from the next meeting
+            meeting.startPanel?.refresh()
             updateSetupWindow()
         case .speakerModels:
             installSpeakerModels()

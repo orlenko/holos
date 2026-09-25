@@ -72,7 +72,13 @@ See the [dictation validation guide](docs/dictation-validation.md) before relyin
 on insertion into other apps.
 
 The app also records meetings from the menu bar: **Start Meeting Recording…**, then
-Pause, Add Marker, Show Live Transcript, and **Stop and Save…**. The recorder is the
+Pause, Add Marker, Show Live Transcript, and **Stop and Save…**. Every meeting records
+the system default microphone and everything the Mac plays (the other side of a call, a
+video), and labels speakers on both. There is no meeting type to choose. Setup's System
+audio row grants the permission for the computer's audio; without it a meeting records
+the microphone only and the menu says so. Setup's collapsed **Advanced** section has
+"Record the computer's audio (system sound) in meetings" (on by default); turned off,
+meetings record the microphone only. The recorder is the
 bundled `voiceislocal` tool (`VoiceIsLocal.app/Contents/MacOS/voiceislocal`, which `build-app.sh` now
 builds and signs) running as a child of the app: it keeps recording if the app quits
 or crashes, and the app finds it again on relaunch, as it does a meeting started from
@@ -85,9 +91,8 @@ open or save the transcript, delete the audio or the whole meeting, and clean up
 leftover renders. Setup has a "Speaker labels" row that installs the speaker models
 (about 21 MB). Voice is Local relabels a meeting automatically when its labelling was
 interrupted (at most twice per meeting, within 7 days). **People…** lists the people
-you have named and their remembered voices (below). When a call plays on the laptop
-speakers, the start panel and the menu warn that the microphone also hears the other
-side and suggest headphones.
+you have named and their remembered voices (below). When the Mac's speakers play a call,
+labelling drops the microphone's echo of it (below); nothing warns about it.
 
 **Review…** in Meetings (or double-clicking a labelled meeting, or the
 **Name Speakers — <name>…** line the menu shows after a meeting) opens the review window:
@@ -146,11 +151,13 @@ audio tracks, not individual speakers. Ctrl-C stops capture and saves audio befo
 transcription finishes. A further Ctrl-C during post-recording transcription exits
 that processing while keeping the saved archive.
 
-`mic` is an in-person meeting: it records the built-in microphone, even when
-AirPods are the default input, and refuses to start without it or with the lid
-closed. `mic+system` is a call: it records the system default input (such as a
+`mic` records the built-in microphone, even when AirPods are the default input, and
+refuses to start without it or with the lid closed; `--microphone default` records the
+system default input instead. `mic+system` records the system default input (such as a
 headset) and system audio, and records system audio alone when there is no input
-device. `record pause`, `resume`, `marker [--label TEXT]`, and `stop` control a
+device. The CLI's defaults are unchanged for scripts; a meeting from the app runs
+`record start --source mic+system --others-in-room --microphone default` (or
+`--source mic --microphone default` when the computer's audio is off or not allowed). `record pause`, `resume`, `marker [--label TEXT]`, and `stop` control a
 running recording by session ID from another shell; a pause stops capture and marks
 the gap. Recordings keep going through audio problems: capture restarts after a
 failure or a device change, and the recording ends only after 10 minutes without
@@ -163,12 +170,14 @@ stopped by itself (low disk, a long sleep, a 6-hour pause) or speaker labelling
 failed or was skipped for a reason other than missing speaker models.
 
 After a recording is saved, Voice is Local labels its speakers (`--no-postprocess` skips
-this). In a call the microphone is "Me" unless `--others-in-room` is given; the
-system audio is split into speakers. In a call, labelling also drops the microphone's
-echo of the call audio (a run of 3 or more words that repeats the call up to 1 s later;
-the words are listed in the run's `droppedWords`, reason `echo`, and appear in no
-export), and with others in the room a microphone speaker who is at least 60 % echo is
-hidden. `record start` warns on stderr when a call plays on the laptop speakers. Speaker
+this). With `mic+system` the system audio is split into speakers, and the microphone is
+"Me" unless `--others-in-room` is given, which splits it too (meetings from the app always
+do; "Me" then comes from your remembered voice, or you name the speakers in review). With
+`mic+system`, labelling also drops the microphone's echo of the system audio (a run of 3
+or more words that repeats it up to 1 s later; the words are listed in the run's
+`droppedWords`, reason `echo`, and appear in no export; with no speech in the system audio
+nothing is dropped), and with others in the room a microphone speaker who is at least
+60 % echo is hidden. Speaker
 labels need the models from
 `voiceislocal setup --speakers` (FluidAudio 0.17.1, run offline; `voiceislocal doctor` reports
 them as verified, not installed, or damaged). Without them the recording is saved

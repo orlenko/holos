@@ -15,12 +15,13 @@ Recorder output goes to `~/Library/Logs/Holos/recorder-<SESSION-UUID>.log`.
 
 ### H1: Permissions and the start panel
 
-1. Choose **Start Meeting Recording…**. The panel shows the name, In person or Online call, the
-   microphone that will be recorded (in person: the built-in microphone; a call: the system
-   default input), the disk estimate, the speaker-model state, and the consent reminder.
-2. Start an in-person recording. Note which app macOS names in the microphone prompt (and, for an
-   online call, the screen and system audio prompt). While a prompt is open, the menu must say
-   "Waiting for permission…" after about 5 seconds.
+1. Choose **Start Meeting Recording…**. The panel shows the name, what will be recorded
+   ("Microphone and the computer's audio"), the microphone (the system default input), the disk
+   estimate, the speaker-model state, and the consent reminder. There is no meeting type to choose
+   and no warning about recording both.
+2. Start a recording. Note which app macOS names in the microphone prompt and the screen and
+   system audio prompt. While a prompt is open, the menu must say "Waiting for permission…" after
+   about 5 seconds.
 3. After approving, the status item shows a red record symbol and the elapsed time; the menu shows
    the recording lines (time, disk used and free, microphone, transcription state).
 4. Stop and save, rebuild the app, and repeat. Note whether the permission survives a rebuild.
@@ -137,8 +138,8 @@ samples**, **This is me**, **Merge into…**, and "Maybe Maria" suggestions with
 pop-up, ⚠ for uncertain turns, text). Keys: Space plays or pauses, ↑/↓ move, 1–9 give the
 selected turns to that speaker number, ⌘' goes to the next uncertain turn and plays it, ⌘Z
 undoes, ⌘F searches, ⌘E opens Export. The **Speakers** pull-down holds Confirm All
-Suggestions, Find More Speakers…, Label Speakers on My Microphone… (calls recorded without
-"others in the room"), and Undo.
+Suggestions, Find More Speakers…, Label Speakers on My Microphone… (calls recorded before the one
+meeting mode without "others in the room"), and Undo.
 
 Every change shows at once and is saved in the background to the meeting's edit journal (there
 is no Save button); the transcript files in `exports/` follow about 2 seconds after the last
@@ -216,49 +217,72 @@ Result: Pending.
 
 Result: Pending.
 
-## Online calls (PR11)
+## One meeting mode: the microphone and the computer's audio (PR11, one-mode change)
 
-In a call, Voice is Local records the system default input and the call audio. When the laptop speakers
-play the call, the microphone hears the other people too: the start panel, the menu, and
-`voiceislocal record start` warn about it, and speaker labelling leaves the microphone's copy of their
-words (echo) out of the transcript. Only runs of 3 or more consecutive words that repeat the call
-audio up to 1 second later are removed, so a short "yes" said over someone stays. Words the
-microphone heard more than a quarter second before the call audio stay: that is your own voice
-coming back from the other end, not echo. The removed words are
-listed in `speakers/runs/<RUN-UUID>.json` under `droppedWords` with reason `echo`. For a call
-with others in the room, a microphone speaker whose words are at least 60 % echo is not a person
-in the room: it is not listed, and its remaining words show as "Unknown speaker".
+Every meeting from the app records the system default input and everything the Mac plays, and
+labels speakers on both tracks. When the laptop speakers play a call, the microphone hears the
+other people too; nothing warns about it, and speaker labelling leaves the microphone's copy of
+their words (echo) out of the transcript. Only runs of 3 or more consecutive words that repeat the
+computer's audio up to 1 second later are removed, so a short "yes" said over someone stays. Words
+the microphone heard more than a quarter second before the computer's audio stay: that is your own
+voice coming back from the other end, not echo. The removed words are listed in
+`speakers/runs/<RUN-UUID>.json` under `droppedWords` with reason `echo`. A microphone speaker whose
+words are at least 60 % echo is not a person in the room: it is not listed, and its remaining words
+show as "Unknown speaker". "Me" is not assumed: it comes from the remembered voice of the person
+marked **This is me** (with Remember voices on), or you name the speakers in review.
 
 For a remote participant, use a second device in a call, or play a talk or podcast in a browser
 tab as "the call" and speak between its sentences. Install the speaker models first (Setup), since
 echo is removed when speakers are labelled.
 
-### H16: A call on the laptop speakers, then a hybrid call
+### H16: A meeting on the laptop speakers, alone and with people in the room
 
 1. Unplug headphones and disconnect AirPods so the laptop speakers are the output. Open **Start
-   Meeting Recording…** and choose Online call. Under the microphone line, the panel shows in
-   orange: "The laptop speakers are playing the call, so other people's voices also reach your
-   microphone. Headphones give a cleaner transcript." Choose In person: the line goes. Choose
-   Online call again, then plug in headphones (or connect AirPods): within 2 seconds the line goes.
-2. Unplug the headphones. Start the call recording on the laptop speakers, with the call audio
-   playing, and say a few sentences of your own between the other side's sentences. The menu shows
-   "⚠ The laptop speakers are playing the call…" and the status item shows ⚠.
-3. During the recording, plug in headphones: the warning leaves the menu within a few seconds. Unplug
-   them: it comes back. (In a terminal, `voiceislocal record start --source mic+system --duration 60`
-   prints the same warning on stderr once each time it appears.)
-4. Stop and save. After labelling, open the transcript (Meetings → Open Transcript). The other
-   side's sentences appear once, under their system-audio speakers, not again under "Me"; your own
-   sentences are under "Me". Note any leftover single words under "Me" that came from the call
-   audio (misheard echo shorter than 3 matching words).
-5. Hybrid: two people in the room, "Others are in the room with me" checked, laptop speakers
-   playing the call. Everyone in the room speaks, and the call audio plays between them. Stop and
-   save; after labelling, check the transcript.
-6. Optional: relabel the same meeting with `voiceislocal session diarize <path to the .holos folder>
-   --force --no-others-in-room`, then with `--others-in-room`, and compare.
+   Meeting Recording…**: the panel says "Microphone and the computer's audio" and shows no orange
+   line about the speakers.
+2. Start the recording with the call audio playing, and say a few sentences of your own between
+   the other side's sentences. The menu shows no ⚠ line about the speakers, and the status item
+   shows no ⚠. (In a terminal, `voiceislocal record start --source mic+system --duration 60`
+   prints no speaker warning on stderr.)
+3. Stop and save. After labelling, open the transcript (Meetings → Open Transcript). The other
+   side's sentences appear once, under their computer-audio speakers, not again under a microphone
+   speaker; your own sentences are under a microphone speaker (named with your name when your voice
+   is remembered; otherwise name it with **This is me** in review). Note any leftover single words
+   on the microphone that came from the computer's audio (misheard echo shorter than 3 matching
+   words).
+4. With people in the room: two people in the room, laptop speakers playing the call. Everyone in
+   the room speaks, and the call audio plays between them. Stop and save; after labelling, check
+   the transcript.
+5. Optional: relabel the same meeting with `voiceislocal session diarize <path to the .holos folder>
+   --force --no-others-in-room` (the microphone becomes "Me"), then with `--others-in-room`, and
+   compare.
 
-Pass: the warning shows with the laptop speakers and not with headphones, in the panel, the menu,
-and the terminal; echoed phrases are absent from the microphone's turns; the room speakers are
-labelled on the microphone track; no speaker consists only of echo (no microphone speaker whose
-text repeats the call audio).
+Pass: no warning in the panel, the menu, or the terminal; echoed phrases are absent from the
+microphone's turns; the room speakers are labelled on the microphone track; no speaker consists
+only of echo (no microphone speaker whose text repeats the computer's audio).
+
+Result: Pending.
+
+### H16b: The Advanced setting and a missing System audio permission
+
+1. Open **Setup…**. The "System audio" row says meetings record the computer's audio; without the
+   permission it shows the pending mark (not the orange problem mark) and **Open Settings**.
+   Expand **Advanced**: "Record the computer's audio (system sound) in meetings" is checked.
+2. Uncheck it. The System audio row says it is not needed while the setting is off. Open **Start
+   Meeting Recording…**: the panel says "Microphone only — the computer's audio is off in Setup ›
+   Advanced." Record a short meeting with a video playing: the menu shows no line about the
+   computer's audio, the session's `meeting.json` has `mode` `inPerson`, only a `mic` track is
+   saved, and after labelling the microphone is split into speakers. Check the box again.
+3. Turn Voice is Local off under System Settings › Privacy & Security › Screen & System Audio
+   Recording, and quit and reopen Voice is Local. Open **Start Meeting Recording…**: the panel says
+   "Recording the microphone only — allow System audio in Setup to include the computer's sound."
+   Start: no permission prompt appears, the recording starts, and the menu shows the same line
+   under the recording lines until the meeting ends. The session records only `mic`.
+4. Turn the permission back on, quit and reopen, and start a meeting: the panel and the recording
+   are back to the microphone and the computer's audio, with no line about it in the menu.
+
+Pass: the setting and the permission each give a microphone-only meeting without a prompt or a
+refusal; only the missing permission is explained in the menu; the setting persists across
+relaunches.
 
 Result: Pending.

@@ -283,16 +283,23 @@ struct MeetingControllerTuning: Sendable {
 
     // MARK: - Start checks
 
-    /// Refuses a start the recorder would refuse: too little disk (`DiskPolicy.startCheck`), or in person without the
-    /// built-in microphone. A free space that cannot be measured does not block the start (the recorder checks again).
+    static let noMicrophone = "No microphone is connected. Connect one and try again."
+
+    /// Refuses a start the recorder would refuse: too little disk (`DiskPolicy.startCheck`), or a microphone-only
+    /// recording without its microphone (the built-in one, or any input for `.systemDefault`). A free space that
+    /// cannot be measured does not block the start (the recorder checks again).
     static func checkStart(_ settings: MeetingStartSettings, freeSpace: any FreeSpaceProvider, root: URL,
                            devices: InputDevices) throws {
         if let free = try? freeSpace.availableBytes(at: root),
            case .refuse(let message) = DiskPolicy.startCheck(freeBytes: free, source: settings.source) {
             throw HolosError.unavailable(message)
         }
-        if settings.source == .microphone, devices.builtIn == nil {
-            throw HolosError.unavailable(BuiltInMicrophone.unavailableMessage)
+        if settings.source == .microphone {
+            if settings.microphone == .systemDefault {
+                if devices.systemDefault == nil { throw HolosError.unavailable(noMicrophone) }
+            } else if devices.builtIn == nil {
+                throw HolosError.unavailable(BuiltInMicrophone.unavailableMessage)
+            }
         }
     }
 

@@ -28,10 +28,11 @@ public enum CaptureOverflow: Sendable, Equatable {
 }
 
 /// Which input device a meeting's microphone track records (docs/meeting-design.md §4.12).
-public enum MicrophoneSelection: Sendable, Equatable {
-    /// The system default input (online calls; dictation).
+/// Saved in the app's last start settings, so the raw values are stable.
+public enum MicrophoneSelection: String, Sendable, Equatable, Codable {
+    /// The system default input (meetings started from the app; `mic+system` from the CLI; dictation).
     case systemDefault
-    /// The built-in microphone, whatever the default input is (in-person meetings).
+    /// The built-in microphone, whatever the default input is (`voiceislocal record start --source mic`).
     case builtIn
 }
 

@@ -1,4 +1,5 @@
 import Foundation
+import HolosAudio
 import HolosCore
 
 // The menu bar's meeting state machine (docs/meeting-design.md §5.8 PR4). Pure: every input is an event, every output
@@ -7,11 +8,15 @@ import HolosCore
 /// What the start panel asks the recorder to do.
 public struct MeetingStartSettings: Codable, Sendable, Equatable {
     public var name: String
-    /// .microphone ("In person") or .microphoneAndSystem ("Online call").
+    /// .microphoneAndSystem for a meeting from the app, .microphone when system audio is off or not allowed
+    /// (`MeetingStartSettings.app`).
     public var source: AudioSource
     public var applicationBundleID: String?
     public var othersInRoom: Bool
     public var expectedSpeakers: Int?
+    /// Which input the microphone track records; nil: the recorder's choice for `source` (the built-in microphone
+    /// for `mic`, the system default input otherwise). Meetings from the app say `.systemDefault`.
+    public var microphone: MicrophoneSelection? = nil
 
     public init(name: String, source: AudioSource, applicationBundleID: String? = nil, othersInRoom: Bool = false,
                 expectedSpeakers: Int? = nil) {
@@ -38,6 +43,7 @@ public struct MeetingStartSettings: Codable, Sendable, Equatable {
         if settings.name.isEmpty { settings.name = Self.defaultName(now: now, timeZone: timeZone) }
         if source == .microphone { settings.applicationBundleID = nil }
         if source != .microphoneAndSystem { settings.othersInRoom = false }
+        if source == .system { settings.microphone = nil }
         if let bundleID = settings.applicationBundleID?.trimmingCharacters(in: .whitespacesAndNewlines) {
             settings.applicationBundleID = bundleID.isEmpty ? nil : bundleID
         }

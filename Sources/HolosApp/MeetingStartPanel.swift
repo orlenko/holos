@@ -3,10 +3,10 @@ import HolosAudio
 import HolosCore
 import HolosMeeting
 
-/// "New Meeting Recording" (docs/meeting-design.md §5.8): name, in person or online call, the microphone that will
-/// be recorded, the disk estimate, the speaker models, and the consent reminder. Start is disabled when the disk
-/// policy refuses or, in person, the built-in microphone is missing. A call that would record the microphone while the
-/// laptop speakers play gets the echo warning line (PR11). An ordinary window, like Setup.
+/// "New Meeting Recording" (docs/meeting-design.md §5.8): name, what will be recorded (the system default input and
+/// the computer's audio, `MeetingStartSettings.app`), the disk estimate, the speaker models, and the consent reminder.
+/// Start is disabled when the disk policy refuses or nothing could be recorded (no microphone, and no computer's
+/// audio). An ordinary window, like Setup.
 @MainActor
 final class MeetingStartPanel: NSObject, NSWindowDelegate {
     /// What the panel shows besides the user's choices; read every 2 s while it is open.
@@ -20,6 +20,10 @@ final class MeetingStartPanel: NSObject, NSWindowDelegate {
         /// `voiceislocal setup --speakers` progress while it runs.
         var installProgress: String?
         var installError: String?
+        /// Setup › Advanced › "Record the computer's audio (system sound) in meetings".
+        var recordSystemAudio = true
+        /// `CGPreflightScreenCaptureAccess()`: without it the meeting records the microphone alone.
+        var systemAudioAllowed = false
 
         static let unknown = Environment(devices: InputDevices(builtIn: nil, systemDefault: nil), freeBytes: nil,
                                          speakerModels: nil, checking: false, installProgress: nil, installError: nil)
@@ -27,22 +31,14 @@ final class MeetingStartPanel: NSObject, NSWindowDelegate {
 
     private let window: NSWindow
     private let environment: () -> Environment
-    /// The system default output (PR11), looked up with the environment; nil when unknown.
-    private let findOutputRoute: () -> OutputRoute?
     /// Returns the error to show, or nil once the recording is starting.
     private let onStart: (MeetingStartSettings, Bool) -> String?
     private let onInstallSpeakerModels: () -> Void
     private let onClose: () -> Void
 
     private let nameField = NSTextField()
-    private let inPersonButton = NSButton(radioButtonWithTitle: "In person — microphone", target: nil, action: nil)
-    private let callButton = NSButton(radioButtonWithTitle: "Online call — microphone and system audio",
-                                      target: nil, action: nil)
-    private let appPopup = NSPopUpButton()
-    private let othersCheckbox = NSButton(
-        checkboxWithTitle: "Others are in the room with me (label speakers on my microphone too)", target: nil, action: nil)
+    private let sourcesLabel = NSTextField(wrappingLabelWithString: "")
     private let microphoneLabel = NSTextField(wrappingLabelWithString: "")
-    private let echoLabel = NSTextField(wrappingLabelWithString: OutputRoute.echoRiskMessage)
     private let diskLabel = NSTextField(wrappingLabelWithString: "")
     private let speakersLabel = NSTextField(wrappingLabelWithString: "")
     private let installButton = NSButton(title: "Install…", target: nil, action: nil)
@@ -51,22 +47,15 @@ final class MeetingStartPanel: NSObject, NSWindowDelegate {
     private let errorLabel = NSTextField(wrappingLabelWithString: "")
     private let startButton = NSButton(title: "Start Recording", target: nil, action: nil)
     private let cancelButton = NSButton(title: "Cancel", target: nil, action: nil)
-    private var appRow: NSGridRow?
-    private var othersRow: NSGridRow?
-    private var echoRow: NSGridRow?
     private var consentRow: NSView?
-    /// Bundle IDs of the app popup's items; nil is "Any app".
-    private var appIDs: [String?] = [nil]
     private var refreshTask: Task<Void, Never>?
     private var positioned = false
 
     var isVisible: Bool { window.isVisible }
 
     init(environment: @escaping () -> Environment, onStart: @escaping (MeetingStartSettings, Bool) -> String?,
-         onInstallSpeakerModels: @escaping () -> Void, onClose: @escaping () -> Void,
-         findOutputRoute: @escaping () -> OutputRoute? = OutputRoute.current) {
+         onInstallSpeakerModels: @escaping () -> Void, onClose: @escaping () -> Void) {
         self.environment = environment
-        self.findOutputRoute = findOutputRoute
         self.onStart = onStart
         self.onInstallSpeakerModels = onInstallSpeakerModels
         self.onClose = onClose
@@ -82,17 +71,10 @@ final class MeetingStartPanel: NSObject, NSWindowDelegate {
 
         nameField.placeholderString = "Meeting name"
         nameField.widthAnchor.constraint(equalToConstant: 320).isActive = true
-        for button in [inPersonButton, callButton] {
-            button.target = self
-            button.action = #selector(typeChanged(_:))
-        }
-        appPopup.widthAnchor.constraint(equalToConstant: 260).isActive = true
-        othersCheckbox.toolTip = "Voice is Local then labels speakers on your microphone track too, not only in the call audio."
-        for label in [microphoneLabel, echoLabel, diskLabel, speakersLabel] {
+        for label in [sourcesLabel, microphoneLabel, diskLabel, speakersLabel] {
             label.font = .systemFont(ofSize: 12)
             label.preferredMaxLayoutWidth = 320
         }
-        echoLabel.textColor = .systemOrange
         installButton.target = self
         installButton.action = #selector(install)
         installButton.bezelStyle = .push
@@ -107,29 +89,18 @@ final class MeetingStartPanel: NSObject, NSWindowDelegate {
         cancelButton.action = #selector(cancel)
         cancelButton.keyEquivalent = "\u{1b}"
 
-        let types = NSStackView(views: [inPersonButton, callButton])
-        types.orientation = .vertical
-        types.alignment = .leading
-        types.spacing = 4
         let speakers = NSStackView(views: [speakersLabel, installButton])
         speakers.spacing = 8
         let grid = NSGridView(views: [
             [Self.title("Name"), nameField],
-            [Self.title("Type"), types],
-            [NSGridCell.emptyContentView, NSStackView(views: [NSTextField(labelWithString: "App"), appPopup])],
-            [NSGridCell.emptyContentView, othersCheckbox],
+            [Self.title("Records"), sourcesLabel],
             [Self.title("Mic"), microphoneLabel],
-            [NSGridCell.emptyContentView, echoLabel],
             [Self.title("Disk"), diskLabel],
             [Self.title("Speakers"), speakers],
         ])
         grid.rowSpacing = 10
         grid.columnSpacing = 12
         grid.column(at: 0).xPlacement = .trailing
-        appRow = grid.row(at: 2)
-        othersRow = grid.row(at: 3)
-        echoRow = grid.row(at: 5)
-        echoRow?.isHidden = true
         for index in 0..<grid.numberOfRows { grid.row(at: index).rowAlignment = .firstBaseline }
 
         consentLabel.font = .systemFont(ofSize: 12)
@@ -164,15 +135,11 @@ final class MeetingStartPanel: NSObject, NSWindowDelegate {
         return label
     }
 
-    /// Opens the panel with a fresh default name and the last settings (their type, app, and room choice).
+    /// Opens the panel with a fresh default name. `saved` is the last settings started; what is recorded does not
+    /// come from them but from Setup and the permission (`MeetingStartSettings.app`).
     func show(name: String, saved: MeetingStartSettings?, consentDismissed: Bool) {
         if !window.isVisible {
             nameField.stringValue = name
-            let call = saved?.source == .microphoneAndSystem
-            inPersonButton.state = call ? .off : .on
-            callButton.state = call ? .on : .off
-            othersCheckbox.state = saved?.othersInRoom == true ? .on : .off
-            fillApps(selecting: saved?.applicationBundleID)
             consentCheckbox.state = .off
             consentRow?.isHidden = consentDismissed
             errorLabel.stringValue = ""
@@ -199,43 +166,39 @@ final class MeetingStartPanel: NSObject, NSWindowDelegate {
         }
     }
 
-    /// Updates the microphone, disk, and speaker lines and whether Start is allowed.
+    private static func settings(name: String, _ current: Environment) -> MeetingStartSettings {
+        MeetingStartSettings.app(name: name, recordSystemAudio: current.recordSystemAudio,
+                                 systemAudioAllowed: current.systemAudioAllowed)
+    }
+
+    /// Updates the sources, microphone, disk, and speaker lines and whether Start is allowed.
     func refresh() {
-        let call = callButton.state == .on
-        appRow?.isHidden = !call
-        othersRow?.isHidden = !call
         let current = environment()
+        let planned = Self.settings(name: nameField.stringValue, current)
+        let source = planned.source
         var allowed = true
 
-        if call {
-            if let input = current.devices.systemDefault {
-                microphoneLabel.stringValue = "\(input.name) (system default)"
-                microphoneLabel.textColor = .labelColor
-            } else {
-                microphoneLabel.stringValue = "No microphone: only the call's audio is recorded."
-                microphoneLabel.textColor = .systemOrange
-            }
-        } else if let builtIn = current.devices.builtIn {
-            microphoneLabel.stringValue = builtIn.name
+        // What a meeting started now records: the microphone, plus the computer's audio unless it is off in Setup's
+        // Advanced section or not allowed.
+        let sources = MeetingStartSettings.sourcesDescription(recordSystemAudio: current.recordSystemAudio,
+                                                              systemAudioAllowed: current.systemAudioAllowed)
+        if sourcesLabel.stringValue != sources {
+            sourcesLabel.stringValue = sources
+            // The line may wrap differently (the setting changed in Setup while the panel is open).
+            if positioned { window.setContentSize(window.contentView?.fittingSize ?? window.frame.size) }
+        }
+        if let input = current.devices.systemDefault {
+            microphoneLabel.stringValue = "\(input.name) (system default)"
             microphoneLabel.textColor = .labelColor
+        } else if source == .microphoneAndSystem {
+            microphoneLabel.stringValue = "No microphone: only the computer's audio is recorded."
+            microphoneLabel.textColor = .systemOrange
         } else {
-            microphoneLabel.stringValue = BuiltInMicrophone.unavailableMessage
+            microphoneLabel.stringValue = "No microphone is connected."
             microphoneLabel.textColor = .systemRed
             allowed = false
         }
-        // A call recording the microphone while the laptop speakers play: other people's words reach it too (PR11).
-        let echoRisk = call && current.devices.systemDefault != nil && findOutputRoute()?.isBuiltInSpeakers == true
-        if let echoRow, echoRow.isHidden == echoRisk {
-            echoRow.isHidden = !echoRisk
-            // Also while the window is hidden: `show` refreshes before it makes the window visible, and it sizes
-            // the window itself only the first time, so a row that came or went since the panel was last open
-            // would otherwise squeeze the rows below it.
-            if positioned {
-                window.setContentSize(window.contentView?.fittingSize ?? window.frame.size)
-            }
-        }
 
-        let source: AudioSource = call ? .microphoneAndSystem : .microphone
         if let free = current.freeBytes {
             let estimate = DiskPolicy.estimateText(source: source, hours: 3, freeBytes: free)
             switch DiskPolicy.startCheck(freeBytes: free, source: source) {
@@ -288,47 +251,14 @@ final class MeetingStartPanel: NSObject, NSWindowDelegate {
         startButton.isEnabled = allowed
     }
 
-    /// "Any app" and the running apps with a bundle ID, plus a saved app that is not running.
-    private func fillApps(selecting saved: String?) {
-        let own = Bundle.main.bundleIdentifier
-        var apps: [(name: String, id: String)] = NSWorkspace.shared.runningApplications.compactMap { app in
-            guard app.activationPolicy == .regular, let id = app.bundleIdentifier, id != own else { return nil }
-            return (app.localizedName ?? id, id)
-        }
-        apps.sort { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
-        var seen = Set<String>()
-        apps = apps.filter { seen.insert($0.id).inserted }
-        if let saved, !seen.contains(saved) { apps.append(("\(saved) (not running)", saved)) }
-        appPopup.removeAllItems()
-        appPopup.addItem(withTitle: "Any app")
-        appIDs = [nil]
-        for app in apps {
-            appPopup.addItem(withTitle: app.name)
-            appIDs.append(app.id)
-        }
-        appPopup.selectItem(at: saved.flatMap { appIDs.firstIndex(of: $0) } ?? 0)
-    }
-
-    @objc private func typeChanged(_ sender: NSButton) {
-        inPersonButton.state = sender === inPersonButton ? .on : .off
-        callButton.state = sender === callButton ? .on : .off
-        errorLabel.isHidden = true
-        refresh()
-        window.setContentSize(window.contentView?.fittingSize ?? window.frame.size)
-    }
-
     @objc private func install() {
         onInstallSpeakerModels()
         refresh()
     }
 
     @objc private func start() {
-        let call = callButton.state == .on
-        let index = appPopup.indexOfSelectedItem
-        let settings = MeetingStartSettings(
-            name: nameField.stringValue, source: call ? .microphoneAndSystem : .microphone,
-            applicationBundleID: call && index >= 0 && index < appIDs.count ? appIDs[index] : nil,
-            othersInRoom: call && othersCheckbox.state == .on)
+        // The permission as it is now, never a prompt: without it the meeting records the microphone alone.
+        let settings = Self.settings(name: nameField.stringValue, environment())
         if let error = onStart(settings, consentCheckbox.state == .on) {
             errorLabel.stringValue = error
             errorLabel.isHidden = false
