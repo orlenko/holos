@@ -508,6 +508,7 @@ public struct MeetingMenuLayout: Sendable, Equatable {
     private var name: String?
     private var source: AudioSource?
     private var microphoneName: String?
+    private var microphoneIsSystemDefault: Bool?
     private var transcription: [TranscriptionState] = []
     private var warnings: [String] = []
     /// Failed: the message line.
@@ -526,6 +527,7 @@ public struct MeetingMenuLayout: Sendable, Equatable {
             name = status.name
             source = status.source
             microphoneName = status.microphoneName
+            microphoneIsSystemDefault = status.microphoneIsSystemDefault
             transcription = status.tracks.map(\.transcription)
             warnings = status.warnings.map(\.message)
         case .finishing:

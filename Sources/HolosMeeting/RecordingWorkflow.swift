@@ -326,15 +326,17 @@ struct EpochPlan: Sendable, Equatable {
     /// The input device the microphone track records, for status.json.
     var microphoneName: String?
 
-    /// Microphone only: the selected microphone; with the built-in one selected, nil when it is gone or the lid is
-    /// closed (Macs with Apple silicon or a T2 chip disconnect it in hardware then, and the device may stay listed
-    /// while recording silence). Microphone and system: the selected input (the system default), or system audio alone when the Mac
-    /// has no input device.
+    /// Microphone only: the selected microphone; nil when the built-in one is selected and gone, or when the device
+    /// it records is the built-in microphone and the lid is closed — selected explicitly, or as the system default
+    /// input (Macs with Apple silicon or a T2 chip disconnect it in hardware then, and the device may stay listed
+    /// while recording silence). Microphone and system: the selected input (the system default), or system audio
+    /// alone when the Mac has no input device.
     static func make(_ options: RecordingOptions, devices: InputDevices, lidOpen: Bool = true) -> EpochPlan? {
         let microphone = options.microphone == .builtIn ? devices.builtIn : devices.systemDefault
         switch options.source {
         case .microphone:
-            if options.microphone == .builtIn, microphone == nil || !lidOpen { return nil }
+            if options.microphone == .builtIn, microphone == nil { return nil }
+            if !lidOpen, let microphone, isBuiltIn(microphone, in: devices) { return nil }
             return EpochPlan(source: .microphone, tracks: ["mic"], microphoneName: microphone?.name)
         case .microphoneAndSystem:
             guard let microphone else { return EpochPlan(source: .system, tracks: ["system"], microphoneName: nil) }
@@ -342,6 +344,12 @@ struct EpochPlan: Sendable, Equatable {
         case .system:
             return EpochPlan(source: .system, tracks: ["system"], microphoneName: nil)
         }
+    }
+
+    /// The device is the built-in microphone: the same CoreAudio device, or the same stable UID.
+    private static func isBuiltIn(_ device: InputDevice, in devices: InputDevices) -> Bool {
+        guard let builtIn = devices.builtIn else { return false }
+        return device.id == builtIn.id || device.uid == builtIn.uid
     }
 }
 
@@ -435,6 +443,7 @@ private final class Recorder {
         let initial = RecorderStatus(
             sessionID: archive.id, name: options.name, pid: getpid(), phase: .starting, sequence: 0, startedAt: now,
             updatedAt: now, source: options.source, microphoneName: plan.microphoneName,
+            microphoneIsSystemDefault: options.source == .system ? nil : options.microphone == .systemDefault,
             tracks: tracks.map { TrackStatus(track: $0, transcription: options.recordOnly ? .off : .live) })
         status = try StatusWriter(session: directory, initial: initial, heartbeat: dependencies.tuning.tick,
                                   observer: dependencies.statusObserver, write: dependencies.statusWrite)

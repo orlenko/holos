@@ -382,6 +382,15 @@ final class SetupWindow: NSObject, NSWindowDelegate {
         case nil:
             set(.speakerModels, .pending, "Checking…", button: install, enabled: false)
         }
+        refitIfContentHeightChanged()
+    }
+
+    /// The window is not resizable: when new row text is taller or shorter than what the window was fitted to (e.g.
+    /// the System audio row after the Advanced checkbox changes), it is refitted, keeping its top edge. Before the
+    /// first `show()` the window is sized there instead.
+    private func refitIfContentHeightChanged() {
+        guard positioned, let contentView = window.contentView else { return }
+        if abs(contentView.fittingSize.height - contentView.frame.height) >= 1 { fitKeepingTopEdge() }
     }
 
     /// Rebuilt only when the list changes, so a refresh never replaces the menu while the user has it open.

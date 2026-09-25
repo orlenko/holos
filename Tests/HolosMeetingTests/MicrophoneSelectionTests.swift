@@ -182,6 +182,7 @@ extension RecorderEnvironmentLoopTests {
         let session = try #require(await recorderSession(in: temp.url))
         #expect(await eventually { (captures.captures.first?.consumedFrames ?? 0) >= 3 })
         #expect(recorderStatus(session)?.microphoneName == "MacBook Pro Microphone")
+        #expect(recorderStatus(session)?.microphoneIsSystemDefault == false)
         stop.requestStop()
         _ = try await run.value
         #expect(captures.requests.map(\.microphone) == [.builtIn])

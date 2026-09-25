@@ -38,6 +38,17 @@ extension MeetingStartSettings {
     }
 }
 
+extension RecorderStatus {
+    /// The menu line naming the input the microphone track records, nil without one. "(system default)" only when the
+    /// recording follows the default input: a CLI recording that selected `--microphone built-in` names the built-in
+    /// microphone alone, whatever its sources.
+    public var microphoneLine: String? {
+        guard let microphoneName else { return nil }
+        return microphoneIsSystemDefault == true
+            ? "Microphone: \(microphoneName) (system default)" : "Microphone: \(microphoneName)"
+    }
+}
+
 /// The source notice of the meeting the app last started (`MeetingStartSettings.sourceNotice`), kept in UserDefaults so
 /// an app that relaunches while its recorder goes on (a crash, a quit mid-meeting) shows it again once it follows that
 /// meeting. It names its session: a meeting started elsewhere (the CLI) or later never shows it.

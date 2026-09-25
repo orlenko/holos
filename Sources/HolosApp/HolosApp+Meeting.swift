@@ -247,10 +247,7 @@ extension HolosAppDelegate: NSMenuDelegate {
         let detail = disabledLine(Self.detailLine(status), indent: 1)
         menu.addItem(detail)
         meeting.detailItem = detail
-        if let microphone = status.microphoneName {
-            let suffix = status.source == .microphoneAndSystem ? " (system default)" : ""
-            menu.addItem(disabledLine("Microphone: \(microphone)\(suffix)", indent: 1))
-        }
+        if let microphone = status.microphoneLine { menu.addItem(disabledLine(microphone, indent: 1)) }
         if let transcription = Self.transcriptionLine(status) {
             menu.addItem(disabledLine(transcription, indent: 1))
         }

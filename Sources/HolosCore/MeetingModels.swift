@@ -436,6 +436,10 @@ public struct RecorderStatus: Codable, Sendable, Equatable {
     public var source: AudioSource
     /// Name of the input device recorded on the microphone track, for display.
     public var microphoneName: String?
+    /// True when the microphone track records the system default input, false when it records the built-in
+    /// microphone whatever the default is (`--microphone built-in`); nil without a microphone track, or from a recorder
+    /// that predates the field.
+    public var microphoneIsSystemDefault: Bool?
     /// Session time now: time since capture first started, including pauses and sleep.
     public var elapsedSeconds: Double
     /// Audio actually captured on the longest track.
@@ -455,14 +459,15 @@ public struct RecorderStatus: Codable, Sendable, Equatable {
 
     public init(schemaVersion: Int = 1, sessionID: String, name: String, pid: Int32, phase: RecorderPhase,
                 sequence: Int, startedAt: Date, updatedAt: Date, source: AudioSource,
-                microphoneName: String? = nil, elapsedSeconds: Double = 0, recordedSeconds: Double = 0,
-                bytesWritten: Int64 = 0, freeBytes: Int64? = nil, tracks: [TrackStatus] = [],
-                lastPhrase: String? = nil, warnings: [RecorderWarning] = [], markers: Int = 0,
+                microphoneName: String? = nil, microphoneIsSystemDefault: Bool? = nil, elapsedSeconds: Double = 0,
+                recordedSeconds: Double = 0, bytesWritten: Int64 = 0, freeBytes: Int64? = nil,
+                tracks: [TrackStatus] = [], lastPhrase: String? = nil, warnings: [RecorderWarning] = [], markers: Int = 0,
                 progress: PostProcessingProgress? = nil, handledRequests: [ControlAck] = [],
                 exit: RecorderExit? = nil) {
         self.schemaVersion = schemaVersion; self.sessionID = sessionID; self.name = name; self.pid = pid
         self.phase = phase; self.sequence = sequence; self.startedAt = startedAt; self.updatedAt = updatedAt
-        self.source = source; self.microphoneName = microphoneName; self.elapsedSeconds = elapsedSeconds
+        self.source = source; self.microphoneName = microphoneName
+        self.microphoneIsSystemDefault = microphoneIsSystemDefault; self.elapsedSeconds = elapsedSeconds
         self.recordedSeconds = recordedSeconds; self.bytesWritten = bytesWritten; self.freeBytes = freeBytes
         self.tracks = tracks; self.lastPhrase = lastPhrase; self.warnings = warnings; self.markers = markers
         self.progress = progress; self.handledRequests = handledRequests; self.exit = exit

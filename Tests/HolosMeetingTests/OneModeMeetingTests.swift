@@ -139,6 +139,39 @@ private let oneModeID = "3F2A9C1E-0000-4000-8000-000000000002"
         == EpochPlan(source: .microphone, tracks: ["mic"], microphoneName: "AirPods Pro"))
 }
 
+/// The default input is the built-in microphone: a closed lid refuses the epoch as it does for `--microphone built-in`
+/// (the device may stay listed while it records silence), matched by device ID or by UID.
+@Test func microphoneOnlyDefaultBuiltInKeepsTheLidGuard() {
+    var options = RecordingOptions.testing(root: oneModeRoot, source: .microphone)
+    options.microphone = .systemDefault
+    let builtInDefault = InputDevices(builtIn: recorderBuiltIn, systemDefault: recorderBuiltIn)
+    #expect(EpochPlan.make(options, devices: builtInDefault)
+        == EpochPlan(source: .microphone, tracks: ["mic"], microphoneName: "MacBook Pro Microphone"))
+    #expect(EpochPlan.make(options, devices: builtInDefault, lidOpen: false) == nil)
+    let sameUID = InputDevice(id: 999, uid: recorderBuiltIn.uid, name: recorderBuiltIn.name)
+    #expect(EpochPlan.make(options, devices: InputDevices(builtIn: recorderBuiltIn, systemDefault: sameUID),
+                           lidOpen: false) == nil)
+}
+
+@Test func microphoneLineNamesTheSystemDefaultOnlyWhenRecorded() {
+    var status = RecorderStatus(sessionID: oneModeID, name: "Weekly", pid: 1, phase: .recording, sequence: 1,
+                                startedAt: Date(timeIntervalSince1970: 0), updatedAt: Date(timeIntervalSince1970: 0),
+                                source: .microphoneAndSystem, microphoneName: "MacBook Pro Microphone",
+                                microphoneIsSystemDefault: false)
+    // `record start --source mic+system --microphone built-in` with AirPods as the default input.
+    #expect(status.microphoneLine == "Microphone: MacBook Pro Microphone")
+    status.microphoneName = "AirPods Pro"
+    status.microphoneIsSystemDefault = true
+    #expect(status.microphoneLine == "Microphone: AirPods Pro (system default)")
+    status.source = .microphone
+    #expect(status.microphoneLine == "Microphone: AirPods Pro (system default)")
+    // A recorder from before the field: no claim either way.
+    status.microphoneIsSystemDefault = nil
+    #expect(status.microphoneLine == "Microphone: AirPods Pro")
+    status.microphoneName = nil
+    #expect(status.microphoneLine == nil)
+}
+
 // MARK: - Recording
 
 extension RecorderEnvironmentLoopTests {
@@ -184,6 +217,7 @@ extension RecorderEnvironmentLoopTests {
         let session = try #require(await recorderSession(in: temp.url))
         #expect(await eventually { (captures.captures.first?.consumedFrames ?? 0) >= 3 })
         #expect(recorderStatus(session)?.microphoneName == "AirPods Pro")
+        #expect(recorderStatus(session)?.microphoneIsSystemDefault == true)
         stop.requestStop()
         _ = try await run.value
         #expect(captures.requests.map(\.microphone) == [.systemDefault])
@@ -191,6 +225,29 @@ extension RecorderEnvironmentLoopTests {
         let meeting = try AtomicFile.readJSON(MeetingInfo.self, from: SessionPaths.meetingInfo(session))
         #expect(meeting.mode == .inPerson)
         #expect(!meeting.othersInRoom)
+    }
+
+    /// The microphone alone from the app, the default input is the built-in microphone, and the lid is closed: the
+    /// recorder refuses as it does for the built-in microphone chosen explicitly.
+    @Test(.timeLimit(.minutes(1)))
+    func microphoneOnlyDefaultBuiltInRefusesWithTheLidClosed() async throws {
+        let temp = try TemporaryDirectory()
+        defer { temp.remove() }
+        let captures = FakeCaptureFactory()
+        var dependencies = recorderDependencies(captures: captures, clock: ManualSessionClock(0))
+        dependencies.findInputDevices = RecorderDevices(builtIn: recorderBuiltIn, systemDefault: recorderBuiltIn).lookup
+        dependencies.power = RecorderFakePower(lidOpen: false)
+        var options = RecordingOptions.testing(root: temp.url, source: .microphone, recordOnly: true)
+        options.microphone = .systemDefault
+        var message: String?
+        do {
+            _ = try await RecordingWorkflow.run(options, dependencies: dependencies)
+        } catch HolosError.unavailable(let text) {
+            message = text
+        }
+        #expect(message == BuiltInMicrophone.unavailableMessage)
+        #expect(sessionFolders(in: temp.url).isEmpty, "No session folder.")
+        #expect(captures.captures.isEmpty)
     }
 }
 
