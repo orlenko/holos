@@ -203,7 +203,7 @@ private func pathURL(_ path: String) -> URL {
 }
 
 private let usage = """
-    Usage: swift scripts/evaluate-references.swift --input DIR --cli HOLOS_BINARY [--reference-format wispr|otter] \
+    Usage: swift scripts/evaluate-references.swift --input DIR --cli VOICEISLOCAL_BINARY [--reference-format wispr|otter] \
     [--pair ID] [--output .local/evaluation/RUN] [--locale en-CA] [--backend both|speech|dictation] \
     [--timeout-seconds 600] [--speakers] [--calibrate] [--keep-sessions]
     """
@@ -603,7 +603,7 @@ private func evaluate() throws {
 
 /// The recordings `--calibrate` compares: they share six named participants.
 private let calibrationPairs = ["001", "003"]
-/// `holos session score`'s default collar.
+/// `voiceislocal session score`'s default collar.
 private let scoreCollar = 0.25
 
 private struct CommandResult {
@@ -613,7 +613,7 @@ private struct CommandResult {
     let seconds: Double
 }
 
-/// `holos session diarize --json`: the fields the evaluation reads.
+/// `voiceislocal session diarize --json`: the fields the evaluation reads.
 private struct DiarizeRecord: Decodable {
     struct Stage: Decodable {
         let stage: String
@@ -626,7 +626,7 @@ private struct DiarizeRecord: Decodable {
     let stages: [Stage]
 }
 
-/// `holos session score --json`: counts, ratios, cluster IDs, and hashed Otter labels only.
+/// `voiceislocal session score --json`: counts, ratios, cluster IDs, and hashed Otter labels only.
 private struct ScoreReport: Decodable {
     let runID: String
     let audioSeconds: Double
@@ -654,7 +654,7 @@ private struct VoiceData: Decodable {
 private struct ImportRow: Encodable {
     let pair: String
     let audioSeconds: Double
-    /// `holos session import`: copying the audio and transcribing it once.
+    /// `voiceislocal session import`: copying the audio and transcribing it once.
     let importSeconds: Double
 }
 
@@ -676,7 +676,7 @@ private struct SpeakerRow: Encodable {
     let mappedSpeakers: Int
     /// The post-processor's diarize stage (FluidAudio, one pass over the track).
     let diarizationSeconds: Double
-    /// The whole `holos session diarize` process: render, diarize, align, exports.
+    /// The whole `voiceislocal session diarize` process: render, diarize, align, exports.
     let commandSeconds: Double
     let peakRSSBytes: Int?
     let peakFootprintBytes: Int?
@@ -718,7 +718,7 @@ private struct SpeakerReport: Encodable {
 
 /// Runs `executable` with stdout and stderr going to files in `scratch` (no pipe can fill up and stall it) and
 /// returns what it wrote; the files are removed. It runs in a process group of its own, so past `timeout` the
-/// whole group (Holos too when `executable` is `/usr/bin/time`) gets SIGTERM (which makes `holos session import`
+/// whole group (Holos too when `executable` is `/usr/bin/time`) gets SIGTERM (which makes `voiceislocal session import`
 /// remove its partial session), then SIGKILL after 10 s.
 private func runCommand(_ executable: URL, _ arguments: [String], timeout: Double, scratch: URL,
                         what: String) throws -> CommandResult {
@@ -853,7 +853,7 @@ private func calibrationReport(first: CalibrationInput, second: CalibrationInput
                              genericLabelsExcluded: excluded)
 }
 
-/// `holos session diarize --force --json` under `/usr/bin/time -l`, then `holos session score --json`.
+/// `voiceislocal session diarize --force --json` under `/usr/bin/time -l`, then `voiceislocal session score --json`.
 private func labelAndScore(_ options: Options, pair: String, session: URL, reference: URL, configuration: String,
                            arguments: [String], hint: String?) throws -> (row: SpeakerRow, score: ScoreReport) {
     print("Pair \(pair): labelling speakers (\(configuration))…")

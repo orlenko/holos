@@ -4,7 +4,7 @@ import HolosCore
 import HolosStorage
 import os
 
-/// What a session is, as the Meetings window and `holos session list` show it (docs/meeting-design.md §5.6).
+/// What a session is, as the Meetings window and `voiceislocal session list` show it (docs/meeting-design.md §5.6).
 public enum SessionState: String, Codable, Sendable {
     case recording, processing, interrupted, complete, audioOnly, transcriptionIncomplete,
          incomplete, failed, recovered, damaged

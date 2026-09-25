@@ -181,9 +181,9 @@ private func exportsMakeWritableAndAppend(_ text: String, to url: URL) throws {
     #expect(rendered.data == (try SessionExports.render(.md, session: session)))
     #expect(expected.notes == [
         "The transcript changed after speakers were labelled, so the exports show it without speakers. Label "
-            + "speakers again with holos session diarize \(session.path).",
-        "1 speaker change in this meeting could not be read (damaged, or saved by a newer version of Holos) and was "
-            + "skipped. If you use a newer Holos elsewhere, update this one before editing speakers.",
+            + "speakers again with voiceislocal session diarize \(session.path).",
+        "1 speaker change in this meeting could not be read (damaged, or saved by a newer version of Voice is Local) and was "
+            + "skipped. If you use a newer version of Voice is Local elsewhere, update this one before editing speakers.",
         "The last speaker change in this meeting was cut off while it was being saved and was skipped.",
     ])
     #expect(SpeakerSnapshotDiagnostics(session: session, staleEdits: 2).notes

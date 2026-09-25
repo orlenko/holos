@@ -403,8 +403,8 @@ public struct MeetingReducer: Sendable, Equatable {
         state = .idle
         let name = meetingName ?? "the meeting"
         let summary = lastPhase == .transcribing
-            ? "Holos stopped while saving \(name). Recover it from Meetings."
-            : "Saved \(name). Speaker labelling stopped; Holos will retry it, or use Label Speakers in Meetings."
+            ? "Voice is Local stopped while saving \(name). Recover it from Meetings."
+            : "Saved \(name). Speaker labelling stopped; Voice is Local will retry it, or use Label Speakers in Meetings."
         return [.finished(sessionID: sessionID, summary: summary, speakersReady: false)]
     }
 

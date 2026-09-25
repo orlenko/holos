@@ -187,7 +187,7 @@ public struct SpeakerProfileStore: Sendable {
     /// Throws `invalidInput` saying which rule failed.
     public static func validate(_ database: SpeakerProfileDatabase) throws {
         guard database.schemaVersion == SpeakerProfileDatabase.currentSchemaVersion else {
-            throw HolosError.invalidInput("The people store has schema version \(database.schemaVersion); this Holos writes version \(SpeakerProfileDatabase.currentSchemaVersion).")
+            throw HolosError.invalidInput("The people store has schema version \(database.schemaVersion); this version of Voice is Local writes version \(SpeakerProfileDatabase.currentSchemaVersion).")
         }
         if let thresholds = database.calibratedThresholds, let problem = thresholds.problem {
             throw HolosError.invalidInput("The people store's calibrated thresholds are damaged: \(problem).")
@@ -450,7 +450,7 @@ public struct SpeakerProfileStore: Sendable {
         let folder = try openDirectory()
         defer { Darwin.close(folder) }
         guard let lock = try SessionLockFile.acquire(Self.lockName, inFolder: folder, timeout: .seconds(2)) else {
-            throw HolosError.unavailable("People are being saved by another Holos window or command; try again.")
+            throw HolosError.unavailable("People are being saved by another Voice is Local window or command; try again.")
         }
         defer { SessionLockFile.unlockAndClose(lock) }
         return try body()

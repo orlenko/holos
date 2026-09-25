@@ -8,7 +8,7 @@ extension Record {
     struct Pause: AsyncParsableCommand {
         static let configuration = CommandConfiguration(
             abstract: "Pause a running recording: capture stops until resume, and the gap is marked.")
-        @Argument(help: "The session ID from holos record status.") var sessionID: String
+        @Argument(help: "The session ID from voiceislocal record status.") var sessionID: String
         @Option(help: "Session output root.") var directory: String?
         @Flag(help: "Do not wait for the recorder to confirm the request.") var noWait = false
         mutating func run() async throws {
@@ -18,7 +18,7 @@ extension Record {
 
     struct Resume: AsyncParsableCommand {
         static let configuration = CommandConfiguration(abstract: "Resume a paused recording in the same session.")
-        @Argument(help: "The session ID from holos record status.") var sessionID: String
+        @Argument(help: "The session ID from voiceislocal record status.") var sessionID: String
         @Option(help: "Session output root.") var directory: String?
         @Flag(help: "Do not wait for the recorder to confirm the request.") var noWait = false
         mutating func run() async throws {
@@ -29,7 +29,7 @@ extension Record {
     struct Marker: AsyncParsableCommand {
         static let configuration = CommandConfiguration(
             abstract: "Add a marker at the current point of a running recording.")
-        @Argument(help: "The session ID from holos record status.") var sessionID: String
+        @Argument(help: "The session ID from voiceislocal record status.") var sessionID: String
         @Option(help: "Text for the marker (at most 200 characters).") var label: String?
         @Option(help: "Session output root.") var directory: String?
         @Flag(help: "Do not wait for the recorder to confirm the request.") var noWait = false
@@ -52,17 +52,17 @@ enum RecorderControl {
     static func send(_ command: ControlCommand, label: String? = nil, sessionID: String, directory: String?,
                      noWait: Bool) async throws {
         guard let uuid = UUID(uuidString: sessionID) else {
-            throw ValidationError("Expected a session UUID from holos record status.")
+            throw ValidationError("Expected a session UUID from voiceislocal record status.")
         }
         let id = uuid.uuidString
         let root = directory.map(fileURL) ?? HolosPaths.sessions
         let session = root.appendingPathComponent("\(id).holos", isDirectory: true)
         guard FileManager.default.fileExists(atPath: session.path) else {
-            throw HolosError.invalidInput("No session \(id) in \(root.path). List sessions with holos record status.")
+            throw HolosError.invalidInput("No session \(id) in \(root.path). List sessions with voiceislocal record status.")
         }
         switch RecorderChannel.liveness(session: session) {
         case .dead:
-            throw HolosError.unavailable("Recorder is no longer running. Recover the saved archive with holos session recover.")
+            throw HolosError.unavailable("Recorder is no longer running. Recover the saved archive with voiceislocal session recover.")
         case .exited:
             if command == .stop {
                 let status = (try? SessionArchive.readManifest(at: session).status) ?? "unknown"

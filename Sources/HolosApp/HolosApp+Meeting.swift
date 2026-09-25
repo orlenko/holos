@@ -45,11 +45,11 @@ final class MeetingAppState {
     var quitting = false
     var liveTranscriptWindow: LiveTranscriptWindow?
     var savingWindow: NSWindow?
-    /// `holos doctor --json` speakerModels ("verified", "notInstalled", "damaged"), "unavailable" when the holos tool
+    /// `voiceislocal doctor --json` speakerModels ("verified", "notInstalled", "damaged"), "unavailable" when the voiceislocal tool
     /// cannot run, "unknown" when it ran but did not report them, nil before the first check.
     var speakerModels: String?
     var checkingSpeakerModels = false
-    /// Progress of `holos setup --speakers` while it runs.
+    /// Progress of `voiceislocal setup --speakers` while it runs.
     var speakerModelInstall: String?
     /// The last install's failure, shown until the next attempt.
     var speakerModelError: String?
@@ -267,13 +267,13 @@ extension HolosAppDelegate: NSMenuDelegate {
         menu.addItem(disabledLine("Dictation paused during meeting recording"))
     }
 
-    /// "Meetings…" and "About Holos" around "Setup…".
+    /// "Meetings…" and "About Voice is Local" around "Setup…".
     func addMeetingsItem(to menu: NSMenu) {
         menu.addItem(item("Meetings…", #selector(showMeetings)))
     }
 
     func addAboutItem(to menu: NSMenu) {
-        menu.addItem(item("About Holos", #selector(showAbout)))
+        menu.addItem(item("About Voice is Local", #selector(showAbout)))
     }
 
     private func disabledLine(_ title: String, indent: Int = 0) -> NSMenuItem {
@@ -347,8 +347,8 @@ extension HolosAppDelegate: NSMenuDelegate {
         case .failed:
             symbol = "exclamationmark.triangle"
         }
-        let image = NSImage(systemSymbolName: symbol, accessibilityDescription: "Holos")
-            ?? NSImage(systemSymbolName: "waveform", accessibilityDescription: "Holos")
+        let image = NSImage(systemSymbolName: symbol, accessibilityDescription: "Voice is Local")
+            ?? NSImage(systemSymbolName: "waveform", accessibilityDescription: "Voice is Local")
         image?.isTemplate = true
         button.image = image
         button.contentTintColor = tint
@@ -363,10 +363,10 @@ extension HolosAppDelegate: NSMenuDelegate {
         guard let controller = meeting.controller else { return nil }
         switch controller.state {
         case .idle: return nil
-        case .starting: return "Holos — " + (meeting.notice ?? "starting a meeting recording")
-        case .active(_, let status): return "Holos — \(Self.headline(status)), \(MeetingFormat.clock(status.elapsedSeconds))"
-        case .finishing(let id, let status): return "Holos — " + Self.savingText(status, name: status?.name ?? id)
-        case .failed(_, let message): return "Holos — " + message
+        case .starting: return "Voice is Local — " + (meeting.notice ?? "starting a meeting recording")
+        case .active(_, let status): return "Voice is Local — \(Self.headline(status)), \(MeetingFormat.clock(status.elapsedSeconds))"
+        case .finishing(let id, let status): return "Voice is Local — " + Self.savingText(status, name: status?.name ?? id)
+        case .failed(_, let message): return "Voice is Local — " + message
         }
     }
 
@@ -484,7 +484,7 @@ extension HolosAppDelegate: NSMenuDelegate {
         guard let controller = meeting.controller, case .active(_, let status) = controller.state else { return }
         let alert = NSAlert()
         alert.messageText = "Stop and save “\(Self.short(status.name))”?"
-        alert.informativeText = "Holos then labels speakers, which takes about 2 minutes for a 3-hour meeting. Keep the lid open until it finishes."
+        alert.informativeText = "Voice is Local then labels speakers, which takes about 2 minutes for a 3-hour meeting. Keep the lid open until it finishes."
         alert.addButton(withTitle: "Stop and Save")
         alert.addButton(withTitle: "Keep Recording")
         NSApplication.shared.activate()
@@ -578,7 +578,7 @@ extension HolosAppDelegate: NSMenuDelegate {
         meeting.meetingsWindow?.show(selecting: sessionID)
     }
 
-    /// Recover…, Label Speakers, Delete Audio…, and Delete Meeting… run `holos` maintenance commands (§5.8). A review
+    /// Recover…, Label Speakers, Delete Audio…, and Delete Meeting… run `voiceislocal` maintenance commands (§5.8). A review
     /// of the meeting, open or still opening, follows `ReviewMaintenance` first: it closes (saving its changes) before
     /// a Delete Meeting, and otherwise turns read-only with its changes saved and playback stopped until the command
     /// ends, when it rereads the meeting. Delete Meeting can also forget the voice samples learned from the meeting
@@ -598,7 +598,7 @@ extension HolosAppDelegate: NSMenuDelegate {
         switch action {
         case .recover:
             guard confirm("Recover “\(name)”?",
-                          "Holos indexes the saved audio, rebuilds the transcript from what was transcribed while recording, transcribes the rest, and labels speakers. Saved audio is never changed.",
+                          "Voice is Local indexes the saved audio, rebuilds the transcript from what was transcribed while recording, transcribes the rest, and labels speakers. Saved audio is never changed.",
                           button: "Recover") else { return }
             arguments = ["session", "recover", path, "--json"]
             doing = "Recovering…"
@@ -648,7 +648,7 @@ extension HolosAppDelegate: NSMenuDelegate {
                 if let failure {
                     guard let self else { return }
                     self.maintenanceFinished(summary.id)
-                    self.showMeetingAlert("Holos could not forget the voice samples learned from “\(name)”.",
+                    self.showMeetingAlert("Voice is Local could not forget the voice samples learned from “\(name)”.",
                                           "The meeting was not moved to the Trash. \(failure)")
                     return
                 }
@@ -699,14 +699,14 @@ extension HolosAppDelegate: NSMenuDelegate {
             maintenanceFinished(summary.id)
             Self.removeFile(output)
             Self.removeFile(errors)
-            let title = action == .recover ? "Holos could not recover “\(Self.short(summary.name))”."
-                : "Holos could not run the command."
+            let title = action == .recover ? "Voice is Local could not recover “\(Self.short(summary.name))”."
+                : "Voice is Local could not run the command."
             showMeetingAlert(title, error.localizedDescription)
         }
     }
 
     private func showSessionInUse(_ summary: SessionSummary, doing: String?) {
-        showMeetingAlert("Holos is working on “\(Self.short(summary.name))”.",
+        showMeetingAlert("Voice is Local is working on “\(Self.short(summary.name))”.",
                          (doing.map { $0 + " " } ?? "") + "Try again when it finishes; the Meetings list shows when it is done.")
     }
 
@@ -743,13 +743,13 @@ extension HolosAppDelegate: NSMenuDelegate {
             let title: String = switch (action, code) {
             case (.recover, 0): "Recovered “\(name)”."
             case (.recover, 3): "Recovered “\(name)”, with a warning."
-            case (.recover, _): "Holos could not recover “\(name)”."
+            case (.recover, _): "Voice is Local could not recover “\(name)”."
             case (.labelSpeakers, 0) where labelled: "Labelled the speakers of “\(name)”."
             case (.labelSpeakers, 3) where labelled: "Labelled the speakers of “\(name)”, with a warning."
             case (.labelSpeakers, 0), (.labelSpeakers, 3): "The speakers of “\(name)” were not labelled."
-            case (.labelSpeakers, _): "Holos could not label the speakers of “\(name)”."
-            case (.deleteAudio, _): "Holos could not delete the audio of “\(name)”."
-            case (.deleteMeeting, _): "Holos could not move “\(name)” to the Trash."
+            case (.labelSpeakers, _): "Voice is Local could not label the speakers of “\(name)”."
+            case (.deleteAudio, _): "Voice is Local could not delete the audio of “\(name)”."
+            case (.deleteMeeting, _): "Voice is Local could not move “\(name)” to the Trash."
             }
             self?.showMeetingAlert(title, result ?? (code == 0 ? "" : "The command ended with code \(code)."))
         }
@@ -808,7 +808,7 @@ extension HolosAppDelegate: NSMenuDelegate {
                     self.showMeetingsWindow(selecting: sessionID)
                     self.meeting.controller?.reviewOpened(sessionID: sessionID)
                 }
-                self.showMeetingAlert("Holos could not open the review of “\(Self.short(name))”.",
+                self.showMeetingAlert("Voice is Local could not open the review of “\(Self.short(name))”.",
                                       error.localizedDescription)
                 return nil
             }
@@ -851,8 +851,8 @@ extension HolosAppDelegate: NSMenuDelegate {
         let problem = review.exportProblem.map { "\n\n" + $0 } ?? ""
         Task { [weak self] in
             self?.showMeetingAlert(
-                "Holos could not update the transcript files of “\(name)”.",
-                "Your changes to the speakers are saved, but transcript.md and the other files in the meeting's exports folder still show the speakers from before. Holos writes them again the next time you open Review for this meeting.\(problem)")
+                "Voice is Local could not update the transcript files of “\(name)”.",
+                "Your changes to the speakers are saved, but transcript.md and the other files in the meeting's exports folder still show the speakers from before. Voice is Local writes them again the next time you open Review for this meeting.\(problem)")
         }
     }
 
@@ -1004,7 +1004,7 @@ extension HolosAppDelegate: NSMenuDelegate {
             prompted.insert(summary.id)
             UserDefaults.standard.set(Array(prompted), forKey: MeetingAppState.promptedKey)
             let alert = NSAlert()
-            alert.messageText = "Holos found an interrupted recording: \(Self.short(summary.name)) (\(MeetingFormat.clock(summary.savedSeconds)) saved)."
+            alert.messageText = "Voice is Local found an interrupted recording: \(Self.short(summary.name)) (\(MeetingFormat.clock(summary.savedSeconds)) saved)."
             alert.informativeText = "Recover indexes its saved audio, rebuilds the transcript, and labels speakers. You can also recover it later from Meetings."
             alert.addButton(withTitle: "Recover")
             alert.addButton(withTitle: "Later")
@@ -1021,7 +1021,7 @@ extension HolosAppDelegate: NSMenuDelegate {
 
     // MARK: - Speaker models (Setup "Speaker labels", start panel)
 
-    /// Reads `speakerModels` from `holos doctor --json`.
+    /// Reads `speakerModels` from `voiceislocal doctor --json`.
     func refreshSpeakerModels() {
         guard let maintenance = meeting.maintenance, !meeting.checkingSpeakerModels else { return }
         meeting.checkingSpeakerModels = true
@@ -1047,7 +1047,7 @@ extension HolosAppDelegate: NSMenuDelegate {
         }
     }
 
-    /// Runs `holos setup --speakers` (about 21 MB, pinned and verified) and shows its progress.
+    /// Runs `voiceislocal setup --speakers` (about 21 MB, pinned and verified) and shows its progress.
     func installSpeakerModels() {
         guard let maintenance = meeting.maintenance, meeting.speakerModelInstall == nil else { return }
         let output = Self.temporaryFile("setup")
@@ -1110,9 +1110,9 @@ extension HolosAppDelegate: NSMenuDelegate {
             alert.messageText = "A meeting is recording."
             alert.addButton(withTitle: "Stop and Save")
             if inProcess {
-                alert.informativeText = "Holos records this meeting itself, so quitting ends it. Stop and Save saves the audio and the transcript before Holos quits; speaker labelling then continues on its own."
+                alert.informativeText = "Voice is Local records this meeting itself, so quitting ends it. Stop and Save saves the audio and the transcript before Voice is Local quits; speaker labelling then continues on its own."
             } else {
-                alert.informativeText = "Stop and Save ends and saves the recording; speaker labelling continues after Holos quits. Keep Recording quits only the app: the recording goes on, and Holos shows it again when you open it."
+                alert.informativeText = "Stop and Save ends and saves the recording; speaker labelling continues after Voice is Local quits. Keep Recording quits only the app: the recording goes on, and Voice is Local shows it again when you open it."
                 alert.addButton(withTitle: "Keep Recording")
             }
             alert.addButton(withTitle: "Cancel")
@@ -1167,8 +1167,8 @@ extension HolosAppDelegate: NSMenuDelegate {
             if undelivered, let self {
                 let reason = self.meeting.notice.map { "\n\n\($0)" } ?? ""
                 self.showMeetingAlert(
-                    "Holos could not stop the recording.",
-                    "The meeting is still recording, so Holos did not quit. Try Stop and Save from the menu again, or stop it where it was started.\(reason)")
+                    "Voice is Local could not stop the recording.",
+                    "The meeting is still recording, so Voice is Local did not quit. Try Stop and Save from the menu again, or stop it where it was started.\(reason)")
             }
         }
     }
@@ -1182,13 +1182,13 @@ extension HolosAppDelegate: NSMenuDelegate {
     private func showSavingWindow() {
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 360, height: 90), styleMask: [.titled],
                               backing: .buffered, defer: false)
-        window.title = "Holos"
+        window.title = "Voice is Local"
         window.isReleasedWhenClosed = false
         let spinner = NSProgressIndicator()
         spinner.style = .spinning
         spinner.controlSize = .small
         spinner.startAnimation(nil)
-        let label = NSTextField(wrappingLabelWithString: "Saving the meeting’s transcript. Holos quits when it is saved.")
+        let label = NSTextField(wrappingLabelWithString: "Saving the meeting’s transcript. Voice is Local quits when it is saved.")
         let stack = NSStackView(views: [spinner, label])
         stack.spacing = 12
         stack.edgeInsets = NSEdgeInsets(top: 20, left: 20, bottom: 20, right: 20)

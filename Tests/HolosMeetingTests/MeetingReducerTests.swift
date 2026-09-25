@@ -228,7 +228,7 @@ private func isFailed(_ state: MeetingState) -> String? {
 /// (MeetingControllerTests `finishedMeetingWithoutLabelsOffersNothing`, `finishedMeetingWithLabelsOffersNaming`).
 @Test func partialExitSaysWhyAndLeavesTheLabelCheckToTheController() {
     var reducer = activeReducer()
-    let message = "No speaker labels: speaker models are not installed. Install them from Setup, or run holos setup --speakers."
+    let message = "No speaker labels: speaker models are not installed. Install them from Setup, or run voiceislocal setup --speakers."
     let exit = RecorderExit(archiveStatus: ArchiveStatus.complete, reason: .requested, postprocessing: .partial,
                             postprocessingMessage: message)
     let effects = reducer.reduce(read(.exited, after: 30, exit: exit, liveness: .exited))
@@ -269,7 +269,7 @@ private func isFailed(_ state: MeetingState) -> String? {
     let effects = reducer.reduce(.statusRead(nil, liveness: .dead, at: reducerStart.addingTimeInterval(40)))
     #expect(reducer.state == .idle)
     #expect(effects == [.finished(sessionID: reducerID,
-                                  summary: "Saved Council meeting. Speaker labelling stopped; Holos will retry it, or use Label Speakers in Meetings.",
+                                  summary: "Saved Council meeting. Speaker labelling stopped; Voice is Local will retry it, or use Label Speakers in Meetings.",
                                   speakersReady: false)])
 }
 
@@ -306,7 +306,7 @@ private func isFailed(_ state: MeetingState) -> String? {
 }
 
 @Test func deadRecorderMarkedExitedByMaintenanceIsNotASave() {
-    // `holos session recover` marks a dead recorder's status exited (reason interrupted) before the menu noticed.
+    // `voiceislocal session recover` marks a dead recorder's status exited (reason interrupted) before the menu noticed.
     var reducer = activeReducer()
     let exit = RecorderExit(archiveStatus: ArchiveStatus.recording, reason: .interrupted,
                             message: "The recorder stopped unexpectedly.")
@@ -371,8 +371,8 @@ private func isFailed(_ state: MeetingState) -> String? {
 
 @Test func dismissFailureGoesIdle() {
     var reducer = startedReducer()
-    _ = reducer.reduce(.launchFailed(message: "The holos tool is missing."))
-    #expect(reducer.state == .failed(sessionID: nil, message: "The holos tool is missing."))
+    _ = reducer.reduce(.launchFailed(message: "The voiceislocal tool is missing."))
+    #expect(reducer.state == .failed(sessionID: nil, message: "The voiceislocal tool is missing."))
     _ = reducer.reduce(.dismissFailure)
     #expect(reducer.state == .idle)
 }

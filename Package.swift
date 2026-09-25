@@ -9,7 +9,7 @@ let package = Package(
     name: "Holos",
     platforms: [.macOS("27.0")],
     products: [
-        .executable(name: "holos", targets: ["HolosCLI"]),
+        .executable(name: "voiceislocal", targets: ["HolosCLI"]),
         .executable(name: "HolosApp", targets: ["HolosApp"]),
         .library(name: "HolosCore", targets: ["HolosCore"]),
         .library(name: "HolosSpeech", targets: ["HolosSpeech"]),

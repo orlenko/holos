@@ -7,7 +7,7 @@ import HolosSpeakers
 import HolosStorage
 import Testing
 
-// TranscriptRebuilder and the `holos session recover` chain (docs/meeting-design.md §5.6 PR3).
+// TranscriptRebuilder and the `voiceislocal session recover` chain (docs/meeting-design.md §5.6 PR3).
 
 // MARK: - Helpers
 
@@ -1025,7 +1025,7 @@ func rebuildRefusesANewerCurrentTranscript(file: String, force: Bool) async thro
 
     let error = await #expect(throws: HolosError.self) { try await rebuilderRun(session, force: force) }
     #expect(isHolosError(error, "unavailable"), "A newer \(file) is refused, force \(force).")
-    #expect(error?.localizedDescription.contains("newer Holos") == true)
+    #expect(error?.localizedDescription.contains("newer version of Voice is Local") == true)
     #expect(try Data(contentsOf: url) == newer, "The newer file is not replaced.")
     #expect(try Data(contentsOf: SessionPaths.transcriptPointer(session)) == pointer, "The pointer is not moved.")
     #expect(try rebuilderRevisions(session).count == 1)
@@ -1074,7 +1074,7 @@ func recoverRefusesANewerPostProcessingRecord(force: Bool) async throws {
             step: { step in steps.update { $0.append(step) } })
     }
     #expect(isHolosError(error, "unavailable"))
-    #expect(error?.localizedDescription.contains("newer Holos") == true)
+    #expect(error?.localizedDescription.contains("newer version of Voice is Local") == true)
     #expect(error?.localizedDescription.hasPrefix("The archive was recovered") == true)
     #expect(!steps.value.contains(.postProcessed))
     #expect(try Data(contentsOf: SessionPaths.postprocess(session)) == newer, "postprocess.json is never overwritten.")
@@ -1124,7 +1124,7 @@ func recoverRefusesNewerSpeakerFilesBeforePostProcessing(file: String, record: S
             step: { step in steps.update { $0.append(step) } })
     }
     #expect(isHolosError(error, "unavailable"), "A newer \(file) with a \(record) record is refused.")
-    #expect(error?.localizedDescription.contains("newer Holos") == true)
+    #expect(error?.localizedDescription.contains("newer version of Voice is Local") == true)
     #expect(!steps.value.contains(.postProcessed), "Post-processing never started.")
     #expect((try? Data(contentsOf: postprocess)) == recordBytes, "postprocess.json is not rewritten.")
     #expect(try Data(contentsOf: url) == newer, "The newer \(file) is not replaced.")
@@ -1192,7 +1192,7 @@ func recoverRebuildsAnUnreadableTranscriptSavedBeforeFinish() async throws {
     #expect(outcome.rebuild?.journalSegments == 2)
     #expect(try rebuilderCurrent(session).segments.count == 2)
 
-    // One from a newer Holos is refused and left as it is; the archive recovery stays.
+    // One from a newer version of Voice is Local is refused and left as it is; the archive recovery stays.
     let (other, otherSaved) = try await rebuilderDiedWhileProcessing(in: temp.url)
     let revision = SessionPaths.transcript(try #require(otherSaved?.id), in: other)
     let newer = try rebuilderMakeNewer(revision)
@@ -1251,7 +1251,7 @@ func recoverDoesNotReuseAPostProcessingRecordOfAnotherSession() async throws {
         let error = await #expect(throws: HolosError.self) {
             try await rebuilderRun(session, force: force, transcribe: true, speech: speech)
         }
-        #expect(isHolosError(error, "unavailable") && error?.localizedDescription.contains("newer Holos") == true)
+        #expect(isHolosError(error, "unavailable") && error?.localizedDescription.contains("newer version of Voice is Local") == true)
     }
     #expect(speech.calls.isEmpty)
     #expect(try SessionArchive.currentTranscriptID(at: session) == nil)

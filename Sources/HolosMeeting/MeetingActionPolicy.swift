@@ -37,7 +37,7 @@ public enum MeetingActionPolicy {
             || summary.liveness == .capturing || summary.liveness == .processing || summary.liveness == .maintenance
     }
 
-    /// `holos session recover` (without `--force`) repairs the meeting: it rebuilds the transcript
+    /// `voiceislocal session recover` (without `--force`) repairs the meeting: it rebuilds the transcript
     /// (`SessionRecoveryCommand.rebuilds`, asked with the catalog's readable transcript), or the meeting is
     /// interrupted, which recovery marks it and then either rebuilds or labels the transcript saved at stop. An
     /// `incomplete` or `transcriptionIncomplete` meeting qualifies only while its current transcript cannot be read;
@@ -45,14 +45,14 @@ public enum MeetingActionPolicy {
     /// (`damaged`) and a transcript written by a newer Holos or that cannot be read now (`transcriptRefused`).
     ///
     /// A transcript that a rebuild saved but could not record looks like the recorder's here (telling them apart takes
-    /// the event journal); the recover that left it said to run `holos session recover` again.
+    /// the event journal); the recover that left it said to run `voiceislocal session recover` again.
     public static func recovers(_ summary: SessionSummary) -> Bool {
         guard summary.state != .damaged, !summary.transcriptRefused else { return false }
         if summary.state == .interrupted { return true }
         return SessionRecoveryCommand.rebuilds(status: summary.manifestStatus) { summary.transcriptID }
     }
 
-    /// `holos session diarize` labels the meeting: its speaker state is none, notLabelled, failed, or interrupted, it
+    /// `voiceislocal session diarize` labels the meeting: its speaker state is none, notLabelled, failed, or interrupted, it
     /// has a readable transcript and its audio, and it is not an interrupted recording (Recover rebuilds and labels
     /// that).
     public static func labels(_ summary: SessionSummary) -> Bool {
@@ -61,7 +61,7 @@ public enum MeetingActionPolicy {
             && summary.state != .interrupted && summary.state != .damaged
     }
 
-    /// `holos session delete --audio-only` has audio to delete: the manifest reads and lists chunks, and the audio was
+    /// `voiceislocal session delete --audio-only` has audio to delete: the manifest reads and lists chunks, and the audio was
     /// not deleted already.
     public static func deletesAudio(_ summary: SessionSummary) -> Bool {
         summary.state != .damaged && !summary.audioDeleted && summary.chunkCount > 0

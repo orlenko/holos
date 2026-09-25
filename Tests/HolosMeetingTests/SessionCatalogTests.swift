@@ -187,7 +187,7 @@ func catalogReportsNotLabelledWithMessage() async throws {
     #expect(record.state == .succeeded)
     let summary = SessionCatalog.summary(session: session)
     #expect(summary.speakerState == .notLabelled)
-    #expect(summary.labelMessage?.contains("holos setup --speakers") == true)
+    #expect(summary.labelMessage?.contains("voiceislocal setup --speakers") == true)
     #expect(summary.runID == nil)
 }
 
@@ -276,8 +276,8 @@ func catalogReportsUnreadableSpeakerFilesAndTranscripts() async throws {
         let original = try Data(contentsOf: url)
         try catalogReplace(url, with: try catalogNewer(original))
         let newer = SessionCatalog.summary(session: session)
-        #expect(newer.speakerState == .unreadable, "\(url.lastPathComponent) from a newer Holos")
-        #expect(newer.labelMessage?.contains("newer Holos") == true, "\(url.lastPathComponent)")
+        #expect(newer.speakerState == .unreadable, "\(url.lastPathComponent) from a newer version of Voice is Local")
+        #expect(newer.labelMessage?.contains("newer version of Voice is Local") == true, "\(url.lastPathComponent)")
         try catalogReplace(url, with: Data("not json".utf8))
         #expect(SessionCatalog.summary(session: session).speakerState == .unreadable,
                 "\(url.lastPathComponent) damaged")
@@ -289,7 +289,7 @@ func catalogReportsUnreadableSpeakerFilesAndTranscripts() async throws {
     let runURL = SessionPaths.run(run.id, in: session)
     let savedRun = try Data(contentsOf: runURL)
     let runDamages = [("damaged", Data("not json".utf8), "speaker labels are missing or damaged"),
-                      ("newer", try catalogNewer(savedRun), "newer Holos")]
+                      ("newer", try catalogNewer(savedRun), "newer version of Voice is Local")]
     for (damage, data, message) in runDamages {
         try catalogReplace(runURL, with: data)
         let summary = SessionCatalog.summary(session: session)
@@ -328,10 +328,10 @@ func catalogReportsUnreadableSpeakerFilesAndTranscripts() async throws {
         #expect(summary.transcriptID == nil, "\(damage)")
         #expect(summary.transcriptProblem != nil, "\(damage)")
     }
-    #expect(SessionCatalog.summary(session: session).transcriptProblem?.contains("newer Holos") == true)
+    #expect(SessionCatalog.summary(session: session).transcriptProblem?.contains("newer version of Voice is Local") == true)
     try catalogReplace(SessionPaths.transcriptPointer(session),
                        with: try catalogNewer(try Data(contentsOf: SessionPaths.transcriptPointer(session))))
-    #expect(SessionCatalog.summary(session: session).transcriptProblem?.contains("newer Holos") == true,
+    #expect(SessionCatalog.summary(session: session).transcriptProblem?.contains("newer version of Voice is Local") == true,
             "A newer pointer is reported, not read as no transcript.")
 }
 
@@ -381,8 +381,8 @@ func catalogCallsLabelsLabelledOnlyWhenTheSnapshotLoadsThem() async throws {
     // A newer one is refused by both.
     try catalogReplace(revision, with: try catalogNewer(saved))
     let newer = catalogLabels(session)
-    #expect(newer.error.map { "\($0)".contains("newer Holos") } == true)
-    #expect(newer.state == .unreadable && newer.message?.contains("newer Holos") == true)
+    #expect(newer.error.map { "\($0)".contains("newer version of Voice is Local") } == true)
+    #expect(newer.state == .unreadable && newer.message?.contains("newer version of Voice is Local") == true)
     try catalogReplace(revision, with: saved)
     #expect(catalogLabels(session).state == .labelled)
 
@@ -488,7 +488,7 @@ private func isDamageError(_ body: () throws -> Any?) -> Bool {
     #expect(broken.bytes == 300 + Int64("{ not a manifest".utf8.count))
     #expect(SessionCatalog.list(root: root.appendingPathComponent("missing")).isEmpty)
 
-    // The JSON form round-trips (`holos session list --json`).
+    // The JSON form round-trips (`voiceislocal session list --json`).
     let decoded = try HolosJSON.decoder().decode([SessionSummary].self, from: HolosJSON.encoder().encode(summaries))
     #expect(decoded.map(\.id) == summaries.map(\.id))
     #expect(decoded.map(\.liveness) == summaries.map(\.liveness))

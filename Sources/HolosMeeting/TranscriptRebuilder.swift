@@ -88,7 +88,7 @@ public enum TranscriptRebuilder {
         let manifest = try SessionArchive.readManifest(at: session)
         guard manifest.status != ArchiveStatus.recording, manifest.status != ArchiveStatus.processing else {
             throw HolosError.invalidInput(
-                "This meeting's archive was interrupted and is not recovered yet; run holos session recover first.")
+                "This meeting's archive was interrupted and is not recovered yet; run voiceislocal session recover first.")
         }
         let events = try SessionArchive.readEvents(at: session).events
         // Whether audio may be transcribed: asked for, and not deleted. The deletion marker is read, not only found:

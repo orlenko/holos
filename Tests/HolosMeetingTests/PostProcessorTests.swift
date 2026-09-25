@@ -6,7 +6,7 @@ import HolosSpeakers
 import HolosStorage
 import Testing
 
-// MeetingPostProcessor stages (docs/meeting-design.md §4.7) and `holos session diarize` (§5.5 PR7b), all with
+// MeetingPostProcessor stages (docs/meeting-design.md §4.7) and `voiceislocal session diarize` (§5.5 PR7b), all with
 // FakeDiarizer on generated audio.
 
 // MARK: - Helpers
@@ -194,7 +194,7 @@ func missingDiarizerSkipsSpeakersButExports() async throws {
     let diarize = try #require(postProcessorStage(record, .diarize))
     #expect(diarize.result == .skipped)
     #expect(diarize.message == SpeakerAnalysis.modelsMissing)
-    #expect(record.message == "No speaker labels: speaker models are not installed. Install them from Setup, or run holos setup --speakers.")
+    #expect(record.message == "No speaker labels: speaker models are not installed. Install them from Setup, or run voiceislocal setup --speakers.")
     #expect(postProcessorStage(record, .export)?.result == .succeeded)
     #expect(try SessionSpeakerStore.readHead(session: session) == nil)
     #expect(try SessionSpeakerStore.runIDs(session: session).isEmpty)
@@ -335,7 +335,7 @@ func damagedHeadIsReplaced() async throws {
     try AtomicFile.write(Data("not json".utf8), to: SessionPaths.head(session))
     // The snapshot tells the user to relabel (SpeakerSnapshotDiagnostics.notes); relabelling must then work.
     #expect(try SpeakerSessionSnapshot.load(session: session).diagnostics.notes.first?
-        .contains("holos session diarize --force") == true)
+        .contains("voiceislocal session diarize --force") == true)
 
     let relabelled = try await postProcessor(options: PostProcessingOptions(force: true))
         .run(session: session, lease: nil)
@@ -421,7 +421,7 @@ func damagedMeetingInfoStillExports() async throws {
     try AtomicFile.write(Data("{not json".utf8), to: SessionPaths.meetingInfo(session))
     let record = try await postProcessor().run(session: session, lease: nil)
     #expect(record.state == .partial)
-    #expect(record.message == "Cannot read meeting.json: meeting.json is damaged or was not written by Holos.")
+    #expect(record.message == "Cannot read meeting.json: meeting.json is damaged or was not written by Voice is Local.")
     #expect(postProcessorStage(record, .align)?.result == .skipped)
     #expect(postProcessorStage(record, .export)?.result == .succeeded)
     #expect(postProcessorExports(session) == ["md", "json", "txt"])
@@ -569,7 +569,7 @@ func refusesActiveRecording() async throws {
     try await recording.finish(status: ArchiveStatus.complete)
 }
 
-// MARK: - holos session diarize
+// MARK: - voiceislocal session diarize
 
 @Test(.timeLimit(.minutes(1)))
 func diarizeAdoptsInheritedLease() async throws {

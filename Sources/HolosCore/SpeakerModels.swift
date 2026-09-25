@@ -573,7 +573,7 @@ public struct GapReason: OpenStringCode {
     public static let overflow = GapReason("overflow")
     /// An unexplained timestamp gap longer than 1 second (exports only; not an event reason).
     public static let audioGap = GapReason("audioGap")
-    /// Reserved for a later `holos session redact`; not written in v1.
+    /// Reserved for a later `voiceislocal session redact`; not written in v1.
     public static let redacted = GapReason("redacted")
 }
 

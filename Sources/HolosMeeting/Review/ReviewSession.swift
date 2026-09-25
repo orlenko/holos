@@ -120,7 +120,7 @@ public struct ReviewWord: Sendable, Equatable {
 
     /// Loads the snapshot off the main actor. `exportDelay` debounces export regeneration.
     ///
-    /// `extractor` learns voices (`VoiceSampleExtractor`); nil uses the bundled `holos` tool
+    /// `extractor` learns voices (`VoiceSampleExtractor`); nil uses the bundled `voiceislocal` tool
     /// (`SubprocessVoiceSampleExtractor`) when `maintenance` is given, else no voice is learned. Throws
     /// `HolosError.unavailable` when the meeting has no usable speaker labels.
     public init(session: URL, profiles: SpeakerProfileStore?, maintenance: MaintenanceLauncher?,
@@ -376,7 +376,7 @@ public struct ReviewWord: Sendable, Equatable {
         switch target {
         case .existing(let profileID):
             guard let person = people.first(where: { $0.id == profileID }) else {
-                throw HolosError.invalidInput("That person is not known to Holos any more; reopen the window.")
+                throw HolosError.invalidInput("That person is not known to Voice is Local any more; reopen the window.")
             }
             optimistic = [.linkProfile(speakerID: speakerID, profileID: profileID),
                           .rename(speakerID: speakerID, name: person.displayName)]
@@ -456,7 +456,7 @@ public struct ReviewWord: Sendable, Equatable {
             }
             try requirePeople()
             guard let person = people.first(where: { $0.id == profileID }) else {
-                throw HolosError.invalidInput("That person is not known to Holos any more; reopen the window.")
+                throw HolosError.invalidInput("That person is not known to Voice is Local any more; reopen the window.")
             }
             let speakerID = Self.newSpeakerID()
             let create = SpeakerEditAction.newSpeaker(speakerID: speakerID, name: person.displayName, turnIDs: ids)
@@ -518,7 +518,7 @@ public struct ReviewWord: Sendable, Equatable {
         try await apply([.rejectProfile(speakerID: speakerID, profileID: profileID)])
     }
 
-    /// `holos session diarize --force --min-speakers <current + 1>`; names carry over (§4.9).
+    /// `voiceislocal session diarize --force --min-speakers <current + 1>`; names carry over (§4.9).
     ///
     /// "Current" is the number of speakers the diarizer found on the one track it split. Turn-level changes are not
     /// carried; the window's undo history ends here. Throws when the relabel fails (`unavailable`) or finished with
@@ -533,7 +533,7 @@ public struct ReviewWord: Sendable, Equatable {
                                                 othersInRoom: othersInRoomFlag))
     }
 
-    /// `holos session diarize --force --others-in-room` (call recordings).
+    /// `voiceislocal session diarize --force --others-in-room` (call recordings).
     public func labelMicrophoneSpeakers() async throws {
         try requireEditable()
         guard canLabelMicrophoneSpeakers else {
@@ -544,7 +544,7 @@ public struct ReviewWord: Sendable, Equatable {
                                                 othersInRoom: true))
     }
 
-    /// Labels the speakers again after the transcript changed (`holos session diarize`); names carry over.
+    /// Labels the speakers again after the transcript changed (`voiceislocal session diarize`); names carry over.
     public func labelAgain() async throws {
         try requireEditable()
         guard maintenance != nil else { throw HolosError.unavailable("Speakers cannot be labelled from here.") }
@@ -1078,7 +1078,7 @@ public struct ReviewWord: Sendable, Equatable {
                 groups.append([edit])
             }
         }
-        // The window writes with source "app"; `VoiceProfileService` names its own ("app" inside Holos.app).
+        // The window writes with source "app"; `VoiceProfileService` names its own ("app" inside VoiceIsLocal.app).
         let sources: Set<String> = [Self.source, VoiceProfileService.editSource]
         var claimed = Set<Int>()
         /// The newest unclaimed group `matching` accepts, claimed.
@@ -1213,7 +1213,7 @@ public struct ReviewWord: Sendable, Equatable {
         switch code {
         case 0: return
         case 3: throw HolosError.incomplete(message ?? "The speakers were not labelled again.")
-        default: throw HolosError.unavailable(message ?? "Holos could not label the speakers again (code \(code)).")
+        default: throw HolosError.unavailable(message ?? "Voice is Local could not label the speakers again (code \(code)).")
         }
     }
 
@@ -1427,7 +1427,7 @@ public struct ReviewWord: Sendable, Equatable {
         }
         if let reloadProblem { throw HolosError.unavailable(reloadProblem) }
         guard !isRelabelling else {
-            throw HolosError.unavailable("Holos is labelling this meeting's speakers again; wait until it finishes.")
+            throw HolosError.unavailable("Voice is Local is labelling this meeting's speakers again; wait until it finishes.")
         }
         if let reason = pauseReason {
             throw HolosError.unavailable(reason + " " + Self.pausedSuffix)

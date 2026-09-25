@@ -13,11 +13,11 @@ final class MeetingStartPanel: NSObject, NSWindowDelegate {
     struct Environment {
         var devices: InputDevices
         var freeBytes: Int64?
-        /// `holos doctor --json` speakerModels, "unavailable" when the holos tool cannot run, "unknown" when it ran
+        /// `voiceislocal doctor --json` speakerModels, "unavailable" when the voiceislocal tool cannot run, "unknown" when it ran
         /// but did not report them, or nil before the first check.
         var speakerModels: String?
         var checking: Bool
-        /// `holos setup --speakers` progress while it runs.
+        /// `voiceislocal setup --speakers` progress while it runs.
         var installProgress: String?
         var installError: String?
 
@@ -87,7 +87,7 @@ final class MeetingStartPanel: NSObject, NSWindowDelegate {
             button.action = #selector(typeChanged(_:))
         }
         appPopup.widthAnchor.constraint(equalToConstant: 260).isActive = true
-        othersCheckbox.toolTip = "Holos then labels speakers on your microphone track too, not only in the call audio."
+        othersCheckbox.toolTip = "Voice is Local then labels speakers on your microphone track too, not only in the call audio."
         for label in [microphoneLabel, echoLabel, diskLabel, speakersLabel] {
             label.font = .systemFont(ofSize: 12)
             label.preferredMaxLayoutWidth = 320
@@ -272,10 +272,10 @@ final class MeetingStartPanel: NSObject, NSWindowDelegate {
                 speakersLabel.textColor = .systemOrange
                 installButton.isHidden = false
             case "unavailable":
-                speakersLabel.stringValue = "The holos tool is missing from Holos.app"
+                speakersLabel.stringValue = "The voiceislocal tool is missing from VoiceIsLocal.app"
                 speakersLabel.textColor = .systemRed
             case "unknown" where !current.checking:
-                // `holos doctor` ran but did not say: the models may still be missing, so Install stays offered.
+                // `voiceislocal doctor` ran but did not say: the models may still be missing, so Install stays offered.
                 speakersLabel.stringValue = current.installError.map { "Speaker models: the install failed: \($0)" }
                     ?? "Could not check the speaker models"
                 speakersLabel.textColor = .systemOrange

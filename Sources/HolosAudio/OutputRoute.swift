@@ -3,7 +3,7 @@ import Foundation
 
 /// Where the Mac plays sound: the system default output device (docs/meeting-design.md §5.11, PR11). A call played on
 /// the laptop speakers reaches the microphone, so other people's words are transcribed twice; the start panel, the
-/// recorder (`echoRisk`), and `holos record start` warn about it.
+/// recorder (`echoRisk`), and `voiceislocal record start` warn about it.
 public struct OutputRoute: Sendable, Equatable {
     /// The device name shown to the user, e.g. "MacBook Pro Speakers".
     public var name: String

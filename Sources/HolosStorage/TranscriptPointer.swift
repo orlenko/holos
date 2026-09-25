@@ -70,7 +70,7 @@ enum SchemaVersion {
 
     static func check(_ version: Int, current: Int, file: String) throws {
         if version > current {
-            throw HolosError.unavailable("\(file) was written by a newer Holos; update Holos to read it.")
+            throw HolosError.unavailable("\(file) was written by a newer version of Voice is Local; update Voice is Local to read it.")
         }
         if version < 1 {
             throw HolosError.invalidInput("\(file) has an unsupported schema version \(version).")

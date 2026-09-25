@@ -12,7 +12,7 @@ struct Read: AsyncParsableCommand {
     var source: String
     @Option(help: "Reading directory. Defaults to Application Support/Holos/Readings/<UUID>.")
     var output: String?
-    @Option(name: .shortAndLong, help: "Exact identifier from holos voices list.")
+    @Option(name: .shortAndLong, help: "Exact identifier from voiceislocal voices list.")
     var voice: String?
     @Option(help: "Native AVSpeechUtterance rate, from 0 to 1 (default: system rate).")
     var rate: Float?

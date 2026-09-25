@@ -22,9 +22,9 @@ struct Say: AsyncParsableCommand {
     static let configuration = CommandConfiguration(abstract: "Speak text locally, or save native speech to an audio file.")
     @Argument(help: "Text to speak; reads UTF-8 stdin when omitted.") var text: [String] = []
     @Option(name: .shortAndLong, help: "Save to .m4a, .wav, or .caf instead of playing.") var output: String?
-    @Option(name: .shortAndLong, help: "Exact identifier from holos voices list.") var voice: String?
+    @Option(name: .shortAndLong, help: "Exact identifier from voiceislocal voices list.") var voice: String?
     @Option(help: "Native AVSpeechUtterance rate, from 0 to 1 (default: system rate).") var rate: Float?
-    @Option(help: "Maximum seconds to wait for another Holos playback.") var maxWait: Double = 10
+    @Option(help: "Maximum seconds to wait for another Voice is Local playback.") var maxWait: Double = 10
 
     @MainActor mutating func run() async throws {
         let input = try readText(arguments: text)

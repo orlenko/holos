@@ -7,7 +7,7 @@ import HolosSpeakers
 import HolosSynthesis
 
 /// Opt-in (`HOLOS_DIARIZATION_FIXTURE=1`): diarizes a synthetic three-voice conversation with the real models. The
-/// models come from `HOLOS_FIXTURE_MODELS_DIR` (the folder `holos setup --speakers` installs, which holds
+/// models come from `HOLOS_FIXTURE_MODELS_DIR` (the folder `voiceislocal setup --speakers` installs, which holds
 /// `speaker-diarization/`), else from the user's real model folder, `~/Library/Application Support/Holos/Models/
 /// speaker-diarization-coreml@df2625ac79a7`. Needs three installed English system voices; no microphone, no network.
 @Suite struct FluidDiarizerFixtureTests {
@@ -21,7 +21,7 @@ import HolosSynthesis
             ?? FluidModels.defaultDirectory(supportRoot: HolosPaths.applicationSupport)
         let status = FluidModels.status(directory: models)
         try #require(status == .verified,
-                     "Speaker models at \(models.path) are \(status.summary); run holos setup --speakers first.")
+                     "Speaker models at \(models.path) are \(status.summary); run voiceislocal setup --speakers first.")
         let folder = FileManager.default.temporaryDirectory
             .appendingPathComponent("holos-fixture-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
