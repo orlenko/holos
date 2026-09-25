@@ -152,20 +152,15 @@ private final class RenderDelegate: NSObject, AVSpeechSynthesizerDelegate {
 /// work in flight that messages the delegate after a cancel: a stopped buffer render still runs
 /// to the end of the utterance, then reports didFinish. Freeing the delegate at cancellation
 /// crashed in `objc_retain`. They are released, and the operation <-> delegate cycle broken,
-/// only by `releaseSynthesizer()`, which clears `synthesizer.delegate` first: after the terminal
-/// didFinish or didCancel callback, or by the idle safety net that `stopSynthesizer()` arms in
-/// case neither arrives.
+/// only by `releaseSynthesizer()`, which clears `synthesizer.delegate` first, after the terminal
+/// didFinish or didCancel callback. Nothing else proves TextToSpeech is done (a stopped render can
+/// pause and resume), so if neither callback ever arrives the synthesizer stays retained: a small
+/// leak is preferred to a use-after-free.
 final class RenderOperation: @unchecked Sendable {
-    /// How long a stopped synthesizer must go without any callback before the safety net
-    /// releases it. It only bounds a leak when no terminal callback ever arrives, so it is
-    /// generous; any buffer callback restarts the wait.
-    static let terminalCallbackGrace: Duration = .seconds(60)
-
     private let lock = NSLock()
     private var synthesizer: AVSpeechSynthesizer?
     private var utterance: AVSpeechUtterance?
     private var delegate: RenderDelegate?
-    private var callbacks: UInt64 = 0
     private var stopping = false
     private var continuation: CheckedContinuation<RenderedAudio, Error>?
     private var writer: AVAudioFile?
@@ -202,9 +197,6 @@ final class RenderOperation: @unchecked Sendable {
     }
 
     func accept(_ audioBuffer: AVAudioBuffer) {
-        lock.lock()
-        callbacks &+= 1
-        lock.unlock()
         guard let buffer = audioBuffer as? AVAudioPCMBuffer else {
             fail(HolosError.io("Speech renderer emitted an unsupported buffer type."))
             return
@@ -311,27 +303,6 @@ final class RenderOperation: @unchecked Sendable {
         lock.unlock()
         guard let active, first else { return }
         _ = active.stopSpeaking(at: .immediate)
-        releaseWhenIdle()
-    }
-
-    /// Safety net: release once no callback has arrived for `terminalCallbackGrace`.
-    @MainActor private func releaseWhenIdle() {
-        lock.lock()
-        let seen = callbacks
-        lock.unlock()
-        Task { @MainActor [weak self] in
-            try? await Task.sleep(for: Self.terminalCallbackGrace)
-            self?.releaseIfIdle(since: seen)
-        }
-    }
-
-    @MainActor private func releaseIfIdle(since seen: UInt64) {
-        lock.lock()
-        let retained = synthesizer != nil
-        let idle = callbacks == seen
-        lock.unlock()
-        guard retained else { return }
-        if idle { releaseSynthesizer() } else { releaseWhenIdle() }
     }
 
     /// Breaks the operation <-> delegate cycle once AVFoundation is done with the synthesizer.
