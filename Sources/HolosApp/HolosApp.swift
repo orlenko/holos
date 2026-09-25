@@ -194,6 +194,19 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
 
     private var shortcutTitle: String { shortcut == .rightOption ? "Right Option" : "Control–Option–Space" }
 
+    /// Copy Result, Copy Original and Discard Result for the last dictation.
+    private func addResultItems(to menu: NSMenu) {
+        let copy = item("Copy Result", #selector(copyResult))
+        copy.isEnabled = !resultText.isEmpty
+        menu.addItem(copy)
+        if !resultOriginal.isEmpty {
+            menu.addItem(item("Copy Original (As Heard)", #selector(copyOriginal)))
+        }
+        let discard = item("Discard Result", #selector(discardResult))
+        discard.isEnabled = !resultText.isEmpty && !isBusy
+        menu.addItem(discard)
+    }
+
     func rebuildMenu() {
         guard statusItem != nil else { return }
         let menu = NSMenu()
@@ -201,8 +214,10 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
         menu.delegate = self
         addMeetingItems(to: menu)
         if meeting.dictationPaused {
-            // A meeting is recording: this line replaces the whole dictation block (§4.12).
+            // A meeting is recording: this line replaces the dictation block (§4.12), except a result kept from
+            // before the meeting, which stays reachable because nothing copies it to the clipboard on its own.
             addDictationPausedLine(to: menu)
+            if !resultText.isEmpty { addResultItems(to: menu) }
         } else {
             let status = NSMenuItem(title: message, action: nil, keyEquivalent: "")
             status.isEnabled = false
@@ -228,15 +243,7 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
             let cancel = item("Cancel Dictation", #selector(cancelDictation))
             cancel.isEnabled = isBusy
             menu.addItem(cancel)
-            let copy = item("Copy Result", #selector(copyResult))
-            copy.isEnabled = !resultText.isEmpty
-            menu.addItem(copy)
-            if !resultOriginal.isEmpty {
-                menu.addItem(item("Copy Original (As Heard)", #selector(copyOriginal)))
-            }
-            let discard = item("Discard Result", #selector(discardResult))
-            discard.isEnabled = !resultText.isEmpty && !isBusy
-            menu.addItem(discard)
+            addResultItems(to: menu)
             menu.addItem(item("Correct Last Dictation…", #selector(showCorrections)))
         }
         menu.addItem(.separator())

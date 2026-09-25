@@ -213,7 +213,9 @@ Hardware-facing and cross-app acceptance remain pending.
 - Finalized phrases are written into the focused field while the user speaks: through
   Accessibility (`AXSelectedText`) into writable native fields, and as typed keystrokes
   into terminals and web or other editors without a direct Accessibility write, only
-  while the same field keeps focus. Secure fields and Secure Keyboard Entry are refused.
+  while the same field keeps focus. For a terminal, "the same field" means the same
+  terminal app staying frontmost: switching tabs, panes or windows inside it is not
+  detected, and later phrases go there. Secure fields and Secure Keyboard Entry are refused.
   It never synthesizes Return and never pastes. Text it could not write (target
   changed, safety check failed, unverified write, forced stop) is kept for Copy Result
   or Discard in the menu; it is never put on the clipboard automatically, since
@@ -224,8 +226,9 @@ Hardware-facing and cross-app acceptance remain pending.
   Dictation…** learns word swaps from the user's edits, and the Corrections window adds,
   edits and removes them. An opt-in Setup option, off by default, fixes misheard words
   in each chunk with Apple's on-device Foundation Models before it is written; a guard
-  keeps the original text when the reply changes more than a few words, changes
-  punctuation other than commas, or undoes a learned correction. **Copy Original** keeps
+  keeps the original text when the reply changes more than a few words, undoes a
+  learned correction, or changes punctuation other than commas and apostrophes (the
+  last piece of a dictation may also change its closing `.`, `!`, `?` or `…`). **Copy Original** keeps
   the text as heard.
 
 The CLI bundle embeds microphone and speech-recognition permission usage strings.
