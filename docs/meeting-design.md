@@ -3437,10 +3437,12 @@ public struct SpeakerProfileDatabase: Codable, Sendable, Equatable {
     because a merge moves the samples and leaves the meeting's link as it was — unless
     `mergedInto` says where that person went and they are still there, which means a merge
     is retargeting its meetings and those links are somebody else's.
-  - A meeting can name somebody through a recognition match alone, with no link, so the
-    labels say nothing about whose speaker it is. The matched speakers are read before the
+  - A meeting can name somebody through a `likely` recognition match alone, with no link,
+    so the labels say nothing about whose speaker it is. Those speakers are read before the
     matches are scrubbed and their centroids and turn embeddings go with the person, or a
-    finished forget would leave their voiceprints on disk.
+    finished forget would leave their voiceprints on disk. A `possible` match is only a
+    suggestion the user has not taken: that speaker may be somebody else, and their voice
+    data stays.
   - The `stored` line also records the person the meetings are cleaned of: for a `.sample`
     or `.profile` forget, the person the store write found the listed samples under, which
     a merge may have changed since the tombstone was written. Cleaning with the tombstone's

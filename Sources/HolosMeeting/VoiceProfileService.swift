@@ -1331,9 +1331,10 @@ public enum VoiceProfileService {
                                       applyRecognition: database.rememberVoices)
     }
 
-    /// The meeting's speakers that a recognition result names as the person (`isThePerson` of the match), across
-    /// every result in `files`. A meeting can name somebody through a match alone, with no link and so nothing in
-    /// the labels to say whose speaker it is; the voice data of those speakers is theirs too and goes with them.
+    /// The meeting's speakers that a recognition result names as the person: a `likely` match, which the meeting
+    /// shows as that name, across every result in `files`. A meeting can name somebody that way alone, with no
+    /// link and so nothing in the labels to say whose speaker it is; the voice data of those speakers is theirs
+    /// too and goes with them. A `possible` match is only a suggestion and names nobody.
     /// A result that cannot be read contributes nothing here and is deleted by `removeMatches` instead.
     private static func matchedSpeakers(_ isThePerson: (String?) -> Bool, files: (runIDs: [String], other: Bool),
                                         session: URL) throws -> Set<String> {
@@ -1342,7 +1343,12 @@ public enum VoiceProfileService {
             guard let result = try? SessionSpeakerStore.readRecognition(runID: runID, session: session) else {
                 continue
             }
-            for match in result.matches where isThePerson(match.profileID) { speakers.insert(match.speakerID) }
+            // Only a `likely` match, which the meeting shows as the person's name. A `possible` one is a
+            // suggestion Holos offers and the user has not taken: the speaker may well be somebody else, and
+            // their voice data is not this person's to remove.
+            for match in result.matches where match.tier == .likely && isThePerson(match.profileID) {
+                speakers.insert(match.speakerID)
+            }
         }
         return speakers
     }
