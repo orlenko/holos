@@ -56,8 +56,15 @@ text still match the snapshot taken at key-down or after the previous chunk. Eac
 write is read back. For a known terminal app (Terminal, iTerm2, Ghostty, WezTerm,
 kitty, Alacritty, Warp), which has no writable text field, chunks are typed as
 keystrokes posted only to the terminal that was frontmost at key-down, and only
-while it is still frontmost; typed text cannot be read back, and switching tabs or
-panes inside the terminal while speaking redirects it. A focused editable field that
+while the terminal session focused at key-down still has focus: before each chunk
+(and every 16 characters within one) Voice is Local checks that the terminal is
+still frontmost and that its focused window and focused element, as reported to
+Accessibility, are the ones captured at key-down. Terminal and iTerm2 are expected to
+report a text area per session, so switching tabs, panes or windows stops typing and
+keeps the rest for Copy Result. A terminal that reports only its focused window is
+tracked by window, so a switch of pane inside one window is not detected there; one
+that reports neither is tracked only by staying frontmost. Typed text cannot be read
+back. A focused editable field that
 has no direct Accessibility write, such as a web rich-text editor, is typed into the
 same way, but only while that exact element keeps focus. Chromium browsers and
 Electron apps are asked to expose accessibility (`AXManualAccessibility`) when they
@@ -87,7 +94,10 @@ The maximum utterance is 120 seconds; finalization after listening has a
 30-second limit. When the maximum duration forces a stop, anything already
 streamed stays and the remainder is kept for Copy Result rather than being auto-inserted. The overlay hides eight seconds after a result, but its text remains
 in app memory and the menu's Copy/Discard actions for up to ten minutes (unless
-replaced, discarded, or the app quits). The system clipboard is overwritten only when
+replaced, discarded, or the app quits). Only a later dictation that produces a
+result replaces it: recognized text, or text left unwritten. A press that is
+cancelled, released before Listening, or recognizes nothing leaves the earlier
+result, its menu items and its ten-minute expiry as they were. The system clipboard is overwritten only when
 **Copy Result** or **Copy Original** is chosen. No raw dictation audio
 is saved.
 
@@ -133,7 +143,8 @@ behavior, and permission owner for each row.
 | TextEdit plain text, empty caret and selected text | One insertion/replacement, with no extra newline or duplicate text. |
 | Browser text field and rich editor (e.g. ChatGPT in Chrome) | Phrases are typed as you pause while that field keeps focus; moving focus stops typing and keeps the rest for Copy Result. |
 | Native field without direct Accessibility writes | Typed into while it keeps focus; a field that fails a safety check (large selection, unreadable range) is not typed into and its text is kept for Copy Result. |
-| Terminal input (shell prompt and a TUI such as Claude Code) | Phrases are typed as you pause; never a Return; Secure Keyboard Entry refuses. |
+| Terminal input (shell prompt and a TUI such as Claude Code) | Phrases are typed as you pause; never a Return; Secure Keyboard Entry refuses. Switching tab, split pane or window while speaking stops typing; nothing lands in the new session, and the rest is kept for Copy Result. Check Terminal and iTerm2 (tabs and split panes), and one of Ghostty, WezTerm, kitty, Alacritty or Warp (the log line "focus tracked by session/window/app" shows which level that terminal supports). |
+| Accidental press after a dictation that left text for Copy Result | Tap the shortcut and release before Listening, press and Esc, or hold without speaking: Copy Result, Copy Original and Discard still offer the earlier text, which still expires ten minutes after its own dictation. A later dictation that recognizes words replaces it. |
 | Learn "bull request" → "pull request", then dictate it | Corrected in preview and in the field; "bull market" unchanged. |
 | Long utterance with pauses in TextEdit | Finalized phrases appear while speaking, the tail on release, no duplicates or missing spaces. |
 | Password or secure field | Refuse dictation/insertion; no text lands in the field. |
