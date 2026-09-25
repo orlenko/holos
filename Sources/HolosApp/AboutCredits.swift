@@ -5,9 +5,11 @@ import AppKit
 enum AboutCredits {
     /// The notice GPLv3 §5(d) asks an interactive program to show.
     static let license = """
-        Copyright © 2026 Vlad Orlenko. Voice is Local is free software under the GNU General Public License, \
-        version 3 or later, and comes with no warranty. Source code: https://github.com/orlenko/holos. The name \
-        and icon are not covered by the license; see TRADEMARKS.md.
+        Copyright © 2026 Vlad Orlenko. Voice is Local is free software: you may redistribute and modify it under \
+        the GNU General Public License, version 3 or later. It comes with no warranty. The license is in \
+        VoiceIsLocal.app/Contents/Resources/LICENSE.txt and at https://www.gnu.org/licenses/gpl-3.0.html. \
+        Source code: https://github.com/orlenko/holos. The name and icon are not covered by the license: \
+        https://github.com/orlenko/holos/blob/main/TRADEMARKS.md
         """
 
     static let fluidAudio = """
