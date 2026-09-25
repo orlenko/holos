@@ -104,7 +104,7 @@ public final class DictationController {
     private var finalizationWatchdogTask: Task<Void, Never>?
     private var timeoutMessage: String?
 
-    public init(locale: String = "en-CA", backend: SpeechBackend = .speech,
+    public init(locale: String = DictationLanguage.standard, backend: SpeechBackend = .speech,
                 maximumDuration: TimeInterval = 120,
                 onUpdate: @escaping @MainActor (DictationStatus) -> Void) {
         self.locale = locale
@@ -115,7 +115,7 @@ public final class DictationController {
         self.dependencies = .live
     }
 
-    init(locale: String = "en-CA", backend: SpeechBackend = .speech,
+    init(locale: String = DictationLanguage.standard, backend: SpeechBackend = .speech,
          maximumDuration: TimeInterval = 120, finalizationTimeout: TimeInterval = 30,
          dependencies: DictationDependencies,
          onUpdate: @escaping @MainActor (DictationStatus) -> Void) {

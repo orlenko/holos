@@ -2,6 +2,7 @@ import ArgumentParser
 import Foundation
 import HolosCore
 import HolosMeeting
+import HolosSpeech
 import HolosStorage
 
 @main
@@ -50,6 +51,22 @@ extension SpeechBackend: ExpressibleByArgument {}
 extension AudioSource: ExpressibleByArgument {}
 
 struct RecognitionOptions: ParsableArguments {
-    @Option(help: "Recognition locale (for example en-CA, en-US or fr-CA).") var locale = "en-CA"
+    @Option(help: ArgumentHelp(
+        "Recognition locale (for example en-CA, en-US or fr-CA).",
+        discussion: "Default: the supported locale closest to your macOS preferred languages and region, or en-CA when "
+            + "none of them is supported. Scripts that need the same locale on every Mac should pass it."))
+    var locale: String?
     @Option(help: "Native recognizer: speech or dictation.") var backend: SpeechBackend = .speech
+
+    /// `--locale`, or the backend's supported locale closest to the user's languages.
+    func resolvedLocale() async -> String {
+        if let locale { return locale }
+        return await Self.defaultLocale(backend: backend)
+    }
+
+    /// The backend's supported locale closest to the user's preferred languages (`DictationLanguage.preferred`).
+    static func defaultLocale(backend: SpeechBackend) async -> String {
+        DictationLanguage.preferredForSystem(
+            supported: await AppleSpeechEngine.capabilities(backend: backend).supportedLocales)
+    }
 }

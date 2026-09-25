@@ -12,7 +12,8 @@ struct Transcribe: AsyncParsableCommand {
 
     mutating func run() async throws {
         let showLive = !json && output == nil
-        let transcript = try await AppleSpeechEngine.transcribe(file: fileURL(input), locale: recognition.locale,
+        let locale = await recognition.resolvedLocale()
+        let transcript = try await AppleSpeechEngine.transcribe(file: fileURL(input), locale: locale,
             backend: recognition.backend) { update in
                 if showLive && update.isFinal { Console.segment(update.segment) }
             }

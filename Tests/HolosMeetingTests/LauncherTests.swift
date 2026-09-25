@@ -31,12 +31,14 @@ private func launcherMode(_ url: URL) -> mode_t? {
 
 @Test func launcherArguments() {
     let settings = MeetingStartSettings(name: "Council meeting", source: .microphoneAndSystem,
-                                        applicationBundleID: "us.zoom.xos", othersInRoom: true, expectedSpeakers: 8)
+                                        applicationBundleID: "us.zoom.xos", othersInRoom: true, expectedSpeakers: 8,
+                                        locales: ["fr-CA", "en-CA"])
     let id = "3F2A9C1E-0000-4000-8000-000000000001"
     let root = URL(fileURLWithPath: "/Users/me/Library/Application Support/Holos/Sessions", isDirectory: true)
     let vocabulary = URL(fileURLWithPath: "/private/tmp/holos-vocabulary-\(id).json")
+    // The recorder transcribes in the first language.
     #expect(ChildProcessLauncher.arguments(settings, sessionID: id, root: root, vocabularyFile: vocabulary) == [
-        "record", "start", "--session-id", id, "--name=Council meeting", "--source", "mic+system",
+        "record", "start", "--session-id", id, "--name=Council meeting", "--source", "mic+system", "--locale=fr-CA",
         "--app", "us.zoom.xos", "--others-in-room", "--expected-speakers", "8",
         "--vocabulary-file", vocabulary.path, "--no-live-text", "--directory", root.path,
     ])

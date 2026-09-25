@@ -9,7 +9,10 @@ Hardware-facing and cross-app acceptance remain pending.
 
 - `doctor` reports local framework/model, voice, permission, and speech-asset
   readiness without requesting permissions. `setup` installs Apple's speech or
-  dictation assets for `en-CA` by default; `en-US` is also selectable.
+  dictation assets for `--locale`; without it, `setup`, `doctor`, `transcribe`,
+  `record start`, and `session import` use the supported locale closest to the macOS
+  preferred languages and region (`en-CA` when none is supported), and
+  `session retranscribe` uses the locale the session was recorded with.
 - `transcribe` processes a local audio file using Apple's Speech framework. It can
   print finalized timestamped segments, emit JSON, or write JSON to a new file.
 - `record start` captures microphone, system audio, or both into a `.holos` session
@@ -204,8 +207,10 @@ Hardware-facing and cross-app acceptance remain pending.
 - `read` renders a local UTF-8 text/Markdown file or stdin as an ordered AAC
   playlist, with resume and optional playback. Markdown is read verbatim.
 - `scripts/build-app.sh` builds and ad-hoc signs `build/VoiceIsLocal.app`, an accessory
-  menu bar app. Its `en-CA` Speech dictation is disabled on first launch; the user
-  explicitly grants permissions, installs speech assets, and enables the chosen
+  menu bar app. Its Speech dictation is disabled on first launch; the user
+  explicitly grants permissions, picks the language (by default the supported one
+  closest to the macOS preferred languages, `en-CA` when none is), installs speech
+  assets, and enables the chosen
   hold-to-talk shortcut. Right Option is the default choice, with
   Control–Option–Space available instead. It previews speech and finalizes on
   release; Esc cancels even during finalization.

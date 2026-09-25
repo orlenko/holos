@@ -13,10 +13,13 @@ import Synchronization
 struct Doctor: AsyncParsableCommand {
     static let configuration = CommandConfiguration(abstract: "Inspect local capabilities without requesting permissions.")
     @Flag(help: "Print machine-readable JSON.") var json = false
-    @Option(help: "Check model readiness for this locale.") var locale = "en-CA"
+    @Option(help: ArgumentHelp("Check model readiness for this locale.",
+                               discussion: "Default: the speech locale closest to your preferred languages, else en-CA."))
+    var locale: String?
 
     @MainActor mutating func run() async throws {
         let speech = await AppleSpeechEngine.capabilities(backend: .speech)
+        let locale = locale ?? DictationLanguage.preferredForSystem(supported: speech.supportedLocales)
         let dictation = await AppleSpeechEngine.capabilities(backend: .dictation)
         let model = SystemLanguageModel.default
         // Files only: checking the speaker models never touches the network.
@@ -92,9 +95,10 @@ struct Setup: AsyncParsableCommand {
             try await SpeakerModelSetup.run(force: force)
             return
         }
-        Console.error("Preparing \(recognition.backend.rawValue) assets for \(recognition.locale)…")
-        try await AppleSpeechEngine.installAssets(locale: recognition.locale, backend: recognition.backend)
-        Console.output("Ready: \(recognition.locale) (\(recognition.backend.rawValue)).")
+        let locale = await recognition.resolvedLocale()
+        Console.error("Preparing \(recognition.backend.rawValue) assets for \(locale)…")
+        try await AppleSpeechEngine.installAssets(locale: locale, backend: recognition.backend)
+        Console.output("Ready: \(locale) (\(recognition.backend.rawValue)).")
     }
 }
 
