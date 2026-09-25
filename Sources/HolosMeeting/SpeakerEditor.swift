@@ -81,11 +81,11 @@ public enum SpeakerEditor {
                              regenerateExports: Bool = true,
                              profileNames: [String: String] = [:],
                              profiles: SpeakerProfileStore? = nil,
-                             requirePeople: [String: String] = [:],
+                             requirePeople: [String: String] = [:], createdHere: Set<String> = [],
                              requireCompleteJournal: Bool = false) throws -> SpeakerEditResult {
         let saved = try save(actions, view: view, session: session, source: source, profileNames: profileNames,
                              skipIfUnchanged: false, profiles: profiles, requirePeople: requirePeople,
-                             requireCompleteJournal: requireCompleteJournal)
+                             createdHere: createdHere, requireCompleteJournal: requireCompleteJournal)
         return try finish(saved ?? Saved(edits: [], journal: EditJournal()), session: session,
                           regenerateExports: regenerateExports, profileNames: profileNames, profiles: profiles)
     }
@@ -104,10 +104,11 @@ public enum SpeakerEditor {
                                             profileNames: [String: String] = [:],
                                             profiles: SpeakerProfileStore? = nil,
                                             requirePeople: [String: String] = [:],
+                                            createdHere: Set<String> = [],
                                             requireCompleteJournal: Bool = false) throws -> SpeakerEditResult? {
         guard let saved = try save(actions, view: view, session: session, source: source,
                                    profileNames: profileNames, skipIfUnchanged: true, profiles: profiles,
-                                   requirePeople: requirePeople,
+                                   requirePeople: requirePeople, createdHere: createdHere,
                                    requireCompleteJournal: requireCompleteJournal) else { return nil }
         return try finish(saved, session: session, regenerateExports: regenerateExports, profileNames: profileNames,
                           profiles: profiles)
@@ -118,7 +119,7 @@ public enum SpeakerEditor {
     private static func save(_ actions: [SpeakerEditAction], view: SpeakerProjection, session: URL, source: String,
                              profileNames: [String: String], skipIfUnchanged: Bool,
                              profiles: SpeakerProfileStore?, requirePeople: [String: String],
-                             requireCompleteJournal: Bool) throws -> Saved? {
+                             createdHere: Set<String>, requireCompleteJournal: Bool) throws -> Saved? {
         guard !actions.isEmpty else { throw HolosError.invalidInput("There is no speaker change to save.") }
         try requireSource(source)
         let preloaded = readRun(view.runID, session: session)
@@ -162,7 +163,7 @@ public enum SpeakerEditor {
                 log.info("Session \(base.run.sessionID, privacy: .public): a speaker change of \(edits.count, privacy: .public) edits changes nothing; not saved")
                 return nil
             }
-            try claimPeople(requirePeople, profiles: profiles, at: at)
+            try claimPeople(requirePeople, createdHere: createdHere, profiles: profiles, at: at)
             try SessionSpeakerStore.appendEdits(edits, session: session)
             log.info("Session \(base.run.sessionID, privacy: .public): saved \(edits.count, privacy: .public) speaker edits (batch \(batchID, privacy: .public), run \(base.run.id, privacy: .public))")
             return Saved(edits: edits, journal: base.journal, sessionID: base.run.sessionID,
@@ -425,7 +426,8 @@ public enum SpeakerEditor {
     /// and no longer provisional. Throws `unavailable` when one is gone or was renamed; the store write is rolled
     /// back with it, so nothing is claimed and the edits are never appended. Called right before the append, so an
     /// edit refused for any other reason claims nobody.
-    static func claimPeople(_ people: [String: String], profiles: SpeakerProfileStore?, at: Date) throws {
+    static func claimPeople(_ people: [String: String], createdHere: Set<String> = [],
+                            profiles: SpeakerProfileStore?, at: Date) throws {
         guard !people.isEmpty, let profiles else { return }
         try profiles.update { database in
             for id in people.keys.sorted() {
@@ -437,6 +439,11 @@ public enum SpeakerEditor {
                     throw HolosError.unavailable("That person was renamed in another Holos window; reload and "
                                                  + "choose the name again.")
                 }
+                // A person this very call created stays untouched until its lines are appended: if the append
+                // fails, or the process goes, they must still look like a link that never happened, so the
+                // caller's rollback and the launch sweep can take them back. Anybody else is taken up here,
+                // before the append, so a caller whose own link is refused cannot remove them.
+                guard !createdHere.contains(id) else { continue }
                 database.profiles[index].lastUsedAt = at
                 database.profiles[index].provisional = nil
             }

@@ -3580,7 +3580,12 @@ public struct SpeakerProfileDatabase: Codable, Sendable, Equatable {
   `abandonedProvisionalAge` (an hour, far longer than a link takes) is removed at app
   launch and at the start of every `holos people`, `speakers` and `session` command.
   `rollBack` covers a link refused in the same run; this covers a crash between creating
-  the person and saving the link, which nothing else would. Test (PR10):
+  the person and saving the link, which nothing else would. A person the call creates is
+  therefore left alone by `claimPeople`: they stay provisional until their lines are
+  appended, and the call takes them up afterwards, so a failed append leaves a person
+  who still looks like a link that never happened. Anybody else is taken up before the
+  append, which is what stops a caller whose own link is refused from removing a person
+  another window has linked. Test (PR10):
   `peopleALinkNeverFinishedCreatingAreTakenBack`.
 - **Enrollment renders are swept.** `DiarizerVoiceSampleExtractor` renders a track to
   `holos-voice-<UUID>` in the temporary directory and deletes it in a `defer`, which a kill

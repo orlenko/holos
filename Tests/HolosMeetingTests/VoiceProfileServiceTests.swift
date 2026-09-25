@@ -2678,3 +2678,35 @@ func aRepeatedLinkStillBringsTheSamplesInStep() async throws {
     #expect(try store.load().profiles.first?.samples.first?.inputDigest != "stale",
             "And the sample is back in step with the labels.")
 }
+
+@Test(.timeLimit(.minutes(1)))
+func aPersonStaysUnfinishedUntilTheirLinkIsSaved() async throws {
+    let temp = try TemporaryDirectory("profiles")
+    defer { temp.remove() }
+    let store = profileStore(temp)
+    let (session, _) = try await profileProcessedSession(in: temp, store: nil)
+    // The meeting's speaker folder cannot be written, so the link's lines are refused at the append, after the
+    // people have been checked.
+    let speakers = session.appendingPathComponent("speakers", isDirectory: true)
+    #expect(chmod(speakers.path, 0o500) == 0)
+
+    await #expect(throws: HolosError.self) {
+        _ = try await VoiceProfileService.link(session: session, speakerID: "mic:S1", to: .new(name: "Jim"),
+                                               view: try SessionFixtures.view(session), learnVoice: false,
+                                               extractor: nil, store: store)
+    }
+    #expect(chmod(speakers.path, 0o700) == 0)
+
+    #expect(try store.load().profiles.isEmpty,
+            "A person created for a link whose lines never landed is taken back, not left in People.")
+
+    // And one whose link is saved is taken up, so neither the rollback nor the launch sweep touches them.
+    _ = try await VoiceProfileService.link(session: session, speakerID: "mic:S1", to: .new(name: "Jim"),
+                                           view: try SessionFixtures.view(session), learnVoice: false,
+                                           extractor: nil, store: store)
+    let jim = try #require(try store.load().profiles.first)
+    #expect(jim.provisional == nil, "Taken up once the lines were appended, so nothing takes them back.")
+    let later = Date().addingTimeInterval(VoiceProfileService.abandonedProvisionalAge + 60)
+    #expect(VoiceProfileService.removeAbandonedProvisionalPeople(store: store, now: later) == 0)
+    #expect(try store.load().profiles.count == 1)
+}

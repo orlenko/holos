@@ -681,7 +681,7 @@ public enum VoiceProfileService {
                           SpeakerEditor.changesNothing(actions, on: projection) else {
                         throw HolosError.unavailable(SpeakerEditor.changedMessage)
                     }
-                    try SpeakerEditor.claimPeople(linked, profiles: store, at: Date())
+                    try SpeakerEditor.claimPeople(linked, createdHere: created, profiles: store, at: Date())
                     return current
                 }
                 // An earlier run of this same link may have saved its lines and then failed to bring the samples
@@ -692,7 +692,7 @@ public enum VoiceProfileService {
             } else {
                 let result = try SpeakerEditor.apply(actions, view: view, session: session, source: editSource,
                                                      profileNames: profileNames(store: store), profiles: store,
-                                                     requirePeople: linked,
+                                                     requirePeople: linked, createdHere: created,
                                                      requireCompleteJournal: requireCompleteJournal)
                 snapshot = result.snapshot
                 needsRefresh = result.needsSampleRefresh
@@ -706,6 +706,20 @@ public enum VoiceProfileService {
             // are affected. Samples are brought in step anyway (cheap when nothing changed), then the error is
             // reported.
             try await syncAfterSavedEdit(error, session: session, extractor: extractor, store: store, enroll: enroll)
+        }
+        // The lines are saved, so the people this call created are no longer a link that might not happen: they
+        // are taken up here, which is what keeps the launch sweep and a later rollback off them. A failure leaves
+        // them looking abandoned, so it is retried once and said out loud.
+        if !created.isEmpty {
+            let take = { try SpeakerEditor.claimPeople(linked.filter { created.contains($0.key) },
+                                                       profiles: store, at: Date()) }
+            do {
+                try take()
+            } catch {
+                do { try take() } catch {
+                    log.error("The link was saved, but the person it created is still marked unfinished: \(ProcessSpawner.logCategory(error), privacy: .public)")
+                }
+            }
         }
         guard !enroll.isEmpty || needsRefresh else { return snapshot }
         do {
