@@ -61,4 +61,22 @@ import Testing
     await #expect(throws: CancellationError.self) { try await task.value }
     #expect(!FileManager.default.fileExists(atPath: output.path))
 }
+
+@Test(.timeLimit(.minutes(1))) func cancelledRenderKeepsDelegateUntilTerminalCallback() async throws {
+    // AVSpeechSynthesizer does not retain its delegate, and TextToSpeech keeps messaging it
+    // after a cancel. Freeing the delegate at cancellation crashed in objc_retain, as does
+    // reading synthesizer.delegate below if the delegate has been freed.
+    let synthesizer = AVSpeechSynthesizer()
+    let utterance = AVSpeechUtterance(string: "Hello")
+    let directory = FileManager.default.temporaryDirectory
+    let output = directory.appendingPathComponent("holos-test-\(UUID().uuidString).wav")
+    RenderOperation(synthesizer: synthesizer, utterance: utterance,
+                    temporary: directory.appendingPathComponent(".holos-test-\(UUID().uuidString).wav"),
+                    output: output, fileExtension: "wav").cancel()
+    weak let delegate = synthesizer.delegate
+    #expect(delegate != nil)
+    synthesizer.delegate?.speechSynthesizer?(synthesizer, didCancel: utterance)
+    while delegate != nil { try await Task.sleep(for: .milliseconds(10)) }
+    #expect(!FileManager.default.fileExists(atPath: output.path))
+}
 }
