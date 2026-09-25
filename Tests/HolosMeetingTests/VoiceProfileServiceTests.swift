@@ -2618,36 +2618,6 @@ func whatAForgetListsAndItsTombstoneAreOneStep() async throws {
     #expect(try store.load().profiles.map(\.id) == ["MARIA"])
 }
 
-@Test func peopleALinkNeverFinishedCreatingAreTakenBack() throws {
-    let temp = try TemporaryDirectory("profiles")
-    defer { temp.remove() }
-    let store = profileStore(temp)
-    let now = Date()
-    let old = now.addingTimeInterval(-VoiceProfileService.abandonedProvisionalAge - 60)
-    var withSample = profilePerson("KEPT", "Has a sample", vector: profileAxis(0))
-    withSample.provisional = true
-    withSample.createdAt = old
-    try store.update {
-        $0.profiles = [
-            // A link that crashed between creating the person and saving its lines, an hour ago.
-            SpeakerProfile(id: "GONE", displayName: "Never linked", createdAt: old, lastUsedAt: old,
-                           provisional: true),
-            // A link being made right now.
-            SpeakerProfile(id: "FRESH", displayName: "In flight", createdAt: now, lastUsedAt: now,
-                           provisional: true),
-            // Taken up by something since.
-            SpeakerProfile(id: "TAKEN", displayName: "Taken", createdAt: old, lastUsedAt: old),
-            withSample,
-        ]
-    }
-
-    #expect(VoiceProfileService.removeAbandonedProvisionalPeople(store: store, now: now) == 1)
-
-    #expect(try store.load().profiles.map(\.id).sorted() == ["FRESH", "KEPT", "TAKEN"],
-            "Only a person nobody took up, with nothing learned, and older than a link ever takes.")
-    #expect(VoiceProfileService.removeAbandonedProvisionalPeople(store: store, now: now) == 0)
-}
-
 @Test(.timeLimit(.minutes(1)))
 func aRepeatedLinkStillBringsTheSamplesInStep() async throws {
     let temp = try TemporaryDirectory("profiles")
@@ -2706,8 +2676,6 @@ func aPersonStaysUnfinishedUntilTheirLinkIsSaved() async throws {
                                            extractor: nil, store: store)
     let jim = try #require(try store.load().profiles.first)
     #expect(jim.provisional == nil, "Taken up once the lines were appended, so nothing takes them back.")
-    let later = Date().addingTimeInterval(VoiceProfileService.abandonedProvisionalAge + 60)
-    #expect(VoiceProfileService.removeAbandonedProvisionalPeople(store: store, now: later) == 0)
     #expect(try store.load().profiles.count == 1)
 }
 
@@ -2731,9 +2699,7 @@ func aPersonIsTakenUpEvenWhenTheLinkReportsAFailure() async throws {
     let jim = try #require(try store.load().profiles.first)
     #expect(jim.provisional == nil, "The meeting links them, so they are not an unfinished link any more.")
     #expect(try SessionFixtures.view(session).speakers.first { $0.id == "mic:S1" }?.profileID == jim.id)
-    let later = Date().addingTimeInterval(VoiceProfileService.abandonedProvisionalAge + 60)
-    #expect(VoiceProfileService.removeAbandonedProvisionalPeople(store: store, now: later) == 0,
-            "And the launch sweep leaves them, though the link reported a failure.")
+    #expect(try store.load().profiles.count == 1, "And they stay, though the link reported a failure.")
 }
 
 @Test(.timeLimit(.minutes(1)))
@@ -2770,4 +2736,33 @@ func aForgetsExportsKeepNamesAnotherForgetHasNotReachedYet() async throws {
     #expect(!text.contains("Jim"))
     #expect(text.contains("Maria"),
             "Another forget being unfinished must not cost everybody else their automatic name for good.")
+}
+
+@Test(.timeLimit(.minutes(1)))
+func aRelinkedSpeakerDoesNotKeepTheOldPersonsVoice() async throws {
+    let temp = try TemporaryDirectory("profiles")
+    defer { temp.remove() }
+    let store = profileStore(temp)
+    try store.update { $0.rememberVoices = true }
+    let (session, _) = try await profileProcessedSession(in: temp, store: nil, forceVoiceData: true)
+    let extractor = ProfileFakeExtractor()
+    _ = try await VoiceProfileService.link(session: session, speakerID: "mic:S1", to: .new(name: "Jim"),
+                                           view: try SessionFixtures.view(session), learnVoice: true,
+                                           extractor: extractor, store: store)
+    let jim = try #require(try store.load().profiles.first { $0.displayName == "Jim" }?.id)
+    #expect(try store.load().profiles.first { $0.id == jim }?.samples.count == 1)
+    try store.update { $0.profiles.append(SpeakerProfile(id: "MARIA", displayName: "Maria")) }
+
+    // The speaker is given to Maria by an edit whose sample refresh does not run (a crash, or a refresh that
+    // failed), so Jim's voice from this meeting is still there, and then Maria is forgotten. The meeting's link
+    // now names a person the store no longer holds, exactly as a merge would leave it.
+    _ = try SpeakerEditor.apply([.linkProfile(speakerID: "mic:S1", profileID: "MARIA")],
+                                view: try profileView(session, store: store), session: session, source: "cli")
+    #expect(try store.load().profiles.first { $0.id == jim }?.samples.count == 1)
+    try VoiceProfileService.forget(profileID: "MARIA", store: store, sessionsRoot: temp.url)
+
+    try await VoiceProfileService.refreshSamples(session: session, extractor: extractor, store: store)
+
+    #expect(try store.load().profiles.first { $0.id == jim }?.samples.isEmpty == true,
+            "The speaker is not Jim's any more, and no merge says otherwise, so his voice from it goes.")
 }

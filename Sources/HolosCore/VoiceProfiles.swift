@@ -64,10 +64,11 @@ public struct SpeakerProfile: Codable, Sendable, Equatable, Identifiable {
     public var recognitionEnabled: Bool
     /// At most one per sessionID; may be empty.
     public var samples: [VoiceprintSample]
-    /// Set while this person exists only for a link that has not been saved yet. It is cleared by any store write
-    /// that changes them (`SpeakerProfileStore.update`), and by the operations that take a person up without
-    /// necessarily changing anything about them: a merge into them, a rename, a suggestions setting, and the
-    /// link's own claim (`SpeakerEditor.claimPeople`). A link that is then refused takes back only a person who is
+    /// Set while this person exists only for a link that has not been saved yet, and cleared once it is, or by any
+    /// other operation that takes them up: a merge into them, a rename, a suggestions setting, any store write
+    /// that changes them. Only the call that created them reads it, to take them back when its own link is
+    /// refused (`VoiceProfileService.rollBack`); nothing removes a person on the strength of this flag alone,
+    /// because a crash between saving a link and clearing it would then cost the meeting its person. A link that is then refused takes back only a person who is
     /// still provisional, so one another window has linked meanwhile is never removed. It is an explicit state
     /// rather than a comparison of `createdAt` and `lastUsedAt`, which `HolosJSON` stores to the second and which
     /// two windows can therefore share. Absent (nil) in stores written by an earlier Holos, and in every person

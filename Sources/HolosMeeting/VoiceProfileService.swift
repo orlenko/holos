@@ -494,65 +494,6 @@ public enum VoiceProfileService {
         }
     }
 
-    /// How long a person created for a link that was never saved is kept before a launch takes them back.
-    static let abandonedProvisionalAge: TimeInterval = 3_600
-
-    /// Removes the people a link left behind: created for a link (`provisional`), never taken up, without samples,
-    /// and older than `abandonedProvisionalAge`. `rollBack` takes such a person back when the link is refused in
-    /// the same run, but a crash or a kill between creating them and saving the link cannot, and nothing else
-    /// would ever remove a name the user never finished giving. The age is what keeps a link in flight safe: it is
-    /// far longer than any link takes, and the first thing a saved link does is clear the flag. Failures are
-    /// logged, never thrown: this is launch housekeeping. Returns how many were removed.
-    @discardableResult
-    public static func removeAbandonedProvisionalPeople(store: SpeakerProfileStore = SpeakerProfileStore(),
-                                                        now: Date = Date(),
-                                                        sessionsRoot: URL = HolosPaths.sessions) -> Int {
-        do {
-            let candidates = try store.load().profiles.filter { profile in
-                profile.provisional == true && profile.samples.isEmpty
-                    && now.timeIntervalSince(profile.createdAt) > abandonedProvisionalAge
-            }.map(\.id)
-            guard !candidates.isEmpty else { return 0 }
-            // The flag can outlive a link whose lines were saved: the write that clears it is a write of its own,
-            // and a crash between the two leaves it set. A meeting that links the person is the authority, so it
-            // is read before anything is removed. Nothing is usually a candidate, so this costs nothing usually.
-            let linked = linkedAnywhere(candidates, sessionsRoot: sessionsRoot)
-            return try store.update { database in
-                let before = database.profiles.count
-                database.profiles.removeAll { profile in
-                    candidates.contains(profile.id) && !linked.contains(profile.id)
-                        && profile.provisional == true && profile.samples.isEmpty
-                }
-                let removed = before - database.profiles.count
-                if removed > 0 {
-                    log.notice("Removed \(removed, privacy: .public) people a link never finished creating")
-                }
-                return removed
-            }
-        } catch {
-            log.error("Cannot take back people a link never finished creating: \(ProcessSpawner.logCategory(error), privacy: .public)")
-            return 0
-        }
-    }
-
-    /// Which of `profileIDs` some meeting's saved labels link to. A meeting whose labels cannot be read counts
-    /// every candidate as linked: with the labels unreadable, removing a person they may name is the worse guess.
-    private static func linkedAnywhere(_ profileIDs: [String], sessionsRoot: URL) -> Set<String> {
-        let wanted = Set(profileIDs)
-        var found = Set<String>()
-        guard let sessions = try? sessionFolders(sessionsRoot) else { return wanted }
-        for session in sessions {
-            guard let journal = try? SessionSpeakerStore.readEdits(session: session) else { return wanted }
-            for edit in journal.edits {
-                if case .linkProfile(_, let profileID) = edit.action, wanted.contains(profileID) {
-                    found.insert(profileID)
-                }
-            }
-            if found == wanted { return found }
-        }
-        return found
-    }
-
     /// Finishes every forget a crash left pending (app launch; the start of every `holos people`, `speakers`, and
     /// `session` command). Each step is idempotent. When all are finished the journal is compacted. Throws
     /// `HolosError.incomplete` when some meeting could not be cleaned yet (it is retried next time).
@@ -1005,7 +946,8 @@ public enum VoiceProfileService {
         for profile in database.profiles {
             let existing = profile.samples.first { $0.sessionID == sessionID }
             guard existing != nil || enroll.contains(profile.id) else { continue }
-            let speakerIDs = linkedSpeakers(profile.id, sample: existing, projection: projection, known: known)
+            let speakerIDs = linkedSpeakers(profile.id, sample: existing, projection: projection,
+                                            database: database)
             let digest = VoiceEnrollment.inputDigest(speakerIDs: speakerIDs, projection: projection)
             if let existing, existing.inputDigest == digest { continue }
             let fromEarlierRun = existing.map { builtFromEarlierRun($0, headRunID: run.id) } ?? false
@@ -1032,14 +974,22 @@ public enum VoiceProfileService {
         return generation[..<separator] != headRunID
     }
 
-    /// The meeting's speakers linked to `profileID`, plus the speakers `sample` was built from whose link names a
-    /// person no longer in the store (the person was merged into `profileID`, and the sample moved with it).
+    /// The meeting's speakers linked to `profileID`, plus the speakers `sample` was built from whose link names the
+    /// person this one was merged from (`mergedInto` says so, and the sample moved with them).
+    ///
+    /// Only a merge the store records lets an unknown link count: a speaker relinked to somebody else who was then
+    /// forgotten also names a person the store no longer holds, and reading that as "still this person's" kept a
+    /// voiceprint alive under the wrong one, with a digest that never changed to say so.
     static func linkedSpeakers(_ profileID: String, sample: VoiceprintSample?, projection: SpeakerProjection,
-                               known: Set<String>) -> [String] {
+                               database: SpeakerProfileDatabase) -> [String] {
         let built = Set(sample?.speakerIDs ?? [])
         return projection.speakers.filter { speaker in
             guard let linked = speaker.profileID else { return false }
-            return linked == profileID || (!known.contains(linked) && built.contains(speaker.id))
+            if linked == profileID { return true }
+            guard built.contains(speaker.id), !database.profiles.contains(where: { $0.id == linked }) else {
+                return false
+            }
+            return mergedOnwards(linked, in: database) == profileID
         }.map(\.id)
     }
 
@@ -1113,8 +1063,8 @@ public enum VoiceProfileService {
         let known = Set(database.profiles.map(\.id))
         for profile in database.profiles {
             guard let sample = profile.samples.first(where: { $0.sessionID == sessionID }) else { continue }
-            let old = linkedSpeakers(profile.id, sample: sample, projection: before, known: known)
-            let new = linkedSpeakers(profile.id, sample: sample, projection: after, known: known)
+            let old = linkedSpeakers(profile.id, sample: sample, projection: before, database: database)
+            let new = linkedSpeakers(profile.id, sample: sample, projection: after, database: database)
             if VoiceEnrollment.inputDigest(speakerIDs: old, projection: before)
                 != VoiceEnrollment.inputDigest(speakerIDs: new, projection: after) {
                 return true
@@ -1345,7 +1295,12 @@ public enum VoiceProfileService {
             }
             return false
         }
-        return (generated.st_mode & S_IFMT) == S_IFREG
+        // Present but not a file is damage, not an absence: the operation waits rather than finishing over an
+        // exported transcript it cannot rewrite.
+        guard (generated.st_mode & S_IFMT) == S_IFREG else {
+            throw HolosError.invalidInput("A meeting's exports/.generated.json is not a regular file.")
+        }
+        return true
     }
 
     /// Rewrites one meeting's generated exports after a forget has scrubbed every meeting, so the names they show

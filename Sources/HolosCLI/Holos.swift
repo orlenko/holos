@@ -38,7 +38,6 @@ enum ForgetResume {
     static func beforeCommand(_ arguments: [String]) {
         guard let command = arguments.first, commands.contains(command) else { return }
         DiarizerVoiceSampleExtractor.removeStaleRenders()
-        VoiceProfileService.removeAbandonedProvisionalPeople()
         do {
             try VoiceProfileService.resumePendingForgets(store: SpeakerProfileStore())
         } catch {

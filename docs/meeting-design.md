@@ -3575,18 +3575,27 @@ public struct SpeakerProfileDatabase: Codable, Sendable, Equatable {
   not shown or exported. Tests (PR10): `keptSamplesAreNotUsedWhileRememberVoicesIsOff`,
   `recognitionIsNotUsedWhileAForgetIsUnfinished`,
   `recognitionIsNotUsedWhileAForgetLineCannotBeRead`.
-- **People a link never finished creating are taken back.** A person created for a link
-  (`provisional`) whom no saved link claimed, who has no samples, and who is older than
-  `abandonedProvisionalAge` (an hour, far longer than a link takes) is removed at app
-  launch and at the start of every `holos people`, `speakers` and `session` command.
-  `rollBack` covers a link refused in the same run; this covers a crash between creating
-  the person and saving the link, which nothing else would. A person the call creates is
-  therefore left alone by `claimPeople`: they stay provisional until their lines are
-  appended, and the call takes them up afterwards, so a failed append leaves a person
-  who still looks like a link that never happened. Anybody else is taken up before the
-  append, which is what stops a caller whose own link is refused from removing a person
-  another window has linked. Test (PR10):
-  `peopleALinkNeverFinishedCreatingAreTakenBack`.
+- **A person created for a link is taken back only by the call that created them.** They
+  are created `provisional`; `claimPeople` leaves a call's own creations alone until its
+  lines are appended, and the call takes them up afterwards, so a link refused in that run
+  removes them (`rollBack`) and one that is saved keeps them. Nothing removes a person on
+  the strength of the flag alone. A launch sweep used to, and it was the wrong trade: a
+  crash between saving a link and clearing the flag would have cost that meeting its
+  person, which is worse than the leftover it cleaned. So a crash between creating the
+  person and saving the link leaves a person in People with no meetings, which the user can
+  remove and which nothing else acts on. Tests (PR10):
+  `aPersonStaysUnfinishedUntilTheirLinkIsSaved`, `aPersonIsTakenUpEvenWhenTheLinkReportsAFailure`.
+- **Accepted races.** Two user-initiated Holos operations on the same data, started in
+  different windows inside the same lock-free window, can interleave in ways Holos does not
+  coordinate. §1.7 is not the reason: it excludes a hostile process running as the user,
+  and Holos does defend against its own concurrent processes elsewhere. These are listed
+  once, deliberately, rather than answered with more coordination:
+  - `holos session export --all` reads "Remember voices" before it takes the meeting's
+    speaker lock, so an export that began just before `holos people remember off` (without
+    forgetting the samples) can write automatic names after the setting changed. Turning
+    the setting off schedules no rewrite, so those names stay in that meeting's exported
+    files until it is exported again. The samples themselves are untouched, and any later
+    export writes them without names.
 - **Enrollment renders are swept.** `DiarizerVoiceSampleExtractor` renders a track to
   `holos-voice-<UUID>` in the temporary directory and deletes it in a `defer`, which a kill
   or a power loss skips; the render is a decoded copy of the meeting's audio, so
