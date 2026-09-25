@@ -29,11 +29,16 @@ struct SetupState {
     var speakerModelsDetail: String?
     /// The status is being checked.
     var speakerModelsBusy = false
+    /// Fix misheard words with Apple's on-device model before they are written.
+    var aiFix = false
+    /// Why the on-device model cannot be used; nil when it can.
+    var aiFixUnavailable: String?
 }
 
 enum SetupAction: Int, CaseIterable {
     case microphone, accessibility, inputMonitoring, assets, dictation, toggleFillers, togglePreview, speakerModels
     case systemAudio
+    case toggleAIFix
 }
 
 /// A regular titled window, so setup status stays visible while the user works in System Settings.
@@ -50,6 +55,8 @@ final class SetupWindow: NSObject, NSWindowDelegate {
                                         target: nil, action: nil)
     private let previewToggle = NSButton(checkboxWithTitle: "Show the dictation preview while dictating",
                                          target: nil, action: nil)
+    private static let aiFixTitle = "Fix misheard words with Apple Intelligence (on-device)"
+    private let aiFixToggle = NSButton(checkboxWithTitle: aiFixTitle, target: nil, action: nil)
     private let opacitySlider = NSSlider(value: 0.85, minValue: 0.3, maxValue: 1.0, target: nil, action: nil)
     private let opacityValue = NSTextField(labelWithString: "")
     private var onOpacityChange: ((Double) -> Void)?
@@ -138,7 +145,12 @@ final class SetupWindow: NSObject, NSWindowDelegate {
         previewToggle.tag = SetupAction.togglePreview.rawValue
         previewToggle.toolTip = "When off, text just streams into the field. Problems that need you (text left on the clipboard, a failed dictation) are always shown."
 
-        let stack = NSStackView(views: [messageLabel, grid, fillerToggle, previewToggle, opacityRow, note])
+        aiFixToggle.target = self
+        aiFixToggle.action = #selector(buttonPressed(_:))
+        aiFixToggle.tag = SetupAction.toggleAIFix.rawValue
+        aiFixToggle.toolTip = "Each phrase is checked by Apple's on-device model before it is typed, which adds about half a second. Only small fixes are kept; Copy Original in the menu has the text as heard."
+
+        let stack = NSStackView(views: [messageLabel, grid, fillerToggle, previewToggle, aiFixToggle, opacityRow, note])
         stack.orientation = .vertical
         stack.alignment = .leading
         stack.spacing = 20
@@ -169,6 +181,9 @@ final class SetupWindow: NSObject, NSWindowDelegate {
         messageLabel.stringValue = "Status: \(state.message)"
         fillerToggle.state = state.removeFillers ? .on : .off
         previewToggle.state = state.showPreview ? .on : .off
+        aiFixToggle.isEnabled = state.aiFixUnavailable == nil
+        aiFixToggle.state = state.aiFix && state.aiFixUnavailable == nil ? .on : .off
+        aiFixToggle.title = state.aiFixUnavailable.map { "\(Self.aiFixTitle) — unavailable: \($0)" } ?? Self.aiFixTitle
         opacitySlider.isEnabled = state.showPreview
         // Leave the slider alone while the user drags it.
         if NSEvent.pressedMouseButtons == 0 { opacitySlider.doubleValue = state.previewOpacity }
