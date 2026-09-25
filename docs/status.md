@@ -9,7 +9,11 @@ Hardware-facing and cross-app acceptance remain pending.
 
 - `doctor` reports local framework/model, voice, permission, and speech-asset
   readiness without requesting permissions. `setup` installs Apple's speech or
-  dictation assets for `en-CA` by default; `en-US` is also selectable.
+  dictation assets for `--locale`; without it, `setup`, `doctor`, `transcribe`,
+  `record start`, and `session import` use the supported locale closest to the macOS
+  preferred languages and region (`en-CA` when none is supported), and
+  `session retranscribe` uses the locale the session was recorded with.
+  `doctor --json` names the locale its asset statuses describe (`locale`).
 - `transcribe` processes a local audio file using Apple's Speech framework. It can
   print finalized timestamped segments, emit JSON, or write JSON to a new file.
 - `record start` captures microphone, system audio, or both into a `.holos` session
@@ -205,11 +209,14 @@ Hardware-facing and cross-app acceptance remain pending.
   playlist, with resume and optional playback. Markdown is read verbatim.
 - `scripts/build-app.sh` builds and ad-hoc signs `build/VoiceIsLocal.app`, an accessory
   menu bar app. Dictation is disabled on first launch; the user explicitly grants
-  permissions, picks the dictation language (en-CA by default; any language Apple's
+  permissions, picks the dictation language (by default the supported one closest to
+  the macOS preferred languages, `en-CA` when none is; any language Apple's
   SpeechTranscriber supports), installs that language's speech model, and enables the
   chosen hold-to-talk shortcut. Right Option is the default choice, with
   Control–Option–Space available instead. It previews speech and finalizes on
-  release; Esc cancels even during finalization.
+  release; Esc cancels even during finalization. Until the default language is
+  known (the supported list loads just after launch), installing its speech model
+  and enabling dictation wait for it, and the meeting start panel keeps Start off.
 - Finalized phrases are written into the focused field while the user speaks: through
   Accessibility (`AXSelectedText`) into writable native fields, and as typed keystrokes
   into terminals and web or other editors without a direct Accessibility write, only

@@ -13,10 +13,13 @@ import Synchronization
 struct Doctor: AsyncParsableCommand {
     static let configuration = CommandConfiguration(abstract: "Inspect local capabilities without requesting permissions.")
     @Flag(help: "Print machine-readable JSON.") var json = false
-    @Option(help: "Check model readiness for this locale.") var locale = "en-CA"
+    @Option(help: ArgumentHelp("Check model readiness for this locale.",
+                               discussion: "Default: the speech locale closest to your preferred languages, else en-CA."))
+    var locale: String?
 
     @MainActor mutating func run() async throws {
         let speech = await AppleSpeechEngine.capabilities(backend: .speech)
+        let locale = locale ?? DictationLanguage.preferredForSystem(supported: speech.supportedLocales)
         let dictation = await AppleSpeechEngine.capabilities(backend: .dictation)
         let model = SystemLanguageModel.default
         // Files only: checking the speaker models never touches the network.
@@ -27,7 +30,7 @@ struct Doctor: AsyncParsableCommand {
             accessibilityPermission: AXIsProcessTrusted(),
             foundationModel: String(describing: model.availability),
             contextSize: model.isAvailable ? model.contextSize : nil,
-            voiceCount: NativeSpeechRenderer.voices().count, speech: speech, dictation: dictation,
+            voiceCount: NativeSpeechRenderer.voices().count, speech: speech, dictation: dictation, locale: locale,
             speechAssetStatus: (try? await AppleSpeechEngine.assetStatus(locale: locale, backend: .speech)) ?? "unsupported",
             dictationAssetStatus: (try? await AppleSpeechEngine.assetStatus(locale: locale, backend: .dictation)) ?? "unsupported",
             sessionsDirectory: HolosPaths.sessions.path,
@@ -44,7 +47,7 @@ struct Doctor: AsyncParsableCommand {
         for item in [speech, dictation] {
             Console.output("\(item.backend.rawValue): \(item.isAvailable ? "available" : "unavailable"); installed locales: \(item.installedLocales.joined(separator: ", "))")
         }
-        Console.output("\(locale) configured assets: speech=\(report.speechAssetStatus), dictation=\(report.dictationAssetStatus)")
+        Console.output("\(report.locale) configured assets: speech=\(report.speechAssetStatus), dictation=\(report.dictationAssetStatus)")
         Console.output("Sessions: \(report.sessionsDirectory)")
         Console.output("Speaker models: \(speakerModels.summary)")
         Console.output("Install transcription assets with: voiceislocal setup --locale \(locale)")
@@ -62,6 +65,9 @@ private struct DoctorReport: Encodable {
     var voiceCount: Int
     var speech: SpeechCapabilities
     var dictation: SpeechCapabilities
+    /// The locale `speechAssetStatus` and `dictationAssetStatus` describe: `--locale`, else the default one, which
+    /// depends on the Mac's preferred languages.
+    var locale: String
     var speechAssetStatus: String
     var dictationAssetStatus: String
     var sessionsDirectory: String
@@ -92,9 +98,10 @@ struct Setup: AsyncParsableCommand {
             try await SpeakerModelSetup.run(force: force)
             return
         }
-        Console.error("Preparing \(recognition.backend.rawValue) assets for \(recognition.locale)…")
-        try await AppleSpeechEngine.installAssets(locale: recognition.locale, backend: recognition.backend)
-        Console.output("Ready: \(recognition.locale) (\(recognition.backend.rawValue)).")
+        let locale = await recognition.resolvedLocale()
+        Console.error("Preparing \(recognition.backend.rawValue) assets for \(locale)…")
+        try await AppleSpeechEngine.installAssets(locale: locale, backend: recognition.backend)
+        Console.output("Ready: \(locale) (\(recognition.backend.rawValue)).")
     }
 }
 

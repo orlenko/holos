@@ -68,7 +68,8 @@ struct Record: AsyncParsableCommand {
             // Decision 9 (docs/meeting-design.md §4.12): in person records the built-in microphone and refuses to start
             // without it ("The built-in microphone is unavailable. Open the lid and try again."); a call records the
             // system default input, and without any input device records system audio alone.
-            let options = RecordingOptions(name: name, source: source, locale: recognition.locale,
+            let locale = await recognition.resolvedLocale()
+            let options = RecordingOptions(name: name, source: source, locale: locale,
                                            backend: recognition.backend, root: directory.map(fileURL) ?? HolosPaths.sessions,
                                            duration: duration, recordOnly: recordOnly, applicationBundleID: app,
                                            vocabulary: vocabulary, sessionID: sessionId, othersInRoom: othersInRoom,

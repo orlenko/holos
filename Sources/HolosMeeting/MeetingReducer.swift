@@ -12,11 +12,32 @@ public struct MeetingStartSettings: Codable, Sendable, Equatable {
     public var applicationBundleID: String?
     public var othersInRoom: Bool
     public var expectedSpeakers: Int?
+    /// The meeting's languages, as locale identifiers ("fr-CA"); the recorder transcribes in the first (`locale`).
+    /// The start panel chooses exactly one today. Empty leaves the choice to the recorder's own default.
+    public var locales: [String]
+
+    /// The language the recorder transcribes in, or nil for the recorder's default.
+    public var locale: String? { locales.first }
 
     public init(name: String, source: AudioSource, applicationBundleID: String? = nil, othersInRoom: Bool = false,
-                expectedSpeakers: Int? = nil) {
+                expectedSpeakers: Int? = nil, locales: [String] = []) {
         self.name = name; self.source = source; self.applicationBundleID = applicationBundleID
-        self.othersInRoom = othersInRoom; self.expectedSpeakers = expectedSpeakers
+        self.othersInRoom = othersInRoom; self.expectedSpeakers = expectedSpeakers; self.locales = locales
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case name, source, applicationBundleID, othersInRoom, expectedSpeakers, locales
+    }
+
+    /// Settings saved before meetings had a language decode with none.
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(name: try container.decode(String.self, forKey: .name),
+                  source: try container.decode(AudioSource.self, forKey: .source),
+                  applicationBundleID: try container.decodeIfPresent(String.self, forKey: .applicationBundleID),
+                  othersInRoom: try container.decode(Bool.self, forKey: .othersInRoom),
+                  expectedSpeakers: try container.decodeIfPresent(Int.self, forKey: .expectedSpeakers),
+                  locales: try container.decodeIfPresent([String].self, forKey: .locales) ?? [])
     }
 
     /// "Meeting 2026-09-23 14:00" in `timeZone`.
@@ -30,8 +51,8 @@ public struct MeetingStartSettings: Codable, Sendable, Equatable {
     }
 
     /// The settings as the recorder accepts them: system audio options only for a source with system audio, others
-    /// in the room only for a call, a trimmed name (the default name when it is empty), and a speaker count only
-    /// within 1...20.
+    /// in the room only for a call, a trimmed name (the default name when it is empty), a speaker count only
+    /// within 1...20, and each language once, as "fr-CA" ("fr_CA" and blanks are cleaned up).
     public func normalized(now: Date = Date(), timeZone: TimeZone = .current) -> MeetingStartSettings {
         var settings = self
         settings.name = name.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -42,6 +63,10 @@ public struct MeetingStartSettings: Codable, Sendable, Equatable {
             settings.applicationBundleID = bundleID.isEmpty ? nil : bundleID
         }
         if let expected = expectedSpeakers, !(1...20).contains(expected) { settings.expectedSpeakers = nil }
+        var seen = Set<String>()
+        settings.locales = locales
+            .map { DictationLanguage.identifier($0.trimmingCharacters(in: .whitespacesAndNewlines)) }
+            .filter { !$0.isEmpty && seen.insert($0).inserted }
         return settings
     }
 }

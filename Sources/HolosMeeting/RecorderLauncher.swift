@@ -48,16 +48,17 @@ import Synchronization
         Bundle.main.bundleURL.appendingPathComponent("Contents/MacOS/voiceislocal", isDirectory: false)
     }
 
-    /// ["record", "start", "--session-id", id, "--name=<name>", "--source", src, ("--app", id)?,
-    ///  ("--others-in-room")?, ("--expected-speakers", n)?, ("--vocabulary-file", path)?,
+    /// ["record", "start", "--session-id", id, "--name=<name>", "--source", src, ("--locale=<locale>")?,
+    ///  ("--app", id)?, ("--others-in-room")?, ("--expected-speakers", n)?, ("--vocabulary-file", path)?,
     ///  "--no-live-text", "--directory", root.path]
     ///
     /// The name is joined to its option: as a separate element, a name starting with "-" ("- standup") would be
-    /// parsed as an option and the recorder would exit with a usage error.
+    /// parsed as an option and the recorder would exit with a usage error. The locale is joined the same way.
     public nonisolated static func arguments(_ settings: MeetingStartSettings, sessionID: String, root: URL,
                                              vocabularyFile: URL?) -> [String] {
         var arguments = ["record", "start", "--session-id", sessionID, "--name=\(settings.name)",
                          "--source", settings.source.rawValue]
+        if let locale = settings.locale { arguments.append("--locale=\(locale)") }
         if let app = settings.applicationBundleID { arguments += ["--app", app] }
         if settings.othersInRoom { arguments.append("--others-in-room") }
         if let expected = settings.expectedSpeakers { arguments += ["--expected-speakers", String(expected)] }
@@ -138,7 +139,9 @@ import Synchronization
                        vocabularyFile: URL?) throws -> Int32? {
         guard running.isEmpty else { throw HolosError.unavailable("A meeting is already recording in Voice is Local.") }
         let vocabulary = try vocabularyFile.map { try VocabularyFile.consume($0) } ?? []
-        let options = RecordingOptions(name: settings.name, source: settings.source, locale: "en-CA", backend: .speech,
+        // The app always passes the language chosen in the start panel; `standard` only for a caller that does not.
+        let options = RecordingOptions(name: settings.name, source: settings.source,
+                                       locale: settings.locale ?? DictationLanguage.standard, backend: .speech,
                                        root: root, applicationBundleID: settings.applicationBundleID,
                                        vocabulary: vocabulary, sessionID: sessionID,
                                        othersInRoom: settings.othersInRoom,

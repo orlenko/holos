@@ -42,9 +42,10 @@ extension Session {
         mutating func run() async throws {
             let file = fileURL(audioFile)
             let fallbackName = file.deletingPathExtension().lastPathComponent
+            let locale = await recognition.resolvedLocale()
             let request = SessionImportCommand.Request(
                 file: file, name: name ?? (fallbackName.isEmpty ? "Imported meeting" : fallbackName),
-                root: directory.map(fileURL) ?? HolosPaths.sessions, locale: recognition.locale,
+                root: directory.map(fileURL) ?? HolosPaths.sessions, locale: locale,
                 backend: recognition.backend, vocabulary: try readVocabulary(), transcribe: !noTranscribe,
                 postprocess: !noTranscribe && !noPostprocess)
             // Ctrl-C (or SIGTERM) cancels the work, so a partial import is removed; a second one ends the process.

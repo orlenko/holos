@@ -13,6 +13,8 @@ final class MeetingAppState {
     static let lastSettingsKey = "meeting.lastSettings"
     static let consentKey = "meeting.consentReminderDismissed"
     static let promptedKey = "meeting.promptedInterrupted"
+    /// The meeting languages chosen in the start panel (`HolosAppDelegate.meetingLocales`).
+    static let localesKey = "meetingLocales"
 
     var controller: MeetingController?
     var maintenance: MaintenanceLauncher?
@@ -53,6 +55,10 @@ final class MeetingAppState {
     var speakerModelInstall: String?
     /// The last install's failure, shown until the next attempt.
     var speakerModelError: String?
+    /// The start panel's speech model checks and installs (HolosApp+MeetingLanguage.swift).
+    var speechModels: [String: String] = [:]
+    var speechModelInstalling: String?
+    var speechModelErrors: [String: String] = [:]
     /// The status item's menu is open; per-second updates change its lines in place.
     var menuOpen = false
     var menuStale = false
@@ -441,6 +447,8 @@ extension HolosAppDelegate: NSMenuDelegate {
                     self?.startMeeting(settings, hideConsentReminder: hideConsent)
                 },
                 onInstallSpeakerModels: { [weak self] in self?.installSpeakerModels() },
+                onCheckSpeechModel: { [weak self] locale in self?.checkMeetingSpeechModel(locale) },
+                onInstallSpeechModel: { [weak self] locale in self?.installMeetingSpeechModel(locale) },
                 onClose: { [weak self] in self?.setDockPresence(false, for: "start") })
         }
         let saved = UserDefaults.standard.data(forKey: MeetingAppState.lastSettingsKey)
@@ -448,29 +456,40 @@ extension HolosAppDelegate: NSMenuDelegate {
         setDockPresence(true, for: "start")
         meeting.startPanel?.show(
             name: MeetingStartSettings.defaultName(now: Date(), timeZone: .current), saved: saved,
+            // No languages yet while the default one is not known: the panel keeps Start off until they arrive.
+            locales: meetingLocales ?? [],
             consentDismissed: UserDefaults.standard.bool(forKey: MeetingAppState.consentKey))
+        if localeGroups.isEmpty { Task { await loadLanguages() } }
         if meeting.speakerModels != "verified" { refreshSpeakerModels() }
     }
 
     private func startPanelEnvironment() -> MeetingStartPanel.Environment {
         let root = meeting.controller?.root ?? HolosPaths.sessions
-        return MeetingStartPanel.Environment(
+        var environment = MeetingStartPanel.Environment(
             devices: BuiltInMicrophone.devices(), freeBytes: try? VolumeFreeSpace().availableBytes(at: root),
             speakerModels: meeting.speakerModels, checking: meeting.checkingSpeakerModels,
             installProgress: meeting.speakerModelInstall, installError: meeting.speakerModelError)
+        addLanguages(to: &environment)
+        return environment
     }
 
     /// Starts from the panel; returns the error text to show there, or nil once the recorder is starting.
     private func startMeeting(_ settings: MeetingStartSettings, hideConsentReminder: Bool) -> String? {
         guard let controller = meeting.controller else { return "Meetings are not available." }
+        // The panel keeps Start off until it has a language; without one the recorder would take its own default.
+        guard !settings.normalized().locales.isEmpty else {
+            return "Still finding the meeting language; try again in a moment."
+        }
         meeting.notice = nil
         do {
             try controller.start(settings)
         } catch {
             return error.localizedDescription
         }
+        rememberMeetingLocales(settings)
         var remembered = settings
         remembered.name = ""
+        remembered.locales = []  // kept in `meetingLocales` instead
         if let data = try? HolosJSON.encoder().encode(remembered) {
             UserDefaults.standard.set(data, forKey: MeetingAppState.lastSettingsKey)
         }
