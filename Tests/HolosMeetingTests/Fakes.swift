@@ -67,8 +67,16 @@ struct PollBudget {
     /// Waits one interval and charges the budget for it, never more than four intervals of scheduling jitter.
     mutating func poll() async {
         let before = clock.now
-        try? await Task.sleep(for: Self.interval)
-        spent += min(before.duration(to: clock.now), Self.interval * 4)
+        do {
+            try await Task.sleep(for: Self.interval)
+            spent += min(before.duration(to: clock.now), Self.interval * 4)
+        } catch {
+            // Cancelled: swift-testing has given up on this test, and `Task.sleep` returns at once from here on.
+            // Charging what that call actually cost would be charging nothing, leaving the loop spinning on its
+            // condition until the hard deadline -- minutes, for the 300 s wait in `LiveTrackTests`, holding the
+            // main actor while the test it belongs to is trying to end. The budget ends with the wait instead.
+            spent = timeout
+        }
     }
 }
 
