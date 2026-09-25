@@ -14,6 +14,10 @@ public struct EditJournal: Sendable, Equatable {
     public init(edits: [SpeakerEdit] = [], tornTail: Bool = false, unreadableLines: Int = 0) {
         self.edits = edits; self.tornTail = tornTail; self.unreadableLines = unreadableLines
     }
+
+    /// Every line was read: no torn tail and no unreadable line. A projection built from an incomplete journal may
+    /// miss a link, a rejection, or a reassignment, so nothing learns a voice or uses recognition from it.
+    public var isComplete: Bool { unreadableLines == 0 && !tornTail }
 }
 
 /// Speaker files inside a session folder (docs/meeting-design.md §2.1): immutable runs, the head pointer,
@@ -156,6 +160,37 @@ public enum SessionSpeakerStore {
         try AtomicFile.writeJSON(result, to: SessionPaths.recognition(result.runID, in: session))
     }
 
+    /// Removes speakers/recognition/ and everything in it (Forget All Voices, PR10). Nothing to remove is not an
+    /// error; a symbolic link or file in place of speakers/ is refused (`invalidInput`). Caller holds the speaker lock.
+    public static func deleteRecognition(session: URL) throws {
+        try SessionLockFile.requireSessionFolder(session)
+        guard try AtomicFile.removeTree(["speakers", "recognition"], in: session) else { return }
+        log.info("Deleted session recognition results")
+    }
+
+    // MARK: - Generation
+
+    /// The session's speaker generation (docs/meeting-design.md §4.10, PR10): the head run ID and the edit journal's
+    /// byte length, as "<runID>:<bytes>"; nil without a head. The journal only grows under one head, so any edit or
+    /// relabel changes it. Read it under the speaker lock to compare it with a later reading.
+    public static func generation(session: URL) throws -> String? {
+        guard let head = try readHead(session: session) else { return nil }
+        var length: Int64 = 0
+        if let (parent, name) = try AtomicFile.openParentIfPresent(of: SessionPaths.edits(session)) {
+            defer { Darwin.close(parent) }
+            var info = stat()
+            if fstatat(parent, name, &info, AT_SYMLINK_NOFOLLOW) == 0 {
+                guard (info.st_mode & S_IFMT) == S_IFREG else {
+                    throw HolosError.invalidInput("speakers/edits.jsonl is not a regular file.")
+                }
+                length = Int64(info.st_size)
+            } else if errno != ENOENT {
+                throw HolosError.io("Cannot inspect speakers/edits.jsonl: \(AtomicFile.errnoText()).")
+            }
+        }
+        return "\(head.runID):\(length)"
+    }
+
     // MARK: - Voice data (biometric; only while "Remember voices" is on)
 
     public static func readVoiceData(runID: String, session: URL) throws -> SessionVoiceData? {
@@ -185,6 +220,77 @@ public enum SessionSpeakerStore {
         try SessionLockFile.requireSessionFolder(session)
         guard try AtomicFile.removeTree(["speakers", "voice"], in: session) else { return }
         log.info("Deleted session voice data")
+    }
+
+    // MARK: - Forgetting
+
+    /// The run IDs of the `<runID>.json` files in speakers/voice/, sorted, and whether that folder holds anything
+    /// else (a leftover temporary file, a link, a folder), which a forget cannot check for a person. ([], false)
+    /// without the folder. A listing error is thrown.
+    public static func voiceDataFiles(session: URL) throws -> (runIDs: [String], other: Bool) {
+        try speakerFiles(in: SessionPaths.voiceDirectory(session), session: session)
+    }
+
+    /// Like `voiceDataFiles`, for speakers/recognition/.
+    public static func recognitionFiles(session: URL) throws -> (runIDs: [String], other: Bool) {
+        try speakerFiles(in: SessionPaths.recognitionDirectory(session), session: session)
+    }
+
+    /// For a forget in a session whose manifest cannot be read, so its speakers cannot be checked for a person:
+    /// removes speakers/voice/ and, with `recognition`, speakers/recognition/. Holds the speaker lock when the folder
+    /// has a `manifest.json` file; without one the lock cannot be taken, and no Holos process can take it to write
+    /// speaker files there either. Returns whether anything was removed. Refuses (`invalidInput`) a symbolic link or
+    /// file in place of the session folder or speakers/.
+    public static func purgeVoiceFolders(session: URL, recognition: Bool) throws -> Bool {
+        let purge = { () throws -> Bool in
+            try SessionLockFile.requireSessionFolder(session)
+            var removed = try AtomicFile.removeTree(["speakers", "voice"], in: session)
+            if recognition { removed = try AtomicFile.removeTree(["speakers", "recognition"], in: session) || removed }
+            return removed
+        }
+        guard try AtomicFile.entryType(at: SessionPaths.manifest(session)) == S_IFREG else { return try purge() }
+        return try SessionArchive.withSpeakerLock(at: session, purge)
+    }
+
+    /// Removes the leftovers of an interrupted atomic write from a meeting's `speakers/recognition` folder:
+    /// regular files named `.<token>.tmp`, which `AtomicFile` publishes through and unlinks itself, but which a
+    /// kill between their fsync and their rename leaves behind. Nothing else clears that folder, so a caller that
+    /// refuses to act while it holds an entry it does not know would otherwise wait for one for ever. The caller
+    /// holds the meeting's speaker lock, so no recognition write is in flight and such a file belongs to nobody.
+    /// Returns whether anything was removed.
+    @discardableResult
+    public static func purgeRecognitionLeftovers(session: URL) throws -> Bool {
+        try SessionLockFile.requireSessionFolder(session)
+        let folder = SessionPaths.recognitionDirectory(session)
+        guard let entries = try AtomicFile.listFolder(folder) else { return false }
+        var removed = false
+        for entry in entries where entry.type == S_IFREG && isAtomicWriteLeftover(entry.name) {
+            _ = try AtomicFile.removeTree(["speakers", "recognition", entry.name], in: session)
+            removed = true
+        }
+        return removed
+    }
+
+    /// `.<token>.tmp`, the name `AtomicFile` gives the file it writes before renaming it into place.
+    static func isAtomicWriteLeftover(_ name: String) -> Bool {
+        guard name.hasPrefix("."), name.hasSuffix(".tmp") else { return false }
+        return SessionArchive.validToken(String(name.dropFirst().dropLast(4)))
+    }
+
+    private static func speakerFiles(in folder: URL, session: URL) throws -> (runIDs: [String], other: Bool) {
+        try SessionLockFile.requireSessionFolder(session)
+        guard let entries = try AtomicFile.listFolder(folder) else { return ([], false) }
+        var runIDs: [String] = []
+        var other = false
+        for entry in entries where entry.name != ".DS_Store" {
+            let id = entry.name.hasSuffix(".json") ? String(entry.name.dropLast(5)) : ""
+            if entry.type == S_IFREG, SessionArchive.validToken(id) {
+                runIDs.append(id)
+            } else {
+                other = true
+            }
+        }
+        return (runIDs.sorted(), other)
     }
 
     // MARK: - Private

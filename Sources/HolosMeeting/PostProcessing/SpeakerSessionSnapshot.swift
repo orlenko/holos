@@ -52,7 +52,16 @@ public struct SpeakerSessionSnapshot: Sendable {
     /// - `transcriptChanged` is set only when the current revision can be read.
     /// - Every such fallback, and every journal line or event skipped, is recorded (`runProblem`,
     ///   `meetingInfoDamaged`, `recognitionUnreadable`, `journal`, `skippedEvents`) and reported by `diagnostics`.
-    public static func load(session: URL, profileNames: [String: String] = [:]) throws -> SpeakerSessionSnapshot {
+    /// - With an incomplete edit journal (`EditJournal.isComplete` false) the recognition result is not read or
+    ///   applied (`recognition` nil): no suggestion or automatic name is made on labels that may miss an edit.
+    /// - `applyRecognition` false does the same for the whole meeting: the stored result is neither read nor
+    ///   applied, so no suggestion or automatic name is shown or exported. Callers that read the people store pass
+    ///   `rememberVoices` (`VoiceProfileService.recognitionAllowed`), which is the promise the People window makes
+    ///   when the setting is turned off with the samples kept: "Kept samples are not used while Remember voices is
+    ///   off." Nothing is deleted, so turning it back on brings the suggestions back. Names are unaffected: a
+    ///   meeting's own names, and the people's current names in `profileNames`, are not governed by the setting.
+    public static func load(session: URL, profileNames: [String: String] = [:],
+                            applyRecognition: Bool = true) throws -> SpeakerSessionSnapshot {
         let manifest = try SessionArchive.readManifest(at: session)
         let meeting: MeetingInfo
         var meetingInfoDamaged = false
@@ -106,7 +115,13 @@ public struct SpeakerSessionSnapshot: Sendable {
         let journal = try SessionSpeakerStore.readEdits(session: session)
         var recognition: RecognitionResult?
         var recognitionUnreadable = false
-        if let run {
+        if !journal.isComplete {
+            // A torn or unreadable edit may be a link or a "Not Jim": no suggestion or automatic name is shown (or
+            // exported) on labels that may miss it.
+            log.error("Session \(manifest.id, privacy: .public): speaker edits cannot all be read; voice suggestions not applied")
+        } else if !applyRecognition {
+            log.info("Session \(manifest.id, privacy: .public): Remember voices is off; voice suggestions not applied")
+        } else if let run {
             do {
                 recognition = try SessionSpeakerStore.readRecognition(runID: run.id, session: session)
             } catch let error where SessionFiles.isDamage(error) {

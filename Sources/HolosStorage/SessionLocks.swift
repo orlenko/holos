@@ -346,7 +346,14 @@ enum SessionLockFile {
 
     private static func openLockFile(_ name: String, inFolder folder: Int32, create: Bool) throws -> Int32? {
         let flags = create ? O_CREAT | O_RDWR : O_RDONLY
-        let fd = openat(folder, name, flags | O_NONBLOCK | O_CLOEXEC | O_NOFOLLOW, 0o600)
+        var fd = openat(folder, name, flags | O_NONBLOCK | O_CLOEXEC | O_NOFOLLOW, 0o600)
+        // When two threads create the same new lock file at once, macOS can fail the second O_CREAT open with
+        // ENOENT although the file then exists; opening again finds it.
+        var retries = 3
+        while fd < 0, create, errno == ENOENT, retries > 0 {
+            retries -= 1
+            fd = openat(folder, name, flags | O_NONBLOCK | O_CLOEXEC | O_NOFOLLOW, 0o600)
+        }
         guard fd >= 0 else {
             let code = errno
             if code == ENOENT, !create { return nil }

@@ -158,7 +158,11 @@ several unrelated external APIs. The coordinator owns shared contract changes.
   timestamp alignment, overlap/unknown handling, rename/split/merge/reassignment.
 - **Accept:** Renaming does not rerun inference; timing survives word/turn splits;
   a new diarization revision does not silently discard human edits; reference
-  meetings meet the agreed speaker-attribution bar. No cross-session identity claim.
+  meetings meet the agreed speaker-attribution bar. Cross-session identity only as
+  opt-in suggestions from voices the user confirmed (voice profiles,
+  [meeting-design.md](meeting-design.md) §4.10): no automatic names until thresholds
+  are calibrated on the user's own meetings, and names carry across meetings without
+  any voiceprint.
 
 ### T12 — Native speech renderer and short-speech CLI
 

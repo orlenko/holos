@@ -9,7 +9,7 @@ public struct SpeakerEditResult: Sendable {
     /// The session after the edit (loaded once the speaker lock was released; it may include later edits).
     public var snapshot: SpeakerSessionSnapshot
     /// True when the batch changed a turn's speaker, turn boundaries, merges, exclusions, or links of a
-    /// speaker whose profile has a sample from this session (PR10 sets it; always false before PR10).
+    /// speaker whose profile has a sample from this session (set only when the editor was given the profile store).
     /// The caller must then `await VoiceProfileService.refreshSamples(session:extractor:store:)`.
     public var needsSampleRefresh: Bool
     /// What to warn about after the edit: `snapshot.diagnostics` merged with the journal as it was read under the
@@ -60,19 +60,39 @@ public enum SpeakerEditor {
     /// - A head run that cannot be used (missing or damaged, or its transcript is) refuses the edit (`unavailable`).
     /// - Once the lines are appended, a failure to load the result or to regenerate the exports throws
     ///   `HolosError.incomplete` saying the change was saved.
+    /// - With `profiles` (PR10), the result's `needsSampleRefresh` says whether the batch changed what a person's
+    ///   voice sample from this meeting is built from (the speakers linked to them and those speakers' qualifying
+    ///   turns); the caller then awaits `VoiceProfileService.refreshSamples(session:extractor:store:)`. Without it,
+    ///   `needsSampleRefresh` is false.
+    /// - `requirePeople` (with `profiles`) maps each person this batch links to the name it is saving for them.
+    ///   In one locked step right before the append (§1.7 order: this speaker lock, then `profiles.lock`), each
+    ///   must still be in the store under that name; then they are marked used and no longer provisional. A person
+    ///   another window forgot or merged away is refused with `unavailable` instead of being linked to by nobody,
+    ///   and so is one another window renamed, because the batch's lines and the caller's view were both made from
+    ///   the name the caller saw: saving a different one would give the meeting a name the user never chose. The
+    ///   claim happens there, rather than after the append, so that a caller whose own link is refused can tell a
+    ///   person nobody has taken up from one another window has linked meanwhile
+    ///   (`VoiceProfileService.rollBack`).
+    /// - `requireCompleteJournal` refuses the batch, under the same lock, when the meeting's edit journal has a
+    ///   torn or unreadable line (`EditJournal.isComplete`). `confirmAll` needs it: its suggestions were read from
+    ///   labels that a line this build cannot decode may contradict.
     @discardableResult
     public static func apply(_ actions: [SpeakerEditAction], view: SpeakerProjection, session: URL, source: String,
                              regenerateExports: Bool = true,
-                             profileNames: [String: String] = [:]) throws -> SpeakerEditResult {
+                             profileNames: [String: String] = [:],
+                             profiles: SpeakerProfileStore? = nil,
+                             requirePeople: [String: String] = [:], createdHere: Set<String> = [],
+                             requireCompleteJournal: Bool = false) throws -> SpeakerEditResult {
         let saved = try save(actions, view: view, session: session, source: source, profileNames: profileNames,
-                             skipIfUnchanged: false)
+                             skipIfUnchanged: false, profiles: profiles, requirePeople: requirePeople,
+                             createdHere: createdHere, requireCompleteJournal: requireCompleteJournal)
         return try finish(saved ?? Saved(edits: [], journal: EditJournal()), session: session,
-                          regenerateExports: regenerateExports, profileNames: profileNames)
+                          regenerateExports: regenerateExports, profileNames: profileNames, profiles: profiles)
     }
 
     /// `apply`, except that a batch that would leave every speaker and turn of the CURRENT session as it is (a rename
     /// to the current name, excluding turns already excluded, …) is not saved, since it would only use up an undo
-    /// step: returns nil, having written nothing and regenerated nothing.
+    /// step: returns nil, having written nothing, regenerated nothing, and claimed nobody.
     ///
     /// The decision is made under the speaker lock, after the same checks as `apply`: an action whose fingerprint on
     /// `view` differs from the current state is refused with `changedMessage` even when it would change nothing on
@@ -81,21 +101,35 @@ public enum SpeakerEditor {
     /// tell the user there is nothing to change.
     public static func applyUnlessUnchanged(_ actions: [SpeakerEditAction], view: SpeakerProjection, session: URL,
                                             source: String, regenerateExports: Bool = true,
-                                            profileNames: [String: String] = [:]) throws -> SpeakerEditResult? {
+                                            profileNames: [String: String] = [:],
+                                            profiles: SpeakerProfileStore? = nil,
+                                            requirePeople: [String: String] = [:],
+                                            createdHere: Set<String> = [],
+                                            requireCompleteJournal: Bool = false) throws -> SpeakerEditResult? {
         guard let saved = try save(actions, view: view, session: session, source: source,
-                                   profileNames: profileNames, skipIfUnchanged: true) else { return nil }
-        return try finish(saved, session: session, regenerateExports: regenerateExports, profileNames: profileNames)
+                                   profileNames: profileNames, skipIfUnchanged: true, profiles: profiles,
+                                   requirePeople: requirePeople, createdHere: createdHere,
+                                   requireCompleteJournal: requireCompleteJournal) else { return nil }
+        return try finish(saved, session: session, regenerateExports: regenerateExports, profileNames: profileNames,
+                          profiles: profiles)
     }
 
     /// The compare-and-append of `apply`; nil (nothing written) when `skipIfUnchanged` and the batch leaves the
     /// current state as it is.
     private static func save(_ actions: [SpeakerEditAction], view: SpeakerProjection, session: URL, source: String,
-                             profileNames: [String: String], skipIfUnchanged: Bool) throws -> Saved? {
+                             profileNames: [String: String], skipIfUnchanged: Bool,
+                             profiles: SpeakerProfileStore?, requirePeople: [String: String],
+                             createdHere: Set<String>, requireCompleteJournal: Bool) throws -> Saved? {
         guard !actions.isEmpty else { throw HolosError.invalidInput("There is no speaker change to save.") }
         try requireSource(source)
         let preloaded = readRun(view.runID, session: session)
         return try SessionArchive.withSpeakerLock(at: session) { () throws -> Saved? in
             let base = try currentBase(view: view, session: session, preloaded: preloaded, profileNames: profileNames)
+            // Checked here, not before the lock: another Holos can append a line this build cannot read between
+            // the two, and a batch decided on labels that may miss a link or a rejection must not be appended.
+            guard !requireCompleteJournal || base.journal.isComplete else {
+                throw HolosError.unavailable(VoiceProfileService.incompleteEdits)
+            }
             var viewState = view
             var current = base.projection
             let batchID = UUID().uuidString
@@ -129,9 +163,11 @@ public enum SpeakerEditor {
                 log.info("Session \(base.run.sessionID, privacy: .public): a speaker change of \(edits.count, privacy: .public) edits changes nothing; not saved")
                 return nil
             }
+            try claimPeople(requirePeople, createdHere: createdHere, profiles: profiles, at: at)
             try SessionSpeakerStore.appendEdits(edits, session: session)
             log.info("Session \(base.run.sessionID, privacy: .public): saved \(edits.count, privacy: .public) speaker edits (batch \(batchID, privacy: .public), run \(base.run.id, privacy: .public))")
-            return Saved(edits: edits, journal: base.journal)
+            return Saved(edits: edits, journal: base.journal, sessionID: base.run.sessionID,
+                         before: base.projection, after: current)
         }
     }
 
@@ -151,9 +187,11 @@ public enum SpeakerEditor {
     ///   batch is reverted; such lines are reverted in the same new batch, so they stay out of effect and undo never
     ///   gets stuck on them. After the newest batch only stale lines and reverts follow, so nothing else can change;
     ///   if the replay shows otherwise, the undo is refused with `invalidInput`.
+    /// - With `profiles` (PR10), `needsSampleRefresh` is set as `apply` sets it.
     @discardableResult
     public static func undoLast(view: SpeakerProjection, session: URL, source: String,
-                                regenerateExports: Bool = true) throws -> SpeakerEditResult {
+                                regenerateExports: Bool = true,
+                                profiles: SpeakerProfileStore? = nil) throws -> SpeakerEditResult {
         try requireSource(source)
         let preloaded = readRun(view.runID, session: session)
         let saved = try SessionArchive.withSpeakerLock(at: session) { () throws -> Saved in
@@ -210,9 +248,11 @@ public enum SpeakerEditor {
             }
             try SessionSpeakerStore.appendEdits(edits, session: session)
             log.info("Session \(base.run.sessionID, privacy: .public): undid batch \(batchID, privacy: .public) with \(edits.count, privacy: .public) reverts (batch \(revertBatch, privacy: .public))")
-            return Saved(edits: edits, journal: base.journal)
+            return Saved(edits: edits, journal: base.journal, sessionID: base.run.sessionID,
+                         before: base.projection, after: current)
         }
-        return try finish(saved, session: session, regenerateExports: regenerateExports, profileNames: [:])
+        return try finish(saved, session: session, regenerateExports: regenerateExports, profileNames: [:],
+                          profiles: profiles)
     }
 
     /// A speaker name as it is saved: runs of whitespace, line breaks, and control characters become one space and
@@ -276,6 +316,17 @@ public enum SpeakerEditor {
         return next.appliedEditIDs == current.appliedEditIDs.filter { $0 != target } && stale(next) == stale(current)
     }
 
+    /// The lines a write appended, with the journal as it was read under the lock just before (its torn last line,
+    /// if any, is repaired by the append), and the session's labels (no recognition) before and after the batch.
+    /// The labels are nil for a batch that appended nothing.
+    private struct Saved {
+        let edits: [SpeakerEdit]
+        let journal: EditJournal
+        var sessionID: String?
+        var before: SpeakerProjection?
+        var after: SpeakerProjection?
+    }
+
     /// The head run with its transcript and the current journal, read under the speaker lock.
     private struct Base {
         let run: DiarizationRun
@@ -335,10 +386,20 @@ public enum SpeakerEditor {
     /// Loads the result after the lock is released and regenerates the exports when asked. The lines are saved
     /// by then, so a failure here says so.
     private static func finish(_ saved: Saved, session: URL, regenerateExports: Bool,
-                               profileNames: [String: String]) throws -> SpeakerEditResult {
+                               profileNames: [String: String],
+                               profiles: SpeakerProfileStore?) throws -> SpeakerEditResult {
+        var needsSampleRefresh = false
+        if let store = profiles, let sessionID = saved.sessionID, let before = saved.before, let after = saved.after {
+            needsSampleRefresh = VoiceProfileService.samplesAffected(before: before, after: after,
+                                                                     sessionID: sessionID, store: store)
+        }
+        // With the people store in hand, the reloaded labels and the rewritten exports follow "Remember voices":
+        // off means the kept samples, and so the suggestions made from them, are not used.
+        let applyRecognition = profiles.map { VoiceProfileService.recognitionAllowed(store: $0) } ?? true
         let snapshot: SpeakerSessionSnapshot
         do {
-            snapshot = try SpeakerSessionSnapshot.load(session: session, profileNames: profileNames)
+            snapshot = try SpeakerSessionSnapshot.load(session: session, profileNames: profileNames,
+                                                       applyRecognition: applyRecognition)
         } catch {
             log.error("Saved \(saved.edits.count, privacy: .public) speaker edits, then could not reload the session: \(error.localizedDescription, privacy: .private)")
             throw HolosError.incomplete("The speaker change was saved, but the speaker labels could not be "
@@ -346,7 +407,8 @@ public enum SpeakerEditor {
         }
         if regenerateExports {
             do {
-                try SessionExports.regenerate(session: session, profileNames: profileNames)
+                try SessionExports.regenerate(session: session, profileNames: profileNames,
+                                              applyRecognition: applyRecognition)
             } catch {
                 log.error("Saved \(saved.edits.count, privacy: .public) speaker edits, then could not rewrite the exports: \(error.localizedDescription, privacy: .private)")
                 throw HolosError.incomplete("The speaker change was saved, but the exports could not be rewritten: "
@@ -355,15 +417,37 @@ public enum SpeakerEditor {
         }
         let before = SpeakerSnapshotDiagnostics(session: session, unreadableLines: saved.journal.unreadableLines,
                                                 tornTail: saved.journal.tornTail)
-        return SpeakerEditResult(snapshot: snapshot, needsSampleRefresh: false,
+        return SpeakerEditResult(snapshot: snapshot, needsSampleRefresh: needsSampleRefresh,
                                  diagnostics: snapshot.diagnostics.merging(before))
     }
 
-    /// The lines a write appended, with the journal as it was read under the lock just before (its torn last line,
-    /// if any, is repaired by the append).
-    private struct Saved {
-        let edits: [SpeakerEdit]
-        let journal: EditJournal
+    /// Under `profiles.lock` (the caller holds this session's speaker lock: the §1.7 order), checks that every
+    /// person in `people` is still in the store under the name the batch is saving for them, then marks them used
+    /// and no longer provisional. Throws `unavailable` when one is gone or was renamed; the store write is rolled
+    /// back with it, so nothing is claimed and the edits are never appended. Called right before the append, so an
+    /// edit refused for any other reason claims nobody.
+    static func claimPeople(_ people: [String: String], createdHere: Set<String> = [],
+                            profiles: SpeakerProfileStore?, at: Date) throws {
+        guard !people.isEmpty, let profiles else { return }
+        try profiles.update { database in
+            for id in people.keys.sorted() {
+                guard let index = database.profiles.firstIndex(where: { $0.id == id }) else {
+                    throw HolosError.unavailable("That person is no longer in Holos (another window forgot or "
+                                                 + "merged them); reload and choose a name again.")
+                }
+                guard database.profiles[index].displayName == people[id] else {
+                    throw HolosError.unavailable("That person was renamed in another Holos window; reload and "
+                                                 + "choose the name again.")
+                }
+                // A person this very call created stays untouched until its lines are appended: if the append
+                // fails, or the process goes, they must still look like a link that never happened, so the
+                // caller's rollback and the launch sweep can take them back. Anybody else is taken up here,
+                // before the append, so a caller whose own link is refused cannot remove them.
+                guard !createdHere.contains(id) else { continue }
+                database.profiles[index].lastUsedAt = at
+                database.profiles[index].provisional = nil
+            }
+        }
     }
 
     private static func requireSource(_ source: String) throws {

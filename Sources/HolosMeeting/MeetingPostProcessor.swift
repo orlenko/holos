@@ -49,12 +49,15 @@ public struct MeetingPostProcessor: Sendable {
     let diarizer: (any SpeakerDiarizer)?
     let options: PostProcessingOptions
     let freeSpace: any FreeSpaceProvider
+    let profiles: SpeakerProfileStore?
 
     /// `diarizer == nil` (speaker models not installed) gives speaker-less exports and the setup hint.
-    /// `freeSpace` measures the volume before rendering.
+    /// `freeSpace` measures the volume before rendering. With `profiles` (PR10) whose "Remember voices" is on and
+    /// some person has voice samples, stage 7 compares the new run's speakers with them (distances only), and the
+    /// exports show people's current names; without it nothing is recognized.
     public init(diarizer: (any SpeakerDiarizer)? = nil, options: PostProcessingOptions = .init(),
-                freeSpace: any FreeSpaceProvider = VolumeFreeSpace()) {
-        self.diarizer = diarizer; self.options = options; self.freeSpace = freeSpace
+                freeSpace: any FreeSpaceProvider = VolumeFreeSpace(), profiles: SpeakerProfileStore? = nil) {
+        self.diarizer = diarizer; self.options = options; self.freeSpace = freeSpace; self.profiles = profiles
     }
 
     /// Runs every stage for one finished session under `lease` (nil: acquire one, retry 1 s) and returns the
@@ -181,7 +184,11 @@ public struct MeetingPostProcessor: Sendable {
         // Stage 8: exports (the speaker lock taken in stage 6 was released there).
         started = recorder.begin(.export, message: "Writing transcript files…")
         do {
-            let result = try SessionExports.regenerate(session: session)
+            let names = profiles.map { VoiceProfileService.profileNames(store: $0) } ?? [:]
+            let result = try SessionExports.regenerate(session: session, profileNames: names,
+                                                       applyRecognition: profiles.map {
+                                                           VoiceProfileService.recognitionAllowed(store: $0)
+                                                       } ?? true)
             let moved = result.movedAside.count
             recorder.end(.export, .succeeded,
                          moved == 0 ? nil : "Moved \(moved) edited transcript \(moved == 1 ? "file" : "files") aside.",
@@ -214,6 +221,25 @@ public struct MeetingPostProcessor: Sendable {
     }
 
     /// Stages 2–7. Every failure is recorded as a stage outcome; only cancellation throws.
+    /// The people store's forget counter, or nil with no store (and nil when it cannot be read, which compares
+    /// equal to itself, so a store that is unreadable throughout a pass does not stop it writing).
+    private func forgetEpochNow() -> Int? {
+        guard let profiles else { return nil }
+        return (try? profiles.load().forgetEpoch) ?? nil
+    }
+
+    /// Whether a forget is still on its way through the meetings. A pass that started after such a forget's store
+    /// write sees no change in the counter, yet its clean-up may pass this meeting before the pass publishes, so
+    /// the voice file waits for it either way.
+    private func aForgetIsStillCleaning() -> Bool {
+        guard let profiles else { return false }
+        guard let pending = try? profiles.pendingForgets() else { return true }
+        if pending.contains(where: { $0.kind != .merge }) { return true }
+        // A forget of a newer Holos is not in that list: this build cannot decode its line, and that build can
+        // scrub this meeting and finish while this pass runs.
+        return (try? profiles.forgetJournalHasUnreadableLines()) ?? true
+    }
+
     private func labelSpeakers(session: URL, manifest: SessionManifest, transcript: Transcript,
                                recorder: StageRecorder) async throws -> SpeakerResult {
         // Stage 2: track policies.
@@ -225,6 +251,14 @@ public struct MeetingPostProcessor: Sendable {
             recorder.skip([.render, .diarize, .align], message)
             return SpeakerResult(problem: message)
         }
+        // Rendering and diarizing take a while, and this pass may write a voice file (evaluation sessions only).
+        // A forget that lands meanwhile has already cleaned this meeting, so what this pass computed must not be
+        // written afterwards: the epoch it started with is compared again under the speaker lock at the publish.
+        let forgetEpoch = forgetEpochNow()
+        // And whether one was already on its way through the meetings: such a forget can reach this meeting and
+        // finish while this pass is still rendering, leaving nothing pending and the counter unchanged at the
+        // publish, so neither test would catch it on its own.
+        let forgetWasCleaning = aForgetIsStillCleaning()
         let othersInRoom = options.othersInRoom ?? meeting.othersInRoom
         recorder.journal.update { $0.othersInRoom = othersInRoom }
         var result = SpeakerResult(othersInRoom: othersInRoom)
@@ -313,7 +347,11 @@ public struct MeetingPostProcessor: Sendable {
         try Task.checkCancellation()
         do {
             switch try SpeakerAnalysis.publish(built, session: session, transcript: transcript, force: options.force,
-                                               writeVoiceData: options.forceVoiceData) {
+                                               writeVoiceData: options.forceVoiceData,
+                                               voiceDataStillWanted: {
+                                                   self.forgetEpochNow() == forgetEpoch && !forgetWasCleaning
+                                                       && !self.aForgetIsStillCleaning()
+                                               }) {
             case .keptEditedHead(let runID):
                 recorder.end(.align, .skipped, SpeakerAnalysis.editedHead, since: started)
                 result.runID = runID
@@ -334,7 +372,21 @@ public struct MeetingPostProcessor: Sendable {
             result.runID = head?.usableRunID
             result.problem = "Cannot save the speaker labels: \(error.localizedDescription)"
         }
-        // Stage 7 (recognition) is added by PR10; without a profile store nothing is recognized.
+
+        // Stage 7: recognition on the in-memory voice data of the run just published (never persisted here).
+        if result.published, let profiles {
+            let started = recorder.begin(.recognize, message: "Comparing voices…")
+            switch RecognizeStage.run(built.run, voiceData: built.voiceData, session: session, store: profiles) {
+            case .skipped(let message):
+                recorder.end(.recognize, .skipped, message, since: started)
+            case .recognized(let recognition):
+                recorder.end(.recognize, .succeeded, RecognizeStage.message(recognition), since: started)
+            case .failed(let message):
+                recorder.end(.recognize, .failed, message, since: started)
+                // The labels are saved; only the suggestions are missing, which makes the record partial.
+                result.problem = ([result.message].compactMap { $0 } + [message]).joined(separator: " ")
+            }
+        }
         return result
     }
 
