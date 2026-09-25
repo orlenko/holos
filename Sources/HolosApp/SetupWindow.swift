@@ -5,8 +5,11 @@ struct SetupState {
     var microphone: String
     var accessibility: Bool
     var inputMonitoring: Bool
-    /// Screen & System Audio Recording, which online calls need to record the other side; in-person meetings do not.
+    /// Screen & System Audio Recording, which meetings need to record the computer's audio; without it they record
+    /// the microphone alone.
     var systemAudio = false
+    /// Advanced: meetings record the computer's audio (UserDefaults "meetingRecordSystemAudio", on by default).
+    var recordSystemAudio = true
     /// nil while the asset check is still running.
     var assets: String?
     var installingAssets: Bool
@@ -48,6 +51,7 @@ enum SetupAction: Int, CaseIterable {
     case microphone, accessibility, inputMonitoring, assets, dictation, toggleFillers, togglePreview, speakerModels
     case systemAudio
     case toggleAIFix
+    case toggleRecordSystemAudio
 }
 
 /// A regular titled window, so setup status stays visible while the user works in System Settings.
@@ -70,6 +74,11 @@ final class SetupWindow: NSObject, NSWindowDelegate {
     private let aiFixToggle = NSButton(checkboxWithTitle: aiFixTitle, target: nil, action: nil)
     private let opacitySlider = NSSlider(value: 0.85, minValue: 0.3, maxValue: 1.0, target: nil, action: nil)
     private let opacityValue = NSTextField(labelWithString: "")
+    /// Advanced, collapsed until its disclosure button is pressed; for this window only.
+    private let advancedDisclosure = NSButton(title: "", target: nil, action: nil)
+    private let recordSystemAudioToggle = NSButton(
+        checkboxWithTitle: "Record the computer's audio (system sound) in meetings", target: nil, action: nil)
+    private var advancedContent: NSView?
     private var onOpacityChange: ((Double) -> Void)?
     private var rows: [SetupAction: Row] = [:]
     private var positioned = false
@@ -100,7 +109,7 @@ final class SetupWindow: NSObject, NSWindowDelegate {
         let titles: [(SetupAction, String)] = [
             (.microphone, "Microphone"), (.accessibility, "Accessibility"),
             (.inputMonitoring, "Input Monitoring"), (.assets, "Speech model"), (.dictation, "Dictation"),
-            (.speakerModels, "Speaker labels"), (.systemAudio, "System audio (online calls)"),
+            (.speakerModels, "Speaker labels"), (.systemAudio, "System audio"),
         ]
         for (action, title) in titles {
             if action == .assets {
@@ -165,8 +174,11 @@ final class SetupWindow: NSObject, NSWindowDelegate {
         aiFixToggle.tag = SetupAction.toggleAIFix.rawValue
         aiFixToggle.toolTip = "Each phrase is checked by Apple's on-device model before it is typed, which adds about half a second. Only small fixes are kept; Copy Original in the menu has the text as heard."
 
+        let advanced = makeAdvancedSection()
+
         // Text options first, then the preview and its opacity together.
-        let stack = NSStackView(views: [messageLabel, grid, fillerToggle, aiFixToggle, previewToggle, opacityRow, note])
+        let stack = NSStackView(views: [messageLabel, grid, fillerToggle, aiFixToggle, previewToggle, opacityRow, note,
+                                        advanced])
         stack.orientation = .vertical
         stack.alignment = .leading
         stack.spacing = 20
@@ -182,6 +194,64 @@ final class SetupWindow: NSObject, NSWindowDelegate {
             grid.widthAnchor.constraint(equalTo: stack.widthAnchor),
         ])
         window.contentView = content
+    }
+
+    /// "Advanced": a disclosure button over settings most people never change, collapsed when the window opens.
+    private func makeAdvancedSection() -> NSView {
+        advancedDisclosure.bezelStyle = .disclosure
+        advancedDisclosure.setButtonType(.pushOnPushOff)
+        advancedDisclosure.state = .off
+        advancedDisclosure.target = self
+        advancedDisclosure.action = #selector(advancedToggled(_:))
+        let title = NSTextField(labelWithString: "Advanced")
+        title.font = .systemFont(ofSize: 13, weight: .semibold)
+        let header = NSStackView(views: [advancedDisclosure, title])
+        header.spacing = 6
+
+        recordSystemAudioToggle.target = self
+        recordSystemAudioToggle.action = #selector(buttonPressed(_:))
+        recordSystemAudioToggle.tag = SetupAction.toggleRecordSystemAudio.rawValue
+        let detail = NSTextField(wrappingLabelWithString: """
+            On: meetings record your microphone and everything the Mac plays, and speakers are labelled on both. \
+            Off: meetings record the microphone only.
+            """)
+        detail.font = .systemFont(ofSize: 11)
+        detail.textColor = .secondaryLabelColor
+        detail.preferredMaxLayoutWidth = 480
+        let content = NSStackView(views: [recordSystemAudioToggle, detail])
+        content.orientation = .vertical
+        content.alignment = .leading
+        content.spacing = 4
+        content.edgeInsets = NSEdgeInsets(top: 0, left: 20, bottom: 0, right: 0)
+        content.isHidden = true
+        advancedContent = content
+
+        let section = NSStackView(views: [header, content])
+        section.orientation = .vertical
+        section.alignment = .leading
+        section.spacing = 8
+        return section
+    }
+
+    @objc private func advancedToggled(_ sender: NSButton) {
+        advancedContent?.isHidden = sender.state != .on
+        fitKeepingTopEdge()
+    }
+
+    /// Collapses Advanced, as the window is specified to open (the window is reused after it closes).
+    private func collapseAdvanced() {
+        advancedDisclosure.state = .off
+        advancedContent?.isHidden = true
+    }
+
+    /// Resizes the window to its content, keeping the top edge where it is while the window grows or shrinks.
+    private func fitKeepingTopEdge() {
+        var frame = window.frame
+        let size = window.frameRect(forContentRect: NSRect(origin: .zero,
+                                                           size: window.contentView?.fittingSize ?? frame.size)).size
+        frame.origin.y += frame.height - size.height
+        frame.size = size
+        window.setFrame(frame, display: true, animate: false)
     }
 
     /// A row's bold title over its detail line.
@@ -205,6 +275,11 @@ final class SetupWindow: NSObject, NSWindowDelegate {
             window.setContentSize(window.contentView?.fittingSize ?? window.frame.size)
             window.center()
             positioned = true
+        } else if !window.isVisible, advancedDisclosure.state == .on {
+            // Reopened after the user expanded Advanced: it opens collapsed again. Left alone while the window is
+            // already showing.
+            collapseAdvanced()
+            fitKeepingTopEdge()
         }
         NSApplication.shared.activate()
         window.makeKeyAndOrderFront(nil)
@@ -243,12 +318,20 @@ final class SetupWindow: NSObject, NSWindowDelegate {
             state.inputMonitoring ? "Granted — used to detect the hold-to-talk shortcut"
                                   : "Not granted — turn on Voice is Local in System Settings",
             button: "Open Settings")
-        // Optional, so never marked as a problem: only online calls record the computer's audio.
-        set(.systemAudio, state.systemAudio ? .done : .pending,
-            state.systemAudio ? "Granted — records the other side of online calls"
-                              : "Optional — needed only to record online calls. Turn on Voice is Local under Screen & System "
-                                + "Audio Recording, then quit and reopen Voice is Local.",
-            button: state.systemAudio ? nil : "Open Settings")
+        recordSystemAudioToggle.state = state.recordSystemAudio ? .on : .off
+        // Never marked as a problem: without it meetings record the microphone alone.
+        if state.systemAudio {
+            set(.systemAudio, .done, state.recordSystemAudio
+                ? "Granted — meetings record the computer's audio"
+                : "Granted — recording the computer's audio is off under Advanced", button: nil)
+        } else if state.recordSystemAudio {
+            set(.systemAudio, .pending, "Meetings record the computer's audio (the other side of a call, a video). "
+                + "Turn on Voice is Local under Screen & System Audio Recording, then quit and reopen Voice is Local. "
+                + "Until then meetings record the microphone only.", button: "Open Settings")
+        } else {
+            set(.systemAudio, .pending, "Not needed — recording the computer's audio is off under Advanced",
+                button: "Open Settings")
+        }
 
         rows[.assets]?.title.stringValue = "Speech model: \(language)"
         let canInstall = !state.installingAssets && !state.busy && !state.dictationEnabled && !state.enabling
@@ -301,6 +384,15 @@ final class SetupWindow: NSObject, NSWindowDelegate {
         case nil:
             set(.speakerModels, .pending, "Checking…", button: install, enabled: false)
         }
+        refitIfContentHeightChanged()
+    }
+
+    /// The window is not resizable: when new row text is taller or shorter than what the window was fitted to (e.g.
+    /// the System audio row after the Advanced checkbox changes), it is refitted, keeping its top edge. Before the
+    /// first `show()` the window is sized there instead.
+    private func refitIfContentHeightChanged() {
+        guard positioned, let contentView = window.contentView else { return }
+        if abs(contentView.fittingSize.height - contentView.frame.height) >= 1 { fitKeepingTopEdge() }
     }
 
     /// Rebuilt only when the list changes, so a refresh never replaces the menu while the user has it open.

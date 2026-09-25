@@ -1150,6 +1150,9 @@ public struct RecorderStatus: Codable, Sendable, Equatable {
     public var source: AudioSource
     /// Name of the input device recorded on the microphone track, for display.
     public var microphoneName: String?
+    /// True when the microphone track records the system default input, false for the built-in microphone
+    /// chosen whatever the default is; nil without a microphone track, or from an older recorder.
+    public var microphoneIsSystemDefault: Bool?
     /// Session time now: time since capture first started, including pauses and sleep.
     public var elapsedSeconds: Double
     /// Audio actually captured on the longest track.
@@ -3905,10 +3908,18 @@ builtIn }`:
 - The start panel shows the device as a static label: "Microphone: Built-in Microphone"
   (in person; red and Start disabled when missing: "The built-in microphone is
   unavailable. Open the lid and try again.") or "Microphone: AirPods Pro (system
-  default)" (call). No device picker anywhere. `status.json` carries `microphoneName`.
+  default)" (call). No device picker anywhere. `status.json` carries `microphoneName` and
+  `microphoneIsSystemDefault`; the menu adds "(system default)" only when the latter is true.
+- The closed-lid rule follows the device, not the choice: a microphone-only recording
+  whose system default input is the built-in microphone refuses or waits with the lid
+  closed, exactly as `--microphone built-in` does.
 - In person, if the built-in microphone disappears mid-recording (lid closed with an
   external display), the recorder enters `waiting` with "The built-in microphone is off.
-  Open the lid to continue recording." and resumes on lid open.
+  Open the lid to continue recording." and resumes on lid open. The loop does not rely on
+  the device disappearing: when a tick sees the lid close while the epoch records the
+  built-in microphone (explicitly or as the default input), it sends `retryNow(lidClosed)`
+  and the machine restarts once, so a call continues with system audio alone and a
+  microphone-only recording waits.
 - Dictation keeps the system default input (unchanged).
 - Test seam: `findInputDevices: @Sendable () -> InputDevices` (`builtIn` and
   `systemDefault`, each `Device?`) in `RecordingDependencies` and

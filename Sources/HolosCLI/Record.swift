@@ -1,6 +1,7 @@
 import ArgumentParser
 import Darwin
 import Foundation
+import HolosAudio
 import HolosCore
 import HolosMeeting
 import HolosStorage
@@ -25,14 +26,15 @@ struct Record: AsyncParsableCommand {
                 disk, a long sleep, or a 6-hour pause) or speaker labelling was skipped or failed. The reason is \
                 printed on stderr.
 
-                In a mic+system call, a warning on stderr says when the laptop speakers play the call: other \
-                people's voices then reach the microphone too. Headphones give a cleaner transcript. Speaker \
-                labelling leaves the microphone's echo of the call audio out of the labelled transcript.
+                Meetings started from Voice is Local record the system default input and system audio with \
+                --others-in-room (--source mic --microphone default when system audio is off in Setup's Advanced \
+                section or not allowed). The defaults here are unchanged for scripts. With mic+system, speaker \
+                labelling leaves the microphone's echo of the system audio out of the labelled transcript.
                 """)
         @Option(help: "Session display name.") var name = "Meeting"
         @Option(help: """
-            Audio sources: mic (in person: the built-in microphone), system, or mic+system (a call: the system \
-            default input, such as a headset, and system audio).
+            Audio sources: mic (the built-in microphone unless --microphone default), system, or mic+system (the \
+            system default input, such as a headset, and system audio).
             """)
         var source: AudioSource = .microphoneAndSystem
         @OptionGroup var recognition: RecognitionOptions
@@ -45,6 +47,11 @@ struct Record: AsyncParsableCommand {
         @Flag(help: "Do not print finalized phrases while recording.") var noLiveText = false
         @Flag(help: "In a mic+system call, also label speakers on the microphone track because others share the room.")
         var othersInRoom = false
+        @Option(help: """
+            The input the microphone track records: built-in (the default with --source mic) or default (the \
+            system default input; the default with mic+system).
+            """)
+        var microphone: String?
         @Option(help: "How many people are expected to speak (1-20), a hint for speaker labelling.") var expectedSpeakers: Int?
         @Option(help: "A JSON file of names and terms to recognize ({\"schemaVersion\": 1, \"strings\": [...]}); it is deleted once read.")
         var vocabularyFile: String?
@@ -54,6 +61,12 @@ struct Record: AsyncParsableCommand {
             if source == .microphone, app != nil { throw ValidationError("--app applies to system audio, not mic-only recording.") }
             if othersInRoom, source != .microphoneAndSystem {
                 throw ValidationError("--others-in-room applies only to --source mic+system.")
+            }
+            if let microphone {
+                guard MicrophoneSelection(argument: microphone) != nil else {
+                    throw ValidationError("--microphone must be default or built-in.")
+                }
+                if source == .system { throw ValidationError("--microphone applies to recordings with the microphone.") }
             }
             if let sessionId, UUID(uuidString: sessionId) == nil {
                 throw ValidationError("--session-id must be a UUID, like \(UUID().uuidString).")
@@ -65,16 +78,17 @@ struct Record: AsyncParsableCommand {
 
         @MainActor mutating func run() async throws {
             let vocabulary = try readVocabulary()
-            // Decision 9 (docs/meeting-design.md §4.12): in person records the built-in microphone and refuses to start
-            // without it ("The built-in microphone is unavailable. Open the lid and try again."); a call records the
-            // system default input, and without any input device records system audio alone.
+            // Decision 9 (docs/meeting-design.md §4.12): mic records the built-in microphone (unless --microphone
+            // default) and refuses to start without it ("The built-in microphone is unavailable. Open the lid and try
+            // again."); mic+system records the system default input, and without any input device system audio alone.
             let locale = await recognition.resolvedLocale()
             let options = RecordingOptions(name: name, source: source, locale: locale,
                                            backend: recognition.backend, root: directory.map(fileURL) ?? HolosPaths.sessions,
                                            duration: duration, recordOnly: recordOnly, applicationBundleID: app,
                                            vocabulary: vocabulary, sessionID: sessionId, othersInRoom: othersInRoom,
                                            expectedSpeakers: expectedSpeakers, liveText: !noLiveText,
-                                           microphone: RecordingOptions.microphone(for: source))
+                                           microphone: microphone.flatMap(MicrophoneSelection.init(argument:))
+                                               ?? RecordingOptions.microphone(for: source))
             let dependencies = RecordingDependencies.live(stop: SignalStopController(), reporter: ConsoleReporter(),
                 postProcess: noPostprocess || recordOnly ? nil : recordingPostProcessHook())
             let outcome = try await RecordingWorkflow.run(options, dependencies: dependencies)

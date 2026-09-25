@@ -13,8 +13,15 @@ final class MeetingAppState {
     static let lastSettingsKey = "meeting.lastSettings"
     static let consentKey = "meeting.consentReminderDismissed"
     static let promptedKey = "meeting.promptedInterrupted"
+    /// Setup › Advanced: meetings record the computer's audio too (on when never set).
+    static let recordSystemAudioKey = "meetingRecordSystemAudio"
     /// The meeting languages chosen in the start panel (`HolosAppDelegate.meetingLocales`).
     static let localesKey = "meetingLocales"
+
+    static var recordSystemAudio: Bool {
+        get { UserDefaults.standard.object(forKey: recordSystemAudioKey) as? Bool ?? true }
+        set { UserDefaults.standard.set(newValue, forKey: recordSystemAudioKey) }
+    }
 
     var controller: MeetingController?
     var maintenance: MaintenanceLauncher?
@@ -26,6 +33,11 @@ final class MeetingAppState {
     var suspendedBySleep = false
     /// The latest `announce` text, shown under the meeting's first menu line.
     var notice: String?
+    /// The meeting started from the app that records the microphone alone because System audio was not allowed,
+    /// and the menu line saying so. Saved in UserDefaults, so a relaunch that follows the same meeting shows it again.
+    var sourceNotice: MeetingSourceNotice? = MeetingSourceNotice.load(from: .standard) {
+        didSet { MeetingSourceNotice.save(sourceNotice, to: .standard) }
+    }
     /// The case of the last meeting state seen ("idle", "starting", …).
     var lastStep = "idle"
     /// How the last meeting ended, until the next one starts.
@@ -211,6 +223,7 @@ extension HolosAppDelegate: NSMenuDelegate {
             menu.addItem(headline)
             meeting.headlineItem = headline
             if let notice = meeting.notice { menu.addItem(disabledLine(notice, indent: 1)) }
+            if let source = sourceNotice(controller) { menu.addItem(disabledLine(source, indent: 1)) }
             let stop = item("Stop Recording", #selector(stopMeetingStart))
             stop.isEnabled = !stopping
             menu.addItem(stop)
@@ -240,17 +253,17 @@ extension HolosAppDelegate: NSMenuDelegate {
         let detail = disabledLine(Self.detailLine(status), indent: 1)
         menu.addItem(detail)
         meeting.detailItem = detail
-        if let microphone = status.microphoneName {
-            let suffix = status.source == .microphoneAndSystem ? " (system default)" : ""
-            menu.addItem(disabledLine("Microphone: \(microphone)\(suffix)", indent: 1))
-        }
+        if let microphone = status.microphoneLine { menu.addItem(disabledLine(microphone, indent: 1)) }
         if let transcription = Self.transcriptionLine(status) {
             menu.addItem(disabledLine(transcription, indent: 1))
         }
-        for warning in status.warnings {
+        for warning in Self.shownWarnings(status) {
             menu.addItem(disabledLine("⚠ \(warning.message)", indent: 1))
         }
         if let notice = meeting.notice { menu.addItem(disabledLine(notice, indent: 1)) }
+        if let controller = meeting.controller, let source = sourceNotice(controller) {
+            menu.addItem(disabledLine(source, indent: 1))
+        }
         let stopping = status.phase == .stopping
         if status.phase == .paused {
             menu.addItem(item("Resume Recording", #selector(resumeMeetingRecording)))
@@ -347,7 +360,7 @@ extension HolosAppDelegate: NSMenuDelegate {
                 symbol = "record.circle.fill"
                 tint = .systemRed
             }
-            title = MeetingFormat.clock(status.elapsedSeconds) + (status.warnings.isEmpty ? "" : " ⚠")
+            title = MeetingFormat.clock(status.elapsedSeconds) + (Self.shownWarnings(status).isEmpty ? "" : " ⚠")
         case .finishing:
             title = "…"
         case .failed:
@@ -404,6 +417,17 @@ extension HolosAppDelegate: NSMenuDelegate {
         case .starting: "◌ Starting — \(name)"
         default: "● Recording — \(name)"
         }
+    }
+
+    /// The recorder's warnings the menu shows: all but `echoRisk`, which recorders before the one-mode change wrote
+    /// while a call played on the laptop speakers.
+    static func shownWarnings(_ status: RecorderStatus) -> [RecorderWarning] {
+        status.warnings.filter { $0.code != .echoRisk }
+    }
+
+    /// The menu line of the followed meeting when it records the microphone alone for want of the permission.
+    private func sourceNotice(_ controller: MeetingController) -> String? {
+        meeting.sourceNotice?.text(for: controller.state.sessionID)
     }
 
     /// "1:23:45 · 0.9 GB used · 22.8 GB free".
@@ -468,7 +492,8 @@ extension HolosAppDelegate: NSMenuDelegate {
         var environment = MeetingStartPanel.Environment(
             devices: BuiltInMicrophone.devices(), freeBytes: try? VolumeFreeSpace().availableBytes(at: root),
             speakerModels: meeting.speakerModels, checking: meeting.checkingSpeakerModels,
-            installProgress: meeting.speakerModelInstall, installError: meeting.speakerModelError)
+            installProgress: meeting.speakerModelInstall, installError: meeting.speakerModelError,
+            recordSystemAudio: MeetingAppState.recordSystemAudio, systemAudioAllowed: CGPreflightScreenCaptureAccess())
         addLanguages(to: &environment)
         return environment
     }
@@ -486,6 +511,8 @@ extension HolosAppDelegate: NSMenuDelegate {
         } catch {
             return error.localizedDescription
         }
+        meeting.sourceNotice = MeetingSourceNotice.started(settings, sessionID: controller.state.sessionID,
+                                                           recordSystemAudio: MeetingAppState.recordSystemAudio)
         rememberMeetingLocales(settings)
         var remembered = settings
         remembered.name = ""

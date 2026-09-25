@@ -177,11 +177,44 @@ Hardware-facing and cross-app acceptance remain pending.
   `droppedWords` with reason `echo`, is in no turn or export, and splits the microphone
   turn around it. With others in the room, a microphone speaker whose words are at least
   60 % echo is not listed and its remaining words become unknown speaker. In-person
-  meetings are unchanged. The start panel, the menu (from `status.json`'s `echoRisk`
-  warning), and `voiceislocal record start` (stderr) warn when a call plays on the laptop
-  speakers, checked at start, after device changes and capture restarts, and every 2 s.
-  The filter runs only with speaker labels, so a call exported without the speaker models
-  keeps the echo, and misheard echo shorter than 3 matching words stays.
+  meetings are unchanged. The filter runs only with speaker labels, so a call exported
+  without the speaker models keeps the echo, and misheard echo shorter than 3 matching
+  words stays. Nothing warns when a call plays on the laptop speakers: the `echoRisk`
+  warning, its output-route check, and the start panel's orange line were removed with
+  the one meeting mode (below); the menu ignores an `echoRisk` left in `status.json` by an
+  older recorder.
+- Meeting recording, one mode: the start panel has no In person / Online call choice, no
+  app picker, and no "Others are in the room" option. Every meeting from the app records
+  the system default input and everything the Mac plays, labels speakers on both tracks,
+  and filters the microphone's echo of the computer's audio (meeting.json `call` with
+  `othersInRoom: true`, `record start --source mic+system --others-in-room --microphone
+  default`). "Me" comes from the remembered voice of the person marked This is me when
+  there is one; otherwise you name the speakers in review. Setup's System audio row is an
+  ordinary step (pending until granted, never marked as a problem). Without the
+  permission when a meeting starts, the meeting records the microphone only (no prompt,
+  no refusal) and the menu says "Recording the microphone only — allow System audio in
+  Setup to include the computer's sound." (UserDefaults `meeting.sourceNotice` keeps it
+  with the session ID, so a relaunched app following that meeting shows it again.)
+  Setup's Advanced section, collapsed each time the window opens, has "Record
+  the computer's audio (system sound) in meetings" (UserDefaults
+  `meetingRecordSystemAudio`, on by default); off, meetings record the microphone only.
+  A microphone-only meeting records the system default input, labels speakers on it, and
+  is saved as `inPerson` (`--source mic --microphone default`). Sessions recorded as in
+  person, call, or hybrid keep their meaning and are labelled, exported, and reviewed as
+  before. `record start` keeps its defaults for scripts (`--source mic+system`, the
+  microphone as "Me" without `--others-in-room`, and the built-in microphone for `--source
+  mic`); `--microphone default|built-in` is new. With the lid closed, a microphone-and-system
+  meeting whose microphone is the built-in one (the system default input, or `--microphone
+  built-in`) records the computer's audio alone, warns "The built-in microphone is off while
+  the lid is closed; recording the computer's audio only. Open the lid to include the
+  microphone.", and journals `deviceChanged` (`builtInMicrophoneLidClosed`) on the
+  microphone track; opening the lid (or unlocking the screen with it open) restarts capture
+  with the microphone. Closing the lid mid-meeting on the built-in microphone restarts
+  capture the same way (`deviceChanged` `lidClosed` on the microphone track), even when
+  Core Audio keeps the device listed: a microphone-and-system meeting goes on with the
+  computer's audio alone and that warning, and a microphone-only meeting waits with "The
+  built-in microphone is off. Open the lid to continue recording." An external default
+  input keeps recording.
 - Review window (wave 5): Review… in Meetings (or double-click, or the "Name Speakers —
   …" menu line after a meeting, which then goes away) opens a window to name a labelled
   meeting's speakers: a name field per speaker that links or creates a person (a known
@@ -261,10 +294,9 @@ changing provisional hypothesis. With `--record-only`, no transcript is generate
 this remains a useful audio-only fallback if recognition is unavailable. After
 Ctrl-C saves audio, another Ctrl-C can terminate ongoing transcription while
 preserving the archive.
-Headphones avoid remote speech leaking acoustically into the microphone track. When a
-call's speakers are labelled, repeated call audio on the microphone (3 or more matching
-words) is removed from the transcript; acoustic echo cancellation is not implemented, and
-a call without speaker labels keeps the echo.
+When a meeting's speakers are labelled, the computer's audio heard again by the
+microphone (3 or more matching words) is removed from the transcript; acoustic echo
+cancellation is not implemented, and a meeting without speaker labels keeps the echo.
 
 ## Validation completed and pending
 
@@ -297,8 +329,10 @@ private locked store, linking with and without voice learning, samples kept in s
 with edits and never overwritten by a stale refresh, forgetting and resuming a forget
 after a crash, the extractors' speaker-slot selection, and that post-processing stores
 distances but no vectors), online calls (the echo filter and hidden echo-only microphone
-speakers, end to end on a call and a hybrid call; the laptop-speaker classification and
-the `echoRisk` warning with a fake output route), the review window's model (changes
+speakers, end to end on a call and a hybrid call), the one meeting mode (the start
+settings with the computer's audio on, off, or not allowed; the launcher arguments; the
+microphone-only start check; meeting.json of a recording; the track plans of in-person,
+call, and hybrid sessions), the review window's model (changes
 shown before they are saved, saved in order, refused and reloaded when the labels changed
 elsewhere, including changes queued behind a refused one; undo of saved, saving, and
 queued changes; turns made by a pending split; Confirm All as one undo; exports rewritten
@@ -357,7 +391,8 @@ Still requiring real-machine or user-data validation:
 - Run the menu bar meeting checks in the [meeting validation guide](meeting-validation.md)
   (permission prompts and ownership, an app or recorder killed mid-meeting, dictation
   paused during a meeting, quitting while recording, installing speaker models from
-  Setup, automatic relabel after a shutdown, a call on laptop speakers and a hybrid call,
+  Setup, automatic relabel after a shutdown, a meeting on the laptop speakers with people
+  in the room and on a call, the Advanced setting and a missing System audio permission,
   naming the speakers of the 89-minute Otter meeting and of a real 3 h meeting in the
   review window in under 10 minutes; the review window's layout, keys, and playback have
   not been seen on screen yet) and the

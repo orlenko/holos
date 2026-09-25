@@ -30,8 +30,9 @@ public struct RecordingOptions: Sendable, Equatable {
     public var expectedSpeakers: Int?
     /// Report finalized phrases while recording (the CLI prints them); false for `--no-live-text`.
     public var liveText: Bool
-    /// Which input the microphone track records (decision 9, §4.12): the built-in microphone in person (`mic`), the
-    /// system default input in a call (`mic+system`), the device the call app uses.
+    /// Which input the microphone track records (decision 9, §4.12): by default the built-in microphone for `mic`
+    /// and the system default input for `mic+system` (the device the call app uses). Meetings from the app record
+    /// the system default input either way (`MeetingStartSettings.app`, `--microphone default`).
     public var microphone: MicrophoneSelection
 
     /// `microphone` nil chooses it from `source`: `.builtIn` for `mic`, `.systemDefault` otherwise.
@@ -73,10 +74,6 @@ public struct RecordingDependencies: Sendable {
     public var findInputDevices: @Sendable () -> InputDevices
     /// Device-list changes and screen unlocks, after which a waiting recorder retries at once (§4.2); nil: none.
     public var environmentEvents: AudioEnvironmentEvents?
-    /// The system default output, looked up at start, after device changes, and every `tuning.outputRouteInterval`: a
-    /// call that records the microphone while the laptop speakers play warns `echoRisk` (PR11). nil from it: unknown,
-    /// no warning.
-    public var findOutputRoute: @Sendable () -> OutputRoute?
     /// A recorder running inside the app sets this to wait, after `run` returns, for an exited status that could not
     /// be written at once (`ExitRetry`); nil (a child recorder): the process exit releases the locks instead.
     public var exitStatusWait: ExitStatusWait?
@@ -102,19 +99,17 @@ public struct RecordingDependencies: Sendable {
                 power: (any SystemPowerEvents)? = nil,
                 makePowerAssertion: @escaping @Sendable (String) -> PowerAssertion? = { _ in nil },
                 findInputDevices: @escaping @Sendable () -> InputDevices = { RecordingDependencies.placeholderDevices },
-                environmentEvents: AudioEnvironmentEvents? = nil,
-                findOutputRoute: @escaping @Sendable () -> OutputRoute? = { nil }) {
+                environmentEvents: AudioEnvironmentEvents? = nil) {
         self.makeCapture = makeCapture; self.makeSpeech = makeSpeech; self.stop = stop
         self.reporter = reporter; self.postProcess = postProcess
         self.makeClock = makeClock ?? { _ in ElapsedSessionClock() }
         self.freeSpace = freeSpace; self.timeouts = timeouts
         self.power = power; self.makePowerAssertion = makePowerAssertion
         self.findInputDevices = findInputDevices; self.environmentEvents = environmentEvents
-        self.findOutputRoute = findOutputRoute
     }
 
     /// LiveMeetingCapture + AppleSpeechSession.make, `ContinuousSessionClock`, `VolumeFreeSpace`, `SystemPowerMonitor`,
-    /// `PowerAssertion`, `BuiltInMicrophone.devices`, `AudioEnvironmentEvents`, and `OutputRoute.current`.
+    /// `PowerAssertion`, `BuiltInMicrophone.devices`, and `AudioEnvironmentEvents`.
     public static func live(stop: any RecorderStopSource, reporter: any RecordingReporter,
                             postProcess: PostProcessHook?) -> RecordingDependencies {
         RecordingDependencies(makeCapture: { LiveMeetingCapture() }, makeSpeech: appleSpeechFactory,
@@ -122,8 +117,7 @@ public struct RecordingDependencies: Sendable {
                               makeClock: { ContinuousSessionClock(hostTimeOrigin: $0) }, freeSpace: VolumeFreeSpace(),
                               power: livePowerMonitor(), makePowerAssertion: livePowerAssertion,
                               findInputDevices: { BuiltInMicrophone.devices() },
-                              environmentEvents: AudioEnvironmentEvents(),
-                              findOutputRoute: { OutputRoute.current() })
+                              environmentEvents: AudioEnvironmentEvents())
     }
 
     /// The inert default of `findInputDevices`: a built-in microphone that is also the default input.
@@ -174,10 +168,6 @@ struct RecorderTuning: Sendable {
     /// Everything done for a sleep before it is allowed (stop capture, close chunks) beyond the capture-stop limit;
     /// macOS waits at most 30 s (§4.4).
     var sleepMargin: Duration = .seconds(2)
-    /// How often a call looks at the output route again for the echo-risk warning (PR11), besides at start and after
-    /// device changes: headphones on the built-in jack, or another output picked in Control Center, change no device
-    /// list.
-    var outputRouteInterval: Duration = .seconds(2)
 }
 
 /// How a recording that saved its audio ended.
@@ -221,9 +211,10 @@ public enum RecordingWorkflow {
     /// system sleep capture stops and the chunks are closed, then the sleep is allowed; a wake within 15 minutes with
     /// the lid open resumes in a new epoch. A track that delivers nothing for 3 s is reported stalled, and a silent
     /// microphone is restarted. The microphone (§4.12): in person the built-in one, a call the system default input;
-    /// a call without any input device records system audio alone until one appears. A call that records the
-    /// microphone while the laptop speakers are the output warns `echoRisk` (PR11), at start, after device changes, and
-    /// when a periodic look finds the output changed.
+    /// a call without any input device records system audio alone until one appears, and a call whose microphone is
+    /// the built-in one records system audio alone while the lid is closed, until the lid opens (or the screen is
+    /// unlocked with it open). Closing the lid mid-recording on the built-in microphone restarts capture: a call goes
+    /// on with system audio alone, a microphone-only recording waits for the lid.
     ///
     /// Throws before creating a session for invalid options, when the disk has too little space, and in person when
     /// the built-in microphone is missing. Capture never started: the archive is finished `failed` and the error is
@@ -253,10 +244,11 @@ public enum RecordingWorkflow {
         let stop = dependencies.stop
         defer { stop.restoreDefaultHandlers() }
         let options = try validated(options)
-        // In person without the built-in microphone: refused before a session exists (§4.12).
-        guard let plan = EpochPlan.make(options, devices: dependencies.findInputDevices(),
+        // A microphone-only recording without its microphone: refused before a session exists (§4.12).
+        let devices = dependencies.findInputDevices()
+        guard let plan = EpochPlan.make(options, devices: devices,
                                         lidOpen: dependencies.power?.isLidOpen() ?? true) else {
-            throw HolosError.unavailable(EpochPlan.builtInMicrophoneUnavailable)
+            throw HolosError.unavailable(EpochPlan.unavailableMessage(options, devices: devices))
         }
         try checkDisk(options, dependencies)
         let archive = try SessionArchive.create(root: options.root, name: options.name, source: options.source,
@@ -330,6 +322,7 @@ public enum RecordingWorkflow {
 /// What one capture epoch records, from the input devices present when it starts (decision 9, §4.12).
 struct EpochPlan: Sendable, Equatable {
     static let builtInMicrophoneUnavailable = BuiltInMicrophone.unavailableMessage
+    static let noMicrophone = "No microphone is connected. Connect one and try again."
 
     /// The epoch's `CaptureRequest.source`: `.system` for a call epoch without the microphone.
     var source: AudioSource
@@ -337,23 +330,47 @@ struct EpochPlan: Sendable, Equatable {
     var tracks: [String]
     /// The input device the microphone track records, for status.json.
     var microphoneName: String?
+    /// A microphone-and-system epoch records system audio alone because the microphone it would record is the
+    /// built-in one and the lid is closed; it restarts with the microphone when the lid opens.
+    var microphoneOffWithLidClosed = false
 
-    /// In person: the selected microphone (the built-in one), or nil when the built-in microphone is gone or the lid is
-    /// closed (Macs with Apple silicon or a T2 chip disconnect it in hardware then, and the device may stay listed
-    /// while recording silence). A call: the selected input (the system default), or system audio alone when the Mac
-    /// has no input device.
+    /// Microphone only: the selected microphone; nil when the built-in one is selected and gone, or when the device
+    /// it records is the built-in microphone and the lid is closed — selected explicitly, or as the system default
+    /// input (Macs with Apple silicon or a T2 chip disconnect it in hardware then, and the device may stay listed
+    /// while recording silence). Microphone and system: the selected input (the system default), or system audio
+    /// alone when the Mac has no input device, or when the selected input is the built-in microphone and the lid is
+    /// closed (`microphoneOffWithLidClosed`, by the same rule as microphone only).
     static func make(_ options: RecordingOptions, devices: InputDevices, lidOpen: Bool = true) -> EpochPlan? {
         let microphone = options.microphone == .builtIn ? devices.builtIn : devices.systemDefault
         switch options.source {
         case .microphone:
-            if options.microphone == .builtIn, microphone == nil || !lidOpen { return nil }
-            return EpochPlan(source: .microphone, tracks: ["mic"], microphoneName: microphone?.name)
+            // Nothing to record: the selected microphone (built-in, or the system default input) is gone.
+            guard let microphone else { return nil }
+            if !lidOpen, isBuiltIn(microphone, in: devices) { return nil }
+            return EpochPlan(source: .microphone, tracks: ["mic"], microphoneName: microphone.name)
         case .microphoneAndSystem:
+            if !lidOpen, options.microphone == .builtIn || microphone.map({ isBuiltIn($0, in: devices) }) == true {
+                return EpochPlan(source: .system, tracks: ["system"], microphoneName: nil,
+                                 microphoneOffWithLidClosed: true)
+            }
             guard let microphone else { return EpochPlan(source: .system, tracks: ["system"], microphoneName: nil) }
             return EpochPlan(source: .microphoneAndSystem, tracks: ["mic", "system"], microphoneName: microphone.name)
         case .system:
             return EpochPlan(source: .system, tracks: ["system"], microphoneName: nil)
         }
+    }
+
+    /// Why `make` returned nil: no input device at all for a capture that follows the system default, otherwise
+    /// the built-in microphone being gone or off with the lid closed.
+    static func unavailableMessage(_ options: RecordingOptions, devices: InputDevices) -> String {
+        options.microphone == .systemDefault && devices.systemDefault == nil
+            ? noMicrophone : builtInMicrophoneUnavailable
+    }
+
+    /// The device is the built-in microphone: the same CoreAudio device, or the same stable UID.
+    private static func isBuiltIn(_ device: InputDevice, in devices: InputDevices) -> Bool {
+        guard let builtIn = devices.builtIn else { return false }
+        return device.id == builtIn.id || device.uid == builtIn.uid
     }
 }
 
@@ -393,8 +410,6 @@ private final class Recorder {
     var sleepBudget: Duration { dependencies.timeouts.captureStop + dependencies.tuning.sleepMargin }
     /// The lid state at the last tick.
     var lidOpen = true
-    /// When a call looks at the output route again for the echo-risk warning.
-    var nextOutputRouteCheck: ContinuousClock.Instant?
     /// `stop()` was called on the current capture.
     var captureStopped = false
     /// The current capture's dropped-buffer count at the last status refresh.
@@ -449,6 +464,7 @@ private final class Recorder {
         let initial = RecorderStatus(
             sessionID: archive.id, name: options.name, pid: getpid(), phase: .starting, sequence: 0, startedAt: now,
             updatedAt: now, source: options.source, microphoneName: plan.microphoneName,
+            microphoneIsSystemDefault: options.source == .system ? nil : options.microphone == .systemDefault,
             tracks: tracks.map { TrackStatus(track: $0, transcription: options.recordOnly ? .off : .live) })
         status = try StatusWriter(session: directory, initial: initial, heartbeat: dependencies.tuning.tick,
                                   observer: dependencies.statusObserver, write: dependencies.statusWrite)
@@ -507,6 +523,15 @@ private final class Recorder {
             }
             // A run cancelled while setting up never opens the microphone or system audio.
             try Task.checkCancellation()
+            // Plan epoch 0 again from the devices and lid of now: the default input or the lid may have changed
+            // while the speech sessions and the permission prompt were set up. A plan that is no longer possible
+            // keeps the first one, and the capture's own start then fails and is reported.
+            if let fresh = EpochPlan.make(options, devices: dependencies.findInputDevices(),
+                                          lidOpen: dependencies.power?.isLidOpen() ?? true), fresh != plan {
+                let name = fresh.microphoneName
+                if name != plan.microphoneName { await updateStatus { $0.microphoneName = name } }
+                plan = fresh
+            }
             let capture = dependencies.makeCapture()
             self.capture = capture
             captureStopped = false
@@ -618,10 +643,13 @@ private final class Recorder {
             power?.detach()
             pendingSleepTokens.removeAll()
         }
-        lidOpen = power?.isLidOpen() ?? true
+        // Epoch 0 was planned before the speech sessions and permissions were set up. A plan that records the
+        // microphone counts as made with the lid open, so a lid that closed during that setup is caught as a closing
+        // on the first tick (and restarts without a built-in microphone that went silent).
+        lidOpen = plan.tracks.contains(TrackWatchdog.microphoneTrack) ? true : (power?.isLidOpen() ?? true)
         // Epoch 0's capture started just before the loop: its stall timers start now, at session time ~0.
-        await apply(.captureStarted(epoch: 0, tracks: plan.tracks, at: clock.now()))
-        await refreshEchoRisk()
+        await apply(.captureStarted(epoch: 0, tracks: plan.tracks, at: clock.now(),
+                                    lidClosed: plan.microphoneOffWithLidClosed))
         while machine.stopReason == nil {
             if Task.isCancelled { cancelled = true }
             // Cancelled, or a capture stop ended with CancellationError.
@@ -649,15 +677,9 @@ private final class Recorder {
             for event in monitor.drain() { await apply(event) }
             let environmentReasons = dependencies.environmentEvents?.pendingReasons() ?? []
             for reason in environmentReasons {
-                // A call recording without the microphone restarts only when an input device is back.
-                if machine.phase == .recording || machine.phase == .starting, machine.microphoneMissing,
-                   EpochPlan.make(options, devices: dependencies.findInputDevices())?.tracks.contains("mic") != true {
-                    continue
-                }
+                if microphoneStillMissing() { continue }
                 await apply(.retryNow(reason: reason, at: clock.now()))
             }
-            // Connecting or removing headphones changes the device list; the warning follows at once.
-            if !environmentReasons.isEmpty { await refreshEchoRisk() }
             for item in inbox.poll() {
                 switch item {
                 case .request(let request):
@@ -685,11 +707,14 @@ private final class Recorder {
             if wall.now >= nextTick {
                 nextTick = wall.now.advanced(by: dependencies.tuning.tick)
                 let lid = power?.isLidOpen() ?? true
-                if lid, !lidOpen { await apply(.retryNow(reason: Self.lidOpened, at: clock.now())) }
+                if lid, !lidOpen, !microphoneStillMissing() {
+                    await apply(.retryNow(reason: Self.lidOpened, at: clock.now()))
+                } else if !lid, lidOpen, closingLidDropsMicrophone() {
+                    await apply(.retryNow(reason: RecorderMachine.lidClosed, at: clock.now()))
+                }
                 lidOpen = lid
                 let free = try? dependencies.freeSpace.availableBytes(at: archive.directory)
                 await apply(.tick(at: clock.now(), lidOpen: lid, freeBytes: free, lastFrameAt: monitor.lastFrameAt()))
-                if let due = nextOutputRouteCheck, ContinuousClock.now >= due { await refreshEchoRisk() }
                 await refreshStatus()
             } else if machine.phase != lastStatusPhase {
                 await refreshStatus()
@@ -697,6 +722,26 @@ private final class Recorder {
             if machine.stopReason != nil { break }
             try? await Task.sleep(for: dependencies.tuning.poll)
         }
+    }
+
+    /// A call recording without the microphone whose next epoch would still lack it (no input device yet, or the
+    /// built-in microphone with the lid still closed): a lid, unlock, or device-list event then restarts nothing.
+    private func microphoneStillMissing() -> Bool {
+        guard machine.phase == .recording || machine.phase == .starting, machine.microphoneMissing else { return false }
+        let next = EpochPlan.make(options, devices: dependencies.findInputDevices(),
+                                  lidOpen: dependencies.power?.isLidOpen() ?? true)
+        return next?.tracks.contains(TrackWatchdog.microphoneTrack) != true
+    }
+
+    /// The lid just closed while the current epoch records a microphone that the next epoch would drop: the built-in
+    /// one, chosen explicitly or as the system default input. Core Audio may keep it listed and deliver silence, so
+    /// neither the stall watchdog nor a device change would restart capture. An external default input keeps going.
+    private func closingLidDropsMicrophone() -> Bool {
+        let microphone = TrackWatchdog.microphoneTrack
+        guard machine.phase == .recording || machine.phase == .starting, options.source != .system,
+              plan.tracks.contains(microphone), !machine.microphoneMissing else { return false }
+        let next = EpochPlan.make(options, devices: dependencies.findInputDevices(), lidOpen: false)
+        return next?.tracks.contains(microphone) != true
     }
 
     /// Feeds one input to the machine and executes its effects in order, then any inputs they produced. A cancelled
@@ -827,18 +872,22 @@ private final class Recorder {
     /// the run cancelled instead (the loop then takes the cancellation stop path).
     ///
     /// The input devices are looked up first (§4.12): in person without the built-in microphone the start fails at
-    /// once (the recorder waits for the lid to open); a call without any input device records system audio alone.
+    /// once (the recorder waits for the lid to open); a call without any input device, or whose microphone is the
+    /// built-in one with the lid closed, records system audio alone.
     ///
     /// Neither step can hold up the loop: a speech session not ready within `tuning.restartLimit` is made later by
     /// its live track, and a capture that has not started by then is abandoned (stopped once its start returns) and
     /// reported as `startFailed`, so the waiting and backoff rules take over.
     private func startCapture(epoch: Int) async -> RecorderInput? {
         if cancelled || Task.isCancelled { return nil }
-        guard let plan = EpochPlan.make(options, devices: dependencies.findInputDevices(),
+        let devices = dependencies.findInputDevices()
+        guard let plan = EpochPlan.make(options, devices: devices,
                                         lidOpen: dependencies.power?.isLidOpen() ?? true) else {
-            Self.log.error("Session \(self.archive.id, privacy: .public): no built-in microphone for epoch \(epoch, privacy: .public)")
-            let off = RecorderMachine.builtInMicrophoneOff
-            return .captureEnded(epoch: epoch, .startFailed(message: off), at: clock.now())
+            Self.log.error("Session \(self.archive.id, privacy: .public): no microphone for epoch \(epoch, privacy: .public)")
+            // A recording that follows the default input and has none asks for a microphone, not an open lid.
+            let message = options.microphone == .systemDefault && devices.systemDefault == nil
+                ? EpochPlan.noMicrophone : RecorderMachine.builtInMicrophoneOff
+            return .captureEnded(epoch: epoch, .startFailed(message: message), at: clock.now())
         }
         let limit = dependencies.tuning.restartLimit
         let epochStart = clock.now()
@@ -923,9 +972,8 @@ private final class Recorder {
             await updateStatus { $0.microphoneName = name }
         }
         self.plan = plan
-        // A restart follows a device change, and may have gained or lost the microphone.
-        await refreshEchoRisk()
-        return .captureStarted(epoch: epoch, tracks: plan.tracks, at: startedAt)
+        return .captureStarted(epoch: epoch, tracks: plan.tracks, at: startedAt,
+                               lidClosed: plan.microphoneOffWithLidClosed)
     }
 
     // MARK: - Power
@@ -954,7 +1002,7 @@ private final class Recorder {
 
     static let powerAssertionName = "Voice is Local meeting recording"
     /// The `retryNow` reason when a tick sees the lid open again.
-    static let lidOpened = "lidOpened"
+    static let lidOpened = RecorderMachine.lidOpened
 
     /// "5" or "0.2": a limit in seconds for a message.
     static func seconds(_ duration: Duration) -> String {
@@ -1012,31 +1060,6 @@ private final class Recorder {
             } else {
                 status.warnings.append(RecorderWarning(code: code, message: message, since: Date()))
             }
-        }
-    }
-
-    /// The `echoRisk` warning (PR11): shown while a call records the microphone and the laptop speakers are the
-    /// output, so other people's voices reach the microphone too; cleared with headphones or another output, or when
-    /// the epoch records no microphone. An unknown route changes nothing. The first time it shows, the reporter says it
-    /// too (stderr in `voiceislocal record start`). Schedules the next periodic look.
-    private func refreshEchoRisk() async {
-        nextOutputRouteCheck = ContinuousClock.now.advanced(by: dependencies.tuning.outputRouteInterval)
-        guard options.source == .microphoneAndSystem else { return }
-        let risky: Bool
-        if plan.tracks.contains("mic") {
-            guard let route = dependencies.findOutputRoute() else { return }
-            risky = route.isBuiltInSpeakers
-        } else {
-            risky = false
-        }
-        let shown = shownWarnings.contains(.echoRisk)
-        if risky, !shown {
-            Self.log.notice("Session \(self.archive.id, privacy: .public): the call plays on the laptop speakers")
-            await warn(RecorderWarning(code: .echoRisk, message: OutputRoute.echoRiskMessage))
-        } else if !risky, shown {
-            Self.log.notice("Session \(self.archive.id, privacy: .public): the call no longer plays on the laptop speakers")
-            shownWarnings.remove(.echoRisk)
-            await updateStatus { $0.warnings.removeAll { $0.code == .echoRisk } }
         }
     }
 

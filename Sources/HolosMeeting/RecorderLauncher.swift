@@ -49,7 +49,8 @@ import Synchronization
     }
 
     /// ["record", "start", "--session-id", id, "--name=<name>", "--source", src, ("--locale=<locale>")?,
-    ///  ("--app", id)?, ("--others-in-room")?, ("--expected-speakers", n)?, ("--vocabulary-file", path)?,
+    ///  ("--app", id)?, ("--others-in-room")?, ("--microphone", "default" | "built-in")?,
+    ///  ("--expected-speakers", n)?, ("--vocabulary-file", path)?,
     ///  "--no-live-text", "--directory", root.path]
     ///
     /// The name is joined to its option: as a separate element, a name starting with "-" ("- standup") would be
@@ -61,6 +62,7 @@ import Synchronization
         if let locale = settings.locale { arguments.append("--locale=\(locale)") }
         if let app = settings.applicationBundleID { arguments += ["--app", app] }
         if settings.othersInRoom { arguments.append("--others-in-room") }
+        if let microphone = settings.microphone { arguments += ["--microphone", microphone.argument] }
         if let expected = settings.expectedSpeakers { arguments += ["--expected-speakers", String(expected)] }
         if let vocabularyFile { arguments += ["--vocabulary-file", vocabularyFile.path] }
         arguments += ["--no-live-text", "--directory", root.path]
@@ -145,7 +147,8 @@ import Synchronization
                                        root: root, applicationBundleID: settings.applicationBundleID,
                                        vocabulary: vocabulary, sessionID: sessionID,
                                        othersInRoom: settings.othersInRoom,
-                                       expectedSpeakers: settings.expectedSpeakers, liveText: false)
+                                       expectedSpeakers: settings.expectedSpeakers, liveText: false,
+                                       microphone: settings.microphone)
         let stop = ManualStopSource()
         let log = Self.labellingLog(in: logDirectory, sessionID: sessionID)
         let labelling = LabellingStarted()

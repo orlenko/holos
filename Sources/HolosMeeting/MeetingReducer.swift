@@ -1,4 +1,5 @@
 import Foundation
+import HolosAudio
 import HolosCore
 
 // The menu bar's meeting state machine (docs/meeting-design.md §5.8 PR4). Pure: every input is an event, every output
@@ -7,11 +8,15 @@ import HolosCore
 /// What the start panel asks the recorder to do.
 public struct MeetingStartSettings: Codable, Sendable, Equatable {
     public var name: String
-    /// .microphone ("In person") or .microphoneAndSystem ("Online call").
+    /// .microphoneAndSystem for a meeting from the app, .microphone when system audio is off or not allowed
+    /// (`MeetingStartSettings.app`).
     public var source: AudioSource
     public var applicationBundleID: String?
     public var othersInRoom: Bool
     public var expectedSpeakers: Int?
+    /// Which input the microphone track records; nil: the recorder's choice for `source` (the built-in microphone
+    /// for `mic`, the system default input otherwise). Meetings from the app say `.systemDefault`.
+    public var microphone: MicrophoneSelection? = nil
     /// The meeting's languages, as locale identifiers ("fr-CA"); the recorder transcribes in the first (`locale`).
     /// The start panel chooses exactly one today. Empty leaves the choice to the recorder's own default.
     public var locales: [String]
@@ -20,16 +25,17 @@ public struct MeetingStartSettings: Codable, Sendable, Equatable {
     public var locale: String? { locales.first }
 
     public init(name: String, source: AudioSource, applicationBundleID: String? = nil, othersInRoom: Bool = false,
-                expectedSpeakers: Int? = nil, locales: [String] = []) {
+                expectedSpeakers: Int? = nil, microphone: MicrophoneSelection? = nil, locales: [String] = []) {
         self.name = name; self.source = source; self.applicationBundleID = applicationBundleID
-        self.othersInRoom = othersInRoom; self.expectedSpeakers = expectedSpeakers; self.locales = locales
+        self.othersInRoom = othersInRoom; self.expectedSpeakers = expectedSpeakers; self.microphone = microphone
+        self.locales = locales
     }
 
     private enum CodingKeys: String, CodingKey {
-        case name, source, applicationBundleID, othersInRoom, expectedSpeakers, locales
+        case name, source, applicationBundleID, othersInRoom, expectedSpeakers, microphone, locales
     }
 
-    /// Settings saved before meetings had a language decode with none.
+    /// Settings saved before meetings had a language (or a microphone choice) decode with none.
     public init(from decoder: any Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         self.init(name: try container.decode(String.self, forKey: .name),
@@ -37,6 +43,7 @@ public struct MeetingStartSettings: Codable, Sendable, Equatable {
                   applicationBundleID: try container.decodeIfPresent(String.self, forKey: .applicationBundleID),
                   othersInRoom: try container.decode(Bool.self, forKey: .othersInRoom),
                   expectedSpeakers: try container.decodeIfPresent(Int.self, forKey: .expectedSpeakers),
+                  microphone: try container.decodeIfPresent(MicrophoneSelection.self, forKey: .microphone),
                   locales: try container.decodeIfPresent([String].self, forKey: .locales) ?? [])
     }
 
@@ -59,6 +66,7 @@ public struct MeetingStartSettings: Codable, Sendable, Equatable {
         if settings.name.isEmpty { settings.name = Self.defaultName(now: now, timeZone: timeZone) }
         if source == .microphone { settings.applicationBundleID = nil }
         if source != .microphoneAndSystem { settings.othersInRoom = false }
+        if source == .system { settings.microphone = nil }
         if let bundleID = settings.applicationBundleID?.trimmingCharacters(in: .whitespacesAndNewlines) {
             settings.applicationBundleID = bundleID.isEmpty ? nil : bundleID
         }
@@ -527,6 +535,7 @@ public struct MeetingMenuLayout: Sendable, Equatable {
     private var name: String?
     private var source: AudioSource?
     private var microphoneName: String?
+    private var microphoneIsSystemDefault: Bool?
     private var transcription: [TranscriptionState] = []
     private var warnings: [String] = []
     /// Failed: the message line.
@@ -545,6 +554,7 @@ public struct MeetingMenuLayout: Sendable, Equatable {
             name = status.name
             source = status.source
             microphoneName = status.microphoneName
+            microphoneIsSystemDefault = status.microphoneIsSystemDefault
             transcription = status.tracks.map(\.transcription)
             warnings = status.warnings.map(\.message)
         case .finishing:
