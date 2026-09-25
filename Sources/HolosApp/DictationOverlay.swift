@@ -138,7 +138,7 @@ final class DictationOverlay {
     var isVisible: Bool { panel.isVisible }
     /// Changes every time the panel shows new content, so a timer can tell whether its content is still up.
     private(set) var contentToken = 0
-    /// Whether the content on screen needs the user (a failure, text left on the clipboard, a warning).
+    /// Whether the content on screen needs the user (a failure, text that could not be written, a warning).
     private(set) var showingAttention = false
 
     /// Opacity of the preview (not of its close button, which stays fully visible).

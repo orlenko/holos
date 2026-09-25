@@ -208,20 +208,45 @@ Hardware-facing and cross-app acceptance remain pending.
 - `read` renders a local UTF-8 text/Markdown file or stdin as an ordered AAC
   playlist, with resume and optional playback. Markdown is read verbatim.
 - `scripts/build-app.sh` builds and ad-hoc signs `build/VoiceIsLocal.app`, an accessory
-  menu bar app. Its Speech dictation is disabled on first launch; the user
-  explicitly grants permissions, picks the language (by default the supported one
-  closest to the macOS preferred languages, `en-CA` when none is), installs speech
-  assets, and enables the chosen
-  hold-to-talk shortcut. Right Option is the default choice, with
+  menu bar app. Dictation is disabled on first launch; the user explicitly grants
+  permissions, picks the dictation language (by default the supported one closest to
+  the macOS preferred languages, `en-CA` when none is; any language Apple's
+  SpeechTranscriber supports), installs that language's speech model, and enables the
+  chosen hold-to-talk shortcut. Right Option is the default choice, with
   Control–Option–Space available instead. It previews speech and finalizes on
   release; Esc cancels even during finalization. Until the default language is
   known (the supported list loads just after launch), installing its speech model
   and enabling dictation wait for it, and the meeting start panel keeps Start off.
-- The app attempts one direct `AXSelectedText` insertion only into a writable,
-  non-secure text field whose focus, selection, and nearby text still match the
-  key-down snapshot. Unsupported or changed targets retain the result for explicit
-  Copy/Discard; it never synthesizes Return or pastes through the clipboard.
+- Finalized phrases are written into the focused field while the user speaks: through
+  Accessibility (`AXSelectedText`) into writable native fields, and as typed keystrokes
+  into terminals and web or other editors without a direct Accessibility write, only
+  while the same field keeps focus. For a terminal, "the same field" means the terminal
+  staying frontmost with the same focused window and focused element as reported to
+  Accessibility at key-down, so switching tabs, panes or windows stops typing where the
+  terminal reports a per-session element (expected for Terminal and iTerm2; not yet
+  checked against live terminals). A terminal reporting only its window is tracked by
+  window, so a pane switch inside that window goes undetected; one reporting neither is
+  tracked by staying frontmost only. Key-down reads the terminal's focus until two
+  consecutive reads agree (at most four reads); if they never agree, as when focus
+  moves during the capture, that dictation is not typed and is kept for Copy Result.
+  Secure fields and Secure Keyboard Entry are refused.
+  It never synthesizes Return and never pastes. Text it could not write (target
+  changed, safety check failed, unverified write, forced stop) is kept for Copy Result
+  or Discard in the menu; it is never put on the clipboard automatically, since
+  dictation can be sensitive. The kept result is replaced only by a later dictation that
+  produces text; a press that is cancelled, released before listening, or recognizes
+  nothing leaves it and its ten-minute expiry in place. See
+  [dictation validation](dictation-validation.md).
   Dictation audio is not saved.
+- Dictation text is cleaned before it is written: filler words are removed (English and
+  French lists; off in Setup), then learned corrections are applied. **Correct Last
+  Dictation…** learns word swaps from the user's edits, and the Corrections window adds,
+  edits and removes them. An opt-in Setup option, off by default, fixes misheard words
+  in each chunk with Apple's on-device Foundation Models before it is written; a guard
+  keeps the original text when the reply changes more than a few words, undoes a
+  learned correction, or changes punctuation other than commas and apostrophes (the
+  last piece of a dictation may also change its closing `.`, `!`, `?` or `…`). **Copy Original** keeps
+  the text as heard.
 
 The CLI bundle embeds microphone and speech-recognition permission usage strings.
 `scripts/build.sh` ad-hoc signs the built executable to give macOS a stable CLI
@@ -349,10 +374,8 @@ Still requiring real-machine or user-data validation:
   selected-text replacement depends on each app's writable text-field support.
   The app is neither auto-installed nor a login item. Right Option is reserved
   while the user enables that shortcut; unrelated typing cancels dictation and
-  may be consumed until the key is released. Copy overwrites the clipboard only
-  when explicitly chosen from the menu.
-- Correction memory, correction management, or Foundation Models-assisted
-  correction. No correction database workflow is present.
+  may be consumed until the key is released. The clipboard is written only when the
+  user chooses Copy Result or Copy Original.
 - Speaker names and edits: labels are "Speaker N" until named in the review window or
   with `voiceislocal speakers`. The review window has no redo, and its undo does not reach past
   a relabel (Find More Speakers keeps names, not turn-level changes). Find More Speakers is

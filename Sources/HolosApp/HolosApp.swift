@@ -56,7 +56,10 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
     private var enableGeneration = 0
     private var enableTask: Task<Void, Never>?
     private var assetTask: Task<Void, Never>?
-    private var expiryTask: Task<Void, Never>?
+    /// Hides the overlay eight seconds after a result or message, unless something else was shown since.
+    private var overlayHideTask: Task<Void, Never>?
+    /// Discards the kept result ten minutes after the dictation that produced it.
+    private var resultExpiryTask: Task<Void, Never>?
     private var observers: [NSObjectProtocol] = []
     private enum Destination {
         case field(InsertionTarget)
@@ -71,9 +74,9 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
     private var typedAppName: String?
     /// A streamed write may have landed without being confirmed; the result must not claim it failed.
     private var streamUnverified = false
-    /// The app or field changed during the utterance; ⌘V now would paste somewhere else.
+    /// The app or field changed during the utterance; pasting Copy Result now would land somewhere else.
     private var targetMoved = false
-    /// Where the user was at key-down, to check before telling them to paste.
+    /// Where the user was at key-down, to check before telling them where to paste Copy Result.
     private var originPID: pid_t?
     private var originFocus: AXUIElement?
     private var previewOpacity: Double {
@@ -84,7 +87,7 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
     /// The overlay content token of the opacity sample currently on screen, if any.
     private var sampleToken: Int?
     /// When false, the preview is hidden during dictation and for results that went in fine; anything that
-    /// needs the user (text left on the clipboard, failures) is still shown.
+    /// needs the user (text that could not be written, failures) is still shown.
     private var showPreview: Bool {
         get { UserDefaults.standard.object(forKey: "showPreview") as? Bool ?? true }
         set { UserDefaults.standard.set(newValue, forKey: "showPreview") }
@@ -100,9 +103,12 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
     }
     /// Fixes each chunk with Apple's on-device model before it is written (Setup option); nil when off.
     private var fixPipeline: DictationFixPipeline?
-    /// The recognizer's text for the last result (before filler removal, corrections and the on-device fix), kept
-    /// when the fix changed what was written; for Copy Original.
+    /// The recognizer's text for this dictation's result (before filler removal, corrections and the on-device fix),
+    /// kept when the fix changed what was written; for Copy Original once the dictation concludes.
     private var resultOriginal = ""
+    /// What the menu's Copy Result and Copy Original offer: the last dictation that produced a result. A later
+    /// press that produces nothing (cancelled, released before listening, nothing recognized) leaves it.
+    private var retention = ResultRetention()
     var corrections = CorrectionList()
     /// False when an existing corrections file could not be read, so it is never overwritten.
     private var correctionsWritable = true
@@ -114,6 +120,7 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
     /// The recognizer's latest committed text, kept so a failure can still offer what was not written.
     private var latestCommitted = ""
     private let log = Logger(subsystem: "ca.orlenko.holos.app", category: "insertion")
+    /// This dictation's text for Copy Result; the menu offers it once the dictation concludes (`retainResult`).
     private var resultText = ""
     private var message = "Disabled — open Setup… to get started"
     private var setupWindow: SetupWindow?
@@ -202,7 +209,8 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
-        enableTask?.cancel(); assetTask?.cancel(); expiryTask?.cancel(); setupRefreshTask?.cancel()
+        enableTask?.cancel(); assetTask?.cancel(); overlayHideTask?.cancel(); resultExpiryTask?.cancel()
+        setupRefreshTask?.cancel()
         monitor?.stop(); controller?.cancel()
         for observer in observers { NSWorkspace.shared.notificationCenter.removeObserver(observer) }
         overlay.hide()
@@ -216,6 +224,19 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
 
     private var shortcutTitle: String { shortcut == .rightOption ? "Right Option" : "Control–Option–Space" }
 
+    /// Copy Result, Copy Original and Discard Result for the last dictation that produced a result.
+    private func addResultItems(to menu: NSMenu) {
+        let copy = item("Copy Result", #selector(copyResult))
+        copy.isEnabled = !retention.kept.text.isEmpty
+        menu.addItem(copy)
+        if !retention.kept.original.isEmpty {
+            menu.addItem(item("Copy Original (As Heard)", #selector(copyOriginal)))
+        }
+        let discard = item("Discard Result", #selector(discardResult))
+        discard.isEnabled = !retention.kept.isEmpty && !isBusy
+        menu.addItem(discard)
+    }
+
     func rebuildMenu() {
         guard statusItem != nil else { return }
         let menu = NSMenu()
@@ -223,8 +244,10 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
         menu.delegate = self
         addMeetingItems(to: menu)
         if meeting.dictationPaused {
-            // A meeting is recording: this line replaces the whole dictation block (§4.12).
+            // A meeting is recording: this line replaces the dictation block (§4.12), except a result kept from
+            // before the meeting, which stays reachable because nothing copies it to the clipboard on its own.
             addDictationPausedLine(to: menu)
+            if !retention.kept.isEmpty { addResultItems(to: menu) }
         } else {
             let status = NSMenuItem(title: message, action: nil, keyEquivalent: "")
             status.isEnabled = false
@@ -250,15 +273,7 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
             let cancel = item("Cancel Dictation", #selector(cancelDictation))
             cancel.isEnabled = isBusy
             menu.addItem(cancel)
-            let copy = item("Copy Result", #selector(copyResult))
-            copy.isEnabled = !resultText.isEmpty
-            menu.addItem(copy)
-            if !resultOriginal.isEmpty {
-                menu.addItem(item("Copy Original (As Heard)", #selector(copyOriginal)))
-            }
-            let discard = item("Discard Result", #selector(discardResult))
-            discard.isEnabled = !resultText.isEmpty && !isBusy
-            menu.addItem(discard)
+            addResultItems(to: menu)
             menu.addItem(item("Correct Last Dictation…", #selector(showCorrections)))
         }
         menu.addItem(.separator())
@@ -316,7 +331,7 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
         show("Voice is Local was rebuilt while running. Quit and reopen Voice is Local to dictate again.")
         overlay.show(title: "Voice is Local was rebuilt while running", text: "Quit and reopen Voice is Local to dictate again.",
                      force: true, attention: true)
-        scheduleExpiry()
+        scheduleOverlayHide()
         return true
     }
 
@@ -462,7 +477,20 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
             originFocus = TextInsertion.currentFocus()
             typedAppName = nil
             if let app = NSWorkspace.shared.frontmostApplication { TextInsertion.enableAccessibility(for: app) }
-            if let terminal = KeystrokeTarget.captureTerminal() {
+            let terminal: KeystrokeTarget?
+            var terminalRefusal: String?
+            do {
+                terminal = try KeystrokeTarget.captureTerminal()
+            } catch {
+                terminal = nil
+                terminalRefusal = error.localizedDescription
+            }
+            if let terminalRefusal {
+                // Focus moved while it was captured; the text is kept for Copy Result, never typed.
+                target = nil
+                insertionBlockReason = "The terminal's focus changed as dictation started; use Copy Result."
+                log.notice("No target: \(terminalRefusal, privacy: .public)")
+            } else if let terminal {
                 target = .keystrokes(terminal)
                 typedAppName = terminal.appName
                 log.notice("Target: terminal \(terminal.appName, privacy: .public)")
@@ -496,9 +524,12 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
                     log.notice("No target: \(error.localizedDescription, privacy: .public)")
                 }
             }
-            expiryTask?.cancel()
+            overlayHideTask?.cancel()
+            // The previous result, its menu items and its expiry stay until this dictation produces one of its own
+            // (`retainResult`). `begin` can conclude at once (no microphone permission), so this comes first.
             resultText = ""
             resultOriginal = ""
+            retention.begin()
             if controller.begin() {
                 // A pending opacity sample must not hide this dictation's own preview or result.
                 // A rejected begin leaves the timer running so the sample still hides on time.
@@ -511,6 +542,7 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
                 }
             } else {
                 target = nil
+                _ = retention.conclude(DictationResult())  // nothing started, so the previous result stays
                 show("Previous dictation is still stopping; release and try again shortly.")
             }
         case .ended: controller.end()
@@ -525,6 +557,9 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
             target = nil
             overlay.hide()
             message = enabled ? "Ready — hold \(shortcutTitle)" : "Disabled"
+            // Cancelled or disabled: usually nothing to keep, but Copy Original may hold what was heard when Apple
+            // Intelligence's fix already changed written text.
+            retainResult()
         case .preparing:
             message = "Preparing — wait before speaking"
             if showPreview {
@@ -589,23 +624,18 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
             if let unwritten, let rest = attempted, !unwritten.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 // Keep the leading space so pasting after the inserted prefix does not join words.
                 resultText = insertedText.isEmpty ? rest.trimmingCharacters(in: .whitespaces) : rest
-                let copied = copyToClipboard(resultText)
+                // Never written to the clipboard on its own (it may hold something sensitive); Copy Result has it.
                 if streamUnverified {
                     // An unconfirmed write may already have landed; pasting blindly could duplicate it.
-                    message += copied
-                        ? " Some text may already be in the field — check it before pasting the clipboard."
-                        : " Some text may already be in the field — check it before using Copy Result."
+                    message += " Some text may already be in the field — check it before using Copy Result."
                 } else if focusMovedSinceKeyDown() {
-                    message += copied
-                        ? " The words that were not inserted are on the clipboard — go back to the original field before pressing ⌘V."
-                        : " Copy Result has the words that were not inserted; return to the original field first."
+                    message += " Copy Result has the words that were not inserted; return to the original field first."
                 } else {
-                    message += copied
-                        ? " The words that were not inserted are on the clipboard — press ⌘V."
-                        : " Copy Result has the words that were not inserted."
+                    message += " Copy Result has the words that were not inserted."
                 }
+                retainResult()
                 overlay.show(title: message, text: resultText, attention: true)
-                scheduleExpiry()
+                scheduleOverlayHide()
                 rebuildMenu()
                 return
             }
@@ -613,14 +643,16 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
                 // The transcript no longer extends what was inserted, so no tail is safe to paste.
                 resultText = committed
                 message += " The transcript changed after text was inserted; check the field. Copy Result has the full transcript."
+                retainResult()
                 overlay.show(title: message, text: resultText, attention: true)
-                scheduleExpiry()
+                scheduleOverlayHide()
                 rebuildMenu()
                 return
             }
             resultText = update.text
+            retainResult()
             overlay.show(title: message, text: resultText, attention: true)
-            scheduleExpiry()
+            scheduleOverlayHide()
         }
         rebuildMenu()
     }
@@ -760,7 +792,7 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
     }
 
     /// `fixed` is the on-device fix of the part not yet written, written in its place; when it cannot be written,
-    /// Copy Result and the clipboard get it instead of the recognized text. True when the whole transcript is now
+    /// Copy Result gets it instead of the recognized text. True when the whole transcript is now
     /// in the target.
     @discardableResult
     private func finish(_ text: String, into destination: Destination?, writing fixed: String? = nil) -> Bool {
@@ -781,7 +813,10 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
             return outcome == .inserted || outcome == .typed
         }
         guard let rest = TextInsertion.unwritten(text, after: insertedText) else {
-            message = "Text was inserted while you spoke, but the final transcript differs. Check the field; Copy Result copies the full transcript."
+            // An empty final transcript is no result, so Copy Result keeps the previous dictation's text instead.
+            message = text.isEmpty
+                ? "Text was inserted while you spoke, but the final transcript came back empty. Check the field."
+                : "Text was inserted while you spoke, but the final transcript differs. Check the field; Copy Result copies the full transcript."
             resultNeedsAttention = true
             return false
         }
@@ -804,10 +839,32 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
     /// Shows the result of a finished dictation, and a forced stop that ended it.
     private func presentResult() {
         if let forced = forcedStopMessage, !message.hasPrefix(forced) { message = forced + " " + message }
+        retainResult()
         if showPreview || resultNeedsAttention {
             overlay.show(title: message, text: resultText, attention: resultNeedsAttention)
         }
-        scheduleExpiry()
+        scheduleOverlayHide()
+    }
+
+    /// Concludes this dictation for the menu: its result replaces the kept one and starts a new ten-minute expiry,
+    /// unless it produced nothing; then the previous result, its menu items and its expiry stay as they were.
+    private func retainResult() {
+        switch retention.conclude(DictationResult(text: resultText, original: resultOriginal)) {
+        case .replaced:
+            resultExpiryTask?.cancel()
+            resultExpiryTask = Task { [weak self] in
+                do {
+                    try await Task.sleep(for: .seconds(600))
+                    self?.expireResult()
+                } catch { }
+            }
+        case .keptPrevious:
+            if !retention.kept.text.isEmpty, controller.status.phase != .idle {
+                message += (message.hasSuffix(".") ? "" : ".") + " Copy Result still has the previous dictation."
+            }
+        case .nothing:
+            break
+        }
     }
 
     private func blockedOutcome(default reason: String) -> InsertionOutcome {
@@ -816,7 +873,8 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
         return targetMoved ? .targetChanged(reason) : .needsCopy(reason)
     }
 
-    /// Text that could not be written goes to the clipboard right away, so it is one ⌘V from the field.
+    /// Text that could not be written is kept for Copy Result in the menu. It is never put on the clipboard on its
+    /// own: dictated text can be sensitive (even a password), so only the user's Copy Result or Copy Original does.
     private func conclude(_ outcome: InsertionOutcome, unwritten: String, partial: Bool) {
         switch outcome {
         case .inserted, .typed:
@@ -825,27 +883,25 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
             log.notice("Not written: \(reason, privacy: .public)")
             resultNeedsAttention = true
             resultText = unwritten
-            let copied = copyToClipboard(unwritten)
             let moved: Bool = if case .targetChanged = outcome { true } else { focusMovedSinceKeyDown() }
             if moved {
                 let head = partial ? "Inserted the first part; then the app or field changed."
                                    : "The app or field changed before Voice is Local could write."
-                message = copied ? "\(head) Copied to the clipboard — go back to the original field before pressing ⌘V."
-                                 : "\(head) Use Copy Result after returning to the original field."
+                message = "\(head) Use Copy Result after returning to the original field."
                 return
             }
             let head: String = if case .unverified = outcome {
-                "Insertion unverified — check the field before pasting."
+                "Insertion unverified — check the field before using Copy Result."
             } else if partial {
                 "Inserted the first part; couldn't write the rest."
             } else {
                 "Couldn't write into this field."
             }
-            message = copied ? "\(head) Copied to the clipboard — press ⌘V." : "\(head) Use Copy Result."
+            message = "\(head) Use Copy Result."
         }
     }
 
-    /// Checked at the moment Holos suggests ⌘V, so a focus change inside the same app counts too.
+    /// Checked when the result message is written, so a focus change inside the same app counts too.
     private func focusMovedSinceKeyDown() -> Bool {
         if targetMoved { return true }
         if NSWorkspace.shared.frontmostApplication?.processIdentifier != originPID { return true }
@@ -961,18 +1017,25 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
         rebuildMenu()
     }
 
-    private func scheduleExpiry() {
-        expiryTask?.cancel()
+    private func scheduleOverlayHide() {
+        overlayHideTask?.cancel()
         let shown = overlay.contentToken
-        expiryTask = Task { [weak self] in
+        overlayHideTask = Task { [weak self] in
             do {
                 try await Task.sleep(for: .seconds(8))
                 // Hide only the content this timer was scheduled for, never something shown since.
                 if let self, self.overlay.contentToken == shown { self.overlay.hide() }
-                try await Task.sleep(for: .seconds(592))
-                self?.discardResult()
             } catch { }
         }
+    }
+
+    /// The kept result's ten minutes are up. During a later dictation only the kept result goes; that dictation
+    /// still concludes on its own.
+    private func expireResult() {
+        guard isBusy else { return discardResult() }
+        retention.discard()
+        resultExpiryTask = nil
+        rebuildMenu()
     }
 
     @objc private func cancelDictation() {
@@ -984,20 +1047,22 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func copyResult() {
-        guard !resultText.isEmpty else { return }
-        let copied = copyToClipboard(resultText)
+        guard !retention.kept.text.isEmpty else { return }
+        let copied = copyToClipboard(retention.kept.text)
         show(copied ? "Copied — paste where you choose" : "Clipboard write failed; result is still available")
     }
 
     @objc private func copyOriginal() {
-        guard !resultOriginal.isEmpty else { return }
-        let copied = copyToClipboard(resultOriginal)
+        guard !retention.kept.original.isEmpty else { return }
+        let copied = copyToClipboard(retention.kept.original)
         show(copied ? "Copied the text as heard, before any fixes" : "Clipboard write failed; the original is still available")
     }
 
     @objc private func discardResult() {
         guard !isBusy else { return }
-        expiryTask?.cancel(); expiryTask = nil
+        overlayHideTask?.cancel(); overlayHideTask = nil
+        resultExpiryTask?.cancel(); resultExpiryTask = nil
+        retention.discard()
         resultText = ""
         resultOriginal = ""
         controller.reset()
