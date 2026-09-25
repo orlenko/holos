@@ -113,43 +113,54 @@ import Testing
     #expect(wrapped == .init(text: "Text: buy milk", outcome: .unchanged))
 }
 
-@Test func withholdsTheWholeAddedClosingRun() {
+@Test func aChunkThatMayContinueKeepsItsEnd() {
+    // Whatever the model put after the last word goes back to the chunk's own end, quotes and brackets included.
     #expect(AIFixGuard.keepingEdges(of: "are you sure", in: "Are you sure?!", isFinal: false) == "are you sure")
-    #expect(AIFixGuard.keepingEdges(of: "and then", in: "And then...", isFinal: false) == "and then")
     #expect(AIFixGuard.keepingEdges(of: "and then", in: "And then…", isFinal: false) == "and then")
-    #expect(AIFixGuard.keepingEdges(of: "wait for me,", in: "Wait for me?!", isFinal: false) == "wait for me,")
+    #expect(AIFixGuard.keepingEdges(of: "wait for me,", in: "Wait for me.", isFinal: false) == "wait for me,")
     #expect(AIFixGuard.keepingEdges(of: "Is it done?", in: "Is it done?!", isFinal: false) == "Is it done?")
-    #expect(AIFixGuard.keepingEdges(of: "are you sure", in: "Are you sure?!", isFinal: true) == "are you sure?!")
-}
-
-@Test func withholdsAClosingRunBeforeClosingQuotesAndBrackets() {
     #expect(AIFixGuard.keepingEdges(of: "he called it “great”", in: "He called it “great.”", isFinal: false)
+        == "he called it “great”")
+    #expect(AIFixGuard.keepingEdges(of: "he called it “great”", in: "He called it “great”.", isFinal: false)
         == "he called it “great”")
     #expect(AIFixGuard.keepingEdges(of: "we will ship (soon)", in: "We will ship (soon?!)", isFinal: false)
         == "we will ship (soon)")
     #expect(AIFixGuard.keepingEdges(of: "she said \"wait,\"", in: "She said \"wait.\"", isFinal: false)
         == "she said \"wait,\"")
+}
+
+@Test func theEndOfTheDictationMayChangeItsClosingMarks() {
+    #expect(AIFixGuard.keepingEdges(of: "are you sure", in: "Are you sure?!", isFinal: true) == "are you sure?!")
     #expect(AIFixGuard.keepingEdges(of: "he called it “great”", in: "He called it “great.”", isFinal: true)
         == "he called it “great.”")
-    #expect(AIFixGuard.closingRun(of: "“great.”") == ".")
-    #expect(AIFixGuard.closingRun(of: "the dogs'") == "")
 }
 
-@Test func fixerHoldsBackAClosingMarkBeforeAClosingQuote() async {
-    let quoted = await fixer { _, _ in "He called it “great.”" }.fix(" he called it “great”", isFinal: false)
-    #expect(quoted == .init(text: " he called it “great”", outcome: .unchanged, withheldClosing: "."))
+@Test func theFirstWordKeepsItsCasePastOpeningQuotesAndBrackets() {
+    #expect(AIFixGuard.keepingEdges(of: "“hello there”", in: "“Hello there.”", isFinal: false) == "“hello there”")
+    #expect(AIFixGuard.keepingEdges(of: "(see below)", in: "(See below.)", isFinal: false) == "(see below)")
+    #expect(AIFixGuard.keepingEdges(of: "\"their here\"", in: "\"They're here.\"", isFinal: true)
+        == "\"they're here.\"")
+    // A capital the chunk had stays, and opening marks the model added or dropped go back to the chunk's.
+    #expect(AIFixGuard.keepingEdges(of: "When a press escape", in: "when I press escape", isFinal: false)
+        == "When I press escape")
+    #expect(AIFixGuard.keepingEdges(of: "“hello there”", in: "hello there”", isFinal: false) == "“hello there”")
+    #expect(AIFixGuard.keepingEdges(of: "“i think so”", in: "“I think so.”", isFinal: false) == "“I think so”")
+}
+
+@Test func fixerKeepsTheEdgesOfAChunkThatMayContinue() async {
+    let quoted = await fixer { _, _ in "“Hello there.”" }.fix(" “hello there”", isFinal: false)
+    #expect(quoted == .init(text: " “hello there”", outcome: .unchanged))
     let fixed = await fixer { _, _ in "He called it “great.”" }.fix(" he cold it “great”", isFinal: false)
-    #expect(fixed == .init(text: " he called it “great”", outcome: .fixed, withheldClosing: "."))
-    // The chunk already ended with a comma inside the quote: nothing is held back.
-    let comma = await fixer { _, _ in "She said \"wait.\"" }.fix("she said \"wait,\"", isFinal: false)
-    #expect(comma == .init(text: "she said \"wait,\"", outcome: .unchanged))
-}
-
-@Test func fixerHoldsBackACompoundClosingRun() async {
-    let asked = await fixer { _, _ in "Are you sure?!" }.fix(" are you sure", isFinal: false)
-    #expect(asked == .init(text: " are you sure", outcome: .unchanged, withheldClosing: "?!"))
-    let trailing = await fixer { _, _ in "And then they left..." }.fix("and than they left", isFinal: false)
-    #expect(trailing == .init(text: "and then they left", outcome: .fixed, withheldClosing: "..."))
+    #expect(fixed == .init(text: " he called it “great”", outcome: .fixed))
+    let middle = await fixer { _, _ in "They're going to review it tomorrow." }
+        .fix(" their going to review it tomorrow", isFinal: false)
+    #expect(middle == .init(text: " they're going to review it tomorrow", outcome: .fixed))
+    // The end of the dictation may gain a period.
+    let last = await fixer { _, _ in "They're going to review it tomorrow." }
+        .fix(" their going to review it tomorrow", isFinal: true)
+    #expect(last == .init(text: " they're going to review it tomorrow.", outcome: .fixed))
+    let period = await fixer { _, _ in "All good here." }.fix("all good here", isFinal: true)
+    #expect(period == .init(text: "all good here.", outcome: .fixed))
 }
 
 @Test func copyResultOffersTheFixHolosTriedToWrite() {
@@ -225,45 +236,51 @@ private func fixer(corrections: CorrectionList = CorrectionList(), timeout: Dura
     #expect(failing == .init(text: "all good here", outcome: .failed))
 }
 
-@Test func fixerAppliesLearnedCorrectionsToTheReply() async {
+@Test func fixerListsLearnedCorrectionsAndKeepsTheWordsTheyProduced() async {
     let corrections = CorrectionList(entries: [Correction(heard: "get hub", meant: "GitHub")])
     let seenInstructions = Mutex("")
     let fix = fixer(corrections: corrections) { instructions, _ in
         seenInstructions.withLock { $0 = instructions }
         return "I opened a pull request on get hub"
     }
+    // The model undid a learned correction: the reply is refused, not corrected again.
     let result = await fix.fix("I opened a bull request on GitHub", isFinal: false)
-    #expect(result.text == "I opened a pull request on GitHub")
-    #expect(result.outcome == .fixed)
+    #expect(result == .init(text: "I opened a bull request on GitHub", outcome: .rejected,
+                            rejection: .changedCorrection))
     #expect(seenInstructions.withLock { $0 }.contains("get hub -> GitHub"))
+    // Other words may still be fixed around it.
+    let kept = await fixer(corrections: corrections) { _, _ in "I opened a pull request on GitHub" }
+        .fix("I opened a bull request on GitHub", isFinal: false)
+    #expect(kept == .init(text: "I opened a pull request on GitHub", outcome: .fixed))
 }
 
-@Test func fixerCorrectsOnlyWordsTheModelChanged() async {
-    // A valid chain: "foo" was already corrected to "bar" before the chunk reached the fixer.
+@Test func fixerNeverRewritesACorrectedWordThroughAChain() async {
+    // "foo" was already corrected to "bar" before the chunk reached the fixer.
     let chain = CorrectionList(entries: [Correction(heard: "foo", meant: "bar"), Correction(heard: "bar", meant: "baz")])
-    let echo = await fixer(corrections: chain) { _, prompt in String(prompt.dropFirst(6)) }
-        .fix("I said bar", isFinal: true)
-    #expect(echo == .init(text: "I said bar", outcome: .unchanged))
+    let chained = await fixer(corrections: chain) { _, _ in "I said baz" }.fix("I said bar", isFinal: true)
+    #expect(chained == .init(text: "I said bar", outcome: .rejected, rejection: .changedCorrection))
     let punctuated = await fixer(corrections: chain) { _, _ in "I said bar, then left." }
         .fix("I said bar then left", isFinal: true)
     #expect(punctuated == .init(text: "I said bar, then left.", outcome: .fixed))
-    // A word the model introduced gets one pass of the rules, like recognized text does.
-    let introduced = await fixer(corrections: chain) { _, _ in "I said foo" }.fix("I said fool", isFinal: true)
-    #expect(introduced == .init(text: "I said bar", outcome: .fixed))
-    // Raw "fool foo" reached the fixer as "fool bar"; the model changed the first word into "bar". Only that
-    // occurrence gets the rules, not its twin that was already corrected.
+    // The model's own words are not run through the rules again: a word it shifted keeps its spelling, and one it
+    // introduced stays as the model wrote it.
+    let shifted = await fixer(corrections: chain) { _, _ in "bar is open now too" }
+        .fix("the bar is open now", isFinal: false)
+    #expect(shifted == .init(text: "bar is open now too", outcome: .fixed))
     let twin = await fixer(corrections: chain) { _, _ in "bar bar" }.fix("fool bar", isFinal: true)
-    #expect(twin == .init(text: "baz bar", outcome: .fixed))
+    #expect(twin == .init(text: "bar bar", outcome: .fixed))
 }
 
-@Test func changedWordsArePositionalOrAbsentFromTheOriginal() {
-    // Same count: position by position.
-    #expect(AIFixGuard.changedWordRanges(from: "fool bar", to: "bar bar") == [NSRange(location: 0, length: 3)])
-    #expect(AIFixGuard.changedWordRanges(from: "bar fool", to: "bar bar") == [NSRange(location: 4, length: 3)])
-    // Different counts: only words found nowhere in the original, so a duplicate is never picked.
-    #expect(AIFixGuard.changedWordRanges(from: "fool bar x", to: "bar bar").isEmpty)
-    #expect(AIFixGuard.changedWordRanges(from: "fool bar", to: "bar bar baz").map(\.location) == [8])
-    #expect(AIFixGuard.changedWordRanges(from: "I don’t know", to: "I don't know").isEmpty)
+@Test func guardProtectsEveryOccurrenceOfAMeantPhrase() {
+    let corrections = [Correction(heard: "bull request", meant: "pull request")]
+    #expect(AIFixGuard.check(original: "a pull request and a pull request", fixed: "a pull request and a full request",
+                             protecting: corrections) == .reject(.changedCorrection))
+    #expect(AIFixGuard.check(original: "a pull request and a bull", fixed: "a pull request and a pull",
+                             protecting: corrections) == .accept)
+    #expect(AIFixGuard.check(original: "no such words here", fixed: "no such word here",
+                             protecting: corrections) == .accept)
+    #expect(AIFixGuard.occurrences(of: ["a", "a"], in: ["a", "a", "a"]) == 2)
+    #expect(AIFixGuard.occurrences(of: ["a", "b"], in: ["a"]) == 0)
 }
 
 @Test func copyOriginalStaysWheneverAFixChangedWhatHolosWroteOrOffers() {
@@ -279,29 +296,13 @@ private func fixer(corrections: CorrectionList = CorrectionList(), timeout: Dura
     #expect(AIFixOriginal.heard("", written: "a", writtenOriginal: "b") == nil)
 }
 
-@Test func correctionsCanBeLimitedToChangedRanges() {
-    let list = CorrectionList(entries: [Correction(heard: "get hub", meant: "GitHub")])
-    let text = "get hub and get hub"
-    #expect(list.apply(to: text, onlyTouching: [NSRange(location: 12, length: 3)]) == "get hub and GitHub")
-    #expect(list.apply(to: text, onlyTouching: []) == text)
-    #expect(AIFixGuard.changedWordRanges(from: "When a press escape", to: "when I press escape,")
-        == [NSRange(location: 5, length: 1)])
-    #expect(AIFixGuard.changedWordRanges(from: "a b c", to: "a b c d").map(\.location) == [6])
-    #expect(AIFixGuard.changedWordRanges(from: "a b c", to: "a c").isEmpty)
-}
-
-@Test func fixerHoldsBackAClosingMarkForAChunkThatMayContinue() async {
-    let fix = fixer { _, _ in "They're going to review it tomorrow." }
-    let middle = await fix.fix(" their going to review it tomorrow", isFinal: false)
-    #expect(middle == .init(text: " they're going to review it tomorrow", outcome: .fixed, withheldClosing: "."))
-    let last = await fix.fix(" their going to review it tomorrow", isFinal: true)
-    #expect(last == .init(text: " they're going to review it tomorrow.", outcome: .fixed))
-    // Only the period was added: the chunk is unchanged, but the mark is still offered.
-    let period = await fixer { _, _ in "All good here." }.fix("all good here", isFinal: false)
-    #expect(period == .init(text: "all good here", outcome: .unchanged, withheldClosing: "."))
-    // A comma the model turned into a period stays a comma, and nothing is held back.
-    let comma = await fixer { _, _ in "Wait for me." }.fix("wait for me,", isFinal: false)
-    #expect(comma == .init(text: "wait for me,", outcome: .unchanged))
+@Test func correctLastDictationOpensTheTextAsWritten() {
+    // The fixed chunks, then the fix of the rest: what the field holds, not the recognizer's text.
+    #expect(AIFixTranscript.final(written: " they're here", rest: " and gone.") == "they're here and gone.")
+    #expect(AIFixTranscript.final(written: "", rest: " they're here.") == "they're here.")
+    // The transcript no longer extends what was written, or nothing is left: the recognized text stays.
+    #expect(AIFixTranscript.final(written: " they're here", rest: nil) == nil)
+    #expect(AIFixTranscript.final(written: " ", rest: "") == nil)
 }
 
 @Test func fixerSkipsLongOrWordlessChunksWithoutAskingTheModel() async {

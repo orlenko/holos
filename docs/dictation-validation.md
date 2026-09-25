@@ -88,6 +88,9 @@ is saved.
 ## Corrections
 
 **Correct Last Dictation…** in the menu opens the last transcript as Voice is Local wrote it.
+With **Fix misheard words with Apple Intelligence** on, that is the fixed text, so
+learning picks up only your own edits; **Copy Original (As Heard)** still has the
+text as recognized.
 Fix misheard words there and choose **Learn Corrections**; Voice is Local compares the two
 versions and keeps short word swaps (up to a few words; insertions, deletions, and
 longer rewrites are ignored). A misheard single word that is itself a dictionary

@@ -580,17 +580,13 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
         await pipeline.idle()
         guard fixPipeline === pipeline else { return }
         var fixedRest: String?
-        // A closing mark held back from the last chunk that could not be written after it.
-        var unwrittenClosing: String?
+        // Only this last part may gain closing punctuation. When the recognizer committed everything before release,
+        // nothing is added at the end.
         let writable = enabled && insertionBlockReason == nil && target != nil
-        if writable, let rest = TextInsertion.unwritten(text, after: insertedText) {
-            if !rest.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                fixedRest = await pipeline.fix(rest, isFinal: true).text
-                guard fixPipeline === pipeline else { return }
-            } else if let closing = pipeline.withheldClosing {
-                // Everything was committed before release, so the last chunk ended the dictation after all.
-                if writeFixed("", as: closing) { pipeline.didWrite("", as: closing) } else { unwrittenClosing = closing }
-            }
+        if writable, let rest = TextInsertion.unwritten(text, after: insertedText),
+           !rest.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            fixedRest = await pipeline.fix(rest, isFinal: true).text
+            guard fixPipeline === pipeline else { return }
         }
         let destination = target
         target = nil // No callback or retry can write to this target again.
@@ -600,18 +596,18 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
         let attempted = unwritten.map {
             AIFixUnwritten.attempted($0, fixedRest: fixedRest, failedWrite: pipeline.failedWrite)
         }
-        endFixing(heard: heard, offered: (attempted ?? "") + (unwrittenClosing ?? ""), recognized: unwritten ?? "")
+        endFixing(heard: heard, offered: attempted ?? "", recognized: unwritten ?? "")
         let written = finish(text, into: destination, writing: attempted == unwritten ? nil : attempted)
         if !resultOriginal.isEmpty {
-            let rest = TextInsertion.unwritten(text, after: pipeline.writtenOriginal) ?? ""
-            let fixed = pipeline.written + (fixedRest ?? rest) + (unwrittenClosing ?? "")
-            if unwrittenClosing != nil {
-                // The words are in the field; only the mark is missing. Copy Result has the whole fixed text.
-                resultText = fixed
-                resultNeedsAttention = true
-                message += " The closing punctuation could not be added; Copy Result has Apple Intelligence's fix, "
-                    + "Copy Original has what was heard."
-            } else if written {
+            // What Holos wrote or tried to write: the fixed chunks, then the fix of the rest.
+            let fixed = pipeline.written + (attempted ?? "")
+            if let final = AIFixTranscript.final(written: pipeline.written, rest: attempted) {
+                // Correct Last Dictation opens exactly what was written and learns only the speaker's own edits
+                // from it, not Apple Intelligence's. Copy Original keeps the text as heard.
+                lastTranscript = final
+                lastRecognized = final
+            }
+            if written {
                 resultText = fixed
                 message += " Apple Intelligence fixed misheard words; Copy Original has what was heard."
             } else if attempted != unwritten {

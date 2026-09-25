@@ -28,10 +28,6 @@ public struct TranscriptFixer: Sendable {
         public var outcome: Outcome
         /// Why the guard refused the reply, for logging; never the text itself.
         public var rejection: AIFixGuard.Rejection?
-        /// The closing marks (a run of ".", "!", "?", "…", such as "?!" or "...") the model added to a chunk fixed
-        /// with `isFinal: false`, at its end or before its closing quotes or brackets, held back because the chunk
-        /// might end mid-sentence. If nothing follows the chunk, the caller appends them.
-        public var withheldClosing: String?
     }
 
     /// Longer chunks are not sent: the edit limits stop meaning "a few misheard words".
@@ -50,8 +46,9 @@ public struct TranscriptFixer: Sendable {
         self.model = model
     }
 
-    /// `isFinal` marks the end of the dictation: only there may the model add closing punctuation, since a chunk
-    /// in the middle of a sentence continues in the next one.
+    /// `isFinal` marks the end of the dictation: only there may the model change the closing punctuation, since a
+    /// chunk in the middle of a sentence continues in the next one. Learned corrections are listed for the model as
+    /// a reference, and a reply that changes a word one of them produced is refused.
     public func fix(_ chunk: String, isFinal: Bool) async -> Result {
         let leading = String(chunk.prefix { $0.isWhitespace })
         let trailing = String(chunk.reversed().prefix { $0.isWhitespace }.reversed())
@@ -68,23 +65,10 @@ public struct TranscriptFixer: Sendable {
         case .timedOut: return Result(text: chunk, outcome: .timedOut)
         case .failed: return Result(text: chunk, outcome: .failed)
         }
-        let tidied = AIFixGuard.sanitized(reply, for: core)
-        let edited = AIFixGuard.keepingEdges(of: core, in: tidied, isFinal: isFinal)
-        // Learned corrections win over the model, as they do over the recognizer. The chunk already had them
-        // applied, so only words the model changed are corrected: a second pass over the rest would chain
-        // rules ("foo" → "bar", then "bar" → "baz").
-        let fixed = corrections.apply(to: edited, onlyTouching: AIFixGuard.changedWordRanges(from: core, to: edited))
-        // The closing marks held back from a chunk that ends mid-sentence, in case it turns out to end the dictation.
-        // Marks before closing quotes or brackets ("great.”") count, and are held back the same way.
-        let added = AIFixGuard.closingRun(of: tidied)
-        let end = core.dropLast(AIFixGuard.closingEnd(of: core).closers.count).last
-        let closing: String? = if !isFinal, !added.isEmpty, AIFixGuard.closingRun(of: edited) != added,
-                                  end?.isLetter == true || end?.isNumber == true {
-            added
-        } else { nil }
-        switch AIFixGuard.check(original: core, fixed: fixed) {
-        case .accept: return Result(text: leading + fixed + trailing, outcome: .fixed, withheldClosing: closing)
-        case .unchanged: return Result(text: chunk, outcome: .unchanged, withheldClosing: closing)
+        let fixed = AIFixGuard.keepingEdges(of: core, in: AIFixGuard.sanitized(reply, for: core), isFinal: isFinal)
+        switch AIFixGuard.check(original: core, fixed: fixed, protecting: corrections.entries) {
+        case .accept: return Result(text: leading + fixed + trailing, outcome: .fixed)
+        case .unchanged: return Result(text: chunk, outcome: .unchanged)
         case .reject(let why): return Result(text: chunk, outcome: .rejected, rejection: why)
         }
     }
@@ -173,9 +157,10 @@ private final class RaceGate<Value: Sendable>: Sendable {
 /// Decides whether a model's reply is a small fix of the original rather than a rewrite, and tidies the reply.
 public enum AIFixGuard {
     public enum Rejection: String, Sendable, Equatable {
-        /// A mark other than a comma or apostrophe was added, removed or moved (a period, colon, quote, bracket or
-        /// line break), apart from closing marks at the very end.
-        case empty, tooManyEdits, wordCountChanged, changedStructure
+        /// `changedStructure`: a mark other than a comma or apostrophe was added, removed or moved (a period, colon,
+        /// quote, bracket or line break), apart from closing marks at the very end. `changedCorrection`: a word a
+        /// learned correction produced was changed.
+        case empty, tooManyEdits, wordCountChanged, changedStructure, changedCorrection
     }
 
     public enum Verdict: Sendable, Equatable {
@@ -189,8 +174,9 @@ public enum AIFixGuard {
     /// word count within 1 (or 10 %), and keeps every other mark where it was: only commas and apostrophes may be
     /// added or removed, and closing marks (".", "!", "?", "…") changed at the very end. Any other added, removed or
     /// moved mark (a period, colon, quote, bracket or line break) is a new sentence, label or line, not a fix.
-    /// Case changes are free.
-    public static func check(original: String, fixed: String) -> Verdict {
+    /// Case changes are free. Words a learned correction produced (each occurrence in `original` of a
+    /// correction's meant phrase, compared as lowercased words) must all still be there: the speaker taught them.
+    public static func check(original: String, fixed: String, protecting corrections: [Correction] = []) -> Verdict {
         let original = original.trimmingCharacters(in: .whitespacesAndNewlines)
         let fixed = fixed.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !fixed.isEmpty else { return .reject(.empty) }
@@ -198,6 +184,11 @@ public enum AIFixGuard {
         let before = words(in: original)
         let after = words(in: fixed)
         guard !after.isEmpty else { return .reject(.empty) }
+        for phrase in Set(corrections.map { words(in: $0.meant) }) where !phrase.isEmpty {
+            if occurrences(of: phrase, in: after) < occurrences(of: phrase, in: before) {
+                return .reject(.changedCorrection)
+            }
+        }
         let was = shape(of: original)
         let now = shape(of: fixed)
         guard was.marks == now.marks else { return .reject(.changedStructure) }
@@ -209,6 +200,12 @@ public enum AIFixGuard {
         if segmented > edits { return .reject(.changedStructure) }
         if edits > max(2, before.count / 5) { return .reject(.tooManyEdits) }
         return .accept
+    }
+
+    /// How many times `phrase` appears in `words`, overlapping matches included.
+    static func occurrences(of phrase: [String], in words: [String]) -> Int {
+        guard phrase.count <= words.count else { return 0 }
+        return (0...(words.count - phrase.count)).count { words[$0..<($0 + phrase.count)].elementsEqual(phrase) }
     }
 
     /// The marks between words, other than whitespace, commas and apostrophes, and the words between them. The
@@ -257,67 +254,37 @@ public enum AIFixGuard {
         return text
     }
 
-    /// Chunks are often the middle of a sentence, so the model must not start them with a capital or end them
-    /// with a period they did not have. A capital stays when the first word is "I" or mixed-case ("GitHub").
+    /// Chunks are often the middle of a sentence, so the model may not change what comes before the first word or
+    /// after the last one (quotes, brackets, punctuation), nor the case of the first word, found past any opening
+    /// quotes or brackets: those edges are put back from `original`. A capital the model gives the first word stays
+    /// when it is "I" or mixed-case ("GitHub"). Only the end of the dictation (`isFinal`) keeps the model's end,
+    /// where the guard lets it change the closing marks alone.
     public static func keepingEdges(of original: String, in fixed: String, isFinal: Bool) -> String {
-        var text = fixed
-        if let first = original.first, first.isLowercase, let head = text.first, head.isUppercase {
-            let word = text.prefix { $0.isLetter || $0 == "'" || $0 == "’" }
+        let was = original.matches(of: wordPattern)
+        let now = fixed.matches(of: wordPattern)
+        guard let firstWas = was.first, let lastWas = was.last, let firstNow = now.first, let lastNow = now.last
+        else { return fixed }
+        let lead = original[..<firstWas.range.lowerBound]
+        let head = keepingCase(of: firstWas.output, in: firstNow.output)
+        let body = fixed[firstNow.range.upperBound..<lastNow.range.upperBound]
+        let end = isFinal ? fixed[lastNow.range.upperBound...] : original[lastWas.range.upperBound...]
+        return lead + head + body + end
+    }
+
+    /// `word` with the case of the first letter of `original`, the word it replaces. A capital the model gave stays
+    /// when `word` is "I" ("I'm") or mixed-case ("GitHub", "OK").
+    static func keepingCase(of original: Substring, in word: Substring) -> String {
+        guard let was = original.first, let head = word.first else { return String(word) }
+        if was.isLowercase, head.isUppercase {
             let isPronounI = word == "I" || word.hasPrefix("I'") || word.hasPrefix("I’")
-            if !isPronounI && word.dropFirst().allSatisfy({ !$0.isUppercase }) {
-                text = head.lowercased() + text.dropFirst()
-            }
+            if isPronounI || word.dropFirst().contains(where: \.isUppercase) { return String(word) }
+            return head.lowercased() + word.dropFirst()
         }
-        // The whole closing run the model added or changed ("?!", "...") goes back to the original's, not one mark,
-        // including a run before closing quotes or brackets ("great.”"), which stay in place.
-        let had = closingEnd(of: original)
-        let has = closingEnd(of: text)
-        if !isFinal, !has.run.isEmpty, has.run != had.run {
-            text.removeLast(has.run.count + has.closers.count)
-            text += had.run
-            // A comma or other mark the model turned into a period stays as it was.
-            if had.run.isEmpty, let end = original.dropLast(had.closers.count).last, !(end.isLetter || end.isNumber),
-               text.last != end {
-                text.append(end)
-            }
-            text += has.closers
-        }
-        return text
+        if was.isUppercase, head.isLowercase { return head.uppercased() + word.dropFirst() }
+        return String(word)
     }
 
     static let closingMarks: Set<Character> = [".", "!", "?", "…"]
-    /// Quotes and brackets that may follow a sentence's closing marks ("great.”", "(soon.)").
-    static let closers: Set<Character> = ["\"", "'", "”", "’", "»", ")", "]", "}"]
-
-    /// The closing marks at the end of `text` ("?!" in "really?!"), or "" when it does not end with one. Closing
-    /// quotes and brackets after them are skipped ("." in "“great.”").
-    static func closingRun(of text: String) -> String {
-        closingEnd(of: text).run
-    }
-
-    /// The closing quotes and brackets at the end of `text`, and the closing marks just before them.
-    static func closingEnd(of text: String) -> (run: String, closers: String) {
-        let closers = String(text.reversed().prefix { Self.closers.contains($0) }.reversed())
-        let body = text.dropLast(closers.count)
-        return (String(body.reversed().prefix { closingMarks.contains($0) }.reversed()), closers)
-    }
-
-    /// UTF-16 ranges of the words in `edited` the model changed from `original`, compared case-insensitively;
-    /// punctuation and case changes alone do not count. With as many words on both sides, words are compared
-    /// position by position. Otherwise only words that appear nowhere in `original` count, so a word the model
-    /// changed into one already there ("fool bar" → "bar bar") is never mistaken for, or hidden by, its twin.
-    public static func changedWordRanges(from original: String, to edited: String) -> [NSRange] {
-        let before = words(in: original)
-        let spans = edited.matches(of: wordPattern)
-        let after = spans.map { normalized($0.output) }
-        let known = Set(before)
-        let changed = if after.count == before.count {
-            after.indices.filter { after[$0] != before[$0] }
-        } else {
-            after.indices.filter { !known.contains(after[$0]) }
-        }
-        return changed.map { NSRange(spans[$0].range, in: edited) }
-    }
 
     /// Letters and digits, with apostrophes inside a word ("don't", "rock'n'roll"). An apostrophe at a word's edge
     /// is a quote, not part of the word.
@@ -366,6 +333,18 @@ public enum AIFixUnwritten {
         let body = rest.dropFirst(lead.count)
         guard !chunk.isEmpty, body.hasPrefix(chunk) else { return rest }
         return lead + failedWrite.text.trimmingCharacters(in: .whitespacesAndNewlines) + body.dropFirst(chunk.count)
+    }
+}
+
+/// What Correct Last Dictation opens after a dictation with on-device fixing.
+public enum AIFixTranscript {
+    /// The text Holos wrote or tried to write: `written`, the chunks written as fixed, then `rest`, what was written
+    /// or offered for the part after them (`AIFixUnwritten.attempted`). Nil when the transcript no longer extends
+    /// what was written (`rest` is nil) or nothing is left; the recognized transcript stays then.
+    public static func final(written: String, rest: String?) -> String? {
+        guard let rest else { return nil }
+        let text = (written + rest).trimmingCharacters(in: .whitespacesAndNewlines)
+        return text.isEmpty ? nil : text
     }
 }
 

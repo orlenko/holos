@@ -48,9 +48,6 @@ final class DictationFixPipeline {
     /// The chunks written so far, as recognized and as written.
     private(set) var writtenOriginal = ""
     private(set) var written = ""
-    /// The closing mark the model added to the last chunk written, held back in case more followed. When the
-    /// recognizer committed the whole dictation before release, that chunk ended it, so the mark is written then.
-    private(set) var withheldClosing: String?
     /// The chunk whose write failed, as recognized and as fixed; nothing after it was written.
     private(set) var failedWrite: (chunk: String, text: String)?
     /// Set once the key is released, while the last chunks are fixed and written; dictation counts as busy.
@@ -102,11 +99,10 @@ final class DictationFixPipeline {
         return result
     }
 
-    /// Records text written after the last chunk: its fix at release, or the closing mark held back from it.
-    func didWrite(_ chunk: String, as text: String) {
+    /// Records a chunk written, as recognized and as written.
+    private func didWrite(_ chunk: String, as text: String) {
         writtenOriginal += chunk
         written += text
-        withheldClosing = nil
     }
 
     /// Returns once every queued chunk has been written or dropped.
@@ -137,7 +133,6 @@ final class DictationFixPipeline {
                 break
             }
             didWrite(chunk, as: result.text)
-            withheldClosing = result.withheldClosing
         }
         worker = nil
     }
