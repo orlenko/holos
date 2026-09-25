@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<!-- Hardened-runtime entitlements for Voice is Local.app (scripts/release-app.sh, docs/release.md).
+     The app is not sandboxed. Accessibility, Input Monitoring, the CGEvent tap, speech recognition, and
+     ScreenCaptureKit need no entitlement outside the sandbox; the hardened runtime blocks the microphone
+     unless the entitlement below is present. The bundled tool has its own file,
+     voiceislocal-cli.entitlements (a name that differs only in case would be the same file on macOS). -->
+<dict>
+    <key>com.apple.security.device.audio-input</key><true/>
+</dict>
+</plist>
