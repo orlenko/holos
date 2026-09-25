@@ -1,4 +1,5 @@
 import AppKit
+import HolosCore
 
 struct SetupState {
     var microphone: String
@@ -33,6 +34,14 @@ struct SetupState {
     var aiFix = false
     /// Why the on-device model cannot be used; nil when it can.
     var aiFixUnavailable: String?
+    /// The dictation language's locale identifier ("fr-CA"), and the ones to offer (`DictationLanguage.groups`);
+    /// empty while loading.
+    var locale = DictationLanguage.standard
+    var localeGroups: [[String]] = []
+    /// False while a dictation, install, or enable is in progress.
+    var localeChangeable = true
+    /// The fillers removed in this language ("euh, heu, …"); nil when it has none.
+    var fillerExamples: String?
 }
 
 enum SetupAction: Int, CaseIterable {
@@ -45,14 +54,16 @@ enum SetupAction: Int, CaseIterable {
 @MainActor
 final class SetupWindow: NSObject, NSWindowDelegate {
     private enum Mark { case done, pending, problem }
-    private struct Row { let icon: NSImageView; let detail: NSTextField; let button: NSButton }
+    private struct Row { let icon: NSImageView; let title: NSTextField; let detail: NSTextField; let button: NSButton }
 
     private let window: NSWindow
     private let perform: (SetupAction) -> Void
     private let onClose: () -> Void
     private let messageLabel = NSTextField(wrappingLabelWithString: "")
-    private let fillerToggle = NSButton(checkboxWithTitle: "Remove filler words (um, uh, ah, erm, hmm)",
-                                        target: nil, action: nil)
+    private let fillerToggle = NSButton(checkboxWithTitle: "Remove filler words", target: nil, action: nil)
+    private let languagePopup = NSPopUpButton(frame: .zero, pullsDown: false)
+    private var onLanguageChange: ((String) -> Void)?
+    private var shownLocaleGroups: [[String]]?
     private let previewToggle = NSButton(checkboxWithTitle: "Show the dictation preview while dictating",
                                          target: nil, action: nil)
     private static let aiFixTitle = "Fix misheard words with Apple Intelligence (on-device)"
@@ -66,8 +77,9 @@ final class SetupWindow: NSObject, NSWindowDelegate {
     var isVisible: Bool { window.isVisible }
 
     init(perform: @escaping (SetupAction) -> Void, onClose: @escaping () -> Void,
-         onOpacityChange: ((Double) -> Void)? = nil) {
+         onOpacityChange: ((Double) -> Void)? = nil, onLanguageChange: ((String) -> Void)? = nil) {
         self.onOpacityChange = onOpacityChange
+        self.onLanguageChange = onLanguageChange
         window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 560, height: 400),
                           styleMask: [.titled, .closable, .miniaturizable], backing: .buffered, defer: true)
         self.perform = perform
@@ -87,28 +99,31 @@ final class SetupWindow: NSObject, NSWindowDelegate {
         grid.columnSpacing = 12
         let titles: [(SetupAction, String)] = [
             (.microphone, "Microphone"), (.accessibility, "Accessibility"),
-            (.inputMonitoring, "Input Monitoring"), (.assets, "English speech assets"), (.dictation, "Dictation"),
+            (.inputMonitoring, "Input Monitoring"), (.assets, "Speech model"), (.dictation, "Dictation"),
             (.speakerModels, "Speaker labels"), (.systemAudio, "System audio (online calls)"),
         ]
         for (action, title) in titles {
+            if action == .assets {
+                // The dictation language, just above the speech model it needs.
+                let (text, _, detail) = Self.labels("Dictation language")
+                detail.stringValue = "Used from the next dictation"
+                let icon = NSImageView(image: NSImage(systemSymbolName: "globe", accessibilityDescription: nil) ?? NSImage())
+                icon.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 17, weight: .regular)
+                icon.contentTintColor = .secondaryLabelColor
+                languagePopup.target = self
+                languagePopup.action = #selector(languageChosen(_:))
+                // Fixed, so the window keeps its size when the list arrives.
+                languagePopup.widthAnchor.constraint(equalToConstant: 200).isActive = true
+                grid.addRow(with: [icon, text, languagePopup])
+            }
             let icon = NSImageView()
             icon.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 17, weight: .regular)
-            let titleLabel = NSTextField(labelWithString: title)
-            titleLabel.font = .systemFont(ofSize: 13, weight: .semibold)
-            let detail = NSTextField(wrappingLabelWithString: "")
-            detail.font = .systemFont(ofSize: 12)
-            detail.textColor = .secondaryLabelColor
-            detail.preferredMaxLayoutWidth = 330
-            let text = NSStackView(views: [titleLabel, detail])
-            text.orientation = .vertical
-            text.alignment = .leading
-            text.spacing = 2
-            text.widthAnchor.constraint(equalToConstant: 330).isActive = true
+            let (text, titleLabel, detail) = Self.labels(title)
             let button = NSButton(title: "", target: self, action: #selector(buttonPressed(_:)))
             button.bezelStyle = .push
             button.tag = action.rawValue
             grid.addRow(with: [icon, text, button])
-            rows[action] = Row(icon: icon, detail: detail, button: button)
+            rows[action] = Row(icon: icon, title: titleLabel, detail: detail, button: button)
         }
         grid.column(at: 0).xPlacement = .center
         grid.column(at: 2).xPlacement = .trailing
@@ -167,6 +182,22 @@ final class SetupWindow: NSObject, NSWindowDelegate {
         window.contentView = content
     }
 
+    /// A row's bold title over its detail line.
+    private static func labels(_ title: String) -> (NSStackView, title: NSTextField, detail: NSTextField) {
+        let titleLabel = NSTextField(labelWithString: title)
+        titleLabel.font = .systemFont(ofSize: 13, weight: .semibold)
+        let detail = NSTextField(wrappingLabelWithString: "")
+        detail.font = .systemFont(ofSize: 12)
+        detail.textColor = .secondaryLabelColor
+        detail.preferredMaxLayoutWidth = 330
+        let text = NSStackView(views: [titleLabel, detail])
+        text.orientation = .vertical
+        text.alignment = .leading
+        text.spacing = 2
+        text.widthAnchor.constraint(equalToConstant: 330).isActive = true
+        return (text, titleLabel, detail)
+    }
+
     func show() {
         if !positioned {
             window.setContentSize(window.contentView?.fittingSize ?? window.frame.size)
@@ -179,7 +210,12 @@ final class SetupWindow: NSObject, NSWindowDelegate {
 
     func update(_ state: SetupState) {
         messageLabel.stringValue = "Status: \(state.message)"
-        fillerToggle.state = state.removeFillers ? .on : .off
+        let language = DictationLanguage.name(of: state.locale)
+        updateLanguagePopup(state)
+        fillerToggle.isEnabled = state.fillerExamples != nil
+        fillerToggle.state = state.removeFillers && state.fillerExamples != nil ? .on : .off
+        fillerToggle.title = state.fillerExamples.map { "Remove filler words (\($0))" }
+            ?? "Remove filler words — none known for \(language)"
         previewToggle.state = state.showPreview ? .on : .off
         aiFixToggle.isEnabled = state.aiFixUnavailable == nil
         aiFixToggle.state = state.aiFix && state.aiFixUnavailable == nil ? .on : .off
@@ -212,15 +248,17 @@ final class SetupWindow: NSObject, NSWindowDelegate {
                                 + "Audio Recording, then quit and reopen Voice is Local.",
             button: state.systemAudio ? nil : "Open Settings")
 
+        rows[.assets]?.title.stringValue = "Speech model: \(language)"
         let canInstall = !state.installingAssets && !state.busy && !state.dictationEnabled && !state.enabling
         if state.installingAssets || state.assets == "downloading" {
-            set(.assets, .pending, "Downloading and installing en-CA…", button: "Install", enabled: false)
+            set(.assets, .pending, "Downloading and installing…", button: "Install", enabled: false)
         } else {
             switch state.assets {
             case nil: set(.assets, .pending, "Checking…", button: "Install", enabled: false)
-            case "installed": set(.assets, .done, "Installed (en-CA)", button: nil)
-            case "supported": set(.assets, .pending, "Not installed — downloads Apple's en-CA model", button: "Install", enabled: canInstall)
-            case "unsupported": set(.assets, .problem, "en-CA speech recognition is not supported on this Mac", button: nil)
+            case "installed": set(.assets, .done, "Installed", button: nil)
+            case "supported": set(.assets, .pending, "Not installed — downloads Apple's model for \(language)",
+                                  button: "Install", enabled: canInstall)
+            case "unsupported": set(.assets, .problem, "\(language) speech recognition is not supported on this Mac", button: nil)
             case let other?: set(.assets, .problem, "Status unknown (\(other))", button: "Install", enabled: canInstall)
             }
         }
@@ -263,6 +301,28 @@ final class SetupWindow: NSObject, NSWindowDelegate {
         }
     }
 
+    /// Rebuilt only when the list changes, so a refresh never replaces the menu while the user has it open.
+    private func updateLanguagePopup(_ state: SetupState) {
+        var groups = state.localeGroups
+        if !groups.joined().contains(state.locale) { groups.insert([state.locale], at: 0) }
+        if groups != shownLocaleGroups {
+            shownLocaleGroups = groups
+            languagePopup.removeAllItems()
+            for (index, group) in groups.enumerated() {
+                if index > 0 { languagePopup.menu?.addItem(.separator()) }
+                for locale in group {
+                    let item = NSMenuItem(title: DictationLanguage.name(of: locale), action: nil, keyEquivalent: "")
+                    item.representedObject = locale
+                    languagePopup.menu?.addItem(item)
+                }
+            }
+        }
+        if languagePopup.selectedItem?.representedObject as? String != state.locale {
+            languagePopup.selectItem(at: languagePopup.indexOfItem(withRepresentedObject: state.locale))
+        }
+        languagePopup.isEnabled = state.localeChangeable
+    }
+
     private func set(_ action: SetupAction, _ mark: Mark, _ detail: String, button title: String?, enabled: Bool = true) {
         guard let row = rows[action] else { return }
         let (symbol, color): (String, NSColor) = switch mark {
@@ -281,6 +341,11 @@ final class SetupWindow: NSObject, NSWindowDelegate {
     @objc private func opacityChanged(_ sender: NSSlider) {
         opacityValue.stringValue = "\(Int((sender.doubleValue * 100).rounded())) %"
         onOpacityChange?(sender.doubleValue)
+    }
+
+    @objc private func languageChosen(_ sender: NSPopUpButton) {
+        guard let locale = sender.selectedItem?.representedObject as? String else { return }
+        onLanguageChange?(locale)
     }
 
     @objc private func buttonPressed(_ sender: NSButton) {

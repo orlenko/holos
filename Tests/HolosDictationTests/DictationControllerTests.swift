@@ -76,10 +76,13 @@ private final class Harness {
     var delaySpeech = false
     var speechWaiter: CheckedContinuation<any DictationSpeech, Error>?
     var update: (@Sendable (TranscriptUpdate) -> Void)?
+    /// The locale of each recognizer made, in order.
+    var locales: [String] = []
 
     var dependencies: DictationDependencies {
         DictationDependencies(permission: { "authorized" }, makeCapture: { self.capture },
-            makeSpeech: { _, _, _, onUpdate in
+            makeSpeech: { locale, _, _, onUpdate in
+                self.locales.append(locale)
                 self.update = onUpdate
                 if self.delaySpeech {
                     return try await withCheckedThrowingContinuation { self.speechWaiter = $0 }
@@ -114,6 +117,21 @@ private func eventually(_ condition: () -> Bool) async -> Bool {
     #expect(controller.status.utteranceID == id)
     #expect(harness.capture.starts == 0)
     #expect(await harness.speech.cancelled)
+}
+
+@Test @MainActor func aLocaleChangeAppliesFromTheNextUtterance() async {
+    let harness = Harness(); harness.delaySpeech = true
+    let controller = DictationController(locale: "en-CA", dependencies: harness.dependencies) { _ in }
+    #expect(controller.begin())
+    controller.locale = "fr-CA"  // before this utterance's recognizer is made; it keeps en-CA
+    #expect(await eventually { harness.speechWaiter != nil })
+    controller.cancel()
+    harness.releaseSpeech()
+    #expect(await eventually { controller.begin() })
+    #expect(await eventually { harness.speechWaiter != nil })
+    #expect(harness.locales == ["en-CA", "fr-CA"])
+    controller.cancel()
+    harness.releaseSpeech()
 }
 
 @Test @MainActor func immediateReleaseSkipsModelAndMicrophoneStartup() async {

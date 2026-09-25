@@ -120,7 +120,14 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
     private var setupRefreshTask: Task<Void, Never>?
     private var assetState: String?
     private var shortcut: HotkeyChoice = .rightOption
-    private let locale = "en-CA"
+    /// The dictation language, chosen in Setup or the menu. Meetings keep their own locale.
+    private var locale: String {
+        get { UserDefaults.standard.string(forKey: "dictationLocale") ?? DictationLanguage.standard }
+        set { UserDefaults.standard.set(newValue, forKey: "dictationLocale") }
+    }
+    /// The languages Apple's speech transcriber supports (`DictationLanguage.groups`); empty until loaded.
+    private var localeGroups: [[String]] = []
+    private var languageName: String { DictationLanguage.name(of: locale) }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         if let raw = UserDefaults.standard.string(forKey: "shortcut"), let saved = HotkeyChoice(rawValue: raw) {
@@ -134,6 +141,7 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
             message = "Could not read corrections.json; corrections are off until it is fixed or removed."
         }
         controller.contextualStrings = corrections.vocabulary
+        loadLanguages()
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         statusItem.button?.image = NSImage(systemSymbolName: "waveform", accessibilityDescription: "Voice is Local")
         statusItem.button?.toolTip = "Voice is Local — local push-to-talk"
@@ -216,6 +224,7 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
             }
             shortcuts.submenu = choices
             menu.addItem(shortcuts)
+            if !localeGroups.isEmpty { menu.addItem(languageItem()) }
             let cancel = item("Cancel Dictation", #selector(cancelDictation))
             cancel.isEnabled = isBusy
             menu.addItem(cancel)
@@ -241,6 +250,25 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
         statusItem.button?.toolTip = meetingToolTip() ?? "Voice is Local — \(message)"
         updateStatusItemAppearance()
         updateSetupWindow()
+    }
+
+    /// "Language: French (Canada)", with a submenu of the supported languages grouped as in Setup.
+    private func languageItem() -> NSMenuItem {
+        let language = NSMenuItem(title: "Language: \(languageName)", action: nil, keyEquivalent: "")
+        let choices = NSMenu()
+        choices.autoenablesItems = false
+        for (index, group) in localeGroups.enumerated() {
+            if index > 0 { choices.addItem(.separator()) }
+            for identifier in group {
+                let entry = item(DictationLanguage.name(of: identifier), #selector(changeLanguage(_:)))
+                entry.representedObject = identifier
+                entry.state = identifier == locale ? .on : .off
+                entry.isEnabled = canChangeLanguage
+                choices.addItem(entry)
+            }
+        }
+        language.submenu = choices
+        return language
     }
 
     func item(_ title: String, _ action: Selector) -> NSMenuItem {
@@ -291,7 +319,7 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
                 self.assetState = state
                 guard state == "installed" else {
                     self.enabling = false
-                    self.show("Install English Speech Assets in Voice is Local Setup first.")
+                    self.show("Install the speech model for \(self.languageName) in Voice is Local Setup first.")
                     self.showSetup()
                     return
                 }
@@ -334,6 +362,43 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
         shortcut = choice
         UserDefaults.standard.set(choice.rawValue, forKey: "shortcut")
         if wasEnabled { enable() } else { show("Disabled — shortcut: \(shortcutTitle)") }
+    }
+
+    /// Not while a dictation, install, or enable is in progress: a change applies from the next dictation.
+    private var canChangeLanguage: Bool { !isBusy && !enabling && !installingAssets }
+
+    @objc private func changeLanguage(_ sender: NSMenuItem) {
+        guard let identifier = sender.representedObject as? String else { return }
+        changeLanguage(to: identifier)
+    }
+
+    private func changeLanguage(to identifier: String) {
+        guard identifier != locale, canChangeLanguage else {
+            updateSetupWindow()  // puts a refused choice back in Setup
+            return
+        }
+        locale = identifier
+        controller.locale = identifier
+        assetState = nil
+        if enabled {
+            // Enabling again checks the new language's speech model; without it, dictation stays off and Setup
+            // offers the install.
+            disable()
+            enable()
+        } else {
+            show("Dictation language: \(languageName)")
+            refreshAssetState()
+        }
+    }
+
+    /// Loads the languages Apple's speech transcriber supports, for Setup and the menu.
+    private func loadLanguages() {
+        Task { [weak self] in
+            let supported = await AppleSpeechEngine.capabilities(backend: .speech).supportedLocales
+            guard let self, !supported.isEmpty else { return }
+            self.localeGroups = DictationLanguage.groups(supported)
+            self.rebuildMenu()
+        }
     }
 
     private func handle(_ action: HotkeyAction) {
@@ -399,7 +464,7 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
                 opacitySampleTask = nil
                 sampleToken = nil
                 fixPipeline?.cancel()
-                fixPipeline = DictationFixPipeline.make(corrections: corrections) { [weak self] chunk, text in
+                fixPipeline = DictationFixPipeline.make(corrections: corrections, language: locale) { [weak self] chunk, text in
                     self?.writeFixed(chunk, as: text) ?? false
                 }
             } else {
@@ -638,7 +703,7 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
 
     /// Writes whatever the final transcript adds beyond the streamed prefix, in a single attempt.
     private func withoutFillers(_ text: String) -> String {
-        removeFillers ? FillerWords.remove(from: text) : text
+        removeFillers ? FillerWords.remove(from: text, language: locale) : text
     }
 
     /// Filler removal, then learned corrections: the text Holos shows and writes.
@@ -649,7 +714,7 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
     /// Like `cleaned`, but holds back a trailing comma or phrase start that later words may still change.
     private func cleanedForStreaming(_ text: String) -> String {
         corrections.applyWithholdingPartialMatch(
-            to: removeFillers ? FillerWords.removeWithholdingTrailingComma(from: text) : text)
+            to: removeFillers ? FillerWords.removeWithholdingTrailingComma(from: text, language: locale) : text)
     }
 
     /// `fixed` is the on-device fix of the part not yet written, written in its place; when it cannot be written,
@@ -912,10 +977,12 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
                                           self?.setupRefreshTask?.cancel(); self?.setupRefreshTask = nil
                                           self?.setDockPresence(false, for: "setup")
                                       },
-                                      onOpacityChange: { [weak self] value in self?.changePreviewOpacity(value) })
+                                      onOpacityChange: { [weak self] value in self?.changePreviewOpacity(value) },
+                                      onLanguageChange: { [weak self] identifier in self?.changeLanguage(to: identifier) })
         }
         setDockPresence(true, for: "setup")
         setupWindow?.show()
+        if localeGroups.isEmpty { loadLanguages() }
         refreshAssetState()
         refreshSpeakerModels()
         // TCC has no change notification, so poll while the window is open.
@@ -964,13 +1031,18 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
             dictationPausedForMeeting: meeting.dictationPaused,
             speakerModels: speakerLabels.status, speakerModelsDetail: speakerLabels.detail,
             speakerModelsBusy: speakerLabels.busy,
-            aiFix: AIFixSetting.isOn, aiFixUnavailable: AIFixSetting.unavailableReason))
+            aiFix: AIFixSetting.isOn, aiFixUnavailable: AIFixSetting.unavailableReason(language: locale),
+            locale: locale, localeGroups: localeGroups, localeChangeable: canChangeLanguage,
+            fillerExamples: FillerWords.examples(language: locale)))
     }
 
     private func refreshAssetState() {
+        let locale = locale
         Task { [weak self] in
-            guard let self else { return }
-            self.assetState = (try? await AppleSpeechEngine.assetStatus(locale: self.locale, backend: .speech)) ?? "unknown"
+            let state = (try? await AppleSpeechEngine.assetStatus(locale: locale, backend: .speech)) ?? "unknown"
+            // A check for a language changed since is dropped; the change started its own.
+            guard let self, self.locale == locale else { return }
+            self.assetState = state
             self.updateSetupWindow()
         }
     }
@@ -1020,15 +1092,17 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
 
     private func installAssets() {
         guard !installingAssets, !isBusy, !enabled, !enabling else { return }
-        installingAssets = true
-        show("Installing en-CA assets — this may download Apple's model")
+        installingAssets = true  // also keeps the language from changing until the install ends
+        let locale = locale
+        let name = languageName
+        show("Installing the speech model for \(name) — this may download Apple's model")
         assetTask = Task { [weak self] in
             guard let self else { return }
             do {
-                try await AppleSpeechEngine.installAssets(locale: self.locale, backend: .speech)
+                try await AppleSpeechEngine.installAssets(locale: locale, backend: .speech)
                 self.installingAssets = false
                 self.assetState = "installed"
-                self.show("English speech assets ready; enable dictation when ready")
+                self.show("Speech model for \(name) ready; enable dictation when ready")
             } catch {
                 self.installingAssets = false
                 self.refreshAssetState()

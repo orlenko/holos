@@ -50,6 +50,6 @@ extension SpeechBackend: ExpressibleByArgument {}
 extension AudioSource: ExpressibleByArgument {}
 
 struct RecognitionOptions: ParsableArguments {
-    @Option(help: "English locale (for example en-CA or en-US).") var locale = "en-CA"
+    @Option(help: "Recognition locale (for example en-CA, en-US or fr-CA).") var locale = "en-CA"
     @Option(help: "Native recognizer: speech or dictation.") var backend: SpeechBackend = .speech
 }

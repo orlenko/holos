@@ -24,8 +24,11 @@ clipboard. Launch with `open` only when ready for an interactive test.
 
 On first launch, the Voice is Local Setup window opens (reopen it with **Setup…** in the
 menu). Use it to grant Microphone, Accessibility, and Input Monitoring access
-explicitly and install Apple's English (`en-CA`) Speech assets; each row updates
-live, and its button opens the matching System Settings pane. The asset action may
+explicitly, pick the **Dictation language** (English (Canada) by default; the menu's
+**Language** submenu has the same list), and install Apple's speech model for it; each
+row updates live, and its button opens the matching System Settings pane. A new
+language applies from the next dictation; when its model is missing, dictation turns
+off until it is installed. The asset action may
 download Apple's model. Then enable dictation from the window or the menu. The default user-selectable shortcut is **Right Option**;
 **Control–Option–Space** is the alternate. Once enabled, hold the chosen shortcut,
 wait for “Listening” in the non-activating preview, speak, then release. Releasing
@@ -64,7 +67,9 @@ field or Secure Keyboard Entry is refused.
 Hesitation sounds ("um", "uh", "ah", "erm", "hmm") and the commas around them are
 removed before corrections are applied, unless **Remove filler words** is turned
 off in the Setup window. "mm", "hm", and "er" are kept because they collide with
-units and abbreviations.
+units and abbreviations. French dictation removes "euh", "heu", "hum", "hmm", and
+"bah" instead, and keeps words such as "ah", "ben", "bon", "hein", "genre", and
+"tsé", which carry meaning. Other languages keep every word.
 
 The first refusal stops writing for the rest of that utterance. Text already
 written stays in place, and the unwritten remainder is copied to the clipboard right
@@ -97,7 +102,11 @@ longer rewrites are ignored). A misheard single word that is itself a dictionary
 word is kept with a neighbouring word, so "bull" → "pull" becomes "bull request" →
 "pull request" instead of rewriting every "bull". Pairs can also be added or removed
 by hand in the same window. They are stored in
-`~/Library/Application Support/Holos/corrections.json`.
+`~/Library/Application Support/Holos/corrections.json`, one list shared by every
+dictation language.
+
+**Fix misheard words with Apple Intelligence** is offered for English and French
+dictation; other languages show it as unavailable until they have been tried.
 
 Corrections are applied, whole-word and case-insensitively, to the preview and to
 every streamed and final chunk. While streaming, trailing words that could start a
