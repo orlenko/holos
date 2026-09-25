@@ -908,9 +908,15 @@ public actor SessionArchive {
         try AtomicFile.write(try encode(manifest), to: SessionPaths.manifest(directory))
     }
 
-    /// Takes the writer lock, retrying for up to 1 s so a concurrent probe cannot make it fail.
+    /// How long `acquireLock` retries for the writer lock. A test whose contended opener must still be waiting when
+    /// the first writer releases raises it: under the load of a parallel suite the release can take longer than a
+    /// second, and what those tests are about is that the opener waits, not how long it is willing to.
+    @TaskLocal static var writerLockRetry: Duration = .seconds(1)
+
+    /// Takes the writer lock, retrying for `writerLockRetry` so a concurrent probe cannot make it fail.
     private nonisolated static func acquireLock(_ directory: URL) throws -> Int32 {
-        guard let fd = try SessionLockFile.acquire(SessionLockFile.writer, in: directory, timeout: .seconds(1)) else {
+        guard let fd = try SessionLockFile.acquire(SessionLockFile.writer, in: directory,
+                                                   timeout: writerLockRetry) else {
             throw HolosError.unavailable("Session archive already has an active writer.")
         }
         return fd

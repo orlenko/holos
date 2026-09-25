@@ -1039,10 +1039,15 @@ private func journalInvariantViolation(_ state: SessionArchive.JournalSchedule) 
     let path = "audio/mic/000001.caf"
     try Data([1, 2, 3]).write(to: directory.appendingPathComponent(path))
 
-    // A second opener starts while the first writer is active and waits for its lock.
+    // A second opener starts while the first writer is active and waits for its lock. It is given a long retry
+    // because the point is that it waits: `registerChunk` below is an `await`, and on a machine running the whole
+    // suite in parallel that suspension can outlast the one second `open` retries for by default, which failed
+    // this test on the opener's lock rather than on anything it is checking.
     let (contended, signal) = AsyncStream.makeStream(of: Void.self)
     let opener = Task.detached {
-        try SessionLockFile.$onContention.withValue({ signal.yield() }) { try SessionArchive.open(at: directory) }
+        try SessionArchive.$writerLockRetry.withValue(.seconds(120)) {
+            try SessionLockFile.$onContention.withValue({ signal.yield() }) { try SessionArchive.open(at: directory) }
+        }
     }
     for await _ in contended { break }
     // The first writer registers a chunk and exits before the opener's retry runs out.
