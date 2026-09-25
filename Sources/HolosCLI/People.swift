@@ -54,9 +54,15 @@ struct People: AsyncParsableCommand {
             if database.isCalibrated, !automatic, database.rememberVoices {
                 Console.output("Automatic names: off for now; a request to forget voices is still being finished.")
             }
+            if !database.isCalibrated, database.rememberVoices, database.calibrationResetAt == nil,
+               database.profiles.contains(where: { !$0.samples.isEmpty }) {
+                Console.output("Automatic names: off for new meetings until you calibrate "
+                               + "(holos people calibrate --apply). Meetings already named keep their names.")
+            }
             if !database.isCalibrated, database.calibrationResetAt != nil {
-                Console.output("Automatic names: off; the calibration was reset when the voice samples changed "
-                               + "(calibrate again with holos people calibrate --apply).")
+                Console.output("Automatic names: off for new meetings; the calibration was reset when the voice "
+                               + "samples changed (calibrate again with holos people calibrate --apply). Meetings "
+                               + "already named keep the names they were given.")
             }
             let people = VoiceProfileService.sortedPeople(database.profiles)
             guard !people.isEmpty else {

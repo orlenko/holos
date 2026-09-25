@@ -316,11 +316,14 @@ final class PeopleWindowController: NSObject, NSWindowDelegate, NSTableViewDataS
             }
             return
         }
-        let meetings = database.sampleSessionIDs.count
+        // Forget here is the `.all` path: it removes every meeting's voice data, not only that of the meetings
+        // that contributed a sample, so the prompt says so rather than counting the samples' meetings.
         let alert = NSAlert()
         alert.messageText = "Also forget the \(samples) saved voice \(samples == 1 ? "sample" : "samples") and the "
-            + "voice data of \(meetings) \(meetings == 1 ? "meeting" : "meetings")?"
-        alert.informativeText = "Names are kept either way. Kept samples are not used while Remember voices is off."
+            + "voice data of every meeting?"
+        alert.informativeText = "Names are kept either way. Kept samples are not used while Remember voices is off. "
+            + "Voice data is the per-meeting data Holos keeps for evaluation; a meeting that never contributed a "
+            + "sample can have some too."
         alert.addButton(withTitle: "Forget")
         alert.addButton(withTitle: "Keep")
         let forget = alert.runModal() == .alertFirstButtonReturn

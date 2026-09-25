@@ -3594,6 +3594,13 @@ public struct SpeakerProfileDatabase: Codable, Sendable, Equatable {
   person and saving the link leaves a person in People with no meetings, which the user can
   remove and which nothing else acts on. Tests (PR10):
   `aPersonStaysUnfinishedUntilTheirLinkIsSaved`, `aPersonIsTakenUpEvenWhenTheLinkReportsAFailure`.
+- **A name a meeting was already given keeps it.** Calibration governs the decisions
+  recognition makes, not the ones it has made: resetting it (a sample changed) stops new
+  meetings being named automatically, and a meeting whose stored result already names
+  somebody `likely` keeps showing and exporting that name. `holos people list` says so in
+  those words, since "automatic names: off" on its own would claim more than Holos does.
+  Demoting stored decisions would mean rewriting every meeting's recognition result on
+  every sample change, and would take back a name the user has already seen and kept.
 - **Accepted races.** Two user-initiated Holos operations on the same data, started in
   different windows inside the same lock-free window, can interleave in ways Holos does not
   coordinate. §1.7 is not the reason: it excludes a hostile process running as the user,

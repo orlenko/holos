@@ -81,7 +81,7 @@ public struct DiarizerVoiceSampleExtractor: VoiceSampleExtractor {
             guard expectedConfiguration.allSatisfy({ current[$0.key] == $0.value }) else {
                 throw HolosError.unavailable(Self.settingsChanged)
             }
-            hint = Self.speakerHint(run: run, session: session, manifest: manifest)
+            hint = try Self.speakerHint(run: run, session: session, manifest: manifest)
         }
         let seconds = TrackRenderer.renderedSeconds(manifest: manifest, track: track)
         if let free = try? freeSpace.availableBytes(at: temporaryDirectory),
@@ -106,10 +106,13 @@ public struct DiarizerVoiceSampleExtractor: VoiceSampleExtractor {
 
     /// The speaker-count hint post-processing gave the run's pass, so the fresh pass groups speakers the same way:
     /// from meeting.json's expected speakers and the number of tracks the run diarized. A `--speakers` hint given to
-    /// `holos session diarize` is not recorded in the run, so it is not repeated here. Nil when meeting.json cannot
-    /// be read.
-    static func speakerHint(run: DiarizationRun, session: URL, manifest: SessionManifest) -> SpeakerCountHint? {
-        guard let meeting = try? SessionFiles.meetingInfo(session: session, manifest: manifest) else { return nil }
+    /// `holos session diarize` is not recorded in the run, so it is not repeated here.
+    ///
+    /// Throws when meeting.json cannot be read. Taking that for "no hint" would let this pass cluster the audio
+    /// differently from the one the meeting was labelled with, and nothing downstream would notice: the engine
+    /// check compares settings, not hints, and the speaker generation only says the labels have not moved.
+    static func speakerHint(run: DiarizationRun, session: URL, manifest: SessionManifest) throws -> SpeakerCountHint? {
+        let meeting = try SessionFiles.meetingInfo(session: session, manifest: manifest)
         let diarized = run.tracks.filter { $0.policy == .diarized }.count
         return SpeakerAnalysis.speakerHint(options: PostProcessingOptions(), meeting: meeting, diarizedTracks: diarized)
     }
