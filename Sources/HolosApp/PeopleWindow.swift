@@ -194,13 +194,21 @@ final class PeopleWindowController: NSObject, NSWindowDelegate, NSTableViewDataS
             guard let self else { return }
             guard let (database, people) = loaded else {
                 self.statusLabel.stringValue = "The people store could not be read."
+                self.derivedStatus = true
                 return
             }
             let selected = self.selectedPerson?.id
-            if self.statusLabel.stringValue.isEmpty, !database.isCalibrated, database.calibrationResetAt != nil {
-                // Also when the samples changed elsewhere (the review window, the CLI).
-                self.statusLabel.stringValue = "Automatic names are off: the calibration was reset when the voice "
-                    + "samples changed."
+            // Anything this window derived from the store is recomputed here, including back to nothing: the
+            // condition may have been answered elsewhere (the review window, the CLI) since it was shown, and a
+            // window that keeps saying so is telling the user something untrue. What an action of this window
+            // reported ("Merged two people.") is not derived and stays until the next action.
+            if self.derivedStatus || self.statusLabel.stringValue.isEmpty {
+                let reset = !database.isCalibrated && database.calibrationResetAt != nil
+                self.statusLabel.stringValue = reset
+                    ? "Automatic names are off for new meetings: the calibration was reset when the voice samples "
+                        + "changed. Meetings already named keep their names."
+                    : ""
+                self.derivedStatus = reset
             }
             self.database = database
             self.people = people
@@ -309,18 +317,17 @@ final class PeopleWindowController: NSObject, NSWindowDelegate, NSTableViewDataS
             }
             return
         }
+        // Also with no samples: a meeting processed with the hidden --voice-data option holds voiceprints of its
+        // own, and the choice to remove them is the same one. Asking costs a dialog; not asking leaves biometric
+        // data the user believes they were offered the chance to delete.
         let samples = database.sampleCount
-        guard samples > 0 else {
-            perform("Remember voices is off.") { store, root in
-                try VoiceProfileService.setRemember(false, forgetExisting: false, store: store, sessionsRoot: root)
-            }
-            return
-        }
         // Forget here is the `.all` path: it removes every meeting's voice data, not only that of the meetings
         // that contributed a sample, so the prompt says so rather than counting the samples' meetings.
         let alert = NSAlert()
-        alert.messageText = "Also forget the \(samples) saved voice \(samples == 1 ? "sample" : "samples") and the "
-            + "voice data of every meeting?"
+        alert.messageText = samples > 0
+            ? "Also forget the \(samples) saved voice \(samples == 1 ? "sample" : "samples") and the voice data of "
+                + "every meeting?"
+            : "Also forget the voice data of every meeting?"
         alert.informativeText = "Names are kept either way. Kept samples are not used while Remember voices is off. "
             + "Voice data is the per-meeting data Holos keeps for evaluation; a meeting that never contributed a "
             + "sample can have some too."
@@ -417,6 +424,10 @@ final class PeopleWindowController: NSObject, NSWindowDelegate, NSTableViewDataS
     }
 
     /// Runs one change off the main actor, then shows `done` (or the error) and reloads.
+    /// Whether what the status line shows was derived from the store (a reset calibration, an unreadable store)
+    /// rather than reported by an action of this window. Only the derived kind is recomputed by a refresh.
+    private var derivedStatus = false
+
     private func perform(_ done: String?, _ change: @escaping @Sendable (SpeakerProfileStore, URL) throws -> Void) {
         guard !busy else { return }
         busy = true
@@ -439,6 +450,7 @@ final class PeopleWindowController: NSObject, NSWindowDelegate, NSTableViewDataS
             guard let self else { return }
             self.busy = false
             self.statusLabel.stringValue = [failure ?? done, reset].compactMap { $0 }.joined(separator: " ")
+            self.derivedStatus = false
             self.refresh()
         }
     }
