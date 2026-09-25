@@ -320,7 +320,7 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
         enabled = false
         target = nil
         monitor?.stop(); monitor = nil
-        fixPipeline?.cancel(); fixPipeline = nil
+        endFixing(heard: latestCommitted)
         controller.cancel()
         if persist { UserDefaults.standard.set(false, forKey: "dictationEnabled") }
         show("Disabled — \(shortcutTitle) is available to other apps")
@@ -467,18 +467,19 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
             finish(text, into: destination)
             presentResult()
         case .failed:
-            let failedWrite = fixPipeline?.failedWrite
-            fixPipeline?.cancel(); fixPipeline = nil
+            // Keep committed words that were withheld or not yet written, so Copy Result still has them. A chunk
+            // whose fixed write failed is offered as fixed, the text Holos tried to write.
+            let committed = cleaned(latestCommitted).trimmingCharacters(in: .whitespacesAndNewlines)
+            let unwritten = TextInsertion.unwritten(committed, after: insertedText)
+            let attempted = unwritten.map {
+                AIFixUnwritten.attempted($0, fixedRest: nil, failedWrite: fixPipeline?.failedWrite)
+            }
+            endFixing(heard: latestCommitted, offered: attempted ?? "", recognized: unwritten ?? "")
             target = nil
             message = update.message ?? "Dictation failed; no text was inserted."
             if !insertedText.isEmpty { message += " Text inserted before the failure stays in the field." }
-            // Keep committed words that were withheld or not yet written, so Copy Result still has them.
-            let committed = cleaned(latestCommitted).trimmingCharacters(in: .whitespacesAndNewlines)
-            if let unwritten = TextInsertion.unwritten(committed, after: insertedText),
-               !unwritten.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                // A chunk whose fixed write failed is offered as fixed, the text Holos tried to write.
-                let rest = AIFixUnwritten.attempted(unwritten, fixedRest: nil, failedWrite: failedWrite)
-                if rest != unwritten { resultOriginal = latestCommitted.trimmingCharacters(in: .whitespacesAndNewlines) }
+            if !resultOriginal.isEmpty { message += " Copy Original has what was heard, before Apple Intelligence's fix." }
+            if let unwritten, let rest = attempted, !unwritten.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 // Keep the leading space so pasting after the inserted prefix does not join words.
                 resultText = insertedText.isEmpty ? rest.trimmingCharacters(in: .whitespaces) : rest
                 let copied = copyToClipboard(resultText)
@@ -501,7 +502,7 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
                 rebuildMenu()
                 return
             }
-            if TextInsertion.unwritten(committed, after: insertedText) == nil, !committed.isEmpty {
+            if unwritten == nil, !committed.isEmpty {
                 // The transcript no longer extends what was inserted, so no tail is safe to paste.
                 resultText = committed
                 message += " The transcript changed after text was inserted; check the field. Copy Result has the full transcript."
@@ -591,7 +592,6 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
                 if writeFixed("", as: closing) { pipeline.didWrite("", as: closing) } else { unwrittenClosing = closing }
             }
         }
-        fixPipeline = nil
         let destination = target
         target = nil // No callback or retry can write to this target again.
         // The fix of the part not yet written: written in its place, or, when that write fails or a streamed chunk's
@@ -600,27 +600,44 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
         let attempted = unwritten.map {
             AIFixUnwritten.attempted($0, fixedRest: fixedRest, failedWrite: pipeline.failedWrite)
         }
+        endFixing(heard: heard, offered: (attempted ?? "") + (unwrittenClosing ?? ""), recognized: unwritten ?? "")
         let written = finish(text, into: destination, writing: attempted == unwritten ? nil : attempted)
-        let rest = TextInsertion.unwritten(text, after: pipeline.writtenOriginal) ?? ""
-        let fixed = pipeline.written + (fixedRest ?? rest) + (unwrittenClosing ?? "")
-        if unwrittenClosing != nil {
-            // The words are in the field; only the mark is missing. Copy Result has the whole fixed text.
-            resultText = fixed
-            resultOriginal = heard
-            resultNeedsAttention = true
-            message += " The closing punctuation could not be added; Copy Result has Apple Intelligence's fix, "
-                + "Copy Original has what was heard."
-        } else if written, fixed != text {
-            resultText = fixed
-            resultOriginal = heard
-            message += " Apple Intelligence fixed misheard words; Copy Original has what was heard."
-        } else if !written, attempted != unwritten {
-            // Copy Result has the fixed words Holos tried to write (set by `finish`); keep the heard text too.
-            resultOriginal = heard
-            message += " Copy Result has Apple Intelligence's fix; Copy Original has what was heard."
+        if !resultOriginal.isEmpty {
+            let rest = TextInsertion.unwritten(text, after: pipeline.writtenOriginal) ?? ""
+            let fixed = pipeline.written + (fixedRest ?? rest) + (unwrittenClosing ?? "")
+            if unwrittenClosing != nil {
+                // The words are in the field; only the mark is missing. Copy Result has the whole fixed text.
+                resultText = fixed
+                resultNeedsAttention = true
+                message += " The closing punctuation could not be added; Copy Result has Apple Intelligence's fix, "
+                    + "Copy Original has what was heard."
+            } else if written {
+                resultText = fixed
+                message += " Apple Intelligence fixed misheard words; Copy Original has what was heard."
+            } else if attempted != unwritten {
+                // Copy Result has the fixed words Holos tried to write (set by `finish`).
+                message += " Copy Result has Apple Intelligence's fix; Copy Original has what was heard."
+            } else {
+                // Only chunks already in the field were fixed; Copy Result has the rest as recognized.
+                message += " Text already written was fixed by Apple Intelligence; Copy Original has what was heard."
+            }
         }
         presentResult()
         rebuildMenu()
+    }
+
+    /// Ends on-device fixing, however the dictation ends: released, failed, cancelled or disabled. When a fix changed
+    /// text already written, or what was written or offered in place of the `recognized` rest (`offered`), Copy
+    /// Original keeps `heard`, the recognizer's text, since the field may hold Apple Intelligence's words.
+    private func endFixing(heard: String, offered: String = "", recognized: String = "") {
+        guard let pipeline = fixPipeline else { return }
+        pipeline.cancel()
+        fixPipeline = nil
+        if let kept = AIFixOriginal.heard(heard.trimmingCharacters(in: .whitespacesAndNewlines),
+                                          written: pipeline.written, writtenOriginal: pipeline.writtenOriginal,
+                                          offered: offered, recognized: recognized) {
+            resultOriginal = kept
+        }
     }
 
     /// Writes whatever the final transcript adds beyond the streamed prefix, in a single attempt.
@@ -858,7 +875,7 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
     @objc private func cancelDictation() {
         target = nil
         insertionBlockReason = "Cancelled"
-        fixPipeline?.cancel(); fixPipeline = nil
+        endFixing(heard: latestCommitted)
         controller.cancel()
         overlay.hide()
     }

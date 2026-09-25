@@ -25,14 +25,39 @@ import Testing
     #expect(AIFixGuard.check(original: "the results were quite good overall",
                              fixed: "overall the outcome looked very good") == .reject(.tooManyEdits))
     #expect(AIFixGuard.check(original: "The weather is lovely today.",
-                             fixed: "The weather is lovely today. Thanks for listening.") == .reject(.addedSentence))
+                             fixed: "The weather is lovely today. Thanks for listening.") == .reject(.changedStructure))
     #expect(AIFixGuard.check(original: "The weather is lovely today and we plan to walk to the lake.",
                              fixed: "The weather is lovely today and we plan to walk to the lake GitHub Holos macOS")
         == .reject(.wordCountChanged))
     #expect(AIFixGuard.check(original: "first part second part", fixed: "first part\nsecond part")
-        == .reject(.addedLine))
+        == .reject(.changedStructure))
     #expect(AIFixGuard.check(original: "we are done for today", fixed: "Corrected: we are done for today")
-        == .reject(.addedLabel))
+        == .reject(.changedStructure))
+}
+
+@Test func guardRejectsAnyMarkOtherThanCommasAndApostrophes() {
+    // Relocated marks: the same words and the same count of each mark, in other places.
+    #expect(AIFixGuard.check(original: "Wait here. Don't leave", fixed: "Wait here Don't. Leave")
+        == .reject(.changedStructure))
+    #expect(AIFixGuard.check(original: "time: five", fixed: "Corrected: time five") == .reject(.changedStructure))
+    #expect(AIFixGuard.check(original: "a b. c d", fixed: "a. b c d") == .reject(.changedStructure))
+    // Removed, added or swapped marks inside the chunk.
+    #expect(AIFixGuard.check(original: "Wait here. Don't leave", fixed: "Wait here, don't leave")
+        == .reject(.changedStructure))
+    #expect(AIFixGuard.check(original: "is it done then we go", fixed: "is it done? then we go")
+        == .reject(.changedStructure))
+    #expect(AIFixGuard.check(original: "he said great", fixed: "he said \"great\"") == .reject(.changedStructure))
+    #expect(AIFixGuard.check(original: "see (below) now", fixed: "see below now") == .reject(.changedStructure))
+    #expect(AIFixGuard.check(original: "Wait here. Don't leave", fixed: "Wait here! Don't leave")
+        == .reject(.changedStructure))
+    // Commas and apostrophes come and go; words change within the budget with the marks where they were.
+    #expect(AIFixGuard.check(original: "Wait here. Dont leave", fixed: "Wait, here. Don't leave,") == .accept)
+    #expect(AIFixGuard.check(original: "I went their. Then we left", fixed: "I went there. Then, we left.")
+        == .accept)
+    #expect(AIFixGuard.check(original: "x. y", fixed: "y. x") == .accept)  // two substitutions, the mark stays put
+    // Closing marks may change at the very end, including before closing quotes.
+    #expect(AIFixGuard.check(original: "he called it “great”", fixed: "he called it “great.”") == .accept)
+    #expect(AIFixGuard.check(original: "Is it done?", fixed: "Is it done?!") == .accept)
 }
 
 @Test func guardRejectsBigDeletionsAndEmptyReplies() {
@@ -95,6 +120,29 @@ import Testing
     #expect(AIFixGuard.keepingEdges(of: "wait for me,", in: "Wait for me?!", isFinal: false) == "wait for me,")
     #expect(AIFixGuard.keepingEdges(of: "Is it done?", in: "Is it done?!", isFinal: false) == "Is it done?")
     #expect(AIFixGuard.keepingEdges(of: "are you sure", in: "Are you sure?!", isFinal: true) == "are you sure?!")
+}
+
+@Test func withholdsAClosingRunBeforeClosingQuotesAndBrackets() {
+    #expect(AIFixGuard.keepingEdges(of: "he called it “great”", in: "He called it “great.”", isFinal: false)
+        == "he called it “great”")
+    #expect(AIFixGuard.keepingEdges(of: "we will ship (soon)", in: "We will ship (soon?!)", isFinal: false)
+        == "we will ship (soon)")
+    #expect(AIFixGuard.keepingEdges(of: "she said \"wait,\"", in: "She said \"wait.\"", isFinal: false)
+        == "she said \"wait,\"")
+    #expect(AIFixGuard.keepingEdges(of: "he called it “great”", in: "He called it “great.”", isFinal: true)
+        == "he called it “great.”")
+    #expect(AIFixGuard.closingRun(of: "“great.”") == ".")
+    #expect(AIFixGuard.closingRun(of: "the dogs'") == "")
+}
+
+@Test func fixerHoldsBackAClosingMarkBeforeAClosingQuote() async {
+    let quoted = await fixer { _, _ in "He called it “great.”" }.fix(" he called it “great”", isFinal: false)
+    #expect(quoted == .init(text: " he called it “great”", outcome: .unchanged, withheldClosing: "."))
+    let fixed = await fixer { _, _ in "He called it “great.”" }.fix(" he cold it “great”", isFinal: false)
+    #expect(fixed == .init(text: " he called it “great”", outcome: .fixed, withheldClosing: "."))
+    // The chunk already ended with a comma inside the quote: nothing is held back.
+    let comma = await fixer { _, _ in "She said \"wait.\"" }.fix("she said \"wait,\"", isFinal: false)
+    #expect(comma == .init(text: "she said \"wait,\"", outcome: .unchanged))
 }
 
 @Test func fixerHoldsBackACompoundClosingRun() async {
@@ -202,6 +250,33 @@ private func fixer(corrections: CorrectionList = CorrectionList(), timeout: Dura
     // A word the model introduced gets one pass of the rules, like recognized text does.
     let introduced = await fixer(corrections: chain) { _, _ in "I said foo" }.fix("I said fool", isFinal: true)
     #expect(introduced == .init(text: "I said bar", outcome: .fixed))
+    // Raw "fool foo" reached the fixer as "fool bar"; the model changed the first word into "bar". Only that
+    // occurrence gets the rules, not its twin that was already corrected.
+    let twin = await fixer(corrections: chain) { _, _ in "bar bar" }.fix("fool bar", isFinal: true)
+    #expect(twin == .init(text: "baz bar", outcome: .fixed))
+}
+
+@Test func changedWordsArePositionalOrAbsentFromTheOriginal() {
+    // Same count: position by position.
+    #expect(AIFixGuard.changedWordRanges(from: "fool bar", to: "bar bar") == [NSRange(location: 0, length: 3)])
+    #expect(AIFixGuard.changedWordRanges(from: "bar fool", to: "bar bar") == [NSRange(location: 4, length: 3)])
+    // Different counts: only words found nowhere in the original, so a duplicate is never picked.
+    #expect(AIFixGuard.changedWordRanges(from: "fool bar x", to: "bar bar").isEmpty)
+    #expect(AIFixGuard.changedWordRanges(from: "fool bar", to: "bar bar baz").map(\.location) == [8])
+    #expect(AIFixGuard.changedWordRanges(from: "I don’t know", to: "I don't know").isEmpty)
+}
+
+@Test func copyOriginalStaysWheneverAFixChangedWhatHolosWroteOrOffers() {
+    // A fixed chunk was written, then recognition failed, the capture failed, or the dictation was cancelled.
+    #expect(AIFixOriginal.heard("their here and gone", written: " they're here", writtenOriginal: " their here")
+        == "their here and gone")
+    // The rest Holos wrote or offers is the fix.
+    #expect(AIFixOriginal.heard("their here", written: "", writtenOriginal: "",
+                                offered: " they're here", recognized: " their here") == "their here")
+    // No fix changed anything: no Copy Original.
+    #expect(AIFixOriginal.heard("all good", written: " all", writtenOriginal: " all",
+                                offered: " good", recognized: " good") == nil)
+    #expect(AIFixOriginal.heard("", written: "a", writtenOriginal: "b") == nil)
 }
 
 @Test func correctionsCanBeLimitedToChangedRanges() {
