@@ -235,6 +235,9 @@ public enum VoiceProfileService {
             if into.samples.isEmpty { into.embeddingModel = nil }
             // The target is taken up by this merge whether or not anything about them changes (a person with no
             // samples can leave every field as it was), so a link that is refused later must not take them back.
+            // What removed this person, recorded in the write that removes them: a journal record beside a missing
+            // person cannot say whether this merge, a forget, or another merge took them away.
+            database.mergedInto = (database.mergedInto ?? [:]).merging([profileID: target]) { _, new in new }
             into.provisional = nil
             into.isSelf = into.isSelf || from.isSelf
             into.createdAt = min(into.createdAt, from.createdAt)
@@ -254,13 +257,13 @@ public enum VoiceProfileService {
     private static func retargetMeetings(_ record: ForgetRecord, store: SpeakerProfileStore,
                                          sessionsRoot: URL) throws {
         guard let from = record.profileID, var to = record.targetProfileID else { return }
+        let database = try store.load()
         if try store.storedForget(record.id) == nil {
             // No marker: the store write either never committed (the merge was refused, or the process went before
-            // it) or committed and the process went before the marker. The store itself says which, and it is the
-            // authority here: the merge committed exactly when the source is gone and the target is there.
-            let database = try store.load()
-            let ids = Set(database.profiles.map(\.id))
-            guard !ids.contains(from), ids.contains(to) else {
+            // it) or committed and the process went before the marker. The database says which, because the write
+            // that removes the person records what removed them: a person a forget or another merge took away is
+            // not this merge's doing, however absent they are.
+            guard database.mergedInto?[from] == to else {
                 log.notice("Dropped a merge whose store write never happened")
                 try store.appendForgetRecord(.done(record.id))
                 return
@@ -271,8 +274,9 @@ public enum VoiceProfileService {
         // Another window may have merged the person this one was merged into onwards while this record waited.
         // Writing the ID it named then would point the meetings at somebody who is no longer there, and a
         // projection drops a match whose person is not in the store, which is the very loss this pass prevents.
-        to = try mergedOnwards(to, store: store)
-        guard try store.load().profiles.contains(where: { $0.id == to }) else {
+        // Only merges the database records as committed are followed: a refused one changed nothing.
+        to = Self.mergedOnwards(to, in: database)
+        guard database.profiles.contains(where: { $0.id == to }) else {
             log.notice("Dropped a merge whose target is no longer in the store")
             try store.appendForgetRecord(.done(record.id))
             return
@@ -292,18 +296,21 @@ public enum VoiceProfileService {
                                         + "show no automatic name for that person.")
         }
         try store.appendForgetRecord(.done(record.id))
+        // The record of what each merge removed is only needed while some merge still waits for its meetings.
+        if try store.pendingForgets().allSatisfy({ $0.kind != .merge }) {
+            try store.update { $0.mergedInto = nil }
+        }
     }
 
-    /// Where `profileID` ended up, following the merges the journal records (`A -> B`, then `B -> C` gives `C`).
-    /// Stops at the first ID no merge names, and after `mergeChainLimit` steps, so a journal a newer Holos wrote
-    /// cannot send this round a cycle.
-    static func mergedOnwards(_ profileID: String, store: SpeakerProfileStore) throws -> String {
-        let merges = try store.forgetRecords().filter { $0.kind == .merge }
+    /// Where `profileID` ended up, following the merges the store records as committed (`A -> B`, then `B -> C`
+    /// gives `C`). Stops at the first ID no committed merge names, and after `mergeChainLimit` steps, so a store a
+    /// newer Holos wrote cannot send this round a cycle.
+    static func mergedOnwards(_ profileID: String, in database: SpeakerProfileDatabase) -> String {
+        guard let merged = database.mergedInto else { return profileID }
         var current = profileID
         var seen: Set<String> = [current]
         for _ in 0..<mergeChainLimit {
-            guard let next = merges.first(where: { $0.profileID == current })?.targetProfileID,
-                  seen.insert(next).inserted else { return current }
+            guard let next = merged[current], seen.insert(next).inserted else { return current }
             current = next
         }
         return current
@@ -327,12 +334,25 @@ public enum VoiceProfileService {
         // A folder with no manifest is not a meeting and is skipped; one whose manifest cannot be read now is,
         // so the read throws and the merge stays pending for a run that can read it.
         var info = stat()
-        guard lstat(SessionPaths.manifest(session).path, &info) == 0, (info.st_mode & S_IFMT) == S_IFREG else {
+        if lstat(SessionPaths.manifest(session).path, &info) != 0 {
+            // Only a manifest that is not there says "not a meeting". A folder that cannot be inspected right now
+            // (no traversal permission, an I/O error) has not been visited, so the merge waits for it.
+            let code = errno
+            guard code == ENOENT || code == ENOTDIR else {
+                throw HolosError.io("Cannot inspect a meeting folder: \(String(cString: strerror(code))).")
+            }
             return
         }
+        guard (info.st_mode & S_IFMT) == S_IFREG else { return }
         _ = try SessionArchive.readManifest(at: session)
         let hadRecognition = try SessionArchive.withSpeakerLock(at: session) { () throws -> Bool in
             let files = try SessionSpeakerStore.recognitionFiles(session: session)
+            // An entry this build does not know may be a recognition result of a newer Holos that still names the
+            // person merged away. A merge deletes nothing, so the meeting is left for a build that can read it.
+            guard !files.other else {
+                throw HolosError.unavailable("This meeting holds recognition results a newer Holos wrote; they are "
+                                             + "left as they are until that Holos runs.")
+            }
             for runID in files.runIDs {
                 guard var result = try SessionSpeakerStore.readRecognition(runID: runID, session: session),
                       result.retargetProfiles(map) else { continue }
@@ -487,8 +507,10 @@ public enum VoiceProfileService {
         }
     }
 
-    /// Whether a meeting's stored recognition result may be applied: "Remember voices" is on, and no forget is
-    /// waiting to be finished. Off means kept
+    /// Whether a meeting's stored recognition result may be applied: "Remember voices" is on, and no forget still
+    /// has meetings whose voice data or recognition results it has not reached (including a forget this build
+    /// cannot read). A forget that only owes an exported transcript does not hold recognition back: nothing Holos
+    /// reads names the forgotten person any more. Off means kept
     /// samples are not used, which is what the People window promises when the setting is turned off without
     /// forgetting them, so no suggestion or automatic name is shown or exported until it is turned back on
     /// (nothing is deleted). False when the store cannot be read, like the empty `profileNames` there: with the
@@ -500,7 +522,11 @@ public enum VoiceProfileService {
             // that could not be written) leaves recognition results naming people it was meant to remove, and
             // `resumePendingForgets` finishes them in the background. Until it does, those results are not used:
             // a name the user asked Holos to forget must not be shown or exported in the meantime.
-            return try store.pendingForgets().allSatisfy { $0.kind == .merge }
+            let unfinished = try store.pendingForgets().filter { $0.kind != .merge }
+            guard try unfinished.allSatisfy({ try store.forgetIsCleaned($0.id) }) else { return false }
+            // A line this build cannot read may be a newer Holos's unfinished forget: it cannot be resumed here,
+            // and until a build that can read it does, its meetings may still name someone it removed.
+            return try !store.forgetJournalHasUnreadableLines()
         } catch {
             log.error("Cannot read whether voices are remembered: \(ProcessSpawner.logCategory(error), privacy: .public)")
             return false
@@ -1080,20 +1106,38 @@ public enum VoiceProfileService {
             sessions = []
         }
         var failed = 0
+        var exportsOwed = 0
         for session in sessions {
             do {
                 try clean(session, kind: kind, profileID: owner, store: store)
+            } catch is ExportRewriteFailed {
+                // The voices are gone from this meeting; only its exported transcript still holds the name.
+                exportsOwed += 1
+                log.error("Cannot rewrite a meeting's exports after a forget yet")
             } catch {
                 failed += 1
                 log.error("Cannot remove forgotten voices from a meeting yet: \(ProcessSpawner.logCategory(error), privacy: .public)")
             }
         }
-        guard failed == 0 else {
-            throw HolosError.incomplete("The voices were forgotten, but \(failed) \(failed == 1 ? "meeting" : "meetings") "
+        if failed == 0, try !store.forgetIsCleaned(record.id) {
+            // Nothing Holos reads names the forgotten person any more, so recognition need not wait on whatever is
+            // still owed (`recognitionAllowed`).
+            try store.appendForgetRecord(.cleaned(record.id))
+        }
+        guard failed == 0, exportsOwed == 0 else {
+            let count = failed + exportsOwed
+            throw HolosError.incomplete("The voices were forgotten, but \(count) \(count == 1 ? "meeting" : "meetings") "
                                         + "could not be cleaned up yet; Holos finishes this next time.")
         }
         try store.appendForgetRecord(.done(record.id))
         return removed
+    }
+
+    /// A meeting whose exported transcripts could not be rewritten after a forget. Everything the forget removes
+    /// is gone from what Holos reads; only the files the user can open still hold the name, so the tombstone stays
+    /// pending for another try while recognition carries on.
+    private struct ExportRewriteFailed: Error {
+        let underlying: any Error
     }
 
     /// Removes what a forget leaves in one meeting, under its speaker lock: every voice file and recognition result
@@ -1116,10 +1160,17 @@ public enum VoiceProfileService {
         do {
             _ = try SessionArchive.readManifest(at: session)
         } catch {
+            // The voice data goes now, because it cannot be told apart without the manifest. The exports cannot be
+            // rewritten without it either, and they may still hold a name this forget removes, so the tombstone
+            // stays pending: a repaired manifest is rewritten at the next launch.
             if try SessionSpeakerStore.purgeVoiceFolders(session: session, recognition: kind != .sample) {
                 log.error("Deleted the voice data of a meeting whose manifest cannot be read: \(ProcessSpawner.logCategory(error), privacy: .public)")
             }
-            return
+            var generated = stat()
+            guard kind == .profile || kind == .all,
+                  lstat(SessionPaths.generatedExports(session).path, &generated) == 0,
+                  (generated.st_mode & S_IFMT) == S_IFREG else { return }
+            throw ExportRewriteFailed(underlying: error)
         }
         let hadRecognition = try SessionArchive.withSpeakerLock(at: session) { () throws -> Bool in
             let recognition = try SessionSpeakerStore.recognitionFiles(session: session)
@@ -1158,8 +1209,12 @@ public enum VoiceProfileService {
         var generated = stat()
         guard owesExports, lstat(SessionPaths.generatedExports(session).path, &generated) == 0,
               (generated.st_mode & S_IFMT) == S_IFREG else { return }
-        try SessionExports.regenerate(session: session, profileNames: profileNames(store: store),
-                                      applyRecognition: recognitionAllowed(store: store))
+        do {
+            try SessionExports.regenerate(session: session, profileNames: profileNames(store: store),
+                                          applyRecognition: recognitionAllowed(store: store))
+        } catch {
+            throw ExportRewriteFailed(underlying: error)
+        }
     }
 
     /// Removes every reference to the person (`isThePerson`: matches, merge suggestions, skipped people; one helper,

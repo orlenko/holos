@@ -96,6 +96,11 @@ public struct SpeakerProfileDatabase: Codable, Sendable, Equatable {
     /// that when the work concerns a person and meeting the forget left empty either way; this counter can.
     /// Absent (nil) in stores written by an earlier Holos, which reads as 0.
     public var forgetEpoch: Int?
+    /// Merges whose store write committed, as the person merged away → the person they were merged into. Written in
+    /// the same write that removes the source, so it says what a journal record alone cannot: that this merge is
+    /// what removed that person, rather than a forget or another merge. Entries let a merge that was interrupted
+    /// find where its target has gone since, and they are dropped once no merge is waiting for its meetings.
+    public var mergedInto: [String: String]?
     /// Set by `holos people calibrate --apply`; `likely` exists only when this is set, and only for runs of
     /// `calibratedModel`.
     public var calibratedThresholds: RecognitionThresholds?
@@ -110,10 +115,12 @@ public struct SpeakerProfileDatabase: Codable, Sendable, Equatable {
 
     public init(schemaVersion: Int = SpeakerProfileDatabase.currentSchemaVersion, rememberVoices: Bool = false,
                 calibratedThresholds: RecognitionThresholds? = nil, calibratedModel: EmbeddingModelID? = nil,
-                profiles: [SpeakerProfile] = [], calibrationResetAt: Date? = nil, forgetEpoch: Int? = nil) {
+                profiles: [SpeakerProfile] = [], calibrationResetAt: Date? = nil, forgetEpoch: Int? = nil,
+                mergedInto: [String: String]? = nil) {
         self.schemaVersion = schemaVersion; self.rememberVoices = rememberVoices
         self.calibratedThresholds = calibratedThresholds; self.calibratedModel = calibratedModel
         self.profiles = profiles; self.calibrationResetAt = calibrationResetAt; self.forgetEpoch = forgetEpoch
+        self.mergedInto = mergedInto
     }
 
     /// The calibrated thresholds for a run of `model`: nil unless they were measured on that model.

@@ -25,6 +25,7 @@ extension HolosPaths {
 public struct ForgetRecord: Codable, Sendable, Equatable {
     public static let pending = "pending"
     public static let stored = "stored"
+    public static let cleaned = "cleaned"
     public static let done = "done"
     public static let currentSchemaVersion = 1
 
@@ -72,6 +73,13 @@ public struct ForgetRecord: Codable, Sendable, Equatable {
     /// meetings are to be cleaned of (for a `.sample` forget, the one the sample was found under).
     public static func stored(_ id: String, profileID: String? = nil) -> ForgetRecord {
         ForgetRecord(id: id, kind: nil, profileID: profileID, state: stored)
+    }
+
+    /// The `cleaned` line for the tombstone `id`: every meeting's voice data and recognition results are done, and
+    /// only the exported transcripts of some meeting are still owed. Nothing names the forgotten person any more
+    /// in what Holos reads, so recognition need not be held back (`VoiceProfileService.recognitionAllowed`).
+    public static func cleaned(_ id: String) -> ForgetRecord {
+        ForgetRecord(id: id, kind: nil, state: cleaned)
     }
 
     /// The `done` line for the tombstone `id`.
@@ -280,6 +288,31 @@ public struct SpeakerProfileStore: Sendable {
         }
     }
 
+    /// Whether the journal holds a line this build cannot read: damaged, or written by a newer Holos (a newer
+    /// schema version, or a forget kind this build does not know). Such a line may be an unfinished forget, which
+    /// this build can neither resume nor account for, so callers that must not act while one is outstanding
+    /// (`VoiceProfileService.recognitionAllowed`) treat it as pending.
+    public func forgetJournalHasUnreadableLines() throws -> Bool {
+        guard let data = try AtomicFile.readIfPresent(forgetJournalURL, maxBytes: Self.maxJournalBytes) else {
+            return false
+        }
+        let (lines, torn) = JournalLines.split(data)
+        if torn { return true }
+        let decoder = HolosJSON.decoder()
+        return lines.contains { line in
+            guard let version = SchemaVersion.probe(line),
+                  SchemaVersion.readable(version, current: ForgetRecord.currentSchemaVersion),
+                  (try? decoder.decode(ForgetRecord.self, from: line)) != nil else { return true }
+            return false
+        }
+    }
+
+    /// Whether the tombstone `id` has reached its `cleaned` line: no meeting's voice data or recognition results
+    /// name the forgotten person any more, whatever else it still owes.
+    public func forgetIsCleaned(_ id: String) throws -> Bool {
+        try forgetRecords().contains { $0.id == id && $0.state == ForgetRecord.cleaned }
+    }
+
     /// The `stored` line of the tombstone `id`, when its store write is already done; nil while that phase is still
     /// owed (including for a tombstone written by an earlier Holos, which journalled no such line: its store write
     /// is then made again, which removes at most a little more than it did).
@@ -323,13 +356,13 @@ public struct SpeakerProfileStore: Sendable {
                         keep = unreadable && !pendingIDs.contains(record.id) && seen.insert("done:" + record.id).inserted
                     } else if record.state == ForgetRecord.pending, record.kind != nil {
                         keep = !finished.contains(record.id) && seen.insert(record.id).inserted
-                    } else if record.state == ForgetRecord.stored {
+                    } else if record.state == ForgetRecord.stored || record.state == ForgetRecord.cleaned {
                         // Kept while its tombstone is, and, like an unmatched `done` line, whenever this build
                         // cannot read every line: the tombstone it belongs to may be one of those (a newer Holos's
                         // forget kind), and dropping the marker would have that Holos repeat its store write.
                         keep = !finished.contains(record.id)
                             && (pendingIDs.contains(record.id) || unreadable)
-                            && seen.insert("stored:" + record.id).inserted
+                            && seen.insert(record.state + ":" + record.id).inserted
                     } else {
                         keep = true
                     }

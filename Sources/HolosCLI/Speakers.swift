@@ -439,7 +439,7 @@ enum SpeakerCommand {
         let people = VoiceProfileService.profileNames(store: store)
         let snapshot = try SpeakerSessionSnapshot.load(
             session: session, profileNames: people,
-            applyRecognition: peopleBefore?.rememberVoices ?? VoiceProfileService.recognitionAllowed(store: store))
+            applyRecognition: VoiceProfileService.recognitionAllowed(store: store))
         guard let view = snapshot.projection else {
             throw HolosError.unavailable(snapshot.runProblem
                 ?? "This meeting has no speaker labels yet. Label them with holos session diarize \(session.path).")

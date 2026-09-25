@@ -221,6 +221,13 @@ public struct MeetingPostProcessor: Sendable {
     }
 
     /// Stages 2–7. Every failure is recorded as a stage outcome; only cancellation throws.
+    /// The people store's forget counter, or nil with no store (and nil when it cannot be read, which compares
+    /// equal to itself, so a store that is unreadable throughout a pass does not stop it writing).
+    private func forgetEpochNow() -> Int? {
+        guard let profiles else { return nil }
+        return (try? profiles.load().forgetEpoch) ?? nil
+    }
+
     private func labelSpeakers(session: URL, manifest: SessionManifest, transcript: Transcript,
                                recorder: StageRecorder) async throws -> SpeakerResult {
         // Stage 2: track policies.
@@ -232,6 +239,10 @@ public struct MeetingPostProcessor: Sendable {
             recorder.skip([.render, .diarize, .align], message)
             return SpeakerResult(problem: message)
         }
+        // Rendering and diarizing take a while, and this pass may write a voice file (evaluation sessions only).
+        // A forget that lands meanwhile has already cleaned this meeting, so what this pass computed must not be
+        // written afterwards: the epoch it started with is compared again under the speaker lock at the publish.
+        let forgetEpoch = forgetEpochNow()
         let othersInRoom = options.othersInRoom ?? meeting.othersInRoom
         recorder.journal.update { $0.othersInRoom = othersInRoom }
         var result = SpeakerResult(othersInRoom: othersInRoom)
@@ -320,7 +331,8 @@ public struct MeetingPostProcessor: Sendable {
         try Task.checkCancellation()
         do {
             switch try SpeakerAnalysis.publish(built, session: session, transcript: transcript, force: options.force,
-                                               writeVoiceData: options.forceVoiceData) {
+                                               writeVoiceData: options.forceVoiceData,
+                                               voiceDataStillWanted: { self.forgetEpochNow() == forgetEpoch }) {
             case .keptEditedHead(let runID):
                 recorder.end(.align, .skipped, SpeakerAnalysis.editedHead, since: started)
                 result.runID = runID
