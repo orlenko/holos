@@ -77,6 +77,13 @@ struct MeetingControllerTuning: Sendable {
     /// The "Name Speakers — <name>…" offer, derived from saved state (`NamingOfferPolicy`) by `refreshNamingOffer`.
     /// Each change is reported once, as `offerNaming` or `clearNamingOffer`.
     public private(set) var namingOffer: NamingOffer?
+    /// Meetings with a review window open, opening, or still saving after it closed (PR9). The automatic relabel
+    /// skips them too (`ReviewMaintenance.sessionsInUse`), but Meetings commands do not: a command makes the review
+    /// read-only (or closes it) instead (`ReviewMaintenance.response`).
+    public var sessionsUnderReview: @MainActor () -> Set<String> = { [] }
+    /// Called with the meeting's ID and true when the automatic relabel starts on it, and false when it ends, so an
+    /// open review of the meeting can follow `ReviewMaintenance`.
+    public var onAutoRelabel: (@MainActor (_ sessionID: String, _ running: Bool) -> Void)?
 
     public let root: URL
     private let launcher: any RecorderLauncher
@@ -641,8 +648,11 @@ struct MeetingControllerTuning: Sendable {
             guard let self else { return }
             let active: Bool = if case .idle = self.state { false } else { true }
             // A meeting the app uses right now (`sessionsInUse`) is left alone: two commands would contend for its
-            // processing lease, and the loser would fail (and here, use up an attempt).
-            let summaries = listed.filter { self.sessionsInUse[$0.id] == nil }
+            // processing lease, and the loser would fail (and here, use up an attempt). So is a meeting under review
+            // (`sessionsUnderReview`): the user is editing its labels.
+            let inUse = ReviewMaintenance.sessionsInUse(commands: self.sessionsInUse.keys,
+                                                        reviews: self.sessionsUnderReview())
+            let summaries = listed.filter { !inUse.contains($0.id) }
             var attempts = self.loadRelabelAttempts()
             guard let pick = AutoRelabelPolicy.candidates(summaries, attempts: attempts,
                                                           modelsInstalled: self.modelsInstalled(),
@@ -668,11 +678,14 @@ struct MeetingControllerTuning: Sendable {
                     Self.log.notice("Session \(pick.id, privacy: .public): automatic relabel ended with \(code, privacy: .public)")
                     self?.relabelling = false
                     self?.relabellingSessionID = nil
+                    // An open review of the meeting rereads it and is editable again.
+                    self?.onAutoRelabel?(pick.id, false)
                     // Labelled in the background: the naming offer is derived again as the use ends.
                     self?.endUsing(pick.id)
                 }
                 attempts[pick.id, default: 0] += 1
                 self.relabellingSessionID = pick.id
+                self.onAutoRelabel?(pick.id, true)
                 Self.log.notice("Session \(pick.id, privacy: .public): relabelling automatically (attempt \(attempts[pick.id] ?? 0, privacy: .public))")
             } catch {
                 Self.log.error("Session \(pick.id, privacy: .public): automatic relabel could not start (\(ProcessSpawner.logCategory(error), privacy: .public)): \(error.localizedDescription, privacy: .private)")
