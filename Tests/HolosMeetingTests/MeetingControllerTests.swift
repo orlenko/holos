@@ -151,11 +151,18 @@ private final class ControllerHeartbeat {
     let archive = try liveSession(in: temp.url)
     let heartbeat = ControllerHeartbeat(session: archive.directory, status: meetingStatus(archive.id, phase: .recording))
     heartbeat.beat(force: true)
-    // Within one rescan: once the rescan interval has passed, the next pass of the loop follows it.
+    // Once a rescan interval has passed, a pass of the loop follows it. Which pass is not fixed: the controller's
+    // own loop runs one every `tuning.poll`, and on a loaded machine one of those can spend the whole rescan
+    // interval while the recorder's status is still stale, leaving the test's own pass inside the interval that
+    // pass just consumed. So the heartbeat is kept up and the loop stepped until it follows the meeting.
     try await Task.sleep(for: controller.tuning.rescan + .milliseconds(10))
-    heartbeat.beat()
-    controller.step()
-    guard case .active(let id, _) = controller.state, id == archive.id else {
+    let followed = await eventually {
+        heartbeat.beat(force: true)
+        controller.step()
+        if case .active(let id, _) = controller.state, id == archive.id { return true }
+        return false
+    }
+    guard followed, case .active = controller.state else {
         Issue.record("Expected active after one rescan, got \(controller.state).")
         return
     }
@@ -660,11 +667,17 @@ func finishedMeetingWithLabelsOffersNaming(postprocessing: PostProcessingState) 
                              to: SessionPaths.status(labelled.session))
     lease.release()
     controller.poll()
+    // The finish and the offer are reported by two asynchronous paths that do not wait for each other: the finish
+    // once the saved labels have been read off the main actor, and the offer from a naming refresh, which the
+    // launch above also started. Either can be first, so both are awaited; waiting for only one of them made this
+    // test fail under load, when the launch refresh's listing landed after the lease was released and offered the
+    // meeting before the finish had checked its labels.
     #expect(await eventually {
-        probe.effects.contains(.offerNaming(sessionID: manifest.id, name: manifest.name))
+        probe.effects.contains { if case .finished(manifest.id, _, true) = $0 { true } else { false } }
+            && probe.effects.contains(.offerNaming(sessionID: manifest.id, name: manifest.name))
     })
-    #expect(probe.effects.contains { if case .finished(manifest.id, _, true) = $0 { true } else { false } })
-    #expect(probe.effects.filter { if case .offerNaming = $0 { true } else { false } }.count == 1)
+    #expect(probe.effects.filter { if case .offerNaming = $0 { true } else { false } }.count == 1,
+            "The two refreshes offer the same meeting, and the offer is reported only when it changes.")
     controller.reviewOpened(sessionID: manifest.id)
     #expect(probe.effects.last == .clearNamingOffer(sessionID: manifest.id))
 }
@@ -684,6 +697,11 @@ func finishedMeetingWithoutLabelsOffersNothing(postprocessing: PostProcessingSta
     try await archive.finish(status: ArchiveStatus.complete)
     let lease = try SessionArchive.acquireProcessingLease(at: archive.directory)
     defer { lease.release() }
+    // A status older than `MeetingReducer.freshSeconds` is not a live meeting (§4.1 "Reattach"), and the setup
+    // above can take longer than that on a loaded machine: instrumenting a failing run found the status 15.8 s old
+    // by the time the launch read it, so the launch found nothing and the controller stayed idle. The meeting the
+    // launch is meant to find is written immediately before it, as `finishedMeetingWithLabelsOffersNaming` does.
+    try AtomicFile.writeJSON(meetingStatus(id, phase: .postprocessing), to: SessionPaths.status(archive.directory))
     controller.attachOnLaunch()
     guard case .finishing = controller.state else {
         Issue.record("Expected finishing, got \(controller.state).")

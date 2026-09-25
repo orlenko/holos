@@ -53,11 +53,11 @@ import Testing
     defer { release.finish() }
     // A save that never finishes, and that ignores cancellation.
     let hung = Task { for await _ in stream {} }
-    let clock = ContinuousClock()
-    let started = clock.now
+    // Returning at all is the proof that the hung work was not awaited, and `.timeLimit` above is what enforces
+    // it: had `waitAtMost` awaited the task, this call would never return and the test would fail there. A
+    // wall-clock bound here measured the machine instead -- the suite starves the cooperative pool badly enough
+    // that a 5 ms sleep has been seen returning after 35 s, and this failed on 2 of 3 full runs.
     #expect(!(await waitAtMost(.milliseconds(100), for: hung)))
-    // Returning at all shows the hung work was not awaited; the bound only allows for a busy test machine.
-    #expect(clock.now - started < .seconds(20))
     #expect(!hung.isCancelled, "The losing work is left running, not cancelled.")
 
     let quick = Task {}

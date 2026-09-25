@@ -560,15 +560,18 @@ public enum VoiceProfileService {
     public static func recognitionAllowed(store: SpeakerProfileStore = SpeakerProfileStore()) -> Bool {
         do {
             guard try store.load().rememberVoices else { return false }
+            // One read of the journal for all three questions: this runs on every reload of a meeting's labels and
+            // every export, and asking them separately read and decoded the same file up to four times.
+            //
             // A forget whose store write is done but whose meetings are not cleaned yet (a crash, or a meeting
             // that could not be written) leaves recognition results naming people it was meant to remove, and
             // `resumePendingForgets` finishes them in the background. Until it does, those results are not used:
-            // a name the user asked Holos to forget must not be shown or exported in the meantime.
-            let unfinished = try store.pendingForgets().filter { $0.kind != .merge }
-            guard try unfinished.allSatisfy({ try store.forgetIsCleaned($0.id) }) else { return false }
-            // A line this build cannot read may be a newer Holos's unfinished forget: it cannot be resumed here,
-            // and until a build that can read it does, its meetings may still name someone it removed.
-            return try !store.forgetJournalHasUnreadableLines()
+            // a name the user asked Holos to forget must not be shown or exported in the meantime. A line this
+            // build cannot read may be a newer Holos's unfinished forget, which it can neither resume nor account
+            // for.
+            let forgets = try store.forgetState()
+            guard !forgets.unreadable else { return false }
+            return forgets.pending.allSatisfy { $0.kind == .merge || forgets.isCleaned($0.id) }
         } catch {
             log.error("Cannot read whether voices are remembered: \(ProcessSpawner.logCategory(error), privacy: .public)")
             return false
