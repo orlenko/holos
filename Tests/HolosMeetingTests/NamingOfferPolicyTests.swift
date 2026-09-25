@@ -52,6 +52,25 @@ private func offerSummary(_ name: String, labelledHoursAgo: Double? = 1, edited:
     #expect(NamingOfferPolicy.offer([older, relabelled], dismissed: [latest.id: runID], now: offerNow) == relabelled)
 }
 
+/// Labels are saved to the whole second: meetings labelled in the same second are all the latest, so naming or
+/// dismissing one of them leaves the offer on another, whatever their IDs.
+@Test func namingOfferAmongLabelsOfTheSameSecondSkipsEditedAndDismissed() {
+    let first = offerSummary("first", labelledHoursAgo: 1)
+    let second = offerSummary("second", labelledHoursAgo: 1)
+    let (lower, higher) = first.id < second.id ? (first, second) : (second, first)
+    #expect(NamingOfferPolicy.offer([higher, lower], dismissed: [:], now: offerNow) == lower, "Ties go by ID.")
+    var named = lower
+    named.hasSpeakerEdits = true
+    #expect(NamingOfferPolicy.offer([named, higher], dismissed: [:], now: offerNow) == higher)
+    #expect(NamingOfferPolicy.offer([lower, higher], dismissed: [lower.id: lower.runID ?? ""], now: offerNow) == higher)
+    var bothNamed = higher
+    bothNamed.hasSpeakerEdits = true
+    #expect(NamingOfferPolicy.offer([named, bothNamed], dismissed: [:], now: offerNow) == nil)
+    // An older unedited meeting is still not brought up.
+    let older = offerSummary("older", labelledHoursAgo: 5)
+    #expect(NamingOfferPolicy.offer([older, named, bothNamed], dismissed: [:], now: offerNow) == nil)
+}
+
 @Test func dismissedOffersAreKeptForListedMeetingsOnly() {
     let listed = offerSummary("listed")
     let dismissed = [listed.id: "run-1", "deleted": "run-2"]

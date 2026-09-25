@@ -5803,7 +5803,8 @@ meetings with liveness exited or dead whose labels are ready and were made in th
 (`SessionSummary.labelsReadyAt`, the head run's `createdAt`), the one labelled last is offered,
 unless its speakers were edited or the user opened the offer for that run (UserDefaults
 `meeting.namingOffersDismissed`, session ID → run ID; another run of the meeting is offered
-again). It is derived on launch, when a followed recording finishes, and whenever the app's use
+again). `createdAt` is saved to the whole second, so meetings labelled in the same second are
+all the latest: the first of them by ID that is neither edited nor dismissed is offered. It is derived on launch, when a followed recording finishes, and whenever the app's use
 of a meeting ends (`endUsing`: a Meetings command, the interrupted prompt's Recover, Clean Up,
 Save Transcript As…, the automatic relabel), so a meeting labelled after Holos quit, by a
 command in a terminal, or by any of those paths is offered, also after a relaunch. Each change
