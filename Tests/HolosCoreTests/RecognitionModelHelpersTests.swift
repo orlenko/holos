@@ -73,3 +73,31 @@ import Testing
     let empty = result.retargetProfiles([:])
     #expect(!empty)
 }
+
+@Test func retargetingKeepsTheStrongerTierAtTheSameDistance() throws {
+    let model = EmbeddingModelID(id: "fake", revision: "1")
+    let thresholds = RecognitionThresholds(likelyMaxDistance: 0.2, likelyMinMargin: 0.1, possibleMaxDistance: 0.4,
+                                           minSampleSeconds: 20)
+    var result = RecognitionResult(
+        runID: "R1", embeddingModel: model, thresholds: thresholds,
+        matches: [SpeakerMatch(speakerID: "mic:S1", profileID: "A", profileName: "Al", distance: 0.30,
+                               tier: .possible),
+                  SpeakerMatch(speakerID: "mic:S1", profileID: "B", profileName: "Bea", distance: 0.30,
+                               tier: .likely)])
+
+    let changed = result.retargetProfiles(["A": "B"])
+
+    #expect(changed)
+    #expect(result.matches.count == 1)
+    #expect(result.matches.first?.tier == .likely,
+            "Nearer first, then the stronger tier: the meeting keeps its automatic name, not a suggestion.")
+    // And the other way round, so the order the matches arrive in does not decide it.
+    var reversed = RecognitionResult(
+        runID: "R1", embeddingModel: model, thresholds: thresholds,
+        matches: [SpeakerMatch(speakerID: "mic:S1", profileID: "B", profileName: "Bea", distance: 0.30,
+                               tier: .likely),
+                  SpeakerMatch(speakerID: "mic:S1", profileID: "A", profileName: "Al", distance: 0.30,
+                               tier: .possible)])
+    _ = reversed.retargetProfiles(["A": "B"])
+    #expect(reversed.matches.first?.tier == .likely)
+}

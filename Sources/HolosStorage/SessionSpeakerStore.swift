@@ -252,6 +252,31 @@ public enum SessionSpeakerStore {
         return try SessionArchive.withSpeakerLock(at: session, purge)
     }
 
+    /// Removes the leftovers of an interrupted atomic write from a meeting's `speakers/recognition` folder:
+    /// regular files named `.<token>.tmp`, which `AtomicFile` publishes through and unlinks itself, but which a
+    /// kill between their fsync and their rename leaves behind. Nothing else clears that folder, so a caller that
+    /// refuses to act while it holds an entry it does not know would otherwise wait for one for ever. The caller
+    /// holds the meeting's speaker lock, so no recognition write is in flight and such a file belongs to nobody.
+    /// Returns whether anything was removed.
+    @discardableResult
+    public static func purgeRecognitionLeftovers(session: URL) throws -> Bool {
+        try SessionLockFile.requireSessionFolder(session)
+        let folder = SessionPaths.recognitionDirectory(session)
+        guard let entries = try AtomicFile.listFolder(folder) else { return false }
+        var removed = false
+        for entry in entries where entry.type == S_IFREG && isAtomicWriteLeftover(entry.name) {
+            _ = try AtomicFile.removeTree(["speakers", "recognition", entry.name], in: session)
+            removed = true
+        }
+        return removed
+    }
+
+    /// `.<token>.tmp`, the name `AtomicFile` gives the file it writes before renaming it into place.
+    static func isAtomicWriteLeftover(_ name: String) -> Bool {
+        guard name.hasPrefix("."), name.hasSuffix(".tmp") else { return false }
+        return SessionArchive.validToken(String(name.dropFirst().dropLast(4)))
+    }
+
     private static func speakerFiles(in folder: URL, session: URL) throws -> (runIDs: [String], other: Bool) {
         try SessionLockFile.requireSessionFolder(session)
         guard let entries = try AtomicFile.listFolder(folder) else { return ([], false) }

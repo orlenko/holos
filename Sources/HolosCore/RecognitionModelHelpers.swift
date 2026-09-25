@@ -51,8 +51,10 @@ extension RecognitionResult {
         for var match in matches {
             match.profileID = to[match.profileID] ?? match.profileID
             if let at = kept.firstIndex(where: { $0.speakerID == match.speakerID && $0.profileID == match.profileID }) {
-                if (match.distance, match.tier == .likely ? 1 : 0)
-                    < (kept[at].distance, kept[at].tier == .likely ? 1 : 0) {
+                // Nearer first, then the stronger tier: an automatic name beats a suggestion at the same distance,
+                // so `likely` sorts before `possible` and must therefore rank lower here.
+                if (match.distance, match.tier == .likely ? 0 : 1)
+                    < (kept[at].distance, kept[at].tier == .likely ? 0 : 1) {
                     kept[at] = match
                 }
             } else {

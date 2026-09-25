@@ -307,20 +307,23 @@ public struct SpeakerProfileStore: Sendable {
         }
     }
 
-    /// Whether the journal holds a line this build cannot read: damaged, or written by a newer Holos (a newer
-    /// schema version, or a forget kind this build does not know). Such a line may be an unfinished forget, which
-    /// this build can neither resume nor account for, so callers that must not act while one is outstanding
-    /// (`VoiceProfileService.recognitionAllowed`) treat it as pending.
+    /// Whether the journal holds a record this build cannot read: one written by a newer Holos (a newer schema
+    /// version, or a forget kind this build does not know). Such a record may be an unfinished forget, which this
+    /// build can neither resume nor account for, so callers that must not act while one is outstanding
+    /// (`VoiceProfileService.recognitionAllowed`) treat it as pending. A damaged or torn line is not one: it was
+    /// never finished being written, and a tombstone is written before its forget changes anything.
     public func forgetJournalHasUnreadableLines() throws -> Bool {
         guard let data = try AtomicFile.readIfPresent(forgetJournalURL, maxBytes: Self.maxJournalBytes) else {
             return false
         }
-        let (lines, torn) = JournalLines.split(data)
-        if torn { return true }
         let decoder = HolosJSON.decoder()
-        return lines.contains { line in
-            guard let version = SchemaVersion.probe(line),
-                  SchemaVersion.readable(version, current: ForgetRecord.currentSchemaVersion),
+        // A line with no usable schema version is not one of these: a tombstone is appended before its store
+        // write, so a line that never finished being written belongs to a forget that changed nothing, and a torn
+        // tail is the same. Counting those would hold voice suggestions back for ever over a crash that removed
+        // nothing, with nothing any build could do about it.
+        return JournalLines.split(data).lines.contains { line in
+            guard let version = SchemaVersion.probe(line), version >= 1 else { return false }
+            guard SchemaVersion.readable(version, current: ForgetRecord.currentSchemaVersion),
                   (try? decoder.decode(ForgetRecord.self, from: line)) != nil else { return true }
             return false
         }
@@ -342,7 +345,9 @@ public struct SpeakerProfileStore: Sendable {
     /// Under `profiles.lock`, rewrites the journal without its finished tombstones (removing it when nothing is
     /// left), so it does not grow without bound. A readable tombstone with its `done` line, its `stored` line, a
     /// `stored` line whose tombstone is gone (unless some line here cannot be read, when that tombstone may be one
-    /// of them), a torn last line, and a damaged line (not a JSON object with a schema version) are dropped. A line this build cannot read because it
+    /// of them), a torn last line, and a damaged line (not a JSON object with a schema version) are dropped. A
+    /// damaged line carries no forget: a tombstone is appended before its store write, so one that never finished
+    /// being written belongs to a forget that changed nothing. A line this build cannot read because it
     /// comes from a newer Holos (a newer schema version, or a kind this build does not know) is kept byte for byte,
     /// and so is a `done` line that finishes none of the readable tombstones (it may finish one of those lines), so a
     /// newer Holos's pending forget is never destroyed (§1.6 rule 5).
@@ -353,6 +358,8 @@ public struct SpeakerProfileStore: Sendable {
             }
             let decoder = HolosJSON.decoder()
             // Damaged lines (not a JSON object with a usable schemaVersion, such as a torn line) are dropped.
+            // Nothing is lost with them: a tombstone is appended before its store write, so a line that never
+            // finished being written belongs to a forget that never changed anything.
             let lines = JournalLines.split(data).lines.filter { line in
                 guard let version = SchemaVersion.probe(line) else { return false }
                 return version >= 1

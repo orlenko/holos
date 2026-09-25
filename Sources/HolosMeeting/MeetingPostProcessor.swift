@@ -234,7 +234,10 @@ public struct MeetingPostProcessor: Sendable {
     private func aForgetIsStillCleaning() -> Bool {
         guard let profiles else { return false }
         guard let pending = try? profiles.pendingForgets() else { return true }
-        return pending.contains { $0.kind != .merge }
+        if pending.contains(where: { $0.kind != .merge }) { return true }
+        // A forget of a newer Holos is not in that list: this build cannot decode its line, and that build can
+        // scrub this meeting and finish while this pass runs.
+        return (try? profiles.forgetJournalHasUnreadableLines()) ?? true
     }
 
     private func labelSpeakers(session: URL, manifest: SessionManifest, transcript: Transcript,

@@ -356,16 +356,26 @@ public enum VoiceProfileService {
             }
             return
         }
-        guard (info.st_mode & S_IFMT) == S_IFREG else { return }
+        // A manifest that is there but is not a file is damage, not an absent one: the meeting is left pending.
+        guard (info.st_mode & S_IFMT) == S_IFREG else {
+            throw HolosError.invalidInput("A meeting's manifest.json is not a regular file.")
+        }
         _ = try SessionArchive.readManifest(at: session)
         let hadRecognition = try SessionArchive.withSpeakerLock(at: session) { () throws -> Bool in
             let to = Self.mergedOnwards(from, in: try store.load())
             guard to != from else { return false }
             let map = [from: to]
             let files = try SessionSpeakerStore.recognitionFiles(session: session)
-            // An entry this build does not know may be a recognition result of a newer Holos that still names the
+            // A kill during an atomic write leaves one of Holos's own `.<token>.tmp` files behind, and nothing
+            // else clears this folder; without this the merge would wait for it for ever. No recognition write is
+            // in flight under this lock, so such a file belongs to nobody.
+            var unknown = files.other
+            if unknown, try SessionSpeakerStore.purgeRecognitionLeftovers(session: session) {
+                unknown = try SessionSpeakerStore.recognitionFiles(session: session).other
+            }
+            // An entry this build still does not know may be a recognition result of a newer Holos that names the
             // person merged away. A merge deletes nothing, so the meeting is left for a build that can read it.
-            guard !files.other else {
+            guard !unknown else {
                 throw HolosError.unavailable("This meeting holds recognition results a newer Holos wrote; they are "
                                              + "left as they are until that Holos runs.")
             }
@@ -376,11 +386,12 @@ public enum VoiceProfileService {
             }
             return !files.runIDs.isEmpty
         }
-        var generated = stat()
-        guard hadRecognition, lstat(SessionPaths.generatedExports(session).path, &generated) == 0,
-              (generated.st_mode & S_IFMT) == S_IFREG else { return }
+        guard hadRecognition, try hasGeneratedExports(session) else { return }
+        // "Remember voices" alone, for the same reason as a forget's rewrite: this meeting's results are correct
+        // by now, and an unrelated unfinished forget must not cost it every automatic name for good.
+        let remembers = (try? store.load().rememberVoices) ?? false
         try SessionExports.regenerate(session: session, profileNames: profileNames(store: store),
-                                      applyRecognition: recognitionAllowed(store: store))
+                                      applyRecognition: remembers)
     }
 
     /// `holos people calibrate --apply`: computes the thresholds inside the store's locked update, from the samples
@@ -494,13 +505,23 @@ public enum VoiceProfileService {
     /// logged, never thrown: this is launch housekeeping. Returns how many were removed.
     @discardableResult
     public static func removeAbandonedProvisionalPeople(store: SpeakerProfileStore = SpeakerProfileStore(),
-                                                        now: Date = Date()) -> Int {
+                                                        now: Date = Date(),
+                                                        sessionsRoot: URL = HolosPaths.sessions) -> Int {
         do {
+            let candidates = try store.load().profiles.filter { profile in
+                profile.provisional == true && profile.samples.isEmpty
+                    && now.timeIntervalSince(profile.createdAt) > abandonedProvisionalAge
+            }.map(\.id)
+            guard !candidates.isEmpty else { return 0 }
+            // The flag can outlive a link whose lines were saved: the write that clears it is a write of its own,
+            // and a crash between the two leaves it set. A meeting that links the person is the authority, so it
+            // is read before anything is removed. Nothing is usually a candidate, so this costs nothing usually.
+            let linked = linkedAnywhere(candidates, sessionsRoot: sessionsRoot)
             return try store.update { database in
                 let before = database.profiles.count
                 database.profiles.removeAll { profile in
-                    profile.provisional == true && profile.samples.isEmpty
-                        && now.timeIntervalSince(profile.createdAt) > abandonedProvisionalAge
+                    candidates.contains(profile.id) && !linked.contains(profile.id)
+                        && profile.provisional == true && profile.samples.isEmpty
                 }
                 let removed = before - database.profiles.count
                 if removed > 0 {
@@ -512,6 +533,24 @@ public enum VoiceProfileService {
             log.error("Cannot take back people a link never finished creating: \(ProcessSpawner.logCategory(error), privacy: .public)")
             return 0
         }
+    }
+
+    /// Which of `profileIDs` some meeting's saved labels link to. A meeting whose labels cannot be read counts
+    /// every candidate as linked: with the labels unreadable, removing a person they may name is the worse guess.
+    private static func linkedAnywhere(_ profileIDs: [String], sessionsRoot: URL) -> Set<String> {
+        let wanted = Set(profileIDs)
+        var found = Set<String>()
+        guard let sessions = try? sessionFolders(sessionsRoot) else { return wanted }
+        for session in sessions {
+            guard let journal = try? SessionSpeakerStore.readEdits(session: session) else { return wanted }
+            for edit in journal.edits {
+                if case .linkProfile(_, let profileID) = edit.action, wanted.contains(profileID) {
+                    found.insert(profileID)
+                }
+            }
+            if found == wanted { return found }
+        }
+        return found
     }
 
     /// Finishes every forget a crash left pending (app launch; the start of every `holos people`, `speakers`, and

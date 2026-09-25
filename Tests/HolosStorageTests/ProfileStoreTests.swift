@@ -450,3 +450,23 @@ func lockedReadHoldsTheLockUntilItsWriteIsDone() throws {
     #expect(try store.storedForget(future)?.profileID == "JIM", "And so is its stored line.")
     #expect(!text.contains(mine.id), "This build's own finished forget goes, stored line and all.")
 }
+
+@Test func aTornForgetLineIsNotAnUnfinishedForget() throws {
+    let root = try profileRoot()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let store = SpeakerProfileStore(directory: root.appendingPathComponent("Speakers"))
+    // One ordinary record first, so the folder and the journal exist.
+    try store.appendForgetRecord(ForgetRecord(kind: .all, sampleIDs: []))
+    #expect(try !store.forgetJournalHasUnreadableLines())
+
+    // A tombstone whose append never finished, with a line after it. It is written before the forget changes
+    // anything, so it belongs to a forget that removed nothing and nothing waits on it.
+    try AtomicFile.append(Data(#"{"schemaVersion":1,"id":"TORN""#.utf8), to: store.forgetJournalURL)
+    try store.appendForgetRecord(ForgetRecord(kind: .sample, sampleIDs: ["A"], sessionIDs: ["S"]))
+    #expect(try !store.forgetJournalHasUnreadableLines())
+
+    // A complete record of a newer Holos is one: it may have removed something, and this build cannot finish it.
+    let newerKind = Data(#"{"schemaVersion":1,"id":"KIND","kind":"device","state":"pending"}"#.utf8)
+    try AtomicFile.append(newerKind + Data([0x0A]), to: store.forgetJournalURL)
+    #expect(try store.forgetJournalHasUnreadableLines())
+}
