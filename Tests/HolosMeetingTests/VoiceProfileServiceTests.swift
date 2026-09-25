@@ -2825,3 +2825,32 @@ func aMergeWaitsForAForgetThisBuildCannotRead() async throws {
     }
     #expect(try store.load().profiles.count == 2, "Nothing moved between them.")
 }
+
+@Test(.timeLimit(.minutes(1)))
+func forgettingAPersonLeavesASpeakerTheUserSaidIsNotThem() async throws {
+    let temp = try TemporaryDirectory("profiles")
+    defer { temp.remove() }
+    let store = profileStore(temp)
+    try store.update { $0.rememberVoices = true }
+    let (session, record) = try await profileProcessedSession(in: temp, store: nil, forceVoiceData: true)
+    let runID = try #require(record.runID)
+    try store.update { $0.profiles = [profilePerson("JIM", "Jim", vector: profileAxis(0))] }
+    // The meeting named mic:S2 as Jim automatically, and the user said it is not him.
+    try SessionArchive.withSpeakerLock(at: session) {
+        try SessionSpeakerStore.writeRecognition(
+            RecognitionResult(runID: runID, embeddingModel: profileModel,
+                              thresholds: SpeakerRecognizer.defaultThresholds,
+                              matches: [SpeakerMatch(speakerID: "mic:S2", profileID: "JIM", profileName: "Jim",
+                                                     distance: 0.05, tier: .likely)]),
+            session: session)
+    }
+    _ = try VoiceProfileService.reject(session: session, speakerID: "mic:S2", profileID: "JIM",
+                                       view: try profileView(session, store: store), store: store)
+
+    try VoiceProfileService.forget(profileID: "JIM", store: store, sessionsRoot: temp.url)
+
+    let voice = try #require(try SessionSpeakerStore.readVoiceData(runID: runID, session: session))
+    #expect(voice.centroids["mic:S2"] != nil,
+            "The user said that speaker is not Jim, so their voice data is not Jim's to remove.")
+    #expect(try store.pendingForgets().isEmpty)
+}

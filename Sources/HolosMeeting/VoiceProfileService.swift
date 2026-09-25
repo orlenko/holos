@@ -1266,23 +1266,23 @@ public enum VoiceProfileService {
                     let moved = Self.mergedOnwards(linked, in: database)
                     return moved == profileID || !known.contains(moved)
                 }
-                // Read before the matches are scrubbed: a speaker the meeting names only through a match has no
-                // link, so the labels alone would not know it is this person's and its voiceprints would stay
-                // behind a finished forget.
-                var matched: Set<String> = []
-                if kind == .profile {
-                    matched = try matchedSpeakers(isThePerson, files: recognition, session: session)
-                    _ = try removeMatches(isThePerson, files: recognition, session: session)
-                }
+                // The voice data goes first, while the recognition results are still there: a speaker the meeting
+                // names only through a `likely` match has no link, and the labels alone would not know whose it
+                // is. Each run is read with its own result, so the projection applies that run's matches, its
+                // rejections and its links, and says who each speaker is now.
                 let voice = try SessionSpeakerStore.voiceDataFiles(session: session)
                 if voice.other {
                     log.error("Deleted a meeting's voice data that holds unexpected files")
                     try SessionSpeakerStore.deleteVoiceData(session: session)
                 } else {
                     for runID in voice.runIDs {
-                        guard try removeVoiceEntries(isThePerson, alsoTheirs: matched, runID: runID,
-                                                     session: session) else { break }
+                        guard try removeVoiceEntries(isThePerson, runID: runID, session: session,
+                                                     forgotten: kind == .profile ? profileID : nil,
+                                                     names: database) else { break }
                     }
+                }
+                if kind == .profile {
+                    _ = try removeMatches(isThePerson, files: recognition, session: session)
                 }
                 return !recognition.runIDs.isEmpty || recognition.other
             }
@@ -1331,26 +1331,13 @@ public enum VoiceProfileService {
                                       applyRecognition: database.rememberVoices)
     }
 
-    /// The meeting's speakers that a recognition result names as the person: a `likely` match, which the meeting
-    /// shows as that name, across every result in `files`. A meeting can name somebody that way alone, with no
-    /// link and so nothing in the labels to say whose speaker it is; the voice data of those speakers is theirs
-    /// too and goes with them. A `possible` match is only a suggestion and names nobody.
-    /// A result that cannot be read contributes nothing here and is deleted by `removeMatches` instead.
-    private static func matchedSpeakers(_ isThePerson: (String?) -> Bool, files: (runIDs: [String], other: Bool),
-                                        session: URL) throws -> Set<String> {
-        var speakers: Set<String> = []
-        for runID in files.runIDs {
-            guard let result = try? SessionSpeakerStore.readRecognition(runID: runID, session: session) else {
-                continue
-            }
-            // Only a `likely` match, which the meeting shows as the person's name. A `possible` one is a
-            // suggestion Holos offers and the user has not taken: the speaker may well be somebody else, and
-            // their voice data is not this person's to remove.
-            for match in result.matches where match.tier == .likely && isThePerson(match.profileID) {
-                speakers.insert(match.speakerID)
-            }
-        }
-        return speakers
+    /// A file written by a newer Holos (`unavailable`), which `SessionFiles.isDamage` leaves out so that nothing
+    /// overwrites it. Voice data is the one place that is not enough: its owner cannot be told without those
+    /// labels, and leaving it would keep a person's voiceprints behind a finished forget, so it goes with the rest.
+    /// A transient failure (`io`) is not this and still propagates, so the forget waits and tries again.
+    private static func isFromANewerHolos(_ error: any Error) -> Bool {
+        if case .unavailable? = error as? HolosError { return true }
+        return false
     }
 
     /// Removes every reference to the person (`isThePerson`: matches, merge suggestions, skipped people; one helper,
@@ -1391,8 +1378,9 @@ public enum VoiceProfileService {
     /// read in full (a damaged, newer, or torn journal line may be the person's link), so the person's entries cannot
     /// be told apart, the meeting's voice data is deleted instead. Returns false once the voice data was deleted (the
     /// other runs have nothing left).
-    private static func removeVoiceEntries(_ isThePerson: (String?) -> Bool, alsoTheirs: Set<String> = [],
-                                           runID: String, session: URL) throws -> Bool {
+    private static func removeVoiceEntries(_ isThePerson: (String?) -> Bool, runID: String, session: URL,
+                                           forgotten: String? = nil,
+                                           names: SpeakerProfileDatabase = SpeakerProfileDatabase()) throws -> Bool {
         let read: SessionVoiceData?
         do {
             read = try SessionSpeakerStore.readVoiceData(runID: runID, session: session)
@@ -1412,14 +1400,34 @@ public enum VoiceProfileService {
                 try SessionSpeakerStore.deleteVoiceData(session: session)
                 return false
             }
+            // The run's own result, so a speaker this meeting names automatically counts as that person, while a
+            // "Not Jim", a link to somebody else and an explicit name all take it back, exactly as the meeting
+            // shows it. A result that cannot be read leaves that undecidable, so the voice data goes.
+            var recognition: RecognitionResult?
+            if forgotten != nil {
+                do {
+                    recognition = try SessionSpeakerStore.readRecognition(runID: runID, session: session)
+                } catch {
+                    log.error("Deleted a meeting's voice data whose recognition result cannot be read")
+                    try SessionSpeakerStore.deleteVoiceData(session: session)
+                    return false
+                }
+            }
+            // The forgotten person is out of the store by now, so their name is put back for this reading only:
+            // `SpeakerProjection` applies a match only for a person it has a name for.
+            var profileNames = Dictionary(names.profiles.map { ($0.id, $0.displayName) },
+                                          uniquingKeysWith: { first, _ in first })
+            if let forgotten { profileNames[forgotten] = profileNames[forgotten] ?? "(forgotten)" }
             projection = SpeakerProjection.make(run: run, transcript: transcript, edits: journal.edits,
-                                                recognition: nil, profileNames: [:])
-        } catch let error where SessionFiles.isDamage(error) {
+                                                recognition: recognition, profileNames: profileNames)
+        } catch let error where SessionFiles.isDamage(error) || Self.isFromANewerHolos(error) {
             log.error("Deleted a meeting's voice data whose speaker labels cannot be read")
             try SessionSpeakerStore.deleteVoiceData(session: session)
             return false
         }
-        let speakers = projection.speakers.filter { isThePerson($0.profileID) || alsoTheirs.contains($0.id) }
+        // The effective person, not just the link: a speaker this meeting names automatically is theirs too, and
+        // a rejection, a link to somebody else or an explicit name has already taken that back.
+        let speakers = projection.speakers.filter { isThePerson($0.effectiveProfileID) }
         let speakerIDs = Set(speakers.map(\.id))
         let clusters = Set(speakers.flatMap(\.clusterIDs))
         let spoken = projection.turns.filter { $0.speakerID.map(speakerIDs.contains) ?? false }

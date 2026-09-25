@@ -3437,12 +3437,15 @@ public struct SpeakerProfileDatabase: Codable, Sendable, Equatable {
     because a merge moves the samples and leaves the meeting's link as it was — unless
     `mergedInto` says where that person went and they are still there, which means a merge
     is retargeting its meetings and those links are somebody else's.
-  - A meeting can name somebody through a `likely` recognition match alone, with no link,
-    so the labels say nothing about whose speaker it is. Those speakers are read before the
-    matches are scrubbed and their centroids and turn embeddings go with the person, or a
-    finished forget would leave their voiceprints on disk. A `possible` match is only a
-    suggestion the user has not taken: that speaker may be somebody else, and their voice
-    data stays.
+  - Whose a speaker is, for the voice data, is `ProjectedSpeaker.effectiveProfileID`: the
+    linked person, else the one a `likely` match named automatically. So a meeting that
+    names somebody through a match alone still gives up their voiceprints, and a "Not Jim",
+    a link to somebody else or an explicit name takes that back, without the forget
+    repeating any of those rules. The voice data is therefore cleaned before the matches
+    are scrubbed, and each run is read with its own result, since a speaker ID means
+    something only inside its run. A result that cannot be read leaves the question
+    undecidable, so that meeting's voice data goes; so do labels written by a newer Holos,
+    which is the one place `unavailable` is not a reason to keep a file.
   - The `stored` line also records the person the meetings are cleaned of: for a `.sample`
     or `.profile` forget, the person the store write found the listed samples under, which
     a merge may have changed since the tombstone was written. Cleaning with the tombstone's
