@@ -215,9 +215,10 @@ Hardware-facing and cross-app acceptance remain pending.
   into terminals and web or other editors without a direct Accessibility write, only
   while the same field keeps focus. Secure fields and Secure Keyboard Entry are refused.
   It never synthesizes Return and never pastes. Text it could not write (target
-  changed, safety check failed, unverified write, forced stop) is copied to the
-  clipboard right away, overwriting it, and also kept for Copy Result or Discard; see
-  [dictation validation](dictation-validation.md). Dictation audio is not saved.
+  changed, safety check failed, unverified write, forced stop) is kept for Copy Result
+  or Discard in the menu; it is never put on the clipboard automatically, since
+  dictation can be sensitive. See [dictation validation](dictation-validation.md).
+  Dictation audio is not saved.
 - Dictation text is cleaned before it is written: filler words are removed (English and
   French lists; off in Setup), then learned corrections are applied. **Correct Last
   Dictation…** learns word swaps from the user's edits, and the Corrections window adds,
@@ -353,8 +354,8 @@ Still requiring real-machine or user-data validation:
   selected-text replacement depends on each app's writable text-field support.
   The app is neither auto-installed nor a login item. Right Option is reserved
   while the user enables that shortcut; unrelated typing cancels dictation and
-  may be consumed until the key is released. The clipboard is overwritten when text
-  could not be written, and when Copy Result or Copy Original is chosen.
+  may be consumed until the key is released. The clipboard is written only when the
+  user chooses Copy Result or Copy Original.
 - Speaker names and edits: labels are "Speaker N" until named in the review window or
   with `voiceislocal speakers`. The review window has no redo, and its undo does not reach past
   a relabel (Find More Speakers keeps names, not turn-level changes). Find More Speakers is
