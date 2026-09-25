@@ -203,13 +203,13 @@ public final class AudioCapture {
                 configurationObserver = NotificationCenter.default.addObserver(
                     forName: .AVAudioEngineConfigurationChange, object: audioEngine, queue: .main) { [weak self] _ in
                     MainActor.assumeIsolated {
-                        guard let self, self.restartInPlace(recording: recorded, followsDefault: pinned == nil,
-                                                            sampleRate: sampleRate, channels: channels) else {
-                            receiver.fail(CaptureInterruption.configurationChanged)
-                            return
-                        }
-                        // The next buffer starts a new anchor: sample times may restart with the engine.
-                        timeline.withLock { $0 = MicrophoneTimeline(sampleRate: sampleRate) }
+                        // Before the engine starts again, so its first buffer already starts a new anchor: sample
+                        // times may restart with the engine. A failed restart fails the capture anyway.
+                        let restarted = self?.restartInPlace(
+                            recording: recorded, followsDefault: pinned == nil, sampleRate: sampleRate,
+                            channels: channels,
+                            beforeStart: { timeline.withLock { $0 = MicrophoneTimeline(sampleRate: sampleRate) } })
+                        if restarted != true { receiver.fail(CaptureInterruption.configurationChanged) }
                     }
                 }
             }
@@ -297,7 +297,7 @@ public final class AudioCapture {
     /// the same. False, for the caller to report the change, when something did change, the engine cannot start, or
     /// such restarts come too often.
     private func restartInPlace(recording device: InputDevice?, followsDefault: Bool, sampleRate: Double,
-                                channels: AVAudioChannelCount) -> Bool {
+                                channels: AVAudioChannelCount, beforeStart: () -> Void) -> Bool {
         guard let engine, let device else { return false }
         let devices = BuiltInMicrophone.devices()
         // A pinned input must still exist; an input that follows the default (including the built-in microphone
@@ -309,6 +309,7 @@ public final class AudioCapture {
         let now = Self.hostSeconds()
         inPlaceRestarts = inPlaceRestarts.filter { now - $0 < Self.inPlaceRestartWindow }
         guard inPlaceRestarts.count < Self.inPlaceRestartLimit else { return false }
+        beforeStart()
         do { try engine.start() } catch { return false }
         inPlaceRestarts.append(now)
         return true
