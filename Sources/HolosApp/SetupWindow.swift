@@ -158,7 +158,7 @@ final class SetupWindow: NSObject, NSWindowDelegate {
         previewToggle.target = self
         previewToggle.action = #selector(buttonPressed(_:))
         previewToggle.tag = SetupAction.togglePreview.rawValue
-        previewToggle.toolTip = "When off, text just streams into the field. Problems that need you (text left on the clipboard, a failed dictation) are always shown."
+        previewToggle.toolTip = "When off, text just streams into the field. Problems that need you (text that could not be written, a failed dictation) are always shown."
 
         aiFixToggle.target = self
         aiFixToggle.action = #selector(buttonPressed(_:))

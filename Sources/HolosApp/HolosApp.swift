@@ -71,9 +71,9 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
     private var typedAppName: String?
     /// A streamed write may have landed without being confirmed; the result must not claim it failed.
     private var streamUnverified = false
-    /// The app or field changed during the utterance; ⌘V now would paste somewhere else.
+    /// The app or field changed during the utterance; pasting Copy Result now would land somewhere else.
     private var targetMoved = false
-    /// Where the user was at key-down, to check before telling them to paste.
+    /// Where the user was at key-down, to check before telling them where to paste Copy Result.
     private var originPID: pid_t?
     private var originFocus: AXUIElement?
     private var previewOpacity: Double {
@@ -84,7 +84,7 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
     /// The overlay content token of the opacity sample currently on screen, if any.
     private var sampleToken: Int?
     /// When false, the preview is hidden during dictation and for results that went in fine; anything that
-    /// needs the user (text left on the clipboard, failures) is still shown.
+    /// needs the user (text that could not be written, failures) is still shown.
     private var showPreview: Bool {
         get { UserDefaults.standard.object(forKey: "showPreview") as? Bool ?? true }
         set { UserDefaults.standard.set(newValue, forKey: "showPreview") }
@@ -194,6 +194,19 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
 
     private var shortcutTitle: String { shortcut == .rightOption ? "Right Option" : "Control–Option–Space" }
 
+    /// Copy Result, Copy Original and Discard Result for the last dictation.
+    private func addResultItems(to menu: NSMenu) {
+        let copy = item("Copy Result", #selector(copyResult))
+        copy.isEnabled = !resultText.isEmpty
+        menu.addItem(copy)
+        if !resultOriginal.isEmpty {
+            menu.addItem(item("Copy Original (As Heard)", #selector(copyOriginal)))
+        }
+        let discard = item("Discard Result", #selector(discardResult))
+        discard.isEnabled = !resultText.isEmpty && !isBusy
+        menu.addItem(discard)
+    }
+
     func rebuildMenu() {
         guard statusItem != nil else { return }
         let menu = NSMenu()
@@ -201,8 +214,10 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
         menu.delegate = self
         addMeetingItems(to: menu)
         if meeting.dictationPaused {
-            // A meeting is recording: this line replaces the whole dictation block (§4.12).
+            // A meeting is recording: this line replaces the dictation block (§4.12), except a result kept from
+            // before the meeting, which stays reachable because nothing copies it to the clipboard on its own.
             addDictationPausedLine(to: menu)
+            if !resultText.isEmpty || !resultOriginal.isEmpty { addResultItems(to: menu) }
         } else {
             let status = NSMenuItem(title: message, action: nil, keyEquivalent: "")
             status.isEnabled = false
@@ -228,15 +243,7 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
             let cancel = item("Cancel Dictation", #selector(cancelDictation))
             cancel.isEnabled = isBusy
             menu.addItem(cancel)
-            let copy = item("Copy Result", #selector(copyResult))
-            copy.isEnabled = !resultText.isEmpty
-            menu.addItem(copy)
-            if !resultOriginal.isEmpty {
-                menu.addItem(item("Copy Original (As Heard)", #selector(copyOriginal)))
-            }
-            let discard = item("Discard Result", #selector(discardResult))
-            discard.isEnabled = !resultText.isEmpty && !isBusy
-            menu.addItem(discard)
+            addResultItems(to: menu)
             menu.addItem(item("Correct Last Dictation…", #selector(showCorrections)))
         }
         menu.addItem(.separator())
@@ -547,20 +554,14 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
             if let unwritten, let rest = attempted, !unwritten.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 // Keep the leading space so pasting after the inserted prefix does not join words.
                 resultText = insertedText.isEmpty ? rest.trimmingCharacters(in: .whitespaces) : rest
-                let copied = copyToClipboard(resultText)
+                // Never written to the clipboard on its own (it may hold something sensitive); Copy Result has it.
                 if streamUnverified {
                     // An unconfirmed write may already have landed; pasting blindly could duplicate it.
-                    message += copied
-                        ? " Some text may already be in the field — check it before pasting the clipboard."
-                        : " Some text may already be in the field — check it before using Copy Result."
+                    message += " Some text may already be in the field — check it before using Copy Result."
                 } else if focusMovedSinceKeyDown() {
-                    message += copied
-                        ? " The words that were not inserted are on the clipboard — go back to the original field before pressing ⌘V."
-                        : " Copy Result has the words that were not inserted; return to the original field first."
+                    message += " Copy Result has the words that were not inserted; return to the original field first."
                 } else {
-                    message += copied
-                        ? " The words that were not inserted are on the clipboard — press ⌘V."
-                        : " Copy Result has the words that were not inserted."
+                    message += " Copy Result has the words that were not inserted."
                 }
                 overlay.show(title: message, text: resultText, attention: true)
                 scheduleExpiry()
@@ -718,7 +719,7 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
     }
 
     /// `fixed` is the on-device fix of the part not yet written, written in its place; when it cannot be written,
-    /// Copy Result and the clipboard get it instead of the recognized text. True when the whole transcript is now
+    /// Copy Result gets it instead of the recognized text. True when the whole transcript is now
     /// in the target.
     @discardableResult
     private func finish(_ text: String, into destination: Destination?, writing fixed: String? = nil) -> Bool {
@@ -774,7 +775,8 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
         return targetMoved ? .targetChanged(reason) : .needsCopy(reason)
     }
 
-    /// Text that could not be written goes to the clipboard right away, so it is one ⌘V from the field.
+    /// Text that could not be written is kept for Copy Result in the menu. It is never put on the clipboard on its
+    /// own: dictated text can be sensitive (even a password), so only the user's Copy Result or Copy Original does.
     private func conclude(_ outcome: InsertionOutcome, unwritten: String, partial: Bool) {
         switch outcome {
         case .inserted, .typed:
@@ -783,27 +785,25 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
             log.notice("Not written: \(reason, privacy: .public)")
             resultNeedsAttention = true
             resultText = unwritten
-            let copied = copyToClipboard(unwritten)
             let moved: Bool = if case .targetChanged = outcome { true } else { focusMovedSinceKeyDown() }
             if moved {
                 let head = partial ? "Inserted the first part; then the app or field changed."
                                    : "The app or field changed before Voice is Local could write."
-                message = copied ? "\(head) Copied to the clipboard — go back to the original field before pressing ⌘V."
-                                 : "\(head) Use Copy Result after returning to the original field."
+                message = "\(head) Use Copy Result after returning to the original field."
                 return
             }
             let head: String = if case .unverified = outcome {
-                "Insertion unverified — check the field before pasting."
+                "Insertion unverified — check the field before using Copy Result."
             } else if partial {
                 "Inserted the first part; couldn't write the rest."
             } else {
                 "Couldn't write into this field."
             }
-            message = copied ? "\(head) Copied to the clipboard — press ⌘V." : "\(head) Use Copy Result."
+            message = "\(head) Use Copy Result."
         }
     }
 
-    /// Checked at the moment Holos suggests ⌘V, so a focus change inside the same app counts too.
+    /// Checked when the result message is written, so a focus change inside the same app counts too.
     private func focusMovedSinceKeyDown() -> Bool {
         if targetMoved { return true }
         if NSWorkspace.shared.frontmostApplication?.processIdentifier != originPID { return true }
