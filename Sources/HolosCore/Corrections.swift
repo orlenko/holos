@@ -69,6 +69,17 @@ public struct CorrectionList: Codable, Sendable, Equatable {
     }
 
     public func apply(to text: String) -> String {
+        apply(to: text) { _ in true }
+    }
+
+    /// Like `apply`, but only rewrites matches that overlap `ranges` (UTF-16), leaving text elsewhere as it is:
+    /// for text that already had corrections applied and was then partly changed, so each word is corrected once.
+    public func apply(to text: String, onlyTouching ranges: [NSRange]) -> String {
+        guard !ranges.isEmpty else { return text }
+        return apply(to: text) { match in ranges.contains { NSIntersectionRange($0, match).length > 0 } }
+    }
+
+    private func apply(to text: String, where permitted: (NSRange) -> Bool) -> String {
         guard !entries.isEmpty, let pattern = matcher() else { return text }
         let replacements = Dictionary(entries.map { (Self.normalized($0.heard), $0) },
                                       uniquingKeysWith: { _, last in last })
@@ -77,7 +88,7 @@ public struct CorrectionList: Codable, Sendable, Equatable {
         var cursor = 0
         for match in pattern.matches(in: text, range: NSRange(location: 0, length: source.length)) {
             let found = source.substring(with: match.range)
-            guard let entry = replacements[Self.normalized(found)] else { continue }
+            guard permitted(match.range), let entry = replacements[Self.normalized(found)] else { continue }
             var meant = entry.meant
             // A capital the saved phrase lacks came from sentence position, so carry it over; a saved
             // capital ("Mac OS" → "macOS") means the lowercase replacement is deliberate.

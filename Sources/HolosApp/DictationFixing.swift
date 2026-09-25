@@ -48,6 +48,9 @@ final class DictationFixPipeline {
     /// The chunks written so far, as recognized and as written.
     private(set) var writtenOriginal = ""
     private(set) var written = ""
+    /// The closing mark the model added to the last chunk written, held back in case more followed. When the
+    /// recognizer committed the whole dictation before release, that chunk ended it, so the mark is written then.
+    private(set) var withheldClosing: String?
     /// Set once the key is released, while the last chunks are fixed and written; dictation counts as busy.
     var finishing = false
 
@@ -84,7 +87,7 @@ final class DictationFixPipeline {
     }
 
     /// Fixes the text after the last chunk, at the end of the dictation.
-    func fix(_ text: String, isFinal: Bool) async -> String {
+    func fix(_ text: String, isFinal: Bool) async -> TranscriptFixer.Result {
         let started = ContinuousClock.now
         let result = await fixer.fix(text, isFinal: isFinal)
         let elapsed = started.duration(to: .now)
@@ -94,7 +97,14 @@ final class DictationFixPipeline {
             \(elapsed.components.seconds * 1000 + elapsed.components.attoseconds / 1_000_000_000_000_000) ms, \
             \(AIFixGuard.words(in: text).count) words\(isFinal ? ", final" : "", privacy: .public)
             """)
-        return result.text
+        return result
+    }
+
+    /// Records text written after the last chunk: its fix at release, or the closing mark held back from it.
+    func didWrite(_ chunk: String, as text: String) {
+        writtenOriginal += chunk
+        written += text
+        withheldClosing = nil
     }
 
     /// Returns once every queued chunk has been written or dropped.
@@ -114,16 +124,16 @@ final class DictationFixPipeline {
         while !stopped, !pending.isEmpty {
             let chunk = pending.joined()
             pending.removeAll()
-            let text = await fix(chunk, isFinal: false)
+            let result = await fix(chunk, isFinal: false)
             guard !stopped else { break }
-            guard deliver(chunk, text) else {
+            guard deliver(chunk, result.text) else {
                 // Streaming stopped (the app or field changed, for example): nothing more is written.
                 stopped = true
                 pending.removeAll()
                 break
             }
-            writtenOriginal += chunk
-            written += text
+            didWrite(chunk, as: result.text)
+            withheldClosing = result.withheldClosing
         }
         worker = nil
     }

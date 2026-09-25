@@ -28,6 +28,9 @@ public struct TranscriptFixer: Sendable {
         public var outcome: Outcome
         /// Why the guard refused the reply, for logging; never the text itself.
         public var rejection: AIFixGuard.Rejection?
+        /// The closing mark (".", "!", "?") the model added to a chunk fixed with `isFinal: false`, held back
+        /// because the chunk might end mid-sentence. If nothing follows the chunk, the caller appends it.
+        public var withheldClosing: String?
     }
 
     /// Longer chunks are not sent: the edit limits stop meaning "a few misheard words".
@@ -64,12 +67,20 @@ public struct TranscriptFixer: Sendable {
         case .timedOut: return Result(text: chunk, outcome: .timedOut)
         case .failed: return Result(text: chunk, outcome: .failed)
         }
-        let edited = AIFixGuard.keepingEdges(of: core, in: AIFixGuard.sanitized(reply, for: core), isFinal: isFinal)
-        // Learned corrections win over the model, as they do over the recognizer.
-        let fixed = corrections.apply(to: edited)
+        let tidied = AIFixGuard.sanitized(reply, for: core)
+        let edited = AIFixGuard.keepingEdges(of: core, in: tidied, isFinal: isFinal)
+        // Learned corrections win over the model, as they do over the recognizer. The chunk already had them
+        // applied, so only words the model changed are corrected: a second pass over the rest would chain
+        // rules ("foo" → "bar", then "bar" → "baz").
+        let fixed = corrections.apply(to: edited, onlyTouching: AIFixGuard.changedWordRanges(from: core, to: edited))
+        // A closing mark held back from a chunk that ends mid-sentence, in case it turns out to end the dictation.
+        let closing: String? = if !isFinal, let mark = tidied.last, AIFixGuard.closingMarks.contains(mark),
+                                  edited.last != mark, core.last?.isLetter == true || core.last?.isNumber == true {
+            String(mark)
+        } else { nil }
         switch AIFixGuard.check(original: core, fixed: fixed) {
-        case .accept: return Result(text: leading + fixed + trailing, outcome: .fixed)
-        case .unchanged: return Result(text: chunk, outcome: .unchanged)
+        case .accept: return Result(text: leading + fixed + trailing, outcome: .fixed, withheldClosing: closing)
+        case .unchanged: return Result(text: chunk, outcome: .unchanged, withheldClosing: closing)
         case .reject(let why): return Result(text: chunk, outcome: .rejected, rejection: why)
         }
     }
@@ -209,11 +220,39 @@ public enum AIFixGuard {
                 text = head.lowercased() + text.dropFirst()
             }
         }
-        let closing: Set<Character> = [".", "!", "?"]
-        if !isFinal, let last = text.last, closing.contains(last), let end = original.last, !closing.contains(end) {
+        if !isFinal, let last = text.last, closingMarks.contains(last), let end = original.last,
+           !closingMarks.contains(end) {
             text.removeLast()
+            // A comma or other mark the model turned into a period stays as it was.
+            if !(end.isLetter || end.isNumber), text.last != end { text.append(end) }
         }
         return text
+    }
+
+    static let closingMarks: Set<Character> = [".", "!", "?"]
+
+    /// UTF-16 ranges of the words in `edited` that are not in `original`, by a longest common subsequence of
+    /// words compared case-insensitively; punctuation and case changes alone do not count.
+    public static func changedWordRanges(from original: String, to edited: String) -> [NSRange] {
+        let before = words(in: original)
+        let spans = edited.ranges(of: /[\p{L}\p{N}'’]+/)
+        let after = spans.map { edited[$0].lowercased().replacingOccurrences(of: "’", with: "'") }
+        guard !after.isEmpty else { return [] }
+        var table = Array(repeating: Array(repeating: 0, count: after.count + 1), count: before.count + 1)
+        for i in stride(from: before.count - 1, through: 0, by: -1) {
+            for j in stride(from: after.count - 1, through: 0, by: -1) {
+                table[i][j] = before[i] == after[j] ? table[i + 1][j + 1] + 1 : max(table[i + 1][j], table[i][j + 1])
+            }
+        }
+        var changed: [NSRange] = []
+        var i = 0, j = 0
+        while j < after.count {
+            if i < before.count, before[i] == after[j] { i += 1; j += 1; continue }
+            if i < before.count, table[i + 1][j] >= table[i][j + 1] { i += 1; continue }
+            changed.append(NSRange(spans[j], in: edited))
+            j += 1
+        }
+        return changed
     }
 
     /// Words (letters, digits, apostrophes), lowercased, with typographic apostrophes made plain.

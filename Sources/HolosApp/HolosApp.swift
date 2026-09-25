@@ -100,7 +100,8 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
     }
     /// Fixes each chunk with Apple's on-device model before it is written (Setup option); nil when off.
     private var fixPipeline: DictationFixPipeline?
-    /// The last result as recognized, when the on-device fix changed what was written; for Copy Original.
+    /// The recognizer's text for the last result (before filler removal, corrections and the on-device fix), kept
+    /// when the fix changed what was written; for Copy Original.
     private var resultOriginal = ""
     var corrections = CorrectionList()
     /// False when an existing corrections file could not be read, so it is never overwritten.
@@ -221,7 +222,7 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
             copy.isEnabled = !resultText.isEmpty
             menu.addItem(copy)
             if !resultOriginal.isEmpty {
-                menu.addItem(item("Copy Original (Before Apple Intelligence Fix)", #selector(copyOriginal)))
+                menu.addItem(item("Copy Original (As Heard)", #selector(copyOriginal)))
             }
             let discard = item("Discard Result", #selector(discardResult))
             discard.isEnabled = !resultText.isEmpty && !isBusy
@@ -455,7 +456,8 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
             if let pipeline = fixPipeline {
                 // Earlier chunks may still be waiting for their fix; the target stays until they are written.
                 pipeline.finishing = true
-                Task { [weak self] in await self?.finishFixing(text, with: pipeline) }
+                let heard = update.text.trimmingCharacters(in: .whitespacesAndNewlines)
+                Task { [weak self] in await self?.finishFixing(text, heard: heard, with: pipeline) }
                 break
             }
             let destination = target
@@ -566,15 +568,20 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
 
     /// The end of a dictation with on-device fixing: waits for the chunks still being fixed, fixes the rest, then
     /// finishes as without it. Cancelling or disabling dictation meanwhile drops the pipeline and ends this.
-    private func finishFixing(_ text: String, with pipeline: DictationFixPipeline) async {
+    /// `heard` is the recognizer's text before filler removal and corrections, for Copy Original.
+    private func finishFixing(_ text: String, heard: String, with pipeline: DictationFixPipeline) async {
         await pipeline.idle()
         guard fixPipeline === pipeline else { return }
         var fixedRest: String?
-        if enabled, insertionBlockReason == nil, target != nil,
-           let rest = TextInsertion.unwritten(text, after: insertedText),
-           !rest.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            fixedRest = await pipeline.fix(rest, isFinal: true)
-            guard fixPipeline === pipeline else { return }
+        let writable = enabled && insertionBlockReason == nil && target != nil
+        if writable, let rest = TextInsertion.unwritten(text, after: insertedText) {
+            if !rest.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                fixedRest = await pipeline.fix(rest, isFinal: true).text
+                guard fixPipeline === pipeline else { return }
+            } else if let closing = pipeline.withheldClosing, writeFixed("", as: closing) {
+                // Everything was committed before release, so the last chunk ended the dictation after all.
+                pipeline.didWrite("", as: closing)
+            }
         }
         fixPipeline = nil
         let destination = target
@@ -584,8 +591,8 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
         let fixed = pipeline.written + (fixedRest ?? rest)
         if written, fixed != text {
             resultText = fixed
-            resultOriginal = text
-            message += " Apple Intelligence fixed misheard words; Copy Original has them as heard."
+            resultOriginal = heard
+            message += " Apple Intelligence fixed misheard words; Copy Original has what was heard."
         }
         presentResult()
         rebuildMenu()
@@ -839,7 +846,7 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
     @objc private func copyOriginal() {
         guard !resultOriginal.isEmpty else { return }
         let copied = copyToClipboard(resultOriginal)
-        show(copied ? "Copied the text as heard, before the fix" : "Clipboard write failed; the original is still available")
+        show(copied ? "Copied the text as heard, before any fixes" : "Clipboard write failed; the original is still available")
     }
 
     @objc private func discardResult() {

@@ -147,6 +147,45 @@ private func fixer(corrections: CorrectionList = CorrectionList(), timeout: Dura
     #expect(seenInstructions.withLock { $0 }.contains("get hub -> GitHub"))
 }
 
+@Test func fixerCorrectsOnlyWordsTheModelChanged() async {
+    // A valid chain: "foo" was already corrected to "bar" before the chunk reached the fixer.
+    let chain = CorrectionList(entries: [Correction(heard: "foo", meant: "bar"), Correction(heard: "bar", meant: "baz")])
+    let echo = await fixer(corrections: chain) { _, prompt in String(prompt.dropFirst(6)) }
+        .fix("I said bar", isFinal: true)
+    #expect(echo == .init(text: "I said bar", outcome: .unchanged))
+    let punctuated = await fixer(corrections: chain) { _, _ in "I said bar, then left." }
+        .fix("I said bar then left", isFinal: true)
+    #expect(punctuated == .init(text: "I said bar, then left.", outcome: .fixed))
+    // A word the model introduced gets one pass of the rules, like recognized text does.
+    let introduced = await fixer(corrections: chain) { _, _ in "I said foo" }.fix("I said fool", isFinal: true)
+    #expect(introduced == .init(text: "I said bar", outcome: .fixed))
+}
+
+@Test func correctionsCanBeLimitedToChangedRanges() {
+    let list = CorrectionList(entries: [Correction(heard: "get hub", meant: "GitHub")])
+    let text = "get hub and get hub"
+    #expect(list.apply(to: text, onlyTouching: [NSRange(location: 12, length: 3)]) == "get hub and GitHub")
+    #expect(list.apply(to: text, onlyTouching: []) == text)
+    #expect(AIFixGuard.changedWordRanges(from: "When a press escape", to: "when I press escape,")
+        == [NSRange(location: 5, length: 1)])
+    #expect(AIFixGuard.changedWordRanges(from: "a b c", to: "a b c d").map(\.location) == [6])
+    #expect(AIFixGuard.changedWordRanges(from: "a b c", to: "a c").isEmpty)
+}
+
+@Test func fixerHoldsBackAClosingMarkForAChunkThatMayContinue() async {
+    let fix = fixer { _, _ in "They're going to review it tomorrow." }
+    let middle = await fix.fix(" their going to review it tomorrow", isFinal: false)
+    #expect(middle == .init(text: " they're going to review it tomorrow", outcome: .fixed, withheldClosing: "."))
+    let last = await fix.fix(" their going to review it tomorrow", isFinal: true)
+    #expect(last == .init(text: " they're going to review it tomorrow.", outcome: .fixed))
+    // Only the period was added: the chunk is unchanged, but the mark is still offered.
+    let period = await fixer { _, _ in "All good here." }.fix("all good here", isFinal: false)
+    #expect(period == .init(text: "all good here", outcome: .unchanged, withheldClosing: "."))
+    // A comma the model turned into a period stays a comma, and nothing is held back.
+    let comma = await fixer { _, _ in "Wait for me." }.fix("wait for me,", isFinal: false)
+    #expect(comma == .init(text: "wait for me,", outcome: .unchanged))
+}
+
 @Test func fixerSkipsLongOrWordlessChunksWithoutAskingTheModel() async {
     let calls = Mutex(0)
     let fix = fixer { _, prompt in
