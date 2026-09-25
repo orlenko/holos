@@ -3413,6 +3413,20 @@ public struct SpeakerProfileDatabase: Codable, Sendable, Equatable {
     remembering back on or take a sample learned since. A crash between the store write
     and its `stored` line makes the next run sweep once more, which forgets slightly more
     than it had to, never less.
+  - A `cleaned` line follows, once every meeting's voice data and recognition results are
+    done and only some meeting's exported transcript is still owed. Nothing Holos reads
+    names the forgotten person from then on, so `recognitionAllowed` stops waiting on that
+    tombstone: a meeting whose manifest cannot be read keeps its forget pending for a
+    readable one without suppressing voice suggestions everywhere in the meantime.
+  - Every forget's store write bumps `SpeakerProfileDatabase.forgetEpoch`, whatever it had
+    left to remove, and `syncSamples` publishes a voice sample only while that counter is
+    the one its plan was made on; the hidden `--voice-data` evaluation pass checks it too,
+    under the speaker lock, before writing a voice file. Comparing the samples cannot see a
+    forget when the person had none from this meeting either way, which is exactly a first
+    enrollment. A refresh that loses the race says nothing; a voice the user asked to learn
+    is reported as not saved and is not tried again, since a retry would put back what they
+    have just forgotten. `perform` acts only on a tombstone the journal still holds as
+    unfinished, so replaying a finished one changes nothing at all.
   - The `stored` line also records the person the meetings are cleaned of: for a `.sample`
     or `.profile` forget, the person the store write found the listed samples under, which
     a merge may have changed since the tombstone was written. Cleaning with the tombstone's
@@ -3443,7 +3457,9 @@ public struct SpeakerProfileDatabase: Codable, Sendable, Equatable {
   `forgetStaysPendingUntilTheExportsAreRewritten`,
   `forgetDeletesVoiceDataWhoseCentroidStillHoldsAReassignedTurn`,
   `leftoverTemporaryFilesArePurgedFromTheStore`,
-  `compactionKeepsAStoredLineWhoseTombstoneThisBuildCannotRead`.
+  `compactionKeepsAStoredLineWhoseTombstoneThisBuildCannotRead`,
+  `aVoiceForgottenWhileItWasLearnedIsNotPutBack`, `forgetJournalReplayIsIdempotent`,
+  `forgetCleansMeetingsWhoseManifestCannotBeRead`.
 - **A merge takes the meetings with it.** Merging person A into B removes A from the
   store, and a projection drops a recognition match whose person is not in the store, so
   the meetings A's voice was recognised in would lose their automatic name (or
@@ -3460,11 +3476,19 @@ public struct SpeakerProfileDatabase: Codable, Sendable, Equatable {
   nothing is retargeted without it: the record is written before that write, so a merge
   refused there (samples of different speaker models) or lost to a crash leaves a record
   that a resume drops rather than acts on. Which of the two it was comes from the store,
-  not from the missing marker: the merge committed exactly when the source is gone and the
-  target is there, and a resume that finds that state writes the marker the crash cost it
-  and finishes the meetings. Unlike a forget, this never deletes what it
-  cannot read: a meeting whose manifest is unreadable is skipped, and a recognition result
-  that cannot be read keeps the record pending for a Holos that can read it. The exports
+  not from the missing marker, and not from the person's absence either: a merge records
+  what it did in the same write that removes the person
+  (`SpeakerProfileDatabase.mergedInto`, source ID -> target ID), because a forget or
+  another merge leaves the same shape behind. A resume that finds its own entry there
+  writes the marker the crash cost it and finishes the meetings. That map is also how the
+  destination is followed onwards (`A -> B` then `B -> C` retargets `A` to `C`, at most
+  `mergeChainLimit` steps and never around a cycle), so only merges that committed are
+  followed; a destination no longer in the store drops the record, and the map is cleared
+  once no merge waits for its meetings. Unlike a forget, this never deletes what it cannot
+  read: a meeting is skipped only when its manifest is absent (ENOENT or ENOTDIR; any other
+  inspection failure keeps the record pending), a recognition folder holding an entry this
+  build does not know keeps it pending too, and a recognition result that cannot be read
+  keeps the record pending for a Holos that can read it. The exports
   of every meeting that has recognition results and generated exports are rewritten, not
   only of those a run changed, since a retry finds them already retargeted. Tests (PR10):
   `mergePointsMeetingsAtThePersonTheyWereMergedInto`,
@@ -3474,7 +3498,11 @@ public struct SpeakerProfileDatabase: Codable, Sendable, Equatable {
   `aMergeStaysPendingWhenAMeetingsRecognitionCannotBeRead`,
   `aMergeStaysPendingUntilTheExportsAreRewritten`,
   `aMergeThatCommittedBeforeItsMarkerIsStillFinished`, `aPersonAMergeAdoptedIsNotRolledBack`,
-  `forgettingAPersonFollowsTheirSamplesThroughAMerge`.
+  `forgettingAPersonFollowsTheirSamplesThroughAMerge`,
+  `aMergeIsNotRecoveredWhenSomethingElseRemovedItsSource`,
+  `aMergeChainFollowsOnlyCommittedMerges`,
+  `aMergeStaysPendingWhenAMeetingHoldsUnknownRecognitionFiles`,
+  `aMergeStaysPendingWhenAMeetingFolderCannotBeInspected`.
 - **A no-op is decided on the current labels, and still finishes what an earlier run
   left.** `SpeakerEditor.applyUnlessUnchanged` makes that decision under the speaker lock,
   and linking, `speakers reject` (`VoiceProfileService.reject`, which returns nil for it)
@@ -3517,11 +3545,14 @@ public struct SpeakerProfileDatabase: Codable, Sendable, Equatable {
   window's Save As, and `VoiceProfileService.reject`, which takes the store for it). Nothing is
   deleted, so turning the setting back on brings the suggestions back. Names are not
   governed by the setting, as they never were. `recognitionAllowed` is also false while
-  any forget other than a merge is unfinished: a crash between a forget's store write and
+  any forget other than a merge has not reached its `cleaned` line, and while the journal
+  holds a line this build cannot read (a newer Holos's forget, which cannot be resumed or
+  accounted for here): a crash between a forget's store write and
   its meetings leaves results naming people it was meant to remove, and
   `resumePendingForgets` clears them in the background, so until it has, those results are
   not shown or exported. Tests (PR10): `keptSamplesAreNotUsedWhileRememberVoicesIsOff`,
-  `recognitionIsNotUsedWhileAForgetIsUnfinished`.
+  `recognitionIsNotUsedWhileAForgetIsUnfinished`,
+  `recognitionIsNotUsedWhileAForgetLineCannotBeRead`.
 - **Enrollment renders are swept.** `DiarizerVoiceSampleExtractor` renders a track to
   `holos-voice-<UUID>` in the temporary directory and deletes it in a `defer`, which a kill
   or a power loss skips; the render is a decoded copy of the meeting's audio, so
