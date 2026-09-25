@@ -5,7 +5,7 @@ import HolosCore
 @testable import HolosStorage
 
 // The processing lease handed from one process to another (docs/meeting-design.md §4.1): `handOff` in the parent,
-// `adoptProcessingLease` in the child (`holos session diarize --lease-fd`), and `withUse`.
+// `adoptProcessingLease` in the child (`voiceislocal session diarize --lease-fd`), and `withUse`.
 
 private func handOffTemporaryRoot() throws -> URL {
     let root = FileManager.default.temporaryDirectory.appendingPathComponent("holos-handoff-\(UUID().uuidString)")
@@ -26,7 +26,7 @@ private func handOffIsCloseOnExec(_ fd: Int32) -> Bool {
 }
 
 /// Spawns `/bin/sleep seconds` with `descriptor` at fd 3 and nothing else inherited, as the in-process recorder
-/// spawns `holos session diarize --lease-fd 3`.
+/// spawns `voiceislocal session diarize --lease-fd 3`.
 private func handOffSpawnSleeper(seconds: String, descriptor: Int32) throws -> pid_t {
     var actions: posix_spawn_file_actions_t?
     posix_spawn_file_actions_init(&actions)

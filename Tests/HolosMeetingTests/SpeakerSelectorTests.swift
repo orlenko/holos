@@ -4,7 +4,7 @@ import HolosMeeting
 import HolosSpeakers
 import Testing
 
-// SpeakerSelector (docs/meeting-design.md §5.7): speakers, turns, and times as typed in `holos speakers` commands.
+// SpeakerSelector (docs/meeting-design.md §5.7): speakers, turns, and times as typed in `voiceislocal speakers` commands.
 // Pure projections built in memory; no files.
 
 private let selectorDate = Date(timeIntervalSince1970: 1_000_000)

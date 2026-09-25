@@ -15,7 +15,7 @@ public protocol VoiceSampleExtractor: Sendable {
     func turnEmbeddings(session: URL, track: String, turns: [TurnRef]) async throws -> [TurnEmbedding]
 }
 
-/// What the hidden `holos speakers embed --json` prints on stdout (a pipe): the embeddings of the requested turns.
+/// What the hidden `voiceislocal speakers embed --json` prints on stdout (a pipe): the embeddings of the requested turns.
 /// Biometric data; it is never written to a file.
 public struct TurnEmbeddingsOutput: Codable, Sendable, Equatable {
     public var schemaVersion: Int
@@ -106,7 +106,7 @@ public struct DiarizerVoiceSampleExtractor: VoiceSampleExtractor {
 
     /// The speaker-count hint post-processing gave the run's pass, so the fresh pass groups speakers the same way:
     /// from meeting.json's expected speakers and the number of tracks the run diarized. A `--speakers` hint given to
-    /// `holos session diarize` is not recorded in the run, so it is not repeated here.
+    /// `voiceislocal session diarize` is not recorded in the run, so it is not repeated here.
     ///
     /// Throws when meeting.json cannot be read. Taking that for "no hint" would let this pass cluster the audio
     /// differently from the one the meeting was labelled with, and nothing downstream would notice: the engine
@@ -188,7 +188,7 @@ public struct DiarizerVoiceSampleExtractor: VoiceSampleExtractor {
 }
 
 /// The app's extractor (§4.10): the app never links FluidAudio, so it runs the bundled hidden
-/// `holos speakers embed <session> --track <t> --turns <id,id,…> --json` and reads the embeddings from its stdout
+/// `voiceislocal speakers embed <session> --track <t> --turns <id,id,…> --json` and reads the embeddings from its stdout
 /// through a pipe (never a file). The child's stderr goes to a private temporary file that is read on failure and
 /// deleted. Cancelling the task stops the child (SIGTERM).
 public struct SubprocessVoiceSampleExtractor: VoiceSampleExtractor {
@@ -199,7 +199,7 @@ public struct SubprocessVoiceSampleExtractor: VoiceSampleExtractor {
     public let executable: URL
     public let temporaryDirectory: URL
 
-    /// `executable` defaults to the bundled `holos` (Holos.app/Contents/MacOS/holos).
+    /// `executable` defaults to the bundled `voiceislocal` (VoiceIsLocal.app/Contents/MacOS/voiceislocal).
     public init(executable: URL = ChildProcessLauncher.bundledExecutable,
                 temporaryDirectory: URL = FileManager.default.temporaryDirectory) {
         self.executable = executable; self.temporaryDirectory = temporaryDirectory
@@ -218,17 +218,17 @@ public struct SubprocessVoiceSampleExtractor: VoiceSampleExtractor {
         let arguments = Self.arguments(session: session, track: track, turnIDs: turns.map(\.id))
         let (code, output, errorText) = try await run(arguments)
         guard code == 0 else {
-            Self.log.error("holos speakers embed exited \(code, privacy: .public)")
-            throw HolosError.unavailable(errorText ?? "The holos tool could not learn this voice (exit \(code)).")
+            Self.log.error("voiceislocal speakers embed exited \(code, privacy: .public)")
+            throw HolosError.unavailable(errorText ?? "The voiceislocal tool could not learn this voice (exit \(code)).")
         }
         let decoded: TurnEmbeddingsOutput
         do {
             decoded = try HolosJSON.decoder().decode(TurnEmbeddingsOutput.self, from: output)
         } catch {
-            throw HolosError.io("The holos tool returned voice data Holos cannot read.")
+            throw HolosError.io("The voiceislocal tool returned voice data Voice is Local cannot read.")
         }
         guard decoded.schemaVersion == 1 else {
-            throw HolosError.unavailable("The holos tool is newer than this Holos; rebuild Holos.")
+            throw HolosError.unavailable("The voiceislocal tool is newer than this app; rebuild Voice is Local.")
         }
         let requested = Set(turns.map(\.id))
         return decoded.turnEmbeddings.filter { requested.contains($0.turnID) }
@@ -238,7 +238,7 @@ public struct SubprocessVoiceSampleExtractor: VoiceSampleExtractor {
     private func run(_ arguments: [String]) async throws -> (code: Int32, output: Data, error: String?) {
         var fds: [Int32] = [-1, -1]
         guard pipe(&fds) == 0 else {
-            throw HolosError.io("Cannot start the holos tool: \(String(cString: strerror(errno))).")
+            throw HolosError.io("Cannot start the voiceislocal tool: \(String(cString: strerror(errno))).")
         }
         let readEnd = fds[0]
         let writeEnd = fds[1]
@@ -269,7 +269,7 @@ public struct SubprocessVoiceSampleExtractor: VoiceSampleExtractor {
                     if let output {
                         continuation.resume(returning: (code, output))
                     } else {
-                        continuation.resume(throwing: HolosError.io("The holos tool returned more voice data than Holos accepts."))
+                        continuation.resume(throwing: HolosError.io("The voiceislocal tool returned more voice data than Voice is Local accepts."))
                     }
                 }
             }

@@ -4,7 +4,7 @@ import Foundation
 /// `FluidInference/speaker-diarization-coreml` at revision `df2625ac79a7ac6b65ad868fee6d80f320da4232`, relative to
 /// `FluidModels.repoFolder(in:)` (docs/meeting-design.md §4.8).
 ///
-/// Recorded on 2026-09-24 with `HOLOS_RECORD_MODEL_MANIFEST=1 holos setup --speakers`. The 22 model artifacts match
+/// Recorded on 2026-09-24 with `HOLOS_RECORD_MODEL_MANIFEST=1 voiceislocal setup --speakers`. The 22 model artifacts match
 /// the SHA-256 and size the repo's own `provenance.json` lists for them; all 24 files, including `config.json` and
 /// `provenance.json` (which `provenance.json` does not list), match the Hugging Face tree API at the pinned revision
 /// (`lfs.oid` for LFS files, the git blob SHA-1 for the others). The `.fluidaudio-revision` marker is checked

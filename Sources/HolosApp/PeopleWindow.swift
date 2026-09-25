@@ -329,7 +329,7 @@ final class PeopleWindowController: NSObject, NSWindowDelegate, NSTableViewDataS
                 + "every meeting?"
             : "Also forget the voice data of every meeting?"
         alert.informativeText = "Names are kept either way. Kept samples are not used while Remember voices is off. "
-            + "Voice data is the per-meeting data Holos keeps for evaluation; a meeting that never contributed a "
+            + "Voice data is the per-meeting data Voice is Local keeps for evaluation; a meeting that never contributed a "
             + "sample can have some too."
         alert.addButton(withTitle: "Forget")
         alert.addButton(withTitle: "Keep")
@@ -381,7 +381,7 @@ final class PeopleWindowController: NSObject, NSWindowDelegate, NSTableViewDataS
         guard let person = selectedPerson else { return }
         let alert = NSAlert()
         alert.messageText = "Forget \(person.displayName)?"
-        alert.informativeText = "Holos forgets this person and their \(person.samples.count) voice "
+        alert.informativeText = "Voice is Local forgets this person and their \(person.samples.count) voice "
             + "\(person.samples.count == 1 ? "sample" : "samples"). Meetings keep the name they were given. This "
             + "cannot be undone."
         alert.addButton(withTitle: "Forget")
@@ -411,8 +411,8 @@ final class PeopleWindowController: NSObject, NSWindowDelegate, NSTableViewDataS
         let samples = database.sampleCount
         let alert = NSAlert()
         alert.messageText = "Forget all voices?"
-        alert.informativeText = "Holos forgets \(samples) voice \(samples == 1 ? "sample" : "samples") and the voice "
-            + "data of every meeting in the Holos sessions folder. People and the names in your meetings stay. This "
+        alert.informativeText = "Voice is Local forgets \(samples) voice \(samples == 1 ? "sample" : "samples") and the voice "
+            + "data of every meeting in the Voice is Local sessions folder. People and the names in your meetings stay. This "
             + "cannot be undone."
         alert.addButton(withTitle: "Forget All Voices")
         alert.addButton(withTitle: "Cancel")

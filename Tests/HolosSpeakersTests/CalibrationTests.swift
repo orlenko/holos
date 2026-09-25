@@ -3,7 +3,7 @@ import Testing
 import HolosCore
 @testable import HolosSpeakers
 
-// RecognitionCalibration (docs/meeting-design.md §4.10 "Calibration", `holos people calibrate`).
+// RecognitionCalibration (docs/meeting-design.md §4.10 "Calibration", `voiceislocal people calibrate`).
 
 private let model = EmbeddingModelID(id: "fake", revision: "1")
 

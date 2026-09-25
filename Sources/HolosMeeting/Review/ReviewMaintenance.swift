@@ -46,9 +46,9 @@ public enum ReviewMaintenance {
         switch command {
         case .deleteMeeting: .close
         case .cleanUp: .unaffected
-        case .recover: .readOnly(banner: "Holos is recovering this meeting.")
-        case .labelSpeakers, .automaticRelabel: .readOnly(banner: "Holos is labelling this meeting's speakers.")
-        case .deleteAudio: .readOnly(banner: "Holos is deleting this meeting's audio.")
+        case .recover: .readOnly(banner: "Voice is Local is recovering this meeting.")
+        case .labelSpeakers, .automaticRelabel: .readOnly(banner: "Voice is Local is labelling this meeting's speakers.")
+        case .deleteAudio: .readOnly(banner: "Voice is Local is deleting this meeting's audio.")
         }
     }
 

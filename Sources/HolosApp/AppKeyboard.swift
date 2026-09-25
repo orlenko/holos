@@ -54,7 +54,7 @@ enum AppKeyboard {
             item.keyEquivalentModifierMask = modifiers
             return item
         }
-        submenu("Holos", [item("Quit Holos", #selector(NSApplication.terminate(_:)), "q")])
+        submenu("Voice is Local", [item("Quit Voice is Local", #selector(NSApplication.terminate(_:)), "q")])
         submenu("Edit", [
             item("Undo", Selector(("undo:")), "z"),
             item("Redo", Selector(("redo:")), "z", [.command, .shift]),

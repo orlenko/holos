@@ -33,7 +33,7 @@ struct Doctor: AsyncParsableCommand {
             sessionsDirectory: HolosPaths.sessions.path,
             speakerModels: speakerModels)
         if json { try Console.json(report); return }
-        Console.output("Holos — local capability report")
+        Console.output("Voice is Local — local capability report")
         Console.output("macOS: \(report.os)")
         Console.output("Microphone: \(report.microphone)")
         Console.output("Screen/system audio permission: \(report.systemAudioPermission ? "granted" : "not granted to this process")")
@@ -47,8 +47,8 @@ struct Doctor: AsyncParsableCommand {
         Console.output("\(locale) configured assets: speech=\(report.speechAssetStatus), dictation=\(report.dictationAssetStatus)")
         Console.output("Sessions: \(report.sessionsDirectory)")
         Console.output("Speaker models: \(speakerModels.summary)")
-        Console.output("Install transcription assets with: holos setup --locale en-CA")
-        if speakerModels != .verified { Console.output("Install speaker models with: holos setup --speakers") }
+        Console.output("Install transcription assets with: voiceislocal setup --locale en-CA")
+        if speakerModels != .verified { Console.output("Install speaker models with: voiceislocal setup --speakers") }
     }
 }
 
@@ -74,7 +74,7 @@ struct Setup: AsyncParsableCommand {
         abstract: "Install Apple's on-device transcription assets for a locale, or the speaker models.",
         discussion: """
             --speakers downloads the speaker-labelling models (about 21 MB, pinned and checked by SHA-256) \
-            into Holos's Application Support folder instead of installing transcription assets. Installed models \
+            into Voice is Local's Application Support folder instead of installing transcription assets. Installed models \
             that are verified and load on this Mac are kept; models that fail either check are downloaded again. \
             --force downloads them again in any case.
             """)
@@ -98,7 +98,7 @@ struct Setup: AsyncParsableCommand {
     }
 }
 
-/// `holos setup --speakers` (docs/meeting-design.md §5.5 PR7a).
+/// `voiceislocal setup --speakers` (docs/meeting-design.md §5.5 PR7a).
 enum SpeakerModelSetup {
     static func run(force: Bool) async throws {
         let directory = FluidModels.defaultDirectory

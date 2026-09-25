@@ -4,7 +4,7 @@ import HolosCore
 /// Matches a run's speakers against the people with voice samples (docs/meeting-design.md §4.10, post-processing
 /// stage 7). Pure: it reads the run's in-memory voice data and the profile database and returns distances only.
 ///
-/// Without calibrated thresholds (`holos people calibrate --apply`) it only suggests names (`possible`, shown as
+/// Without calibrated thresholds (`voiceislocal people calibrate --apply`) it only suggests names (`possible`, shown as
 /// "Maybe Jim — Confirm"); nothing is applied automatically.
 public enum SpeakerRecognizer {
     /// likelyMaxDistance 0 (suggestions only), likelyMinMargin 0.10, possibleMaxDistance from PR7c's

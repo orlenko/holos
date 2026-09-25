@@ -11,7 +11,7 @@ public enum ProfileTarget: Sendable, Equatable { case existing(profileID: String
 /// People and their voices (docs/meeting-design.md §4.10, PR10). The only code that writes profiles and samples.
 ///
 /// Enrollment is asynchronous and the extractor is injected: its real implementations live in
-/// HolosDiarization (CLI) or spawn the bundled `holos` (app), and HolosMeeting cannot import FluidAudio.
+/// HolosDiarization (CLI) or spawn the bundled `voiceislocal` (app), and HolosMeeting cannot import FluidAudio.
 /// `extractor == nil`, `learnVoice == false`, Remember voices off, or deleted audio → the name/link is
 /// recorded and no sample is taken. Journal edits are appended under the speaker lock first; extraction
 /// runs after the lock is released; the sample is upserted under `profiles.lock` last.
@@ -226,7 +226,7 @@ public enum VoiceProfileService {
         // A forget of a newer Holos is not in that list, and it may have listed one of these people: moving a
         // sample between them would put it where the IDs that forget listed will never reach it.
         guard try !store.forgetJournalHasUnreadableLines() else {
-            throw HolosError.unavailable("A newer Holos is forgetting voices; merge these people once it has "
+            throw HolosError.unavailable("A newer version of Voice is Local is forgetting voices; merge these people once it has "
                                          + "finished.")
         }
         let record = ForgetRecord(kind: .merge, profileID: profileID, targetProfileID: target)
@@ -239,7 +239,7 @@ public enum VoiceProfileService {
             // Both questions again, under this write's own hold of the lock: the outer check released it, and a
             // newer Holos can have appended its tombstone in between, readable or not.
             guard try !store.forgetJournalHasUnreadableLines() else {
-                throw HolosError.unavailable("A newer Holos is forgetting voices; merge these people once it has "
+                throw HolosError.unavailable("A newer version of Voice is Local is forgetting voices; merge these people once it has "
                                              + "finished.")
             }
             let fromIndex = try profileIndex(profileID, in: database)
@@ -321,7 +321,7 @@ public enum VoiceProfileService {
         }
         guard failed == 0 else {
             throw HolosError.incomplete("The people were merged, but \(failed) \(failed == 1 ? "meeting" : "meetings") "
-                                        + "could not be updated yet; Holos finishes this next time. Until then they "
+                                        + "could not be updated yet; Voice is Local finishes this next time. Until then they "
                                         + "show no automatic name for that person.")
         }
         try store.appendForgetRecord(.done(record.id))
@@ -384,8 +384,8 @@ public enum VoiceProfileService {
             // An entry this build still does not know may be a recognition result of a newer Holos that names the
             // person merged away. A merge deletes nothing, so the meeting is left for a build that can read it.
             guard !unknown else {
-                throw HolosError.unavailable("This meeting holds recognition results a newer Holos wrote; they are "
-                                             + "left as they are until that Holos runs.")
+                throw HolosError.unavailable("This meeting holds recognition results a newer version of Voice is Local wrote; they are "
+                                             + "left as they are until that version runs.")
             }
             for runID in files.runIDs {
                 guard var result = try SessionSpeakerStore.readRecognition(runID: runID, session: session),
@@ -404,7 +404,7 @@ public enum VoiceProfileService {
                                       applyRecognition: database.rememberVoices)
     }
 
-    /// `holos people calibrate --apply`: computes the thresholds inside the store's locked update, from the samples
+    /// `voiceislocal people calibrate --apply`: computes the thresholds inside the store's locked update, from the samples
     /// present when they are saved (never from an earlier read, which another window or command may have changed by
     /// then), and stores them with the embedding model they were measured on; they apply only to runs of that model.
     /// Refused (`invalidInput`) when the samples come from more than one embedding model, or below the §4.10
@@ -438,7 +438,7 @@ public enum VoiceProfileService {
     /// Said when a change to the voice samples reset the calibration (`SpeakerProfileStore.update` clears it in the
     /// same write that changes the samples).
     public static let calibrationResetNote = "The voice samples changed, so the calibration was reset: new meetings "
-        + "only suggest names, and name nobody automatically, until you calibrate again (holos people calibrate "
+        + "only suggest names, and name nobody automatically, until you calibrate again (voiceislocal people calibrate "
         + "--apply)."
 
     /// `calibrationResetNote` when `before` (read before a change) was calibrated and `after` was reset since then,
@@ -504,7 +504,7 @@ public enum VoiceProfileService {
         }
     }
 
-    /// Finishes every forget a crash left pending (app launch; the start of every `holos people`, `speakers`, and
+    /// Finishes every forget a crash left pending (app launch; the start of every `voiceislocal people`, `speakers`, and
     /// `session` command). Each step is idempotent. When all are finished the journal is compacted. Throws
     /// `HolosError.incomplete` when some meeting could not be cleaned yet (it is retried next time).
     public static func resumePendingForgets(store: SpeakerProfileStore,
@@ -526,7 +526,7 @@ public enum VoiceProfileService {
             }
         }
         guard failed == 0 else {
-            throw HolosError.incomplete("An earlier request to forget voices is not finished yet; Holos retries it "
+            throw HolosError.incomplete("An earlier request to forget voices is not finished yet; Voice is Local retries it "
                                         + "next time.")
         }
         try store.compactForgetJournal()
@@ -603,7 +603,7 @@ public enum VoiceProfileService {
         }
     }
 
-    /// `holos people export`: names and sample metadata as JSON (format `holos-people`), with each sample's embedding
+    /// `voiceislocal people export`: names and sample metadata as JSON (format `holos-people`), with each sample's embedding
     /// only when `includeVoiceprints`.
     public static func exportPeople(store: SpeakerProfileStore, includeVoiceprints: Bool,
                                     now: Date = Date()) throws -> Data {
@@ -805,8 +805,8 @@ public enum VoiceProfileService {
     /// Said when a meeting's edit journal has a torn or unreadable line: no voice is learned from its labels, and its
     /// suggestions are neither shown nor confirmed.
     public static let incompleteEdits = "Some speaker changes in this meeting can't be read (damaged, cut off while "
-        + "saving, or saved by a newer Holos), so Holos doesn't learn voices from it or use its voice suggestions. "
-        + "Its saved voice samples are left as they are. If you use a newer Holos elsewhere, update this one."
+        + "saving, or saved by a newer version of Voice is Local), so Voice is Local doesn't learn voices from it or use its voice suggestions. "
+        + "Its saved voice samples are left as they are. If you use a newer version of Voice is Local elsewhere, update this one."
 
     /// Brings every person's sample from this meeting in step with its labels, and learns samples for `enroll`.
     /// Runs up to `sampleAttempts` times when the labels, or the store's inputs to the plan, change while it works;
@@ -1221,7 +1221,7 @@ public enum VoiceProfileService {
         guard failed == 0, exportsOwed == 0 else {
             let count = failed + exportsOwed
             throw HolosError.incomplete("The voices were forgotten, but \(count) \(count == 1 ? "meeting" : "meetings") "
-                                        + "could not be cleaned up yet; Holos finishes this next time.")
+                                        + "could not be cleaned up yet; Voice is Local finishes this next time.")
         }
         try store.appendForgetRecord(.done(record.id))
         return removed
@@ -1508,7 +1508,7 @@ public enum VoiceProfileService {
 
     private static func profileIndex(_ profileID: String, in database: SpeakerProfileDatabase) throws -> Int {
         guard let index = database.profiles.firstIndex(where: { $0.id == profileID }) else {
-            throw HolosError.invalidInput("There is no person \(profileID); list people with holos people list.")
+            throw HolosError.invalidInput("There is no person \(profileID); list people with voiceislocal people list.")
         }
         return index
     }
@@ -1519,7 +1519,7 @@ public enum VoiceProfileService {
     }
 }
 
-/// `holos people export` (format `holos-people`, schema 1). Embeddings only with `--include-voiceprints`.
+/// `voiceislocal people export` (format `holos-people`, schema 1). Embeddings only with `--include-voiceprints`.
 struct PeopleExport: Encodable {
     struct Sample: Encodable {
         var id: String

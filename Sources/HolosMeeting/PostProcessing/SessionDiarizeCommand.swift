@@ -4,7 +4,7 @@ import HolosSpeakers
 import HolosStorage
 import os
 
-/// What `holos session diarize` does (docs/meeting-design.md §5.5 PR7b), as a library call: the CLI parses its
+/// What `voiceislocal session diarize` does (docs/meeting-design.md §5.5 PR7b), as a library call: the CLI parses its
 /// arguments and prints the outcome, so the lease hand-off, the model check, and the exit status are tested here.
 public enum SessionDiarizeCommand {
     private static let log = Logger(subsystem: "ca.orlenko.holos.app", category: "postprocess")

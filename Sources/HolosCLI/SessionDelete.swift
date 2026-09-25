@@ -5,7 +5,7 @@ import HolosMeeting
 import HolosStorage
 
 extension Session {
-    /// `holos session delete` (docs/meeting-design.md §4.13, §5.6).
+    /// `voiceislocal session delete` (docs/meeting-design.md §4.13, §5.6).
     struct Delete: ParsableCommand {
         static let configuration = CommandConfiguration(
             abstract: "Move a session to the Trash, or with --audio-only delete its audio and keep the rest.",
@@ -13,7 +13,7 @@ extension Session {
                 Without --audio-only the session folder is moved to the Trash (restore it from there) and its \
                 recorder log is deleted. With --audio-only the audio is deleted for good; the transcript, speaker \
                 labels, and exports stay. Either way any stored voice data of the session is deleted. Refused while \
-                the session is recording or another Holos command is working on it. Nothing is deleted without --yes.
+                the session is recording or another Voice is Local command is working on it. Nothing is deleted without --yes.
                 """)
 
         @Argument(help: "Path to a .holos folder, or a session ID.") var path: String

@@ -34,7 +34,7 @@ struct Session: AsyncParsableCommand {
                 Console.output("\(manifest.name) (\(manifest.id)) — \(manifest.status)")
                 Console.output("\(manifest.chunks.count) finalized chunks")
                 if try AudioDeletedRecord.isDeleted(session: fileURL(path), sessionID: manifest.id) {
-                    Console.output("The audio was deleted (holos session delete --audio-only); its chunks are "
+                    Console.output("The audio was deleted (voiceislocal session delete --audio-only); its chunks are "
                         + "expected to be missing.")
                 }
             }

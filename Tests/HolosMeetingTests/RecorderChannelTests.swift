@@ -93,7 +93,7 @@ private func controlFiles(_ session: URL) -> [String] {
                              to: SessionPaths.status(session))
     #expect(RecorderChannel.liveness(session: session) == .maintenance)
     #expect(RecorderChannel.maintenanceOnly(session: session))
-    // `holos record stop` and `stop --no-wait` both publish through `send` first.
+    // `voiceislocal record stop` and `stop --no-wait` both publish through `send` first.
     for command in [ControlCommand.stop, .pause, .marker] {
         do {
             try RecorderChannel.send(command, session: session, sessionID: archive.id, sender: "cli")

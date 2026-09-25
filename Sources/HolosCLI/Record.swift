@@ -184,7 +184,7 @@ struct Record: AsyncParsableCommand {
     struct Stop: AsyncParsableCommand {
         static let configuration = CommandConfiguration(
             abstract: "Ask a running recorder to stop and save, by exact session ID.")
-        @Argument(help: "The session ID from holos record status.") var sessionID: String
+        @Argument(help: "The session ID from voiceislocal record status.") var sessionID: String
         @Option(help: "Session output root.") var directory: String?
         @Flag(help: "Do not wait for the recorder to confirm the request.") var noWait = false
         mutating func run() async throws {

@@ -92,7 +92,7 @@ public enum SpeakerSelector {
         guard let seconds = try? time(query) else {
             if looksLikeTurnID(query) {
                 throw HolosError.invalidInput("There is no turn \(query) in the current speaker labels. "
-                                              + "List them with holos speakers list --turns.")
+                                              + "List them with voiceislocal speakers list --turns.")
             }
             throw HolosError.invalidInput(
                 "“\(query)” is neither a turn ID (T12) nor a time (01:12:03, 12:03.5, or 723.5 seconds).")
@@ -146,7 +146,7 @@ public enum SpeakerSelector {
         return total
     }
 
-    /// The word that starts the second part of a split (`holos speakers split`): the turn's `atWord`-th word
+    /// The word that starts the second part of a split (`voiceislocal speakers split`): the turn's `atWord`-th word
     /// (counting from 1, so at least 2), or, with `at`, the first word that begins at or after that time. Exactly one
     /// of the two is given. Words are the turn's spans in order, timed with `WordTiming.effectiveWords`.
     public static func splitWord(turnID: String, atWord: Int?, at: String?, in projection: SpeakerProjection,

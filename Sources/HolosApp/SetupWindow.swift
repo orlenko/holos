@@ -21,8 +21,8 @@ struct SetupState {
     var message: String
     /// A meeting is recording, so dictation is paused (docs/meeting-design.md §4.12).
     var dictationPausedForMeeting = false
-    /// `holos doctor --json` speakerModels: "verified", "notInstalled", "damaged"; "installing" while
-    /// `holos setup --speakers` runs; "unavailable" when the holos tool cannot run; "unknown" when it ran but did not
+    /// `voiceislocal doctor --json` speakerModels: "verified", "notInstalled", "damaged"; "installing" while
+    /// `voiceislocal setup --speakers` runs; "unavailable" when the voiceislocal tool cannot run; "unknown" when it ran but did not
     /// report them; nil before the first check.
     var speakerModels: String?
     /// Install progress, or the last install's error.
@@ -66,7 +66,7 @@ final class SetupWindow: NSObject, NSWindowDelegate {
         self.perform = perform
         self.onClose = onClose
         super.init()
-        window.title = "Holos Setup"
+        window.title = "Voice is Local Setup"
         window.isReleasedWhenClosed = false
         // An ordinary window: other apps can cover it. It stays open until the user closes it, and while it
         // is open Holos appears in the Dock and Command-Tab so it can be found again (HolosAppDelegate).
@@ -110,9 +110,10 @@ final class SetupWindow: NSObject, NSWindowDelegate {
         messageLabel.font = .systemFont(ofSize: 13)
         messageLabel.preferredMaxLayoutWidth = 500
         let note = NSTextField(wrappingLabelWithString: """
-            This window updates on its own while you change System Settings. After rebuilding Holos, \
-            macOS can keep an old entry that looks switched on but no longer matches the app: select Holos \
-            in that list, remove it with –, then click Open Settings here to add it again.
+            This window updates on its own while you change System Settings. After rebuilding Voice is Local, \
+            macOS can keep an old entry that looks switched on but no longer matches the app: select Voice is Local \
+            in that list, remove it with –, then click Open Settings here to add it again. An entry named Holos \
+            is this app from before it was renamed; remove it the same way.
             """)
         note.font = .systemFont(ofSize: 11)
         note.textColor = .secondaryLabelColor
@@ -179,21 +180,21 @@ final class SetupWindow: NSObject, NSWindowDelegate {
         case "notDetermined":
             set(.microphone, .pending, "Not requested yet — macOS asks once", button: "Request…")
         default:
-            set(.microphone, .problem, "Denied — turn on Holos in System Settings", button: "Open Settings")
+            set(.microphone, .problem, "Denied — turn on Voice is Local in System Settings", button: "Open Settings")
         }
         set(.accessibility, state.accessibility ? .done : .problem,
             state.accessibility ? "Granted — used to insert text into the focused field"
-                                : "Not granted — turn on Holos in System Settings",
+                                : "Not granted — turn on Voice is Local in System Settings",
             button: "Open Settings")
         set(.inputMonitoring, state.inputMonitoring ? .done : .problem,
             state.inputMonitoring ? "Granted — used to detect the hold-to-talk shortcut"
-                                  : "Not granted — turn on Holos in System Settings",
+                                  : "Not granted — turn on Voice is Local in System Settings",
             button: "Open Settings")
         // Optional, so never marked as a problem: only online calls record the computer's audio.
         set(.systemAudio, state.systemAudio ? .done : .pending,
             state.systemAudio ? "Granted — records the other side of online calls"
-                              : "Optional — needed only to record online calls. Turn on Holos under Screen & System "
-                                + "Audio Recording, then quit and reopen Holos.",
+                              : "Optional — needed only to record online calls. Turn on Voice is Local under Screen & System "
+                                + "Audio Recording, then quit and reopen Voice is Local.",
             button: state.systemAudio ? nil : "Open Settings")
 
         let canInstall = !state.installingAssets && !state.busy && !state.dictationEnabled && !state.enabling
@@ -236,10 +237,10 @@ final class SetupWindow: NSObject, NSWindowDelegate {
             set(.speakerModels, .problem, state.speakerModelsDetail.map { "Install failed: \($0)" }
                 ?? "Damaged — install them again", button: install)
         case "unavailable":
-            set(.speakerModels, .problem, "The holos tool is missing from Holos.app; rebuild Holos with scripts/build-app.sh",
+            set(.speakerModels, .problem, "The voiceislocal tool is missing from VoiceIsLocal.app; rebuild Voice is Local with scripts/build-app.sh",
                 button: nil)
         case "unknown":
-            set(.speakerModels, .problem, "Could not check the speaker models; `holos doctor` shows why", button: install)
+            set(.speakerModels, .problem, "Could not check the speaker models; `voiceislocal doctor` shows why", button: install)
         case let other?:
             set(.speakerModels, .problem, "Status unknown (\(other))", button: install)
         case nil:

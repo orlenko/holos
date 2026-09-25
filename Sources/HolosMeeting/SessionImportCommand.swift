@@ -3,9 +3,9 @@ import HolosCore
 import HolosSpeakers
 import HolosStorage
 
-/// What `holos session import` does (docs/meeting-design.md §5.5 PR7c), as a library call: the CLI parses its
+/// What `voiceislocal session import` does (docs/meeting-design.md §5.5 PR7c), as a library call: the CLI parses its
 /// arguments, prints, and handles signals; the import, the labelling under the import's lease, and the exit status
-/// are tested here (as `SessionDiarizeCommand` is for `holos session diarize`).
+/// are tested here (as `SessionDiarizeCommand` is for `voiceislocal session diarize`).
 public enum SessionImportCommand {
     public struct Request: Sendable {
         public var file: URL
@@ -80,12 +80,12 @@ public enum SessionImportCommand {
         } catch is CancellationError {
             return Outcome(session: session, exitCode: 3,
                            summary: "Speaker labelling was cancelled. The imported session is saved; label its "
-                               + "speakers with holos session diarize.",
+                               + "speakers with voiceislocal session diarize.",
                            postProcessing: nil)
         } catch {
             return Outcome(session: session, exitCode: 3,
                            summary: "Speakers were not labelled: \(error.localizedDescription) The imported session "
-                               + "is saved; label its speakers with holos session diarize.",
+                               + "is saved; label its speakers with voiceislocal session diarize.",
                            postProcessing: nil)
         }
     }

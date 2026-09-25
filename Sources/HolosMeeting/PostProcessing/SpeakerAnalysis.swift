@@ -12,9 +12,9 @@ enum SpeakerAnalysis {
 
     // MARK: - Messages (user-facing; never transcript text)
 
-    static let modelsMissing = "Speaker models are not installed. Install them from Setup, or run holos setup --speakers."
-    static let modelsMissingRecord = "No speaker labels: speaker models are not installed. Install them from Setup, or run holos setup --speakers."
-    static let modelsMissingKeptLabels = "Kept the earlier speaker labels: speaker models are not installed. Install them from Setup, or run holos setup --speakers."
+    static let modelsMissing = "Speaker models are not installed. Install them from Setup, or run voiceislocal setup --speakers."
+    static let modelsMissingRecord = "No speaker labels: speaker models are not installed. Install them from Setup, or run voiceislocal setup --speakers."
+    static let modelsMissingKeptLabels = "Kept the earlier speaker labels: speaker models are not installed. Install them from Setup, or run voiceislocal setup --speakers."
     static let editedHead = "Speaker labels were edited; relabel with --force (names carry over)."
     static let noDiskSpace = "Not enough disk space to label speakers. Free some space, then use Label Speakers."
     static let audioDeleted = "The recording's audio was deleted, so speakers can't be labelled."

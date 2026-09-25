@@ -35,15 +35,15 @@ public enum RecorderChannel {
         struct Header: Decodable { var schemaVersion: Int }
         let decoder = HolosJSON.decoder()
         guard let header = try? decoder.decode(Header.self, from: data) else {
-            throw HolosError.invalidInput("status.json is damaged or was not written by Holos.")
+            throw HolosError.invalidInput("status.json is damaged or was not written by Voice is Local.")
         }
         guard header.schemaVersion <= 1 else {
-            throw HolosError.unavailable("status.json was written by a newer Holos; update Holos to read it.")
+            throw HolosError.unavailable("status.json was written by a newer version of Voice is Local; update Voice is Local to read it.")
         }
         do {
             return try decoder.decode(RecorderStatus.self, from: data)
         } catch {
-            throw HolosError.invalidInput("status.json is damaged or was not written by Holos.")
+            throw HolosError.invalidInput("status.json is damaged or was not written by Voice is Local.")
         }
     }
 
@@ -106,7 +106,7 @@ public enum RecorderChannel {
             throw HolosError.unavailable(exitedMessage)
         }
         if maintenanceOnly(session: session) {
-            throw HolosError.unavailable("No recorder is running for this session: another Holos command (recovery, rebuild, speaker labelling, or deletion) is using it. Try again when it finishes.")
+            throw HolosError.unavailable("No recorder is running for this session: another Voice is Local command (recovery, rebuild, speaker labelling, or deletion) is using it. Try again when it finishes.")
         }
         try step?(.checked)
         let request = ControlRequest(sessionID: sessionID, command: command,

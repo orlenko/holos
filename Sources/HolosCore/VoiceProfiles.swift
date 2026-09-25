@@ -103,7 +103,7 @@ public struct SpeakerProfileDatabase: Codable, Sendable, Equatable {
     /// find where its target has gone since, and they are kept: dropping them raced with the next merge's own
     /// commit, and one pair of IDs per merge a user ever makes is a small price for a chain that always resolves.
     public var mergedInto: [String: String]?
-    /// Set by `holos people calibrate --apply`; `likely` exists only when this is set, and only for runs of
+    /// Set by `voiceislocal people calibrate --apply`; `likely` exists only when this is set, and only for runs of
     /// `calibratedModel`.
     public var calibratedThresholds: RecognitionThresholds?
     /// The embedding model `calibratedThresholds` were measured on (distances of different models cannot be
@@ -111,7 +111,7 @@ public struct SpeakerProfileDatabase: Codable, Sendable, Equatable {
     public var calibratedModel: EmbeddingModelID?
     public var profiles: [SpeakerProfile]
     /// When a change to the voice samples last cleared the calibration (`resetCalibrationIfSamplesChanged`); nil
-    /// once `holos people calibrate --apply` saves new thresholds. `holos people list` says the calibration was reset
+    /// once `voiceislocal people calibrate --apply` saves new thresholds. `voiceislocal people list` says the calibration was reset
     /// while this is set and nothing is calibrated.
     public var calibrationResetAt: Date?
 

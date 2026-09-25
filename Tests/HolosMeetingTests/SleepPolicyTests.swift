@@ -538,7 +538,7 @@ extension RecorderEnvironmentLoopTests {
         }
         let run = recorderRecordOnly(temp.url, dependencies)
         #expect(await eventually { (captures.captures.first?.consumedFrames ?? 0) >= 3 })
-        #expect(names.value == ["Holos meeting recording"])
+        #expect(names.value == ["Voice is Local meeting recording"])
         let session = try #require(await recorderSession(in: temp.url))
         #expect(try await recorderSend(.pause, to: session)?.result == .applied)
         #expect(names.value.count == 1, "Paused: no assertion is taken.")

@@ -247,7 +247,7 @@ func snapshotReportsEveryFallback(_ index: Int) async throws {
         #expect(snapshot.run == nil && snapshot.projection == nil)
         #expect(snapshot.diagnostics.notes == [
             "\(problem) Speaker labels were left out, so the exports show the transcript without speakers. Label "
-                + "speakers again with holos session diarize --force \(session.path).",
+                + "speakers again with voiceislocal session diarize --force \(session.path).",
         ])
     }
 }

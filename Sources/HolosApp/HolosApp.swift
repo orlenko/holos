@@ -29,7 +29,7 @@ enum HolosAppMain {
             return
         }
         guard Bundle.main.bundleIdentifier == "ca.orlenko.holos.app" else {
-            fputs("Launch the Holos.app bundle built by scripts/build-app.sh.\n", stderr)
+            fputs("Launch the VoiceIsLocal.app bundle built by scripts/build-app.sh.\n", stderr)
             return
         }
         let siblings = NSRunningApplication.runningApplications(withBundleIdentifier: "ca.orlenko.holos.app")
@@ -130,8 +130,8 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
         }
         controller.contextualStrings = corrections.vocabulary
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-        statusItem.button?.image = NSImage(systemSymbolName: "waveform", accessibilityDescription: "Holos")
-        statusItem.button?.toolTip = "Holos — local push-to-talk"
+        statusItem.button?.image = NSImage(systemSymbolName: "waveform", accessibilityDescription: "Voice is Local")
+        statusItem.button?.toolTip = "Voice is Local — local push-to-talk"
         rebuildMenu()
         AppKeyboard.install { [weak self] in self?.isBusy ?? false }
         let center = NSWorkspace.shared.notificationCenter
@@ -227,9 +227,9 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(item("Setup…", #selector(showSetup)))
         addAboutItem(to: menu)
         menu.addItem(.separator())
-        menu.addItem(item("Quit Holos", #selector(quit)))
+        menu.addItem(item("Quit Voice is Local", #selector(quit)))
         statusItem.menu = menu
-        statusItem.button?.toolTip = meetingToolTip() ?? "Holos — \(message)"
+        statusItem.button?.toolTip = meetingToolTip() ?? "Voice is Local — \(message)"
         updateStatusItemAppearance()
         updateSetupWindow()
     }
@@ -254,8 +254,8 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
         guard !Self.codeSignatureIsIntact() else { return false }
         log.error("Code signature no longer matches the app on disk; dictation paused")
         if enabled || enabling { disable(persist: false) }
-        show("Holos was rebuilt while running. Quit and reopen Holos to dictate again.")
-        overlay.show(title: "Holos was rebuilt while running", text: "Quit and reopen Holos to dictate again.",
+        show("Voice is Local was rebuilt while running. Quit and reopen Voice is Local to dictate again.")
+        overlay.show(title: "Voice is Local was rebuilt while running", text: "Quit and reopen Voice is Local to dictate again.",
                      force: true, attention: true)
         scheduleExpiry()
         return true
@@ -266,7 +266,7 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
         guard !enabled, !enabling, !installingAssets, !meeting.dictationPaused else { return }
         guard !refuseIfReplaced() else { return }
         guard AudioCapture.microphonePermission == "authorized", AXIsProcessTrusted() else {
-            show("Grant Microphone and Accessibility access in Holos Setup, then enable dictation.")
+            show("Grant Microphone and Accessibility access in Voice is Local Setup, then enable dictation.")
             showSetup()
             return
         }
@@ -282,7 +282,7 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
                 self.assetState = state
                 guard state == "installed" else {
                     self.enabling = false
-                    self.show("Install English Speech Assets in Holos Setup first.")
+                    self.show("Install English Speech Assets in Voice is Local Setup first.")
                     self.showSetup()
                     return
                 }
@@ -601,7 +601,7 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
             let moved: Bool = if case .targetChanged = outcome { true } else { focusMovedSinceKeyDown() }
             if moved {
                 let head = partial ? "Inserted the first part; then the app or field changed."
-                                   : "The app or field changed before Holos could write."
+                                   : "The app or field changed before Voice is Local could write."
                 message = copied ? "\(head) Copied to the clipboard — go back to the original field before pressing ⌘V."
                                  : "\(head) Use Copy Result after returning to the original field."
                 return
@@ -696,7 +696,7 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
     @discardableResult
     private func changeCorrections(_ change: (inout CorrectionList) -> Void) -> Bool {
         guard correctionsWritable else {
-            show("Could not read corrections.json; fix or remove it, then relaunch Holos.")
+            show("Could not read corrections.json; fix or remove it, then relaunch Voice is Local.")
             return false
         }
         change(&corrections)
