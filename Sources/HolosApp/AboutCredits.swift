@@ -1,16 +1,16 @@
 import AppKit
+import HolosCore
 
 /// The credits of the About panel (docs/meeting-design.md §4.8): the app has no resource bundle, so the text of
 /// THIRD_PARTY_NOTICES.md's speaker-model section and the FluidAudio line are embedded here.
 enum AboutCredits {
-    /// The notice GPLv3 §5(d) asks an interactive program to show.
-    static let license = """
-        Copyright © 2026 Vlad Orlenko. Voice is Local is free software: you may redistribute and modify it under \
-        the GNU General Public License, version 3 or later. It comes with no warranty. The license is in \
-        VoiceIsLocal.app/Contents/Resources/LICENSE.txt and at https://www.gnu.org/licenses/gpl-3.0.html. \
-        Source code: https://github.com/orlenko/holos. The name and icon are not covered by the license: \
-        https://github.com/orlenko/holos/blob/main/TRADEMARKS.md
-        """
+    /// The notice GPLv3 §5(d) asks an interactive program to show. It points to the LICENSE.txt and TRADEMARKS.md
+    /// the build scripts copy into this bundle, and to the release tag's copies online when the build recorded one.
+    static var license: String {
+        LicenseNotice.text(
+            bundleName: Bundle.main.bundleURL.lastPathComponent,
+            sourceTag: Bundle.main.object(forInfoDictionaryKey: LicenseNotice.sourceTagInfoKey) as? String)
+    }
 
     static let fluidAudio = """
         Speaker labels are made by the bundled voiceislocal tool with FluidAudio 0.17.1 \

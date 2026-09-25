@@ -97,6 +97,20 @@ xcrun notarytool store-credentials voiceislocal-notary --key AuthKey_KEYID.p8 --
 
 ## Each release
 
+Voice is Local is licensed under the GPL, version 3 or later. Every build given or sold to anyone must have its
+exact source available, so a signed release is built only from a clean checkout of a pushed tag:
+
+1. Set the version in `Resources/App-Info.plist` (or pass `VERSION` below), commit, and push.
+2. Tag that commit `v<version>` and push the tag before building:
+
+   ```sh
+   git tag v1.0.0
+   git push origin v1.0.0
+   ```
+
+3. Build from a clean working tree with `HEAD` at that tag (`git status` shows nothing, untracked files included;
+   ignored folders such as `build/` and `.build/` do not count):
+
 ```sh
 DEVELOPER_ID="Developer ID Application: Bjola Software Inc. (TEAMID)" \
 NOTARY_PROFILE=voiceislocal-notary \
@@ -110,26 +124,31 @@ becomes `CFBundleVersion`; raise it with every release. Both can also be passed 
 
 The script:
 
-1. builds `HolosApp` and `voiceislocal` with `swift build -c release` (arm64 only);
-2. assembles `build/release/VoiceIsLocal.app`: `Info.plist` with the version, the icon when
-   `Resources/Icon/VoiceIsLocal.icns` exists, `LICENSE.txt` and `THIRD_PARTY_NOTICES.md` in `Contents/Resources`;
-3. signs inside out with the hardened runtime and a secure timestamp: first `Contents/MacOS/voiceislocal`
+1. checks the source: the working tree is clean (`git status --porcelain --untracked-files=all` is empty), the tag
+   `v<VERSION>` exists and is `HEAD`, and `git ls-remote --tags origin` shows the same tag at the same commit. With
+   `DEVELOPER_ID` set, any failure stops the script; a dry run prints a warning and goes on;
+2. builds `HolosApp` and `voiceislocal` with `swift build -c release` (arm64 only), then checks again that `HEAD`
+   did not move and the tree is still clean;
+3. assembles `build/release/VoiceIsLocal.app`: `Info.plist` with the version and, when the source check passed, the
+   tag as `VoiceIsLocalSourceTag` (the About panel then links the source and `TRADEMARKS.md` at that tag instead of
+   `main`), the icon when `Resources/Icon/VoiceIsLocal.icns` exists, and `LICENSE.txt`, `TRADEMARKS.md`, and
+   `THIRD_PARTY_NOTICES.md` in `Contents/Resources`;
+4. signs inside out with the hardened runtime and a secure timestamp: first `Contents/MacOS/voiceislocal`
    (identifier `ca.orlenko.holos.cli`, `Resources/voiceislocal-cli.entitlements`), then the bundle (identifier
    `ca.orlenko.holos.app`, `Resources/VoiceIsLocal.entitlements`). These are the identifiers of the local builds,
    so preferences and data keyed to the bundle ID carry over;
-4. verifies with `codesign --verify --deep --strict`, prints both binaries' entitlements and linked libraries, and
+5. verifies with `codesign --verify --deep --strict`, prints both binaries' entitlements and linked libraries, and
    fails if either lacks the hardened runtime or links a library outside `/usr/lib` and `/System`;
-5. zips the app, submits it with `notarytool submit --wait`, and staples the ticket to the app, so the copy users
+6. zips the app, submits it with `notarytool submit --wait`, and staples the ticket to the app, so the copy users
    drag out of the DMG opens without a network check;
-6. builds `build/release/VoiceIsLocal-<version>.dmg` (the app, an `Applications` shortcut, the license and notices;
-   compressed UDZO) and signs it;
-7. submits the DMG, staples it, and validates both staples;
-8. runs `spctl --assess` on the app and the DMG, then prints the DMG path and its SHA-256.
+7. builds `build/release/VoiceIsLocal-<version>.dmg` (the app, an `Applications` shortcut, `LICENSE.txt`,
+   `TRADEMARKS.md`, and `THIRD_PARTY_NOTICES.md`; compressed UDZO) and signs it;
+8. submits the DMG, staples it, and validates both staples;
+9. runs `spctl --assess` on the app and the DMG, then prints the DMG path, its SHA-256, and the source tag.
 
-Voice is Local is licensed under the GPL, version 3 or later. Every build given or sold to anyone must have its
-exact source available: push a tag for the release (`git tag v<version> && git push origin v<version>`) before the DMG
-goes out, and keep the repository public. `LICENSE` ships as `LICENSE.txt` in the app and the DMG, and the About panel
-shows the license notice.
+Keep the repository and the release tags public, and never move or delete a tag once its DMG is out. The About panel
+shows the license notice and points to the `LICENSE.txt` and `TRADEMARKS.md` inside the app. The name Voice is Local
+and the icon are not under the GPL: Bjola Software Inc. owns them and grants the permissions in `TRADEMARKS.md`.
 
 A notarization that ends in any status other than Accepted stops the script with the submission ID and the command
 that shows Apple's reasons: `xcrun notarytool log <id> --keychain-profile voiceislocal-notary`. Each submission
@@ -175,8 +194,9 @@ malware scan (notarization).
 
 ## Third-party notices
 
-`THIRD_PARTY_NOTICES.md` and the project `LICENSE` ship in the app (`Contents/Resources`) and at the top of the DMG;
-the script copies them. The `voiceislocal` tool compiles in FluidAudio (Apache 2.0) and the code it bundles, whose
+`THIRD_PARTY_NOTICES.md`, the project `LICENSE` (as `LICENSE.txt`), and `TRADEMARKS.md` ship in the app
+(`Contents/Resources`) and at the top of the DMG; the script copies them. `scripts/build-app.sh` copies the same
+three files into local builds. The `voiceislocal` tool compiles in FluidAudio (Apache 2.0) and the code it bundles, whose
 license texts the notices reproduce. The speaker diarization models are not shipped: `voiceislocal setup --speakers`
 downloads them at runtime from Hugging Face under their own license (CC BY 4.0), and the notices carry their
 attribution. Apple's speech assets are downloaded by macOS. When a dependency or model changes, update

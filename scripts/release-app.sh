@@ -11,12 +11,15 @@
 #                   ad-hoc, for local testing only.
 #   NOTARY_PROFILE  a keychain profile saved with `xcrun notarytool store-credentials`. With DEVELOPER_ID, the app
 #                   and the DMG are notarized and stapled.
+# A signed release (DEVELOPER_ID set) must be built from a clean working tree (no changed or untracked files) whose
+# HEAD is the tag v<VERSION>, pushed to origin at the same commit; otherwise the script stops. A dry run warns and
+# goes on.
 set -eu
 cd "$(dirname "$0")/.."
 
 case "${1:-}" in
     -h|--help)
-        sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//'
+        sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'
         exit 0
         ;;
 esac
@@ -82,6 +85,61 @@ for file in "$app_plist_source" "$app_entitlements" "$cli_entitlements"; do
     plutil -lint "$file" >/dev/null || fail "$file is not a valid property list."
 done
 
+# The GPL requires the exact source of every build given to anyone (docs/release.md). The tag v<VERSION> on origin
+# names that source, so a signed release is built only from a clean checkout of that tag.
+release_tag="v$version"
+source_verified=yes
+source_problem() {
+    # $*: why the build cannot be traced to the pushed tag. Stops a signed release; a dry run warns and goes on.
+    source_verified=no
+    if [ -n "$developer_id" ]; then
+        fail "$* A signed release must be built from a clean checkout of the tag $release_tag, pushed to origin (docs/release.md)."
+    fi
+    printf 'release-app: warning: %s A signed release would stop here.\n' "$*" >&2
+}
+check_clean_tree() {
+    # Ignored files (build/, .build/) are not source; every other change or untracked file could be compiled or shipped.
+    changes=$(git status --porcelain --untracked-files=all)
+    if [ -n "$changes" ]; then
+        printf '%s\n' "$changes" >&2
+        source_problem "The working tree has uncommitted or untracked files (listed above)."
+    fi
+}
+check_source() {
+    if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+        source_problem "This is not a git checkout, so no tag identifies the source."
+        return 0
+    fi
+    check_clean_tree
+    head_commit=$(git rev-parse HEAD)
+    local_commit=$(git rev-parse -q --verify "refs/tags/$release_tag^{commit}" || true)
+    if [ -z "$local_commit" ]; then
+        head_tags=$(git tag --points-at HEAD | tr '\n' ' ')
+        source_problem "There is no tag $release_tag for VERSION $version${head_tags:+ (HEAD is tagged ${head_tags% })}."
+    elif [ "$local_commit" != "$head_commit" ]; then
+        source_problem "The tag $release_tag is commit $local_commit, not HEAD ($head_commit)."
+    fi
+    if ! remote_tags=$(GIT_TERMINAL_PROMPT=0 git ls-remote --tags origin); then
+        source_problem "Could not list the tags on origin."
+        return 0
+    fi
+    # An annotated tag is listed with the commit it points to on its ^{} line; a lightweight tag has only its own line.
+    remote_commit=$(printf '%s\n' "$remote_tags" | awk -v ref="refs/tags/$release_tag^{}" '$2 == ref { print $1 }')
+    if [ -z "$remote_commit" ]; then
+        remote_commit=$(printf '%s\n' "$remote_tags" | awk -v ref="refs/tags/$release_tag" '$2 == ref { print $1 }')
+    fi
+    if [ -z "$remote_commit" ]; then
+        source_problem "The tag $release_tag is not on origin (git push origin $release_tag)."
+    elif [ "$remote_commit" != "$head_commit" ]; then
+        source_problem "The tag $release_tag on origin is commit $remote_commit, not HEAD ($head_commit)."
+    fi
+}
+step "Checking that the tag $release_tag on origin is the source being built"
+check_source
+if [ "$source_verified" = yes ]; then
+    printf 'HEAD %s is %s on origin, and the working tree is clean.\n' "$head_commit" "$release_tag"
+fi
+
 # Replacing the files of a running copy invalidates its signature mid-run. Only the release copy is checked: this
 # script never writes anywhere else.
 if pgrep -f "$app_bundle/Contents/MacOS/" >/dev/null 2>&1; then
@@ -92,6 +150,11 @@ step "Building release products (version $version, build $build_number)"
 swift build -c release --product HolosApp
 swift build -c release --product voiceislocal
 bin_dir=$(swift build -c release --show-bin-path)
+if [ "$source_verified" = yes ]; then
+    # A file changed while the build ran would be in the binaries but not in the tag.
+    [ "$(git rev-parse HEAD)" = "$head_commit" ] || source_problem "HEAD changed during the build."
+    check_clean_tree
+fi
 
 step "Assembling $app_bundle"
 rm -rf "$app_bundle" "$dmg_root" "$dmg" "$app_zip"
@@ -105,8 +168,15 @@ if [ -f "$icon_source" ]; then
 else
     printf 'No %s; the app keeps the generic icon.\n' "$icon_source"
 fi
+if [ "$source_verified" = yes ]; then
+    # The About panel links the license terms and the source at this tag.
+    plutil -replace VoiceIsLocalSourceTag -string "$release_tag" "$app_bundle/Contents/Info.plist"
+fi
 plutil -lint "$app_bundle/Contents/Info.plist"
+# The license, the trademark terms (the name and icon are outside the GPL), and the notices ship in the app; the
+# About panel points to these copies.
 cp LICENSE "$app_bundle/Contents/Resources/LICENSE.txt"
+cp TRADEMARKS.md "$app_bundle/Contents/Resources/TRADEMARKS.md"
 cp THIRD_PARTY_NOTICES.md "$app_bundle/Contents/Resources/THIRD_PARTY_NOTICES.md"
 cp "$bin_dir/HolosApp" "$app_executable"
 cp "$bin_dir/voiceislocal" "$cli_executable"
@@ -186,6 +256,7 @@ mkdir -p "$dmg_root"
 ditto "$app_bundle" "$dmg_root/VoiceIsLocal.app"
 ln -s /Applications "$dmg_root/Applications"
 cp LICENSE "$dmg_root/LICENSE.txt"
+cp TRADEMARKS.md "$dmg_root/TRADEMARKS.md"
 cp THIRD_PARTY_NOTICES.md "$dmg_root/THIRD_PARTY_NOTICES.md"
 hdiutil create -volname "Voice is Local" -srcfolder "$dmg_root" -format UDZO -ov "$dmg"
 rm -rf "$dmg_root"
@@ -218,6 +289,11 @@ step "Done"
 dmg_sha=$(shasum -a 256 "$dmg" | awk '{print $1}')
 printf 'DMG:     %s\n' "$dmg"
 printf 'SHA-256: %s\n' "$dmg_sha"
+if [ "$source_verified" = yes ]; then
+    printf 'Source:  %s (%s)\n' "$release_tag" "$head_commit"
+else
+    printf 'Source:  not verified; no tag on origin identifies what this build compiled (see the warnings above).\n'
+fi
 if [ -z "$developer_id" ]; then
     printf '\nDRY RUN: signed ad-hoc and not notarized. This build is for local testing only; Gatekeeper blocks it on\n'
     printf 'other Macs. Set DEVELOPER_ID and NOTARY_PROFILE for a release (docs/release.md).\n'
