@@ -62,8 +62,10 @@ over. Because the app's path changed, macOS may ask for its permissions again. O
 `build/VoiceIsLocal.app` works, delete `build/Holos.app`.
 On first launch, dictation is disabled and the Voice is Local Setup window opens (reopen it
 with **Setup…** in the menu). It shows live status for each step: explicitly grant
-Microphone, Accessibility, and Input Monitoring access, install Apple's `en-CA`
-Speech assets, then enable your chosen hold-to-talk shortcut. The default choice
+Microphone, Accessibility, and Input Monitoring access, pick the dictation language
+(English (Canada) by default; any language Apple's speech transcriber supports, such
+as French (Canada)), install Apple's speech model for it, then enable your chosen
+hold-to-talk shortcut. The default choice
 is Right Option; Control–Option–Space is available as an alternate. The menu bar
 app shows a live preview, and releasing the shortcut finalizes one utterance.
 See the [dictation validation guide](docs/dictation-validation.md) before relying

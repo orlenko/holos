@@ -25,6 +25,21 @@ enum AIFixSetting {
             }
         }
     }
+
+    /// Like `unavailableReason`, for dictation in `language` (a locale identifier). Only English and French have been
+    /// tried: the model fixed misheard French words as well as English ones, and the guard refused the replies that
+    /// translated or answered the text. Other languages stay off until someone tries them.
+    static func unavailableReason(language: String) -> String? {
+        if let reason = unavailableReason { return reason }
+        let name = DictationLanguage.name(of: language)
+        guard SystemLanguageModel.default.supportsLocale(Locale(identifier: language)) else {
+            return "Apple Intelligence does not support \(name)"
+        }
+        guard ["en", "fr"].contains(DictationLanguage.languageCode(of: language)) else {
+            return "not yet tried with \(name) dictation"
+        }
+        return nil
+    }
 }
 
 /// Fixes each committed dictation chunk with Apple's on-device model before Holos writes it, one chunk at a time
@@ -53,11 +68,11 @@ final class DictationFixPipeline {
     /// Set once the key is released, while the last chunks are fixed and written; dictation counts as busy.
     var finishing = false
 
-    /// A pipeline when the Setup option is on and the model is available; nil otherwise, so dictation runs exactly
-    /// as it does without the option.
-    static func make(corrections: CorrectionList,
+    /// A pipeline when the Setup option is on and the model is available for dictation in `language`; nil otherwise,
+    /// so dictation runs exactly as it does without the option.
+    static func make(corrections: CorrectionList, language: String,
                      deliver: @escaping (_ chunk: String, _ text: String) -> Bool) -> DictationFixPipeline? {
-        guard AIFixSetting.isOn, AIFixSetting.unavailableReason == nil else { return nil }
+        guard AIFixSetting.isOn, AIFixSetting.unavailableReason(language: language) == nil else { return nil }
         let model = SystemLanguageModel.default
         // Loads the model while the user starts speaking, so the first chunk does not wait for it.
         LanguageModelSession(model: model, instructions: TranscriptFixer.instructions(reference: [])).prewarm()

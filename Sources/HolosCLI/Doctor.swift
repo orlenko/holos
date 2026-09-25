@@ -47,7 +47,7 @@ struct Doctor: AsyncParsableCommand {
         Console.output("\(locale) configured assets: speech=\(report.speechAssetStatus), dictation=\(report.dictationAssetStatus)")
         Console.output("Sessions: \(report.sessionsDirectory)")
         Console.output("Speaker models: \(speakerModels.summary)")
-        Console.output("Install transcription assets with: voiceislocal setup --locale en-CA")
+        Console.output("Install transcription assets with: voiceislocal setup --locale \(locale)")
         if speakerModels != .verified { Console.output("Install speaker models with: voiceislocal setup --speakers") }
     }
 }

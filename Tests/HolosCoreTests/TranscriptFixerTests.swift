@@ -35,6 +35,26 @@ import Testing
         == .reject(.changedStructure))
 }
 
+/// Replies Apple's on-device model gave to made-up French dictation.
+@Test func guardHandlesFrenchFixesAndRefusesTranslations() {
+    #expect(AIFixGuard.check(original: "Il faut que je prévienne mon patron que le projet et en retard",
+                             fixed: "Il faut que je prévienne mon patron que le projet est en retard") == .accept)
+    #expect(AIFixGuard.check(original: "Je pense que ces une bonne idée de reporter la réunion",
+                             fixed: "Je pense que c'est une bonne idée de reporter la réunion") == .accept)
+    #expect(AIFixGuard.check(original: "Merci pour ton aide je te revaudrai sa",
+                             fixed: "Merci pour ton aide, je te revaudrai ça.") == .accept)
+    #expect(AIFixGuard.check(original: "Peux-tu m'envoyer le fichier quand tu auras fini",
+                             fixed: "Peux-tu m'envoyer le fichier quand tu auras fini ?") == .accept)
+    // A dictated request the model translated or carried out instead of fixing.
+    #expect(AIFixGuard.check(original: "Est-ce que tu peux me traduire ça en anglais",
+                             fixed: "Can you translate this for me into English?") == .reject(.changedStructure))
+    #expect(AIFixGuard.check(original: "Tu peux me traduire ça en anglais",
+                             fixed: "Can you translate this for me into English?") == .reject(.tooManyEdits))
+    #expect(AIFixGuard.check(original: "Écris un courriel à Marie pour lui dire que je serai en retard",
+                             fixed: "Objet : Retard prévu\n\nBonjour Marie,\n\nJe vous informe que je serai en retard.")
+        == .reject(.changedStructure))
+}
+
 @Test func guardRejectsAnyMarkOtherThanCommasAndApostrophes() {
     // Relocated marks: the same words and the same count of each mark, in other places.
     #expect(AIFixGuard.check(original: "Wait here. Don't leave", fixed: "Wait here Don't. Leave")
@@ -205,6 +225,7 @@ import Testing
     let text = TranscriptFixer.instructions(reference: [Correction(heard: "get hub", meant: "GitHub")])
     #expect(text.contains("get hub -> GitHub"))
     #expect(TranscriptFixer.instructions(reference: []) == TranscriptFixer.baseInstructions)
+    #expect(TranscriptFixer.baseInstructions.contains("never translate"))
 }
 
 private func fixer(corrections: CorrectionList = CorrectionList(), timeout: Duration = .seconds(5),

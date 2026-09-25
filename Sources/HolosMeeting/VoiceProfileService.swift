@@ -962,7 +962,6 @@ public enum VoiceProfileService {
                              projection: SpeakerProjection, enroll: Set<String>,
                              extractorAvailable: Bool) -> [SamplePlan] {
         let sessionID = snapshot.manifest.id
-        let known = Set(database.profiles.map(\.id))
         let model = run.engine?.embeddingModel
         var plans: [SamplePlan] = []
         for profile in database.profiles {
@@ -1082,7 +1081,6 @@ public enum VoiceProfileService {
             log.error("Cannot read people to check voice samples: \(ProcessSpawner.logCategory(error), privacy: .public)")
             return true
         }
-        let known = Set(database.profiles.map(\.id))
         for profile in database.profiles {
             guard let sample = profile.samples.first(where: { $0.sessionID == sessionID }) else { continue }
             let old = linkedSpeakers(profile.id, sample: sample, projection: before, database: database)
