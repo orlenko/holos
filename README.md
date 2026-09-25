@@ -284,6 +284,6 @@ License, or (at your option) any later version. It is distributed in the hope th
 useful, but without any warranty; see [LICENSE](LICENSE) for the full terms. Copyright © 2026
 Vlad Orlenko.
 
-The name and the app icon are not covered by the license: modified builds you give to others ship
+The name and the app icon are not covered by the license: builds you make and give to others ship
 under their own name and icon. See [TRADEMARKS.md](TRADEMARKS.md). Third-party components keep
 their own licenses: [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
