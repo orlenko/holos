@@ -165,10 +165,12 @@ final class SetupWindow: NSObject, NSWindowDelegate {
         aiFixToggle.tag = SetupAction.toggleAIFix.rawValue
         aiFixToggle.toolTip = "Each phrase is checked by Apple's on-device model before it is typed, which adds about half a second. Only small fixes are kept; Copy Original in the menu has the text as heard."
 
-        let stack = NSStackView(views: [messageLabel, grid, fillerToggle, previewToggle, aiFixToggle, opacityRow, note])
+        // Text options first, then the preview and its opacity together.
+        let stack = NSStackView(views: [messageLabel, grid, fillerToggle, aiFixToggle, previewToggle, opacityRow, note])
         stack.orientation = .vertical
         stack.alignment = .leading
         stack.spacing = 20
+        stack.setCustomSpacing(10, after: previewToggle)
         stack.translatesAutoresizingMaskIntoConstraints = false
         let content = NSView()
         content.addSubview(stack)
