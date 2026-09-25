@@ -38,7 +38,9 @@ func makeVoiceSampleExtractor(session: URL) -> (any VoiceSampleExtractor)? {
        let configuration = run.engine?.configuration {
         for key in FluidDiarizerConfiguration.overrideKeys { overrides[key] = configuration[key] }
     }
-    return makeDiarizer(engineOverrides: overrides).map { DiarizerVoiceSampleExtractor(diarizer: $0) }
+    return makeDiarizer(engineOverrides: overrides).map {
+        DiarizerVoiceSampleExtractor(diarizer: $0, expectedConfiguration: overrides)
+    }
 }
 
 /// The hook `holos record start` runs under the processing lease after the archive is finished.

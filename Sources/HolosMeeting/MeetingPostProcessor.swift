@@ -228,6 +228,15 @@ public struct MeetingPostProcessor: Sendable {
         return (try? profiles.load().forgetEpoch) ?? nil
     }
 
+    /// Whether a forget is still on its way through the meetings. A pass that started after such a forget's store
+    /// write sees no change in the counter, yet its clean-up may pass this meeting before the pass publishes, so
+    /// the voice file waits for it either way.
+    private func aForgetIsStillCleaning() -> Bool {
+        guard let profiles else { return false }
+        guard let pending = try? profiles.pendingForgets() else { return true }
+        return pending.contains { $0.kind != .merge }
+    }
+
     private func labelSpeakers(session: URL, manifest: SessionManifest, transcript: Transcript,
                                recorder: StageRecorder) async throws -> SpeakerResult {
         // Stage 2: track policies.
@@ -332,7 +341,10 @@ public struct MeetingPostProcessor: Sendable {
         do {
             switch try SpeakerAnalysis.publish(built, session: session, transcript: transcript, force: options.force,
                                                writeVoiceData: options.forceVoiceData,
-                                               voiceDataStillWanted: { self.forgetEpochNow() == forgetEpoch }) {
+                                               voiceDataStillWanted: {
+                                                   self.forgetEpochNow() == forgetEpoch
+                                                       && !self.aForgetIsStillCleaning()
+                                               }) {
             case .keptEditedHead(let runID):
                 recorder.end(.align, .skipped, SpeakerAnalysis.editedHead, since: started)
                 result.runID = runID

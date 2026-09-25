@@ -40,14 +40,22 @@ public struct DiarizerVoiceSampleExtractor: VoiceSampleExtractor {
     static let modelChanged = "The speaker models changed since this meeting was labelled, so its voices can't be "
         + "learned. Label its speakers again first."
     static let noDiskSpace = "Not enough disk space to learn this voice. Free some space, then try again."
+    static let settingsChanged = "This meeting's speakers were labelled again with other settings while the voice "
+        + "was being learned. Try again."
 
     public let diarizer: any SpeakerDiarizer
     public let temporaryDirectory: URL
     let freeSpace: any FreeSpaceProvider
+    /// The head run's settings this diarizer was configured from, when it was. Checked against the head run again
+    /// at every call: a relabel can publish a new head with the same speaker model and other settings, and a
+    /// sample taken with this pass's settings must not be saved against that run.
+    let expectedConfiguration: [String: String]
 
     public init(diarizer: any SpeakerDiarizer, temporaryDirectory: URL = FileManager.default.temporaryDirectory,
-                freeSpace: any FreeSpaceProvider = VolumeFreeSpace()) {
+                freeSpace: any FreeSpaceProvider = VolumeFreeSpace(),
+                expectedConfiguration: [String: String] = [:]) {
         self.diarizer = diarizer; self.temporaryDirectory = temporaryDirectory; self.freeSpace = freeSpace
+        self.expectedConfiguration = expectedConfiguration
     }
 
     public func turnEmbeddings(session: URL, track: String, turns: [TurnRef]) async throws -> [TurnEmbedding] {
@@ -68,6 +76,10 @@ public struct DiarizerVoiceSampleExtractor: VoiceSampleExtractor {
             if let expected = run.engine?.embeddingModel {
                 let info = try await diarizer.engineInfo()
                 guard info.embeddingModel == expected else { throw HolosError.unavailable(Self.modelChanged) }
+            }
+            let current = run.engine?.configuration ?? [:]
+            guard expectedConfiguration.allSatisfy({ current[$0.key] == $0.value }) else {
+                throw HolosError.unavailable(Self.settingsChanged)
             }
             hint = Self.speakerHint(run: run, session: session, manifest: manifest)
         }

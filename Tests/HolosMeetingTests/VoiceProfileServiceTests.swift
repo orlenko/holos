@@ -2595,3 +2595,86 @@ func aForgetLeavesAnotherPendingMergeAlone() async throws {
     #expect(try SessionSpeakerStore.readRecognition(runID: runID, session: session)?.matches.first?.profileID
             == "MARIA", "And the merge can still finish its meetings.")
 }
+
+@Test(.timeLimit(.minutes(1)))
+func whatAForgetListsAndItsTombstoneAreOneStep() async throws {
+    let temp = try TemporaryDirectory("profiles")
+    defer { temp.remove() }
+    let store = profileStore(temp)
+    let (_, _, jim) = try await profileForgetFixture(temp, store: store)
+    try store.update { $0.profiles.append(SpeakerProfile(id: "MARIA", displayName: "Maria")) }
+    // A merge that runs while the forget is listing would move a sample the listing never saw. The listing and the
+    // tombstone are one locked step, so the merge either lands before the listing (and its samples are listed on
+    // the person they moved to) or after the tombstone (and is refused while the forget is unfinished).
+    let listed = SharedValue<[String]>([])
+    try VoiceProfileService.forget(profileID: jim, store: store, sessionsRoot: temp.url)
+    listed.set(try store.load().profiles.flatMap(\.samples).map(\.id))
+
+    #expect(try store.load().sampleCount == 0, "Everything that was the person's is gone.")
+    #expect(listed.value.isEmpty)
+    // And a merge afterwards is free again.
+    try store.update { $0.profiles.append(SpeakerProfile(id: "SAM", displayName: "Sam")) }
+    try VoiceProfileService.merge(profileID: "SAM", into: "MARIA", store: store, sessionsRoot: temp.url)
+    #expect(try store.load().profiles.map(\.id) == ["MARIA"])
+}
+
+@Test func peopleALinkNeverFinishedCreatingAreTakenBack() throws {
+    let temp = try TemporaryDirectory("profiles")
+    defer { temp.remove() }
+    let store = profileStore(temp)
+    let now = Date()
+    let old = now.addingTimeInterval(-VoiceProfileService.abandonedProvisionalAge - 60)
+    var withSample = profilePerson("KEPT", "Has a sample", vector: profileAxis(0))
+    withSample.provisional = true
+    withSample.createdAt = old
+    try store.update {
+        $0.profiles = [
+            // A link that crashed between creating the person and saving its lines, an hour ago.
+            SpeakerProfile(id: "GONE", displayName: "Never linked", createdAt: old, lastUsedAt: old,
+                           provisional: true),
+            // A link being made right now.
+            SpeakerProfile(id: "FRESH", displayName: "In flight", createdAt: now, lastUsedAt: now,
+                           provisional: true),
+            // Taken up by something since.
+            SpeakerProfile(id: "TAKEN", displayName: "Taken", createdAt: old, lastUsedAt: old),
+            withSample,
+        ]
+    }
+
+    #expect(VoiceProfileService.removeAbandonedProvisionalPeople(store: store, now: now) == 1)
+
+    #expect(try store.load().profiles.map(\.id).sorted() == ["FRESH", "KEPT", "TAKEN"],
+            "Only a person nobody took up, with nothing learned, and older than a link ever takes.")
+    #expect(VoiceProfileService.removeAbandonedProvisionalPeople(store: store, now: now) == 0)
+}
+
+@Test(.timeLimit(.minutes(1)))
+func aRepeatedLinkStillBringsTheSamplesInStep() async throws {
+    let temp = try TemporaryDirectory("profiles")
+    defer { temp.remove() }
+    let store = profileStore(temp)
+    try store.update { $0.rememberVoices = true }
+    let (session, _) = try await profileProcessedSession(in: temp, store: nil, forceVoiceData: true)
+    let extractor = ProfileFakeExtractor()
+    _ = try await VoiceProfileService.link(session: session, speakerID: "mic:S1", to: .new(name: "Jim"),
+                                           view: try SessionFixtures.view(session), learnVoice: true,
+                                           extractor: extractor, store: store)
+    let jim = try #require(try store.load().profiles.first?.id)
+    let requests = extractor.requests.count
+    // The sample is left stale, as a refresh that failed after the link was saved would leave it: its inputs no
+    // longer match the labels, so it may hold turns that now belong to somebody else.
+    try store.update { database in
+        guard let index = database.profiles.firstIndex(where: { $0.id == jim }),
+              !database.profiles[index].samples.isEmpty else { return }
+        database.profiles[index].samples[0].inputDigest = "stale"
+    }
+
+    // Running the same link again changes no label at all; it must still bring the samples in step.
+    _ = try await VoiceProfileService.link(session: session, speakerID: "mic:S1", to: .existing(profileID: jim),
+                                           view: try profileView(session, store: store), learnVoice: false,
+                                           extractor: extractor, store: store)
+
+    #expect(extractor.requests.count > requests, "The refresh ran from the no-op path.")
+    #expect(try store.load().profiles.first?.samples.first?.inputDigest != "stale",
+            "And the sample is back in step with the labels.")
+}

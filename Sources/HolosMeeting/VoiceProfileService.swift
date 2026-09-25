@@ -165,10 +165,9 @@ public enum VoiceProfileService {
             // The tombstone comes first, and the setting is turned off in the same store write that removes the
             // samples, so a crash or a lock timeout never leaves the setting off with every sample kept and nothing
             // to resume.
-            let database = try store.load()
-            let listed = database.profiles.flatMap(\.samples).map(\.id)
-            let removed = try forget(ForgetRecord(kind: .all, sampleIDs: listed), store: store,
-                                     sessionsRoot: sessionsRoot, turnRememberOff: true)
+            let removed = try forget(store: store, sessionsRoot: sessionsRoot, turnRememberOff: true) { database in
+                ForgetRecord(kind: .all, sampleIDs: database.profiles.flatMap(\.samples).map(\.id))
+            }
             log.notice("Remember voices turned off")
             return removed
         }
@@ -440,13 +439,14 @@ public enum VoiceProfileService {
     @discardableResult
     public static func forget(sampleID: String, store: SpeakerProfileStore,
                               sessionsRoot: URL = HolosPaths.sessions) throws -> Int {
-        let database = try store.load()
-        guard let profile = database.profiles.first(where: { $0.samples.contains { $0.id == sampleID } }),
-              let sample = profile.samples.first(where: { $0.id == sampleID }) else {
-            throw HolosError.invalidInput("There is no voice sample \(sampleID).")
+        return try forget(store: store, sessionsRoot: sessionsRoot) { database in
+            guard let profile = database.profiles.first(where: { $0.samples.contains { $0.id == sampleID } }),
+                  let sample = profile.samples.first(where: { $0.id == sampleID }) else {
+                throw HolosError.invalidInput("There is no voice sample \(sampleID).")
+            }
+            return ForgetRecord(kind: .sample, profileID: profile.id, sampleIDs: [sampleID],
+                                sessionIDs: [sample.sessionID])
         }
-        return try forget(ForgetRecord(kind: .sample, profileID: profile.id, sampleIDs: [sampleID],
-                                       sessionIDs: [sample.sessionID]), store: store, sessionsRoot: sessionsRoot)
     }
 
     /// Forgets a person: their name and every sample. Meetings keep the name they were given; every reference to the
@@ -456,31 +456,62 @@ public enum VoiceProfileService {
     @discardableResult
     public static func forget(profileID: String, store: SpeakerProfileStore,
                               sessionsRoot: URL = HolosPaths.sessions) throws -> Int {
-        let database = try store.load()
-        guard let profile = database.profiles.first(where: { $0.id == profileID }) else {
-            throw HolosError.invalidInput("There is no person \(profileID).")
+        return try forget(store: store, sessionsRoot: sessionsRoot) { database in
+            guard let profile = database.profiles.first(where: { $0.id == profileID }) else {
+                throw HolosError.invalidInput("There is no person \(profileID).")
+            }
+            return ForgetRecord(kind: .profile, profileID: profileID, sampleIDs: profile.samples.map(\.id),
+                                sessionIDs: unique(profile.samples.map(\.sessionID)))
         }
-        return try forget(ForgetRecord(kind: .profile, profileID: profileID, sampleIDs: profile.samples.map(\.id),
-                                       sessionIDs: unique(profile.samples.map(\.sessionID))),
-                          store: store, sessionsRoot: sessionsRoot)
     }
 
     /// Forgets the samples learned from one meeting (Delete Meeting's "Also forget voice samples"). Names stay.
     @discardableResult
     public static func forget(sessionID: String, store: SpeakerProfileStore) throws -> Int {
-        let database = try store.load()
-        let samples = database.profiles.flatMap(\.samples).filter { $0.sessionID == sessionID }
-        return try forget(ForgetRecord(kind: .session, sampleIDs: samples.map(\.id), sessionIDs: [sessionID]),
-                          store: store, sessionsRoot: HolosPaths.sessions)
+        return try forget(store: store, sessionsRoot: HolosPaths.sessions) { database in
+            let samples = database.profiles.flatMap(\.samples).filter { $0.sessionID == sessionID }
+            return ForgetRecord(kind: .session, sampleIDs: samples.map(\.id), sessionIDs: [sessionID])
+        }
     }
 
     /// "Forget All Voices": every sample, and the voice data and recognition results of every meeting in
     /// `sessionsRoot` (a session kept in another folder is not visited); names stay.
     @discardableResult
     public static func forgetAll(store: SpeakerProfileStore, sessionsRoot: URL = HolosPaths.sessions) throws -> Int {
-        let database = try store.load()
-        return try forget(ForgetRecord(kind: .all, sampleIDs: database.profiles.flatMap(\.samples).map(\.id)),
-                          store: store, sessionsRoot: sessionsRoot)
+        return try forget(store: store, sessionsRoot: sessionsRoot) { database in
+            ForgetRecord(kind: .all, sampleIDs: database.profiles.flatMap(\.samples).map(\.id))
+        }
+    }
+
+    /// How long a person created for a link that was never saved is kept before a launch takes them back.
+    static let abandonedProvisionalAge: TimeInterval = 3_600
+
+    /// Removes the people a link left behind: created for a link (`provisional`), never taken up, without samples,
+    /// and older than `abandonedProvisionalAge`. `rollBack` takes such a person back when the link is refused in
+    /// the same run, but a crash or a kill between creating them and saving the link cannot, and nothing else
+    /// would ever remove a name the user never finished giving. The age is what keeps a link in flight safe: it is
+    /// far longer than any link takes, and the first thing a saved link does is clear the flag. Failures are
+    /// logged, never thrown: this is launch housekeeping. Returns how many were removed.
+    @discardableResult
+    public static func removeAbandonedProvisionalPeople(store: SpeakerProfileStore = SpeakerProfileStore(),
+                                                        now: Date = Date()) -> Int {
+        do {
+            return try store.update { database in
+                let before = database.profiles.count
+                database.profiles.removeAll { profile in
+                    profile.provisional == true && profile.samples.isEmpty
+                        && now.timeIntervalSince(profile.createdAt) > abandonedProvisionalAge
+                }
+                let removed = before - database.profiles.count
+                if removed > 0 {
+                    log.notice("Removed \(removed, privacy: .public) people a link never finished creating")
+                }
+                return removed
+            }
+        } catch {
+            log.error("Cannot take back people a link never finished creating: \(ProcessSpawner.logCategory(error), privacy: .public)")
+            return 0
+        }
     }
 
     /// Finishes every forget a crash left pending (app launch; the start of every `holos people`, `speakers`, and
@@ -653,6 +684,11 @@ public enum VoiceProfileService {
                     try SpeakerEditor.claimPeople(linked, profiles: store, at: Date())
                     return current
                 }
+                // An earlier run of this same link may have saved its lines and then failed to bring the samples
+                // in step, which would leave a voiceprint holding turns now linked to somebody else. Repeating the
+                // command lands here, so the refresh runs from here too; it is decided by input digests, so it
+                // costs nothing when they are already in step.
+                needsRefresh = true
             } else {
                 let result = try SpeakerEditor.apply(actions, view: view, session: session, source: editSource,
                                                      profileNames: profileNames(store: store), profiles: store,
@@ -1033,11 +1069,16 @@ public enum VoiceProfileService {
     /// voices" off in the store write that removes the samples; it is applied only while that write is still owed
     /// (no `stored` line yet), so a forget that keeps failing on a meeting cannot undo the user turning the setting
     /// back on. Returns how many samples its store write removed.
-    private static func forget(_ record: ForgetRecord, store: SpeakerProfileStore, sessionsRoot: URL,
-                               turnRememberOff: Bool = false) throws -> Int {
-        var record = record
-        record.turnRememberOff = turnRememberOff ? true : nil
-        try store.appendForgetRecord(record)
+    private static func forget(store: SpeakerProfileStore, sessionsRoot: URL, turnRememberOff: Bool = false,
+                               listing: @escaping (SpeakerProfileDatabase) throws -> ForgetRecord) throws -> Int {
+        // The listing and the tombstone are one locked step: between them, a merge could move a sample the listing
+        // did not see to somebody else, where the IDs this tombstone carries would never reach it, and a merge
+        // that starts after it is refused while this forget is unfinished.
+        guard let record = try store.appendForgetRecord(listing: { database in
+            var record = try listing(database)
+            record.turnRememberOff = turnRememberOff ? true : nil
+            return record
+        }) else { return 0 }
         let removed = try perform(record, store: store, sessionsRoot: sessionsRoot)
         log.notice("Forgot voices (\(record.kind?.rawValue ?? "?", privacy: .public))")
         return removed
@@ -1188,7 +1229,7 @@ public enum VoiceProfileService {
                 && lstat(SessionPaths.generatedExports(session).path, &generated) == 0
                 && (generated.st_mode & S_IFMT) == S_IFREG
         }
-        let hadRecognition = try SessionArchive.withSpeakerLock(at: session) { () throws -> Bool in
+        _ = try SessionArchive.withSpeakerLock(at: session) { () throws -> Bool in
             let recognition = try SessionSpeakerStore.recognitionFiles(session: session)
             if kind == .all {
                 // Unreadable files are deleted like the others, without being read first.
@@ -1228,7 +1269,9 @@ public enum VoiceProfileService {
                 return !recognition.runIDs.isEmpty || recognition.other
             }
         }
-        let owesExports = kind == .all || (kind == .profile && hadRecognition)
+        // Owed on every run, not only when this one found recognition results: a previous attempt may have
+        // scrubbed or deleted the very files that would say a rewrite is still due.
+        let owesExports = kind == .all || kind == .profile
         var generated = stat()
         return owesExports && lstat(SessionPaths.generatedExports(session).path, &generated) == 0
             && (generated.st_mode & S_IFMT) == S_IFREG

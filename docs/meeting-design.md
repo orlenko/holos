@@ -3392,7 +3392,10 @@ public struct SpeakerProfileDatabase: Codable, Sendable, Equatable {
   audio was deleted, so this voice can't be learned." `refreshSamples` re-extracts the
   affected `(profile, session)` samples the same way. Meetings processed while Remember
   voices was off need nothing special: confirming a person later extracts on demand.
-- **Forgetting is resumable.** Every forget operation first appends a tombstone to
+- **Forgetting is resumable.** What a forget lists and the tombstone that records it are
+  one locked step (`SpeakerProfileStore.appendForgetRecord(listing:)`), so no merge can
+  move a sample out from between them, and a merge that starts afterwards is refused while
+  the forget is unfinished. Every forget operation first appends a tombstone to
   `Support/Speakers/forget-journal.jsonl` (0600, fsync; `{id, kind, profileID?, sampleIDs,
   sessionIDs, turnRememberOff?, state: "pending"}`), then updates the profile store, then
   appends `{id, profileID?, state: "stored"}`, then cleans each affected session under its
@@ -3456,6 +3459,9 @@ public struct SpeakerProfileDatabase: Codable, Sendable, Equatable {
     (the user reassigned it, or moved it to a speaker they made), that cluster's centroid
     holds their voice and cannot be told apart from the rest of the cluster's, so the
     meeting's evaluation voice data is deleted instead of filtered.
+  A `.profile` forget owes its meetings' exported transcripts on every run, not only when
+  it found recognition results: an earlier attempt may have scrubbed or deleted the files
+  that would say a rewrite is still due.
   Tests (PR10): `forgetResumesAfterCrashBetweenStoreAndSessions` (failure injected after
   the store update; resume removes every reference), `forgetJournalReplayIsIdempotent`,
   `aForgetThatCrashedBeforeItsStoreWriteStillTurnsRememberingOff`,
@@ -3569,6 +3575,13 @@ public struct SpeakerProfileDatabase: Codable, Sendable, Equatable {
   not shown or exported. Tests (PR10): `keptSamplesAreNotUsedWhileRememberVoicesIsOff`,
   `recognitionIsNotUsedWhileAForgetIsUnfinished`,
   `recognitionIsNotUsedWhileAForgetLineCannotBeRead`.
+- **People a link never finished creating are taken back.** A person created for a link
+  (`provisional`) whom no saved link claimed, who has no samples, and who is older than
+  `abandonedProvisionalAge` (an hour, far longer than a link takes) is removed at app
+  launch and at the start of every `holos people`, `speakers` and `session` command.
+  `rollBack` covers a link refused in the same run; this covers a crash between creating
+  the person and saving the link, which nothing else would. Test (PR10):
+  `peopleALinkNeverFinishedCreatingAreTakenBack`.
 - **Enrollment renders are swept.** `DiarizerVoiceSampleExtractor` renders a track to
   `holos-voice-<UUID>` in the temporary directory and deletes it in a `defer`, which a kill
   or a power loss skips; the render is a decoded copy of the meeting's audio, so

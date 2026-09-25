@@ -31,6 +31,7 @@ enum PeopleLaunch {
         resumed = true
         Task.detached(priority: .utility) {
             DiarizerVoiceSampleExtractor.removeStaleRenders()
+            VoiceProfileService.removeAbandonedProvisionalPeople()
             do {
                 try VoiceProfileService.resumePendingForgets(store: SpeakerProfileStore())
             } catch {

@@ -249,13 +249,32 @@ public struct SpeakerProfileStore: Sendable {
     /// the new line starts on a line of its own, so the torn part stays a separate damaged line.
     public func appendForgetRecord(_ record: ForgetRecord) throws {
         guard SessionArchive.validToken(record.id) else { throw HolosError.invalidInput("Invalid forget record ID.") }
+        try withLock { try appendLocked(record) }
+    }
+
+    /// The append itself; the caller holds `profiles.lock`.
+    private func appendLocked(_ record: ForgetRecord) throws {
+        var line = try HolosJSON.line(record)
+        if let existing = try AtomicFile.readIfPresent(forgetJournalURL, maxBytes: Self.maxJournalBytes),
+           let last = existing.last, last != 0x0A {
+            line.insert(0x0A, at: line.startIndex)
+        }
+        try AtomicFile.append(line, to: forgetJournalURL)
+    }
+
+    /// Under `profiles.lock`, reads the database and appends the record `make` builds from it (nothing when it
+    /// returns nil). What a tombstone lists and its being written are then one step, so no other write of this
+    /// store — a merge moving a sample to somebody else, a voice learned — can land between them. Returns the
+    /// record that was written.
+    public func appendForgetRecord(listing make: (SpeakerProfileDatabase) throws -> ForgetRecord?) throws
+        -> ForgetRecord? {
         try withLock {
-            var line = try HolosJSON.line(record)
-            if let existing = try AtomicFile.readIfPresent(forgetJournalURL, maxBytes: Self.maxJournalBytes),
-               let last = existing.last, last != 0x0A {
-                line.insert(0x0A, at: line.startIndex)
+            guard let record = try make(try load()) else { return nil }
+            guard SessionArchive.validToken(record.id) else {
+                throw HolosError.invalidInput("Invalid forget record ID.")
             }
-            try AtomicFile.append(line, to: forgetJournalURL)
+            try appendLocked(record)
+            return record
         }
     }
 
