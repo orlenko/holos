@@ -204,16 +204,28 @@ Hardware-facing and cross-app acceptance remain pending.
 - `read` renders a local UTF-8 text/Markdown file or stdin as an ordered AAC
   playlist, with resume and optional playback. Markdown is read verbatim.
 - `scripts/build-app.sh` builds and ad-hoc signs `build/VoiceIsLocal.app`, an accessory
-  menu bar app. Its `en-CA` Speech dictation is disabled on first launch; the user
-  explicitly grants permissions, installs speech assets, and enables the chosen
-  hold-to-talk shortcut. Right Option is the default choice, with
+  menu bar app. Dictation is disabled on first launch; the user explicitly grants
+  permissions, picks the dictation language (en-CA by default; any language Apple's
+  SpeechTranscriber supports), installs that language's speech model, and enables the
+  chosen hold-to-talk shortcut. Right Option is the default choice, with
   Control–Option–Space available instead. It previews speech and finalizes on
   release; Esc cancels even during finalization.
-- The app attempts one direct `AXSelectedText` insertion only into a writable,
-  non-secure text field whose focus, selection, and nearby text still match the
-  key-down snapshot. Unsupported or changed targets retain the result for explicit
-  Copy/Discard; it never synthesizes Return or pastes through the clipboard.
-  Dictation audio is not saved.
+- Finalized phrases are written into the focused field while the user speaks: through
+  Accessibility (`AXSelectedText`) into writable native fields, and as typed keystrokes
+  into terminals and web or other editors without a direct Accessibility write, only
+  while the same field keeps focus. Secure fields and Secure Keyboard Entry are refused.
+  It never synthesizes Return and never pastes. Text it could not write (target
+  changed, safety check failed, unverified write, forced stop) is copied to the
+  clipboard right away, overwriting it, and also kept for Copy Result or Discard; see
+  [dictation validation](dictation-validation.md). Dictation audio is not saved.
+- Dictation text is cleaned before it is written: filler words are removed (English and
+  French lists; off in Setup), then learned corrections are applied. **Correct Last
+  Dictation…** learns word swaps from the user's edits, and the Corrections window adds,
+  edits and removes them. An opt-in Setup option, off by default, fixes misheard words
+  in each chunk with Apple's on-device Foundation Models before it is written; a guard
+  keeps the original text when the reply changes more than a few words, changes
+  punctuation other than commas, or undoes a learned correction. **Copy Original** keeps
+  the text as heard.
 
 The CLI bundle embeds microphone and speech-recognition permission usage strings.
 `scripts/build.sh` ad-hoc signs the built executable to give macOS a stable CLI
@@ -341,10 +353,8 @@ Still requiring real-machine or user-data validation:
   selected-text replacement depends on each app's writable text-field support.
   The app is neither auto-installed nor a login item. Right Option is reserved
   while the user enables that shortcut; unrelated typing cancels dictation and
-  may be consumed until the key is released. Copy overwrites the clipboard only
-  when explicitly chosen from the menu.
-- Correction memory, correction management, or Foundation Models-assisted
-  correction. No correction database workflow is present.
+  may be consumed until the key is released. The clipboard is overwritten when text
+  could not be written, and when Copy Result or Copy Original is chosen.
 - Speaker names and edits: labels are "Speaker N" until named in the review window or
   with `voiceislocal speakers`. The review window has no redo, and its undo does not reach past
   a relabel (Find More Speakers keeps names, not turn-level changes). Find More Speakers is
