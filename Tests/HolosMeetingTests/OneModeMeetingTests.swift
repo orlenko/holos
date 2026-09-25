@@ -530,6 +530,35 @@ extension RecorderEnvironmentLoopTests {
         #expect(waiting.details["reason"] == RecorderMachine.builtInMicrophoneOff)
     }
 
+    /// A microphone-only recording that follows the default input loses its only microphone (a USB microphone
+    /// unplugged on a Mac without a built-in one): it waits asking for a microphone, not for the lid.
+    @Test(.timeLimit(.minutes(1)))
+    func microphoneOnlyWithoutAnyInputAsksForAMicrophone() async throws {
+        let temp = try TemporaryDirectory()
+        defer { temp.remove() }
+        // The microphone is there while the recording starts (the start check and epoch 0's two plans), then gone.
+        let lookups = SharedValue(0)
+        let captures = FakeCaptureFactory([
+            FakeCaptureScript(frames: FakeFrame.run(count: 3), failAfterFrames: 3, failure: .io("Device lost.")),
+        ])
+        let stop = ManualStopSource()
+        var dependencies = recorderDependencies(captures: captures, stop: stop, clock: ManualSessionClock(0))
+        dependencies.findInputDevices = {
+            let call = lookups.update { $0 += 1; return $0 }
+            return InputDevices(builtIn: nil, systemDefault: call <= 2 ? recorderAirPods : nil)
+        }
+        dependencies.power = RecorderFakePower()
+        var options = RecordingOptions.testing(root: temp.url, source: .microphone, recordOnly: true)
+        options.microphone = .systemDefault
+        let run = Task { try await RecordingWorkflow.run(options, dependencies: dependencies) }
+        let session = try #require(await recorderSession(in: temp.url))
+        #expect(await eventually { recorderStatus(session)?.phase == .waiting })
+        let warning = recorderStatus(session)?.warnings.first { $0.code == .audioUnavailable }
+        #expect(warning?.message == EpochPlan.noMicrophone)
+        stop.requestStop()
+        _ = try await run.value
+    }
+
     /// An external default input keeps recording when the lid closes: nothing restarts or warns.
     @Test(.timeLimit(.minutes(1)))
     func callOnAnExternalMicrophoneIgnoresTheLidClosing() async throws {

@@ -264,8 +264,9 @@ public struct RecorderMachine: Sendable, Equatable {
         let delay = min(Self.maxRetryDelay, 0.5 * pow(2, Double(min(attempt - 1, 16))))
         retryAt = at + delay
         phase = .waiting
-        // The built-in microphone being off is something the user can fix; say how.
-        let text = message == Self.builtInMicrophoneOff ? message : "Audio is unavailable; retrying. The gap is marked."
+        // Missing microphones say what to do (open the lid, connect a microphone); other failures stay generic.
+        let text = message == Self.builtInMicrophoneOff || message == EpochPlan.noMicrophone
+            ? message : "Audio is unavailable; retrying. The gap is marked."
         effects += [
             // Chunks are already closed; this sets the gap's reason.
             .stopCapture(reason: .audioUnavailable),

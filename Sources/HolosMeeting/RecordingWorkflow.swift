@@ -523,6 +523,15 @@ private final class Recorder {
             }
             // A run cancelled while setting up never opens the microphone or system audio.
             try Task.checkCancellation()
+            // Plan epoch 0 again from the devices and lid of now: the default input or the lid may have changed
+            // while the speech sessions and the permission prompt were set up. A plan that is no longer possible
+            // keeps the first one, and the capture's own start then fails and is reported.
+            if let fresh = EpochPlan.make(options, devices: dependencies.findInputDevices(),
+                                          lidOpen: dependencies.power?.isLidOpen() ?? true), fresh != plan {
+                let name = fresh.microphoneName
+                if name != plan.microphoneName { await updateStatus { $0.microphoneName = name } }
+                plan = fresh
+            }
             let capture = dependencies.makeCapture()
             self.capture = capture
             captureStopped = false
@@ -871,11 +880,14 @@ private final class Recorder {
     /// reported as `startFailed`, so the waiting and backoff rules take over.
     private func startCapture(epoch: Int) async -> RecorderInput? {
         if cancelled || Task.isCancelled { return nil }
-        guard let plan = EpochPlan.make(options, devices: dependencies.findInputDevices(),
+        let devices = dependencies.findInputDevices()
+        guard let plan = EpochPlan.make(options, devices: devices,
                                         lidOpen: dependencies.power?.isLidOpen() ?? true) else {
-            Self.log.error("Session \(self.archive.id, privacy: .public): no built-in microphone for epoch \(epoch, privacy: .public)")
-            let off = RecorderMachine.builtInMicrophoneOff
-            return .captureEnded(epoch: epoch, .startFailed(message: off), at: clock.now())
+            Self.log.error("Session \(self.archive.id, privacy: .public): no microphone for epoch \(epoch, privacy: .public)")
+            // A recording that follows the default input and has none asks for a microphone, not an open lid.
+            let message = options.microphone == .systemDefault && devices.systemDefault == nil
+                ? EpochPlan.noMicrophone : RecorderMachine.builtInMicrophoneOff
+            return .captureEnded(epoch: epoch, .startFailed(message: message), at: clock.now())
         }
         let limit = dependencies.tuning.restartLimit
         let epochStart = clock.now()
