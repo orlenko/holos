@@ -253,7 +253,7 @@ public enum VoiceProfileService {
     /// written now leaves the record pending, and this throws `incomplete`.
     private static func retargetMeetings(_ record: ForgetRecord, store: SpeakerProfileStore,
                                          sessionsRoot: URL) throws {
-        guard let from = record.profileID, let to = record.targetProfileID else { return }
+        guard let from = record.profileID, var to = record.targetProfileID else { return }
         if try store.storedForget(record.id) == nil {
             // No marker: the store write either never committed (the merge was refused, or the process went before
             // it) or committed and the process went before the marker. The store itself says which, and it is the
@@ -267,6 +267,15 @@ public enum VoiceProfileService {
             }
             // It did commit; write the marker the crash cost it and carry on with the meetings.
             try store.appendForgetRecord(.stored(record.id))
+        }
+        // Another window may have merged the person this one was merged into onwards while this record waited.
+        // Writing the ID it named then would point the meetings at somebody who is no longer there, and a
+        // projection drops a match whose person is not in the store, which is the very loss this pass prevents.
+        to = try mergedOnwards(to, store: store)
+        guard try store.load().profiles.contains(where: { $0.id == to }) else {
+            log.notice("Dropped a merge whose target is no longer in the store")
+            try store.appendForgetRecord(.done(record.id))
+            return
         }
         var failed = 0
         for session in try sessionFolders(sessionsRoot) {
@@ -285,6 +294,24 @@ public enum VoiceProfileService {
         try store.appendForgetRecord(.done(record.id))
     }
 
+    /// Where `profileID` ended up, following the merges the journal records (`A -> B`, then `B -> C` gives `C`).
+    /// Stops at the first ID no merge names, and after `mergeChainLimit` steps, so a journal a newer Holos wrote
+    /// cannot send this round a cycle.
+    static func mergedOnwards(_ profileID: String, store: SpeakerProfileStore) throws -> String {
+        let merges = try store.forgetRecords().filter { $0.kind == .merge }
+        var current = profileID
+        var seen: Set<String> = [current]
+        for _ in 0..<mergeChainLimit {
+            guard let next = merges.first(where: { $0.profileID == current })?.targetProfileID,
+                  seen.insert(next).inserted else { return current }
+            current = next
+        }
+        return current
+    }
+
+    /// How many merges of one person this follows before it keeps what it has.
+    static let mergeChainLimit = 32
+
     /// One meeting's recognition results, retargeted under its speaker lock, and then its generated exports.
     ///
     /// A merge is not a forget, so nothing here deletes what it cannot interpret: a recognition result that cannot
@@ -297,7 +324,13 @@ public enum VoiceProfileService {
     /// rewrite is not owed although it never happened. `SessionExports.regenerate` writes only the files that
     /// differ from what it renders, so repeating it costs a render and no writes.
     private static func retarget(_ map: [String: String], session: URL, store: SpeakerProfileStore) throws {
-        guard (try? SessionArchive.readManifest(at: session)) != nil else { return }
+        // A folder with no manifest is not a meeting and is skipped; one whose manifest cannot be read now is,
+        // so the read throws and the merge stays pending for a run that can read it.
+        var info = stat()
+        guard lstat(SessionPaths.manifest(session).path, &info) == 0, (info.st_mode & S_IFMT) == S_IFREG else {
+            return
+        }
+        _ = try SessionArchive.readManifest(at: session)
         let hadRecognition = try SessionArchive.withSpeakerLock(at: session) { () throws -> Bool in
             let files = try SessionSpeakerStore.recognitionFiles(session: session)
             for runID in files.runIDs {
@@ -454,14 +487,20 @@ public enum VoiceProfileService {
         }
     }
 
-    /// Whether a meeting's stored recognition result may be applied: "Remember voices" is on. Off means kept
+    /// Whether a meeting's stored recognition result may be applied: "Remember voices" is on, and no forget is
+    /// waiting to be finished. Off means kept
     /// samples are not used, which is what the People window promises when the setting is turned off without
     /// forgetting them, so no suggestion or automatic name is shown or exported until it is turned back on
     /// (nothing is deleted). False when the store cannot be read, like the empty `profileNames` there: with the
     /// people unreadable, a name recognition chose earlier is not shown either.
     public static func recognitionAllowed(store: SpeakerProfileStore = SpeakerProfileStore()) -> Bool {
         do {
-            return try store.load().rememberVoices
+            guard try store.load().rememberVoices else { return false }
+            // A forget whose store write is done but whose meetings are not cleaned yet (a crash, or a meeting
+            // that could not be written) leaves recognition results naming people it was meant to remove, and
+            // `resumePendingForgets` finishes them in the background. Until it does, those results are not used:
+            // a name the user asked Holos to forget must not be shown or exported in the meantime.
+            return try store.pendingForgets().allSatisfy { $0.kind == .merge }
         } catch {
             log.error("Cannot read whether voices are remembered: \(ProcessSpawner.logCategory(error), privacy: .public)")
             return false
@@ -653,6 +692,12 @@ public enum VoiceProfileService {
         case upsert(profileID: String, sample: VoiceprintSample, replacing: String?)
     }
 
+    /// Said when a forget removed the voices this work would have saved, while it was being computed. The forget is
+    /// the later request, so nothing is saved and the work is not tried again: trying again would put back what the
+    /// user has just asked Holos to forget.
+    static let forgottenWhileLearning = "Voices were forgotten while this one was being learned, so nothing was "
+        + "saved. Learn it again if you still want to."
+
     /// Said when the labels or the people's samples kept changing while samples were computed.
     static let labelsKeptChanging = "The speaker labels or voice samples kept changing while the voice was learned; "
         + "try again."
@@ -698,6 +743,7 @@ public enum VoiceProfileService {
             }
             let model = run.engine?.embeddingModel
             let database = try store.load()
+            let forgetEpoch = database.forgetEpoch ?? 0
             let makePlans = { (database: SpeakerProfileDatabase) in
                 plan(database: database, snapshot: snapshot, run: run, projection: projection, enroll: enroll,
                      extractorAvailable: extractor != nil)
@@ -753,13 +799,27 @@ public enum VoiceProfileService {
             // Publish only if the labels are still the ones the samples were computed from (§1.7 order), and the
             // store still gives the same plan: a sample forgotten, refreshed, merged, or learned elsewhere meanwhile,
             // a person forgotten, Remember voices or the calibration changed, all make the work stale.
+            var forgotten = false
             let published = try SessionArchive.withSpeakerLock(at: session) { () throws -> Bool in
                 guard try SessionSpeakerStore.generation(session: session) == generation else { return false }
                 return try store.update { current -> Bool in
+                    // A forget that landed while this was computed wins: it was the later request, and the samples
+                    // alone cannot show it when the person had none from this meeting either way.
+                    guard (current.forgetEpoch ?? 0) == forgetEpoch else {
+                        forgotten = true
+                        return false
+                    }
                     guard makePlans(current) == plans, minimumSeconds(current) == minimum else { return false }
                     apply(changes, to: &current, sessionID: sessionID, model: model)
                     return true
                 }
+            }
+            if forgotten {
+                log.notice("Session \(sessionID, privacy: .public): voices were forgotten while a voice sample was computed; nothing was saved")
+                // A refresh keeps what the forget did and says nothing: it had nothing of its own to save. A voice
+                // the user asked to learn is reported, because they asked for it and it is not there.
+                guard enroll.isEmpty else { throw HolosError.unavailable(forgottenWhileLearning) }
+                return
             }
             if published {
                 let upserts = changes.filter { if case .upsert = $0 { true } else { false } }.count
@@ -960,6 +1020,9 @@ public enum VoiceProfileService {
     @discardableResult
     static func perform(_ record: ForgetRecord, store: SpeakerProfileStore, sessionsRoot: URL) throws -> Int {
         guard let kind = record.kind, kind != .merge else { return 0 }
+        // Only a tombstone the journal still holds as unfinished is performed. Replaying one that is done, or that
+        // compaction has taken away with its `done` line, must change nothing at all.
+        guard try store.pendingForgets().contains(where: { $0.id == record.id }) else { return 0 }
         let sampleIDs = Set(record.sampleIDs ?? [])
         let sessionIDs = Set(record.sessionIDs ?? [])
         let stored = try store.storedForget(record.id)
@@ -993,6 +1056,10 @@ public enum VoiceProfileService {
                     database.profiles[index].samples.removeAll { sampleIDs.contains($0.id) || inScope($0) }
                     if database.profiles[index].samples.isEmpty { database.profiles[index].embeddingModel = nil }
                 }
+                // Voice sample work that started before this write must not publish after it (`syncSamples`),
+                // whether or not there was anything to remove yet: a voice being learned right now is exactly what
+                // a forget of this scope is meant to stop.
+                database.forgetEpoch = (database.forgetEpoch ?? 0) + 1
                 return before - database.sampleCount
             }
             owner = found ?? owner

@@ -91,6 +91,11 @@ public struct SpeakerProfileDatabase: Codable, Sendable, Equatable {
     public var schemaVersion: Int
     /// Off by default. Governs voice samples, per-session voice data, and recognition. Never names.
     public var rememberVoices: Bool
+    /// Counts the store writes of forgets (`VoiceProfileService.perform`). Voice sample work started before a
+    /// forget and published after it would put back what the forget removed, and comparing the samples cannot see
+    /// that when the work concerns a person and meeting the forget left empty either way; this counter can.
+    /// Absent (nil) in stores written by an earlier Holos, which reads as 0.
+    public var forgetEpoch: Int?
     /// Set by `holos people calibrate --apply`; `likely` exists only when this is set, and only for runs of
     /// `calibratedModel`.
     public var calibratedThresholds: RecognitionThresholds?
@@ -105,10 +110,10 @@ public struct SpeakerProfileDatabase: Codable, Sendable, Equatable {
 
     public init(schemaVersion: Int = SpeakerProfileDatabase.currentSchemaVersion, rememberVoices: Bool = false,
                 calibratedThresholds: RecognitionThresholds? = nil, calibratedModel: EmbeddingModelID? = nil,
-                profiles: [SpeakerProfile] = [], calibrationResetAt: Date? = nil) {
+                profiles: [SpeakerProfile] = [], calibrationResetAt: Date? = nil, forgetEpoch: Int? = nil) {
         self.schemaVersion = schemaVersion; self.rememberVoices = rememberVoices
         self.calibratedThresholds = calibratedThresholds; self.calibratedModel = calibratedModel
-        self.profiles = profiles; self.calibrationResetAt = calibrationResetAt
+        self.profiles = profiles; self.calibrationResetAt = calibrationResetAt; self.forgetEpoch = forgetEpoch
     }
 
     /// The calibrated thresholds for a run of `model`: nil unless they were measured on that model.

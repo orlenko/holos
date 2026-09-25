@@ -3516,8 +3516,12 @@ public struct SpeakerProfileDatabase: Codable, Sendable, Equatable {
   post-processing's export write, `holos speakers`, `holos session export`, the Meetings
   window's Save As, and `VoiceProfileService.reject`, which takes the store for it). Nothing is
   deleted, so turning the setting back on brings the suggestions back. Names are not
-  governed by the setting, as they never were. Test (PR10):
-  `keptSamplesAreNotUsedWhileRememberVoicesIsOff`.
+  governed by the setting, as they never were. `recognitionAllowed` is also false while
+  any forget other than a merge is unfinished: a crash between a forget's store write and
+  its meetings leaves results naming people it was meant to remove, and
+  `resumePendingForgets` clears them in the background, so until it has, those results are
+  not shown or exported. Tests (PR10): `keptSamplesAreNotUsedWhileRememberVoicesIsOff`,
+  `recognitionIsNotUsedWhileAForgetIsUnfinished`.
 - **Enrollment renders are swept.** `DiarizerVoiceSampleExtractor` renders a track to
   `holos-voice-<UUID>` in the temporary directory and deletes it in a `defer`, which a kill
   or a power loss skips; the render is a decoded copy of the meeting's audio, so
