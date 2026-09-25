@@ -51,6 +51,8 @@ final class DictationFixPipeline {
     /// The closing mark the model added to the last chunk written, held back in case more followed. When the
     /// recognizer committed the whole dictation before release, that chunk ended it, so the mark is written then.
     private(set) var withheldClosing: String?
+    /// The chunk whose write failed, as recognized and as fixed; nothing after it was written.
+    private(set) var failedWrite: (chunk: String, text: String)?
     /// Set once the key is released, while the last chunks are fixed and written; dictation counts as busy.
     var finishing = false
 
@@ -127,7 +129,9 @@ final class DictationFixPipeline {
             let result = await fix(chunk, isFinal: false)
             guard !stopped else { break }
             guard deliver(chunk, result.text) else {
-                // Streaming stopped (the app or field changed, for example): nothing more is written.
+                // Streaming stopped (the app or field changed, for example): nothing more is written. Copy Result
+                // offers the fix Holos tried to write.
+                failedWrite = (chunk, result.text)
                 stopped = true
                 pending.removeAll()
                 break

@@ -28,8 +28,9 @@ public struct TranscriptFixer: Sendable {
         public var outcome: Outcome
         /// Why the guard refused the reply, for logging; never the text itself.
         public var rejection: AIFixGuard.Rejection?
-        /// The closing mark (".", "!", "?") the model added to a chunk fixed with `isFinal: false`, held back
-        /// because the chunk might end mid-sentence. If nothing follows the chunk, the caller appends it.
+        /// The closing marks (a run of ".", "!", "?", "…", such as "?!" or "...") the model added to a chunk fixed
+        /// with `isFinal: false`, held back because the chunk might end mid-sentence. If nothing follows the chunk,
+        /// the caller appends them.
         public var withheldClosing: String?
     }
 
@@ -73,10 +74,11 @@ public struct TranscriptFixer: Sendable {
         // applied, so only words the model changed are corrected: a second pass over the rest would chain
         // rules ("foo" → "bar", then "bar" → "baz").
         let fixed = corrections.apply(to: edited, onlyTouching: AIFixGuard.changedWordRanges(from: core, to: edited))
-        // A closing mark held back from a chunk that ends mid-sentence, in case it turns out to end the dictation.
-        let closing: String? = if !isFinal, let mark = tidied.last, AIFixGuard.closingMarks.contains(mark),
-                                  edited.last != mark, core.last?.isLetter == true || core.last?.isNumber == true {
-            String(mark)
+        // The closing marks held back from a chunk that ends mid-sentence, in case it turns out to end the dictation.
+        let added = AIFixGuard.closingRun(of: tidied)
+        let closing: String? = if !isFinal, !added.isEmpty, !edited.hasSuffix(added),
+                                  core.last?.isLetter == true || core.last?.isNumber == true {
+            added
         } else { nil }
         switch AIFixGuard.check(original: core, fixed: fixed) {
         case .accept: return Result(text: leading + fixed + trailing, outcome: .fixed, withheldClosing: closing)
@@ -198,10 +200,15 @@ public enum AIFixGuard {
         return .accept
     }
 
-    /// The reply without the prompt's label or quotes the original did not have.
+    /// The reply without the prompt's label or quotes the original did not have. A "Text:" the speaker dictated
+    /// stays: the label is removed only when the reply has one more than the original.
     public static func sanitized(_ reply: String, for original: String) -> String {
         var text = reply.trimmingCharacters(in: .whitespacesAndNewlines)
-        if text.hasPrefix("Text:") { text = text.dropFirst(5).trimmingCharacters(in: .whitespaces) }
+        if text.hasPrefix("Text:") {
+            let unlabelled = text.dropFirst(5).trimmingCharacters(in: .whitespaces)
+            let dictatedLabel = original.trimmingCharacters(in: .whitespacesAndNewlines).lowercased().hasPrefix("text:")
+            if !dictatedLabel || unlabelled.lowercased().hasPrefix("text:") { text = unlabelled }
+        }
         for (open, close) in [("\"", "\""), ("“", "”")]
         where text.count >= 2 && text.hasPrefix(open) && text.hasSuffix(close) && !original.hasPrefix(open) {
             text = String(text.dropFirst().dropLast())
@@ -220,16 +227,24 @@ public enum AIFixGuard {
                 text = head.lowercased() + text.dropFirst()
             }
         }
-        if !isFinal, let last = text.last, closingMarks.contains(last), let end = original.last,
-           !closingMarks.contains(end) {
-            text.removeLast()
+        // The whole closing run the model added or changed ("?!", "...") goes back to the original's, not one mark.
+        let had = closingRun(of: original)
+        let has = closingRun(of: text)
+        if !isFinal, let end = original.last, !has.isEmpty, has != had {
+            text.removeLast(has.count)
+            text += had
             // A comma or other mark the model turned into a period stays as it was.
-            if !(end.isLetter || end.isNumber), text.last != end { text.append(end) }
+            if had.isEmpty, !(end.isLetter || end.isNumber), text.last != end { text.append(end) }
         }
         return text
     }
 
-    static let closingMarks: Set<Character> = [".", "!", "?"]
+    static let closingMarks: Set<Character> = [".", "!", "?", "…"]
+
+    /// The closing marks at the end of `text` ("?!" in "really?!"), or "" when it does not end with one.
+    static func closingRun(of text: String) -> String {
+        String(text.reversed().prefix { closingMarks.contains($0) }.reversed())
+    }
 
     /// UTF-16 ranges of the words in `edited` that are not in `original`, by a longest common subsequence of
     /// words compared case-insensitively; punctuation and case changes alone do not count.
@@ -286,6 +301,24 @@ public enum AIFixGuard {
 
     static func lineBreaks(in text: String) -> Int {
         text.count(where: \.isNewline)
+    }
+}
+
+/// What Copy Result offers for the part of a fixed dictation Holos could not write: the text Holos tried to write.
+public enum AIFixUnwritten {
+    /// `rest` is the recognized text not written. `fixedRest` is its fix, made on release before the final write;
+    /// `failedWrite` is the streamed chunk whose write failed and the fix Holos tried to write for it (an unverified
+    /// write may already be in the field). The result is that fix, followed by the recognized text after the failed
+    /// chunk; `rest` itself when no fix covers its start.
+    public static func attempted(_ rest: String, fixedRest: String?,
+                                 failedWrite: (chunk: String, text: String)?) -> String {
+        if let fixedRest { return fixedRest }
+        guard let failedWrite else { return rest }
+        let chunk = failedWrite.chunk.trimmingCharacters(in: .whitespacesAndNewlines)
+        let lead = rest.prefix { $0.isWhitespace }
+        let body = rest.dropFirst(lead.count)
+        guard !chunk.isEmpty, body.hasPrefix(chunk) else { return rest }
+        return lead + failedWrite.text.trimmingCharacters(in: .whitespacesAndNewlines) + body.dropFirst(chunk.count)
     }
 }
 

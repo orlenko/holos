@@ -465,14 +465,18 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
             finish(text, into: destination)
             presentResult()
         case .failed:
+            let failedWrite = fixPipeline?.failedWrite
             fixPipeline?.cancel(); fixPipeline = nil
             target = nil
             message = update.message ?? "Dictation failed; no text was inserted."
             if !insertedText.isEmpty { message += " Text inserted before the failure stays in the field." }
             // Keep committed words that were withheld or not yet written, so Copy Result still has them.
             let committed = cleaned(latestCommitted).trimmingCharacters(in: .whitespacesAndNewlines)
-            if let rest = TextInsertion.unwritten(committed, after: insertedText),
-               !rest.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            if let unwritten = TextInsertion.unwritten(committed, after: insertedText),
+               !unwritten.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                // A chunk whose fixed write failed is offered as fixed, the text Holos tried to write.
+                let rest = AIFixUnwritten.attempted(unwritten, fixedRest: nil, failedWrite: failedWrite)
+                if rest != unwritten { resultOriginal = latestCommitted.trimmingCharacters(in: .whitespacesAndNewlines) }
                 // Keep the leading space so pasting after the inserted prefix does not join words.
                 resultText = insertedText.isEmpty ? rest.trimmingCharacters(in: .whitespaces) : rest
                 let copied = copyToClipboard(resultText)
@@ -586,13 +590,23 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
         fixPipeline = nil
         let destination = target
         target = nil // No callback or retry can write to this target again.
-        let written = finish(text, into: destination, writing: fixedRest)
+        // The fix of the part not yet written: written in its place, or, when that write fails or a streamed chunk's
+        // write failed, what Copy Result offers, since Holos tried to write it and it may already be in the field.
+        let unwritten = TextInsertion.unwritten(text, after: insertedText)
+        let attempted = unwritten.map {
+            AIFixUnwritten.attempted($0, fixedRest: fixedRest, failedWrite: pipeline.failedWrite)
+        }
+        let written = finish(text, into: destination, writing: attempted == unwritten ? nil : attempted)
         let rest = TextInsertion.unwritten(text, after: pipeline.writtenOriginal) ?? ""
         let fixed = pipeline.written + (fixedRest ?? rest)
         if written, fixed != text {
             resultText = fixed
             resultOriginal = heard
             message += " Apple Intelligence fixed misheard words; Copy Original has what was heard."
+        } else if !written, attempted != unwritten {
+            // Copy Result has the fixed words Holos tried to write (set by `finish`); keep the heard text too.
+            resultOriginal = heard
+            message += " Copy Result has Apple Intelligence's fix; Copy Original has what was heard."
         }
         presentResult()
         rebuildMenu()
@@ -614,8 +628,9 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
             to: removeFillers ? FillerWords.removeWithholdingTrailingComma(from: text) : text)
     }
 
-    /// `fixed` is the on-device fix of the part not yet written, written in its place. True when the whole
-    /// transcript is now in the target.
+    /// `fixed` is the on-device fix of the part not yet written, written in its place; when it cannot be written,
+    /// Copy Result and the clipboard get it instead of the recognized text. True when the whole transcript is now
+    /// in the target.
     @discardableResult
     private func finish(_ text: String, into destination: Destination?, writing fixed: String? = nil) -> Bool {
         resultText = text
@@ -631,7 +646,7 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
                 blockedOutcome(default: "No writable target.")
             }
             log.notice("Nothing streamed; whole result of \(text.utf16.count) units: \(String(describing: outcome), privacy: .public)")
-            conclude(outcome, unwritten: text, partial: false)
+            conclude(outcome, unwritten: fixed ?? text, partial: false)
             return outcome == .inserted || outcome == .typed
         }
         guard let rest = TextInsertion.unwritten(text, after: insertedText) else {
@@ -651,7 +666,7 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
         }
         log.notice("Final chunk of \(rest.utf16.count) units: \(String(describing: outcome), privacy: .public)")
         // Keep the leading space so pasting after the inserted prefix does not join words.
-        conclude(outcome, unwritten: rest.trimmingCharacters(in: .newlines), partial: true)
+        conclude(outcome, unwritten: (fixed ?? rest).trimmingCharacters(in: .newlines), partial: true)
         return outcome == .inserted || outcome == .typed
     }
 

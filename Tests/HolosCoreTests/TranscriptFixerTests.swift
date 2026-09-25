@@ -75,6 +75,49 @@ import Testing
     #expect(AIFixGuard.sanitized("Text: When I press escape", for: "When a press escape") == "When I press escape")
     #expect(AIFixGuard.sanitized("\"When I press escape\"", for: "When a press escape") == "When I press escape")
     #expect(AIFixGuard.sanitized("\"quoted\"", for: "\"quoted\"") == "\"quoted\"")
+    // A "Text:" the speaker dictated is content; only the prompt's own label is removed.
+    #expect(AIFixGuard.sanitized("Text: buy milk", for: "Text: buy milk") == "Text: buy milk")
+    #expect(AIFixGuard.sanitized("Text: buy milk", for: "text: by milk") == "Text: buy milk")
+    #expect(AIFixGuard.sanitized("Text: Text: buy milk", for: "Text: by milk") == "Text: buy milk")
+}
+
+@Test func fixerKeepsADictatedTextLabel() async {
+    let echo = await fixer { _, prompt in String(prompt.dropFirst(6)) }.fix("Text: buy milk", isFinal: true)
+    #expect(echo == .init(text: "Text: buy milk", outcome: .unchanged))
+    let wrapped = await fixer { _, prompt in prompt }.fix("Text: buy milk", isFinal: true)
+    #expect(wrapped == .init(text: "Text: buy milk", outcome: .unchanged))
+}
+
+@Test func withholdsTheWholeAddedClosingRun() {
+    #expect(AIFixGuard.keepingEdges(of: "are you sure", in: "Are you sure?!", isFinal: false) == "are you sure")
+    #expect(AIFixGuard.keepingEdges(of: "and then", in: "And then...", isFinal: false) == "and then")
+    #expect(AIFixGuard.keepingEdges(of: "and then", in: "And then…", isFinal: false) == "and then")
+    #expect(AIFixGuard.keepingEdges(of: "wait for me,", in: "Wait for me?!", isFinal: false) == "wait for me,")
+    #expect(AIFixGuard.keepingEdges(of: "Is it done?", in: "Is it done?!", isFinal: false) == "Is it done?")
+    #expect(AIFixGuard.keepingEdges(of: "are you sure", in: "Are you sure?!", isFinal: true) == "are you sure?!")
+}
+
+@Test func fixerHoldsBackACompoundClosingRun() async {
+    let asked = await fixer { _, _ in "Are you sure?!" }.fix(" are you sure", isFinal: false)
+    #expect(asked == .init(text: " are you sure", outcome: .unchanged, withheldClosing: "?!"))
+    let trailing = await fixer { _, _ in "And then they left..." }.fix("and than they left", isFinal: false)
+    #expect(trailing == .init(text: "and then they left", outcome: .fixed, withheldClosing: "..."))
+}
+
+@Test func copyResultOffersTheFixHolosTriedToWrite() {
+    // The fix made on release, whose write failed.
+    #expect(AIFixUnwritten.attempted(" their here", fixedRest: " they're here", failedWrite: nil) == " they're here")
+    // A streamed chunk whose fixed write failed, then the recognized text after it.
+    #expect(AIFixUnwritten.attempted(" their here and gone", fixedRest: nil,
+                                     failedWrite: (chunk: " their here", text: " they're here"))
+        == " they're here and gone")
+    // The final transcript is trimmed while the chunk kept its leading space.
+    #expect(AIFixUnwritten.attempted("their here", fixedRest: nil,
+                                     failedWrite: (chunk: " their here", text: " they're here")) == "they're here")
+    // No fix covers the start: the recognized text.
+    #expect(AIFixUnwritten.attempted(" something else", fixedRest: nil,
+                                     failedWrite: (chunk: " their here", text: " they're here")) == " something else")
+    #expect(AIFixUnwritten.attempted(" their here", fixedRest: nil, failedWrite: nil) == " their here")
 }
 
 @Test func referencePrefersRelatedCorrectionsWithinBudget() {
