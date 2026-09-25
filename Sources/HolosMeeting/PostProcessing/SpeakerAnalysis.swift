@@ -75,8 +75,16 @@ enum SpeakerAnalysis {
         return SpeakerCountHint(maximum: expected + 1)
     }
 
-    /// Alignment settings for the meeting (PR11 turns on the echo filter for calls here).
-    static func alignmentParameters(meeting: MeetingInfo) -> AlignmentParameters { .v1 }
+    /// How far apart a call's system word and its microphone echo may be (PR11).
+    static let callEchoWindowSeconds = 1.0
+
+    /// Alignment settings for the meeting: `AlignmentParameters.v1`, and for a call the echo filter (PR11) with a
+    /// window of `callEchoWindowSeconds`. In person there is no system audio to echo, so nothing is filtered.
+    static func alignmentParameters(meeting: MeetingInfo) -> AlignmentParameters {
+        var parameters = AlignmentParameters.v1
+        if meeting.mode == .call { parameters.echoWindowSeconds = callEchoWindowSeconds }
+        return parameters
+    }
 
     // MARK: - Stage 4: disk check
 
