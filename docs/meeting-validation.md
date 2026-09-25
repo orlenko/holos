@@ -26,8 +26,10 @@ the microphone's.
    Recording, and quit and reopen Voice is Local. The System audio row now shows the granted mark.
 3. Choose **Start Meeting Recording…**. The panel shows the name, what will be recorded
    ("Microphone and the computer's audio"), the microphone (the system default input), the disk
-   estimate, the speaker-model state, and the consent reminder. There is no meeting type to choose
-   and no warning about recording both.
+   estimate, the speaker-model state, the language (a pop-up with the same languages as
+   dictation, starting at the dictation language or the last meeting's), its speech-model state,
+   and the consent reminder. There is no meeting type to choose and no warning about recording
+   both.
 4. Start a recording. Note which app macOS names in the microphone prompt; no screen or system
    audio prompt appears. While the prompt is open, the menu must say "Waiting for permission…" after
    about 5 seconds.
@@ -113,6 +115,26 @@ Result: Pending.
 2. Open the start panel again.
 
 Pass: the reminder stays hidden on the next start.
+
+Result: Pending.
+
+### Meeting language
+
+1. With no meeting language chosen yet (`defaults delete ca.orlenko.holos.app meetingLocales`),
+   open the start panel: the Language pop-up shows the dictation language. Right after launch,
+   before the supported languages load, the line reads "Finding the meeting language…" and
+   Start stays off until the pop-up fills in.
+2. Choose French (Canada) (or another language whose speech model is not installed). The panel
+   says the speech model is not installed and offers **Install…**; nothing downloads until you
+   click it. Click it: the line says it is installing, then "Speech model ready".
+3. Record a short in-person meeting speaking French; stop and save.
+4. Open the start panel again: French (Canada) is still chosen.
+5. Check the session: `manifest.json` has `"locale": "fr-CA"` and the transcript is French; while
+   it recorded, `pgrep -lf "voiceislocal record start"` showed `--locale=fr-CA`. Repeat once in the
+   in-process mode.
+
+Pass: the pop-up starts at the dictation language, then at the last meeting's; the model is
+installed only on Install…; the recording is transcribed in the chosen language in both modes.
 
 Result: Pending.
 

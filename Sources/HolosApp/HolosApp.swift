@@ -56,7 +56,10 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
     private var enableGeneration = 0
     private var enableTask: Task<Void, Never>?
     private var assetTask: Task<Void, Never>?
-    private var expiryTask: Task<Void, Never>?
+    /// Hides the overlay eight seconds after a result or message, unless something else was shown since.
+    private var overlayHideTask: Task<Void, Never>?
+    /// Discards the kept result ten minutes after the dictation that produced it.
+    private var resultExpiryTask: Task<Void, Never>?
     private var observers: [NSObjectProtocol] = []
     private enum Destination {
         case field(InsertionTarget)
@@ -100,9 +103,12 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
     }
     /// Fixes each chunk with Apple's on-device model before it is written (Setup option); nil when off.
     private var fixPipeline: DictationFixPipeline?
-    /// The recognizer's text for the last result (before filler removal, corrections and the on-device fix), kept
-    /// when the fix changed what was written; for Copy Original.
+    /// The recognizer's text for this dictation's result (before filler removal, corrections and the on-device fix),
+    /// kept when the fix changed what was written; for Copy Original once the dictation concludes.
     private var resultOriginal = ""
+    /// What the menu's Copy Result and Copy Original offer: the last dictation that produced a result. A later
+    /// press that produces nothing (cancelled, released before listening, nothing recognized) leaves it.
+    private var retention = ResultRetention()
     var corrections = CorrectionList()
     /// False when an existing corrections file could not be read, so it is never overwritten.
     private var correctionsWritable = true
@@ -114,19 +120,42 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
     /// The recognizer's latest committed text, kept so a failure can still offer what was not written.
     private var latestCommitted = ""
     private let log = Logger(subsystem: "ca.orlenko.holos.app", category: "insertion")
+    /// This dictation's text for Copy Result; the menu offers it once the dictation concludes (`retainResult`).
     private var resultText = ""
     private var message = "Disabled — open Setup… to get started"
     private var setupWindow: SetupWindow?
     private var setupRefreshTask: Task<Void, Never>?
     private var assetState: String?
     private var shortcut: HotkeyChoice = .rightOption
-    /// The dictation language, chosen in Setup or the menu. Meetings keep their own locale.
+    /// The dictation language, chosen in Setup or the menu; until then, the supported one closest to the user's
+    /// languages (`DictationLanguage.preferred`). Meetings keep their own (`meetingLocales`). Shown as
+    /// `DictationLanguage.standard` while that default is not known yet (`resolvedLocale` nil): an action that uses
+    /// the language (enabling dictation, installing its speech model) awaits `loadLanguages` first.
     private var locale: String {
-        get { UserDefaults.standard.string(forKey: "dictationLocale") ?? DictationLanguage.standard }
+        get { resolvedLocale ?? DictationLanguage.standard }
         set { UserDefaults.standard.set(newValue, forKey: "dictationLocale") }
     }
-    /// The languages Apple's speech transcriber supports (`DictationLanguage.groups`); empty until loaded.
-    private var localeGroups: [[String]] = []
+    /// The dictation language, or nil while there is no saved choice and the supported languages have not loaded.
+    private var resolvedLocale: String? {
+        DictationLanguage.resolvedForSystem(saved: UserDefaults.standard.string(forKey: "dictationLocale"),
+                                            supported: supportedLocales)
+    }
+    /// The meeting languages chosen in the meeting start panel (exactly one today; the recorder transcribes in the
+    /// first); until then, the dictation language. Nil while that is not known yet (`resolvedLocale`): the start
+    /// panel keeps Start off until it is.
+    var meetingLocales: [String]? {
+        get {
+            DictationLanguage.meetingLocales(
+                saved: UserDefaults.standard.stringArray(forKey: MeetingAppState.localesKey), dictation: resolvedLocale)
+        }
+        set { UserDefaults.standard.set(newValue, forKey: MeetingAppState.localesKey) }
+    }
+    /// The languages Apple's speech transcriber supports; nil until a load finished, empty when it failed (the
+    /// default is then `DictationLanguage.standard`, and the next `loadLanguages` tries again).
+    private var supportedLocales: [String]?
+    /// The same, grouped for a picker (`DictationLanguage.groups`).
+    private(set) var localeGroups: [[String]] = []
+    private var languagesTask: Task<Void, Never>?
     private var languageName: String { DictationLanguage.name(of: locale) }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -141,7 +170,7 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
             message = "Could not read corrections.json; corrections are off until it is fixed or removed."
         }
         controller.contextualStrings = corrections.vocabulary
-        loadLanguages()
+        Task { await loadLanguages() }
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         statusItem.button?.image = NSImage(systemSymbolName: "waveform", accessibilityDescription: "Voice is Local")
         statusItem.button?.toolTip = "Voice is Local — local push-to-talk"
@@ -180,7 +209,8 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
-        enableTask?.cancel(); assetTask?.cancel(); expiryTask?.cancel(); setupRefreshTask?.cancel()
+        enableTask?.cancel(); assetTask?.cancel(); overlayHideTask?.cancel(); resultExpiryTask?.cancel()
+        setupRefreshTask?.cancel()
         monitor?.stop(); controller?.cancel()
         for observer in observers { NSWorkspace.shared.notificationCenter.removeObserver(observer) }
         overlay.hide()
@@ -194,16 +224,16 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
 
     private var shortcutTitle: String { shortcut == .rightOption ? "Right Option" : "Control–Option–Space" }
 
-    /// Copy Result, Copy Original and Discard Result for the last dictation.
+    /// Copy Result, Copy Original and Discard Result for the last dictation that produced a result.
     private func addResultItems(to menu: NSMenu) {
         let copy = item("Copy Result", #selector(copyResult))
-        copy.isEnabled = !resultText.isEmpty
+        copy.isEnabled = !retention.kept.text.isEmpty
         menu.addItem(copy)
-        if !resultOriginal.isEmpty {
+        if !retention.kept.original.isEmpty {
             menu.addItem(item("Copy Original (As Heard)", #selector(copyOriginal)))
         }
         let discard = item("Discard Result", #selector(discardResult))
-        discard.isEnabled = !resultText.isEmpty && !isBusy
+        discard.isEnabled = !retention.kept.isEmpty && !isBusy
         menu.addItem(discard)
     }
 
@@ -217,7 +247,7 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
             // A meeting is recording: this line replaces the dictation block (§4.12), except a result kept from
             // before the meeting, which stays reachable because nothing copies it to the clipboard on its own.
             addDictationPausedLine(to: menu)
-            if !resultText.isEmpty || !resultOriginal.isEmpty { addResultItems(to: menu) }
+            if !retention.kept.isEmpty { addResultItems(to: menu) }
         } else {
             let status = NSMenuItem(title: message, action: nil, keyEquivalent: "")
             status.isEnabled = false
@@ -301,7 +331,7 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
         show("Voice is Local was rebuilt while running. Quit and reopen Voice is Local to dictate again.")
         overlay.show(title: "Voice is Local was rebuilt while running", text: "Quit and reopen Voice is Local to dictate again.",
                      force: true, attention: true)
-        scheduleExpiry()
+        scheduleOverlayHide()
         return true
     }
 
@@ -321,6 +351,10 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
         enableTask = Task { [weak self] in
             guard let self else { return }
             do {
+                // Without a saved choice the language is the default one, known once the languages are loaded.
+                await self.loadLanguages()
+                guard !Task.isCancelled, generation == self.enableGeneration else { return }
+                self.controller.locale = self.locale
                 let state = try await AppleSpeechEngine.assetStatus(locale: self.locale, backend: .speech)
                 guard !Task.isCancelled, generation == self.enableGeneration else { return }
                 self.assetState = state
@@ -398,14 +432,30 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    /// Loads the languages Apple's speech transcriber supports, for Setup and the menu.
-    private func loadLanguages() {
-        Task { [weak self] in
+    /// Loads the languages Apple's speech transcriber supports, for Setup, the menu, the meeting start panel, and the
+    /// default language; returns once they are loaded (or could not be: the default is then
+    /// `DictationLanguage.standard`, and a later call tries again). Loads them once.
+    func loadLanguages() async {
+        if let supportedLocales, !supportedLocales.isEmpty { return }
+        if let languagesTask { return await languagesTask.value }
+        let task = Task { [weak self] in
             let supported = await AppleSpeechEngine.capabilities(backend: .speech).supportedLocales
-            guard let self, !supported.isEmpty else { return }
-            self.localeGroups = DictationLanguage.groups(supported)
+            guard let self else { return }
+            self.languagesTask = nil
+            let before = self.locale
+            // Also when empty: the default is then known to be `standard`, so what waited for it can go on.
+            self.supportedLocales = supported
+            if !supported.isEmpty { self.localeGroups = DictationLanguage.groups(supported) }
+            // The default language may have changed from the provisional one; enabling uses the new one.
+            if self.locale != before {
+                self.assetState = nil
+                self.refreshAssetState()
+            }
             self.rebuildMenu()
+            self.languagesLoaded()
         }
+        languagesTask = task
+        await task.value
     }
 
     private func handle(_ action: HotkeyAction) {
@@ -427,7 +477,20 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
             originFocus = TextInsertion.currentFocus()
             typedAppName = nil
             if let app = NSWorkspace.shared.frontmostApplication { TextInsertion.enableAccessibility(for: app) }
-            if let terminal = KeystrokeTarget.captureTerminal() {
+            let terminal: KeystrokeTarget?
+            var terminalRefusal: String?
+            do {
+                terminal = try KeystrokeTarget.captureTerminal()
+            } catch {
+                terminal = nil
+                terminalRefusal = error.localizedDescription
+            }
+            if let terminalRefusal {
+                // Focus moved while it was captured; the text is kept for Copy Result, never typed.
+                target = nil
+                insertionBlockReason = "The terminal's focus changed as dictation started; use Copy Result."
+                log.notice("No target: \(terminalRefusal, privacy: .public)")
+            } else if let terminal {
                 target = .keystrokes(terminal)
                 typedAppName = terminal.appName
                 log.notice("Target: terminal \(terminal.appName, privacy: .public)")
@@ -461,9 +524,12 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
                     log.notice("No target: \(error.localizedDescription, privacy: .public)")
                 }
             }
-            expiryTask?.cancel()
+            overlayHideTask?.cancel()
+            // The previous result, its menu items and its expiry stay until this dictation produces one of its own
+            // (`retainResult`). `begin` can conclude at once (no microphone permission), so this comes first.
             resultText = ""
             resultOriginal = ""
+            retention.begin()
             if controller.begin() {
                 // A pending opacity sample must not hide this dictation's own preview or result.
                 // A rejected begin leaves the timer running so the sample still hides on time.
@@ -476,6 +542,7 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
                 }
             } else {
                 target = nil
+                _ = retention.conclude(DictationResult())  // nothing started, so the previous result stays
                 show("Previous dictation is still stopping; release and try again shortly.")
             }
         case .ended: controller.end()
@@ -490,6 +557,9 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
             target = nil
             overlay.hide()
             message = enabled ? "Ready — hold \(shortcutTitle)" : "Disabled"
+            // Cancelled or disabled: usually nothing to keep, but Copy Original may hold what was heard when Apple
+            // Intelligence's fix already changed written text.
+            retainResult()
         case .preparing:
             message = "Preparing — wait before speaking"
             if showPreview {
@@ -563,8 +633,9 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
                 } else {
                     message += " Copy Result has the words that were not inserted."
                 }
+                retainResult()
                 overlay.show(title: message, text: resultText, attention: true)
-                scheduleExpiry()
+                scheduleOverlayHide()
                 rebuildMenu()
                 return
             }
@@ -572,14 +643,16 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
                 // The transcript no longer extends what was inserted, so no tail is safe to paste.
                 resultText = committed
                 message += " The transcript changed after text was inserted; check the field. Copy Result has the full transcript."
+                retainResult()
                 overlay.show(title: message, text: resultText, attention: true)
-                scheduleExpiry()
+                scheduleOverlayHide()
                 rebuildMenu()
                 return
             }
             resultText = update.text
+            retainResult()
             overlay.show(title: message, text: resultText, attention: true)
-            scheduleExpiry()
+            scheduleOverlayHide()
         }
         rebuildMenu()
     }
@@ -740,7 +813,10 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
             return outcome == .inserted || outcome == .typed
         }
         guard let rest = TextInsertion.unwritten(text, after: insertedText) else {
-            message = "Text was inserted while you spoke, but the final transcript differs. Check the field; Copy Result copies the full transcript."
+            // An empty final transcript is no result, so Copy Result keeps the previous dictation's text instead.
+            message = text.isEmpty
+                ? "Text was inserted while you spoke, but the final transcript came back empty. Check the field."
+                : "Text was inserted while you spoke, but the final transcript differs. Check the field; Copy Result copies the full transcript."
             resultNeedsAttention = true
             return false
         }
@@ -763,10 +839,32 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
     /// Shows the result of a finished dictation, and a forced stop that ended it.
     private func presentResult() {
         if let forced = forcedStopMessage, !message.hasPrefix(forced) { message = forced + " " + message }
+        retainResult()
         if showPreview || resultNeedsAttention {
             overlay.show(title: message, text: resultText, attention: resultNeedsAttention)
         }
-        scheduleExpiry()
+        scheduleOverlayHide()
+    }
+
+    /// Concludes this dictation for the menu: its result replaces the kept one and starts a new ten-minute expiry,
+    /// unless it produced nothing; then the previous result, its menu items and its expiry stay as they were.
+    private func retainResult() {
+        switch retention.conclude(DictationResult(text: resultText, original: resultOriginal)) {
+        case .replaced:
+            resultExpiryTask?.cancel()
+            resultExpiryTask = Task { [weak self] in
+                do {
+                    try await Task.sleep(for: .seconds(600))
+                    self?.expireResult()
+                } catch { }
+            }
+        case .keptPrevious:
+            if !retention.kept.text.isEmpty, controller.status.phase != .idle {
+                message += (message.hasSuffix(".") ? "" : ".") + " Copy Result still has the previous dictation."
+            }
+        case .nothing:
+            break
+        }
     }
 
     private func blockedOutcome(default reason: String) -> InsertionOutcome {
@@ -919,18 +1017,25 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
         rebuildMenu()
     }
 
-    private func scheduleExpiry() {
-        expiryTask?.cancel()
+    private func scheduleOverlayHide() {
+        overlayHideTask?.cancel()
         let shown = overlay.contentToken
-        expiryTask = Task { [weak self] in
+        overlayHideTask = Task { [weak self] in
             do {
                 try await Task.sleep(for: .seconds(8))
                 // Hide only the content this timer was scheduled for, never something shown since.
                 if let self, self.overlay.contentToken == shown { self.overlay.hide() }
-                try await Task.sleep(for: .seconds(592))
-                self?.discardResult()
             } catch { }
         }
+    }
+
+    /// The kept result's ten minutes are up. During a later dictation only the kept result goes; that dictation
+    /// still concludes on its own.
+    private func expireResult() {
+        guard isBusy else { return discardResult() }
+        retention.discard()
+        resultExpiryTask = nil
+        rebuildMenu()
     }
 
     @objc private func cancelDictation() {
@@ -942,20 +1047,22 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func copyResult() {
-        guard !resultText.isEmpty else { return }
-        let copied = copyToClipboard(resultText)
+        guard !retention.kept.text.isEmpty else { return }
+        let copied = copyToClipboard(retention.kept.text)
         show(copied ? "Copied — paste where you choose" : "Clipboard write failed; result is still available")
     }
 
     @objc private func copyOriginal() {
-        guard !resultOriginal.isEmpty else { return }
-        let copied = copyToClipboard(resultOriginal)
+        guard !retention.kept.original.isEmpty else { return }
+        let copied = copyToClipboard(retention.kept.original)
         show(copied ? "Copied the text as heard, before any fixes" : "Clipboard write failed; the original is still available")
     }
 
     @objc private func discardResult() {
         guard !isBusy else { return }
-        expiryTask?.cancel(); expiryTask = nil
+        overlayHideTask?.cancel(); overlayHideTask = nil
+        resultExpiryTask?.cancel(); resultExpiryTask = nil
+        retention.discard()
         resultText = ""
         resultOriginal = ""
         controller.reset()
@@ -982,7 +1089,7 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
         }
         setDockPresence(true, for: "setup")
         setupWindow?.show()
-        if localeGroups.isEmpty { loadLanguages() }
+        if localeGroups.isEmpty { Task { await loadLanguages() } }
         refreshAssetState()
         refreshSpeakerModels()
         // TCC has no change notification, so poll while the window is open.
@@ -1098,11 +1205,19 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
     private func installAssets() {
         guard !installingAssets, !isBusy, !enabled, !enabling else { return }
         installingAssets = true  // also keeps the language from changing until the install ends
-        let locale = locale
-        let name = languageName
-        show("Installing the speech model for \(name) — this may download Apple's model")
+        updateSetupWindow()
         assetTask = Task { [weak self] in
             guard let self else { return }
+            // Without a saved choice the language is the default one, known once the languages are loaded: installing
+            // before then would install `DictationLanguage.standard` for a user whose language is another.
+            await self.loadLanguages()
+            guard !Task.isCancelled else {
+                self.installingAssets = false
+                return
+            }
+            let locale = self.locale
+            let name = self.languageName
+            self.show("Installing the speech model for \(name) — this may download Apple's model")
             do {
                 try await AppleSpeechEngine.installAssets(locale: locale, backend: .speech)
                 self.installingAssets = false

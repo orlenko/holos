@@ -63,8 +63,9 @@ over. Because the app's path changed, macOS may ask for its permissions again. O
 On first launch, dictation is disabled and the Voice is Local Setup window opens (reopen it
 with **Setup…** in the menu). It shows live status for each step: explicitly grant
 Microphone, Accessibility, and Input Monitoring access, pick the dictation language
-(English (Canada) by default; any language Apple's speech transcriber supports, such
-as French (Canada)), install Apple's speech model for it, then enable your chosen
+(by default the supported language closest to your macOS preferred languages and
+region, English (Canada) when none of them is supported; any language Apple's speech
+transcriber supports, such as French (Canada)), install Apple's speech model for it, then enable your chosen
 hold-to-talk shortcut. The default choice
 is Right Option; Control–Option–Space is available as an alternate. The menu bar
 app shows a live preview, and releasing the shortcut finalizes one utterance.
@@ -82,7 +83,12 @@ meetings record the microphone only. The recorder is the
 bundled `voiceislocal` tool (`VoiceIsLocal.app/Contents/MacOS/voiceislocal`, which `build-app.sh` now
 builds and signs) running as a child of the app: it keeps recording if the app quits
 or crashes, and the app finds it again on relaunch, as it does a meeting started from
-a terminal. Its log is `~/Library/Logs/Holos/recorder-<id>.log`;
+a terminal. The start panel's Language pop-up (the same languages as dictation) sets
+the language the meeting is transcribed in; it starts as the dictation language and
+remembers your last choice. When that language's speech model is not installed, the
+panel says so and offers Install… (a download from Apple, only when you click it); a
+meeting recorded without it saves its audio but no transcript. The recorder's log is
+`~/Library/Logs/Holos/recorder-<id>.log`;
 `defaults write ca.orlenko.holos.app meetingRecorderMode inProcess` records inside
 the app instead. Dictation is paused while a meeting records. If a permission prompt
 is open when you choose Stop Recording, the recorder stops once the prompt is
@@ -118,6 +124,9 @@ voiceislocal="$BIN_DIR/voiceislocal"
 
 "$voiceislocal" doctor                         # inspect capabilities, no permission prompt
 "$voiceislocal" setup --locale en-CA           # install speech assets; may download assets
+# Without --locale, commands use the supported locale closest to your macOS preferred
+# languages (en-CA when none is supported); session retranscribe uses the session's own.
+# Scripts that need the same locale on every Mac pass --locale.
 "$voiceislocal" setup --speakers               # download the speaker models (about 21 MB)
 "$voiceislocal" transcribe ./meeting.wav       # local file to finalized timed text
 "$voiceislocal" transcribe ./meeting.wav --json
@@ -284,3 +293,16 @@ transcripts. It is gitignored; keep originals out of commits.
   [implementation design](docs/meeting-design.md) (in progress)
 - [Speaker labelling evaluation](docs/speaker-evaluation.md) and
   [third-party notices](THIRD_PARTY_NOTICES.md)
+
+## License
+
+Voice is Local is free software: you can redistribute it and/or modify it under the terms of the
+GNU General Public License as published by the Free Software Foundation, either version 3 of the
+License, or (at your option) any later version. It is distributed in the hope that it will be
+useful, but without any warranty; see [LICENSE](LICENSE) for the full terms. Copyright © 2026
+Vlad Orlenko.
+
+The name and the app icon are not covered by the license: Bjola Software Inc. owns the Voice is
+Local trademark and the icon copyright, and builds you make and give to others ship under their own
+name and icon. See [TRADEMARKS.md](TRADEMARKS.md) for what Bjola Software Inc. permits. Third-party components keep
+their own licenses: [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

@@ -17,12 +17,11 @@ extension MeetingStartSettings {
     /// The settings of a meeting started from the app. `recordSystemAudio` is the Advanced setting;
     /// `systemAudioAllowed` is `CGPreflightScreenCaptureAccess()` when the meeting starts (never a prompt).
     public static func app(name: String, recordSystemAudio: Bool, systemAudioAllowed: Bool,
-                           expectedSpeakers: Int? = nil) -> MeetingStartSettings {
+                           expectedSpeakers: Int? = nil, locales: [String] = []) -> MeetingStartSettings {
         let both = recordSystemAudio && systemAudioAllowed
-        var settings = MeetingStartSettings(name: name, source: both ? .microphoneAndSystem : .microphone,
-                                            othersInRoom: both, expectedSpeakers: expectedSpeakers)
-        settings.microphone = .systemDefault
-        return settings
+        return MeetingStartSettings(name: name, source: both ? .microphoneAndSystem : .microphone,
+                                    othersInRoom: both, expectedSpeakers: expectedSpeakers, microphone: .systemDefault,
+                                    locales: locales)
     }
 
     /// The start panel's "Records" line: what a meeting started now records.

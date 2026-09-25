@@ -138,7 +138,9 @@ struct Session: AsyncParsableCommand {
     }
 
     struct Retranscribe: AsyncParsableCommand {
-        static let configuration = CommandConfiguration(abstract: "Reprocess finalized archive chunks into a new JSON transcript.")
+        static let configuration = CommandConfiguration(
+            abstract: "Reprocess finalized archive chunks into a new JSON transcript.",
+            discussion: "Without --locale, the session is transcribed in the locale it was recorded with.")
         @Argument(help: "Path to a .holos directory.") var path: String
         @Option(name: .shortAndLong, help: "New JSON transcript output path; required to preserve original revisions.") var output: String
         @OptionGroup var recognition: RecognitionOptions
@@ -149,14 +151,16 @@ struct Session: AsyncParsableCommand {
             guard !report.needsAttention, let manifest = report.manifest else {
                 throw HolosError.incomplete("Inspect the archive first; missing, damaged, or unindexed audio needs attention.")
             }
+            // The language the session was recorded in, unless --locale asks for another.
+            let locale = recognition.locale ?? manifest.locale
             var segments: [TranscriptSegment] = []
             for track in Set(manifest.chunks.map(\.track)).sorted() {
                 Console.error("Transcribing \(track)…")
                 segments += try await TrackReplayer.replay(directory: directory, track: track,
-                    locale: recognition.locale, backend: recognition.backend)
+                    locale: locale, backend: recognition.backend)
             }
             segments.sort { $0.start < $1.start }
-            let transcript = Transcript(source: directory.path, locale: recognition.locale, backend: recognition.backend, segments: segments)
+            let transcript = Transcript(source: directory.path, locale: locale, backend: recognition.backend, segments: segments)
             try writeJSON(transcript, to: fileURL(output))
             Console.output(fileURL(output).path)
         }

@@ -97,6 +97,22 @@ private let oneModeID = "3F2A9C1E-0000-4000-8000-000000000002"
     #expect(try HolosJSON.decoder().decode(MeetingStartSettings.self, from: HolosJSON.encoder().encode(app)) == app)
 }
 
+/// The start panel's language travels with the one-mode sources: the recorder gets `--locale` and `--microphone`, and
+/// both survive saving the settings.
+@Test func appMeetingCarriesTheMeetingLanguage() throws {
+    let settings = MeetingStartSettings.app(name: "Weekly", recordSystemAudio: true, systemAudioAllowed: true,
+                                            locales: ["fr-CA"])
+    #expect(settings.locale == "fr-CA")
+    #expect(settings.normalized() == settings)
+    #expect(ChildProcessLauncher.arguments(settings, sessionID: oneModeID, root: oneModeRoot, vocabularyFile: nil) == [
+        "record", "start", "--session-id", oneModeID, "--name=Weekly", "--source", "mic+system", "--locale=fr-CA",
+        "--others-in-room", "--microphone", "default", "--no-live-text", "--directory", oneModeRoot.path,
+    ])
+    let decoded = try HolosJSON.decoder().decode(MeetingStartSettings.self, from: HolosJSON.encoder().encode(settings))
+    #expect(decoded == settings)
+    #expect(decoded.microphone == .systemDefault)
+}
+
 @Test func microphoneArguments() {
     for selection in [MicrophoneSelection.systemDefault, .builtIn] {
         #expect(MicrophoneSelection(argument: selection.argument) == selection)

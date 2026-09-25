@@ -176,11 +176,13 @@ final class SetupWindow: NSObject, NSWindowDelegate {
 
         let advanced = makeAdvancedSection()
 
-        let stack = NSStackView(views: [messageLabel, grid, fillerToggle, previewToggle, aiFixToggle, opacityRow, note,
+        // Text options first, then the preview and its opacity together.
+        let stack = NSStackView(views: [messageLabel, grid, fillerToggle, aiFixToggle, previewToggle, opacityRow, note,
                                         advanced])
         stack.orientation = .vertical
         stack.alignment = .leading
         stack.spacing = 20
+        stack.setCustomSpacing(10, after: previewToggle)
         stack.translatesAutoresizingMaskIntoConstraints = false
         let content = NSView()
         content.addSubview(stack)

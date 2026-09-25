@@ -423,3 +423,18 @@ private func isFailed(_ state: MeetingState) -> String? {
         .normalized(now: date, timeZone: TimeZone(identifier: "UTC")!)
     #expect(normalized == MeetingStartSettings(name: "Meeting 2026-09-23 14:00", source: .microphone))
 }
+
+@Test func startSettingsKeepEachLanguageOnceInOrder() throws {
+    let settings = MeetingStartSettings(name: "Council", source: .microphone, locales: [" fr_CA", "", "en-CA", "fr-CA"])
+        .normalized()
+    #expect(settings.locales == ["fr-CA", "en-CA"])
+    #expect(settings.locale == "fr-CA")
+    #expect(MeetingStartSettings(name: "Council", source: .microphone).locale == nil)
+    // Settings saved before meetings had a language still load, with none; saved ones round-trip.
+    let old = Data(#"{"name":"","source":"mic+system","applicationBundleID":"us.zoom.xos","othersInRoom":true}"#.utf8)
+    let decoded = try JSONDecoder().decode(MeetingStartSettings.self, from: old)
+    #expect(decoded == MeetingStartSettings(name: "", source: .microphoneAndSystem, applicationBundleID: "us.zoom.xos",
+                                            othersInRoom: true))
+    let encoded = try JSONEncoder().encode(settings)
+    #expect(try JSONDecoder().decode(MeetingStartSettings.self, from: encoded) == settings)
+}
