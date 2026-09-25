@@ -5,7 +5,7 @@ import HolosCore
 import HolosStorage
 
 /// Transcribes saved audio: after a recording whose live transcription fell behind, and for
-/// `holos session retranscribe`.
+/// `voiceislocal session retranscribe`.
 public enum TrackReplayer {
     static let bufferFrames: AVAudioFrameCount = 4096
     /// A gap between chunks longer than this starts a new speech session (docs/meeting-design.md §2.3, R19).

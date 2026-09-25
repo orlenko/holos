@@ -51,7 +51,7 @@ func recorderSession(in root: URL) async -> URL? {
     return found
 }
 
-/// Sends `command` like `holos record …` and waits up to 3 s for the recorder's answer.
+/// Sends `command` like `voiceislocal record …` and waits up to 3 s for the recorder's answer.
 func recorderSend(_ command: ControlCommand, label: String? = nil, to session: URL) async throws -> ControlAck? {
     let sessionID = session.deletingPathExtension().lastPathComponent
     let request = try RecorderChannel.send(command, label: label, session: session, sessionID: sessionID,

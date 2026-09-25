@@ -53,7 +53,7 @@ func speechFixtureTimesAreAbsolute() async throws {
     let length = frames.reduce(0) { $0 + $1.duration }
     let reporter = CollectingReporter()
     let locale = ProcessInfo.processInfo.environment["HOLOS_SPEECH_TEST_LOCALE"] ?? "en-CA"
-    // Fails here, with the reason, when the speech assets are not installed (`holos setup --locale <locale>`).
+    // Fails here, with the reason, when the speech assets are not installed (`voiceislocal setup --locale <locale>`).
     let probe = try await appleSpeechFactory(locale, .speech, []) { _ in }
     await probe.cancel()
     let track = LiveTrack(track: "mic", locale: locale, backend: .speech, contextualStrings: [],

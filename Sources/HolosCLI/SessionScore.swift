@@ -5,7 +5,7 @@ import HolosMeeting
 import HolosStorage
 
 extension Session {
-    /// `holos session score` (hidden; docs/meeting-design.md §5.5 PR7c, R24).
+    /// `voiceislocal session score` (hidden; docs/meeting-design.md §5.5 PR7c, R24).
     struct Score: ParsableCommand {
         static let configuration = CommandConfiguration(
             abstract: "Compare a session's speaker labels with Otter's for the same audio (numbers only).",

@@ -2,7 +2,7 @@ import Synchronization
 
 /// A task that can be cancelled before it exists. A command installs its interrupt handling with `cancel` as the
 /// action first, then calls `start`: a signal that arrives in between is never lost, because a `start` after `cancel`
-/// begins the work already cancelled and runs none of it (`holos session import`).
+/// begins the work already cancelled and runs none of it (`voiceislocal session import`).
 public final class CancellableStart<Success: Sendable>: Sendable {
     private struct State {
         var task: Task<Success, any Error>?

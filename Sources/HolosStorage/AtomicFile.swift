@@ -140,7 +140,7 @@ public enum AtomicFile {
             let code = errno
             if code == ENOENT { return nil }
             if code == ELOOP {
-                throw HolosError.invalidInput("\(url.lastPathComponent) is a symbolic link; Holos reads only regular files.")
+                throw HolosError.invalidInput("\(url.lastPathComponent) is a symbolic link; Voice is Local reads only regular files.")
             }
             throw HolosError.io("Cannot open \(url.lastPathComponent): \(errnoText(code)).")
         }
@@ -200,9 +200,9 @@ public enum AtomicFile {
         do {
             return try HolosJSON.decoder().decode(type, from: data)
         } catch let error as DecodingError {
-            throw HolosError.invalidInput("\(name) is damaged or was not written by Holos (\(describe(error))).")
+            throw HolosError.invalidInput("\(name) is damaged or was not written by Voice is Local (\(describe(error))).")
         } catch {
-            throw HolosError.invalidInput("\(name) is damaged or was not written by Holos.")
+            throw HolosError.invalidInput("\(name) is damaged or was not written by Voice is Local.")
         }
     }
 
@@ -219,7 +219,7 @@ public enum AtomicFile {
             let code = errno
             if code == ENOENT { return nil }
             if code == ELOOP {
-                throw HolosError.invalidInput("\(url.lastPathComponent) is a symbolic link; Holos reads only regular files.")
+                throw HolosError.invalidInput("\(url.lastPathComponent) is a symbolic link; Voice is Local reads only regular files.")
             }
             throw HolosError.io("Cannot open \(url.lastPathComponent): \(errnoText(code)).")
         }
@@ -249,7 +249,7 @@ public enum AtomicFile {
             let code = errno
             if code == ENOENT { return nil }
             if code == ELOOP {
-                throw HolosError.invalidInput("\(url.lastPathComponent) is a symbolic link; Holos reads only regular files.")
+                throw HolosError.invalidInput("\(url.lastPathComponent) is a symbolic link; Voice is Local reads only regular files.")
             }
             throw HolosError.io("Cannot open \(url.lastPathComponent): \(errnoText(code)).")
         }
@@ -406,7 +406,7 @@ public enum AtomicFile {
     /// Reads the open regular file `fd` of `size` bytes, refusing more than `maxBytes`.
     private static func readAll(_ fd: Int32, size: off_t, url: URL, maxBytes: Int) throws -> Data {
         guard size <= off_t(maxBytes) else {
-            throw HolosError.invalidInput("\(url.lastPathComponent) is larger than Holos expects.")
+            throw HolosError.invalidInput("\(url.lastPathComponent) is larger than Voice is Local expects.")
         }
         var data = Data()
         data.reserveCapacity(Int(size))
@@ -420,7 +420,7 @@ public enum AtomicFile {
             if count == 0 { break }
             data.append(contentsOf: buffer[0..<count])
             guard data.count <= maxBytes else {
-                throw HolosError.invalidInput("\(url.lastPathComponent) is larger than Holos expects.")
+                throw HolosError.invalidInput("\(url.lastPathComponent) is larger than Voice is Local expects.")
             }
         }
         return data
@@ -789,7 +789,7 @@ public enum AtomicFile {
         guard fd >= 0 else {
             let code = errno
             if code == ELOOP {
-                throw HolosError.invalidInput("\(url.lastPathComponent) is a symbolic link; Holos appends only to regular files.")
+                throw HolosError.invalidInput("\(url.lastPathComponent) is a symbolic link; Voice is Local appends only to regular files.")
             }
             throw HolosError.io("Cannot open \(url.lastPathComponent) for appending: \(errnoText(code)).")
         }

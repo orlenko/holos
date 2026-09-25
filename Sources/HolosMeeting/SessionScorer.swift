@@ -4,7 +4,7 @@ import HolosCore
 import HolosSpeakers
 import HolosStorage
 
-/// `holos session score` (hidden; docs/meeting-design.md §5.5 PR7c, R24, R25): how a session's speaker labels agree
+/// `voiceislocal session score` (hidden; docs/meeting-design.md §5.5 PR7c, R24, R25): how a session's speaker labels agree
 /// with Otter's for the same audio. Otter labels are people's names and Otter transcripts hold what was said, so
 /// nothing here keeps or reports either: a label becomes the first 12 hex digits of its SHA-256 as soon as it is read,
 /// and the report holds counts, seconds, ratios, and those keys only (§1.9).
@@ -13,7 +13,7 @@ public enum SessionScorer {
     /// "with at least 30 s" counts; the evaluation's speaker-count hint is built from the Otter count.
     public static let substantialSeconds = 30.0
 
-    /// Everything `holos session score` prints. Numbers, run and cluster IDs, and hashed labels only.
+    /// Everything `voiceislocal session score` prints. Numbers, run and cluster IDs, and hashed labels only.
     public struct Report: Codable, Sendable, Equatable {
         public var schemaVersion: Int
         /// The head run scored.
@@ -65,11 +65,11 @@ public enum SessionScorer {
             self.engineConfiguration = engineConfiguration
         }
 
-        /// The text `holos session score` prints without `--json`: numbers only, not even hashed labels.
+        /// The text `voiceislocal session score` prints without `--json`: numbers only, not even hashed labels.
         public var summaryLines: [String] {
             [
                 "Reference speakers: \(referenceSpeakers) (\(referenceSpeakersOver30s) with at least 30 s)",
-                "Holos speakers: \(holosSpeakers) (\(holosSpeakersOver30s) with at least 30 s)",
+                "Voice is Local speakers: \(holosSpeakers) (\(holosSpeakersOver30s) with at least 30 s)",
                 "Agreement with Otter, speaker segments: confusion \(Self.percent(agreementConfusion)) over "
                     + "\(Self.seconds(comparedSeconds)) compared",
                 turnAgreementConfusion.map {
@@ -108,7 +108,7 @@ public enum SessionScorer {
         let manifest = try SessionArchive.readManifest(at: session)
         guard let head = try SessionSpeakerStore.readHead(session: session) else {
             throw HolosError.unavailable(
-                "This session has no speaker labels yet. Label them first with holos session diarize.")
+                "This session has no speaker labels yet. Label them first with voiceislocal session diarize.")
         }
         let run = try SessionSpeakerStore.readRun(id: head.runID, session: session)
         let audioSeconds = manifest.chunks.map(\.end).filter(\.isFinite).max() ?? 0
@@ -124,7 +124,7 @@ public enum SessionScorer {
         let holosSeconds = speakingSeconds(segments)
         guard !holosSeconds.isEmpty else {
             throw HolosError.unavailable("The session's speaker labels have no speaker segments to compare. "
-                                         + "Label them again with holos session diarize --force.")
+                                         + "Label them again with voiceislocal session diarize --force.")
         }
         let turnIntervals = run.turns.compactMap { turn -> LabelledInterval? in
             guard let speaker = turn.speakerID else { return nil }

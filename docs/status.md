@@ -24,7 +24,7 @@ Hardware-facing and cross-app acceptance remain pending.
   back instead of leaving a partial line; a corrupt journal line is skipped and
   counted, so `inspect` and `recover` still work; `transcripts/current.json` names
   the current transcript revision (older archives fall back to the newest one);
-  `recover` takes a per-session processing lease and refuses while another Holos
+  `recover` takes a per-session processing lease and refuses while another Voice is Local
   process holds it. The value types and storage for meeting recording and speaker
   labels (runs, edit journal, opt-in voice data, locks) exist as internal APIs;
   no command writes speaker data yet.
@@ -85,7 +85,7 @@ Hardware-facing and cross-app acceptance remain pending.
   that fails, is cancelled, or is killed is never taken for a recording; a failed or
   cancelled import removes that folder, and the next import removes one a killed
   import left (only a folder with that exact name and the `.holos-import` marker
-  Holos writes into it; nothing else in a `--directory` folder). Labelling runs under the lock the import took, and the session's path
+  Voice is Local writes into it; nothing else in a `--directory` folder). Labelling runs under the lock the import took, and the session's path
   is printed once labelling ends. The hidden
   `session score --otter <transcript.txt>` compares a session's labels with Otter's
   and prints numbers only (hashed labels with `--json`).
@@ -126,9 +126,9 @@ Hardware-facing and cross-app acceptance remain pending.
   at a time; there is no redo. `session export <session> --format md|json|txt
   [--output FILE]` renders the labelled transcript (`--output` creates a new 0600 file
   and never replaces one), and `--all` rewrites `exports/`.
-- Menu bar meetings (wave 4): Holos.app records meetings from the menu bar (Start
+- Menu bar meetings (wave 4): VoiceIsLocal.app records meetings from the menu bar (Start
   Meeting Recording…, then Pause, Add Marker, Show Live Transcript, and Stop and Save).
-  The recorder is the bundled `holos` tool running as a child of the app; it keeps
+  The recorder is the bundled `voiceislocal` tool running as a child of the app; it keeps
   recording if the app quits or crashes, and the app finds it again on relaunch, as it
   does a meeting started from a terminal. Its log is
   `~/Library/Logs/Holos/recorder-<id>.log`; `defaults write ca.orlenko.holos.app
@@ -138,7 +138,7 @@ Hardware-facing and cross-app acceptance remain pending.
   paused while a meeting records. Meetings… lists recordings and can recover them,
   label their speakers, open or save the transcript, delete the audio or the whole
   meeting, and clean up leftover renders. Setup has a "Speaker labels" row that installs
-  the speaker models (about 21 MB). Holos relabels a meeting automatically when its
+  the speaker models (about 21 MB). Voice is Local relabels a meeting automatically when its
   labelling was interrupted, at most twice per meeting within 7 days; quitting during a
   recording asks what to do. `build-app.sh` bundles and signs the CLI and refuses to
   rebuild while a recorder runs from the bundle.
@@ -150,7 +150,7 @@ Hardware-facing and cross-app acceptance remain pending.
   sample per person and meeting from the confirmed speaker's clear turns only (2 s or
   longer, not overlapped, not reassigned, split, or excluded; an outlier pass drops
   turns far from the rest), extracted on demand by a fresh FluidAudio pass (the app runs
-  the bundled `holos` for it). Post-processing never stores voice embeddings; after
+  the bundled `voiceislocal` for it). Post-processing never stores voice embeddings; after
   labelling it compares speakers with remembered voices and saves distances only, and
   `speakers list` shows "suggestion: Maybe Jim". Suggestions are never exported, and
   nothing is named automatically until thresholds are calibrated on the user's own
@@ -164,13 +164,46 @@ Hardware-facing and cross-app acceptance remain pending.
   `export [--include-voiceprints]` manage them; People… in the menu does the same.
   Forgetting cleans the meetings in the sessions folder, not sessions kept elsewhere with
   `--directory`. A forget is journalled first and finished at the next app launch or
-  `people`, `speakers`, or `session` command if Holos stops midway. Known people's names
+  `people`, `speakers`, or `session` command if Voice is Local stops midway. Known people's names
   are added to meeting recognition vocabulary.
+- Online calls (wave 5): when a call's speakers are labelled, the microphone's echo of the
+  call audio is left out: a run of 3 or more microphone words that repeats the call audio
+  starting up to 1 s after it (or at most 0.25 s before, for timing jitter; earlier words
+  are your own voice sent back by the far end and stay) is listed in the run's
+  `droppedWords` with reason `echo`, is in no turn or export, and splits the microphone
+  turn around it. With others in the room, a microphone speaker whose words are at least
+  60 % echo is not listed and its remaining words become unknown speaker. In-person
+  meetings are unchanged. The start panel, the menu (from `status.json`'s `echoRisk`
+  warning), and `voiceislocal record start` (stderr) warn when a call plays on the laptop
+  speakers, checked at start, after device changes and capture restarts, and every 2 s.
+  The filter runs only with speaker labels, so a call exported without the speaker models
+  keeps the echo, and misheard echo shorter than 3 matching words stays.
+- Review window (wave 5): Review… in Meetings (or double-click, or the "Name Speakers —
+  …" menu line after a meeting, which then goes away) opens a window to name a labelled
+  meeting's speakers: a name field per speaker that links or creates a person (a known
+  name links that person), talk time, the start of the speaker's two longest turns, Play
+  samples (three clips from the longest turns without overlap), This is me, Merge into…,
+  and "Maybe Maria" suggestions to confirm or reject one by one or all at once; a turn
+  list with a play-from-here time button, a speaker pop-up (speakers, known people,
+  Unknown, New Speaker…), and ⚠ for uncertain turns; Next Uncertain (⌘'), 1–9 to assign
+  the selection, Split Turn, search, Find More Speakers (a relabel with a minimum of one
+  more speaker than found; names carry over, turn-level changes do not), Label Speakers on
+  My Microphone for calls, Label Again after the transcript changed, Undo (⌘Z, the
+  window's own changes, newest first), and Export (Save As… Markdown, text, JSON; Copy as
+  Markdown). Voice is Local has no main menu, so these live in the window's toolbar ("Speakers"
+  pull-down) and the window handles its shortcuts. Every change shows at once and is saved
+  in order in the background through the same compare-and-append as `voiceislocal speakers`; a
+  change made on labels that changed elsewhere is refused and the window reloads them.
+  The transcript files are rewritten 2 s after the last change and when the window closes
+  (and before Voice is Local quits); a hand-edited export is moved aside and the footer says so.
+  Playback uses the saved chunks at their session times (off after Delete Audio). The
+  footer box "Learn voices of people I name in this meeting" decides whether naming learns
+  a voice. Delete Meeting can also forget the voice samples learned from that meeting.
 - `voices list` and `say` provide native voice discovery, playback, and `.m4a`,
   `.wav`, or `.caf` export. Text comes from arguments or UTF-8 stdin.
 - `read` renders a local UTF-8 text/Markdown file or stdin as an ordered AAC
   playlist, with resume and optional playback. Markdown is read verbatim.
-- `scripts/build-app.sh` builds and ad-hoc signs `build/Holos.app`, an accessory
+- `scripts/build-app.sh` builds and ad-hoc signs `build/VoiceIsLocal.app`, an accessory
   menu bar app. Its `en-CA` Speech dictation is disabled on first launch; the user
   explicitly grants permissions, installs speech assets, and enables the chosen
   hold-to-talk shortcut. Right Option is the default choice, with
@@ -195,8 +228,10 @@ changing provisional hypothesis. With `--record-only`, no transcript is generate
 this remains a useful audio-only fallback if recognition is unavailable. After
 Ctrl-C saves audio, another Ctrl-C can terminate ongoing transcription while
 preserving the archive.
-Headphones avoid remote speech leaking acoustically into the microphone track;
-cross-track echo cancellation and duplicate-speech removal are not implemented.
+Headphones avoid remote speech leaking acoustically into the microphone track. When a
+call's speakers are labelled, repeated call audio on the microphone (3 or more matching
+words) is removed from the transcript; acoustic echo cancellation is not implemented, and
+a call without speaker labels keeps the echo.
 
 ## Validation completed and pending
 
@@ -228,8 +263,16 @@ automatic relabel policy, the vocabulary hand-off file), people and voice profil
 private locked store, linking with and without voice learning, samples kept in step
 with edits and never overwritten by a stale refresh, forgetting and resuming a forget
 after a crash, the extractors' speaker-slot selection, and that post-processing stores
-distances but no vectors), and the speaker algorithms (alignment, edit projection,
-carry-over, exporters, scoring) on synthetic data; run them with
+distances but no vectors), online calls (the echo filter and hidden echo-only microphone
+speakers, end to end on a call and a hybrid call; the laptop-speaker classification and
+the `echoRisk` warning with a fake output route), the review window's model (changes
+shown before they are saved, saved in order, refused and reloaded when the labels changed
+elsewhere, including changes queued behind a refused one; undo of saved, saving, and
+queued changes; turns made by a pending split; Confirm All as one undo; exports rewritten
+after a delay and at close; search, next uncertain turn, sample clips, previews, and the
+name field's link-or-create rule) and its playback composition (chunks at their session
+times, overlapping chunks trimmed, missing chunks skipped), and the speaker algorithms
+(alignment, edit projection, carry-over, exporters, scoring) on synthetic data; run them with
 `./scripts/test.sh`, which keeps `HOLOS_DATA_DIR` and `HOLOS_SUPPORT_DIR` in a
 temporary folder. The opt-in native fixture was exercised separately for both
 recognizers. WAV, CAF, and M4A synthesis/export were exercised without audible
@@ -254,9 +297,9 @@ See the [reference comparison](reference-evaluation.md) for scoring rules and re
 
 Speaker labels were run end to end (`session import`, `session diarize`,
 `session score`) on the three private Otter recordings (7, 20, and 89 minutes).
-Holos disagreed with Otter's speaker on 1.4–5.1 % of the time where both have a
-speaker. Holos had 2, 7, and 6 speakers with at least 30 s of speech; Otter had 2,
-7, and 8 labels with at least 30 s of turns (counts, not matched people). Holos
+Voice is Local disagreed with Otter's speaker on 1.4–5.1 % of the time where both have a
+speaker. Voice is Local had 2, 7, and 6 speakers with at least 30 s of speech; Otter had 2,
+7, and 8 labels with at least 30 s of turns (counts, not matched people). Voice is Local
 labelled the 89-minute recording in about 17 s at about 780 MB peak RSS (about
 1.05 GB peak memory footprint). This is agreement
 with Otter, not accuracy. Keeping overlapping speech (`exclusiveSegments` false) did
@@ -281,7 +324,10 @@ Still requiring real-machine or user-data validation:
 - Run the menu bar meeting checks in the [meeting validation guide](meeting-validation.md)
   (permission prompts and ownership, an app or recorder killed mid-meeting, dictation
   paused during a meeting, quitting while recording, installing speaker models from
-  Setup, automatic relabel after a shutdown) and the
+  Setup, automatic relabel after a shutdown, a call on laptop speakers and a hybrid call,
+  naming the speakers of the 89-minute Otter meeting and of a real 3 h meeting in the
+  review window in under 10 minutes; the review window's layout, keys, and playback have
+  not been seen on screen yet) and the
   [voice profile checks](voice-profile-validation.md) (a voice confirmed in one meeting is
   suggested in the next; forgetting removes it). None has been run yet.
 - Measure recognition accuracy against private, human-reviewed reference audio.
@@ -299,10 +345,11 @@ Still requiring real-machine or user-data validation:
   when explicitly chosen from the menu.
 - Correction memory, correction management, or Foundation Models-assisted
   correction. No correction database workflow is present.
-- Speaker names and edits: labels are "Speaker N" until renamed or linked to a person
-  with `holos speakers`; the transcript review window is a later wave, so naming speakers
-  and learning voices are command-line only (the People window manages people and
-  voices but does not name speakers). Recognition thresholds come from a small
+- Speaker names and edits: labels are "Speaker N" until named in the review window or
+  with `voiceislocal speakers`. The review window has no redo, and its undo does not reach past
+  a relabel (Find More Speakers keeps names, not turn-level changes). Find More Speakers is
+  off for a call whose two tracks were both split into speakers, because a minimum speaker
+  count cannot be asked of two tracks at once. Recognition thresholds come from a small
   calibration (two recordings of one team); suggestions for a person recorded in the
   other condition (room vs call) are less reliable. Speaker counts are approximate:
   quieter or briefer speakers can merge into others. Nothing deletes old meetings

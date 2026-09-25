@@ -27,7 +27,7 @@ private func relabelSummary(_ name: String, speakers: SpeakerLabelState = .inter
         relabelSummary("interrupted with edits", edited: true),
         relabelSummary("interrupted 10 days old", daysOld: 10),
         relabelSummary("not labelled: models missing", speakers: .notLabelled,
-                       message: "No speaker labels: speaker models are not installed. Install them from Setup, or run holos setup --speakers."),
+                       message: "No speaker labels: speaker models are not installed. Install them from Setup, or run voiceislocal setup --speakers."),
         pick,
     ]
     #expect(AutoRelabelPolicy.candidates(summaries, attempts: [:], modelsInstalled: true, meetingActive: false,

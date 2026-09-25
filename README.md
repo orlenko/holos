@@ -1,11 +1,14 @@
-# Holos
+# Voice is Local
 
-Holos is a local speech toolkit for Apple Silicon Macs, written in Swift. It has
+Voice is Local is a local speech toolkit for Apple Silicon Macs, written in Swift. It has
 a command-line interface for on-device transcription, meeting recording with
 speaker labels, archive recovery, and native speech playback/export, plus a
 locally built menu bar app for push-to-talk dictation and meeting recording.
 Implemented inference runs locally with Apple's frameworks and, for speaker labels,
 FluidAudio's Core ML models; a cloud inference backend is not implemented.
+
+The repository is still called `holos`, Ukrainian for "voice": a reminder to add
+Ukrainian once Apple's on-device speech supports it. Code modules keep the `Holos` prefix.
 
 The software was built on macOS 27 with Apple Silicon and Swift 6.4. Live
 microphone/system-audio capture, app permissions, cross-app insertion, and audible
@@ -20,7 +23,7 @@ signs the CLI executable with the embedded permission usage descriptions:
 ```sh
 ./scripts/build.sh
 BIN_DIR=$(swift build --show-bin-path)
-"$BIN_DIR/holos" --help
+"$BIN_DIR/voiceislocal" --help
 ```
 
 Run the test suite with `./scripts/test.sh`. Unless you set them yourself, it points
@@ -33,22 +36,28 @@ To build the ad-hoc-signed accessory menu bar app locally, then launch it yourse
 
 ```sh
 ./scripts/build-app.sh
-open build/Holos.app
+open build/VoiceIsLocal.app
 ```
 
 The build does not install or launch the app, add a login item, or enable dictation.
 
-To update a running Holos in one step, run `./scripts/restart-app.sh`. It compiles first while Holos keeps
-running, asks Holos to quit (the first time, macOS asks whether your terminal may control Holos), rebuilds the
-bundle, and opens it again. It never force-quits: while Holos asks what to do with a meeting in progress or
+To update the running app in one step, run `./scripts/restart-app.sh`. It compiles first while the app keeps
+running, asks Voice is Local to quit (the first time, macOS asks whether your terminal may control it), rebuilds
+the bundle, and opens it again. It never force-quits: while the app asks what to do with a meeting in progress or
 finishes saving one, it waits (Ctrl-C stops waiting), and it refuses while a meeting recorder is still labelling
-speakers. It quits a Holos running from any copy, since only one can run at a time.
-Quit Holos before rebuilding; the script refuses to replace a running copy, because
+speakers. It quits the app running from any copy, since only one can run at a time.
+Quit Voice is Local before running `build-app.sh` directly; the script refuses to replace a running copy, because
 that invalidates its code signature (macOS re-prompts for permissions, and dictation
 into a terminal has frozen the terminal). It also refuses while a meeting recorder or
-its speaker labelling runs from the bundle. A running Holos that detects this pauses
+its speaker labelling runs from the bundle. A running app that detects this pauses
 dictation and asks to be reopened.
-On first launch, dictation is disabled and the Holos Setup window opens (reopen it
+
+The app used to be built as `build/Holos.app` with a `holos` command. `build-app.sh`
+refuses while that old copy runs, and `restart-app.sh` quits it first. The new build
+keeps the same bundle ID, settings, sessions, corrections, and people, so they carry
+over. Because the app's path changed, macOS may ask for its permissions again. Once
+`build/VoiceIsLocal.app` works, delete `build/Holos.app`.
+On first launch, dictation is disabled and the Voice is Local Setup window opens (reopen it
 with **Setup…** in the menu). It shows live status for each step: explicitly grant
 Microphone, Accessibility, and Input Monitoring access, install Apple's `en-CA`
 Speech assets, then enable your chosen hold-to-talk shortcut. The default choice
@@ -59,7 +68,7 @@ on insertion into other apps.
 
 The app also records meetings from the menu bar: **Start Meeting Recording…**, then
 Pause, Add Marker, Show Live Transcript, and **Stop and Save…**. The recorder is the
-bundled `holos` tool (`Holos.app/Contents/MacOS/holos`, which `build-app.sh` now
+bundled `voiceislocal` tool (`VoiceIsLocal.app/Contents/MacOS/voiceislocal`, which `build-app.sh` now
 builds and signs) running as a child of the app: it keeps recording if the app quits
 or crashes, and the app finds it again on relaunch, as it does a meeting started from
 a terminal. Its log is `~/Library/Logs/Holos/recorder-<id>.log`;
@@ -69,41 +78,58 @@ is open when you choose Stop Recording, the recorder stops once the prompt is
 answered. **Meetings…** lists recordings and can recover them, label their speakers,
 open or save the transcript, delete the audio or the whole meeting, and clean up
 leftover renders. Setup has a "Speaker labels" row that installs the speaker models
-(about 21 MB). Holos relabels a meeting automatically when its labelling was
+(about 21 MB). Voice is Local relabels a meeting automatically when its labelling was
 interrupted (at most twice per meeting, within 7 days). **People…** lists the people
-you have named and their remembered voices (below). See the
+you have named and their remembered voices (below). When a call plays on the laptop
+speakers, the start panel and the menu warn that the microphone also hears the other
+side and suggest headphones.
+
+**Review…** in Meetings (or double-clicking a labelled meeting, or the
+**Name Speakers — <name>…** line the menu shows after a meeting) opens the review window:
+speakers on the left (a name field that suggests known people, talk time, the start of
+their longest turns, Play samples, This is me, Merge into…, and "Maybe Maria" suggestions to
+confirm or reject, or Confirm All at once), turns on the right (a time button that plays
+from there, a speaker pop-up, and ⚠ for uncertain turns). Space plays and pauses, 1–9 give
+the selected turns to that speaker, ⌘' jumps to the next uncertain turn, and ⌘Z undoes the
+window's changes one at a time; Split Turn, search (⌘F), Find More Speakers (a relabel that
+asks for one more speaker and keeps the names), and Export (Save As… Markdown, text, or
+JSON; Copy as Markdown) complete it. Changes save as you make them and the transcript files
+follow a moment later; a change made from an outdated view (another window or a command)
+is refused and the window shows the current labels. The footer box "Learn voices of people
+I name in this meeting" decides whether naming a person also learns their voice. Delete
+Meeting can also forget the voice samples learned from that meeting. See the
 [meeting validation guide](docs/meeting-validation.md) for the manual checks.
 
 ## Quick start
 
 ```sh
 BIN_DIR=$(swift build --show-bin-path)
-holos="$BIN_DIR/holos"
+voiceislocal="$BIN_DIR/voiceislocal"
 
-"$holos" doctor                         # inspect capabilities, no permission prompt
-"$holos" setup --locale en-CA           # install speech assets; may download assets
-"$holos" setup --speakers               # download the speaker models (about 21 MB)
-"$holos" transcribe ./meeting.wav       # local file to finalized timed text
-"$holos" transcribe ./meeting.wav --json
+"$voiceislocal" doctor                         # inspect capabilities, no permission prompt
+"$voiceislocal" setup --locale en-CA           # install speech assets; may download assets
+"$voiceislocal" setup --speakers               # download the speaker models (about 21 MB)
+"$voiceislocal" transcribe ./meeting.wav       # local file to finalized timed text
+"$voiceislocal" transcribe ./meeting.wav --json
 
-"$holos" record start --name Planning --source mic+system
+"$voiceislocal" record start --name Planning --source mic+system
 # Press Ctrl-C to stop and save, or use `record stop <session-id>` from another shell.
-"$holos" record status
-"$holos" record pause <session-id>      # also resume, marker, stop
+"$voiceislocal" record status
+"$voiceislocal" record pause <session-id>      # also resume, marker, stop
 
-"$holos" session import ./meeting.m4a   # an audio file to a transcribed, labelled session
-"$holos" session diarize /path/to/session.holos
-"$holos" session list                   # sessions, newest first, with state and size
-"$holos" speakers list <session>        # a session's speakers; also rename, merge, assign, ...
-"$holos" speakers rename <session> S2 "Maria"
-"$holos" speakers link <session> S3 new:Jim   # a person whose name carries across meetings
-"$holos" people list                    # people, their voice samples, and Remember voices
-"$holos" session export <session> --format md
+"$voiceislocal" session import ./meeting.m4a   # an audio file to a transcribed, labelled session
+"$voiceislocal" session diarize /path/to/session.holos
+"$voiceislocal" session list                   # sessions, newest first, with state and size
+"$voiceislocal" speakers list <session>        # a session's speakers; also rename, merge, assign, ...
+"$voiceislocal" speakers rename <session> S2 "Maria"
+"$voiceislocal" speakers link <session> S3 new:Jim   # a person whose name carries across meetings
+"$voiceislocal" people list                    # people, their voice samples, and Remember voices
+"$voiceislocal" session export <session> --format md
 
-"$holos" say "The build is ready."       # native speech playback
-printf '%s\n' "Piped text" | "$holos" say
-"$holos" say --output greeting.m4a "Hello."
-"$holos" read ./article.md              # local UTF-8 text/Markdown to AAC playlist
+"$voiceislocal" say "The build is ready."      # native speech playback
+printf '%s\n' "Piped text" | "$voiceislocal" say
+"$voiceislocal" say --output greeting.m4a "Hello."
+"$voiceislocal" read ./article.md              # local UTF-8 text/Markdown to AAC playlist
 ```
 
 Recording sources are `mic`, `system`, and `mic+system`. macOS may request
@@ -131,21 +157,26 @@ below 500 MB free. `record start` exits 3 when the audio was saved but the recor
 stopped by itself (low disk, a long sleep, a 6-hour pause) or speaker labelling
 failed or was skipped for a reason other than missing speaker models.
 
-After a recording is saved, Holos labels its speakers (`--no-postprocess` skips
+After a recording is saved, Voice is Local labels its speakers (`--no-postprocess` skips
 this). In a call the microphone is "Me" unless `--others-in-room` is given; the
-system audio is split into speakers. Speaker labels need the models from
-`holos setup --speakers` (FluidAudio 0.17.1, run offline; `holos doctor` reports
+system audio is split into speakers. In a call, labelling also drops the microphone's
+echo of the call audio (a run of 3 or more words that repeats the call up to 1 s later;
+the words are listed in the run's `droppedWords`, reason `echo`, and appear in no
+export), and with others in the room a microphone speaker who is at least 60 % echo is
+hidden. `record start` warns on stderr when a call plays on the laptop speakers. Speaker
+labels need the models from
+`voiceislocal setup --speakers` (FluidAudio 0.17.1, run offline; `voiceislocal doctor` reports
 them as verified, not installed, or damaged). Without them the recording is saved
 with speaker-less transcript files and a hint to install them. The results are
 read-only generated files in the session's `exports/`: `transcript.md`,
 `transcript.txt` (Otter's layout), and `transcript.json`. A hand-edited copy is
 moved aside to `exports/edited-<YYYYMMDD-HHMMSS>.<ext>` instead of being
-overwritten. `holos session diarize <session>` labels a finished session again;
+overwritten. `voiceislocal session diarize <session>` labels a finished session again;
 it keeps edited speaker labels unless `--force` is given, and names carry over.
 It exits 0 when speakers were labelled, 3 when the exports were written but
 labelling was skipped or failed, and 1 when nothing was done (including when the
 speaker models are not installed).
-`holos session import <audio-file>` creates a session from any audio file macOS
+`voiceislocal session import <audio-file>` creates a session from any audio file macOS
 reads (its channels mixed into one in-person microphone track), transcribes it,
 and labels its speakers; it prints the new session's path once labelling ends. The
 session appears in the sessions folder only once the import is complete. It exits 0
@@ -153,40 +184,40 @@ when the session was imported (and labelled, or the speaker models are not
 installed), 3 when labelling failed, was skipped for another reason, or was
 cancelled, and 1 when nothing was imported.
 
-`holos speakers list <session>` shows a session's speakers (`--turns` adds every
+`voiceislocal speakers list <session>` shows a session's speakers (`--turns` adds every
 turn); `rename`, `merge`, `assign`, `split`, `exclude`, and `undo` correct them.
 `<session>` is the path to a `.holos` folder or a session ID. Each change is
 checked against the labels it was worked out on: if they changed meanwhile, the
 command refuses and exits 1 (list again and retry). Changes are saved in the
 session's edit journal, never in the labels themselves, and rewrite `exports/`.
-`holos session export <session> --format md|json|txt` writes the labelled
+`voiceislocal session export <session> --format md|json|txt` writes the labelled
 transcript to stdout or, with `--output`, to a new file; `--all` rewrites
 `exports/`. No export contains voice data.
 
-People and voices: `holos speakers link <session> <speaker> <person|new:NAME>` links a
-speaker to a person (`holos speakers me` to you), which also names the speaker, so the
-name carries across meetings; `holos speakers reject` says a speaker is not someone in
+People and voices: `voiceislocal speakers link <session> <speaker> <person|new:NAME>` links a
+speaker to a person (`voiceislocal speakers me` to you), which also names the speaker, so the
+name carries across meetings; `voiceislocal speakers reject` says a speaker is not someone in
 that meeting. Names never need a voiceprint. Remembering voices is opt-in and off by
-default (`holos people remember on|off|status`, or the People window): with it on,
+default (`voiceislocal people remember on|off|status`, or the People window): with it on,
 `link --learn-voice` learns the person's voice from that speaker's clear turns (only do
 this for people who agreed; voiceprints are biometric data), and later meetings suggest
-them as "Maybe Jim" in `holos speakers list`. Suggestions are never exported, and no
-name is applied automatically unless you calibrate on your own confirmed meetings (hidden
-`holos people calibrate --apply`). Voice samples stay in
+them as "Maybe Jim" in `voiceislocal speakers list` and the review window. Suggestions are never
+exported, and no name is applied automatically unless you calibrate on your own confirmed
+meetings (hidden `voiceislocal people calibrate --apply`). Voice samples stay in
 `~/Library/Application Support/Holos/Speakers` (private, not in Time Machine backups);
-post-processing never stores voice embeddings. `holos people list`, `rename`, `merge`,
+post-processing never stores voice embeddings. `voiceislocal people list`, `rename`, `merge`,
 `forget <person> [--sample ID] | --session <session> | --all` (with `--yes`), and
 `export [--output FILE] [--include-voiceprints]` manage them; a person's sample from a
 meeting follows later speaker edits in that meeting.
 
-`holos session list` shows every session, newest first: its state (`interrupted`
+`voiceislocal session list` shows every session, newest first: its state (`interrupted`
 when the recorder stopped unexpectedly, `damaged` when its manifest cannot be
 read), saved audio, size on disk, and speaker labels; `--interrupted` lists only
-the sessions to recover, `--json` prints everything. `holos record status` uses the
-same states. `holos session delete <session> --yes` moves a session to the Trash
+the sessions to recover, `--json` prints everything. `voiceislocal record status` uses the
+same states. `voiceislocal session delete <session> --yes` moves a session to the Trash
 (a damaged one too) and deletes its recorder log; with `--audio-only` it deletes only the audio (for
 good), keeping the transcript, speaker labels, and exports. Both refuse while the
-session is recording or another Holos command is working on it.
+session is recording or another Voice is Local command is working on it.
 
 `say` accepts text arguments or UTF-8 stdin and can play speech or save `.m4a`,
 `.wav`, or `.caf`. `read` accepts a local UTF-8 text/Markdown file or `-` for stdin;
@@ -196,15 +227,15 @@ Sessions are portable `.holos` directories. Inspect, recover, and retranscribe a
 inactive archive without replacing its saved audio or original transcript:
 
 ```sh
-"$holos" session inspect /path/to/session.holos
-"$holos" session recover /path/to/session.holos
-"$holos" session retranscribe /path/to/session.holos --output ./revised.json
+"$voiceislocal" session inspect /path/to/session.holos
+"$voiceislocal" session recover /path/to/session.holos
+"$voiceislocal" session retranscribe /path/to/session.holos --output ./revised.json
 ```
 
 `session recover` finishes a session whose recorder stopped unexpectedly (a crash,
 `kill -9`, power loss): it indexes the saved audio, rebuilds the transcript from the
 phrases live transcription had already saved, transcribes only the audio those do
-not cover, and labels the speakers, all under one lock so no other Holos process can
+not cover, and labels the speakers, all under one lock so no other Voice is Local process can
 start in between. It prints what it did, for example `Recovered 212 chunks
 (1:46:10). Transcript rebuilt from 1812 saved phrases; transcribed 0:31 of uncovered
 audio. Speaker labels: 9 speakers.` `--no-transcribe` keeps only the saved phrases,
@@ -213,7 +244,7 @@ was already rebuilt or a session that was not interrupted (a session whose
 transcription did not finish otherwise keeps the transcript saved when it stopped).
 Running it again changes nothing. It exits 0 when done, 3 when speaker labelling failed or was skipped for a
 reason other than missing speaker models, and 1 when recovery or the rebuild failed
-or some saved audio could not be recovered. It refuses while another Holos process
+or some saved audio could not be recovered. It refuses while another Voice is Local process
 is working on the same session. A damaged line in a session's event journal is
 skipped, and `inspect`, `recover`, and `session list` say how many were skipped.
 Each saved transcript revision is recorded as the current one in

@@ -303,7 +303,7 @@ public enum SessionSpeakerStore {
 
     private static func requireWritableSchema(_ version: Int, _ current: Int, _ what: String) throws {
         guard version == current else {
-            throw HolosError.invalidInput("\(what) has schema version \(version); this Holos writes version \(current).")
+            throw HolosError.invalidInput("\(what) has schema version \(version); this version of Voice is Local writes version \(current).")
         }
     }
 

@@ -3,10 +3,10 @@
 <plist version="1.0">
 <dict>
     <key>CFBundleIdentifier</key><string>ca.orlenko.holos.cli</string>
-    <key>CFBundleName</key><string>Holos</string>
+    <key>CFBundleName</key><string>Voice is Local</string>
     <key>CFBundleVersion</key><string>1</string>
     <key>CFBundleShortVersionString</key><string>0.1.0</string>
-    <key>NSMicrophoneUsageDescription</key><string>Holos records your microphone when you explicitly start a meeting recording or dictation.</string>
-    <key>NSSpeechRecognitionUsageDescription</key><string>Holos transcribes audio locally on your Mac.</string>
+    <key>NSMicrophoneUsageDescription</key><string>Voice is Local records your microphone when you explicitly start a meeting recording or dictation.</string>
+    <key>NSSpeechRecognitionUsageDescription</key><string>Voice is Local transcribes audio locally on your Mac.</string>
 </dict>
 </plist>

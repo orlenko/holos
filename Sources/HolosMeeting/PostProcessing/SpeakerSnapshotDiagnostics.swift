@@ -57,7 +57,7 @@ public struct SpeakerSnapshotDiagnostics: Sendable, Equatable {
         var notes: [String] = []
         if let runProblem {
             notes.append("\(runProblem) Speaker labels were left out, so the exports show the transcript without "
-                         + "speakers. Label speakers again with holos session diarize --force \(session.path).")
+                         + "speakers. Label speakers again with voiceislocal session diarize --force \(session.path).")
         }
         if staleEdits > 0 {
             let one = staleEdits == 1
@@ -66,13 +66,13 @@ public struct SpeakerSnapshotDiagnostics: Sendable, Equatable {
         }
         if transcriptChanged {
             notes.append("The transcript changed after speakers were labelled, so the exports show it without "
-                         + "speakers. Label speakers again with holos session diarize \(session.path).")
+                         + "speakers. Label speakers again with voiceislocal session diarize \(session.path).")
         }
         if unreadableLines > 0 {
             let one = unreadableLines == 1
             notes.append("\(unreadableLines) speaker \(one ? "change" : "changes") in this meeting could not be read "
-                         + "(damaged, or saved by a newer version of Holos) and \(one ? "was" : "were") skipped. "
-                         + "If you use a newer Holos elsewhere, update this one before editing speakers.")
+                         + "(damaged, or saved by a newer version of Voice is Local) and \(one ? "was" : "were") skipped. "
+                         + "If you use a newer version of Voice is Local elsewhere, update this one before editing speakers.")
         }
         if tornTail {
             notes.append("The last speaker change in this meeting was cut off while it was being saved and was "
@@ -83,7 +83,7 @@ public struct SpeakerSnapshotDiagnostics: Sendable, Equatable {
                          + "speaker is named or suggested from a remembered voice.")
         }
         if meetingInfoDamaged {
-            notes.append("This meeting's settings (meeting.json) are damaged and were ignored; Holos assumed the "
+            notes.append("This meeting's settings (meeting.json) are damaged and were ignored; Voice is Local assumed the "
                          + "meeting type from how it was recorded.")
         }
         if skippedEvents > 0 {

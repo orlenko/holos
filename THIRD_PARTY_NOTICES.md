@@ -1,15 +1,15 @@
 # Third-party notices
 
-The `holos` command-line tool includes FluidAudio, and `holos setup --speakers` downloads the speaker
-diarization models it runs. Their licenses and credits follow. The Holos app does not link FluidAudio or
-include the models; it runs speaker labelling through the `holos` tool.
+The `voiceislocal` command-line tool includes FluidAudio, and `voiceislocal setup --speakers` downloads the speaker
+diarization models it runs. Their licenses and credits follow. The Voice is Local app does not link FluidAudio or
+include the models; it runs speaker labelling through the `voiceislocal` tool.
 
 ## 1. FluidAudio 0.17.1
 
 - Source: https://github.com/FluidInference/FluidAudio, tag v0.17.1, commit
   `5c51c5c93afff0d89594a2a93c3103e790ba648c`.
 - License: Apache License 2.0; the full text of the checkout's `LICENSE` follows.
-- Holos uses its offline speaker diarization (`OfflineDiarizerManager`). The files of its
+- Voice is Local uses its offline speaker diarization (`OfflineDiarizerManager`). The files of its
   `ThirdPartyLicenses/` folder follow the license verbatim: the VBx port (Apache 2.0), fastcluster
   (BSD-2-clause style), the prebuilt NemoTextProcessing binary v0.3.1 that FluidAudio links by default
   (Apache 2.0), and the text-frontend notices that ship in the same module.
@@ -883,7 +883,7 @@ limitations under the License.
 Speaker labels use `Segmentation.mlmodelc`, `FBank.mlmodelc`, `Embedding.mlmodelc`,
 `PldaRho.mlmodelc`, `plda-parameters.json`, and `xvector-transform.json` from
 https://huggingface.co/FluidInference/speaker-diarization-coreml (revision
-df2625ac79a7ac6b65ad868fee6d80f320da4232), downloaded by `holos setup --speakers`
+df2625ac79a7ac6b65ad868fee6d80f320da4232), downloaded by `voiceislocal setup --speakers`
 and not included in the app. They are licensed under the Creative Commons
 Attribution 4.0 International License (CC BY 4.0,
 https://creativecommons.org/licenses/by/4.0/). They are modified Core ML conversions,

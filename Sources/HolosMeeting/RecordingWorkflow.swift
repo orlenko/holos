@@ -952,7 +952,7 @@ private final class Recorder {
         }
     }
 
-    static let powerAssertionName = "Holos meeting recording"
+    static let powerAssertionName = "Voice is Local meeting recording"
     /// The `retryNow` reason when a tick sees the lid open again.
     static let lidOpened = "lidOpened"
 
@@ -1018,7 +1018,7 @@ private final class Recorder {
     /// The `echoRisk` warning (PR11): shown while a call records the microphone and the laptop speakers are the
     /// output, so other people's voices reach the microphone too; cleared with headphones or another output, or when
     /// the epoch records no microphone. An unknown route changes nothing. The first time it shows, the reporter says it
-    /// too (stderr in `holos record start`). Schedules the next periodic look.
+    /// too (stderr in `voiceislocal record start`). Schedules the next periodic look.
     private func refreshEchoRisk() async {
         nextOutputRouteCheck = ContinuousClock.now.advanced(by: dependencies.tuning.outputRouteInterval)
         guard options.source == .microphoneAndSystem else { return }
@@ -1167,7 +1167,7 @@ private final class Recorder {
             if cancelled { throw CancellationError() }
             throw HolosError.incomplete("Recording stopped with an error: \(recordingError.localizedDescription). Saved audio: \(archive.directory.path)")
         }
-        // Without transcription, the saved audio can be transcribed later (`holos session retranscribe`).
+        // Without transcription, the saved audio can be transcribed later (`voiceislocal session retranscribe`).
         let untranscribed = options.recordOnly ? ArchiveStatus.audioOnly : ArchiveStatus.transcriptionIncomplete
         if cancelled {
             try await finishCancelled(status: savedAudio ? untranscribed : ArchiveStatus.incomplete)
@@ -1325,11 +1325,11 @@ private final class Recorder {
     }
 
     static let leaseBusyMessage = "Speaker labelling was skipped: the session is busy (recovery or another command "
-        + "holds it). Run holos session diarize on this session later."
+        + "holds it). Run voiceislocal session diarize on this session later."
 
     static func leaseFailedMessage(_ error: any Error) -> String {
         "Speaker labelling was skipped: the session could not be locked for it (\(error.localizedDescription)). "
-            + "Run holos session diarize on this session later."
+            + "Run voiceislocal session diarize on this session later."
     }
 
     /// Takes the processing lease (retrying for `tuning.leaseRetry`, 1 s) off the main actor. On failure,
@@ -1346,7 +1346,7 @@ private final class Recorder {
             throw CancellationError()
         } catch HolosError.unavailable {
             Self.log.error("Session \(sessionID, privacy: .public): processing lease held elsewhere; post-processing skipped")
-            reporter.message("Another Holos process is labelling this meeting.")
+            reporter.message("Another Voice is Local process is labelling this meeting.")
             return .unavailable(Self.leaseBusyMessage)
         } catch {
             let code = error as NSError

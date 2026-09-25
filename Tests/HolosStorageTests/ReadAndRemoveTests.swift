@@ -5,7 +5,7 @@ import HolosCore
 @testable import HolosStorage
 
 // `AtomicFile.readAndRemove` (the vocabulary hand-off file, docs/meeting-design.md §4.12) and `removeTree` on a
-// Holos-created folder in the temporary folder (`holos say`): a path that is not a verified regular file, or a link
+// Holos-created folder in the temporary folder (`voiceislocal say`): a path that is not a verified regular file, or a link
 // inside a Holos folder, is never followed or removed recursively.
 
 private func handOffFolder() throws -> URL {
@@ -211,7 +211,7 @@ private func removalFolders(_ folder: URL) -> [URL] {
     #expect(chmod(sharedAside.path, 0o700) == 0)
 }
 
-/// `holos say` removes its own `holos-say-<UUID>` folder with `removeTree` from the resolved temporary folder: the
+/// `voiceislocal say` removes its own `holos-say-<UUID>` folder with `removeTree` from the resolved temporary folder: the
 /// folder goes, a link inside it is removed itself, and the link's target survives.
 @Test func removeTreeRemovesAHolosTemporaryFolderWithoutFollowingLinks() throws {
     let fm = FileManager.default

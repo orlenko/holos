@@ -5,7 +5,7 @@ import HolosMeeting
 import HolosSpeakers
 import HolosStorage
 
-/// `holos speakers …` (docs/meeting-design.md §5.7, §5.9): list a session's speakers, correct them through
+/// `voiceislocal speakers …` (docs/meeting-design.md §5.7, §5.9): list a session's speakers, correct them through
 /// `SpeakerEditor`, and link them to people through `VoiceProfileService`. Content goes to stdout; notes and warnings
 /// to stderr (§1.4).
 struct Speakers: AsyncParsableCommand {
@@ -16,9 +16,9 @@ struct Speakers: AsyncParsableCommand {
             Application Support/Holos/Sessions). <speaker> is a speaker ID (system:S2), its engine label (S2), its \
             number (3 or "Speaker 3"), its name, or unknown. <turn> is a turn ID (T12) or a time inside the turn \
             (01:12:03, 12:03.5, or 723.5 seconds); add --track mic or --track system when both tracks speak then. \
-            <person> is a person's ID or unique name from holos people list. \
+            <person> is a person's ID or unique name from voiceislocal people list. \
             Each change is checked against the labels it was worked out on and refused if they changed meanwhile, \
-            is saved in the session's edit journal (holos speakers undo reverts it), and rewrites the session's \
+            is saved in the session's edit journal (voiceislocal speakers undo reverts it), and rewrites the session's \
             exports. A person's voice sample learned from the session is updated when a change affects it.
             """,
         subcommands: [
@@ -242,9 +242,9 @@ struct Speakers: AsyncParsableCommand {
         static let configuration = CommandConfiguration(
             abstract: "Link a speaker to a person, so the name carries across meetings.",
             discussion: """
-                <person> is a person's ID or unique name (holos people list), or new:NAME for a new person. The \
+                <person> is a person's ID or unique name (voiceislocal people list), or new:NAME for a new person. The \
                 speaker is named after the person too, so the meeting keeps the name if the person is forgotten \
-                later. With --learn-voice and Remember voices on (holos people remember on), the person's voice is \
+                later. With --learn-voice and Remember voices on (voiceislocal people remember on), the person's voice is \
                 learned from this speaker's clear turns (2 s or longer, not overlapped) so later meetings can suggest \
                 them. Only learn the voices of people who agreed to it. Learning needs the speaker models and the \
                 meeting's audio.
@@ -283,8 +283,8 @@ struct Speakers: AsyncParsableCommand {
         static let configuration = CommandConfiguration(
             abstract: "Link a speaker to you (\"This is me\").",
             discussion: """
-                The first time, Holos creates the person who is you with your account's full name; rename it with \
-                holos people rename. --learn-voice learns your voice as holos speakers link does.
+                The first time, Voice is Local creates the person who is you with your account's full name; rename it with \
+                voiceislocal people rename. --learn-voice learns your voice as voiceislocal speakers link does.
                 """)
 
         @Argument(help: "Path to a .holos folder, or a session ID.") var session: String
@@ -317,8 +317,8 @@ struct Speakers: AsyncParsableCommand {
         static let configuration = CommandConfiguration(
             abstract: "Say a speaker is not a person, in this meeting only.",
             discussion: """
-                Holos stops suggesting that person for the speaker, and unlinks the speaker if it was linked to them \
-                (the speaker keeps its name; rename it or clear it with holos speakers rename).
+                Voice is Local stops suggesting that person for the speaker, and unlinks the speaker if it was linked to them \
+                (the speaker keeps its name; rename it or clear it with voiceislocal speakers rename).
                 """)
 
         @Argument(help: "Path to a .holos folder, or a session ID.") var session: String
@@ -366,7 +366,7 @@ struct Speakers: AsyncParsableCommand {
     /// as JSON on stdout, which must be a pipe, and writes nothing.
     struct Embed: AsyncParsableCommand {
         static let configuration = CommandConfiguration(
-            abstract: "Print the voice embeddings of some turns to a pipe (used by Holos.app).",
+            abstract: "Print the voice embeddings of some turns to a pipe (used by VoiceIsLocal.app).",
             shouldDisplay: false)
 
         @Argument(help: "Path to a .holos folder, or a session ID.") var session: String
@@ -375,7 +375,7 @@ struct Speakers: AsyncParsableCommand {
         @Flag(help: "Print JSON (the only format).") var json = false
 
         func validate() throws {
-            guard json else { throw ValidationError("holos speakers embed prints JSON only; add --json.") }
+            guard json else { throw ValidationError("voiceislocal speakers embed prints JSON only; add --json.") }
             guard track == "mic" || track == "system" else { throw ValidationError("--track must be mic or system.") }
         }
 
@@ -383,7 +383,7 @@ struct Speakers: AsyncParsableCommand {
             var info = stat()
             guard fstat(STDOUT_FILENO, &info) == 0,
                   (info.st_mode & S_IFMT) == S_IFIFO || (info.st_mode & S_IFMT) == S_IFSOCK else {
-                throw HolosError.invalidInput("holos speakers embed writes voice data only to a pipe.")
+                throw HolosError.invalidInput("voiceislocal speakers embed writes voice data only to a pipe.")
             }
             let loaded = try SpeakerCommand.load(session)
             var seen = Set<String>()
@@ -428,7 +428,7 @@ enum SpeakerCommand {
     static let source = "cli"
 
     static let modelsMissing = "Speaker models are not installed, so voices can't be learned. Install them with "
-        + "holos setup --speakers."
+        + "voiceislocal setup --speakers."
 
     /// Resolves the session and loads its snapshot with people's current names; refuses a session without usable
     /// speaker labels.
@@ -442,7 +442,7 @@ enum SpeakerCommand {
             applyRecognition: VoiceProfileService.recognitionAllowed(store: store))
         guard let view = snapshot.projection else {
             throw HolosError.unavailable(snapshot.runProblem
-                ?? "This meeting has no speaker labels yet. Label them with holos session diarize \(session.path).")
+                ?? "This meeting has no speaker labels yet. Label them with voiceislocal session diarize \(session.path).")
         }
         return LoadedSpeakers(session: session, snapshot: snapshot, view: view, store: store, people: people,
                               peopleBefore: peopleBefore)
@@ -585,7 +585,7 @@ enum SpeakerCommand {
                 applyRecognition: VoiceProfileService.recognitionAllowed(store: loaded.store))
         } catch {
             throw HolosError.incomplete("The change was saved, but the exports could not be rewritten: "
-                                        + "\(error.localizedDescription) Rewrite them with holos session export "
+                                        + "\(error.localizedDescription) Rewrite them with voiceislocal session export "
                                         + "\(session.path) --all.")
         }
         for url in written.movedAside { Console.error(movedAsideNote(url)) }
@@ -619,13 +619,13 @@ enum SpeakerCommand {
                 + (sample.weak ? " It is short, so it can only give suggestions." : "")
         }
         if !database.rememberVoices {
-            return "Remember voices is off, so no voice was learned. Turn it on with holos people remember on."
+            return "Remember voices is off, so no voice was learned. Turn it on with voiceislocal people remember on."
         }
         if snapshot.audioDeleted { return VoiceProfileService.audioDeletedNote }
         if !extractorAvailable { return modelsMissing }
         if let model = profile.embeddingModel, let run = snapshot.run?.engine?.embeddingModel, model != run {
             return "\(profile.displayName)'s voice samples come from other speaker models, so this one can't be "
-                + "added. Forget their samples first (holos people forget)."
+                + "added. Forget their samples first (voiceislocal people forget)."
         }
         return "No turn of this speaker was long and clear enough (2 s or more, without overlap) to learn the voice."
     }

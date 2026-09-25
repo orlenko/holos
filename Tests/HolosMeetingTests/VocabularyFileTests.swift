@@ -3,7 +3,7 @@ import Testing
 import HolosCore
 @testable import HolosMeeting
 
-// `holos record start --vocabulary-file` (docs/meeting-design.md §4.12): the file is deleted once read, but only
+// `voiceislocal record start --vocabulary-file` (docs/meeting-design.md §4.12): the file is deleted once read, but only
 // after it was opened and verified as a regular file; any other path is refused and left untouched.
 
 private func expectVocabularyInvalidInput(_ body: () throws -> Void) {

@@ -67,6 +67,11 @@ public final class AudioCapture {
     private var configurationObserver: (any NSObjectProtocol)?
     /// Watches the system default input during a call capture that records it.
     private var defaultInputListener: SystemAudioListener?
+    /// When the microphone engine was restarted in place after configuration changes that changed nothing.
+    private var inPlaceRestarts: [Double] = []
+    /// At most this many in-place restarts within `inPlaceRestartWindow` seconds; more is reported as a change.
+    static let inPlaceRestartLimit = 3
+    static let inPlaceRestartWindow = 10.0
 
     /// `bufferCapacity` buffers wait for the consumer. When the queue is full, `.fail` (dictation's default) ends the
     /// stream with an error; `.dropAndCount` drops the buffer, counts it (`droppedBuffers`), and continues.
@@ -145,7 +150,7 @@ public final class AudioCapture {
             let granted = await AVCaptureDevice.requestAccess(for: .audio)
             try Task.checkCancellation()
             guard granted else {
-                throw HolosError.permissionDenied("Microphone access is required. Enable it for Holos or your terminal in System Settings > Privacy & Security > Microphone.")
+                throw HolosError.permissionDenied("Microphone access is required. Enable it for Voice is Local or your terminal in System Settings > Privacy & Security > Microphone.")
             }
         }
         // The pinned device, looked up just before the capture starts.
@@ -159,7 +164,13 @@ public final class AudioCapture {
         if source == .microphone {
             let audioEngine = AVAudioEngine()
             let input = audioEngine.inputNode
-            if let builtIn { try Self.pin(input, to: builtIn) }
+            // The input unit already records the system default; pinning a device that is the default anyway only
+            // makes AVAudioEngine report a configuration change right after it starts.
+            let systemDefault = BuiltInMicrophone.devices().systemDefault
+            let pinned = builtIn.flatMap { $0.id == systemDefault?.id ? nil : $0 }
+            if let pinned { try Self.pin(input, to: pinned) }
+            // The device this capture records, to tell a real device change from one that changed nothing.
+            let recorded = builtIn ?? systemDefault
             let format = input.outputFormat(forBus: 0)
             guard format.sampleRate.isFinite, format.sampleRate > 0,
                   format.sampleRate < Double(UInt32.max), format.channelCount > 0 else {
@@ -185,18 +196,33 @@ public final class AudioCapture {
             receiver.setOrigin(hostTimeOrigin)
             if reportsConfigurationChanges {
                 // The engine stops itself on a configuration change (a device came or went, a format changed).
+                // AVAudioEngine also reports changes that change nothing (for example just after it starts on a
+                // selected input); those restart the same engine in place instead of the whole capture, which would
+                // only report the same change again (docs/meeting-design.md §4.2).
+                let sampleRate = format.sampleRate, channels = format.channelCount
                 configurationObserver = NotificationCenter.default.addObserver(
-                    forName: .AVAudioEngineConfigurationChange, object: audioEngine, queue: nil) { _ in
-                    receiver.fail(CaptureInterruption.configurationChanged)
+                    forName: .AVAudioEngineConfigurationChange, object: audioEngine, queue: .main) { [weak self] _ in
+                    MainActor.assumeIsolated {
+                        // Before the engine starts again, so its first buffer already starts a new anchor: sample
+                        // times may restart with the engine. A failed restart fails the capture anyway.
+                        let restarted = self?.restartInPlace(
+                            recording: recorded, followsDefault: pinned == nil, sampleRate: sampleRate,
+                            channels: channels,
+                            beforeStart: { timeline.withLock { $0 = MicrophoneTimeline(sampleRate: sampleRate) } })
+                        if restarted != true { receiver.fail(CaptureInterruption.configurationChanged) }
+                    }
                 }
             }
+            // Kept before it starts: a configuration change can be delivered while `start()` runs, and restarting
+            // in place needs the engine.
+            engine = audioEngine
             do { try audioEngine.start() }
             catch {
+                engine = nil
                 removeConfigurationWatchers()
                 input.removeTap(onBus: 0)
                 throw error
             }
-            engine = audioEngine
         } else {
             let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: false)
             try Task.checkCancellation()
@@ -267,6 +293,29 @@ public final class AudioCapture {
         configurationObserver = nil
         defaultInputListener?.remove()
         defaultInputListener = nil
+    }
+
+    /// Restarts the stopped microphone engine in place after a configuration change that changed nothing: the device
+    /// it records is still there (still the default, for a capture that follows the default) and the input format is
+    /// the same. False, for the caller to report the change, when something did change, the engine cannot start, or
+    /// such restarts come too often.
+    private func restartInPlace(recording device: InputDevice?, followsDefault: Bool, sampleRate: Double,
+                                channels: AVAudioChannelCount, beforeStart: () -> Void) -> Bool {
+        guard let engine, let device else { return false }
+        let devices = BuiltInMicrophone.devices()
+        // A pinned input must still exist; an input that follows the default (including the built-in microphone
+        // left unpinned because it was the default) must still be the default, or the recording would move.
+        let present = followsDefault ? devices.systemDefault?.id == device.id
+            : devices.builtIn?.id == device.id || devices.systemDefault?.id == device.id
+        let format = engine.inputNode.outputFormat(forBus: 0)
+        guard present, format.sampleRate == sampleRate, format.channelCount == channels else { return false }
+        let now = Self.hostSeconds()
+        inPlaceRestarts = inPlaceRestarts.filter { now - $0 < Self.inPlaceRestartWindow }
+        guard inPlaceRestarts.count < Self.inPlaceRestartLimit else { return false }
+        beforeStart()
+        do { try engine.start() } catch { return false }
+        inPlaceRestarts.append(now)
+        return true
     }
 
     /// Makes `input` record `device` instead of the system default input. Must run before the input's format is read.

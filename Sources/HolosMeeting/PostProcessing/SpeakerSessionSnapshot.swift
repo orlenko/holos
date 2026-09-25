@@ -230,7 +230,7 @@ enum SessionFiles {
     static func decode<T: Decodable>(_ type: T.Type, from data: Data, current: Int, name: String) throws -> T {
         if let version = (try? HolosJSON.decoder().decode(VersionProbe.self, from: data))?.schemaVersion {
             if version > current {
-                throw HolosError.unavailable("\(name) was written by a newer Holos; update Holos to read it.")
+                throw HolosError.unavailable("\(name) was written by a newer version of Voice is Local; update Voice is Local to read it.")
             }
             if version < 1 {
                 throw HolosError.invalidInput("\(name) has an unsupported schema version \(version).")
@@ -239,7 +239,7 @@ enum SessionFiles {
         do {
             return try HolosJSON.decoder().decode(type, from: data)
         } catch {
-            throw HolosError.invalidInput("\(name) is damaged or was not written by Holos.")
+            throw HolosError.invalidInput("\(name) is damaged or was not written by Voice is Local.")
         }
     }
 

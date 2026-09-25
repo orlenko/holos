@@ -7,7 +7,7 @@ import HolosStorage
 import os
 import Synchronization
 
-/// `holos session import` (docs/meeting-design.md §5.5 PR7c): turns an audio file into a finished session, so a meeting
+/// `voiceislocal session import` (docs/meeting-design.md §5.5 PR7c): turns an audio file into a finished session, so a meeting
 /// recorded elsewhere (or a reference recording for evaluation) can be transcribed, labelled, and exported like one
 /// Holos recorded.
 public enum SessionImporter {
@@ -168,7 +168,7 @@ public enum SessionImporter {
         switch error {
         case let failure as TranscriptionFailure:
             return HolosError.unavailable("\(failure.message) \(outcome) Import it without transcription "
-                                          + "(holos session import --no-transcribe) to keep the audio alone.")
+                                          + "(voiceislocal session import --no-transcribe) to keep the audio alone.")
         case HolosError.invalidInput(let message): return HolosError.invalidInput("\(message) \(outcome)")
         case HolosError.unavailable(let message): return HolosError.unavailable("\(message) \(outcome)")
         case HolosError.permissionDenied(let message): return HolosError.permissionDenied("\(message) \(outcome)")
@@ -312,7 +312,7 @@ private struct TranscriptionFailure: Error {
 /// The hidden folder `<root>/.import-<UUID>` that holds one import until it is published. Its `.import.lock` is
 /// locked (`flock`) from just after the folder is made until it is removed, so the sweep of another import leaves a
 /// running import alone. The folder's name does not end in `.holos`, so nothing lists it as a session, and
-/// `holos session recover` never turns a killed import into an interrupted recording.
+/// `voiceislocal session recover` never turns a killed import into an interrupted recording.
 ///
 /// The sessions root may be any folder the user names (`--directory`), so a sweep removes only a folder Holos
 /// made: one named exactly `.import-` + `UUID().uuidString` (upper case) that holds the ownership marker

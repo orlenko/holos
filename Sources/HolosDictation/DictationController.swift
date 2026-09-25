@@ -389,11 +389,11 @@ public final class DictationController {
     private static func permissionMessage(_ value: String) -> String {
         switch value {
         case "denied", "restricted":
-            "Microphone access is blocked. Enable it for Holos in System Settings > Privacy & Security > Microphone."
+            "Microphone access is blocked. Enable it for Voice is Local in System Settings > Privacy & Security > Microphone."
         case "notDetermined":
-            "Microphone access has not been granted. Use Holos microphone setup before dictating."
+            "Microphone access has not been granted. Use Voice is Local microphone setup before dictating."
         default:
-            "Microphone access is unavailable. Check Holos microphone settings and try again."
+            "Microphone access is unavailable. Check Voice is Local microphone settings and try again."
         }
     }
 }

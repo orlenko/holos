@@ -5,16 +5,16 @@ import HolosMeeting
 import HolosStorage
 
 extension Session {
-    /// `holos session list` (docs/meeting-design.md §5.6).
+    /// `voiceislocal session list` (docs/meeting-design.md §5.6).
     struct List: ParsableCommand {
         static let configuration = CommandConfiguration(
             abstract: "List sessions, newest first, with their state, saved audio, size, and speaker labels.",
             discussion: """
                 STATE is recording, processing, interrupted (the recorder stopped unexpectedly; recover it with \
-                holos session recover), complete, audioOnly, transcriptionIncomplete, incomplete, failed, recovered, \
+                voiceislocal session recover), complete, audioOnly, transcriptionIncomplete, incomplete, failed, recovered, \
                 or damaged (the manifest cannot be read). SAVED is the longest track's saved audio (h:mm:ss). \
                 SPEAKERS is none, labelling, labelled, not labelled, failed, interrupted, or unreadable (the \
-                speaker files are damaged or were written by a newer Holos; --json gives the reason).
+                speaker files are damaged or were written by a newer version of Voice is Local; --json gives the reason).
                 """)
 
         @Option(help: "Session folder (default: HOLOS_DATA_DIR or Application Support/Holos/Sessions).")

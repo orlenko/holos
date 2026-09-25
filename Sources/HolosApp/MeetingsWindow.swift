@@ -7,8 +7,9 @@ import Quartz
 import UniformTypeIdentifiers
 
 /// The saved meetings (docs/meeting-design.md §5.8, §4.13): a table of the session catalog and the actions on the
-/// selected meeting. Recover, Label Speakers, and the deletions run `holos` commands through the app delegate; the
-/// rest (Show in Finder, the Quick Look preview, Save Transcript As…, Clean Up) happen here. Refreshes every 2 s
+/// selected meeting. Recover, Label Speakers, and the deletions run `voiceislocal` commands through the app delegate, which
+/// also opens Review (PR9, §5.10); the rest (Show in Finder, the Quick Look preview, Save Transcript As…, Clean Up)
+/// happen here. Double-click opens Review for a labelled meeting and the preview otherwise. Refreshes every 2 s
 /// while visible; the listing is read off the main actor.
 @MainActor
 final class MeetingsWindow: NSObject, NSWindowDelegate, NSTableViewDataSource, NSTableViewDelegate,
@@ -32,6 +33,7 @@ final class MeetingsWindow: NSObject, NSWindowDelegate, NSTableViewDataSource, N
 
     private let root: URL
     private let perform: (Action, SessionSummary) -> Void
+    private let openReview: (SessionSummary) -> Void
     /// `MeetingController.beginUsing` and `endUsing`: Clean Up and Save Transcript As… hold the meeting while they run.
     private let beginUsing: (String, String) -> Bool
     private let endUsing: (String) -> Void
@@ -59,10 +61,12 @@ final class MeetingsWindow: NSObject, NSWindowDelegate, NSTableViewDataSource, N
     var isVisible: Bool { window.isVisible }
 
     init(root: URL, perform: @escaping (Action, SessionSummary) -> Void,
+         openReview: @escaping (SessionSummary) -> Void,
          beginUsing: @escaping (String, String) -> Bool, endUsing: @escaping (String) -> Void,
          onClose: @escaping () -> Void) {
         self.root = root
         self.perform = perform
+        self.openReview = openReview
         self.beginUsing = beginUsing
         self.endUsing = endUsing
         self.onClose = onClose
@@ -70,7 +74,7 @@ final class MeetingsWindow: NSObject, NSWindowDelegate, NSTableViewDataSource, N
                                   styleMask: [.titled, .closable, .miniaturizable, .resizable],
                                   backing: .buffered, defer: true)
         super.init()
-        window.title = "Holos Meetings"
+        window.title = "Voice is Local Meetings"
         window.isReleasedWhenClosed = false
         window.contentMinSize = NSSize(width: 640, height: 320)
         window.delegate = self
@@ -87,7 +91,7 @@ final class MeetingsWindow: NSObject, NSWindowDelegate, NSTableViewDataSource, N
         table.usesAlternatingRowBackgroundColors = true
         table.allowsMultipleSelection = false
         table.target = self
-        table.doubleAction = #selector(openTranscript)
+        table.doubleAction = #selector(openSelected)
         let scroll = NSScrollView()
         scroll.documentView = table
         scroll.hasVerticalScroller = true
@@ -95,6 +99,7 @@ final class MeetingsWindow: NSObject, NSWindowDelegate, NSTableViewDataSource, N
         scroll.translatesAutoresizingMaskIntoConstraints = false
 
         let row = NSStackView(views: [
+            button("Review…", #selector(review)),
             button("Recover…", #selector(recover)), button("Label Speakers", #selector(labelSpeakers)),
             button("Show in Finder", #selector(showInFinder)), button("Open Transcript", #selector(openTranscript)),
             button("Save Transcript As…", #selector(saveTranscript)),
@@ -277,6 +282,7 @@ final class MeetingsWindow: NSObject, NSWindowDelegate, NSTableViewDataSource, N
     /// The buttons follow `MeetingActionPolicy`, the rules of the commands behind them.
     private func updateButtons() {
         let summary = selectedSession
+        buttons["Review…"]?.isEnabled = summary.map(canReview) ?? false
         let hasExport = summary.map { Self.isRegularFile(SessionPaths.export("md", in: $0.directory)) } ?? false
         let enabled = MeetingActionPolicy.enabled(summary, inUse: summary.map { running[$0.id] != nil } ?? false,
                                                   hasExport: hasExport)
@@ -291,9 +297,33 @@ final class MeetingsWindow: NSObject, NSWindowDelegate, NSTableViewDataSource, N
             var parts: [String] = []
             if let doing = running[summary.id] { parts.append(doing) }
             if let message = summary.labelMessage, summary.speakerState != .labelled { parts.append(message) }
+            if PendingExports().contains(summary.id) {
+                parts.append("The transcript files are older than the speaker labels; open Review to update them.")
+            }
             statusLabel.stringValue = parts.joined(separator: " ")
         } else {
             statusLabel.stringValue = ""
+        }
+    }
+
+    /// Review needs speaker labels and no recording, labelling, or command running on the meeting.
+    private func canReview(_ summary: SessionSummary) -> Bool {
+        summary.runID != nil && running[summary.id] == nil && summary.state != .recording
+            && summary.state != .processing && summary.speakerState != .running
+    }
+
+    @objc private func review() {
+        guard let summary = selectedSession, canReview(summary) else { return }
+        openReview(summary)
+    }
+
+    /// Double-click: Review for a labelled meeting, else the transcript preview.
+    @objc private func openSelected() {
+        guard let summary = selectedSession, table.clickedRow >= 0 else { return }
+        if canReview(summary) {
+            openReview(summary)
+        } else {
+            openTranscript()
         }
     }
 
@@ -359,7 +389,7 @@ final class MeetingsWindow: NSObject, NSWindowDelegate, NSTableViewDataSource, N
         let session = summary.directory
         let id = summary.id
         guard beginUsing(id, "Saving the transcript…") else {
-            showSheet("Holos could not save the transcript.", Self.inUseText(running[id]))
+            showSheet("Voice is Local could not save the transcript.", Self.inUseText(running[id]))
             return
         }
         Task { [weak self] in
@@ -382,7 +412,7 @@ final class MeetingsWindow: NSObject, NSWindowDelegate, NSTableViewDataSource, N
             guard let self else { return }
             self.endUsing(id)
             guard let failure else { return }
-            self.showSheet("Holos could not save the transcript.", failure)
+            self.showSheet("Voice is Local could not save the transcript.", failure)
         }
     }
 
@@ -393,7 +423,7 @@ final class MeetingsWindow: NSObject, NSWindowDelegate, NSTableViewDataSource, N
         let session = summary.directory
         let id = summary.id
         guard beginUsing(id, "Cleaning up…") else {
-            showSheet("Holos could not clean up this meeting.", Self.inUseText(running[id]))
+            showSheet("Voice is Local could not clean up this meeting.", Self.inUseText(running[id]))
             return
         }
         Task { [weak self] in
@@ -409,7 +439,7 @@ final class MeetingsWindow: NSObject, NSWindowDelegate, NSTableViewDataSource, N
             self.endUsing(id)
             self.refresh()
             guard let failure else { return }
-            self.showSheet("Holos could not clean up this meeting.", failure)
+            self.showSheet("Voice is Local could not clean up this meeting.", failure)
         }
     }
 
@@ -421,7 +451,7 @@ final class MeetingsWindow: NSObject, NSWindowDelegate, NSTableViewDataSource, N
     }
 
     private static func inUseText(_ doing: String?) -> String {
-        "Holos is working on this meeting" + (doing.map { " (\($0))" } ?? "") + ". Try again when it finishes."
+        "Voice is Local is working on this meeting" + (doing.map { " (\($0))" } ?? "") + ". Try again when it finishes."
     }
 
     // MARK: - Quick Look

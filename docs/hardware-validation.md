@@ -1,7 +1,7 @@
 # First live-recording check
 
 These are manual acceptance steps, not checks already performed by the automated
-suite. Use a short private test before trusting Holos with a meeting. Recording
+suite. Use a short private test before trusting Voice is Local with a meeting. Recording
 other people requires the appropriate notice/consent for your situation.
 
 ## Capture both sources
@@ -10,24 +10,24 @@ other people requires the appropriate notice/consent for your situation.
 
    ```sh
    BIN_DIR=$(swift build --show-bin-path)
-   "$BIN_DIR/holos" doctor
-   "$BIN_DIR/holos" record start --name "Capture check" \
+   "$BIN_DIR/voiceislocal" doctor
+   "$BIN_DIR/voiceislocal" record start --name "Capture check" \
      --source mic+system --duration 30 --record-only
    ```
 
 2. Approve the requested microphone/system-audio permissions if desired. Note
-   whether macOS attributes each permission to Holos or the launching terminal.
+   whether macOS attributes each permission to Voice is Local or the launching terminal.
    A declined permission must fail clearly without claiming a successful recording.
 
 3. Speak a short sentence, then play a known audio file in another application,
    such as QuickTime Player. Use headphones initially: remote audio remains in the
-   system track without also leaking acoustically into the microphone. Holos does
+   system track without also leaking acoustically into the microphone. Voice is Local does
    not yet implement cross-track echo cancellation or duplicate-speech removal.
 
 4. After automatic stop, inspect the `.holos` path printed by the command:
 
    ```sh
-   "$BIN_DIR/holos" session inspect /path/to/session.holos
+   "$BIN_DIR/voiceislocal" session inspect /path/to/session.holos
    ```
 
    Expect a clean archive, with CAF files under `audio/mic/` and `audio/system/`
@@ -41,7 +41,7 @@ other people requires the appropriate notice/consent for your situation.
 
 ## Growing transcript and safe stop
 
-Install assets explicitly with `holos setup --locale en-CA`, then repeat without
+Install assets explicitly with `voiceislocal setup --locale en-CA`, then repeat without
 `--record-only`. Finalized phrases should appear during the recording with source
 labels. These are microphone/system labels, not individual speaker recognition.
 Speak several sentences with pauses to allow the model to finalize phrases.
@@ -66,12 +66,12 @@ PR2b: sleep and power, device changes, the stall watchdog, microphone selection)
 automated suite covers the same rules with fakes; only a real Mac shows what macOS does.
 Record the date, macOS build, Mac model, and the outcome of each item here.
 
-Tools used below, all from a second terminal while `holos record start` runs:
+Tools used below, all from a second terminal while `voiceislocal record start` runs:
 
 ```sh
 BIN_DIR=$(swift build --show-bin-path)
-"$BIN_DIR/holos" record status            # phase=… elapsed=… for the live session
-"$BIN_DIR/holos" record status --json
+"$BIN_DIR/voiceislocal" record status            # phase=… elapsed=… for the live session
+"$BIN_DIR/voiceislocal" record status --json
 S=/path/to/<SESSION-UUID>.holos
 cat "$S/status.json"                      # phase, warnings, tracks, backlogSeconds, freeBytes
 grep -o '"kind":"[A-Za-z]*"' "$S/events.jsonl" | sort | uniq -c
@@ -83,12 +83,12 @@ then keeps the outcome (`exit.reason`, `exit.archiveStatus`, `exit.postprocessin
 
 ### Control from another process (PR2a)
 
-1. Start `holos record start --name "Control check" --source mic --record-only`.
-2. `holos record pause <id>` prints `Paused Control check.`; the microphone indicator
+1. Start `voiceislocal record start --name "Control check" --source mic --record-only`.
+2. `voiceislocal record pause <id>` prints `Paused Control check.`; the microphone indicator
    goes off; `record status` shows `phase=paused`, and `elapsed` keeps counting.
-3. `holos record pause <id>` again prints `Ignored: already paused.` (exit 0).
-4. `holos record marker <id> --label Vote` prints `Marker added at hh:mm:ss.`
-5. `holos record resume <id>`, speak, then `holos record stop <id>`.
+3. `voiceislocal record pause <id>` again prints `Ignored: already paused.` (exit 0).
+4. `voiceislocal record marker <id> --label Vote` prints `Marker added at hh:mm:ss.`
+5. `voiceislocal record resume <id>`, speak, then `voiceislocal record stop <id>`.
 6. Expect two chunks with an `audioDiscontinuity` of reason `paused` between them, and
    `paused`, `resumed`, `marker`, and `controlHandled` events. `control/` is empty after
    exit and `status.json` says `exited`.
@@ -113,7 +113,7 @@ the gap has reason `sleep` and the Markdown export has a "computer was asleep" l
 
 ### H6: lid closed on battery for 20 minutes (PR2b)
 
-Pass: the recording ends at the sleep point (`exit.reason` `sleepTimeout`, `holos`
+Pass: the recording ends at the sleep point (`exit.reason` `sleepTimeout`, `voiceislocal`
 exits 3); after wake the transcript and labels exist.
 
 ### H7: AirPods connected and disconnected (PR2b)
@@ -143,7 +143,7 @@ labelled transcript exists within 5 minutes of stop; diarization peak RSS under 
 ```sh
 hdiutil create -size 2g -fs APFS -volname HolosSmall /tmp/holos-small.dmg
 hdiutil attach /tmp/holos-small.dmg
-HOLOS_DATA_DIR=/Volumes/HolosSmall/Sessions "$BIN_DIR/holos" record start --source mic
+HOLOS_DATA_DIR=/Volumes/HolosSmall/Sessions "$BIN_DIR/voiceislocal" record start --source mic
 ```
 
 Pass: start is refused below 4 hours of budget plus 2 GB, or warns below 8 hours; with
@@ -154,7 +154,7 @@ with the disk message. Detach and delete the image afterwards.
 
 ### H11: paused, then lid closed for 20 minutes (PR2b)
 
-Pass: the meeting is still paused after wake; `holos record resume <id>` continues it in
+Pass: the meeting is still paused after wake; `voiceislocal record resume <id>` continues it in
 the same session.
 
 ### H21: a call with AirPods (PR2b)
@@ -164,7 +164,7 @@ it.
 
 ### Speech timing fixture (opt-in, no microphone)
 
-After `holos setup --locale en-CA` has installed the configured speech assets:
+After `voiceislocal setup --locale en-CA` has installed the configured speech assets:
 
 ```sh
 HOLOS_SPEECH_FIXTURE=1 ./scripts/test.sh --filter speechFixtureTimesAreAbsolute

@@ -432,11 +432,11 @@ public enum SpeakerEditor {
         try profiles.update { database in
             for id in people.keys.sorted() {
                 guard let index = database.profiles.firstIndex(where: { $0.id == id }) else {
-                    throw HolosError.unavailable("That person is no longer in Holos (another window forgot or "
+                    throw HolosError.unavailable("That person is no longer in Voice is Local (another window forgot or "
                                                  + "merged them); reload and choose a name again.")
                 }
                 guard database.profiles[index].displayName == people[id] else {
-                    throw HolosError.unavailable("That person was renamed in another Holos window; reload and "
+                    throw HolosError.unavailable("That person was renamed in another Voice is Local window; reload and "
                                                  + "choose the name again.")
                 }
                 // A person this very call created stays untouched until its lines are appended: if the append
