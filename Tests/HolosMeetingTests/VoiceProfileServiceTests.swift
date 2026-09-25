@@ -2191,11 +2191,13 @@ func forgettingAPersonFollowsTheirSamplesThroughAMerge() async throws {
     let maria = try #require(try store.load().profiles.first { $0.displayName == "Maria" }?.id)
     let samples = try #require(try store.load().profiles.first { $0.id == jim }?.samples.map(\.id))
 
-    // The tombstone was listed while the samples were Jim's; the merge moved them to Maria before the store write.
+    // A tombstone listed while the samples were Jim's, with the samples already moved to Maria by the time it is
+    // performed. `merge` refuses to start while a person's forget is pending, so this is what an older Holos, or
+    // a tombstone carried across an upgrade, can still leave; the owner is resolved in the store write either way.
     let stale = ForgetRecord(kind: .profile, profileID: jim, sampleIDs: samples,
                              sessionIDs: [try profileManifestID(session)])
-    try store.appendForgetRecord(stale)
     try VoiceProfileService.merge(profileID: jim, into: maria, store: store, sessionsRoot: temp.url)
+    try store.appendForgetRecord(stale)
     try VoiceProfileService.perform(stale, store: store, sessionsRoot: temp.url)
 
     // Cleanup followed the samples to Maria, so her entries went too. With the tombstone's stale ID, the match the
@@ -2448,4 +2450,81 @@ func aMergeStaysPendingWhenAMeetingFolderCannotBeInspected() async throws {
     }
     #expect(try store.pendingForgets().first?.kind == .merge,
             "A folder that cannot be inspected has not been visited; only a missing manifest means not a meeting.")
+}
+
+@Test(.timeLimit(.minutes(1)))
+func aMergeWaitsWhileOneOfItsPeopleIsBeingForgotten() async throws {
+    let temp = try TemporaryDirectory("profiles")
+    defer { temp.remove() }
+    let store = profileStore(temp)
+    let (_, _, jim) = try await profileForgetFixture(temp, store: store)
+    try store.update { $0.profiles.append(SpeakerProfile(id: "MARIA", displayName: "Maria")) }
+    // A forget of Jim that has listed his samples and not yet written: a merge now would move a sample learned
+    // since out to Maria, where the forget's own write would not find it.
+    let listing = ForgetRecord(kind: .profile, profileID: jim, sampleIDs: [])
+    try store.appendForgetRecord(listing)
+
+    #expect(throws: HolosError.self) {
+        try VoiceProfileService.merge(profileID: jim, into: "MARIA", store: store, sessionsRoot: temp.url)
+    }
+    #expect(throws: HolosError.self) {
+        try VoiceProfileService.merge(profileID: "MARIA", into: jim, store: store, sessionsRoot: temp.url)
+    }
+    #expect(try store.load().profiles.count == 2, "Neither direction moved anything.")
+
+    try VoiceProfileService.resumePendingForgets(store: store, sessionsRoot: temp.url)
+    #expect(try store.load().profiles.map(\.id) == ["MARIA"])
+}
+
+@Test(.timeLimit(.minutes(1)))
+func whatAMergeRemovedIsKeptForLaterChains() async throws {
+    let temp = try TemporaryDirectory("profiles")
+    defer { temp.remove() }
+    let store = profileStore(temp)
+    try store.update {
+        $0.profiles = [SpeakerProfile(id: "A", displayName: "A"), SpeakerProfile(id: "B", displayName: "B"),
+                       SpeakerProfile(id: "C", displayName: "C")]
+    }
+    try VoiceProfileService.merge(profileID: "A", into: "B", store: store, sessionsRoot: temp.url)
+    #expect(try store.load().mergedInto == ["A": "B"],
+            "Kept after the merge finished: an interrupted merge still has to find where its target went.")
+
+    try VoiceProfileService.merge(profileID: "B", into: "C", store: store, sessionsRoot: temp.url)
+    let map = try #require(try store.load().mergedInto)
+    #expect(map == ["A": "B", "B": "C"])
+    #expect(VoiceProfileService.mergedOnwards("A", in: try store.load()) == "C", "And the chain resolves through it.")
+}
+
+@Test(.timeLimit(.minutes(1)))
+func anEditThatNeedsWholeLabelsIsRefusedUnderTheLock() async throws {
+    let temp = try TemporaryDirectory("profiles")
+    defer { temp.remove() }
+    let store = profileStore(temp)
+    let (session, _) = try await profileProcessedSession(in: temp, store: nil)
+    try store.update { $0.profiles = [SpeakerProfile(id: "JIM", displayName: "Jim")] }
+    // One ordinary edit first, so the meeting has an edit journal at all.
+    _ = try SpeakerEditor.apply([.rename(speakerID: "mic:S2", name: "Chair")],
+                                view: try profileView(session, store: store), session: session, source: "cli")
+    let view = try profileView(session, store: store)
+    let before = try SessionSpeakerStore.readEdits(session: session).edits.count
+    // Another Holos appends a line this build cannot read, after the caller looked and before the lock is taken.
+    let torn = try FileHandle(forWritingTo: SessionPaths.edits(session))
+    try torn.seekToEnd()
+    try torn.write(contentsOf: Data(#"{"schemaVersion": 99, "id": "x"}"#.utf8 + [0x0A]))
+    try torn.close()
+
+    #expect(throws: HolosError.self) {
+        try SpeakerEditor.apply([.linkProfile(speakerID: "mic:S1", profileID: "JIM"),
+                                 .rename(speakerID: "mic:S1", name: "Jim")],
+                                view: view, session: session, source: "cli", profiles: store,
+                                requirePeople: ["JIM": "Jim"], requireCompleteJournal: true)
+    }
+    #expect(try SessionSpeakerStore.readEdits(session: session).edits.count == before, "Nothing was appended.")
+
+    // Without that requirement the same batch is saved, as every other speaker edit is.
+    _ = try SpeakerEditor.apply([.linkProfile(speakerID: "mic:S1", profileID: "JIM"),
+                                 .rename(speakerID: "mic:S1", name: "Jim")],
+                                view: view, session: session, source: "cli", profiles: store,
+                                requirePeople: ["JIM": "Jim"])
+    #expect(try SessionSpeakerStore.readEdits(session: session).edits.count > before)
 }

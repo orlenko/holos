@@ -68,7 +68,8 @@ public enum VoiceProfileService {
                                   extractor: (any VoiceSampleExtractor)?,
                                   store: SpeakerProfileStore) async throws -> SpeakerSessionSnapshot {
         // The suggestions are recognition decisions on the meeting's labels; with edits missing, they may contradict
-        // a link or a "Not Jim" that could not be read.
+        // a link or a "Not Jim" that could not be read. Read here to refuse early, and again under the speaker lock
+        // before the lines are appended (`requireCompleteJournal`), where another Holos can no longer slip one in.
         guard try SessionSpeakerStore.readEdits(session: session).isComplete else {
             throw HolosError.unavailable(incompleteEdits)
         }
@@ -82,7 +83,8 @@ public enum VoiceProfileService {
         guard !links.isEmpty else { throw HolosError.invalidInput("There are no suggested names to confirm.") }
         let people = Set(links.map(\.1.id))
         return try await linkPeople(links, created: [], session: session, view: view,
-                                    enroll: learnVoices ? people : [], extractor: extractor, store: store)
+                                    enroll: learnVoices ? people : [], extractor: extractor, store: store,
+                                    requireCompleteJournal: true)
     }
 
     /// "This is me": links `speakerID` to the one `isSelf` person, created on first use with the account's full
@@ -213,9 +215,22 @@ public enum VoiceProfileService {
     public static func merge(profileID: String, into target: String, store: SpeakerProfileStore,
                              sessionsRoot: URL = HolosPaths.sessions) throws {
         guard profileID != target else { throw HolosError.invalidInput("Choose two different people to merge.") }
+        // A forget of either person that has been listed but not yet written must not have its work moved out from
+        // under it: it removes the samples it listed, and one learned since and moved by this merge would survive
+        // on the other person. Checked again inside the merge's own locked write, which the forget's write takes.
+        let names = { (record: ForgetRecord) in
+            record.kind == .profile && (record.profileID == profileID || record.profileID == target)
+        }
+        guard try !store.pendingForgets().contains(where: names) else {
+            throw HolosError.unavailable("One of these people is being forgotten; try the merge again in a moment.")
+        }
         let record = ForgetRecord(kind: .merge, profileID: profileID, targetProfileID: target)
         try store.appendForgetRecord(record)
         try store.update { database in
+            guard try !store.pendingForgets().contains(where: names) else {
+                throw HolosError.unavailable("One of these people is being forgotten; try the merge again in a "
+                                             + "moment.")
+            }
             let fromIndex = try profileIndex(profileID, in: database)
             let intoIndex = try profileIndex(target, in: database)
             let from = database.profiles[fromIndex]
@@ -284,7 +299,10 @@ public enum VoiceProfileService {
         var failed = 0
         for session in try sessionFolders(sessionsRoot) {
             do {
-                try retarget([from: to], session: session, store: store)
+                // The destination is resolved again for each meeting, from the store as it is then: another window
+                // can merge it onwards while this pass runs, and the meetings it has not reached yet must name
+                // where that person is now, not where they were when this pass started.
+                try retarget(from: from, session: session, store: store)
             } catch {
                 failed += 1
                 log.error("Cannot point a meeting at the person two people were merged into yet: \(ProcessSpawner.logCategory(error), privacy: .public)")
@@ -296,10 +314,6 @@ public enum VoiceProfileService {
                                         + "show no automatic name for that person.")
         }
         try store.appendForgetRecord(.done(record.id))
-        // The record of what each merge removed is only needed while some merge still waits for its meetings.
-        if try store.pendingForgets().allSatisfy({ $0.kind != .merge }) {
-            try store.update { $0.mergedInto = nil }
-        }
     }
 
     /// Where `profileID` ended up, following the merges the store records as committed (`A -> B`, then `B -> C`
@@ -330,7 +344,7 @@ public enum VoiceProfileService {
     /// for the ones this run changed: a retry finds them already retargeted, and `changed` would then say the
     /// rewrite is not owed although it never happened. `SessionExports.regenerate` writes only the files that
     /// differ from what it renders, so repeating it costs a render and no writes.
-    private static func retarget(_ map: [String: String], session: URL, store: SpeakerProfileStore) throws {
+    private static func retarget(from: String, session: URL, store: SpeakerProfileStore) throws {
         // A folder with no manifest is not a meeting and is skipped; one whose manifest cannot be read now is,
         // so the read throws and the merge stays pending for a run that can read it.
         var info = stat()
@@ -346,6 +360,9 @@ public enum VoiceProfileService {
         guard (info.st_mode & S_IFMT) == S_IFREG else { return }
         _ = try SessionArchive.readManifest(at: session)
         let hadRecognition = try SessionArchive.withSpeakerLock(at: session) { () throws -> Bool in
+            let to = Self.mergedOnwards(from, in: try store.load())
+            guard to != from else { return false }
+            let map = [from: to]
             let files = try SessionSpeakerStore.recognitionFiles(session: session)
             // An entry this build does not know may be a recognition result of a newer Holos that still names the
             // person merged away. A merge deletes nothing, so the meeting is left for a build that can read it.
@@ -613,8 +630,8 @@ public enum VoiceProfileService {
     /// marked used in the same locked step, so this path saves nothing behind a person who is gone either.
     private static func linkPeople(_ links: [(speakerID: String, profile: SpeakerProfile)], created: Set<String>,
                                    session: URL, view: SpeakerProjection, enroll: Set<String>,
-                                   extractor: (any VoiceSampleExtractor)?,
-                                   store: SpeakerProfileStore) async throws -> SpeakerSessionSnapshot {
+                                   extractor: (any VoiceSampleExtractor)?, store: SpeakerProfileStore,
+                                   requireCompleteJournal: Bool = false) async throws -> SpeakerSessionSnapshot {
         let actions = links.flatMap { link -> [SpeakerEditAction] in
             [.linkProfile(speakerID: link.speakerID, profileID: link.profile.id),
              .rename(speakerID: link.speakerID, name: link.profile.displayName)]
@@ -639,7 +656,8 @@ public enum VoiceProfileService {
             } else {
                 let result = try SpeakerEditor.apply(actions, view: view, session: session, source: editSource,
                                                      profileNames: profileNames(store: store), profiles: store,
-                                                     requirePeople: linked)
+                                                     requirePeople: linked,
+                                                     requireCompleteJournal: requireCompleteJournal)
                 snapshot = result.snapshot
                 needsRefresh = result.needsSampleRefresh
             }

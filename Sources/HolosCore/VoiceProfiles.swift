@@ -99,7 +99,8 @@ public struct SpeakerProfileDatabase: Codable, Sendable, Equatable {
     /// Merges whose store write committed, as the person merged away → the person they were merged into. Written in
     /// the same write that removes the source, so it says what a journal record alone cannot: that this merge is
     /// what removed that person, rather than a forget or another merge. Entries let a merge that was interrupted
-    /// find where its target has gone since, and they are dropped once no merge is waiting for its meetings.
+    /// find where its target has gone since, and they are kept: dropping them raced with the next merge's own
+    /// commit, and one pair of IDs per merge a user ever makes is a small price for a chain that always resolves.
     public var mergedInto: [String: String]?
     /// Set by `holos people calibrate --apply`; `likely` exists only when this is set, and only for runs of
     /// `calibratedModel`.

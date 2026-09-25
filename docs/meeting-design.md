@@ -3483,8 +3483,12 @@ public struct SpeakerProfileDatabase: Codable, Sendable, Equatable {
   writes the marker the crash cost it and finishes the meetings. That map is also how the
   destination is followed onwards (`A -> B` then `B -> C` retargets `A` to `C`, at most
   `mergeChainLimit` steps and never around a cycle), so only merges that committed are
-  followed; a destination no longer in the store drops the record, and the map is cleared
-  once no merge waits for its meetings. Unlike a forget, this never deletes what it cannot
+  followed; a destination no longer in the store drops the record. The map is kept rather
+  than cleared: clearing it raced with the next merge's own commit, and it is resolved
+  again for each meeting, because another window can merge the destination onwards while a
+  pass is running. A merge is also refused while a `.profile` forget of either person is
+  unfinished (checked in the merge's own locked write): that forget removes the samples it
+  listed, and one learned since and moved by the merge would survive on the other person. Unlike a forget, this never deletes what it cannot
   read: a meeting is skipped only when its manifest is absent (ENOENT or ENOTDIR; any other
   inspection failure keeps the record pending), a recognition folder holding an entry this
   build does not know keeps it pending too, and a recognition result that cannot be read
@@ -3502,7 +3506,8 @@ public struct SpeakerProfileDatabase: Codable, Sendable, Equatable {
   `aMergeIsNotRecoveredWhenSomethingElseRemovedItsSource`,
   `aMergeChainFollowsOnlyCommittedMerges`,
   `aMergeStaysPendingWhenAMeetingHoldsUnknownRecognitionFiles`,
-  `aMergeStaysPendingWhenAMeetingFolderCannotBeInspected`.
+  `aMergeStaysPendingWhenAMeetingFolderCannotBeInspected`,
+  `aMergeWaitsWhileOneOfItsPeopleIsBeingForgotten`, `whatAMergeRemovedIsKeptForLaterChains`.
 - **A no-op is decided on the current labels, and still finishes what an earlier run
   left.** `SpeakerEditor.applyUnlessUnchanged` makes that decision under the speaker lock,
   and linking, `speakers reject` (`VoiceProfileService.reject`, which returns nil for it)
@@ -3532,7 +3537,11 @@ public struct SpeakerProfileDatabase: Codable, Sendable, Equatable {
   inside that second from one nobody has touched. Tests (PR10): `anEditIsRefusedWhenThePersonItLinksIsGone`,
   `aLinkThatChangesNothingIsRefusedWhenAnotherWindowChangedIt`,
   `aPersonAnotherLinkHasTakenUpIsNotRolledBack`, `aRefusedNewPersonIsStillRemoved`,
-  `aLinkIsRefusedWhenThePersonWasRenamedMeanwhile`.
+  `aLinkIsRefusedWhenThePersonWasRenamedMeanwhile`, `anEditThatNeedsWholeLabelsIsRefusedUnderTheLock`.
+  `confirmAll` also asks the editor to refuse under the lock when the meeting's edit journal
+  has a line this build cannot read (`requireCompleteJournal`): its suggestions were read
+  from labels such a line may contradict, and another Holos can append one between the
+  caller's own check and the lock.
 - **"Remember voices" governs recognition, not only new voice data.** Turning it off
   without forgetting the samples keeps them, and the People window promises that "Kept
   samples are not used while Remember voices is off." `SpeakerSessionSnapshot.load`

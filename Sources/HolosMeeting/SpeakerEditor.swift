@@ -73,14 +73,19 @@ public enum SpeakerEditor {
     ///   claim happens there, rather than after the append, so that a caller whose own link is refused can tell a
     ///   person nobody has taken up from one another window has linked meanwhile
     ///   (`VoiceProfileService.rollBack`).
+    /// - `requireCompleteJournal` refuses the batch, under the same lock, when the meeting's edit journal has a
+    ///   torn or unreadable line (`EditJournal.isComplete`). `confirmAll` needs it: its suggestions were read from
+    ///   labels that a line this build cannot decode may contradict.
     @discardableResult
     public static func apply(_ actions: [SpeakerEditAction], view: SpeakerProjection, session: URL, source: String,
                              regenerateExports: Bool = true,
                              profileNames: [String: String] = [:],
                              profiles: SpeakerProfileStore? = nil,
-                             requirePeople: [String: String] = [:]) throws -> SpeakerEditResult {
+                             requirePeople: [String: String] = [:],
+                             requireCompleteJournal: Bool = false) throws -> SpeakerEditResult {
         let saved = try save(actions, view: view, session: session, source: source, profileNames: profileNames,
-                             skipIfUnchanged: false, profiles: profiles, requirePeople: requirePeople)
+                             skipIfUnchanged: false, profiles: profiles, requirePeople: requirePeople,
+                             requireCompleteJournal: requireCompleteJournal)
         return try finish(saved ?? Saved(edits: [], journal: EditJournal()), session: session,
                           regenerateExports: regenerateExports, profileNames: profileNames, profiles: profiles)
     }
@@ -98,10 +103,12 @@ public enum SpeakerEditor {
                                             source: String, regenerateExports: Bool = true,
                                             profileNames: [String: String] = [:],
                                             profiles: SpeakerProfileStore? = nil,
-                                            requirePeople: [String: String] = [:]) throws -> SpeakerEditResult? {
+                                            requirePeople: [String: String] = [:],
+                                            requireCompleteJournal: Bool = false) throws -> SpeakerEditResult? {
         guard let saved = try save(actions, view: view, session: session, source: source,
                                    profileNames: profileNames, skipIfUnchanged: true, profiles: profiles,
-                                   requirePeople: requirePeople) else { return nil }
+                                   requirePeople: requirePeople,
+                                   requireCompleteJournal: requireCompleteJournal) else { return nil }
         return try finish(saved, session: session, regenerateExports: regenerateExports, profileNames: profileNames,
                           profiles: profiles)
     }
@@ -110,12 +117,18 @@ public enum SpeakerEditor {
     /// current state as it is.
     private static func save(_ actions: [SpeakerEditAction], view: SpeakerProjection, session: URL, source: String,
                              profileNames: [String: String], skipIfUnchanged: Bool,
-                             profiles: SpeakerProfileStore?, requirePeople: [String: String]) throws -> Saved? {
+                             profiles: SpeakerProfileStore?, requirePeople: [String: String],
+                             requireCompleteJournal: Bool) throws -> Saved? {
         guard !actions.isEmpty else { throw HolosError.invalidInput("There is no speaker change to save.") }
         try requireSource(source)
         let preloaded = readRun(view.runID, session: session)
         return try SessionArchive.withSpeakerLock(at: session) { () throws -> Saved? in
             let base = try currentBase(view: view, session: session, preloaded: preloaded, profileNames: profileNames)
+            // Checked here, not before the lock: another Holos can append a line this build cannot read between
+            // the two, and a batch decided on labels that may miss a link or a rejection must not be appended.
+            guard !requireCompleteJournal || base.journal.isComplete else {
+                throw HolosError.unavailable(VoiceProfileService.incompleteEdits)
+            }
             var viewState = view
             var current = base.projection
             let batchID = UUID().uuidString
