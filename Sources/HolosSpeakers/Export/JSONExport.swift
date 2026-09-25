@@ -76,7 +76,7 @@ private struct TranscriptFile: Encodable {
         let document = content.document
         session = SessionEntry(document.metadata)
         transcriptID = document.transcript.id
-        languages = document.transcript.languages
+        languages = document.transcript.mergedLanguages
         runID = content.run?.id
         engine = content.run?.engine
         alignment = content.run?.alignment

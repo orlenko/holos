@@ -43,7 +43,8 @@ extension Session {
                 installed: voiceislocal setup --locale <language>), keeps, every few seconds, the language that \
                 fits, and makes that the session's transcript. Speakers are then labelled again on it (names carry \
                 over) and the transcript files rewritten. Transcriptions made before are reused, and running it \
-                again with the same languages changes nothing. With one language the transcript becomes that \
+                again with the same languages leaves the transcript and the speaker labels as they are. With one \
+                language the transcript becomes that \
                 language's alone. Exits 0 when done (also when the speaker models are not installed), 3 when the \
                 transcript files were written but a language could not be transcribed or speaker labelling was \
                 skipped or failed (it is printed), and 1 when nothing could be done.

@@ -1,5 +1,6 @@
 import Foundation
 import HolosCore
+import HolosSpeakers
 import HolosSpeech
 import HolosStorage
 import os
@@ -82,7 +83,10 @@ enum LanguageStage {
         var problem: String?
     }
 
-    static let editedHead = "Speaker labels were edited; detect languages with --force (names carry over)."
+    static let editedHead = "Speaker labels were edited, so the languages were not detected again. To detect them "
+        + "and label speakers again (names carry over), run voiceislocal session languages with --force."
+    /// Ends the note that the recorded transcript stood in for a language that could not be transcribed again.
+    static let standsIn = "The recorded transcript stands in for it."
 
     /// Runs the stage and records its outcome. Throws only `CancellationError`: every other failure is recorded
     /// and the current transcript kept.
@@ -104,7 +108,11 @@ enum LanguageStage {
         guard let target = targetLanguages(request, events: events), !target.isEmpty else { return unchanged }
 
         let started = recorder.begin(.languages, message: "Checking the meeting's languages…")
-        if current.languages == target || (current.languages == nil && target == [current.locale]) {
+        // The language the recorded transcript stood in for in the current merge, which is tried again.
+        let previousStandIn = current.languages == nil ? nil
+            : mergeEvent(of: current.id, events: events)?.details["fallback"].flatMap { $0.isEmpty ? nil : $0 }
+        if (current.languages == target && previousStandIn == nil)
+            || (current.languages == nil && target == [current.locale]) {
             recorder.end(.languages, .succeeded, "The transcript was already made from \(names(target)).",
                          since: started)
             return Outcome(transcript: current, note: note(target))
@@ -135,8 +143,14 @@ enum LanguageStage {
             sources.merge(transcribed.sources) { _, new in new }
             reasons.merge(transcribed.failures) { _, new in new }
         }
+        // Said in the messages and journaled (`fallback`), so a later run tries that language again.
+        var standIn: String?
+        var standInNote: String?
         if let fallback, target.contains(fallback.locale), sources[fallback.locale] == nil {
             sources[fallback.locale] = fallback
+            standIn = fallback.locale
+            standInNote = (reasons[fallback.locale] ?? "\(name(fallback.locale)) was not transcribed again.")
+                + " " + standsIn
             reasons[fallback.locale] = nil
             log.notice("Session \(request.manifest.id, privacy: .public): the recorded transcript stands in for \(fallback.locale, privacy: .public)")
         }
@@ -149,18 +163,30 @@ enum LanguageStage {
             recorder.end(.languages, .failed, message.trimmingCharacters(in: .whitespaces), since: started)
             return Outcome(transcript: current, problem: message.trimmingCharacters(in: .whitespaces))
         }
-        if current.languages == available {
-            // Nothing new could be added (a language is still missing): the current merge stands.
-            recorder.end(.languages, .failed, failure, since: started)
-            return Outcome(transcript: current, note: note(available), problem: failure)
+        let merging = [note(available), standInNote].compactMap { $0 }.joined(separator: " ")
+        if current.languages == available && previousStandIn == standIn {
+            // Nothing new could be added (a language is still missing, or still stood in for): the current merge
+            // stands.
+            let message = [standInNote, failure].compactMap { $0 }.joined(separator: " ")
+            recorder.end(.languages, failure == nil ? .succeeded : .failed, message.isEmpty ? nil : message,
+                         since: started)
+            return Outcome(transcript: current, note: merging, problem: failure)
         }
 
         // The merge (pure), then its publication under the writer lock.
         recorder.progress(.languages, track: nil, fraction: nil, message: "Choosing the language of each passage…")
         let tracks = sessionTracks(request.manifest)
+        let echo = echoParameters(request)
         let candidates = available.map { language in
-            LanguageMerge.Candidate(language: language,
-                                    segments: attributed(sources[language]?.segments ?? [], tracks: tracks))
+            let segments = attributed(sources[language]?.segments ?? [], tracks: tracks)
+            // Microphone echo of a call, found in each language's own transcription, where both tracks were heard
+            // by the same recognizer (LanguageMerge rule 5).
+            let spans = echo.map { parameters in
+                EchoFilter.echoSpans(transcript: Transcript(source: request.session.path, locale: language,
+                                                            backend: request.manifest.backend, segments: segments),
+                                     parameters: parameters)
+            } ?? []
+            return LanguageMerge.Candidate(language: language, segments: segments, echo: spans)
         }
         let result = LanguageMerge.merge(candidates, scorer: dependencies.makeScorer())
         try Task.checkCancellation()
@@ -180,6 +206,7 @@ enum LanguageStage {
             details["source.\(language)"] = sources[language]?.id ?? ""
             details["windows.\(language)"] = String(result.summary.windowsByLanguage[language] ?? 0)
         }
+        if let standIn { details["fallback"] = standIn }
         do {
             try await publish(merged, details: details, session: request.session, lease: request.lease)
         } catch let error where !(error is CancellationError) {
@@ -190,9 +217,9 @@ enum LanguageStage {
         log.notice("Session \(request.manifest.id, privacy: .public): merged \(available.count, privacy: .public) languages over \(result.summary.windows, privacy: .public) windows, \(result.summary.switches, privacy: .public) switches")
         // Merged: the stage did its job, even when a language is missing (that makes the post-processing partial).
         let summary = summaryMessage(result.summary, languages: available)
-        recorder.end(.languages, .succeeded, [summary, failure].compactMap { $0 }.joined(separator: " "),
+        recorder.end(.languages, .succeeded, [summary, standInNote, failure].compactMap { $0 }.joined(separator: " "),
                      since: started)
-        return Outcome(transcript: merged, note: note(available), problem: failure)
+        return Outcome(transcript: merged, note: merging, problem: failure)
     }
 
     // MARK: - Which languages
@@ -217,9 +244,10 @@ enum LanguageStage {
         guard current.languages != nil else { return languages }
         // A merged transcript: redo it only when it was made from meeting.json's languages and missed some. One made
         // from languages asked for by name (`voiceislocal session languages`) stays.
+        // A language the recorded transcript stood in for counts as missed.
         guard let merge = mergeEvent(of: current.id, events: events),
               merge.details["requested"] == languages.joined(separator: ","),
-              current.languages != languages else { return nil }
+              current.languages != languages || !(merge.details["fallback"] ?? "").isEmpty else { return nil }
         return languages
     }
 
@@ -296,9 +324,25 @@ enum LanguageStage {
             return ([], reasons)
         }
         var planned: [String] = []
+        let check = dependencies.modelStatus
+        let backend = request.manifest.backend
         for language in languages {
             try Task.checkCancellation()
-            let status = await dependencies.modelStatus(language, request.manifest.backend)
+            // The asset inventory is a platform call; it is waited for within the stop path's limit (§1.3).
+            let status: String
+            if let limit = dependencies.timeouts?.speechFinishBase {
+                switch await awaitWithTimeout(limit, { await check(language, backend) }) {
+                case .finished(.success(let value)): status = value
+                case .finished(.failure): status = "unsupported"
+                case .cancelled: throw CancellationError()
+                case .timedOut:
+                    reasons[language] = "\(name(language)) was not transcribed: its speech model did not answer "
+                        + "in time. Later, " + detectAgain + "."
+                    continue
+                }
+            } else {
+                status = await check(language, backend)
+            }
             if status == "installed" {
                 planned.append(language)
             } else {
@@ -333,8 +377,14 @@ enum LanguageStage {
                     journal.progress(PostProcessingProgress(stage: .languages, fraction: fraction, message: message))
                 }
                 try Task.checkCancellation()
-                try await savePass(pass, tracks: tracks, manifest: manifest, session: session, lease: request.lease)
                 sources[language] = pass
+                do {
+                    try await savePass(pass, tracks: tracks, manifest: manifest, session: session,
+                                       lease: request.lease)
+                } catch let error where !(error is CancellationError) && !Task.isCancelled {
+                    // The transcription still goes into this merge; only a later run cannot reuse it.
+                    log.error("Session \(manifest.id, privacy: .public): the transcription in \(language, privacy: .public) was not saved for later runs: \(error.localizedDescription, privacy: .private)")
+                }
             } catch {
                 if error is CancellationError || Task.isCancelled { throw CancellationError() }
                 log.error("Session \(manifest.id, privacy: .public): transcription in \(language, privacy: .public) failed: \(error.localizedDescription, privacy: .private)")
@@ -350,16 +400,21 @@ enum LanguageStage {
                                       progress: @escaping @Sendable (Double) -> Void) async throws -> Transcript {
         let manifest = request.manifest
         let total = max(tracks.reduce(0.0) { $0 + manifest.audioSeconds(track: $1) }, 1e-9)
-        let fed = LockedValue(0.0)
+        // Audio is fed in buffers of about 85 ms, over a hundred times faster than real time: progress is reported
+        // at most once per whole percent, as rendering does, so the status files are not rewritten for every buffer.
+        let fed = LockedValue((seconds: 0.0, percent: -1))
         let base = dependencies.makeSpeech
         let counting: LiveSpeechFactory = { locale, backend, contextualStrings, onUpdate in
             let session = try await base(locale, backend, contextualStrings, onUpdate)
             return CountingSpeechSession(base: session) { duration in
-                let sum = fed.withLock { value -> Double in
-                    value += duration
-                    return value
+                let percent = fed.withLock { value -> Int? in
+                    value.seconds += duration
+                    let percent = Int(min(1, value.seconds / total) * 100)
+                    guard percent > value.percent else { return nil }
+                    value.percent = percent
+                    return percent
                 }
-                progress(min(1, sum / total))
+                if let percent { progress(Double(percent) / 100) }
             }
         }
         var segments: [TranscriptSegment] = []
@@ -410,6 +465,15 @@ enum LanguageStage {
 
     // MARK: - Helpers
 
+    /// The speaker stages' alignment parameters when they look for microphone echo (a call); nil otherwise, or when
+    /// meeting.json cannot be read (stage 2 reports that).
+    private static func echoParameters(_ request: Request) -> AlignmentParameters? {
+        guard let meeting = try? SessionFiles.meetingInfo(session: request.session, manifest: request.manifest)
+        else { return nil }
+        let parameters = SpeakerAnalysis.alignmentParameters(meeting: meeting)
+        return parameters.echoWindowSeconds == nil ? nil : parameters
+    }
+
     /// The session's tracks with audio, "mic" before "system".
     private static func sessionTracks(_ manifest: SessionManifest) -> [String] {
         Set(manifest.chunks.map(\.track)).sorted()
@@ -453,13 +517,17 @@ enum LanguageStage {
         case "unsupported":
             "\(name(language)) was not transcribed: this Mac's speech recognition does not support it."
         case "downloading":
-            "\(name(language)) was not transcribed: its speech model is still downloading. Detect the languages again "
-                + "once it is installed."
+            "\(name(language)) was not transcribed: its speech model is still downloading. Once it is installed, "
+                + detectAgain + "."
         default:
             "\(name(language)) was not transcribed: its speech model is not installed. Install it from the meeting "
-                + "start panel or with voiceislocal setup --locale \(language), then detect the languages again."
+                + "start panel or with voiceislocal setup --locale \(language), then " + detectAgain + "."
         }
     }
+
+    /// What detects the languages again from the app: Label Speakers runs `session diarize`, which runs this stage
+    /// first and picks up a language missed before (unless speaker labels were edited).
+    static let detectAgain = "choose Label Speakers in Meetings to detect the languages again"
 
     /// "Kept French (Canada) in 70 % of the passages and English (Canada) in 30 %, with 212 switches."
     static func summaryMessage(_ summary: LanguageMerge.Summary, languages: [String]) -> String {

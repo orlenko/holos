@@ -6,7 +6,8 @@ import HolosStorage
 /// What `voiceislocal session languages` does (docs/meeting-design.md §4.14), as a library call: the CLI parses its
 /// arguments and prints the outcome. It runs the post-processor with the languages named, so the transcript is merged
 /// from one transcription in each, then speakers are labelled again on it and the exports rewritten, as after a
-/// recording (without speaker models the exports are speaker-less, as there).
+/// recording (without speaker models the exports are speaker-less, as there). When the transcript stays as it was
+/// (already merged from these languages, or kept after a failure), its speaker labels stay too, edited or not.
 public enum SessionLanguagesCommand {
     public struct Request: Sendable {
         public var session: URL
@@ -57,7 +58,11 @@ public enum SessionLanguagesCommand {
         var shown = record
         let note = LanguageStage.note(languages)
         if let message = shown.message, message.hasPrefix(note) {
-            let rest = message.dropFirst(note.count).trimmingCharacters(in: .whitespaces)
+            var rest = message.dropFirst(note.count).trimmingCharacters(in: .whitespaces)
+            // The stage's message also says which language the recorded transcript stood in for.
+            if let range = rest.range(of: LanguageStage.standsIn) {
+                rest = rest[range.upperBound...].trimmingCharacters(in: .whitespaces)
+            }
             shown.message = rest.isEmpty ? nil : rest
         }
         let stage = record.stages.last { $0.stage == .languages }?.message

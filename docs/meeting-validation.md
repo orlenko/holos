@@ -159,10 +159,14 @@ some of them within a turn, at least 10 minutes long, with the consent it needs.
 5. Check the session: `meeting.json` has `"languages": ["fr-CA", "en-CA"]`; `postprocess.json` has a
    `languages` stage `succeeded` with the share of each language; `events.jsonl` has two
    `languagePass` lines and one `languagesDetected`.
-6. Run `voiceislocal session languages <session> --languages fr-CA,en-CA`: it says the transcript was
-   already made from both languages and exits 0 without transcribing anything.
+6. In Review, name one speaker. Then run `voiceislocal session languages <session> --languages
+   fr-CA,en-CA`: it says the transcript was already made from both languages and the speaker labels
+   were kept, and exits 0 without transcribing or labelling anything. The name is still there.
 7. Record a short English-only meeting with the same settings: the transcript is all English, and
    `languagesDetected` shows `windows.fr-CA` 0 or close to it.
+   Then record a short call in French with the same languages, played on the laptop speakers (no
+   headphones), where the far end says a few English sentences: those sentences appear once, under
+   the far end's speaker, and not again under yours.
 8. Check Spanish (Spain) (or another language whose model you do not install) and record a short
    meeting: the finished message says Spanish was not transcribed because its speech model is not
    installed, and French and English are still detected.

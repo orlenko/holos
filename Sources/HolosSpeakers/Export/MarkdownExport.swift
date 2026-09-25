@@ -133,7 +133,7 @@ enum MarkdownExport {
     /// marks: the language changes every few seconds, often inside a sentence, and marks there would break it up; the
     /// JSON export names each turn's languages.
     private static func languages(_ transcript: Transcript) -> String? {
-        guard let languages = transcript.languages, languages.count > 1 else { return nil }
+        guard let languages = transcript.mergedLanguages else { return nil }
         let english = Locale(identifier: "en_US")
         return languages.map { escapeInline(ExportText.singleLine(DictationLanguage.name(of: $0, in: english))) }
             .joined(separator: ", ")

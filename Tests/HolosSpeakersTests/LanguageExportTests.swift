@@ -94,8 +94,11 @@ private func languageExportText(_ document: ExportDocument, _ format: ExportForm
 }
 
 @Test func jsonOfATranscriptInOneLanguageHasNoLanguageKeys() throws {
-    let object = try languageExportJSON(languageExportDocument(languageExportTranscript(languages: nil)))
-    #expect(object["languages"] == nil)
-    let turns = try #require(object["turns"] as? [[String: Any]])
-    #expect(turns.allSatisfy { $0["languages"] == nil })
+    // Also a transcript made one language's alone (`session languages` with one), as the Markdown header.
+    for languages in [nil, ["fr-CA"]] as [[String]?] {
+        let object = try languageExportJSON(languageExportDocument(languageExportTranscript(languages: languages)))
+        #expect(object["languages"] == nil)
+        let turns = try #require(object["turns"] as? [[String: Any]])
+        #expect(turns.allSatisfy { $0["languages"] == nil })
+    }
 }

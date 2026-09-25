@@ -283,7 +283,7 @@ struct ExportContent {
                 track: track, start: segment.start, end: segment.end, text: text, overlap: false, otherSpeakerIDs: [],
                 score: 0, timing: WordTimingQuality(estimated: estimated, of: entry.words.count),
                 spans: [WordSpan(segmentID: segment.id, first: 0, end: entry.words.count)],
-                languages: transcript.languages == nil ? nil : [segment.language].compactMap { $0 }))
+                languages: transcript.mergedLanguages == nil ? nil : [segment.language].compactMap { $0 }))
         }
         return turns
     }
@@ -420,6 +420,16 @@ struct TranscriptText {
     }
 }
 
+extension Transcript {
+    /// The languages of a transcript merged from several (docs/meeting-design.md §4.14); nil for one language,
+    /// including a transcript made one language's alone (`voiceislocal session languages` with one), so the exports
+    /// name languages only when there is a choice between them.
+    var mergedLanguages: [String]? {
+        guard let languages, languages.count > 1 else { return nil }
+        return languages
+    }
+}
+
 /// Segment languages by segment ID (the first segment wins when IDs repeat), for a transcript merged from several
 /// languages (docs/meeting-design.md §4.14).
 struct SegmentLanguages {
@@ -427,7 +437,7 @@ struct SegmentLanguages {
     private var languages: [String: String] = [:]
 
     init(_ transcript: Transcript) {
-        merged = transcript.languages != nil
+        merged = transcript.mergedLanguages != nil
         guard merged else { return }
         for segment in transcript.segments where languages[segment.id] == nil {
             if let language = segment.language { languages[segment.id] = language }

@@ -401,6 +401,64 @@ private func languageMergeRun(_ candidates: [LanguageMerge.Candidate]) -> Langua
     #expect(LanguageMerge.smooth([0, 1, 1, 1, 2, 2], switchWindows: 3) == [1, 1, 1, 1, 1, 1])
 }
 
+// MARK: - Echo in calls (rule 5)
+
+/// A call: the user speaks French on the microphone (0–6 s and 9–18 s); the far end says one English phrase on the
+/// system track (6–9 s), which the laptop speakers play back into the microphone 0.1 s later.
+private func languageMergeEchoCall(echo: Bool) -> [LanguageMerge.Candidate] {
+    func heard(by model: String, prefix: String) -> [TranscriptSegment] {
+        [languageMergePassage("fr", heardBy: model, from: 0, seconds: 6, track: "mic", id: "\(prefix)1"),
+         languageMergePassage("en", heardBy: model, from: 6.1, seconds: 3, track: "mic", id: "\(prefix)E"),
+         languageMergePassage("fr", heardBy: model, from: 9, seconds: 9, track: "mic", id: "\(prefix)3"),
+         languageMergePassage("en", heardBy: model, from: 6, seconds: 3, track: "system", id: "\(prefix)S")]
+    }
+    return [
+        LanguageMerge.Candidate(language: french, segments: heard(by: "fr", prefix: "F"),
+                                echo: echo ? [WordSpan(segmentID: "FE", first: 0, end: 6)] : []),
+        LanguageMerge.Candidate(language: english, segments: heard(by: "en", prefix: "E"),
+                                echo: echo ? [WordSpan(segmentID: "EE", first: 0, end: 6)] : []),
+    ]
+}
+
+@Test func echoWindowFollowsTheSystemTracksLanguage() {
+    // Without echo, the lone English window on the microphone is smoothed to French: the microphone keeps the
+    // French model's words for the phrase while the system track keeps the English model's, which no longer match.
+    let smoothed = languageMergeRun(languageMergeEchoCall(echo: false))
+    #expect(smoothed.segments.filter { $0.track == "mic" }.map(\.id) == ["F1", "FE", "F3"])
+    #expect(smoothed.segments.filter { $0.track == "system" }.map(\.id) == ["ES"])
+
+    // With the echo each transcription found, that window takes the system track's language, so both tracks keep
+    // the same model's words and the speaker stages' echo filter can drop the microphone copy.
+    let result = languageMergeRun(languageMergeEchoCall(echo: true))
+    let mic = result.segments.filter { $0.track == "mic" }
+    #expect(mic.map(\.id) == ["F1", "EE", "F3"])
+    #expect(mic.map(\.language) == [french, english, french])
+    #expect(result.segments.filter { $0.track == "system" }.map(\.id) == ["ES"])
+    #expect(mic[1].text == result.segments.first { $0.track == "system" }?.text)
+}
+
+@Test func echoNeedsHalfOfTheWindowsWordsAndSystemChoiceBreaksTies() {
+    // Echo on only 2 of the window's 6 words does not pin it.
+    var candidates = languageMergeEchoCall(echo: true)
+    candidates[0].echo = [WordSpan(segmentID: "FE", first: 0, end: 2)]
+    candidates[1].echo = [WordSpan(segmentID: "EE", first: 0, end: 2)]
+    #expect(languageMergeRun(candidates).segments.filter { $0.track == "mic" }.map(\.id) == ["F1", "FE", "F3"])
+
+    // Echo heard only in French is followed even though the system track chose English.
+    candidates = languageMergeEchoCall(echo: true)
+    candidates[1].echo = []
+    #expect(languageMergeRun(candidates).segments.filter { $0.track == "mic" }.map(\.id) == ["F1", "FE", "F3"])
+}
+
+@Test func pinnedWindowsTakeNoPartInSmoothing() {
+    #expect(LanguageMerge.smooth([0, 0, 1, 0, 0], switchWindows: 2, pinned: [nil, nil, 1, nil, nil])
+        == [0, 0, 1, 0, 0])
+    // A pinned window between two windows that agree does not break their run.
+    #expect(LanguageMerge.smooth([0, 0, 1, 0, 1, 0], switchWindows: 2, pinned: [nil, nil, nil, 0, nil, nil])
+        == [0, 0, 1, 0, 1, 1])
+    #expect(LanguageMerge.smooth([0, 1], switchWindows: 2, pinned: []) == LanguageMerge.smooth([0, 1], switchWindows: 2))
+}
+
 // MARK: - Language identification
 
 @Test func naturalLanguageScorerTellsFrenchFromEnglish() {

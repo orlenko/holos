@@ -130,8 +130,9 @@ public enum MeetingEventKind {
     /// transcriptID, language, tracks, seconds: the saved audio was transcribed again in `language` and kept as a
     /// revision that is not current (LANG2, §4.14)
     public static let languagePass = "languagePass"
-    /// transcriptID, base, languages, source.<language>, windows, windows.<language>, switches: journaled before the
-    /// transcript merged from one transcription per language is saved as current (LANG2, §4.14)
+    /// transcriptID, base, languages, requested, source.<language>, windows, windows.<language>, switches, and
+    /// fallback (the language the recorded transcript stood in for, when it did): journaled before the transcript
+    /// merged from one transcription per language is saved as current (LANG2, §4.14)
     public static let languagesDetected = "languagesDetected"
 }
 

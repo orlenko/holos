@@ -4031,7 +4031,8 @@ digests describe the wave-0 text):
 - `PostProcessingStage.languages`.
 - `MeetingEventKind.languagePass` (`transcriptID, language, tracks, seconds`) and
   `MeetingEventKind.languagesDetected` (`transcriptID, base, languages, requested,
-  source.<language>, windows, windows.<language>, switches`).
+  source.<language>, windows, windows.<language>, switches`, and `fallback`: the language
+  the recorded transcript stood in for, when it did).
 
 Outside the frozen files: `Transcript.languages: [String]?` and `TranscriptSegment.language:
 String?` in `Models.swift` (optional, left out of the JSON when nil, so older transcripts
@@ -4053,35 +4054,47 @@ recorder, `session diarize`, `recover`, `import`, the app's relabels):
 1. *Which languages.* `PostProcessingOptions.languages` when given (`session languages`);
    else meeting.json's `languages` (two or more) while the current transcript is not
    merged, or when it was merged automatically from them (`requested` of its
-   `languagesDetected`) but missed one (a speech model installed since). A transcript
+   `languagesDetected`) but missed one (a speech model installed since) or had the
+   recorded transcript stand in for one (`fallback`). A transcript
    merged from languages named on the command line is never replaced automatically. A
    meeting in one language records no stage at all, so its `postprocess.json` is unchanged.
-2. *Done already.* A current transcript merged from exactly these languages (or, for one
-   language, the recording's own) is kept: `succeeded`, "The transcript was already made
-   from …".
+2. *Done already.* A current transcript merged from exactly these languages, with none
+   stood in for (or, for one language, the recording's own), is kept: `succeeded`, "The
+   transcript was already made from …".
 3. *Edited labels.* When the head run was built from the current transcript and has
-   applied edits, the stage is `skipped` without `force` ("Speaker labels were edited;
-   detect languages with --force (names carry over)."), checked again just before the
-   merge is published.
+   applied edits, the stage is `skipped` without `force` ("Speaker labels were edited, so
+   the languages were not detected again. To detect them and label speakers again (names
+   carry over), run voiceislocal session languages with --force."), checked again just
+   before the merge is published.
 4. *Transcriptions.* For each language: the last `languagePass` after the last
    `archiveRecovered` whose revision reads (resumable); else a new one, one language after
    another, every track through `TrackReplayer` (the session vocabulary, the stop path's
-   time limits, progress "Transcribing the meeting in French (Canada)…") with
+   time limits, progress "Transcribing the meeting in French (Canada)…" reported at most
+   once per whole percent, as rendering does) with
    `AppleSpeechSession.make(accurate: true)`, saved with `saveTranscriptRevision` and
-   `languagePass` under the writer lock (held only for the save). The recorded transcript
+   `languagePass` under the writer lock (held only for the save). A transcription whose
+   save fails still goes into this merge (logged; a later run cannot reuse it). The
+   recorded transcript
    (the base: the current one, or the one a merge's event names) stands in for its own
    language only when that language cannot be transcribed again, and never when the
-   manifest says `transcriptionIncomplete`. Speech models are checked first
-   (`assetStatus`, only `installed` transcribes) and nothing is transcribed when the
+   manifest says `transcriptionIncomplete`; the stage message and the record's message
+   then say so ("… The recorded transcript stands in for it."), `languagesDetected`
+   records it as `fallback`, and a later run tries that language again. Speech models are
+   checked first (`assetStatus`, each check within `speechFinishBase`; only `installed`
+   transcribes) and nothing is transcribed when the
    languages that could be had would not make a merge.
 5. *Fail soft.* A language that cannot be had (its model not installed, "downloading", or
-   unsupported; a speech error or time-out; deleted audio) is left out with the reason. The
+   unsupported; a model check, speech error, or time-out; deleted audio) is left out with
+   the reason. The
    merge needs the first language and, when several were asked for, two. Otherwise the
    current transcript stays (`failed`, "Kept the transcript as it was. English (Canada) was
    not transcribed: its speech model is not installed. Install it from the meeting start
-   panel or with voiceislocal setup --locale en-CA, then detect the languages again."). A
+   panel or with voiceislocal setup --locale en-CA, then choose Label Speakers in Meetings
+   to detect the languages again."). Label Speakers runs this stage first, so it picks the
+   language up once its model is installed (nothing does so on its own). A
    missing language makes the post-processing `partial` (exit 3) with that reason first in
-   the message; speakers are still labelled.
+   the message; speakers are still labelled. When nothing new can be added (the same
+   languages as the current merge, the same one stood in for), the current merge stands.
 6. *Merge and publish.* `LanguageMerge.merge` (pure), then, under the writer lock,
    `languagesDetected` and `saveTranscript(merged)`. The stage message: "Kept French
    (Canada) in 61 % of the passages and English (Canada) in 39 %, with 171 switches."; the
@@ -4089,6 +4102,11 @@ recorder, `session diarize`, `recover`, `import`, the app's relabels):
    (Canada) and English (Canada)." Speaker
    labelling then sees a new transcript and relabels (names carry over, §4.9). A
    cancellation publishes nothing; saved transcriptions stay for the next run.
+
+The stage runs inside the recorder's post-processing, so the app's next meeting can start
+only once it ends (`.finishing`, `stillSaving`): about 3 more minutes for a 3-hour meeting
+in two languages. The stop alert says "about 2 minutes for a 3-hour meeting, or about 5
+when it also detects languages" and that the next meeting can start once it has.
 
 **The merge** (`LanguageMerge`, `Sources/HolosMeeting/PostProcessing/LanguageMerge.swift`,
 pure; `NaturalLanguageScorer` in `LanguageIdentification.swift` is the live scorer):
@@ -4110,6 +4128,13 @@ pure; `NaturalLanguageScorer` in `LanguageIdentification.swift` is the live scor
    spaces when the offsets do not fit). IDs stay unique (`<id>/<language>` on a collision).
    Where two languages meet, a word can be kept twice or not at all; the measured error
    includes that.
+5. *Echo in calls* (added in review). Each track is merged on its own, so a lone echoed
+   window on the microphone could be smoothed into the other language, keep another
+   recognizer's words than the system track's, and escape the speaker stages' echo filter
+   (§5.11). So in a call the stage runs `EchoFilter.echoSpans` on each language's own
+   transcription (`Candidate.echo`), and a microphone window where at least half of a
+   language's words are echo takes that language (the system track's choice there, or the
+   one before, when several hear echo; else the most echo words), outside the smoothing.
 
 **Surfaces.**
 
@@ -4128,12 +4153,17 @@ pure; `NaturalLanguageScorer` in `LanguageIdentification.swift` is the live scor
   `--locale`; `session languages <session> --languages … [--force] [--json]`
   (`SessionLanguagesCommand`) runs the post-processor with those languages (one language
   makes the transcript that language's alone): exit 0 done (also without speaker models),
-  3 partial, 1 failed.
+  3 partial, 1 failed. When the stage leaves the transcript as it was (already made, or
+  kept after a failure) and the head run was built from it, the speaker stages are
+  skipped ("The transcript did not change, so the speaker labels were kept."), so a
+  second run changes no labels and edited labels need no `--force`; `--force` matters only
+  for replacing the transcript.
 - *Exports.* Markdown adds "- Languages: French (Canada), English (Canada)" (English names)
   to the header of a transcript merged from several; the text carries no language marks,
   because the language changes every few seconds, often inside a sentence, and marks would
   break the text up. JSON adds top-level `languages` and each turn's `languages` (those of
-  its words in order), only for a merged transcript. Text is unchanged.
+  its words in order), only for a transcript merged from several (not one made one
+  language's alone). Text is unchanged.
 - *Review window.* It shows the merged transcript (the head run's). Changing a turn's
   language there is a follow-up: it would need a per-turn override stored beside the
   transcriptions and a new merge, then a relabel.
@@ -4144,13 +4174,21 @@ a switch needs two windows; a lone window smoothed away; windows without words c
 do not break a run; a window heard only in one language takes it; a lone window heard only
 in the other keeps nothing; ties; tracks apart; three languages; one candidate; word
 middles; cuts at recognizer offsets and the fallback; untimed segments; unique IDs;
-determinism; smoothing cases; the NaturalLanguage scorer), `LanguageStageTests` (merged,
-kept, and labelled end to end with scripted speech; one language records nothing; a second
-run and a resumed run transcribe nothing again; a missing model or a failed transcription
-keeps the transcript and says why; the recorded transcript stands in, but never an
-incomplete one; a language added once its model is installed; cancellation; `session
+determinism; smoothing cases; echo windows follow the system track, need half the
+window's words, and take no part in smoothing; the NaturalLanguage scorer),
+`LanguageStageTests` (merged,
+kept, and labelled end to end with scripted speech, progress once per percent; one
+language records nothing; a second
+run and a resumed run transcribe nothing again; a pass from before a recovery is made
+again; a missing model or a failed transcription
+keeps the transcript and says why; nothing new while a language is still missing; the
+recorded transcript stands in (said, journaled, and replaced once it can be), but never an
+incomplete one; a language added once its model is installed; labels edited while
+transcribing are kept; cut pieces labelled and exported; a call's echo still dropped;
+cancellation; `session
 languages` with order, one language, and invalid lists; edited labels and `--force` with
-names carried; `session import --languages`), `MeetingLanguageTests` (meeting.json from a
+names carried, then the same languages again keeping edited labels without `--force`;
+`session import --languages`), `MeetingLanguageTests` (meeting.json from a
 recording, refused lists, launcher arguments, start settings), `MeetingLanguagesTests`
 (HolosCore lists and optional fields), `TranscriptRevisionTests`, `LanguageExportTests`.
 
@@ -4185,7 +4223,9 @@ language of each segment has to live in the transcript that exports and speaker 
 read.
 
 **Follow-ups.** A per-turn language override in the review window; the live transcript in
-several languages; a Markdown option to mark language switches.
+several languages; a Markdown option to mark language switches; detecting a missed
+language on its own once its model is installed, and an app action that detects languages
+over edited labels (today only `session languages --force` does).
 
 ## 5. PRs
 
@@ -6595,7 +6635,8 @@ Conflict rules:
 - Final subcommand lists after wave 5:
   - `holos`: `Doctor, Setup, Transcribe, Record, Session, Speakers, People, Voices, Say, Read`
   - `holos record`: `Start, Status, Stop, Pause, Resume, Marker`
-  - `holos session`: `Inspect, List, Recover, Retranscribe, Diarize, Import, Export, Score, Delete`
+  - `holos session`: `Inspect, List, Recover, Retranscribe, Diarize, Import, Export, Score, Delete`,
+    then `Languages` (LANG2, §4.14)
   - `holos speakers`: `List, Rename, Merge, Assign, Split, Exclude, Undo, Link, Me, Reject`
   - `holos people`: `List, Remember, Rename, Merge, Forget, Export, Calibrate`
 

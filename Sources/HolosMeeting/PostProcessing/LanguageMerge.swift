@@ -21,6 +21,12 @@ import HolosCore
 ///    in their own segments: a segment all of whose words are kept is kept whole (same ID, text, and words); a run
 ///    of kept words from part of a segment becomes a segment of its own, cut from the text at the words' UTF-16
 ///    offsets. Every segment carries the language it was transcribed in.
+/// 5. Echo in calls: a microphone window where at least half of some language's words there are echo of the system
+///    track in that language (`Candidate.echo`) takes that language, whatever its own choice and the smoothing say, so
+///    the microphone keeps the same recognizer's words as the system track and the speaker stages' echo filter still
+///    finds them. When several languages hear echo there, the system track's choice for that window (or the one
+///    before) wins when it is one of them, else the one with the most echo words, then the one listed first. These
+///    windows take no part in the smoothing of the others.
 ///
 /// Where two windows of different languages meet, the same spoken word may be kept twice or not at all (each
 /// recognizer times it a little differently); the validation's error rates include that.
@@ -44,9 +50,12 @@ public enum LanguageMerge {
         /// A locale identifier, "fr-CA".
         public var language: String
         public var segments: [TranscriptSegment]
+        /// Microphone words that are echo of the system track in this transcription (`EchoFilter.echoSpans` of it:
+        /// the laptop speakers playing a call), as spans of `segments`; empty without a system track (rule 5).
+        public var echo: [WordSpan]
 
-        public init(language: String, segments: [TranscriptSegment]) {
-            self.language = language; self.segments = segments
+        public init(language: String, segments: [TranscriptSegment], echo: [WordSpan] = []) {
+            self.language = language; self.segments = segments; self.echo = echo
         }
     }
 
@@ -91,21 +100,38 @@ public enum LanguageMerge {
         var tracks: [String?: [Int: [[Unit]]]] = [:]
         let empty = [[Unit]](repeating: [], count: candidates.count)
         for (candidateIndex, candidate) in candidates.enumerated() {
+            let echo = echoWords(candidate.echo)
             for (segmentIndex, segment) in candidate.segments.enumerated() {
-                for unit in units(of: segment, candidate: candidateIndex, segmentIndex: segmentIndex) {
+                for var unit in units(of: segment, candidate: candidateIndex, segmentIndex: segmentIndex) {
+                    // Only microphone words are echo, even when a system segment shares a microphone one's ID.
+                    if segment.track != echoSourceTrack, let words = echo[segment.id] {
+                        unit.isEcho = unit.word.map { words.contains($0) } ?? !words.isEmpty
+                    }
                     let window = windowIndex(unit.middle, windowSeconds: windowSeconds)
                     tracks[segment.track, default: [:]][window, default: empty][candidateIndex].append(unit)
                 }
             }
         }
 
+        /// Each track's smoothed choice by window; the system track's is what echo follows (rule 5).
+        func choices(_ windows: [Int: [[Unit]]], following system: [Int: Int]) -> [Int: Int] {
+            let order = windows.keys.sorted()
+            let raw = order.map { choose(windows[$0] ?? [], languages: languages, scorer: scorer) }
+            let pinned = order.map { window in
+                echoChoice(windows[window] ?? [], system: system[window] ?? system[window - 1])
+            }
+            let chosen = smooth(raw, switchWindows: parameters.switchWindows, pinned: pinned)
+            return Dictionary(uniqueKeysWithValues: zip(order, chosen))
+        }
+        let system = tracks[echoSourceTrack].map { choices($0, following: [:]) } ?? [:]
+
         var summary = Summary()
         var kept: [Unit] = []
         for track in tracks.keys.sorted(by: { ($0 ?? "") < ($1 ?? "") }) {
             guard let windows = tracks[track] else { continue }
             let order = windows.keys.sorted()
-            let raw = order.map { choose(windows[$0] ?? [], languages: languages, scorer: scorer) }
-            let chosen = smooth(raw, switchWindows: parameters.switchWindows)
+            let byWindow = track == echoSourceTrack ? system : choices(windows, following: system)
+            let chosen = order.map { byWindow[$0] ?? 0 }
             for (position, window) in order.enumerated() {
                 let candidate = chosen[position]
                 let language = languages[candidate]
@@ -139,7 +165,19 @@ public enum LanguageMerge {
         return result
     }
 
+    /// `smooth(_:switchWindows:)` over the windows without a pinned choice; a pinned window takes its pin (rule 5).
+    static func smooth(_ raw: [Int], switchWindows: Int, pinned: [Int?]) -> [Int] {
+        let free = raw.indices.filter { $0 >= pinned.count || pinned[$0] == nil }
+        let smoothed = smooth(free.map { raw[$0] }, switchWindows: switchWindows)
+        var result = raw.indices.map { $0 < pinned.count ? pinned[$0] ?? raw[$0] : raw[$0] }
+        for (position, index) in free.enumerated() { result[index] = smoothed[position] }
+        return result
+    }
+
     // MARK: - Private
+
+    /// The track microphone echo is heard from (`EchoFilter`'s system track).
+    private static let echoSourceTrack: String? = "system"
 
     /// One timed word of a segment, or a whole segment without timed words.
     private struct Unit {
@@ -151,6 +189,31 @@ public enum LanguageMerge {
         var text: String
         var confidence: Double?
         var wordCount: Int
+        /// Echo of the system track in its candidate's transcription (rule 5).
+        var isEcho = false
+    }
+
+    /// The word indexes `spans` cover, by segment ID.
+    private static func echoWords(_ spans: [WordSpan]) -> [String: Set<Int>] {
+        var words: [String: Set<Int>] = [:]
+        for span in spans where span.first < span.end {
+            words[span.segmentID, default: []].formUnion(span.first..<span.end)
+        }
+        return words
+    }
+
+    /// Rule 5: the candidate a window must take because at least half of its words there are echo; nil when none.
+    private static func echoChoice(_ perCandidate: [[Unit]], system: Int?) -> Int? {
+        var best: (candidate: Int, echo: Int)?
+        var echoing: [Int] = []
+        for (candidate, units) in perCandidate.enumerated() where !units.isEmpty {
+            let echo = units.filter(\.isEcho).count
+            guard echo > 0, echo * 2 >= units.count else { continue }
+            echoing.append(candidate)
+            if echo > best?.echo ?? 0 { best = (candidate, echo) }
+        }
+        if let system, echoing.contains(system) { return system }
+        return best?.candidate
     }
 
     private static func units(of segment: TranscriptSegment, candidate: Int, segmentIndex: Int) -> [Unit] {

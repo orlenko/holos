@@ -222,18 +222,20 @@ Hardware-facing and cross-app acceptance remain pending.
   With several, meeting.json records them (`languages`), and post-processing (stage
   `languages`, before the speakers) transcribes the saved audio again in each language
   (final results only; the live transcript stands in for its language only when that
-  fails), keeps each transcription as a transcript revision that is not current
+  fails, which the finished message says and a later run retries), keeps each transcription as a transcript revision that is not current
   (`languagePass` in the journal), and merges them: words in 3 s passages, each passage in
   the language whose words score higher (mean word confidence plus the on-device language
   identifier's probability that the text is in that language), switching only when two
-  passages in a row agree. The merged transcript becomes current (`languagesDetected`),
+  passages in a row agree (in a call, a microphone passage that echoes the system track
+  follows the system track's language, so the echo is still dropped). The merged transcript becomes current (`languagesDetected`),
   names each segment's language, and speakers are labelled on it. It is resumable (saved
   transcriptions are reused), does nothing on a second run, and fails soft: a language
   whose speech model is missing, or whose transcription fails, is left out and the result
   is partial with the reason (exit 3), the transcript staying as it was when fewer than
   two languages remain. `record start` and `session import` take `--languages fr-CA,en-CA`;
   `session languages <session> --languages …` detects the languages of a saved or
-  imported session and labels its speakers again (`--force` over edited labels). The
+  imported session and labels its speakers again when the transcript changed (`--force`
+  over edited labels; a run that leaves the transcript as it was keeps the labels). The
   Markdown export lists the languages in its header and the JSON export each turn's.
   Dictation stays in one language.
 - Review window (wave 5): Review… in Meetings (or double-click, or the "Name Speakers —

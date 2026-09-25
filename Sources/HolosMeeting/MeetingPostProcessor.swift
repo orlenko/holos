@@ -193,9 +193,16 @@ public struct MeetingPostProcessor: Sendable {
         let transcript = languages.transcript
         if transcript.id != current.id { journal.update { $0.transcriptID = transcript.id } }
 
-        // Stages 2–7.
-        let speakers = try await labelSpeakers(session: session, manifest: manifest, transcript: transcript,
+        // Stages 2–7. Languages asked for by name (`voiceislocal session languages`) that left the transcript as it
+        // was also leave its speaker labels as they are, edited or not (§4.14).
+        let speakers: SpeakerResult
+        if options.languages != nil, transcript.id == current.id,
+           let kept = keptLabels(session: session, manifest: manifest, transcript: transcript, recorder: recorder) {
+            speakers = kept
+        } else {
+            speakers = try await labelSpeakers(session: session, manifest: manifest, transcript: transcript,
                                                recorder: recorder)
+        }
         // Once a new head is published, the exports are written from it before a cancellation is honoured, so the
         // head and the exports never disagree.
         if !speakers.published { try Task.checkCancellation() }
@@ -263,6 +270,19 @@ public struct MeetingPostProcessor: Sendable {
         // A forget of a newer Holos is not in that list: this build cannot decode its line, and that build can
         // scrub this meeting and finish while this pass runs.
         return (try? profiles.forgetJournalHasUnreadableLines()) ?? true
+    }
+
+    /// The speaker labels of `transcript` kept as they are (stages 4–6 recorded as skipped), when they were built from
+    /// it and can still be shown; nil otherwise, so speakers are labelled as usual.
+    private func keptLabels(session: URL, manifest: SessionManifest, transcript: Transcript,
+                            recorder: StageRecorder) -> SpeakerResult? {
+        guard let head = try? SpeakerAnalysis.headState(session: session, transcript: transcript),
+              let runID = head.usableRunID else { return nil }
+        let meeting = try? SessionFiles.meetingInfo(session: session, manifest: manifest)
+        let othersInRoom = options.othersInRoom ?? meeting?.othersInRoom
+        if let othersInRoom { recorder.journal.update { $0.othersInRoom = othersInRoom } }
+        recorder.skip([.render, .diarize, .align], SpeakerAnalysis.transcriptUnchanged)
+        return SpeakerResult(runID: runID, othersInRoom: othersInRoom, message: SpeakerAnalysis.transcriptUnchanged)
     }
 
     private func labelSpeakers(session: URL, manifest: SessionManifest, transcript: Transcript,
