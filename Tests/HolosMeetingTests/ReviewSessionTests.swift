@@ -306,6 +306,8 @@ func confirmAllIsOneUndo() async throws {
     defer { temp.remove() }
     let store = reviewStore(temp)
     try store.update {
+        // Suggestions are shown only with Remember voices on (`VoiceProfileService.recognitionAllowed`).
+        $0.rememberVoices = true
         $0.profiles = [SpeakerProfile(id: "JIM", displayName: "Jim"), SpeakerProfile(id: "MARIA", displayName: "Maria"),
                        SpeakerProfile(id: "SAM", displayName: "Sam")]
     }
@@ -321,7 +323,8 @@ func confirmAllIsOneUndo() async throws {
     }
     let review = try await reviewOpen(fixture.session, store: store)
     #expect(review.projection.speakers.compactMap(\.suggestion).count == 3)
-    #expect(!review.learnVoices, "Remember voices is off, so the footer box starts off.")
+    // No voice is learned here (there is no extractor): only the names are confirmed.
+    review.learnVoices = false
 
     try await review.confirmAllSuggestions()
     #expect(review.projection.speakers.map(\.profileID) == ["JIM", "MARIA", "SAM"])
@@ -682,7 +685,11 @@ func clearingAnAutomaticNameRejectsItsPerson() async throws {
     let temp = try TemporaryDirectory("review")
     defer { temp.remove() }
     let store = reviewStore(temp)
-    try store.update { $0.profiles = [SpeakerProfile(id: "JIM", displayName: "Jim")] }
+    // Automatic names are shown only with Remember voices on (`VoiceProfileService.recognitionAllowed`).
+    try store.update {
+        $0.rememberVoices = true
+        $0.profiles = [SpeakerProfile(id: "JIM", displayName: "Jim")]
+    }
     let fixture = try await SessionFixtures.labelledSession(in: temp.url)
     try SessionArchive.withSpeakerLock(at: fixture.session) {
         try SessionSpeakerStore.writeRecognition(
@@ -1058,7 +1065,11 @@ func reloadsRereadPeopleBeforeTheLabels() async throws {
     let temp = try TemporaryDirectory("review")
     defer { temp.remove() }
     let store = reviewStore(temp)
-    try store.update { $0.profiles = [SpeakerProfile(id: "JIM", displayName: "Jim")] }
+    // Automatic names are shown only with Remember voices on (`VoiceProfileService.recognitionAllowed`).
+    try store.update {
+        $0.rememberVoices = true
+        $0.profiles = [SpeakerProfile(id: "JIM", displayName: "Jim")]
+    }
     let fixture = try await SessionFixtures.labelledSession(in: temp.url)
     try SessionArchive.withSpeakerLock(at: fixture.session) {
         try SessionSpeakerStore.writeRecognition(
@@ -1084,4 +1095,38 @@ func reloadsRereadPeopleBeforeTheLabels() async throws {
     #expect(review.knownPeople().map(\.displayName) == ["Jimmy"])
     #expect(review.speaker("system:S1")?.name == "Jimmy")
     #expect(review.snapshot.projection == review.projection)
+}
+
+/// The review applies a meeting's recognition result exactly when every other reader of the labels does
+/// (`VoiceProfileService.recognitionAllowed`, PR10): with Remember voices off, or a forget still owed, no suggestion or
+/// automatic name is shown, and the transcript files it renders name nobody recognition chose.
+@Test(.timeLimit(.minutes(1))) @MainActor
+func recognitionIsShownOnlyWhenRecognitionIsAllowed() async throws {
+    let temp = try TemporaryDirectory("review")
+    defer { temp.remove() }
+    let store = reviewStore(temp)
+    try store.update { $0.profiles = [SpeakerProfile(id: "JIM", displayName: "Jim")] }
+    let fixture = try await SessionFixtures.labelledSession(in: temp.url)
+    try SessionArchive.withSpeakerLock(at: fixture.session) {
+        try SessionSpeakerStore.writeRecognition(
+            RecognitionResult(runID: fixture.run.id, embeddingModel: DiarizationEngineInfo.fake.embeddingModel,
+                              thresholds: SpeakerRecognizer.defaultThresholds,
+                              matches: [SpeakerMatch(speakerID: "system:S1", profileID: "JIM", profileName: "Jim",
+                                                     distance: 0.1, tier: .likely)]),
+            session: fixture.session)
+    }
+    let review = try await reviewOpen(fixture.session, store: store)
+    #expect(!review.learnVoices, "Remember voices is off, so the footer box starts off.")
+    #expect(review.speaker("system:S1")?.isAutomatic == false)
+    #expect(review.automaticProfileID(for: "system:S1") == nil)
+    #expect(review.speaker("system:S1")?.name != "Jim")
+    let markdown = String(decoding: try await review.render(.md), as: UTF8.self)
+    #expect(!markdown.contains("Jim"), "The rendered transcript names nobody recognition chose.")
+
+    // Turned on in People: the review rereads (a reload), and the automatic name is shown.
+    try store.update { $0.rememberVoices = true }
+    await review.reload()
+    #expect(review.speaker("system:S1")?.isAutomatic == true)
+    #expect(review.speaker("system:S1")?.name == "Jim")
+    #expect(String(decoding: try await review.render(.md), as: UTF8.self).contains("Jim"))
 }

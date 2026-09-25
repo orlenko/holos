@@ -30,29 +30,30 @@ private func person(_ id: String, _ samples: [VoiceprintSample]) -> SpeakerProfi
         person("JIM", [sample("M1", vector(0)), sample("M2", vector(5))]),
         person("MARIA", [sample("M1", vector(80, other: 2)), sample("M2", vector(85, other: 2))]),
     ])
-    let measured = RecognitionCalibration.distances(database: two)
+    let measured = RecognitionCalibration.distances(database: two, model: model)
     #expect(measured.meetings == 2)
     #expect(measured.repeatedPeople == 2)
     #expect(measured.samePerson.count == 2)
     #expect(measured.differentPerson.count == 4)
-    #expect(RecognitionCalibration.thresholds(database: two) == nil, "--apply is refused.")
+    #expect(RecognitionCalibration.calibration(database: two) == nil, "--apply is refused.")
 
     // Three meetings but only one person with samples from two of them: still refused.
     let onePerson = SpeakerProfileDatabase(rememberVoices: true, profiles: [
         person("JIM", [sample("M1", vector(0)), sample("M2", vector(5))]),
         person("MARIA", [sample("M3", vector(80, other: 2))]),
     ])
-    #expect(RecognitionCalibration.thresholds(database: onePerson) == nil)
+    #expect(RecognitionCalibration.calibration(database: onePerson) == nil)
 
     // Three meetings and two repeated people: allowed.
     let enough = SpeakerProfileDatabase(rememberVoices: true, profiles: [
         person("JIM", [sample("M1", vector(0)), sample("M2", vector(5)), sample("M3", vector(8))]),
         person("MARIA", [sample("M1", vector(80, other: 2)), sample("M3", vector(85, other: 2))]),
     ])
-    let calibrated = RecognitionCalibration.thresholds(database: enough)
+    let calibrated = RecognitionCalibration.calibration(database: enough)
     #expect(calibrated != nil)
-    #expect(calibrated?.samePerson.count == 4)
-    #expect(calibrated?.differentPerson.count == 6)
+    #expect(calibrated?.distances.samePerson.count == 4)
+    #expect(calibrated?.model == model)
+    #expect(calibrated?.distances.differentPerson.count == 6)
 }
 
 @Test func calibrationPercentiles() throws {
@@ -104,9 +105,28 @@ private func person(_ id: String, _ samples: [VoiceprintSample]) -> SpeakerProfi
         person("JIM", [sample("M1", vector(0)), sample("M2", vector(10))]),
         other,
     ])
-    let measured = RecognitionCalibration.distances(database: database)
+    let measured = RecognitionCalibration.distances(database: database, model: model)
     #expect(measured.differentPerson.isEmpty, "Samples of another model are never compared.")
-    #expect(measured.samePerson.count == 2)
+    #expect(measured.samePerson.count == 1)
+    #expect(RecognitionCalibration.distances(database: database, model: other.embeddingModel!).samePerson.count == 1)
+    #expect(RecognitionCalibration.models(database) == [model, other.embeddingModel!].sorted { $0.id < $1.id })
+}
+
+@Test func calibrationIsRefusedWithSamplesOfSeveralModels() throws {
+    // Enough data for the first model on its own…
+    var database = SpeakerProfileDatabase(rememberVoices: true, profiles: [
+        person("JIM", [sample("M1", vector(0)), sample("M2", vector(5)), sample("M3", vector(8))]),
+        person("MARIA", [sample("M1", vector(80, other: 2)), sample("M3", vector(85, other: 2))]),
+    ])
+    let calibration = try #require(RecognitionCalibration.calibration(database: database))
+    #expect(calibration.model == model)
+    #expect(calibration.thresholds.problem == nil)
+    // …but a person with samples of another model makes the pooled thresholds meaningless for both: refused.
+    var other = person("SAM", [sample("M4", vector(40, other: 3))])
+    other.embeddingModel = EmbeddingModelID(id: "other", revision: "2")
+    database.profiles.append(other)
+    #expect(RecognitionCalibration.models(database).count == 2)
+    #expect(RecognitionCalibration.calibration(database: database) == nil)
 }
 
 @Test func percentileInterpolates() {

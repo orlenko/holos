@@ -123,6 +123,9 @@ public enum MeetingEventKind {
     public static let controlRejected = "controlRejected"
     /// transcriptID, journalSegments, replayedSeconds (PR3)
     public static let transcriptRebuilt = "transcriptRebuilt"
+    /// The details `transcriptRebuilt` will have, journaled before the rebuilt transcript is saved, so a rebuild whose
+    /// status or `transcriptRebuilt` could not be recorded is told from a transcript the recorder saved (PR3)
+    public static let transcriptRebuilding = "transcriptRebuilding"
 }
 
 // MARK: - Meeting setup (meeting.json, vocabulary.json)

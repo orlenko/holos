@@ -39,9 +39,23 @@ public enum RecognitionCalibration {
         }
     }
 
-    /// Every pairwise sample distance of `database`.
-    public static func distances(database: SpeakerProfileDatabase) -> Distances {
-        let profiles = database.profiles.filter { !$0.samples.isEmpty && $0.embeddingModel != nil }
+    /// The thresholds `--apply` stores, and the model they were measured on (they apply only to runs of it).
+    public struct Calibration: Sendable, Equatable {
+        public var model: EmbeddingModelID
+        public var thresholds: RecognitionThresholds
+        public var distances: Distances
+    }
+
+    /// The embedding models of the stored samples, sorted by ID and revision.
+    public static func models(_ database: SpeakerProfileDatabase) -> [EmbeddingModelID] {
+        let models = Set(database.profiles.filter { !$0.samples.isEmpty }.compactMap(\.embeddingModel))
+        return models.sorted { ($0.id, $0.revision) < ($1.id, $1.revision) }
+    }
+
+    /// Every pairwise distance between samples of `model` (people whose samples are of another model are left out:
+    /// distances of different embedding models are not comparable).
+    public static func distances(database: SpeakerProfileDatabase, model: EmbeddingModelID) -> Distances {
+        let profiles = database.profiles.filter { !$0.samples.isEmpty && $0.embeddingModel == model }
         var same: [Double] = []
         var different: [Double] = []
         for (index, profile) in profiles.enumerated() {
@@ -52,7 +66,7 @@ public enum RecognitionCalibration {
                                                           samples[second].embedding.values))
                 }
             }
-            for other in profiles[(index + 1)...] where other.embeddingModel == profile.embeddingModel {
+            for other in profiles[(index + 1)...] {
                 for sample in samples {
                     for otherSample in other.samples {
                         different.append(VectorMath.cosineDistance(sample.embedding.values,
@@ -67,13 +81,15 @@ public enum RecognitionCalibration {
                          repeatedPeople: repeated)
     }
 
-    /// Percentiles of same-person and different-person sample distances; nil below the §4.10 minimums.
-    public static func thresholds(database: SpeakerProfileDatabase) -> (thresholds: RecognitionThresholds,
-        samePerson: [Double], differentPerson: [Double])? {
-        let measured = distances(database: database)
+    /// The calibration of the database's one embedding model; nil when the samples come from no model or from more
+    /// than one (the People store holds one set of thresholds, tied to one model), or below the §4.10 minimums.
+    public static func calibration(database: SpeakerProfileDatabase) -> Calibration? {
+        let found = models(database)
+        guard found.count == 1, let model = found.first else { return nil }
+        let measured = distances(database: database, model: model)
         guard measured.isSufficient,
               let thresholds = thresholds(differentPerson: measured.differentPerson) else { return nil }
-        return (thresholds, measured.samePerson, measured.differentPerson)
+        return Calibration(model: model, thresholds: thresholds, distances: measured)
     }
 
     /// `likelyMaxDistance` and `possibleMaxDistance` from different-person distances (`admitting`), with the default

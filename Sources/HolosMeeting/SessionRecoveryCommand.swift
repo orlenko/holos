@@ -70,18 +70,39 @@ public enum SessionRecoveryCommand {
     /// `stoppedCapturing`: the manifest was `processing` when recovery marked it `interrupted` (the recorder had
     /// stopped capturing and was transcribing, or had saved the transcript and died before `finish`). Such a session
     /// is treated like `rebuiltWithoutTranscriptStatuses`: a transcript the stop path saved is kept.
-    static func rebuilds(status: String, stoppedCapturing: Bool = false, session: URL) -> Bool {
+    ///
+    /// A saved transcript is kept only while it can be read (`SessionFiles.readableCurrentTranscriptID`): a pointer or
+    /// revision that is missing, damaged, or holds another ID counts as none (a rebuild adds a revision and deletes
+    /// none). One written by a newer Holos throws `unavailable`.
+    ///
+    /// Only a transcript the recorder saved is kept: one a rebuild saved (a rebuild event in `events` names it) whose
+    /// status or `transcriptRebuilt` could not be recorded goes to the rebuild again, which finishes recording it.
+    static func rebuilds(status: String, stoppedCapturing: Bool = false, events: [ArchiveEvent] = [],
+                         session: URL) throws -> Bool {
+        try rebuilds(status: status, stoppedCapturing: stoppedCapturing, events: events) {
+            try SessionFiles.readableCurrentTranscriptID(session: session)
+        }
+    }
+
+    /// `rebuilds` with the readable current transcript given by `current` (nil: none, or missing or damaged), read
+    /// only when the status keeps a saved transcript. The Meetings window's Recover button asks this with the
+    /// catalog's transcript (`MeetingActionPolicy.recovers`), so the button and the command decide alike.
+    static func rebuilds(status: String, stoppedCapturing: Bool = false, events: [ArchiveEvent] = [],
+                         current: () throws -> String?) rethrows -> Bool {
         let keepsSavedTranscript = rebuiltWithoutTranscriptStatuses.contains(status)
             || (status == ArchiveStatus.interrupted && stoppedCapturing)
         if !keepsSavedTranscript, rebuiltStatuses.contains(status) { return true }
         guard keepsSavedTranscript else { return false }
-        return !hasCurrentTranscript(session)
+        guard let current = try current() else { return true }
+        return TranscriptRebuilder.rebuildSaved(current, events: events)
     }
 
-    /// Whether the session names a current transcript. A pointer that cannot be read shows none either; a rebuild adds
-    /// a revision and deletes none.
-    private static func hasCurrentTranscript(_ session: URL) -> Bool {
-        (try? SessionArchive.currentTranscriptID(at: session)) != nil
+    /// `error` from a step after the archive was recovered, saying so. A refusal (`unavailable`, such as a file
+    /// written by a newer Holos) stays a refusal; anything else is `incomplete`.
+    static func afterRecovery(_ what: String, _ error: any Error) -> HolosError {
+        let message = "The archive was recovered and its audio is kept, but \(what): \(error.localizedDescription)"
+        if case .unavailable? = error as? HolosError { return .unavailable(message) }
+        return .incomplete(message)
     }
 
     /// Whether the manifest's `interrupted` status was set by a recovery that found it `processing`: the last
@@ -100,8 +121,10 @@ public enum SessionRecoveryCommand {
     ///
     /// Throws, and changes nothing more, when the lease is held elsewhere, recovery refuses (missing or damaged
     /// audio, an unreadable manifest, an active recorder), or the transcript cannot be rebuilt (the archive recovery
-    /// is kept). A post-processing failure does not throw: it is reported in `warnings` with exit code 3.
-    /// `profiles` is passed to the post-processor (voice suggestions, PR10).
+    /// is kept). A post-processing failure does not throw: it is reported in `warnings` with exit code 3. A file that
+    /// the chain would read or replace and that a newer Holos wrote (the current transcript pointer or revision,
+    /// vocabulary.json, postprocess.json, the speaker head or run) throws `unavailable` (schema rule 3, §1.6), with
+    /// the archive recovery kept. `profiles` is passed to the post-processor (voice suggestions, PR10).
     public static func run(_ request: Request, diarizer: (any SpeakerDiarizer)?, makeSpeech: LiveSpeechFactory? = nil,
                            freeSpace: any FreeSpaceProvider = VolumeFreeSpace(),
                            profiles: SpeakerProfileStore? = nil,
@@ -140,7 +163,15 @@ public enum SessionRecoveryCommand {
             + "(\(clock(recovery.manifest?.savedSeconds ?? 0)))."]
         var rebuild: RebuildReport?
         var record: PostProcessingRecord?
-        if request.force || rebuilds(status: status, stoppedCapturing: stoppedCapturing, session: session) {
+        let rebuildsTranscript: Bool
+        do {
+            rebuildsTranscript = try request.force
+                || rebuilds(status: status, stoppedCapturing: stoppedCapturing, events: recovery.events,
+                            session: session)
+        } catch {
+            throw afterRecovery("its transcript cannot be read", error)
+        }
+        if rebuildsTranscript {
             progress("Rebuilding the transcript…")
             do {
                 rebuild = try await TranscriptRebuilder.rebuild(
@@ -151,8 +182,7 @@ public enum SessionRecoveryCommand {
                         progress("Transcribing audio live transcription missed (\(Int(fraction * 100))%)…")
                     })
             } catch let error where !(error is CancellationError) {
-                throw HolosError.incomplete("The archive was recovered and its audio is kept, but the transcript "
-                    + "could not be rebuilt: \(error.localizedDescription)")
+                throw afterRecovery("the transcript could not be rebuilt", error)
             }
             step(.rebuilt)
         } else if stoppedCapturing {
@@ -175,10 +205,31 @@ public enum SessionRecoveryCommand {
         }
         // The transcript to label: the rebuilt one, or the one a recorder interrupted before `finish` saved (its
         // post-processing never ran). Labels already made for the same transcript are kept.
-        let kept = rebuild == nil && stoppedCapturing ? try? SessionArchive.currentTranscriptID(at: session) : nil
+        // A kept transcript counts only while it can be read; `rebuilds` already refused one from a newer Holos.
+        var kept: String?
+        if rebuild == nil, stoppedCapturing {
+            do { kept = try SessionFiles.readableCurrentTranscriptID(session: session) } catch {
+                throw afterRecovery("its transcript cannot be read", error)
+            }
+        }
         if request.postProcess, let transcriptID = rebuild?.transcriptID ?? kept {
             let unchanged = rebuild?.reused ?? true
-            if unchanged, let current = currentLabels(session, transcriptID: transcriptID, canLabel: diarizer != nil) {
+            // Read after a new rebuild too: a postprocess.json or speaker head written by a newer Holos is refused
+            // (thrown, `unavailable`), never treated as absent and replaced by post-processing.
+            var labels: PostProcessingRecord?
+            var unreadable: (any Error)?
+            do {
+                labels = try currentLabels(session, transcriptID: transcriptID, canLabel: diarizer != nil)
+            } catch {
+                if case .unavailable? = error as? HolosError {
+                    throw afterRecovery("its speaker labels were not updated", error)
+                }
+                unreadable = error
+            }
+            if let unreadable {
+                warnings.append("Speaker labels were not updated: \(unreadable.localizedDescription)")
+                exitCode = 3
+            } else if unchanged, let current = labels {
                 // A success without labels repeats why (the setup hint) instead of calling them up to date.
                 parts.append(current.runID == nil ? (current.message ?? "No speaker labels.")
                     : "Speaker labels are up to date.")
@@ -195,6 +246,9 @@ public enum SessionRecoveryCommand {
                         exitCode = 3
                     }
                 } catch let error where !(error is CancellationError) {
+                    if case .unavailable? = error as? HolosError {
+                        throw afterRecovery("its speaker labels were not updated", error)
+                    }
                     warnings.append("Speaker labels were not updated: \(error.localizedDescription)")
                     exitCode = 3
                 }
@@ -248,20 +302,33 @@ public enum SessionRecoveryCommand {
 
     /// The last post-processing record when it succeeded for `transcriptID`, so a rebuild that changed nothing does
     /// not diarize the meeting again (and recover run twice changes nothing). A record that names a run counts only
-    /// while the saved labels are usable for `transcriptID`: `speakers/head.json` is readable and its run is readable,
-    /// was built from that transcript, and its spans fit it (`SpeakerAnalysis.HeadState.usableRunID`); a missing,
+    /// while the saved labels are usable for `transcriptID`: `SpeakerSessionSnapshot.load` uses the head's run (it and
+    /// its transcript are readable and its spans fit it; `SavedSpeakerState`) and that run was built from that
+    /// transcript; a missing,
     /// damaged, or other transcript's head is replaced by post-processing instead of being called up to date. A
     /// success without labels (speaker models were not installed) counts only while nothing can label (`canLabel`
     /// false). Anything else (no record, a run that was interrupted or failed, labels possible now) gives nil:
     /// post-processing runs again.
-    private static func currentLabels(_ session: URL, transcriptID: String, canLabel: Bool) -> PostProcessingRecord? {
-        guard let record = try? AtomicFile.readJSON(PostProcessingRecord.self, from: SessionPaths.postprocess(session),
-                                                    maxBytes: 1 << 20),
-              record.state == .succeeded, record.transcriptID == transcriptID else { return nil }
+    ///
+    /// postprocess.json, the head, and the head's run are validated first, whatever the record says
+    /// (`SavedSpeakerState`, as the catalog validates them), so post-processing never starts over a file it must not
+    /// replace: one written by a newer Holos throws `unavailable` (schema rule 3, §1.6), and one that cannot be read
+    /// now throws too. A damaged or missing postprocess.json, head, run, or transcript gives nil (post-processing
+    /// replaces it).
+    static func currentLabels(_ session: URL, transcriptID: String, canLabel: Bool) throws -> PostProcessingRecord? {
+        let saved = SavedSpeakerState.read(session: session)
+        if let refusal = saved.refusal { throw refusal }
+        if !saved.problems.isEmpty {
+            let message = saved.problems.map(\.localizedDescription).joined(separator: " ")
+            log.error("Speaker files are unusable and will be replaced: \(message, privacy: .private)")
+        }
+        guard let record = saved.record, record.state == .succeeded, record.transcriptID == transcriptID else {
+            return nil
+        }
         guard record.runID != nil else { return canLabel ? nil : record }
-        guard let transcript = try? SessionFiles.transcript(id: transcriptID, session: session),
-              let head = try? SpeakerAnalysis.headState(session: session, transcript: transcript),
-              head.usableRunID != nil else { return nil }
+        // `headRun` is set only when the snapshot loader uses the head's run as the labels (its transcript read, its
+        // spans fit), so this only adds that the run was built from `transcriptID`.
+        guard saved.problems.isEmpty, let run = saved.headRun, run.transcriptID == transcriptID else { return nil }
         return record
     }
 }

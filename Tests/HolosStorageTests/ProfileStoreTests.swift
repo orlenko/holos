@@ -129,7 +129,8 @@ func profileStoreIsPrivateLockedAndNotBackedUp() async throws {
     let repeated = profileSample()
     let damaged: [SpeakerProfileDatabase] = [
         // A repeated person ID, two people marked as you, two samples from one meeting, a repeated sample ID,
-        // samples of different dimensions, and a sample without its person's embedding model.
+        // samples of different dimensions (within one person, and between two people of one model), and a sample
+        // without its person's embedding model.
         SpeakerProfileDatabase(profiles: [SpeakerProfile(id: "JIM", displayName: "Jim"),
                                           SpeakerProfile(id: "JIM", displayName: "Jim")]),
         SpeakerProfileDatabase(profiles: [SpeakerProfile(displayName: "Me", isSelf: true),
@@ -147,6 +148,16 @@ func profileStoreIsPrivateLockedAndNotBackedUp() async throws {
                                               weak: false, addedAt: profileDate),
         ])]),
         SpeakerProfileDatabase(profiles: [SpeakerProfile(displayName: "Jim", samples: [profileSample()])]),
+        // One embedding model, two people, vectors of different sizes: cosineDistance answers 2 for that pair,
+        // which would quietly exclude them from every comparison instead of reporting the damage.
+        SpeakerProfileDatabase(profiles: [
+            SpeakerProfile(displayName: "Jim", embeddingModel: profileModel, samples: [profileSample()]),
+            SpeakerProfile(displayName: "Maria", embeddingModel: profileModel, samples: [
+                VoiceprintSample(sessionID: UUID().uuidString, sessionName: "Other", speakerIDs: ["mic:S1"],
+                                 speechSeconds: 30, embedding: FloatVector([1, 0]), condition: .room, weak: false,
+                                 addedAt: profileDate),
+            ]),
+        ]),
     ]
     for database in damaged {
         let data = try HolosJSON.encoder().encode(database)
@@ -157,6 +168,128 @@ func profileStoreIsPrivateLockedAndNotBackedUp() async throws {
         #expect(throws: HolosError.self) { try store.update { $0.rememberVoices = false } }
         #expect(try Data(contentsOf: store.databaseURL) == data)
     }
+}
+
+@Test func damagedCalibrationIsRefusedOnLoad() throws {
+    let root = try profileRoot()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let store = SpeakerProfileStore(directory: root.appendingPathComponent("Speakers"))
+    func thresholds(likely: Double = 0.2, margin: Double = 0.1, possible: Double = 0.4,
+                    minimum: Double = 20) -> RecognitionThresholds {
+        RecognitionThresholds(likelyMaxDistance: likely, likelyMinMargin: margin, possibleMaxDistance: possible,
+                              minSampleSeconds: minimum)
+    }
+    // Valid, including a threshold just below 0 (calibration's "admit nothing"), and thresholds saved without a
+    // model by an earlier build (loaded, never applied).
+    for valid in [thresholds(), thresholds(likely: -Double.ulpOfOne, possible: -Double.ulpOfOne / 2)] {
+        try store.update { $0.calibratedThresholds = valid; $0.calibratedModel = profileModel }
+        #expect(try store.load().isCalibrated)
+    }
+    try store.update { $0.calibratedModel = nil }
+    #expect(try !store.load().isCalibrated)
+
+    // Out of range (a distance of 2 would admit zero-norm vectors), likely above possible, a negative margin or
+    // minimum length, a margin over 2, and a model without thresholds.
+    let damaged: [(RecognitionThresholds?, EmbeddingModelID?)] = [
+        (thresholds(possible: 2), profileModel),
+        (thresholds(likely: -1.5), profileModel),
+        (thresholds(likely: 0.5, possible: 0.4), profileModel),
+        (thresholds(margin: -0.1), profileModel),
+        (thresholds(margin: 3), profileModel),
+        (thresholds(minimum: -1), profileModel),
+        (thresholds(likely: 1e300, possible: 1e300), profileModel),
+        (nil, profileModel),
+        (thresholds(), EmbeddingModelID(id: "", revision: "1")),
+    ]
+    for (value, model) in damaged {
+        let database = SpeakerProfileDatabase(rememberVoices: true, calibratedThresholds: value,
+                                              calibratedModel: model)
+        let data = try HolosJSON.encoder().encode(database)
+        try AtomicFile.write(data, to: store.databaseURL)
+        #expect(throws: HolosError.self) { try store.load() }
+        #expect(throws: HolosError.self) { try store.update { $0.rememberVoices = false } }
+        #expect(try Data(contentsOf: store.databaseURL) == data)
+    }
+    // Every non-finite value is refused by the same rule (JSON cannot carry one, but a decoder might).
+    for bad in [Double.nan, .infinity, -.infinity] {
+        #expect(thresholds(likely: bad).problem != nil)
+        #expect(thresholds(margin: bad).problem != nil)
+        #expect(thresholds(possible: bad).problem != nil)
+        #expect(thresholds(minimum: bad).problem != nil)
+    }
+    // A negative count of dropped turns is damage too.
+    var sample = profileSample()
+    sample.droppedOutlierTurns = -1
+    let negative = SpeakerProfileDatabase(profiles: [SpeakerProfile(displayName: "Jim", embeddingModel: profileModel,
+                                                                    samples: [sample])])
+    try AtomicFile.write(try HolosJSON.encoder().encode(negative), to: store.databaseURL)
+    #expect(throws: HolosError.self) { try store.load() }
+}
+
+@Test func calibrationIsResetInTheWriteThatChangesTheSamples() throws {
+    let root = try profileRoot()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let store = SpeakerProfileStore(directory: root.appendingPathComponent("Speakers"))
+    let thresholds = RecognitionThresholds(likelyMaxDistance: 0.2, likelyMinMargin: 0.1, possibleMaxDistance: 0.4,
+                                           minSampleSeconds: 20)
+    let jim = SpeakerProfile(id: "JIM", displayName: "Jim", embeddingModel: profileModel, samples: [profileSample()])
+    // Samples and calibration saved together: the calibration is the write's own, so it stays.
+    try store.update {
+        $0.profiles = [jim]
+        $0.calibratedThresholds = thresholds
+        $0.calibratedModel = profileModel
+    }
+    #expect(try store.load().isCalibrated)
+
+    // Names, settings, and people without samples are not part of the population.
+    try store.update {
+        $0.rememberVoices = true
+        $0.profiles[0].displayName = "James"
+        $0.profiles[0].recognitionEnabled = false
+        $0.profiles.append(SpeakerProfile(id: "MARIA", displayName: "Maria"))
+    }
+    #expect(try store.load().isCalibrated)
+    #expect(try store.load().calibrationResetAt == nil)
+
+    // A sample added, changed, moved to another person, or removed, or a model change: reset in the same write.
+    let recalibrate = { try store.update { $0.calibratedThresholds = thresholds; $0.calibratedModel = profileModel } }
+    let changes: [(inout SpeakerProfileDatabase) -> Void] = [
+        { $0.profiles[1].samples = [profileSample()]; $0.profiles[1].embeddingModel = profileModel },
+        { $0.profiles[0].samples[0].embedding = FloatVector([0, 1, 0]) },
+        { $0.profiles[0].samples += $0.profiles[1].samples; $0.profiles[1].samples = [] },
+        { $0.profiles[0].samples.removeLast() },
+        { $0.profiles[0].embeddingModel = EmbeddingModelID(id: "other", revision: "2") },
+    ]
+    for change in changes {
+        try recalibrate()
+        let before = try store.load()
+        #expect(before.isCalibrated)
+        try store.update(change)
+        let after = try store.load()
+        #expect(after.calibratedThresholds == nil)
+        #expect(after.calibratedModel == nil)
+        #expect(after.calibrationResetAt != nil)
+    }
+
+    // A store saved before `calibrationResetAt` existed still loads.
+    let old = Data(#"{"schemaVersion": 1, "rememberVoices": true, "profiles": []}"#.utf8)
+    try AtomicFile.write(old, to: store.databaseURL)
+    #expect(try store.load().calibrationResetAt == nil)
+}
+
+@Test(.timeLimit(.minutes(1)))
+func lockedReadHoldsTheLockUntilItsWriteIsDone() throws {
+    let root = try profileRoot()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let store = SpeakerProfileStore(directory: root.appendingPathComponent("Speakers"))
+    try store.update { $0.rememberVoices = true }
+    let seen = try store.withLockedDatabase { database -> Bool in
+        // Any store change waits for the locked read to finish (and gives up after 2 s).
+        #expect(throws: HolosError.self) { try store.update { $0.rememberVoices = false } }
+        return database.rememberVoices
+    }
+    #expect(seen)
+    #expect(try store.load().rememberVoices, "Nothing is written by a locked read or the refused update.")
 }
 
 @Test func newerStoreIsRefusedAndNeverOverwritten() throws {
@@ -246,4 +379,94 @@ func profileStoreIsPrivateLockedAndNotBackedUp() async throws {
 
 @Test func supportRootHoldsTheSpeakersFolder() {
     #expect(HolosPaths.speakerProfiles == HolosPaths.supportRoot.appendingPathComponent("Speakers", isDirectory: true))
+}
+
+
+@Test func leftoverTemporaryFilesArePurgedFromTheStore() throws {
+    let root = try profileRoot()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let store = SpeakerProfileStore(directory: root.appendingPathComponent("Speakers"))
+    try store.update { $0.profiles = [SpeakerProfile(id: "JIM", displayName: "Jim")] }
+    // What a kill between an atomic write's fsync and its rename leaves: a whole copy of the database beside it.
+    let leftover = store.directory.appendingPathComponent(".\(UUID().uuidString).tmp", isDirectory: false)
+    try AtomicFile.write(Data("an older database, voiceprints and all".utf8), to: leftover)
+    let unrelated = store.directory.appendingPathComponent("from-a-newer-holos.json", isDirectory: false)
+    try AtomicFile.write(Data("{}".utf8), to: unrelated)
+
+    #expect(try store.purgeTemporaryFiles() == 1)
+
+    #expect(!FileManager.default.fileExists(atPath: leftover.path))
+    #expect(FileManager.default.fileExists(atPath: unrelated.path), "Only atomic-write leftovers are removed.")
+    #expect(FileManager.default.fileExists(atPath: store.databaseURL.path))
+    #expect(try store.load().profiles.map(\.id) == ["JIM"])
+    #expect(try store.purgeTemporaryFiles() == 0, "Nothing to do the second time.")
+}
+
+@Test func storedLinesSayWhichForgetsHaveHadTheirStoreWrite() throws {
+    let root = try profileRoot()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let store = SpeakerProfileStore(directory: root.appendingPathComponent("Speakers"))
+    let crashed = ForgetRecord(kind: .all, sampleIDs: ["S1"], turnRememberOff: true)
+    let stored = ForgetRecord(kind: .sample, profileID: "JIM", sampleIDs: ["S2"])
+    let finished = ForgetRecord(kind: .session, sampleIDs: ["S3"], sessionIDs: ["M1"])
+    for record in [crashed, stored, finished] { try store.appendForgetRecord(record) }
+    try store.appendForgetRecord(.stored(stored.id, profileID: "MARIA"))
+    try store.appendForgetRecord(.stored(finished.id))
+    try store.appendForgetRecord(.done(finished.id))
+
+    #expect(try store.pendingForgets().map(\.id) == [crashed.id, stored.id], "A stored forget is still pending.")
+    #expect(try store.storedForget(crashed.id) == nil, "Its store write is still owed.")
+    #expect(try store.storedForget(stored.id)?.profileID == "MARIA", "The person its store write found.")
+    #expect(try store.forgetRecords().first { $0.id == crashed.id }?.turnRememberOff == true)
+
+    try store.compactForgetJournal()
+    let kept = try store.forgetRecords()
+    #expect(kept.filter { $0.id == finished.id }.isEmpty, "A finished forget and its stored line go together.")
+    #expect(kept.filter { $0.id == stored.id && $0.state == ForgetRecord.stored }.count == 1,
+            "The stored line of a pending forget is kept: it says its store write is done.")
+    #expect(try store.pendingForgets().map(\.id) == [crashed.id, stored.id])
+}
+
+@Test func compactionKeepsAStoredLineWhoseTombstoneThisBuildCannotRead() throws {
+    let root = try profileRoot()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let store = SpeakerProfileStore(directory: root.appendingPathComponent("Speakers"))
+    let mine = ForgetRecord(kind: .all, sampleIDs: ["S1"])
+    try store.appendForgetRecord(mine)
+    try store.appendForgetRecord(.stored(mine.id))
+    try store.appendForgetRecord(.done(mine.id))
+    // A forget of a newer Holos: a kind this build cannot decode, at a schema version it can read. Its pending
+    // line is kept byte for byte (§1.6 rule 5); its phase marker must be kept with it, or that Holos would run
+    // its store write a second time and remove samples learned since.
+    let future = UUID().uuidString
+    let pending = Data("{\"schemaVersion\":1,\"id\":\"\(future)\",\"kind\":\"quarantine\",\"state\":\"pending\"}\n".utf8)
+    try AtomicFile.append(pending, to: store.forgetJournalURL)
+    try store.appendForgetRecord(.stored(future, profileID: "JIM"))
+
+    try store.compactForgetJournal()
+
+    let text = String(decoding: try Data(contentsOf: store.forgetJournalURL), as: UTF8.self)
+    #expect(text.contains("quarantine"), "The newer Holos's tombstone is kept.")
+    #expect(try store.storedForget(future)?.profileID == "JIM", "And so is its stored line.")
+    #expect(!text.contains(mine.id), "This build's own finished forget goes, stored line and all.")
+}
+
+@Test func aTornForgetLineIsNotAnUnfinishedForget() throws {
+    let root = try profileRoot()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let store = SpeakerProfileStore(directory: root.appendingPathComponent("Speakers"))
+    // One ordinary record first, so the folder and the journal exist.
+    try store.appendForgetRecord(ForgetRecord(kind: .all, sampleIDs: []))
+    #expect(try !store.forgetJournalHasUnreadableLines())
+
+    // A tombstone whose append never finished, with a line after it. It is written before the forget changes
+    // anything, so it belongs to a forget that removed nothing and nothing waits on it.
+    try AtomicFile.append(Data(#"{"schemaVersion":1,"id":"TORN""#.utf8), to: store.forgetJournalURL)
+    try store.appendForgetRecord(ForgetRecord(kind: .sample, sampleIDs: ["A"], sessionIDs: ["S"]))
+    #expect(try !store.forgetJournalHasUnreadableLines())
+
+    // A complete record of a newer Holos is one: it may have removed something, and this build cannot finish it.
+    let newerKind = Data(#"{"schemaVersion":1,"id":"KIND","kind":"device","state":"pending"}"#.utf8)
+    try AtomicFile.append(newerKind + Data([0x0A]), to: store.forgetJournalURL)
+    #expect(try store.forgetJournalHasUnreadableLines())
 }

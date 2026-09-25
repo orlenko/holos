@@ -47,7 +47,9 @@ public enum SpeakerRunBuilder {
     ///   in `run.droppedWords` (reason `echo`). The microphone track's words are labelled first, echo included, so
     ///   alignment sees the audio as it was; then the echo words leave. A diarized microphone cluster with at least
     ///   `EchoFilter.echoClusterShare` of its labelled words dropped is not listed, and its remaining words become
-    ///   unknown speaker (no cluster, no overlap, score 0). Its segments stay in `run.tracks`.
+    ///   unknown speaker (no cluster, no overlap, score 0). Its segments stay in `run.tracks`. A word that is kept
+    ///   stops naming such a cluster among its overlaps, so no turn is marked overlapped with a speaker the run
+    ///   does not list.
     public static func build(sessionID: String, transcript: Transcript, tracks: [TrackInput],
                              engine: DiarizationEngineInfo?, parameters: AlignmentParameters = .v1,
                              id: String = UUID().uuidString, createdAt: Date = Date()) -> Result {
@@ -180,7 +182,14 @@ public enum SpeakerRunBuilder {
                 continue
             }
             guard let label = word.label, hidden.contains(label) else {
-                run.append(word)
+                var kept = word
+                // A hidden cluster is in no `speakers` entry, so a word that survives must not still name it as an
+                // overlap: `buildTurns` would mark the turn overlapped with nobody to overlap with, and enrollment
+                // skips overlapped turns, which would cost a real room speaker their voice sample.
+                if !hidden.isEmpty {
+                    kept.overlapClusters = kept.overlapClusters.filter { !hidden.contains($0) }
+                }
+                run.append(kept)
                 continue
             }
             var unknown = word

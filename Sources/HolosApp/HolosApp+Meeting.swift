@@ -13,7 +13,6 @@ final class MeetingAppState {
     static let lastSettingsKey = "meeting.lastSettings"
     static let consentKey = "meeting.consentReminderDismissed"
     static let promptedKey = "meeting.promptedInterrupted"
-    static let namingOfferKey = "meeting.namingOffer"
 
     var controller: MeetingController?
     var maintenance: MaintenanceLauncher?
@@ -29,8 +28,6 @@ final class MeetingAppState {
     var lastStep = "idle"
     /// How the last meeting ended, until the next one starts.
     var lastSummary: (sessionID: String, text: String)?
-    /// "Name Speakers — <name>…", until the meeting is reviewed.
-    var namingOffer: (sessionID: String, name: String)?
     var startPanel: MeetingStartPanel?
     var meetingsWindow: MeetingsWindow?
     /// Open review windows by session ID (one per meeting), and reviews being opened (the window once shown, nil when
@@ -56,8 +53,6 @@ final class MeetingAppState {
     var speakerModelInstall: String?
     /// The last install's failure, shown until the next attempt.
     var speakerModelError: String?
-    /// Maintenance commands started from the Meetings window, by session ID: what they are doing.
-    var runningCommands: [String: String] = [:]
     /// The status item's menu is open; per-second updates change its lines in place.
     var menuOpen = false
     var menuStale = false
@@ -93,18 +88,20 @@ extension HolosAppDelegate: NSMenuDelegate {
             modelsInstalled: { [weak self] in self?.meeting.speakerModels == "verified" },
             onChange: { [weak self] state in self?.meetingStateChanged(state) },
             onEffect: { [weak self] effect in self?.handleMeetingEffect(effect) })
-        controller.sessionsInUse = { [weak self] in
+        controller.onSessionsInUseChanged = { [weak self, weak controller] in
+            guard let controller else { return }
+            self?.meeting.meetingsWindow?.update(running: controller.sessionsInUse)
+        }
+        // Reviews open, opening, or still saving after they closed: the automatic relabel leaves those meetings alone.
+        controller.sessionsUnderReview = { [weak self] in
             guard let self else { return [] }
-            return ReviewMaintenance.sessionsInUse(
-                commands: self.meeting.runningCommands.keys,
-                reviews: Array(self.meeting.reviewWindows.keys) + Array(self.meeting.openingReviews.keys))
+            return Set(self.meeting.reviewWindows.keys).union(self.meeting.openingReviews.keys)
         }
         controller.onAutoRelabel = { [weak self] sessionID, running in
             self?.automaticRelabelChanged(sessionID, running: running)
         }
         meeting.controller = controller
         meeting.maintenance = maintenance
-        restoreNamingOffer()
         Self.sweepCommandOutputs()
         controller.attachOnLaunch()
         refreshSpeakerModels()
@@ -147,13 +144,9 @@ extension HolosAppDelegate: NSMenuDelegate {
             meeting.lastSummary = (sessionID, summary)
             meeting.notice = nil
             meeting.meetingsWindow?.refresh()
-        case .offerNaming(let sessionID, let name):
-            meeting.namingOffer = (sessionID, name)
-            saveNamingOffer()
-        case .clearNamingOffer(let sessionID):
-            guard meeting.namingOffer?.sessionID == sessionID else { return }
-            meeting.namingOffer = nil
-            saveNamingOffer()
+        case .offerNaming, .clearNamingOffer:
+            // `MeetingController.namingOffer` changed; the menu and the status item show it.
+            break
         case .launch, .send, .terminateChild:
             return
         }
@@ -193,7 +186,7 @@ extension HolosAppDelegate: NSMenuDelegate {
         meeting.menuLayout = MeetingMenuLayout(controller.state)
         switch controller.state {
         case .idle:
-            if let offer = meeting.namingOffer {
+            if let offer = controller.namingOffer {
                 menu.addItem(item("Name Speakers — \(Self.short(offer.name))…", #selector(nameSpeakers)))
             }
             if let notice = meeting.notice { menu.addItem(disabledLine(notice)) }
@@ -218,7 +211,7 @@ extension HolosAppDelegate: NSMenuDelegate {
         case .active(_, let status):
             addRecordingItems(status, to: menu)
         case .finishing(_, let status):
-            if let offer = meeting.namingOffer {
+            if let offer = controller.namingOffer {
                 menu.addItem(item("Name Speakers — \(Self.short(offer.name))…", #selector(nameSpeakers)))
             }
             let headline = disabledLine(Self.savingText(status, name: controller.reducer.meetingName))
@@ -334,7 +327,7 @@ extension HolosAppDelegate: NSMenuDelegate {
         var tint: NSColor?
         switch state {
         case .idle:
-            if meeting.namingOffer != nil { title = "•" }
+            if meeting.controller?.namingOffer != nil { title = "•" }
         case .starting:
             symbol = "record.circle"
             title = "…"
@@ -542,7 +535,7 @@ extension HolosAppDelegate: NSMenuDelegate {
     /// "Name Speakers — <name>…": opens Review for the meeting (Meetings, with the meeting selected, when it cannot
     /// be reviewed) and reports `reviewOpened`, which ends the offer.
     @objc func nameSpeakers() {
-        guard let offer = meeting.namingOffer, let controller = meeting.controller else { return }
+        guard let controller = meeting.controller, let offer = controller.namingOffer else { return }
         openReview(sessionID: offer.sessionID, directory: controller.sessionURL(offer.sessionID), name: offer.name,
                    fallBackToMeetings: true)
     }
@@ -576,10 +569,12 @@ extension HolosAppDelegate: NSMenuDelegate {
                 openReview: { [weak self] summary in
                     self?.openReview(sessionID: summary.id, directory: summary.directory, name: summary.name)
                 },
+                beginUsing: { [weak controller] id, doing in controller?.beginUsing(id, for: doing) ?? false },
+                endUsing: { [weak controller] id in controller?.endUsing(id) },
                 onClose: { [weak self] in self?.setDockPresence(false, for: "meetings") })
         }
         setDockPresence(true, for: "meetings")
-        meeting.meetingsWindow?.update(running: meeting.runningCommands)
+        meeting.meetingsWindow?.update(running: controller.sessionsInUse)
         meeting.meetingsWindow?.show(selecting: sessionID)
     }
 
@@ -589,10 +584,10 @@ extension HolosAppDelegate: NSMenuDelegate {
     /// ends, when it rereads the meeting. Delete Meeting can also forget the voice samples learned from the meeting
     /// (PR9), before the meeting is moved.
     private func performMeetingAction(_ action: MeetingsWindow.Action, _ summary: SessionSummary) {
-        guard meeting.maintenance != nil, meeting.runningCommands[summary.id] == nil else { return }
-        guard meeting.controller?.relabellingSessionID != summary.id else {
-            showMeetingAlert("Holos is labelling the speakers of “\(Self.short(summary.name))”.",
-                             "Try again when it finishes; the Meetings list shows when it is done.")
+        guard let controller = meeting.controller else { return }
+        // Asked before the confirmation too, so no confirmation is shown for a command that would be turned down.
+        if let doing = controller.sessionsInUse[summary.id] {
+            showSessionInUse(summary, doing: doing)
             return
         }
         let name = Self.short(summary.name)
@@ -622,10 +617,23 @@ extension HolosAppDelegate: NSMenuDelegate {
             arguments = ["session", "delete", path, "--yes", "--json"]
             doing = "Moving to the Trash…"
         }
-        meeting.runningCommands[summary.id] = doing
+        startMeetingCommand(action, summary, arguments: arguments, doing: doing, forgetSamples: forgetSamples)
+    }
+
+    /// Registers the meeting as in use (`MeetingController.beginUsing`; a meeting the app already uses is turned down
+    /// with an alert), lets a review of it go (`ReviewMaintenance`), then runs the command. Delete Meeting with
+    /// "Also forget voice samples" forgets them first, after the review closed and before the meeting moves.
+    private func startMeetingCommand(_ action: MeetingsWindow.Action, _ summary: SessionSummary, arguments: [String],
+                                     doing: String, forgetSamples: Bool = false) {
+        guard meeting.maintenance != nil, let controller = meeting.controller else { return }
+        // The automatic relabel or another command may have taken the meeting while the confirmation was open.
+        guard controller.beginUsing(summary.id, for: doing) else {
+            showSessionInUse(summary, doing: controller.sessionsInUse[summary.id])
+            return
+        }
+        let name = Self.short(summary.name)
         let hold = ReviewMaintenance.Hold(Self.maintenanceCommand(action))
         meeting.maintenanceOn[summary.id] = hold
-        meeting.meetingsWindow?.update(running: meeting.runningCommands)
         Task { [weak self] in
             await self?.reviewsLetGo(of: summary.id, for: hold)
             if forgetSamples {
@@ -674,7 +682,8 @@ extension HolosAppDelegate: NSMenuDelegate {
         return box.state == .on
     }
 
-    /// Runs the maintenance command of a Meetings action (its "running" line is already shown).
+    /// Runs the maintenance command of a Meetings action, the meeting already registered as in use
+    /// (`startMeetingCommand`); `maintenanceFinished` ends that use however the command ends.
     private func runMeetingCommand(_ action: MeetingsWindow.Action, _ summary: SessionSummary, arguments: [String]) {
         guard let maintenance = meeting.maintenance else {
             maintenanceFinished(summary.id)
@@ -690,44 +699,60 @@ extension HolosAppDelegate: NSMenuDelegate {
             maintenanceFinished(summary.id)
             Self.removeFile(output)
             Self.removeFile(errors)
-            showMeetingAlert("Holos could not run the command.", error.localizedDescription)
+            let title = action == .recover ? "Holos could not recover “\(Self.short(summary.name))”."
+                : "Holos could not run the command."
+            showMeetingAlert(title, error.localizedDescription)
         }
+    }
+
+    private func showSessionInUse(_ summary: SessionSummary, doing: String?) {
+        showMeetingAlert("Holos is working on “\(Self.short(summary.name))”.",
+                         (doing.map { $0 + " " } ?? "") + "Try again when it finishes; the Meetings list shows when it is done.")
     }
 
     private func meetingCommandEnded(_ action: MeetingsWindow.Action, _ summary: SessionSummary, code: Int32,
                                      output: URL, errors: URL) {
         let result = Self.commandResult(output: output, errors: errors)
         // `session diarize` succeeds without labels when the speaker models are missing; its record then has no run.
-        let labelled = Self.jsonObject(output)?["runID"] is String
+        let madeRun = Self.jsonObject(output)?["runID"] is String
         Self.removeFile(output)
         Self.removeFile(errors)
-        // An open review shows the meeting as the command left it (new transcript, labels, or no audio).
+        // Ending the use derives the naming offer again (a meeting deleted, recovered, or labelled changes it), and an
+        // open review shows the meeting as the command left it (new transcript, labels, or no audio).
         maintenanceFinished(summary.id)
         meeting.meetingsWindow?.refresh()
         let name = Self.short(summary.name)
         if code == 0, action == .deleteMeeting || action == .deleteAudio {
             if action == .deleteMeeting {
                 PendingExports().clear(summary.id)
-                if meeting.namingOffer?.sessionID == summary.id {
-                    meeting.namingOffer = nil
-                    saveNamingOffer()
-                }
                 if meeting.lastSummary?.sessionID == summary.id { meeting.lastSummary = nil }
                 rebuildMenu()
             }
             return
         }
-        let title: String = switch (action, code) {
-        case (.recover, 0): "Recovered “\(name)”."
-        case (.recover, 3): "Recovered “\(name)”, with a warning."
-        case (.recover, _): "Holos could not recover “\(name)”."
-        case (.labelSpeakers, 0) where labelled: "Labelled the speakers of “\(name)”."
-        case (.labelSpeakers, 0), (.labelSpeakers, 3): "The speakers of “\(name)” were not labelled."
-        case (.labelSpeakers, _): "Holos could not label the speakers of “\(name)”."
-        case (.deleteAudio, _): "Holos could not delete the audio of “\(name)”."
-        case (.deleteMeeting, _): "Holos could not move “\(name)” to the Trash."
+        let session = summary.directory
+        let controller = meeting.controller
+        Task { [weak self] in
+            // A run counts as labels only once the saved labels load as the catalog and the exports load them
+            // (`MeetingController.speakerLabelsReady`, off the main actor).
+            let labels = action == .recover || (action == .labelSpeakers && madeRun)
+            var labelled = false
+            if labels, let controller {
+                labelled = await controller.labellingCommandEnded(session: session, code: code)
+            }
+            let title: String = switch (action, code) {
+            case (.recover, 0): "Recovered “\(name)”."
+            case (.recover, 3): "Recovered “\(name)”, with a warning."
+            case (.recover, _): "Holos could not recover “\(name)”."
+            case (.labelSpeakers, 0) where labelled: "Labelled the speakers of “\(name)”."
+            case (.labelSpeakers, 3) where labelled: "Labelled the speakers of “\(name)”, with a warning."
+            case (.labelSpeakers, 0), (.labelSpeakers, 3): "The speakers of “\(name)” were not labelled."
+            case (.labelSpeakers, _): "Holos could not label the speakers of “\(name)”."
+            case (.deleteAudio, _): "Holos could not delete the audio of “\(name)”."
+            case (.deleteMeeting, _): "Holos could not move “\(name)” to the Trash."
+            }
+            self?.showMeetingAlert(title, result ?? (code == 0 ? "" : "The command ended with code \(code)."))
         }
-        showMeetingAlert(title, result ?? (code == 0 ? "" : "The command ended with code \(code)."))
     }
 
     // MARK: - Review window (PR9)
@@ -819,7 +844,7 @@ extension HolosAppDelegate: NSMenuDelegate {
             return
         }
         PendingExports().mark(sessionID)
-        meeting.meetingsWindow?.update(running: meeting.runningCommands)
+        if let controller = meeting.controller { meeting.meetingsWindow?.update(running: controller.sessionsInUse) }
         Self.meetingLog.error("Session \(sessionID, privacy: .public): transcript files not rewritten when the review closed; marked pending")
         guard !meeting.quitting, meeting.maintenanceOn[sessionID]?.command != .deleteMeeting else { return }
         let name = Self.short(review.sessionName)
@@ -861,12 +886,12 @@ extension HolosAppDelegate: NSMenuDelegate {
         }
     }
 
-    /// A command from Meetings or the interrupted prompt ended (or never started): Meetings stops showing it, and a
+    /// A command from Meetings or the interrupted prompt ended (or never started): its use of the meeting ends
+    /// (`MeetingController.endUsing`, so Meetings stops showing it and the naming offer is derived again), and a
     /// review of the meeting reads the meeting again and is editable.
     private func maintenanceFinished(_ sessionID: String) {
-        meeting.runningCommands[sessionID] = nil
         let hold = meeting.maintenanceOn.removeValue(forKey: sessionID)
-        meeting.meetingsWindow?.update(running: meeting.runningCommands)
+        meeting.controller?.endUsing(sessionID)
         if let hold { reviewsTakeBack(sessionID, after: hold) }
     }
 
@@ -896,16 +921,17 @@ extension HolosAppDelegate: NSMenuDelegate {
     /// Text Meetings shows while a review window relabels the meeting.
     private static let reviewRelabelText = "Labelling speakers (Review)…"
 
-    /// A review window started or finished relabelling its meeting: Meetings shows it, and the automatic relabel
-    /// leaves the meeting alone meanwhile.
+    /// A review window started or finished relabelling its meeting: the meeting is in use meanwhile
+    /// (`MeetingController.beginUsing`), so Meetings shows it and turns its commands down, and the automatic relabel
+    /// leaves it alone. A use something else already holds is left as it is.
     private func reviewRelabelChanged(_ sessionID: String, running: Bool) {
+        guard let controller = meeting.controller else { return }
         if running {
-            if meeting.runningCommands[sessionID] == nil { meeting.runningCommands[sessionID] = Self.reviewRelabelText }
-        } else if meeting.runningCommands[sessionID] == Self.reviewRelabelText {
-            meeting.runningCommands[sessionID] = nil
+            _ = controller.beginUsing(sessionID, for: Self.reviewRelabelText)
+        } else {
+            if controller.sessionsInUse[sessionID] == Self.reviewRelabelText { controller.endUsing(sessionID) }
+            meeting.meetingsWindow?.refresh()
         }
-        meeting.meetingsWindow?.update(running: meeting.runningCommands)
-        if !running { meeting.meetingsWindow?.refresh() }
     }
 
     /// Quitting with review windows open: they close first, so their last changes reach the transcript files. Returns
@@ -989,36 +1015,8 @@ extension HolosAppDelegate: NSMenuDelegate {
     }
 
     private func runRecovery(_ summary: SessionSummary) {
-        guard meeting.maintenance != nil, meeting.runningCommands[summary.id] == nil,
-              meeting.controller?.relabellingSessionID != summary.id else { return }
-        meeting.runningCommands[summary.id] = "Recovering…"
-        let hold = ReviewMaintenance.Hold(.recover)
-        meeting.maintenanceOn[summary.id] = hold
-        meeting.meetingsWindow?.update(running: meeting.runningCommands)
-        Task { [weak self] in
-            await self?.reviewsLetGo(of: summary.id, for: hold)
-            self?.startRecovery(summary)
-        }
-    }
-
-    private func startRecovery(_ summary: SessionSummary) {
-        guard let maintenance = meeting.maintenance else {
-            maintenanceFinished(summary.id)
-            return
-        }
-        let output = Self.temporaryFile("out")
-        let errors = Self.temporaryFile("err")
-        do {
-            try maintenance.run(["session", "recover", summary.directory.path, "--json"], standardOutput: output,
-                                standardError: errors) { [weak self] code in
-                self?.meetingCommandEnded(.recover, summary, code: code, output: output, errors: errors)
-            }
-        } catch {
-            maintenanceFinished(summary.id)
-            Self.removeFile(output)
-            Self.removeFile(errors)
-            showMeetingAlert("Holos could not recover “\(Self.short(summary.name))”.", error.localizedDescription)
-        }
+        startMeetingCommand(.recover, summary, arguments: ["session", "recover", summary.directory.path, "--json"],
+                            doing: "Recovering…")
     }
 
     // MARK: - Speaker models (Setup "Speaker labels", start panel)
@@ -1128,20 +1126,19 @@ extension HolosAppDelegate: NSMenuDelegate {
             if !inProcess, response == .alertSecondButtonReturn { return quitAfterClosingReviews() }
             return .terminateCancel
         case .idle, .finishing, .failed:
-            // An in-process recording still saving its transcript (also one whose start timed out in the menu but
-            // that did start) is waited for; quitting would cut the save short.
-            guard inProcess, !Self.transcriptSaved(controller.status?.phase) else { return quitAfterClosingReviews() }
+            // A recording still running in this process is waited for, whatever its phase: saving its transcript
+            // (also one whose start timed out in the menu but that did start), labelling speakers (it is told to
+            // leave that to its child, then writes exited), or retrying its exited status (`ExitRetry`). Quitting
+            // earlier would cut the save short or leave status.json unfinished. Open reviews close first either way.
+            guard inProcess else { return quitAfterClosingReviews() }
             waitBeforeQuitting(inProcess: true)
             return .terminateLater
         }
     }
 
-    private static func transcriptSaved(_ phase: RecorderPhase?) -> Bool {
-        phase == .postprocessing || phase == .exited
-    }
-
-    /// Replies to the pending terminate once the recorder has stopped capturing (child: 10 s at most) or saved the
-    /// transcript (in-process: 10 minutes at most).
+    /// Replies to the pending terminate once the recorder has stopped capturing (child: 10 s at most) or, in-process,
+    /// once the recording here has ended (10 minutes at most): after its transcript is saved it stops following the
+    /// labelling child (`InProcessLauncher.leaveLabellingToItsChild`) and writes its exited status.
     private func waitBeforeQuitting(inProcess: Bool) {
         if inProcess { showSavingWindow() }
         let limit: Duration = inProcess ? .seconds(600) : .seconds(10)
@@ -1157,8 +1154,11 @@ extension HolosAppDelegate: NSMenuDelegate {
                     undelivered = true
                     break
                 }
+                // Labelling continues in its child after the quit (§5.8): a recording here that reached it stops
+                // waiting for it, writes its exited status, and ends.
+                if inProcess { self.meeting.inProcess?.leaveLabellingToItsChild() }
                 let recordingHere = self.meeting.inProcess?.isRecording == true
-                if Self.readyToQuit(controller, inProcess: inProcess, recordingHere: recordingHere) { break }
+                if QuitReadiness.ready(controller.state, inProcess: inProcess, recordingHere: recordingHere) { break }
                 try? await Task.sleep(for: .milliseconds(200))
             }
             self?.meeting.savingWindow?.close()
@@ -1177,17 +1177,6 @@ extension HolosAppDelegate: NSMenuDelegate {
     private static func stopNotDelivered(_ controller: MeetingController) -> Bool {
         guard case .active(_, let status) = controller.state else { return false }
         return status.phase != .stopping && !controller.reducer.stopRequested
-    }
-
-    /// Child mode: once capture stopped. In-process: once the recording in this process ended or saved its transcript.
-    private static func readyToQuit(_ controller: MeetingController, inProcess: Bool, recordingHere: Bool) -> Bool {
-        if inProcess && !recordingHere { return true }
-        switch controller.state {
-        case .starting, .active:
-            return false
-        case .idle, .failed, .finishing:
-            return inProcess ? transcriptSaved(controller.status?.phase) : true
-        }
     }
 
     private func showSavingWindow() {
@@ -1222,29 +1211,6 @@ extension HolosAppDelegate: NSMenuDelegate {
     }
 
     // MARK: - Helpers
-
-    /// The naming offer of the last session, unless that meeting was deleted since.
-    private func restoreNamingOffer() {
-        guard let saved = UserDefaults.standard.dictionary(forKey: MeetingAppState.namingOfferKey),
-              let id = saved["sessionID"] as? String, let name = saved["name"] as? String,
-              let controller = meeting.controller else { return }
-        var isFolder: ObjCBool = false
-        guard FileManager.default.fileExists(atPath: controller.sessionURL(id).path, isDirectory: &isFolder),
-              isFolder.boolValue else {
-            UserDefaults.standard.removeObject(forKey: MeetingAppState.namingOfferKey)
-            return
-        }
-        meeting.namingOffer = (id, name)
-    }
-
-    private func saveNamingOffer() {
-        if let offer = meeting.namingOffer {
-            UserDefaults.standard.set(["sessionID": offer.sessionID, "name": offer.name],
-                                      forKey: MeetingAppState.namingOfferKey)
-        } else {
-            UserDefaults.standard.removeObject(forKey: MeetingAppState.namingOfferKey)
-        }
-    }
 
     /// A private temporary file name for a command's output.
     private static func temporaryFile(_ kind: String) -> URL {

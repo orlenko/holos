@@ -26,7 +26,8 @@ public enum SpeakerRecognizer {
     ///    another model is listed in `skippedProfiles`, the rest are left out silently.
     /// 3. Distance(speaker, profile) = the smallest cosine distance to the profile's non-weak samples of the
     ///    speaker's condition; without any, to its other samples, and the tier is capped at `possible`.
-    /// 4. Thresholds: `database.calibratedThresholds ?? defaultThresholds`.
+    /// 4. Thresholds: `thresholds(database, model:)`: the calibrated ones only when they were measured on the run's
+    ///    embedding model (`calibratedModel`), else `defaultThresholds`.
     /// 5. A pair within `possibleMaxDistance` is `possible`; it is `likely` only with calibrated thresholds, a distance
     ///    within `likelyMaxDistance`, the speaker's next-best profile at least `likelyMinMargin` farther, and an
     ///    uncapped tier.
@@ -39,8 +40,7 @@ public enum SpeakerRecognizer {
                                  now: Date = Date()) -> RecognitionResult? {
         guard let engine = run.engine, let voiceData else { return nil }
         let model = engine.embeddingModel
-        let thresholds = database.calibratedThresholds ?? defaultThresholds
-        let calibrated = database.calibratedThresholds != nil
+        let (thresholds, calibrated) = SpeakerRecognizer.thresholds(database, model: model)
 
         let candidates = candidates(run: run, voiceData: voiceData)
         let (eligible, skipped) = profiles(database, model: model)
@@ -85,6 +85,14 @@ public enum SpeakerRecognizer {
                              distance: $0.distance, tier: $0.tier)
             },
             mergeSuggestions: suggestions, skippedProfiles: skipped)
+    }
+
+    /// Step 4: the thresholds for a run of `model`, and whether they are calibrated. Calibrated thresholds apply only
+    /// to the embedding model they were measured on (distances of different models are not comparable).
+    public static func thresholds(_ database: SpeakerProfileDatabase,
+                                  model: EmbeddingModelID?) -> (thresholds: RecognitionThresholds, calibrated: Bool) {
+        guard let calibrated = database.calibratedThresholds(for: model) else { return (defaultThresholds, false) }
+        return (calibrated, true)
     }
 
     /// Step 2: the people a run of `model` is compared with (`recognitionEnabled`, with samples, of `model`), and the

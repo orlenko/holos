@@ -18,6 +18,11 @@ public enum EchoFilter {
     /// How far a microphone word may start before its system counterpart and still be echo: timing jitter between
     /// the two tracks' recognized words. Echo itself can only follow the system audio.
     public static let echoLeadToleranceSeconds = 0.25
+    /// A pause longer than this between two matched words ends the run they would extend: they belong to separate
+    /// utterances, not to one phrase the microphone heard back. Without it, the same short word said on both
+    /// tracks minutes apart ("yes" … "yes" … "yes") would add up to a run and be dropped, which is exactly what
+    /// `echoMinRunWords` exists to prevent.
+    public static let echoRunGapSeconds = 2.0
 
     /// Microphone spans to drop: runs of at least `echoMinRunWords` consecutive mic words whose normalized
     /// text (lowercased, letters and digits only) equals, in order, consecutive system words, each mic word
@@ -32,6 +37,9 @@ public enum EchoFilter {
     /// Details:
     /// - No spans when `echoWindowSeconds` is nil, negative, or not finite. A run needs at least
     ///   `max(1, echoMinRunWords)` words (3 in `AlignmentParameters.v1`, so a lone "yes" or "okay" is kept, R34).
+    /// - Consecutive matches extend one run only while both tracks stay inside `echoRunGapSeconds`: matches
+    ///   further apart than that are separate utterances and each starts a new run, so isolated words repeated
+    ///   over a call never add up to one.
     /// - Words are the effective words (`WordTiming`) of the segments whose track is exactly "mic" or "system", in
     ///   alignment order (segments by start, then their words). A word's time is its start.
     /// - A word whose normalized text is empty (punctuation) or whose start is not a number takes no part in matching
@@ -77,12 +85,24 @@ public enum EchoFilter {
 
         // A pair (mic i, system j) lies on a diagonal of consecutive matches; its length is the matches before it
         // (forward) plus the matches after it (backward), counting the pair once.
+        /// Whether the matchable microphone words at `positions` follow each other closely enough to be one phrase.
+        let micTogether = { (earlier: Int, later: Int) -> Bool in
+            mic[micMatchable[later]].start - mic[micMatchable[earlier]].start <= echoRunGapSeconds + timeEpsilon
+        }
+        /// The same for the system words a run is matched against.
+        let systemTogether = { (earlier: Int, later: Int) -> Bool in
+            guard earlier >= 0, later < systemMatchable.count else { return false }
+            return system[systemMatchable[later]].start - system[systemMatchable[earlier]].start
+                <= echoRunGapSeconds + timeEpsilon
+        }
         var forward = candidates.map { [Int](repeating: 0, count: $0.count) }
         var previous: [Int: Int] = [:]
         for i in candidates.indices {
             var current: [Int: Int] = [:]
+            let followsOn = i > 0 && micTogether(i - 1, i)
             for (slot, j) in candidates[i].enumerated() {
-                let length = (previous[j - 1] ?? 0) + 1
+                var length = 1
+                if followsOn, let before = previous[j - 1], systemTogether(j - 1, j) { length = before + 1 }
                 forward[i][slot] = length
                 current[j] = length
             }
@@ -92,8 +112,10 @@ public enum EchoFilter {
         var next: [Int: Int] = [:]
         for i in candidates.indices.reversed() {
             var current: [Int: Int] = [:]
+            let leadsOn = i + 1 < candidates.count && micTogether(i, i + 1)
             for (slot, j) in candidates[i].enumerated() {
-                let length = (next[j + 1] ?? 0) + 1
+                var length = 1
+                if leadsOn, let after = next[j + 1], systemTogether(j, j + 1) { length = after + 1 }
                 current[j] = length
                 if forward[i][slot] + length - 1 >= minimumRun { droppedMatchable[i] = true }
             }

@@ -31,7 +31,7 @@ final class PeopleWindowController: NSObject, NSWindowDelegate, NSTableViewDataS
     private let mergePopUp = NSPopUpButton(frame: .zero, pullsDown: true)
     private let forgetPersonButton = NSButton(title: "Forget…", target: nil, action: nil)
     private let forgetAllButton = NSButton(title: "Forget All Voices…", target: nil, action: nil)
-    private let statusLabel = NSTextField(labelWithString: "")
+    private let statusLabel = NSTextField(wrappingLabelWithString: "")
     private var database = SpeakerProfileDatabase()
     private var people: [SpeakerProfile] = []
     private var busy = false
@@ -139,7 +139,6 @@ final class PeopleWindowController: NSObject, NSWindowDelegate, NSTableViewDataS
         footer.alignment = .centerY
         statusLabel.textColor = .secondaryLabelColor
         statusLabel.font = .systemFont(ofSize: 12)
-        statusLabel.lineBreakMode = .byTruncatingTail
 
         let stack = NSStackView(views: [rememberBox, explanation, split, footer, statusLabel])
         stack.orientation = .vertical
@@ -190,14 +189,27 @@ final class PeopleWindowController: NSObject, NSWindowDelegate, NSTableViewDataS
         Task { [weak self] in
             let loaded = await Task.detached { () -> (SpeakerProfileDatabase, [SpeakerProfile])? in
                 guard let database = try? store.load() else { return nil }
-                return (database, VoiceProfileService.knownPeople(store: store))
+                return (database, VoiceProfileService.sortedPeople(database.profiles))
             }.value
             guard let self else { return }
             guard let (database, people) = loaded else {
                 self.statusLabel.stringValue = "The people store could not be read."
+                self.derivedStatus = true
                 return
             }
             let selected = self.selectedPerson?.id
+            // Anything this window derived from the store is recomputed here, including back to nothing: the
+            // condition may have been answered elsewhere (the review window, the CLI) since it was shown, and a
+            // window that keeps saying so is telling the user something untrue. What an action of this window
+            // reported ("Merged two people.") is not derived and stays until the next action.
+            if self.derivedStatus || self.statusLabel.stringValue.isEmpty {
+                let reset = !database.isCalibrated && database.calibrationResetAt != nil
+                self.statusLabel.stringValue = reset
+                    ? "Automatic names are off for new meetings: the calibration was reset when the voice samples "
+                        + "changed. Meetings already named keep their names."
+                    : ""
+                self.derivedStatus = reset
+            }
             self.database = database
             self.people = people
             self.peopleTable.reloadData()
@@ -305,18 +317,20 @@ final class PeopleWindowController: NSObject, NSWindowDelegate, NSTableViewDataS
             }
             return
         }
+        // Also with no samples: a meeting processed with the hidden --voice-data option holds voiceprints of its
+        // own, and the choice to remove them is the same one. Asking costs a dialog; not asking leaves biometric
+        // data the user believes they were offered the chance to delete.
         let samples = database.sampleCount
-        guard samples > 0 else {
-            perform("Remember voices is off.") { store, root in
-                try VoiceProfileService.setRemember(false, forgetExisting: false, store: store, sessionsRoot: root)
-            }
-            return
-        }
-        let meetings = database.sampleSessionIDs.count
+        // Forget here is the `.all` path: it removes every meeting's voice data, not only that of the meetings
+        // that contributed a sample, so the prompt says so rather than counting the samples' meetings.
         let alert = NSAlert()
-        alert.messageText = "Also forget the \(samples) saved voice \(samples == 1 ? "sample" : "samples") and the "
-            + "voice data of \(meetings) \(meetings == 1 ? "meeting" : "meetings")?"
-        alert.informativeText = "Names are kept either way. Kept samples are not used while Remember voices is off."
+        alert.messageText = samples > 0
+            ? "Also forget the \(samples) saved voice \(samples == 1 ? "sample" : "samples") and the voice data of "
+                + "every meeting?"
+            : "Also forget the voice data of every meeting?"
+        alert.informativeText = "Names are kept either way. Kept samples are not used while Remember voices is off. "
+            + "Voice data is the per-meeting data Holos keeps for evaluation; a meeting that never contributed a "
+            + "sample can have some too."
         alert.addButton(withTitle: "Forget")
         alert.addButton(withTitle: "Keep")
         let forget = alert.runModal() == .alertFirstButtonReturn
@@ -410,6 +424,10 @@ final class PeopleWindowController: NSObject, NSWindowDelegate, NSTableViewDataS
     }
 
     /// Runs one change off the main actor, then shows `done` (or the error) and reloads.
+    /// Whether what the status line shows was derived from the store (a reset calibration, an unreadable store)
+    /// rather than reported by an action of this window. Only the derived kind is recomputed by a refresh.
+    private var derivedStatus = false
+
     private func perform(_ done: String?, _ change: @escaping @Sendable (SpeakerProfileStore, URL) throws -> Void) {
         guard !busy else { return }
         busy = true
@@ -418,17 +436,21 @@ final class PeopleWindowController: NSObject, NSWindowDelegate, NSTableViewDataS
         let store = self.store
         let root = sessionsRoot
         Task { [weak self] in
-            let failure = await Task.detached { () -> String? in
+            let (failure, reset) = await Task.detached { () -> (String?, String?) in
+                // A change to the voice samples resets the calibration in its store write; say so.
+                let before = try? store.load()
+                var failure: String?
                 do {
                     try change(store, root)
-                    return nil
                 } catch {
-                    return error.localizedDescription
+                    failure = error.localizedDescription
                 }
+                return (failure, VoiceProfileService.calibrationResetNote(before: before, after: try? store.load()))
             }.value
             guard let self else { return }
             self.busy = false
-            self.statusLabel.stringValue = failure ?? done ?? ""
+            self.statusLabel.stringValue = [failure ?? done, reset].compactMap { $0 }.joined(separator: " ")
+            self.derivedStatus = false
             self.refresh()
         }
     }

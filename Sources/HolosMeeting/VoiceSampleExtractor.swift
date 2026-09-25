@@ -40,14 +40,22 @@ public struct DiarizerVoiceSampleExtractor: VoiceSampleExtractor {
     static let modelChanged = "The speaker models changed since this meeting was labelled, so its voices can't be "
         + "learned. Label its speakers again first."
     static let noDiskSpace = "Not enough disk space to learn this voice. Free some space, then try again."
+    static let settingsChanged = "This meeting's speakers were labelled again with other settings while the voice "
+        + "was being learned. Try again."
 
     public let diarizer: any SpeakerDiarizer
     public let temporaryDirectory: URL
     let freeSpace: any FreeSpaceProvider
+    /// The head run's settings this diarizer was configured from, when it was. Checked against the head run again
+    /// at every call: a relabel can publish a new head with the same speaker model and other settings, and a
+    /// sample taken with this pass's settings must not be saved against that run.
+    let expectedConfiguration: [String: String]
 
     public init(diarizer: any SpeakerDiarizer, temporaryDirectory: URL = FileManager.default.temporaryDirectory,
-                freeSpace: any FreeSpaceProvider = VolumeFreeSpace()) {
+                freeSpace: any FreeSpaceProvider = VolumeFreeSpace(),
+                expectedConfiguration: [String: String] = [:]) {
         self.diarizer = diarizer; self.temporaryDirectory = temporaryDirectory; self.freeSpace = freeSpace
+        self.expectedConfiguration = expectedConfiguration
     }
 
     public func turnEmbeddings(session: URL, track: String, turns: [TurnRef]) async throws -> [TurnEmbedding] {
@@ -58,10 +66,10 @@ public struct DiarizerVoiceSampleExtractor: VoiceSampleExtractor {
         if try SessionArchive.isActive(at: session) {
             throw HolosError.unavailable("This meeting is still recording. Stop it before learning voices.")
         }
-        if SessionFiles.audioDeleted(session: session) {
+        let manifest = try SessionArchive.readManifest(at: session)
+        if try SessionFiles.audioDeleted(session: session, sessionID: manifest.id) {
             throw HolosError.unavailable(VoiceProfileService.audioDeletedNote)
         }
-        let manifest = try SessionArchive.readManifest(at: session)
         var hint: SpeakerCountHint?
         if let head = try SessionSpeakerStore.readHead(session: session) {
             let run = try SessionSpeakerStore.readRun(id: head.runID, session: session)
@@ -69,7 +77,11 @@ public struct DiarizerVoiceSampleExtractor: VoiceSampleExtractor {
                 let info = try await diarizer.engineInfo()
                 guard info.embeddingModel == expected else { throw HolosError.unavailable(Self.modelChanged) }
             }
-            hint = Self.speakerHint(run: run, session: session, manifest: manifest)
+            let current = run.engine?.configuration ?? [:]
+            guard expectedConfiguration.allSatisfy({ current[$0.key] == $0.value }) else {
+                throw HolosError.unavailable(Self.settingsChanged)
+            }
+            hint = try Self.speakerHint(run: run, session: session, manifest: manifest)
         }
         let seconds = TrackRenderer.renderedSeconds(manifest: manifest, track: track)
         if let free = try? freeSpace.availableBytes(at: temporaryDirectory),
@@ -77,7 +89,8 @@ public struct DiarizerVoiceSampleExtractor: VoiceSampleExtractor {
             throw HolosError.unavailable(Self.noDiskSpace)
         }
         try Task.checkCancellation()
-        let folder = temporaryDirectory.appendingPathComponent("holos-voice-\(UUID().uuidString)", isDirectory: true)
+        let folder = temporaryDirectory.appendingPathComponent("\(Self.renderPrefix)\(UUID().uuidString)",
+                                                              isDirectory: true)
         defer { Self.remove(folder) }
         let rendered = try TrackRenderer.render(session: session, manifest: manifest, track: track,
                                                 to: folder.appendingPathComponent("\(track)-16k.caf"))
@@ -93,23 +106,84 @@ public struct DiarizerVoiceSampleExtractor: VoiceSampleExtractor {
 
     /// The speaker-count hint post-processing gave the run's pass, so the fresh pass groups speakers the same way:
     /// from meeting.json's expected speakers and the number of tracks the run diarized. A `--speakers` hint given to
-    /// `holos session diarize` is not recorded in the run, so it is not repeated here. Nil when meeting.json cannot
-    /// be read.
-    static func speakerHint(run: DiarizationRun, session: URL, manifest: SessionManifest) -> SpeakerCountHint? {
-        guard let meeting = try? SessionFiles.meetingInfo(session: session, manifest: manifest) else { return nil }
+    /// `holos session diarize` is not recorded in the run, so it is not repeated here.
+    ///
+    /// Throws when meeting.json cannot be read. Taking that for "no hint" would let this pass cluster the audio
+    /// differently from the one the meeting was labelled with, and nothing downstream would notice: the engine
+    /// check compares settings, not hints, and the speaker generation only says the labels have not moved.
+    static func speakerHint(run: DiarizationRun, session: URL, manifest: SessionManifest) throws -> SpeakerCountHint? {
+        let meeting = try SessionFiles.meetingInfo(session: session, manifest: manifest)
         let diarized = run.tracks.filter { $0.policy == .diarized }.count
         return SpeakerAnalysis.speakerHint(options: PostProcessingOptions(), meeting: meeting, diarizedTracks: diarized)
     }
 
-    /// Deletes the temporary render folder (created 0700 by the render).
+    /// The name a render folder gets: `holos-voice-<UUID>` in the temporary directory.
+    static let renderPrefix = "holos-voice-"
+
+    /// How long a render folder must have been untouched before the sweep takes it: longer than any enrollment
+    /// runs, so a render of another Holos that is using it right now is never removed.
+    static let staleRenderAge: TimeInterval = 6 * 3600
+
+    /// At most this many folders per sweep, so a temporary directory full of them cannot hold up a launch.
+    static let staleRenderLimit = 64
+
+    /// Deletes the temporary render folder (created 0700 by the render). A failure is logged and left to
+    /// `removeStaleRenders`, which takes it on a later launch: a render holds a decoded copy of the meeting's audio,
+    /// so it must not be left behind silently.
     private static func remove(_ folder: URL) {
         do {
             try FileManager.default.removeItem(at: folder)
         } catch CocoaError.fileNoSuchFile {
             return
         } catch {
-            log.error("Cannot delete a temporary voice render: \(error.localizedDescription, privacy: .private)")
+            log.error("Cannot delete a temporary voice render; it is removed on a later launch: \(error.localizedDescription, privacy: .private)")
         }
+    }
+
+    /// Removes render folders an interrupted enrollment left in `temporaryDirectory`: a kill or a power loss skips
+    /// the `defer` that deletes one, and the rendered copy of the meeting's audio would then outlive Delete Audio,
+    /// Delete Meeting and every voice forget. Only folders named `holos-voice-<token>` that nothing has touched for
+    /// `staleRenderAge` are taken, at most `staleRenderLimit` of them, so a render another Holos is using right now
+    /// is left alone. Failures are logged, never thrown: this is launch housekeeping, not part of any request.
+    /// Returns how many folders were removed.
+    @discardableResult
+    public static func removeStaleRenders(in temporaryDirectory: URL = FileManager.default.temporaryDirectory,
+                                          now: Date = Date()) -> Int {
+        let names: [String]
+        do {
+            names = try FileManager.default.contentsOfDirectory(atPath: temporaryDirectory.path)
+        } catch {
+            log.error("Cannot look for leftover voice renders: \(ProcessSpawner.logCategory(error), privacy: .public)")
+            return 0
+        }
+        var removed = 0
+        for name in names.sorted() where isRenderName(name) {
+            guard removed < staleRenderLimit else { break }
+            let folder = temporaryDirectory.appendingPathComponent(name, isDirectory: true)
+            var info = stat()
+            // Not through a symbolic link: a link named like a render is left where it is.
+            guard lstat(folder.path, &info) == 0, (info.st_mode & S_IFMT) == S_IFDIR else { continue }
+            let touched = Date(timeIntervalSince1970: Double(info.st_mtimespec.tv_sec))
+            guard now.timeIntervalSince(touched) > staleRenderAge else { continue }
+            do {
+                try FileManager.default.removeItem(at: folder)
+                removed += 1
+            } catch CocoaError.fileNoSuchFile {
+                continue
+            } catch {
+                log.error("Cannot delete a leftover voice render: \(error.localizedDescription, privacy: .private)")
+            }
+        }
+        if removed > 0 {
+            log.notice("Deleted \(removed, privacy: .public) leftover voice renders")
+        }
+        return removed
+    }
+
+    /// `holos-voice-<token>`, the name `turnEmbeddings` gives its render folder.
+    static func isRenderName(_ name: String) -> Bool {
+        guard name.hasPrefix(renderPrefix) else { return false }
+        return SessionArchive.validToken(String(name.dropFirst(renderPrefix.count)))
     }
 }
 

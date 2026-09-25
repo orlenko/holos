@@ -14,6 +14,10 @@ public struct EditJournal: Sendable, Equatable {
     public init(edits: [SpeakerEdit] = [], tornTail: Bool = false, unreadableLines: Int = 0) {
         self.edits = edits; self.tornTail = tornTail; self.unreadableLines = unreadableLines
     }
+
+    /// Every line was read: no torn tail and no unreadable line. A projection built from an incomplete journal may
+    /// miss a link, a rejection, or a reassignment, so nothing learns a voice or uses recognition from it.
+    public var isComplete: Bool { unreadableLines == 0 && !tornTail }
 }
 
 /// Speaker files inside a session folder (docs/meeting-design.md §2.1): immutable runs, the head pointer,
@@ -248,6 +252,31 @@ public enum SessionSpeakerStore {
         return try SessionArchive.withSpeakerLock(at: session, purge)
     }
 
+    /// Removes the leftovers of an interrupted atomic write from a meeting's `speakers/recognition` folder:
+    /// regular files named `.<token>.tmp`, which `AtomicFile` publishes through and unlinks itself, but which a
+    /// kill between their fsync and their rename leaves behind. Nothing else clears that folder, so a caller that
+    /// refuses to act while it holds an entry it does not know would otherwise wait for one for ever. The caller
+    /// holds the meeting's speaker lock, so no recognition write is in flight and such a file belongs to nobody.
+    /// Returns whether anything was removed.
+    @discardableResult
+    public static func purgeRecognitionLeftovers(session: URL) throws -> Bool {
+        try SessionLockFile.requireSessionFolder(session)
+        let folder = SessionPaths.recognitionDirectory(session)
+        guard let entries = try AtomicFile.listFolder(folder) else { return false }
+        var removed = false
+        for entry in entries where entry.type == S_IFREG && isAtomicWriteLeftover(entry.name) {
+            _ = try AtomicFile.removeTree(["speakers", "recognition", entry.name], in: session)
+            removed = true
+        }
+        return removed
+    }
+
+    /// `.<token>.tmp`, the name `AtomicFile` gives the file it writes before renaming it into place.
+    static func isAtomicWriteLeftover(_ name: String) -> Bool {
+        guard name.hasPrefix("."), name.hasSuffix(".tmp") else { return false }
+        return SessionArchive.validToken(String(name.dropFirst().dropLast(4)))
+    }
+
     private static func speakerFiles(in folder: URL, session: URL) throws -> (runIDs: [String], other: Bool) {
         try SessionLockFile.requireSessionFolder(session)
         guard let entries = try AtomicFile.listFolder(folder) else { return ([], false) }
@@ -290,12 +319,13 @@ public enum SessionSpeakerStore {
     /// swapped in during the call. Nothing is checked by path first. With `excludeFromBackup`, the backup exclusion
     /// is set on the descriptor that chain returned, so a link swapped in afterwards never redirects it.
     ///
-    /// The paths are compared after removing "." and ".." only (`URL.standardized`). `standardizedFileURL` would also
-    /// drop a leading "/private" when the shorter path exists, which it does for the session but not yet for the
-    /// folder, so a session under /private/tmp or /private/var could never get its speaker folders.
+    /// The paths are compared in `AtomicFile.canonicalComponents` form, which never looks at the file system:
+    /// `standardizedFileURL` would drop a leading "/private" when the shorter path exists, which it does for the
+    /// session but not yet for the folder, and a session and folder named one with "/private" and one without would
+    /// not match at all.
     private static func ensureSpeakerFolder(_ folder: URL, session: URL, excludeFromBackup: Bool = false) throws {
-        let sessionComponents = session.standardized.pathComponents
-        let folderComponents = folder.standardized.pathComponents
+        let sessionComponents = AtomicFile.canonicalComponents(session)
+        let folderComponents = AtomicFile.canonicalComponents(folder)
         guard folderComponents.count > sessionComponents.count,
               Array(folderComponents.prefix(sessionComponents.count)) == sessionComponents else {
             throw HolosError.invalidInput("\(folder.lastPathComponent) is not a folder of this session.")

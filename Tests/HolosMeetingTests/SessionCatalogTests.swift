@@ -245,6 +245,215 @@ func catalogReportsDeletedAudio() async throws {
     #expect(!(try SessionArchive.inspectRecovery(at: session).needsAttention))
 }
 
+/// Replaces the file at `url` (some session files are read-only) with `data`.
+private func catalogReplace(_ url: URL, with data: Data) throws {
+    try? FileManager.default.removeItem(at: url)
+    try data.write(to: url)
+}
+
+/// `data`, a JSON object, as a newer Holos writes it: `schemaVersion` 2 and a field this build does not know.
+private func catalogNewer(_ data: Data) throws -> Data {
+    var object = try #require(try JSONSerialization.jsonObject(with: data) as? [String: Any])
+    object["schemaVersion"] = 2
+    object["newerField"] = "kept"
+    return try JSONSerialization.data(withJSONObject: object)
+}
+
+@Test(.timeLimit(.minutes(1)))
+func catalogReportsUnreadableSpeakerFilesAndTranscripts() async throws {
+    let temp = try TemporaryDirectory("catalog")
+    defer { temp.remove() }
+    let (session, transcript, run) = try await SessionFixtures.labelledSession(in: temp.url)
+    let record = PostProcessingRecord(sessionID: try SessionArchive.readManifest(at: session).id, state: .succeeded,
+                                      runID: run.id, pid: 1, startedAt: Date(), updatedAt: Date())
+    try AtomicFile.writeJSON(record, to: SessionPaths.postprocess(session))
+    let before = SessionCatalog.summary(session: session)
+    #expect(before.speakerState == .labelled && before.runID == run.id)
+    #expect(before.transcriptID == transcript.id && before.transcriptProblem == nil)
+
+    // postprocess.json and speakers/head.json: newer or damaged is unreadable, never "none" or "labelled".
+    for url in [SessionPaths.postprocess(session), SessionPaths.head(session)] {
+        let original = try Data(contentsOf: url)
+        try catalogReplace(url, with: try catalogNewer(original))
+        let newer = SessionCatalog.summary(session: session)
+        #expect(newer.speakerState == .unreadable, "\(url.lastPathComponent) from a newer Holos")
+        #expect(newer.labelMessage?.contains("newer Holos") == true, "\(url.lastPathComponent)")
+        try catalogReplace(url, with: Data("not json".utf8))
+        #expect(SessionCatalog.summary(session: session).speakerState == .unreadable,
+                "\(url.lastPathComponent) damaged")
+        try catalogReplace(url, with: original)
+        #expect(SessionCatalog.summary(session: session).speakerState == .labelled)
+    }
+
+    // The run the head names is read: missing, damaged, or newer is unreadable, never "labelled".
+    let runURL = SessionPaths.run(run.id, in: session)
+    let savedRun = try Data(contentsOf: runURL)
+    let runDamages = [("damaged", Data("not json".utf8), "speaker labels are missing or damaged"),
+                      ("newer", try catalogNewer(savedRun), "newer Holos")]
+    for (damage, data, message) in runDamages {
+        try catalogReplace(runURL, with: data)
+        let summary = SessionCatalog.summary(session: session)
+        #expect(summary.speakerState == .unreadable, "head run \(damage)")
+        #expect(summary.labelMessage?.contains(message) == true, "head run \(damage)")
+    }
+    try FileManager.default.removeItem(at: runURL)
+    #expect(SessionCatalog.summary(session: session).speakerState == .unreadable, "head run missing")
+    try catalogReplace(runURL, with: savedRun)
+    #expect(SessionCatalog.summary(session: session).speakerState == .labelled)
+
+    // postprocess.json names a run, but the head the labels load through is missing: unreadable, never "labelled".
+    let headURL = SessionPaths.head(session)
+    let savedHead = try Data(contentsOf: headURL)
+    try FileManager.default.removeItem(at: headURL)
+    let headless = SessionCatalog.summary(session: session)
+    #expect(headless.speakerState == .unreadable)
+    #expect(headless.labelMessage?.contains("speakers/head.json is missing") == true)
+    #expect(headless.runID == run.id)
+    try catalogReplace(headURL, with: savedHead)
+    #expect(SessionCatalog.summary(session: session).speakerState == .labelled)
+
+    // The current revision is read: truncated, mislabelled, or newer is not listed as the transcript.
+    let revision = SessionPaths.transcript(transcript.id, in: session)
+    let saved = try Data(contentsOf: revision)
+    var mislabelled = transcript
+    mislabelled.id = UUID().uuidString
+    let damages: [(String, Data)] = [
+        ("truncated", saved.prefix(saved.count / 2)),
+        ("mislabelled", try HolosJSON.encoder().encode(mislabelled)),
+        ("newer", try catalogNewer(saved)),
+    ]
+    for (damage, data) in damages {
+        try catalogReplace(revision, with: data)
+        let summary = SessionCatalog.summary(session: session)
+        #expect(summary.transcriptID == nil, "\(damage)")
+        #expect(summary.transcriptProblem != nil, "\(damage)")
+    }
+    #expect(SessionCatalog.summary(session: session).transcriptProblem?.contains("newer Holos") == true)
+    try catalogReplace(SessionPaths.transcriptPointer(session),
+                       with: try catalogNewer(try Data(contentsOf: SessionPaths.transcriptPointer(session))))
+    #expect(SessionCatalog.summary(session: session).transcriptProblem?.contains("newer Holos") == true,
+            "A newer pointer is reported, not read as no transcript.")
+}
+
+/// The catalog's speaker state and label message, and whether the snapshot loader (the exports and speaker commands)
+/// uses the head's run: a nil run when `load` refuses (`error`).
+private func catalogLabels(_ session: URL) -> (state: SpeakerLabelState, message: String?, loadedRun: String?,
+                                               error: (any Error)?) {
+    let summary = SessionCatalog.summary(session: session)
+    do {
+        let snapshot = try SpeakerSessionSnapshot.load(session: session)
+        return (summary.speakerState, summary.labelMessage, snapshot.run?.id, nil)
+    } catch {
+        return (summary.speakerState, summary.labelMessage, nil, error)
+    }
+}
+
+@Test(.timeLimit(.minutes(1)))
+func catalogCallsLabelsLabelledOnlyWhenTheSnapshotLoadsThem() async throws {
+    let temp = try TemporaryDirectory("catalog")
+    defer { temp.remove() }
+    let (session, transcript, run) = try await SessionFixtures.labelledSession(in: temp.url)
+    // A newer transcript is current, so the snapshot has one to fall back to when the run's own cannot be used.
+    try await SessionFixtures.saveTranscript(
+        SessionFixtures.transcript(SessionFixtures.alternatingSegments(track: "system")), in: session)
+    let labelled = catalogLabels(session)
+    #expect(labelled.state == .labelled && labelled.loadedRun == run.id)
+
+    // The transcript revision the head's run was built from: missing, damaged, or of another ID. The exports leave
+    // the labels out, so the catalog never calls them labelled.
+    let revision = SessionPaths.transcript(transcript.id, in: session)
+    let saved = try Data(contentsOf: revision)
+    var other = transcript
+    other.id = UUID().uuidString
+    let damages: [(String, Data?)] = [
+        ("missing", nil), ("truncated", saved.prefix(saved.count / 2)),
+        ("of another ID", try HolosJSON.encoder().encode(other)),
+    ]
+    for (damage, data) in damages {
+        try? FileManager.default.removeItem(at: revision)
+        if let data { try data.write(to: revision) }
+        let labels = catalogLabels(session)
+        #expect(labels.error == nil && labels.loadedRun == nil, "The snapshot leaves the labels out: \(damage).")
+        #expect(labels.state == .unreadable, "The run's transcript is \(damage).")
+        #expect(labels.message == "The transcript the speaker labels were made from is missing or damaged.",
+                "\(damage)")
+    }
+    // A newer one is refused by both.
+    try catalogReplace(revision, with: try catalogNewer(saved))
+    let newer = catalogLabels(session)
+    #expect(newer.error.map { "\($0)".contains("newer Holos") } == true)
+    #expect(newer.state == .unreadable && newer.message?.contains("newer Holos") == true)
+    try catalogReplace(revision, with: saved)
+    #expect(catalogLabels(session).state == .labelled)
+
+    // A head run with a span outside its transcript.
+    var bad = run
+    bad.id = UUID().uuidString
+    bad.turns[1].spans[0].end = 999
+    try SessionArchive.withSpeakerLock(at: session) {
+        try SessionSpeakerStore.writeRun(bad, session: session)
+        try SessionSpeakerStore.writeHead(SpeakerHead(runID: bad.id), session: session)
+    }
+    let outside = catalogLabels(session)
+    #expect(outside.error == nil && outside.loadedRun == nil)
+    #expect(outside.state == .unreadable)
+    #expect(outside.message == "Speaker labels do not match the transcript (turn T2).")
+    #expect(SessionCatalog.summary(session: session).runID == bad.id)
+}
+
+@Test(.timeLimit(.minutes(1)))
+func catalogTreatsAPostProcessingRecordOfAnotherSessionAsUnreadable() async throws {
+    let temp = try TemporaryDirectory("catalog")
+    defer { temp.remove() }
+    let (session, transcript, run) = try await SessionFixtures.labelledSession(in: temp.url)
+    let foreign = PostProcessingRecord(sessionID: UUID().uuidString, state: .failed, runID: UUID().uuidString,
+                                       transcriptID: transcript.id, pid: 1, startedAt: Date(), updatedAt: Date(),
+                                       message: "Foreign failure.")
+    try AtomicFile.writeJSON(foreign, to: SessionPaths.postprocess(session))
+    let summary = SessionCatalog.summary(session: session)
+    #expect(summary.speakerState == .unreadable, "Never the foreign record's failed state.")
+    #expect(summary.labelMessage == "postprocess.json belongs to another session.")
+    #expect(summary.runID == run.id, "Never the foreign record's run.")
+    #expect(isDamageError { try SessionFiles.postProcessingRecord(session: session) })
+}
+
+@Test(.timeLimit(.minutes(1)))
+func catalogReadsTheAudioDeletionMarker() async throws {
+    let temp = try TemporaryDirectory("catalog")
+    defer { temp.remove() }
+    let (session, _, _) = try await SessionFixtures.labelledSession(in: temp.url)
+    let marker = SessionPaths.audioDeleted(session)
+    let own = try HolosJSON.encoder().encode(AudioDeletedRecord(
+        sessionID: try SessionArchive.readManifest(at: session).id, chunkCount: 1, seconds: 20))
+    try catalogReplace(marker, with: own)
+    #expect(SessionCatalog.summary(session: session).audioDeleted)
+    #expect(try SpeakerSessionSnapshot.load(session: session).audioDeleted)
+
+    let foreign = try HolosJSON.encoder().encode(AudioDeletedRecord(sessionID: UUID().uuidString, chunkCount: 1,
+                                                                    seconds: 20))
+    for (damage, data) in [("damaged", Data("not json".utf8)), ("of another session", foreign),
+                           ("version 0", Data(#"{"schemaVersion":0,"deletedAt":"2026-09-24T00:00:00Z","chunkCount":1,"seconds":1}"#.utf8))] {
+        try catalogReplace(marker, with: data)
+        #expect(!SessionCatalog.summary(session: session).audioDeleted, "A \(damage) marker is not deleted audio.")
+        #expect(try !SpeakerSessionSnapshot.load(session: session).audioDeleted, "\(damage)")
+    }
+    try catalogReplace(marker, with: try catalogNewer(own))
+    #expect(!SessionCatalog.summary(session: session).audioDeleted)
+    #expect(throws: HolosError.self, "The snapshot refuses a newer marker.") {
+        try SpeakerSessionSnapshot.load(session: session)
+    }
+}
+
+/// Whether `body` throws damage (`SessionFiles.isDamage`).
+private func isDamageError(_ body: () throws -> Any?) -> Bool {
+    do {
+        _ = try body()
+        return false
+    } catch {
+        return SessionFiles.isDamage(error)
+    }
+}
+
 // MARK: - Listing
 
 @Test func catalogListsNewestFirstAndReportsDamagedFolders() async throws {

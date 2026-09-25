@@ -559,7 +559,11 @@ public struct ReviewWord: Sendable, Equatable {
         try? await enqueue(.exports, optimistic: [])
         let session = self.session
         let names = profileNames
-        return try await Self.detached { try SessionExports.render(format, session: session, profileNames: names) }
+        let store = profiles
+        return try await Self.detached {
+            try SessionExports.render(format, session: session, profileNames: names,
+                                      applyRecognition: Self.recognitionAllowed(store))
+        }
     }
 
     /// Rereads the people and then the labels from disk (after a change made elsewhere, such as Delete Audio or a
@@ -868,15 +872,23 @@ public struct ReviewWord: Sendable, Equatable {
         let names = profileNames
         let store = profiles
         let hook = beforeEdit
-        let outcome = await Self.detachedResult { () throws -> SpeakerEditResult in
+        let outcome = await Self.detachedResult { () throws -> SpeakerEditResult? in
             if let hook { await hook() }
-            return try SpeakerEditor.apply(actions, view: view, session: session, source: Self.source,
-                                           regenerateExports: false, profileNames: names, profiles: store)
+            // Whether the batch changes anything is decided on the current labels under the speaker lock: the check
+            // on the shown labels (`apply`) cannot see a change saved elsewhere meanwhile that already made it.
+            return try SpeakerEditor.applyUnlessUnchanged(actions, view: view, session: session, source: Self.source,
+                                                          regenerateExports: false, profileNames: names,
+                                                          profiles: store)
         }
         switch outcome {
-        case .success(let result):
+        case .success(let result?):
             if adopt(result.snapshot, op: op, matching: matching) { changesSaved(exportsWritten: false) }
             if result.needsSampleRefresh { try await refreshSamples() }
+        case .success(nil):
+            // Nothing saved (no undo step is used up): the labels on disk already read as the change asked. They are
+            // reread so the window shows them; when that fails, the saved labels shown stay as they were.
+            Self.log.info("Session \(self.sessionID, privacy: .public): a change would leave the labels as they are; not saved")
+            if let fresh = try? await loadSnapshot() { adopt(fresh, op: op, matching: matching) }
         case .failure(let error):
             try await handleFailure(error, op: op, refreshSamples: true, matching: matching)
         }
@@ -1253,8 +1265,12 @@ public struct ReviewWord: Sendable, Equatable {
         notify()
         let session = self.session
         let names = profileNames
+        let store = profiles
         do {
-            let result = try await Self.detached { try SessionExports.regenerate(session: session, profileNames: names) }
+            let result = try await Self.detached {
+                try SessionExports.regenerate(session: session, profileNames: names,
+                                              applyRecognition: Self.recognitionAllowed(store))
+            }
             exportsPending = false
             exportProblem = nil
             noteMovedAside(Set(result.movedAside.map(\.lastPathComponent)))
@@ -1523,9 +1539,17 @@ public struct ReviewWord: Sendable, Equatable {
 
     private nonisolated static func load(session: URL, profiles: SpeakerProfileStore?) throws -> Loaded {
         let known = profiles.map { people(store: $0) } ?? (people: [], names: [:], remember: false)
-        let snapshot = try SpeakerSessionSnapshot.load(session: session, profileNames: known.names)
+        let snapshot = try SpeakerSessionSnapshot.load(session: session, profileNames: known.names,
+                                                       applyRecognition: recognitionAllowed(profiles))
         return Loaded(snapshot: snapshot, people: known.people, profileNames: known.names,
                       rememberVoices: known.remember, editedExports: editedExports(session: session))
+    }
+
+    /// Whether the meeting's stored recognition result may be shown and exported, decided as every other reader of
+    /// the labels decides it (`VoiceProfileService.recognitionAllowed`: Remember voices on and no forget still owed);
+    /// without a people store (tests), as `SpeakerEditor` does, it is.
+    nonisolated static func recognitionAllowed(_ profiles: SpeakerProfileStore?) -> Bool {
+        profiles.map { VoiceProfileService.recognitionAllowed(store: $0) } ?? true
     }
 
     private nonisolated static func people(store: SpeakerProfileStore)

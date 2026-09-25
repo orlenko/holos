@@ -37,6 +37,12 @@ open build/Holos.app
 ```
 
 The build does not install or launch the app, add a login item, or enable dictation.
+
+To update a running Holos in one step, run `./scripts/restart-app.sh`. It compiles first while Holos keeps
+running, asks Holos to quit (the first time, macOS asks whether your terminal may control Holos), rebuilds the
+bundle, and opens it again. It never force-quits: while Holos asks what to do with a meeting in progress or
+finishes saving one, it waits (Ctrl-C stops waiting), and it refuses while a meeting recorder is still labelling
+speakers. It quits a Holos running from any copy, since only one can run at a time.
 Quit Holos before rebuilding; the script refuses to replace a running copy, because
 that invalidates its code signature (macOS re-prompts for permissions, and dictation
 into a terminal has frozen the terminal). It also refuses while a meeting recorder or

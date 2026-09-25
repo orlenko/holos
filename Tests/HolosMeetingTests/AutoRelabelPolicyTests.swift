@@ -66,6 +66,7 @@ private func relabelSummary(_ name: String, speakers: SpeakerLabelState = .inter
         relabelSummary("audio only", state: .audioOnly),
         relabelSummary("audio deleted", audioDeleted: true),
         relabelSummary("failed labelling", speakers: .failed),
+        relabelSummary("unreadable speaker files", speakers: .unreadable),
     ]
     #expect(AutoRelabelPolicy.candidates(summaries, attempts: [:], modelsInstalled: true, meetingActive: false,
                                          now: relabelNow).isEmpty)

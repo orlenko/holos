@@ -11,8 +11,8 @@ import HolosCore
 /// Appends to one file must be serialized by the caller (the writer or speaker lock).
 ///
 /// No operation here follows a symbolic link in place of a folder Holos owns: `write`, `create`, `writeStream`,
-/// `append`, `truncate`, `sync`, `readIfPresent`/`readJSON`, `readAndRemove`, `openForReading`,
-/// `ensurePrivateDirectory`, and `removeTree` all open folders
+/// `append`, `truncate`, `sync`, `readIfPresent`/`readJSON`, `readAndRemove`, `removeRegularFile`, `openForReading`,
+/// `ensurePrivateDirectory`, `createForWriting`, and `removeTree` all open folders
 /// with `openFolder` (FolderChain.swift): the folder holding the file is opened with O_NOFOLLOW, and inside a
 /// session folder (`<id>.holos`) so is every folder from the session folder down (an `openat` chain). A symbolic
 /// link or file in their place is refused with `HolosError.invalidInput`. Folders above those may be reached
@@ -35,6 +35,14 @@ public enum AtomicFile {
     /// entry, and the reopen of a folder just made, is numbered, and the ones the plan names fail as an I/O error
     /// would (`FaultPlan`).
     @TaskLocal static var faultPlan: FaultPlan? = nil
+
+    /// Test hook: while set (a task-local value), `readAndRemove` calls it with the file's folder URL just before it
+    /// moves the verified file aside (`.beforeMove`) and just before it unlinks it (`.beforeUnlink`), so tests can
+    /// swap another file in at those moments.
+    @TaskLocal static var handOffRemovalHook: (@Sendable (HandOffRemovalStage, URL) -> Void)? = nil
+
+    /// The moments `handOffRemovalHook` is called at.
+    enum HandOffRemovalStage: Sendable { case beforeMove, beforeUnlink }
 
     /// Writes a same-directory temporary file (O_CREAT|O_EXCL|O_CLOEXEC, `permissions`), fsyncs it,
     /// renames it over `url`, and fsyncs the directory. Leaves no temporary file on failure.
@@ -144,6 +152,37 @@ public enum AtomicFile {
         return FileHandle(fileDescriptor: fd, closeOnDealloc: true)
     }
 
+    /// Creates the new, empty regular file `url` (0600, never over an existing entry: O_CREAT|O_EXCL|O_NOFOLLOW)
+    /// relative to its folder, which is opened like `write` opens it, fsyncs that folder, and returns the file open
+    /// read-write (O_CLOEXEC; the caller closes it). For a file written in place through its descriptor, such as an
+    /// audio chunk: writes through it reach this file wherever its path leads later. Throws `invalidInput` when
+    /// `url` exists.
+    public static func createForWriting(at url: URL) throws -> Int32 {
+        guard url.isFileURL else { throw HolosError.invalidInput("File path must be a file URL.") }
+        let (parent, name) = try openParent(of: url)
+        defer { Darwin.close(parent) }
+        let fd = openat(parent, name, O_RDWR | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0o600)
+        guard fd >= 0 else {
+            let code = errno
+            if code == EEXIST {
+                throw HolosError.invalidInput("\(url.lastPathComponent) already exists and is never replaced.")
+            }
+            throw HolosError.io("Cannot create \(url.lastPathComponent): \(errnoText(code)).")
+        }
+        faultPlan?.changed(url.deletingLastPathComponent(), name)
+        do {
+            guard fchmod(fd, 0o600) == 0 else {
+                throw HolosError.io("Cannot set permissions of \(url.lastPathComponent): \(errnoText()).")
+            }
+            try syncFolder(parent, url.deletingLastPathComponent())
+            return fd
+        } catch {
+            Darwin.close(fd)
+            removeCreated(name, in: parent, url: url)
+            throw error
+        }
+    }
+
     /// Like `write` (or `create` with `exclusive`), for a file too large to hold in memory: `fill` writes the
     /// contents through the descriptor of the same-directory temporary file (opened read-write, so it may seek and
     /// read back; it must not close it). The file is then fsync'd, renamed over `url`, and the folder fsync'd. When
@@ -197,9 +236,10 @@ public enum AtomicFile {
     ///
     /// The file is opened with O_NOFOLLOW (through its folder opened like `readIfPresent` opens it) and checked with
     /// fstat to be a regular file before anything is removed. A folder, symbolic link, FIFO, or other entry in its
-    /// place is refused (`invalidInput`) and left untouched. The unlink is `unlinkat` without AT_REMOVEDIR, so it can
-    /// never remove a folder, and only when the name still refers to the file that was opened (same device and
-    /// inode, not followed). Once the file is verified it is removed even if it is too large or cannot be read.
+    /// place is refused (`invalidInput`) and left untouched. Only the file that was opened (same device and inode,
+    /// not followed) is ever removed, even if another process can write to its folder and renames a different file
+    /// onto its name meanwhile (`removeIfSame`); the unlink is `unlinkat` without AT_REMOVEDIR, so it can never
+    /// remove a folder. Once the file is verified it is removed even if it is too large or cannot be read.
     public static func readAndRemove(_ url: URL, maxBytes: Int) throws -> Data? {
         guard url.isFileURL else { throw HolosError.invalidInput("File path must be a file URL.") }
         guard let (parent, name) = try openParentIfPresent(of: url) else { return nil }
@@ -218,23 +258,149 @@ public enum AtomicFile {
         guard fstat(fd, &info) == 0, (info.st_mode & S_IFMT) == S_IFREG else {
             throw HolosError.invalidInput("\(url.lastPathComponent) is not a regular file.")
         }
-        defer { unlinkIfSame(name, in: parent, as: info) }
+        defer { removeIfSame(name, in: parent, as: info, folder: url.deletingLastPathComponent()) }
         return try readAll(fd, size: info.st_size, url: url, maxBytes: maxBytes)
     }
 
-    /// Unlinks the non-folder entry `name` of `parent` only while it is the file `opened` (device and inode), so an
-    /// entry swapped in after the file was verified is left alone.
-    private static func unlinkIfSame(_ name: String, in parent: Int32, as opened: stat) {
+    /// Removes `url` if it is a regular file (a symbolic link in its place is not followed) for which `accept` is
+    /// true, with `readAndRemove`'s guarantee: only the file that was checked is removed, never a different entry
+    /// renamed onto its name meanwhile (`removeIfSame`). A missing file or folder, a link, a folder, or any other
+    /// entry is left alone. Errors are logged; returns true when the file was removed.
+    @discardableResult
+    public static func removeRegularFile(_ url: URL, if accept: (stat) -> Bool = { _ in true }) -> Bool {
+        do {
+            guard url.isFileURL, let (parent, name) = try openParentIfPresent(of: url) else { return false }
+            defer { Darwin.close(parent) }
+            var info = stat()
+            guard fstatat(parent, name, &info, AT_SYMLINK_NOFOLLOW) == 0, (info.st_mode & S_IFMT) == S_IFREG,
+                  accept(info) else { return false }
+            return removeIfSame(name, in: parent, as: info, folder: url.deletingLastPathComponent())
+        } catch {
+            log.error("Cannot delete a file: \(error.localizedDescription, privacy: .public)")
+            return false
+        }
+    }
+
+    /// Removes the entry `name` of `parent` only if it is the file `opened` (device and inode); anything else in its
+    /// place is left alone. Returns true when it was removed.
+    ///
+    /// Checking the name and then unlinking it would race: another process that can write to the folder could
+    /// rename a different file onto the name between the two, and the unlink would delete that file. So the entry
+    /// is first moved (one `renameat`) into a new folder made here for it: 0700, a random name, and checked through
+    /// its own descriptor to be a folder this user owns, so no other user can put anything in it. The check and the
+    /// unlink then look at an entry in that folder, which nothing else can replace. An entry that turns out not to be
+    /// the opened file is moved back (RENAME_EXCL, so it replaces nothing); if its name was taken again meanwhile,
+    /// it is left in the new folder and logged. The new folder is removed once empty.
+    ///
+    /// The new folder's name records the opened file's device and inode (`removalFolderName`), so if the process
+    /// ends, or the unlink fails, after the move, `removeStrandedRemovalFolders` can later finish removing that file
+    /// (and only that file).
+    @discardableResult
+    private static func removeIfSame(_ name: String, in parent: Int32, as opened: stat, folder: URL) -> Bool {
+        let asideName = removalFolderName(device: opened.st_dev, inode: opened.st_ino)
+        guard mkdirat(parent, asideName, 0o700) == 0 else {
+            log.error("Cannot delete a file: cannot make a folder beside it: \(errnoText(), privacy: .public)")
+            return false
+        }
+        let aside = openat(parent, asideName, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        var asideInfo = stat()
+        guard aside >= 0, fstat(aside, &asideInfo) == 0, (asideInfo.st_mode & S_IFMT) == S_IFDIR,
+              asideInfo.st_uid == geteuid(), asideInfo.st_mode & 0o077 == 0 else {
+            if aside >= 0 { Darwin.close(aside) }
+            log.error("Cannot delete a file: the folder made beside it was replaced; the file was left in place")
+            return false
+        }
+        defer {
+            Darwin.close(aside)
+            // Only an empty folder is removed.
+            _ = unlinkat(parent, asideName, AT_REMOVEDIR)
+        }
+        handOffRemovalHook?(.beforeMove, folder)
+        let moved = "file"
+        guard renameat(parent, name, aside, moved) == 0 else {
+            let code = errno
+            if code != ENOENT {
+                log.error("Cannot delete a file: cannot move it aside: \(errnoText(code), privacy: .public)")
+            }
+            return false
+        }
         var current = stat()
-        guard fstatat(parent, name, &current, AT_SYMLINK_NOFOLLOW) == 0,
-              (current.st_mode & S_IFMT) == S_IFREG,
-              current.st_dev == opened.st_dev, current.st_ino == opened.st_ino else {
-            log.error("A hand-off file was replaced before it could be deleted; it was left in place")
-            return
+        let same = fstatat(aside, moved, &current, AT_SYMLINK_NOFOLLOW) == 0
+            && (current.st_mode & S_IFMT) == S_IFREG
+            && current.st_dev == opened.st_dev && current.st_ino == opened.st_ino
+        guard same else {
+            log.error("A file was replaced before it could be deleted; the replacement was left in place")
+            if renameatx_np(aside, moved, parent, name, UInt32(RENAME_EXCL)) != 0 {
+                log.error("Cannot put back the entry that replaced a file being deleted: \(errnoText(), privacy: .public); it is in \(asideName, privacy: .public)")
+            }
+            return false
         }
-        if unlinkat(parent, name, 0) != 0 {
-            log.error("Cannot delete a hand-off file: \(errnoText(), privacy: .public)")
+        handOffRemovalHook?(.beforeUnlink, folder)
+        guard unlinkat(aside, moved, 0) == 0 else {
+            log.error("Cannot delete a file: \(errnoText(), privacy: .public); it is in \(asideName, privacy: .public)")
+            return false
         }
+        return true
+    }
+
+    /// The prefix of the folders `removeIfSame` makes.
+    static let removalFolderPrefix = ".holos-remove-"
+
+    /// Minimum age of a removal folder before `removeStrandedRemovalFolders` touches it: a removal in progress (in
+    /// this or another Holos process) holds its folder for microseconds.
+    public static let strandedRemovalGrace: TimeInterval = 300
+
+    /// `.holos-remove-<device>.<inode>.<UUID>`: the folder a file being removed is moved into, naming that file.
+    static func removalFolderName(device: dev_t, inode: ino_t) -> String {
+        "\(removalFolderPrefix)\(UInt32(bitPattern: device)).\(inode).\(UUID().uuidString)"
+    }
+
+    /// Finishes removals that a crash or a failed unlink left in `folder` (docs/meeting-design.md §4.12): for each
+    /// `.holos-remove-*` folder there (`removeIfSame`) that is a real folder (not a link), owned by this user, 0700,
+    /// and last changed before `cutoff`, it removes the entry `file` inside only if it is the regular file the
+    /// folder's name records (same device and inode, never followed), then the folder itself only if it is empty.
+    /// Anything else, such as a replacement that could not be put back, is left where it is. Errors are logged.
+    public static func removeStrandedRemovalFolders(in folder: URL, olderThan cutoff: Date) {
+        do {
+            guard folder.isFileURL, let parent = try openFolder(folder) else { return }
+            defer { Darwin.close(parent) }
+            for raw in try entries(ofOpenFolder: parent, name: folder.lastPathComponent) {
+                let name = String(decoding: raw.dropLast().map { UInt8(bitPattern: $0) }, as: UTF8.self)
+                guard name.hasPrefix(removalFolderPrefix) else { continue }
+                let fields = name.dropFirst(removalFolderPrefix.count).split(separator: ".")
+                guard fields.count == 3, let device = UInt32(fields[0]), let inode = ino_t(fields[1]) else { continue }
+                removeStrandedRemovalFolder(name, in: parent, device: dev_t(bitPattern: device), inode: inode,
+                                            olderThan: cutoff)
+            }
+        } catch {
+            log.error("Cannot clean up interrupted deletes: \(error.localizedDescription, privacy: .public)")
+        }
+    }
+
+    private static func removeStrandedRemovalFolder(_ name: String, in parent: Int32, device: dev_t, inode: ino_t,
+                                                    olderThan cutoff: Date) {
+        let aside = openat(parent, name, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        guard aside >= 0 else { return }
+        defer { Darwin.close(aside) }
+        var info = stat()
+        guard fstat(aside, &info) == 0, (info.st_mode & S_IFMT) == S_IFDIR, info.st_uid == geteuid(),
+              info.st_mode & 0o077 == 0,
+              Date(timeIntervalSince1970: TimeInterval(info.st_mtimespec.tv_sec)) < cutoff else { return }
+        var file = stat()
+        if fstatat(aside, "file", &file, AT_SYMLINK_NOFOLLOW) == 0, (file.st_mode & S_IFMT) == S_IFREG,
+           file.st_dev == device, file.st_ino == inode {
+            if unlinkat(aside, "file", 0) == 0 {
+                log.info("Finished an interrupted delete in \(name, privacy: .public)")
+            } else {
+                log.error("Cannot finish an interrupted delete in \(name, privacy: .public): \(errnoText(), privacy: .public)")
+                return
+            }
+        }
+        // Only the folder checked above, and only once empty (AT_REMOVEDIR refuses any other).
+        var named = stat()
+        guard fstatat(parent, name, &named, AT_SYMLINK_NOFOLLOW) == 0, named.st_dev == info.st_dev,
+              named.st_ino == info.st_ino else { return }
+        _ = unlinkat(parent, name, AT_REMOVEDIR)
     }
 
     /// Reads the open regular file `fd` of `size` bytes, refusing more than `maxBytes`.
@@ -332,6 +498,14 @@ public enum AtomicFile {
         if (info.st_mode & S_IFMT) == S_IFDIR {
             let fd = openat(parent, name, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
             guard fd >= 0 else { throw folderOpenError(display, errno) }
+            // The folder emptied is the one inspected: a folder renamed in at `name` between the two calls is
+            // refused, not emptied. Past this point everything goes through `fd`, and the final unlinkat removes
+            // only an empty folder.
+            var opened = stat()
+            guard fstat(fd, &opened) == 0, opened.st_dev == info.st_dev, opened.st_ino == info.st_ino else {
+                Darwin.close(fd)
+                throw HolosError.io("Cannot delete \(display): it changed during the delete.")
+            }
             guard let folder = fdopendir(fd) else {
                 let code = errno
                 Darwin.close(fd)
@@ -360,6 +534,76 @@ public enum AtomicFile {
         return true
     }
 
+    /// Removes a folder the caller has open and has checked (`folder`, named `name` in the open folder `parent`,
+    /// which `parentURL` names in messages) through those descriptors, never by path: every entry in it without
+    /// following a symbolic link (the names in `last` after all others, in that order), an fsync of it, then the
+    /// emptied folder itself and an fsync of `parent`. A folder renamed away from `name` during the call is still
+    /// the one emptied, and a folder put at `name` in its place is never emptied.
+    ///
+    /// The emptied folder is removed only while `name` in `parent` is still `folder` (same device and inode);
+    /// otherwise it is left where it is, empty, and the result is false. The check and the removal are two calls,
+    /// so a folder put at `name` between them can be removed only when it is empty (`unlinkat` with AT_REMOVEDIR
+    /// refuses any other). Throws, having removed what it could, when a removal or fsync fails.
+    @discardableResult
+    public static func removeOpenFolder(_ folder: Int32, named name: String, in parent: Int32, parentURL: URL,
+                                        removingLast last: [String] = []) throws -> Bool {
+        guard !name.isEmpty, name != ".", name != "..", !name.contains("/") else {
+            throw HolosError.invalidInput("Invalid path to delete.")
+        }
+        let folderURL = parentURL.appendingPathComponent(name, isDirectory: true)
+        // Names are kept as bytes, so an entry whose name is not UTF-8 is removed too.
+        let names = try entries(ofOpenFolder: folder, name: name)
+        let lastNames = last.map { Array($0.utf8CString) }
+        let ordered = names.filter { !lastNames.contains($0) }.sorted { $0.lexicographicallyPrecedes($1) }
+            + lastNames.filter(names.contains)
+        for child in ordered {
+            guard try removeEntry(child, in: folder) else { continue }
+            faultPlan?.changed(folderURL, String(decoding: child.dropLast().map { UInt8(bitPattern: $0) }, as: UTF8.self))
+        }
+        guard fsyncFolder(folder, folderURL) else {
+            throw HolosError.io("Cannot save the folder \(name): \(errnoText()).")
+        }
+        var opened = stat()
+        var named = stat()
+        guard fstat(folder, &opened) == 0 else { throw HolosError.io("Cannot inspect \(name): \(errnoText()).") }
+        guard fstatat(parent, name, &named, AT_SYMLINK_NOFOLLOW) == 0 else {
+            let code = errno
+            if code == ENOENT { return false }
+            throw HolosError.io("Cannot inspect \(name): \(errnoText(code)).")
+        }
+        guard named.st_dev == opened.st_dev, named.st_ino == opened.st_ino else { return false }
+        guard !injectFault("unlink \(name)"), unlinkat(parent, name, AT_REMOVEDIR) == 0 else {
+            throw HolosError.io("Cannot delete \(name): \(errnoText()).")
+        }
+        faultPlan?.changed(parentURL, name)
+        guard fsyncFolder(parent, parentURL) else {
+            throw HolosError.io("Cannot save the folder holding \(name): \(errnoText()).")
+        }
+        return true
+    }
+
+    /// The names (NUL-terminated C strings) in the open folder `folder` (left open), "." and ".." excepted.
+    private static func entries(ofOpenFolder folder: Int32, name: String) throws -> [[CChar]] {
+        let copy = dup(folder)
+        guard copy >= 0 else { throw HolosError.io("Cannot list \(name): \(errnoText()).") }
+        guard let directory = fdopendir(copy) else {
+            let code = errno
+            Darwin.close(copy)
+            throw HolosError.io("Cannot list \(name): \(errnoText(code)).")
+        }
+        defer { closedir(directory) }
+        // The copy shares its offset with `folder`; start from the beginning.
+        rewinddir(directory)
+        var names: [[CChar]] = []
+        while let entry = readdir(directory) {
+            let child: [CChar] = withUnsafeBytes(of: entry.pointee.d_name) { raw in
+                raw.prefix(Int(entry.pointee.d_namlen)).map { CChar(bitPattern: $0) } + [0]
+            }
+            if child != [46, 0] && child != [46, 46, 0] { names.append(child) }  // "." and ".."
+        }
+        return names
+    }
+
     static func folderOpenError(_ name: String, _ code: Int32) -> HolosError {
         if code == ELOOP || code == ENOTDIR {
             return .invalidInput("\(name) must be a folder, not a file or a symbolic link.")
@@ -371,7 +615,7 @@ public enum AtomicFile {
     /// folder by path, so a sessions root reached through a symbolic link still works.
     static func syncDirectory(_ url: URL) throws {
         let fd: Int32
-        if url.standardizedFileURL.pathComponents.contains(where: isSessionFolderName) {
+        if canonicalComponents(url).contains(where: isSessionFolderName) {
             guard let opened = try openFolder(url) else {
                 throw HolosError.io("Cannot open folder \(url.lastPathComponent): \(errnoText(ENOENT)).")
             }
@@ -632,5 +876,7 @@ final class FaultPlan: Sendable {
 
     func synced(_ folder: URL) { state.withLock { $0.log.append((Self.key(folder), nil)) } }
 
-    private static func key(_ folder: URL) -> String { folder.standardizedFileURL.path }
+    private static func key(_ folder: URL) -> String {
+        NSString.path(withComponents: AtomicFile.canonicalComponents(folder))
+    }
 }

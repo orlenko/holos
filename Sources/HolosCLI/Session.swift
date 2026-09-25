@@ -33,7 +33,7 @@ struct Session: AsyncParsableCommand {
             if let manifest = report.manifest {
                 Console.output("\(manifest.name) (\(manifest.id)) — \(manifest.status)")
                 Console.output("\(manifest.chunks.count) finalized chunks")
-                if (try? AtomicFile.readIfPresent(SessionPaths.audioDeleted(fileURL(path)), maxBytes: 1 << 20)) != nil {
+                if try AudioDeletedRecord.isDeleted(session: fileURL(path), sessionID: manifest.id) {
                     Console.output("The audio was deleted (holos session delete --audio-only); its chunks are "
                         + "expected to be missing.")
                 }
