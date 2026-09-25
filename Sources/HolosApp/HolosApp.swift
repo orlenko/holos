@@ -133,6 +133,7 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
         statusItem.button?.image = NSImage(systemSymbolName: "waveform", accessibilityDescription: "Holos")
         statusItem.button?.toolTip = "Holos — local push-to-talk"
         rebuildMenu()
+        AppKeyboard.install { [weak self] in self?.isBusy ?? false }
         let center = NSWorkspace.shared.notificationCenter
         for name in [NSWorkspace.willSleepNotification, NSWorkspace.sessionDidResignActiveNotification] {
             observers.append(center.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
