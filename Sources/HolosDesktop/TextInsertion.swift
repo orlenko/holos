@@ -88,6 +88,50 @@ enum InsertionPolicy {
     }
 }
 
+/// Where a terminal's keystrokes land, as far as Accessibility reports it: the process, its focused window and,
+/// where the terminal exposes one, its focused element (Terminal and iTerm2 expose a text area per session, so
+/// switching tabs or panes changes it). `Handle` is an Accessibility element in the app and a plain value in tests.
+struct TerminalFocus<Handle: Equatable>: Equatable {
+    var pid: pid_t
+    var window: Handle?
+    var element: Handle?
+
+    enum Tracking: Equatable {
+        /// The focused element: a switch of tab, pane or window is detected.
+        case session
+        /// Only the focused window: a switch of window, or of tab where each tab is its own window, is detected;
+        /// a switch of pane inside one window is not.
+        case window
+        /// Only the frontmost app: no switch inside the terminal is detected.
+        case app
+    }
+
+    var tracking: Tracking { element != nil ? .session : window != nil ? .window : .app }
+
+    /// Keeps only what two reads taken one after the other agree on. An app that hands out a new identity on
+    /// every read would otherwise look like it changed focus at the first check and stop typing at once.
+    func keepingStable(_ again: TerminalFocus) -> TerminalFocus {
+        TerminalFocus(pid: pid,
+                      window: pid == again.pid && window == again.window ? window : nil,
+                      element: pid == again.pid && element == again.element ? element : nil)
+    }
+
+    /// Whether keystrokes may still go to the focus captured at key-down (`self`): the same process, and every
+    /// identity it reported then still reported and unchanged. An identity it did not report is not checked.
+    func admits(_ live: TerminalFocus) -> Bool {
+        guard pid == live.pid else { return false }
+        if let window, live.window != window { return false }
+        if let element, live.element != element { return false }
+        return true
+    }
+}
+
+/// An Accessibility element compared by identity (`CFEqual`), for `TerminalFocus`.
+struct AXHandle: Equatable {
+    let element: AXUIElement
+    static func == (lhs: AXHandle, rhs: AXHandle) -> Bool { CFEqual(lhs.element, rhs.element) }
+}
+
 @MainActor public enum TextInsertion {
     private static let log = Logger(subsystem: "ca.orlenko.holos.app", category: "insertion")
 
@@ -262,6 +306,20 @@ enum InsertionPolicy {
         return element
     }
 
+    /// The terminal's focused window and element right now; either is nil when the app does not report it.
+    static func terminalFocus(pid: pid_t) -> TerminalFocus<AXHandle> {
+        guard AXIsProcessTrusted() else { return TerminalFocus(pid: pid) }
+        let app = AXUIElementCreateApplication(pid)
+        AXUIElementSetMessagingTimeout(app, 0.4)
+        func handle(_ key: String) -> AXHandle? {
+            guard let value = try? attribute(app, key as CFString),
+                  CFGetTypeID(value) == AXUIElementGetTypeID() else { return nil }
+            return AXHandle(element: value as! AXUIElement)
+        }
+        return TerminalFocus(pid: pid, window: handle(kAXFocusedWindowAttribute),
+                             element: handle(kAXFocusedUIElementAttribute))
+    }
+
     private static func readSnapshot(_ element: AXUIElement) throws -> InsertionSnapshot {
         if IsSecureEventInputEnabled() || secureSubrole(element) { throw TextInsertionError.secureInput }
         guard let role = try? attribute(element, kAXRoleAttribute as CFString) as? String,
@@ -353,18 +411,26 @@ enum InsertionPolicy {
     public let appName: String
     /// For a field in a regular app, the element that must still have focus before each chunk.
     private let element: AXUIElement?
+    /// For a terminal, the window and session focused at key-down, which must still have focus before each chunk.
+    private let terminalFocus: TerminalFocus<AXHandle>?
 
-    private init(pid: pid_t, appName: String, element: AXUIElement? = nil) {
+    private init(pid: pid_t, appName: String, element: AXUIElement? = nil,
+                 terminalFocus: TerminalFocus<AXHandle>? = nil) {
         self.pid = pid
         self.appName = appName
         self.element = element
+        self.terminalFocus = terminalFocus
     }
 
-    /// A target when the frontmost app is a known terminal; nil otherwise.
+    /// A target when the frontmost app is a known terminal; nil otherwise. Typing stops when the terminal's
+    /// focused window or session (tab or pane) changes, as far as the terminal reports them to Accessibility.
     public static func captureTerminal() -> KeystrokeTarget? {
         guard let app = NSWorkspace.shared.frontmostApplication,
               let bundleID = app.bundleIdentifier, terminalBundleIDs.contains(bundleID) else { return nil }
-        return KeystrokeTarget(pid: app.processIdentifier, appName: app.localizedName ?? bundleID)
+        let pid = app.processIdentifier
+        let focus = TextInsertion.terminalFocus(pid: pid).keepingStable(TextInsertion.terminalFocus(pid: pid))
+        log.notice("Terminal \(bundleID, privacy: .public) focus tracked by \(String(describing: focus.tracking), privacy: .public)")
+        return KeystrokeTarget(pid: pid, appName: app.localizedName ?? bundleID, terminalFocus: focus)
     }
 
     /// A target for a focused editable field that cannot take a direct Accessibility write, such as a
@@ -385,6 +451,7 @@ enum InsertionPolicy {
 
     private func stillTargeted() -> Bool {
         guard NSWorkspace.shared.frontmostApplication?.processIdentifier == pid else { return false }
+        if let terminalFocus { return terminalFocus.admits(TextInsertion.terminalFocus(pid: pid)) }
         guard let element else { return true }
         guard let focused = try? TextInsertion.focusedElement() else { return false }
         return CFEqual(focused, element)
@@ -401,7 +468,8 @@ enum InsertionPolicy {
             return .targetChanged("\(appName) is no longer frontmost; copy the transcript explicitly.")
         }
         guard stillTargeted() else {
-            return .targetChanged("Focus moved to a different field; copy the transcript explicitly.")
+            let moved = terminalFocus == nil ? "a different field" : "a different terminal tab, pane or window"
+            return .targetChanged("Focus moved to \(moved); copy the transcript explicitly.")
         }
         // A private source keeps the held shortcut modifier out of the typed characters.
         let source = CGEventSource(stateID: .privateState)
