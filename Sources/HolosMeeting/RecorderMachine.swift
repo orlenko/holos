@@ -19,8 +19,8 @@ public enum CaptureEnd: Sendable, Equatable {
 public enum RecorderInput: Sendable, Equatable {
     /// The capture of `epoch` started (its `start` returned) at session time `at`, recording `tracks`. The stall
     /// timers start here (PR2b). A call epoch whose `tracks` lack "mic" records without the microphone (no input
-    /// device, §4.12).
-    case captureStarted(epoch: Int, tracks: [String], at: Double)
+    /// device, §4.12); `lidClosed`: because that microphone is the built-in one and the lid is closed.
+    case captureStarted(epoch: Int, tracks: [String], at: Double, lidClosed: Bool = false)
     /// The first frame of `epoch` arrived at session time `at`.
     case captureRunning(epoch: Int, at: Double)
     /// Ends from any epoch other than the current one are ignored (logged).
@@ -76,6 +76,15 @@ public struct RecorderMachine: Sendable, Equatable {
     /// Why an in-person epoch could not start: the built-in microphone is gone (lid closed with an external display).
     /// It is also the `waiting` warning then (§4.12).
     public static let builtInMicrophoneOff = "The built-in microphone is off. Open the lid to continue recording."
+    /// The warning of a call epoch that records without the microphone for want of an input device.
+    public static let callMicrophoneMissing = "Microphone unavailable; recording call audio only."
+    /// The warning of a call epoch that records without the built-in microphone because the lid is closed.
+    public static let builtInMicrophoneOffInCall =
+        "The built-in microphone is off while the lid is closed; recording the computer's audio only. Open the lid to include the microphone."
+    /// The `deviceChanged` reason journaled when a call epoch starts without the built-in microphone (lid closed).
+    static let lidClosedReason = "builtInMicrophoneLidClosed"
+    /// The `retryNow` reason when the loop sees the lid open again.
+    public static let lidOpened = "lidOpened"
 
     /// starting, recording, paused, waiting, sleeping, stopping.
     public private(set) var phase: RecorderPhase = .starting
@@ -85,8 +94,12 @@ public struct RecorderMachine: Sendable, Equatable {
     public private(set) var stopReason: StopReason?
     /// The meeting's tracks ("mic", "system"). A started epoch that lacks "mic" records without the microphone.
     public let tracks: [String]
-    /// The current call epoch records without the microphone because the Mac has no input device (§4.12).
+    /// The current call epoch records without the microphone because the Mac has no input device, or because it is
+    /// the built-in microphone and the lid is closed (§4.12).
     public private(set) var microphoneMissing = false
+    /// `microphoneMissing` because the lid is closed: opening the lid or unlocking the screen restarts capture with
+    /// the microphone, not only a device-list change.
+    public private(set) var microphoneOffWithLidClosed = false
 
     /// Restarts since the last healthy epoch.
     private(set) var attempt = 0
@@ -130,8 +143,8 @@ public struct RecorderMachine: Sendable, Equatable {
             return []
         }
         switch input {
-        case .captureStarted(let epoch, let tracks, let at):
-            return captureStarted(epoch: epoch, tracks: tracks, at: at)
+        case .captureStarted(let epoch, let tracks, let at, let lidClosed):
+            return captureStarted(epoch: epoch, tracks: tracks, at: at, lidClosed: lidClosed)
         case .captureRunning(let epoch, let at):
             return captureRunning(epoch: epoch, at: at)
         case .captureEnded(let epoch, let end, let at):
@@ -156,9 +169,11 @@ public struct RecorderMachine: Sendable, Equatable {
     // MARK: - Capture
 
     /// The epoch's capture started: its stall timers start now, and a call epoch without the microphone warns (and
-    /// one with it again clears the warning).
-    private mutating func captureStarted(epoch started: Int, tracks recorded: [String],
-                                         at: Double) -> [RecorderEffect] {
+    /// one with it again clears the warning). Without the built-in microphone because the lid is closed, the warning
+    /// says so and the reason is journaled (`deviceChanged` on the microphone track), so the gap on the microphone
+    /// track is explained.
+    private mutating func captureStarted(epoch started: Int, tracks recorded: [String], at: Double,
+                                         lidClosed: Bool) -> [RecorderEffect] {
         guard started == epoch, phase == .starting || phase == .recording else { return [] }
         let stalledBefore = watchdog.stalledTracks
         watchdog.startEpoch(at: at, tracks: recorded)
@@ -166,13 +181,20 @@ public struct RecorderMachine: Sendable, Equatable {
         var effects = stallWarning(previously: stalledBefore)
         let microphone = TrackWatchdog.microphoneTrack
         let missing = tracks.contains(microphone) && !recorded.contains(microphone)
-        if missing, !microphoneMissing {
-            let message = "Microphone unavailable; recording call audio only."
+        let offWithLid = missing && lidClosed
+        if missing, !microphoneMissing || offWithLid != microphoneOffWithLidClosed {
+            if offWithLid {
+                effects.append(.recordEvent(kind: MeetingEventKind.deviceChanged, details: [
+                    "track": microphone, "at": String(at), "reason": Self.lidClosedReason,
+                ]))
+            }
+            let message = offWithLid ? Self.builtInMicrophoneOffInCall : Self.callMicrophoneMissing
             effects.append(.warn(Self.warning(.microphoneUnavailable, message)))
         } else if !missing, microphoneMissing {
             effects.append(.clearWarning(.microphoneUnavailable))
         }
         microphoneMissing = missing
+        microphoneOffWithLidClosed = offWithLid
         return effects
     }
 
@@ -270,14 +292,19 @@ public struct RecorderMachine: Sendable, Equatable {
     }
 
     /// `retryNow` (lid opened, screen unlocked, device list changed): a waiting recorder retries at once; a call
-    /// recording without the microphone restarts with it when the device list changes.
+    /// recording without the microphone restarts with it when the device list changes, and one without the built-in
+    /// microphone because the lid was closed also when the lid opens or the screen is unlocked. The loop sends these
+    /// only when the next epoch would record the microphone.
     private mutating func retryNow(reason: String, at: Double) -> [RecorderEffect] {
         switch phase {
         case .waiting:
             return [retry(at: at)]
         case .starting, .recording:
             // `starting` too: a call epoch 0 without the microphone may deliver nothing while nothing plays.
-            guard microphoneMissing, watching, reason == AudioEnvironmentEvents.audioDevicesChanged else { return [] }
+            guard microphoneMissing, watching else { return [] }
+            let lidReasons = [Self.lidOpened, AudioEnvironmentEvents.screenUnlocked]
+            guard reason == AudioEnvironmentEvents.audioDevicesChanged
+                || microphoneOffWithLidClosed && lidReasons.contains(reason) else { return [] }
             return [
                 .recordEvent(kind: MeetingEventKind.deviceChanged, details: [
                     "track": TrackWatchdog.microphoneTrack, "at": String(at), "reason": reason,

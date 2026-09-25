@@ -1,5 +1,5 @@
 import Foundation
-import HolosAudio
+@testable import HolosAudio
 import HolosCore
 @testable import HolosMeeting
 import HolosSpeakers
@@ -169,6 +169,84 @@ private let oneModeID = "3F2A9C1E-0000-4000-8000-000000000002"
                            lidOpen: false) == nil)
 }
 
+/// Microphone and system with the lid closed (review finding): when the microphone recorded is the built-in one,
+/// chosen explicitly or as the system default input (by device ID or UID), the epoch records system audio alone and
+/// says why; another default input is recorded as usual.
+@Test func callWithTheBuiltInMicrophoneKeepsTheLidGuard() {
+    var byDefault = RecordingOptions.testing(root: oneModeRoot, source: .microphoneAndSystem)
+    byDefault.microphone = .systemDefault
+    var explicit = byDefault
+    explicit.microphone = .builtIn
+    let systemOnly = EpochPlan(source: .system, tracks: ["system"], microphoneName: nil,
+                               microphoneOffWithLidClosed: true)
+    let builtInDefault = InputDevices(builtIn: recorderBuiltIn, systemDefault: recorderBuiltIn)
+    let withBuiltIn = EpochPlan(source: .microphoneAndSystem, tracks: ["mic", "system"],
+                                microphoneName: "MacBook Pro Microphone")
+    #expect(EpochPlan.make(byDefault, devices: builtInDefault) == withBuiltIn)
+    #expect(EpochPlan.make(byDefault, devices: builtInDefault, lidOpen: false) == systemOnly)
+    let sameUID = InputDevice(id: 999, uid: recorderBuiltIn.uid, name: recorderBuiltIn.name)
+    #expect(EpochPlan.make(byDefault, devices: InputDevices(builtIn: recorderBuiltIn, systemDefault: sameUID),
+                           lidOpen: false) == systemOnly)
+
+    let headsetDefault = InputDevices(builtIn: recorderBuiltIn, systemDefault: recorderAirPods)
+    #expect(EpochPlan.make(explicit, devices: headsetDefault) == withBuiltIn)
+    #expect(EpochPlan.make(explicit, devices: headsetDefault, lidOpen: false) == systemOnly)
+    #expect(EpochPlan.make(explicit, devices: InputDevices(builtIn: nil, systemDefault: recorderAirPods),
+                           lidOpen: false) == systemOnly, "Gone from the list with the lid closed: the lid.")
+
+    // An external default input is unaffected by the lid.
+    #expect(EpochPlan.make(byDefault, devices: headsetDefault, lidOpen: false)
+        == EpochPlan(source: .microphoneAndSystem, tracks: ["mic", "system"], microphoneName: "AirPods Pro"))
+    // No input device at all is not the lid's doing.
+    #expect(EpochPlan.make(byDefault, devices: InputDevices(builtIn: nil, systemDefault: nil), lidOpen: false)
+        == EpochPlan(source: .system, tracks: ["system"], microphoneName: nil))
+}
+
+/// The machine's side: a call epoch without the built-in microphone because the lid is closed journals why and warns;
+/// opening the lid or unlocking the screen restarts capture with the microphone, and its return clears the warning.
+/// Without any input device, the lid and unlock still restart nothing.
+@Test func callWithoutTheBuiltInMicrophoneReturnsWhenTheLidOpens() {
+    var machine = RecorderMachine(tracks: ["mic", "system"])
+    #expect(machine.handle(.captureStarted(epoch: 0, tracks: ["system"], at: 0, lidClosed: true)) == [
+        .recordEvent(kind: MeetingEventKind.deviceChanged,
+                     details: ["track": "mic", "at": "0.0", "reason": RecorderMachine.lidClosedReason]),
+        .warn(RecorderWarning(code: .microphoneUnavailable, message: RecorderMachine.builtInMicrophoneOffInCall,
+                              since: RecorderMachine.placeholderDate)),
+    ])
+    #expect(machine.microphoneMissing)
+    #expect(machine.microphoneOffWithLidClosed)
+    _ = machine.handle(.captureRunning(epoch: 0, at: 0.1))
+    for reason in [RecorderMachine.lidOpened, AudioEnvironmentEvents.screenUnlocked,
+                   AudioEnvironmentEvents.audioDevicesChanged] {
+        var copy = machine
+        #expect(copy.handle(.retryNow(reason: reason, at: 5)) == [
+            .recordEvent(kind: MeetingEventKind.deviceChanged, details: ["track": "mic", "at": "5.0", "reason": reason]),
+            .stopCapture(reason: .deviceChanged),
+            .startCapture(epoch: 1),
+        ])
+    }
+    #expect(machine.handle(.retryNow(reason: RecorderMachine.lidOpened, at: 5)).last == .startCapture(epoch: 1))
+    #expect(machine.handle(.retryNow(reason: RecorderMachine.lidOpened, at: 5.1)).isEmpty,
+            "Not again while the restart is in flight.")
+    #expect(machine.handle(.captureStarted(epoch: 1, tracks: ["mic", "system"], at: 5.5))
+        == [.clearWarning(.microphoneUnavailable)])
+    #expect(!machine.microphoneMissing)
+    #expect(!machine.microphoneOffWithLidClosed)
+
+    var noInput = RecorderMachine(tracks: ["mic", "system"])
+    _ = noInput.handle(.captureStarted(epoch: 0, tracks: ["system"], at: 0))
+    #expect(!noInput.microphoneOffWithLidClosed)
+    #expect(noInput.handle(.retryNow(reason: RecorderMachine.lidOpened, at: 1)).isEmpty)
+    #expect(noInput.handle(.retryNow(reason: AudioEnvironmentEvents.screenUnlocked, at: 1)).isEmpty)
+    // The lid then closes on a built-in default that comes back: the warning names the lid.
+    #expect(noInput.handle(.retryNow(reason: AudioEnvironmentEvents.audioDevicesChanged, at: 2)).last
+        == .startCapture(epoch: 1))
+    #expect(noInput.handle(.captureStarted(epoch: 1, tracks: ["system"], at: 2.5, lidClosed: true)).last
+        == .warn(RecorderWarning(code: .microphoneUnavailable, message: RecorderMachine.builtInMicrophoneOffInCall,
+                                 since: RecorderMachine.placeholderDate)))
+    #expect(noInput.microphoneOffWithLidClosed)
+}
+
 @Test func microphoneLineNamesTheSystemDefaultOnlyWhenRecorded() {
     var status = RecorderStatus(sessionID: oneModeID, name: "Weekly", pid: 1, phase: .recording, sequence: 1,
                                 startedAt: Date(timeIntervalSince1970: 0), updatedAt: Date(timeIntervalSince1970: 0),
@@ -264,6 +342,94 @@ extension RecorderEnvironmentLoopTests {
         #expect(message == BuiltInMicrophone.unavailableMessage)
         #expect(sessionFolders(in: temp.url).isEmpty, "No session folder.")
         #expect(captures.captures.isEmpty)
+    }
+
+    /// The app's meeting starts with the lid closed and the built-in microphone as the default input: it records the
+    /// computer's audio alone, says why, and brings the microphone back when the lid opens.
+    @Test(.timeLimit(.minutes(1)))
+    func callWithTheDefaultBuiltInMicrophoneWaitsForTheLid() async throws {
+        try await recordCallWithTheLidClosed(
+            microphone: .systemDefault,
+            devices: RecorderDevices(builtIn: recorderBuiltIn, systemDefault: recorderBuiltIn))
+    }
+
+    /// The same with `record start --source mic+system --microphone built-in` and a headset as the default input.
+    @Test(.timeLimit(.minutes(1)))
+    func callWithTheExplicitBuiltInMicrophoneWaitsForTheLid() async throws {
+        try await recordCallWithTheLidClosed(microphone: .builtIn, devices: RecorderDevices())
+    }
+
+    /// An external default input is recorded with the lid closed, with nothing to warn about.
+    @Test(.timeLimit(.minutes(1)))
+    func callWithAnExternalMicrophoneIgnoresTheLid() async throws {
+        let temp = try TemporaryDirectory()
+        defer { temp.remove() }
+        let captures = FakeCaptureFactory([FakeCaptureScript(frames: recorderCallFrames(count: 2))])
+        let stop = ManualStopSource()
+        var dependencies = recorderDependencies(captures: captures, stop: stop, clock: ManualSessionClock(0))
+        dependencies.findInputDevices = RecorderDevices().lookup
+        dependencies.power = RecorderFakePower(lidOpen: false)
+        var options = RecordingOptions.testing(root: temp.url, source: .microphoneAndSystem, recordOnly: true)
+        options.microphone = .systemDefault
+        let run = Task { try await RecordingWorkflow.run(options, dependencies: dependencies) }
+        let session = try #require(await recorderSession(in: temp.url))
+        #expect(await eventually { (captures.captures.first?.consumedFrames ?? 0) >= 4 })
+        #expect(recorderStatus(session)?.microphoneName == "AirPods Pro")
+        stop.requestStop()
+        let outcome = try await run.value
+        #expect(captures.requests.map(\.source) == [.microphoneAndSystem])
+        #expect(recorderStatus(outcome.directory)?.warnings.isEmpty == true)
+        #expect(try recorderEvents(outcome.directory, MeetingEventKind.deviceChanged).isEmpty)
+    }
+
+    private func recordCallWithTheLidClosed(microphone: MicrophoneSelection, devices: RecorderDevices) async throws {
+        let temp = try TemporaryDirectory()
+        defer { temp.remove() }
+        let power = RecorderFakePower(lidOpen: false)
+        let environment = AudioEnvironmentEvents.silent()
+        let clock = ManualSessionClock(0)
+        let captures = FakeCaptureFactory([
+            FakeCaptureScript(frames: FakeFrame.run(track: "system", from: 0, count: 3)),
+            FakeCaptureScript(frames: recorderCallFrames(count: 2)),
+        ])
+        let stop = ManualStopSource()
+        var dependencies = recorderDependencies(captures: captures, stop: stop, clock: clock)
+        dependencies.findInputDevices = devices.lookup
+        dependencies.power = power
+        dependencies.environmentEvents = environment
+        var options = RecordingOptions.testing(root: temp.url, source: .microphoneAndSystem, recordOnly: true)
+        options.othersInRoom = true
+        options.microphone = microphone
+        let run = Task { try await RecordingWorkflow.run(options, dependencies: dependencies) }
+        let session = try #require(await recorderSession(in: temp.url))
+        #expect(await eventually { captures.captures.count == 1 && captures.captures[0].consumedFrames >= 3 })
+        #expect(captures.requests[0].source == .system, "The system track alone while the lid is closed.")
+        let warningMessage = {
+            recorderStatus(session)?.warnings.first { $0.code == .microphoneUnavailable }?.message
+        }
+        #expect(await eventually { warningMessage() == RecorderMachine.builtInMicrophoneOffInCall })
+        #expect(recorderStatus(session)?.microphoneName == nil)
+        // An unlock or a device-list change with the lid still closed restarts nothing.
+        environment.post(AudioEnvironmentEvents.screenUnlocked)
+        environment.post(AudioEnvironmentEvents.audioDevicesChanged)
+        try await Task.sleep(for: .milliseconds(200))
+        #expect(captures.captures.count == 1)
+        // The lid opens: capture restarts with the microphone.
+        clock.set(2)
+        power.setLid(open: true)
+        #expect(await eventually { captures.captures.count == 2 && captures.captures[1].consumedFrames >= 4 })
+        #expect(captures.requests[1].source == .microphoneAndSystem)
+        #expect(captures.requests.map(\.microphone) == [microphone, microphone])
+        #expect(await eventually { warningMessage() == nil })
+        #expect(recorderStatus(session)?.microphoneName == "MacBook Pro Microphone")
+        stop.requestStop()
+        let outcome = try await run.value
+        #expect(outcome.stopReason == .requested)
+        let changes = try recorderEvents(outcome.directory, MeetingEventKind.deviceChanged)
+        #expect(changes.map { $0.details["reason"] } == [RecorderMachine.lidClosedReason, RecorderMachine.lidOpened])
+        #expect(changes.allSatisfy { $0.details["track"] == "mic" })
+        let tracks = Set(try SessionArchive.readManifest(at: outcome.directory).chunks.map(\.track))
+        #expect(tracks == ["mic", "system"])
     }
 }
 

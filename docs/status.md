@@ -203,7 +203,13 @@ Hardware-facing and cross-app acceptance remain pending.
   person, call, or hybrid keep their meaning and are labelled, exported, and reviewed as
   before. `record start` keeps its defaults for scripts (`--source mic+system`, the
   microphone as "Me" without `--others-in-room`, and the built-in microphone for `--source
-  mic`); `--microphone default|built-in` is new.
+  mic`); `--microphone default|built-in` is new. With the lid closed, a microphone-and-system
+  meeting whose microphone is the built-in one (the system default input, or `--microphone
+  built-in`) records the computer's audio alone, warns "The built-in microphone is off while
+  the lid is closed; recording the computer's audio only. Open the lid to include the
+  microphone.", and journals `deviceChanged` (`builtInMicrophoneLidClosed`) on the
+  microphone track; opening the lid (or unlocking the screen with it open) restarts capture
+  with the microphone.
 - Review window (wave 5): Review… in Meetings (or double-click, or the "Name Speakers —
   …" menu line after a meeting, which then goes away) opens a window to name a labelled
   meeting's speakers: a name field per speaker that links or creates a person (a known
