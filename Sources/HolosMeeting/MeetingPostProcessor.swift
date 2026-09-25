@@ -80,7 +80,7 @@ public struct MeetingPostProcessor: Sendable {
         let owned = lease == nil ? try SessionArchive.acquireProcessingLease(at: session) : nil
         defer { owned?.release() }
         guard let held = lease ?? owned else {
-            throw HolosError.unavailable("Another Holos process is processing this session.")
+            throw HolosError.unavailable("Another Voice is Local process is processing this session.")
         }
         return try await held.withUse(for: session) {
             try await start(session: session, startedAt: startedAt, progress: progress)

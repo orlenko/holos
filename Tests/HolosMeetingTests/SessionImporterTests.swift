@@ -8,7 +8,7 @@ import HolosSpeakers
 @testable import HolosStorage
 import Testing
 
-// `holos session import` and `holos session score` (docs/meeting-design.md §5.5 PR7c), with generated audio and
+// `voiceislocal session import` and `voiceislocal session score` (docs/meeting-design.md §5.5 PR7c), with generated audio and
 // FakeSpeech; no speech assets or diarization models.
 
 // MARK: - Helpers
@@ -641,7 +641,7 @@ func publishFailsClearlyWhenTheOpenedRootMoved(throughLink: Bool) async throws {
 }
 
 /// A cancel before `start` is kept: the work starts cancelled and none of it runs, so interrupt handling installed
-/// before `holos session import` starts its work never misses a signal. A cancel after `start` reaches the task.
+/// before `voiceislocal session import` starts its work never misses a signal. A cancel after `start` reaches the task.
 @Test(.timeLimit(.minutes(1)))
 func cancellableStartKeepsACancelMadeBeforeTheWorkStarts() async throws {
     let early = CancellableStart<Bool>()
@@ -906,7 +906,7 @@ func importSweepLeavesFoldersHolosDidNotMake() async throws {
     #expect(sessionImporterTree(published).contains("audio/mic/000001.caf"))
 }
 
-// MARK: - holos session import (import, then labelling)
+// MARK: - voiceislocal session import (import, then labelling)
 
 @Test(.timeLimit(.minutes(1)))
 func importCommandLabelsUnderTheImportsLease() async throws {

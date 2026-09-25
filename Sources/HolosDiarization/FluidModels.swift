@@ -25,7 +25,7 @@ public enum ModelInstallStatus: Sendable, Equatable {
     case corrupt(files: [String])
 }
 
-/// Encodes as its `doctorValue` string; `holos doctor --json` stores the status itself in `speakerModels`, so the
+/// Encodes as its `doctorValue` string; `voiceislocal doctor --json` stores the status itself in `speakerModels`, so the
 /// tests check the same encoding the report uses.
 extension ModelInstallStatus: Encodable {
     public func encode(to encoder: any Encoder) throws {
@@ -35,7 +35,7 @@ extension ModelInstallStatus: Encodable {
 }
 
 extension ModelInstallStatus {
-    /// The `speakerModels` value of `holos doctor --json`: "verified", "notInstalled", or "damaged".
+    /// The `speakerModels` value of `voiceislocal doctor --json`: "verified", "notInstalled", or "damaged".
     public var doctorValue: String {
         switch self {
         case .verified: "verified"
@@ -44,7 +44,7 @@ extension ModelInstallStatus {
         }
     }
 
-    /// Plain text for `holos doctor`: "verified", "not installed", or "damaged (N files)".
+    /// Plain text for `voiceislocal doctor`: "verified", "not installed", or "damaged (N files)".
     public var summary: String {
         switch self {
         case .verified: "verified"
@@ -119,11 +119,11 @@ public enum FluidModels {
 
     /// What `diarize` and `engineInfo` throw when the models are not verified.
     public static let missingModelsMessage =
-        "Speaker models are missing or damaged. Install them from Setup, or run holos setup --speakers."
-    /// Printed by `holos setup --speakers` after a verified install.
+        "Speaker models are missing or damaged. Install them from Setup, or run voiceislocal setup --speakers."
+    /// Printed by `voiceislocal setup --speakers` after a verified install.
     public static let readyMessage = "Ready: speaker models (FluidAudio \(FluidDiarizer.engineVersion), "
         + "speaker-diarization-coreml@\(revision.prefix(12)))."
-    /// The credits line `holos setup --speakers` prints after installing (THIRD_PARTY_NOTICES.md has the full text).
+    /// The credits line `voiceislocal setup --speakers` prints after installing (THIRD_PARTY_NOTICES.md has the full text).
     public static let creditsLine = "Speaker models by Fluid Inference (pyannote, WeSpeaker, BUT Speech@FIT), "
         + "CC BY 4.0; see THIRD_PARTY_NOTICES.md."
 
@@ -218,7 +218,7 @@ public enum FluidModels {
                           progress: progress)
     }
 
-    /// `holos setup --speakers`. Models that are verified and load on this Mac (checked offline, as a fresh install
+    /// `voiceislocal setup --speakers`. Models that are verified and load on this Mac (checked offline, as a fresh install
     /// is) are left in place unless `force`; anything else (missing, damaged, verified but failing to load, or
     /// `force`) is installed again through `install`, whose rename replaces the whole folder. `notice` receives one
     /// line for stderr saying which case applies. The same network and lock rules as `install`.
@@ -259,7 +259,7 @@ public enum FluidModels {
 
     /// Network. Downloads the pinned revision into a temporary folder next to `directory`, lists every file with
     /// its size and SHA-256 (`ModelTreeDigest.manifest`), and deletes the download: nothing is installed. The
-    /// one-time pinning step behind `HOLOS_RECORD_MODEL_MANIFEST=1 holos setup --speakers`. Throws when the
+    /// one-time pinning step behind `HOLOS_RECORD_MODEL_MANIFEST=1 voiceislocal setup --speakers`. Throws when the
     /// download's revision marker is not `revision`.
     public static func recordManifest(directory: URL = defaultDirectory,
                                       progress: @escaping @Sendable (Double) -> Void) async throws -> [PinnedFile] {
@@ -276,7 +276,7 @@ public enum FluidModels {
                         progress: @escaping @Sendable (Double) -> Void) async throws {
         guard !pinned.isEmpty else {
             throw HolosError.unavailable(
-                "This build of Holos has no pinned speaker-model manifest; it cannot install speaker models.")
+                "This build of Voice is Local has no pinned speaker-model manifest; it cannot install speaker models.")
         }
         try await withStagingFolder(for: directory) { partial in
             try await download(partial) { fraction in progress(0.85 * clamp(fraction)) }
@@ -287,12 +287,12 @@ public enum FluidModels {
             case .notInstalled:
                 throw HolosError.incomplete(
                     "The speaker-model download produced no files. Check the network connection, then run "
-                        + "holos setup --speakers again.")
+                        + "voiceislocal setup --speakers again.")
             case .corrupt(let files):
                 log.error("Downloaded speaker models failed verification: \(files.count, privacy: .public) files")
                 let count = files.count == 1 ? "1 file differs" : "\(files.count) files differ"
                 throw HolosError.incomplete(
-                    "The downloaded speaker models failed verification: \(count) from the pinned list. Run holos "
+                    "The downloaded speaker models failed verification: \(count) from the pinned list. Run voiceislocal "
                         + "setup --speakers again; if it keeps failing, the download source has changed.")
             }
             progress(0.9)
@@ -353,7 +353,7 @@ public enum FluidModels {
             log.error("Speaker-model download failed: \(String(describing: type(of: error)), privacy: .public)")
             throw HolosError.unavailable(
                 "Could not download the speaker models (\(error.localizedDescription)). Check the network "
-                    + "connection, then run holos setup --speakers again.")
+                    + "connection, then run voiceislocal setup --speakers again.")
         }
     }
 
@@ -456,7 +456,7 @@ private final class InstallLock {
             close(fd)
             if code == EWOULDBLOCK {
                 throw HolosError.unavailable(
-                    "Speaker models are being installed by another holos setup --speakers; wait for it to finish, "
+                    "Speaker models are being installed by another voiceislocal setup --speakers; wait for it to finish, "
                         + "then try again.")
             }
             throw HolosError.io("Cannot lock the speaker-model install lock in \(folder.path).")

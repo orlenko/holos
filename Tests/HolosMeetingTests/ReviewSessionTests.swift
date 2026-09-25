@@ -606,7 +606,7 @@ func failedRelabelKeepsTheExportsPending() async throws {
     defer { temp.remove() }
     let fixture = try await SessionFixtures.labelledSession(in: temp.url)
     let markdown = SessionPaths.export("md", in: fixture.session)
-    // `holos session diarize` that could do nothing (exit 1) and wrote no export.
+    // `voiceislocal session diarize` that could do nothing (exit 1) and wrote no export.
     let script = temp.url.appendingPathComponent("fake-holos.sh")
     try Data("#!/bin/sh\necho '{\"message\": \"Nothing could be done.\"}'\nexit 1\n".utf8).write(to: script)
     try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: script.path)
@@ -734,7 +734,7 @@ func maintenancePauseSavesEarlierChangesAndRefusesNewOnes() async throws {
     let paused = SharedValue(false)
     let hold = ReviewMaintenance.Hold(.labelSpeakers)
     let pause = Task { @MainActor in
-        await review.pause(hold, reason: "Holos is labelling this meeting's speakers.")
+        await review.pause(hold, reason: "Voice is Local is labelling this meeting's speakers.")
         paused.update { $0 = true }
     }
     // Read-only at once: a new change is refused, whatever the timing.
@@ -775,8 +775,8 @@ func resumeRereadsTranscriptAndLabels() async throws {
     #expect(review.words(of: "T1").count == 6)
 
     let hold = ReviewMaintenance.Hold(.recover)
-    await review.pause(hold, reason: "Holos is recovering this meeting.")
-    // Recover rebuilds the transcript and labels the speakers again, as `holos session recover` would.
+    await review.pause(hold, reason: "Voice is Local is recovering this meeting.")
+    // Recover rebuilds the transcript and labels the speakers again, as `voiceislocal session recover` would.
     let rebuilt = SessionFixtures.transcript(SessionFixtures.alternatingSegments(track: "system", wordsPerTurn: 4))
     try await SessionFixtures.saveTranscript(rebuilt, in: fixture.session)
     let newer = try SessionFixtures.writeHeadRun(session: fixture.session, transcript: rebuilt,

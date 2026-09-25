@@ -141,7 +141,7 @@ public actor FluidDiarizer: SpeakerDiarizer {
     /// post-processing treats as "not set up" (speaker-less exports and the setup hint, not a failure). Installed
     /// models, verified or damaged, give a `FluidDiarizer`; with damaged ones its calls throw
     /// `FluidModels.missingModelsMessage`, so labelling is recorded as failed and a caller that reports exit codes
-    /// (`holos session import`, `holos session diarize`) says labelling failed instead of that models are missing.
+    /// (`voiceislocal session import`, `voiceislocal session diarize`) says labelling failed instead of that models are missing.
     public static func forInstalledModels(modelsDirectory: URL = FluidModels.defaultDirectory,
                                           configuration: FluidDiarizerConfiguration = .default) -> FluidDiarizer? {
         forInstalledModels(modelsDirectory: modelsDirectory, configuration: configuration, pinned: PinnedModels.files)
@@ -231,7 +231,7 @@ public actor FluidDiarizer: SpeakerDiarizer {
             log.error("Speaker models failed to load: \(String(describing: type(of: error)), privacy: .public)")
             throw HolosError.unavailable(
                 "The speaker models could not be loaded (\(error.localizedDescription)). "
-                    + "Reinstall them from Setup, or run holos setup --speakers.")
+                    + "Reinstall them from Setup, or run voiceislocal setup --speakers.")
         }
     }
 
@@ -258,7 +258,7 @@ public actor FluidDiarizer: SpeakerDiarizer {
             log.error("Diarization failed: \(String(describing: type(of: error)), privacy: .public)")
             throw HolosError.unavailable(
                 "Speaker labelling failed (\(error.localizedDescription)). Try again; if it keeps failing, "
-                    + "reinstall the speaker models with holos setup --speakers.")
+                    + "reinstall the speaker models with voiceislocal setup --speakers.")
         }
         return output(from: result, processingSeconds: seconds(since: started))
     }

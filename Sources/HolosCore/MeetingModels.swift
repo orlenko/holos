@@ -5,7 +5,7 @@ import Foundation
 
 // MARK: - Open string codes
 
-/// Recorder warnings shown in the menu and `holos record status`. Open string code.
+/// Recorder warnings shown in the menu and `voiceislocal record status`. Open string code.
 public struct RecorderWarningCode: OpenStringCode {
     public var rawValue: String
     public init(rawValue: String) { self.rawValue = rawValue }
@@ -35,7 +35,7 @@ public struct StopReason: OpenStringCode {
     public var rawValue: String
     public init(rawValue: String) { self.rawValue = rawValue }
 
-    /// A stop control request (app, `holos record stop`, or legacy stop.request).
+    /// A stop control request (app, `voiceislocal record stop`, or legacy stop.request).
     public static let requested = StopReason("requested")
     /// SIGINT or SIGTERM.
     public static let signal = StopReason("signal")
@@ -148,12 +148,12 @@ public struct MeetingInfo: Codable, Sendable, Equatable {
     public var sessionID: String
     public var mode: MeetingMode
     /// In a call, also diarize the microphone track because other people share the room.
-    /// `holos session diarize --others-in-room | --no-others-in-room` overrides it per run.
+    /// `voiceislocal session diarize --others-in-room | --no-others-in-room` overrides it per run.
     public var othersInRoom: Bool
     /// Bundle ID whose audio the system track captures, when filtered with `--app`.
     public var applicationBundleID: String?
     public var origin: MeetingOrigin
-    /// Original file name for `holos session import`; nil for recordings.
+    /// Original file name for `voiceislocal session import`; nil for recordings.
     public var importedFileName: String?
     /// Number of people the user expects, passed to the diarizer as a hint (optional).
     public var expectedSpeakers: Int?

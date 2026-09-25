@@ -37,7 +37,7 @@ extension AudioDeletedRecord {
         let record = try SchemaVersion.decode(AudioDeletedRecord.self, from: data, current: SchemaVersion.audioDeleted,
                                               name: name)
         guard record.chunkCount >= 0, record.seconds.isFinite, record.seconds >= 0 else {
-            throw HolosError.invalidInput("\(name) is damaged or was not written by Holos.")
+            throw HolosError.invalidInput("\(name) is damaged or was not written by Voice is Local.")
         }
         if let sessionID, let owner = record.sessionID, owner != sessionID {
             throw HolosError.invalidInput("\(name) belongs to another session.")
@@ -204,7 +204,7 @@ public enum SessionDeletion {
         defer { Darwin.close(folder) }
         guard let processing = try SessionLockFile.acquire(SessionLockFile.processing, inFolder: folder,
                                                            timeout: .seconds(1)) else {
-            throw HolosError.unavailable("Another Holos process is processing this session.")
+            throw HolosError.unavailable("Another Voice is Local process is processing this session.")
         }
         defer { SessionLockFile.unlockAndClose(processing) }
         guard let writer = try SessionLockFile.acquire(SessionLockFile.writer, inFolder: folder,
@@ -220,7 +220,7 @@ public enum SessionDeletion {
         // is being moved.
         guard let speakers = try SessionLockFile.acquire(SessionLockFile.speakers, inFolder: folder,
                                                          timeout: .seconds(2)) else {
-            throw HolosError.unavailable("Speaker labels are being saved by another Holos window or command; try again.")
+            throw HolosError.unavailable("Speaker labels are being saved by another Voice is Local window or command; try again.")
         }
         defer { SessionLockFile.unlockAndClose(speakers) }
         try SessionSpeakerStore.deleteVoiceData(session: session)

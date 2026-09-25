@@ -12,17 +12,17 @@ On macOS 27 / Apple Silicon with Swift 6.4, run:
 
 ```sh
 ./scripts/build-app.sh
-build/Holos.app/Contents/MacOS/HolosApp --check
-open build/Holos.app
+build/VoiceIsLocal.app/Contents/MacOS/HolosApp --check
+open build/VoiceIsLocal.app
 ```
 
-The build creates an ad-hoc-signed accessory `build/Holos.app`; it does not
+The build creates an ad-hoc-signed accessory `build/VoiceIsLocal.app`; it does not
 install or launch it, create a login item, or enable dictation. `--check` is a
 noninteractive packaging/read-only permission-status check. It does not prompt,
 record, install a keyboard event tap, inspect a focused field, or use the
 clipboard. Launch with `open` only when ready for an interactive test.
 
-On first launch, the Holos Setup window opens (reopen it with **Setup…** in the
+On first launch, the Voice is Local Setup window opens (reopen it with **Setup…** in the
 menu). Use it to grant Microphone, Accessibility, and Input Monitoring access
 explicitly and install Apple's English (`en-CA`) Speech assets; each row updates
 live, and its button opens the matching System Settings pane. The asset action may
@@ -87,8 +87,8 @@ is saved.
 
 ## Corrections
 
-**Correct Last Dictation…** in the menu opens the last transcript as Holos wrote it.
-Fix misheard words there and choose **Learn Corrections**; Holos compares the two
+**Correct Last Dictation…** in the menu opens the last transcript as Voice is Local wrote it.
+Fix misheard words there and choose **Learn Corrections**; Voice is Local compares the two
 versions and keeps short word swaps (up to a few words; insertions, deletions, and
 longer rewrites are ignored). A misheard single word that is itself a dictionary
 word is kept with a neighbouring word, so "bull" → "pull" becomes "bull request" →
@@ -133,7 +133,7 @@ behavior, and permission owner for each row.
 | Unwritable target after a streamed prefix | The clipboard holds only the unwritten tail, with its leading space; pasting after the prefix gives correctly spaced text. |
 | Sleep/lock and wake | Capture stops; shortcut stays paused until manually re-enabled. |
 
-Also test the clipboard: text Holos could not write should be on the clipboard
+Also test the clipboard: text Voice is Local could not write should be on the clipboard
 right after the status says to press ⌘V, and **Copy Result** should copy the
 retained text again; Discard should remove the retained result. After a
 completed utterance, check that the overlay hides after about eight seconds and

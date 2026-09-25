@@ -8,7 +8,7 @@ import HolosStorage
 extension ExportFormat: ExpressibleByArgument {}
 
 extension Session {
-    /// `holos session export` (docs/meeting-design.md §4.11, §5.7).
+    /// `voiceislocal session export` (docs/meeting-design.md §4.11, §5.7).
     struct Export: ParsableCommand {
         static let configuration = CommandConfiguration(
             abstract: "Write a session's transcript with speaker labels as Markdown, JSON, or text.",

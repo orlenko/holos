@@ -53,7 +53,7 @@ final class CorrectionsWindow: NSObject, NSWindowDelegate, NSTextFieldDelegate {
         let transcriptScroll = NSTextView.scrollableTextView()
         transcriptView = transcriptScroll.documentView as! NSTextView
         super.init()
-        window.title = "Holos Corrections"
+        window.title = "Voice is Local Corrections"
         window.isReleasedWhenClosed = false
         window.delegate = self
         window.contentMinSize = NSSize(width: 480, height: 480)
@@ -123,7 +123,7 @@ final class CorrectionsWindow: NSObject, NSWindowDelegate, NSTextFieldDelegate {
         heardField.widthAnchor.constraint(equalTo: meantField.widthAnchor).isActive = true
 
         let note = NSTextField(wrappingLabelWithString: """
-            Holos replaces these phrases in new dictations and tells the recognizer to expect the \
+            Voice is Local replaces these phrases in new dictations and tells the recognizer to expect the \
             corrected words. Changes here do not edit text already inserted into other apps.
             """)
         note.font = .systemFont(ofSize: 11)
@@ -193,7 +193,7 @@ final class CorrectionsWindow: NSObject, NSWindowDelegate, NSTextFieldDelegate {
         }
     }
 
-    private static let saveFailure = "Corrections could not be saved; see the Holos status in the menu."
+    private static let saveFailure = "Corrections could not be saved; see the Voice is Local status in the menu."
 
     private func heading(_ text: String) -> NSTextField {
         let label = NSTextField(labelWithString: text)

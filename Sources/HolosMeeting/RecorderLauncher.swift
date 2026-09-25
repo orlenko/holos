@@ -6,7 +6,7 @@ import HolosStorage
 import os
 import Synchronization
 
-// How the app starts a recorder, and the `holos` maintenance commands it runs (docs/meeting-design.md §4.1, §5.8).
+// How the app starts a recorder, and the `voiceislocal` maintenance commands it runs (docs/meeting-design.md §4.1, §5.8).
 
 /// Starts and stops the recorder of one meeting. `MeetingController` does not know which implementation it has: both
 /// write the same `status.json` and read the same `control/`.
@@ -23,7 +23,7 @@ import Synchronization
 
 // MARK: - Child process
 
-/// Runs the bundled `holos record start` as a child in its own session (docs/meeting-design.md §4.1): stdin is
+/// Runs the bundled `voiceislocal record start` as a child in its own session (docs/meeting-design.md §4.1): stdin is
 /// `/dev/null`, stdout and stderr append to `recorder-<SESSION-UUID>.log`, nothing else is inherited, and the child is
 /// reaped with a process source plus `waitpid`. The recorder outlives the app; after a relaunch the app finds it again
 /// through its `status.json` (`MeetingController.attachOnLaunch`).
@@ -36,16 +36,16 @@ import Synchronization
     /// Running children by session ID.
     private var children: [String: ChildWatcher] = [:]
 
-    /// Default: Bundle.main.bundleURL/Contents/MacOS/holos.
+    /// Default: Bundle.main.bundleURL/Contents/MacOS/voiceislocal.
     public init(executable: URL = ChildProcessLauncher.bundledExecutable,
                 logDirectory: URL = SessionDeletion.defaultLogDirectory) {
         self.executable = executable
         self.logDirectory = logDirectory
     }
 
-    /// `Holos.app/Contents/MacOS/holos`, the command-line tool bundled with the app.
+    /// `VoiceIsLocal.app/Contents/MacOS/voiceislocal`, the command-line tool bundled with the app.
     public nonisolated static var bundledExecutable: URL {
-        Bundle.main.bundleURL.appendingPathComponent("Contents/MacOS/holos", isDirectory: false)
+        Bundle.main.bundleURL.appendingPathComponent("Contents/MacOS/voiceislocal", isDirectory: false)
     }
 
     /// ["record", "start", "--session-id", id, "--name=<name>", "--source", src, ("--app", id)?,
@@ -115,7 +115,7 @@ import Synchronization
 
 /// Runs `RecordingWorkflow.run` inside the app (decision 4's fallback, docs/meeting-design.md §4.1), with the same
 /// options as the child. Frames are consumed off the main actor; an activity keeps App Nap and timer coalescing away
-/// while recording. Post-processing still runs in a `holos session diarize` child, which inherits the processing lease
+/// while recording. Post-processing still runs in a `voiceislocal session diarize` child, which inherits the processing lease
 /// (`--lease-fd 3`), so FluidAudio stays out of the app and the session is never without a lock.
 @MainActor public final class InProcessLauncher: RecorderLauncher {
     private nonisolated static let log = Logger(subsystem: "ca.orlenko.holos.app", category: "meeting")
@@ -136,7 +136,7 @@ import Synchronization
 
     public func launch(_ settings: MeetingStartSettings, sessionID: String, root: URL,
                        vocabularyFile: URL?) throws -> Int32? {
-        guard running.isEmpty else { throw HolosError.unavailable("A meeting is already recording in Holos.") }
+        guard running.isEmpty else { throw HolosError.unavailable("A meeting is already recording in Voice is Local.") }
         let vocabulary = try vocabularyFile.map { try VocabularyFile.consume($0) } ?? []
         let options = RecordingOptions(name: settings.name, source: settings.source, locale: "en-CA", backend: .speech,
                                        root: root, applicationBundleID: settings.applicationBundleID,
@@ -156,7 +156,7 @@ import Synchronization
         let exit = onExit
         let task = Task { @MainActor [weak self] in
             let activity = ProcessInfo.processInfo.beginActivity(
-                options: [.userInitiated, .idleSystemSleepDisabled], reason: "Holos meeting recording")
+                options: [.userInitiated, .idleSystemSleepDisabled], reason: "Voice is Local meeting recording")
             defer { ProcessInfo.processInfo.endActivity(activity) }
             var code: Int32 = 0
             var message: String?
@@ -176,7 +176,7 @@ import Synchronization
                 self?.exitRetrying.remove(sessionID)
                 if !written, code == 0 {
                     code = 1
-                    message = "The meeting's folder disappeared before Holos could record that it ended."
+                    message = "The meeting's folder disappeared before Voice is Local could record that it ended."
                 }
             }
             self?.running[sessionID] = nil
@@ -242,7 +242,7 @@ import Synchronization
         return directory.appendingPathComponent("recorder-\(sessionID).log", isDirectory: false)
     }
 
-    /// The post-process hook of an in-process recording: `holos session diarize <path> --after-recording --json
+    /// The post-process hook of an in-process recording: `voiceislocal session diarize <path> --after-recording --json
     /// --lease-fd 3` in a child that inherits the lease; its stderr goes to `log`.
     nonisolated static func childPostProcessHook(executable: URL, log: URL?) -> PostProcessHook {
         { session, lease, progress in
@@ -345,7 +345,7 @@ private struct LoggingReporter: RecordingReporter {
 
 // MARK: - Maintenance commands
 
-/// Runs `holos session recover|diarize|delete`, `holos setup --speakers`, and `holos doctor` for the app, each
+/// Runs `voiceislocal session recover|diarize|delete`, `voiceislocal setup --speakers`, and `voiceislocal doctor` for the app, each
 /// detached in its own session (POSIX_SPAWN_SETSID, nothing inherited), so a quit app never cuts one short. Callers
 /// add `--json` for the commands that print JSON (`setup` has none).
 @MainActor public final class MaintenanceLauncher {
@@ -541,7 +541,7 @@ public enum ProcessSpawner {
         guard code == 0 else {
             let reason = String(cString: strerror(code))
             if code == ENOENT {
-                throw HolosError.unavailable("The holos tool is missing at \(executable.path). Rebuild Holos with scripts/build-app.sh.")
+                throw HolosError.unavailable("The voiceislocal tool is missing at \(executable.path). Rebuild Voice is Local with scripts/build-app.sh.")
             }
             throw HolosError.io("Cannot start \(executable.lastPathComponent): \(reason).")
         }

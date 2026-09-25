@@ -444,7 +444,7 @@ struct MeetingControllerTuning: Sendable {
         return await Self.speakerLabelsReadyOffMain(session: session)
     }
 
-    /// `holos session diarize|recover` ended with its labels saved, perhaps with a warning (exit code 3: partial).
+    /// `voiceislocal session diarize|recover` ended with its labels saved, perhaps with a warning (exit code 3: partial).
     static func ranToTheEnd(_ code: Int32) -> Bool { code == 0 || code == 3 }
 
     // MARK: - Naming offer
@@ -635,7 +635,7 @@ struct MeetingControllerTuning: Sendable {
     // MARK: - Automatic relabel
 
     /// Picks at most one meeting whose labelling was interrupted (`AutoRelabelPolicy`) and runs
-    /// `holos session diarize <path> --json` for it; attempts are counted in UserDefaults. Runs on launch and every
+    /// `voiceislocal session diarize <path> --json` for it; attempts are counted in UserDefaults. Runs on launch and every
     /// 30 s while idle; the app also calls it as soon as it learns the speaker models are installed.
     public func runAutoRelabel() {
         lastRelabel = clock.now

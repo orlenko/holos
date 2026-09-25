@@ -201,7 +201,7 @@ struct HotkeyReducer {
     public func start() throws {
         guard tap == nil else { return }
         guard AXIsProcessTrusted(), CGPreflightListenEventAccess() else {
-            throw HolosError.permissionDenied("Global hotkey requires Accessibility and Input Monitoring access for Holos. Enable both in System Settings, then retry.")
+            throw HolosError.permissionDenied("Global hotkey requires Accessibility and Input Monitoring access for Voice is Local. Enable both in System Settings, then retry.")
         }
         let flags = CGEventSource.flagsState(.combinedSessionState)
         generation += 1

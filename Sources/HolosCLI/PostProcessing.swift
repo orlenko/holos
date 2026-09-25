@@ -5,7 +5,7 @@ import HolosDiarization
 import HolosMeeting
 import HolosStorage
 
-/// The post-processor the CLI runs, after a recording and (from PR7b) for `holos session diarize`.
+/// The post-processor the CLI runs, after a recording and (from PR7b) for `voiceislocal session diarize`.
 ///
 /// The diarizer is `makeDiarizer(engineOverrides: options.engineOverrides)`. The people store
 /// (`SpeakerProfileStore()`) lets stage 7 suggest known people when "Remember voices" is on (PR10).
@@ -54,7 +54,7 @@ func makeVoiceSampleExtractor(session: URL) -> (any VoiceSampleExtractor)? {
     }
 }
 
-/// The hook `holos record start` runs under the processing lease after the archive is finished.
+/// The hook `voiceislocal record start` runs under the processing lease after the archive is finished.
 /// It never throws: an error becomes a `.failed` record with the error's message.
 func makePostProcessHook(options: PostProcessingOptions) -> PostProcessHook {
     { session, lease, progress in

@@ -313,7 +313,7 @@ import HolosCore
             Issue.record("Expected the second install to be refused as unavailable")
             return
         }
-        #expect(message.contains("another holos setup --speakers"))
+        #expect(message.contains("another voiceislocal setup --speakers"))
         #expect(FluidModels.status(directory: directory, pinned: pinned) == .verified)
     }
 
@@ -478,13 +478,13 @@ import HolosCore
         defer { try? FileManager.default.removeItem(at: support) }
         let directory = FluidModels.defaultDirectory(supportRoot: support)
         #expect(directory.path == support.path + "/Models/speaker-diarization-coreml@df2625ac79a7")
-        // `holos doctor` reads the default folder, which follows HOLOS_SUPPORT_DIR (scripts/test.sh sets it).
+        // `voiceislocal doctor` reads the default folder, which follows HOLOS_SUPPORT_DIR (scripts/test.sh sets it).
         #expect(FluidModels.defaultDirectory == FluidModels.defaultDirectory(supportRoot: HolosPaths.supportRoot))
         #expect(HolosPaths.models == HolosPaths.supportRoot.appendingPathComponent("Models", isDirectory: true))
 
         let status = FluidModels.status(directory: directory)
         #expect(status == .notInstalled)
-        // `DoctorReport.speakerModels` holds the status itself, so this is the encoding `holos doctor --json` writes.
+        // `DoctorReport.speakerModels` holds the status itself, so this is the encoding `voiceislocal doctor --json` writes.
         let json = String(decoding: try HolosJSON.encoder().encode(["speakerModels": status]), as: UTF8.self)
         #expect(json.contains(#""speakerModels" : "notInstalled""#))
         for (value, text) in [(ModelInstallStatus.verified, "verified"), (.corrupt(files: ["a"]), "damaged")] {
@@ -499,7 +499,7 @@ import HolosCore
     }
 
     /// Only models that are not installed give no diarizer (post-processing's "not set up", exit 0 for
-    /// `holos session import`). Damaged models give one that fails with "missing or damaged", so labelling is
+    /// `voiceislocal session import`). Damaged models give one that fails with "missing or damaged", so labelling is
     /// recorded as failed (exit 3). Before, the CLI gave nil for every status but verified, so a damaged install
     /// was reported as not installed and the import exited 0.
     @Test func onlyUninstalledModelsGiveNoDiarizer() async throws {

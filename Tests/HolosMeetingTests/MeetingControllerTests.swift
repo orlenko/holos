@@ -147,7 +147,7 @@ private final class ControllerHeartbeat {
     defer { controller.stopMonitoring() }
     controller.attachOnLaunch()
     #expect(controller.state == .idle)
-    // `holos record start` in a terminal, after the app launched.
+    // `voiceislocal record start` in a terminal, after the app launched.
     let archive = try liveSession(in: temp.url)
     let heartbeat = ControllerHeartbeat(session: archive.directory, status: meetingStatus(archive.id, phase: .recording))
     heartbeat.beat(force: true)
@@ -184,7 +184,7 @@ private final class ControllerHeartbeat {
     let probe = ControllerProbe()
     let controller = makeController(root: temp.url, launcher: launcher, probe: probe)
     defer { controller.stopMonitoring() }
-    // `holos record start` in a terminal a moment ago; the idle rescan has not seen it yet (it is not polling here).
+    // `voiceislocal record start` in a terminal a moment ago; the idle rescan has not seen it yet (it is not polling here).
     let archive = try liveSession(in: temp.url, phase: .starting)
     let error = #expect(throws: HolosError.self) {
         try controller.start(MeetingStartSettings(name: "Second", source: .microphone))

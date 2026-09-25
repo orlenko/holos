@@ -590,7 +590,7 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate {
         guard let minimum = review.findMoreSpeakersMinimum else { return }
         let alert = NSAlert()
         alert.messageText = "Find more speakers?"
-        alert.informativeText = "Holos labels the speakers of this meeting again, asking for at least \(minimum) "
+        alert.informativeText = "Voice is Local labels the speakers of this meeting again, asking for at least \(minimum) "
             + "speakers. This takes a minute or two. Names you gave carry over to the new speakers that share the "
             + "most speech with them. Turn-level changes (moved or split turns, speakers you added) do not carry "
             + "over, and Undo cannot go back past this."
@@ -605,7 +605,7 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate {
     @objc private func labelMicrophoneSpeakers() {
         let alert = NSAlert()
         alert.messageText = "Label the speakers on your microphone?"
-        alert.informativeText = "This call was labelled with your microphone as you alone. Holos labels its speakers "
+        alert.informativeText = "This call was labelled with your microphone as you alone. Voice is Local labels its speakers "
             + "again and also splits your microphone into speakers, for people in the room with you. Names carry "
             + "over; turn-level changes do not, and Undo cannot go back past this."
         alert.addButton(withTitle: "Label Speakers")

@@ -70,7 +70,7 @@ public final class ProcessingLease: Sendable {
     }
 
     /// Hands the lease to a child process without a moment in which the lock is free (the in-process recorder's
-    /// hand-off to `holos session diarize --lease-fd 3`, docs/meeting-design.md §4.1). Calls `spawn` with a locked
+    /// hand-off to `voiceislocal session diarize --lease-fd 3`, docs/meeting-design.md §4.1). Calls `spawn` with a locked
     /// descriptor that shares the lease's open file description; `spawn` must make the child inherit it (for example
     /// with `posix_spawn_file_actions_adddup2(&actions, descriptor, 3)`). The descriptor is a close-on-exec duplicate
     /// numbered 10 or higher, so it never already has the child's number: `dup2` onto the same number would keep
@@ -174,7 +174,7 @@ public final class ProcessingLease: Sendable {
 }
 
 extension SessionArchive {
-    /// Throws `HolosError.unavailable("Another Holos process is processing this session.")` after `retry`.
+    /// Throws `HolosError.unavailable("Another Voice is Local process is processing this session.")` after `retry`.
     public nonisolated static func acquireProcessingLease(at session: URL,
                                                           retry: Duration = .seconds(1)) throws -> ProcessingLease {
         try SessionLockFile.requireSession(session)
@@ -184,7 +184,7 @@ extension SessionArchive {
         let identity = try FileIdentity(descriptor: folder)
         guard let fd = try SessionLockFile.acquire(SessionLockFile.processing, inFolder: folder,
                                                    timeout: retry) else {
-            throw HolosError.unavailable("Another Holos process is processing this session.")
+            throw HolosError.unavailable("Another Voice is Local process is processing this session.")
         }
         return ProcessingLease(session: session, folder: identity, descriptor: fd)
     }
@@ -197,18 +197,18 @@ extension SessionArchive {
         var info = stat()
         guard fstatat(folder, "manifest.json", &info, AT_SYMLINK_NOFOLLOW) == 0,
               (info.st_mode & S_IFMT) == S_IFREG else {
-            throw HolosError.invalidInput("\(session.lastPathComponent) is not a Holos session folder.")
+            throw HolosError.invalidInput("\(session.lastPathComponent) is not a Voice is Local session folder.")
         }
         let identity = try FileIdentity(descriptor: folder)
         guard let fd = try SessionLockFile.acquire(SessionLockFile.processing, inFolder: folder,
                                                    timeout: retry) else {
-            throw HolosError.unavailable("Another Holos process is processing this session.")
+            throw HolosError.unavailable("Another Voice is Local process is processing this session.")
         }
         return ProcessingLease(session: session, folder: identity, descriptor: fd)
     }
 
     /// Adopts `descriptor`, inherited from a parent that handed its lease over (`ProcessingLease.handOff`,
-    /// `holos session diarize --lease-fd`, docs/meeting-design.md §4.1), as this process's lease, without acquiring
+    /// `voiceislocal session diarize --lease-fd`, docs/meeting-design.md §4.1), as this process's lease, without acquiring
     /// one (the lease is not re-entrant).
     ///
     /// Refuses with `HolosError.invalidInput("The inherited lock is not this session's processing lease.")` unless
@@ -248,13 +248,13 @@ extension SessionArchive {
     }
 
     /// Polls `flock(LOCK_EX|LOCK_NB)` every 20 ms up to `timeout`, runs `body`, unlocks.
-    /// Throws `HolosError.unavailable("Speaker labels are being saved by another Holos window or command; try again.")`.
+    /// Throws `HolosError.unavailable("Speaker labels are being saved by another Voice is Local window or command; try again.")`.
     /// Not re-entrant: never call it, or anything that takes the speaker lock, from inside `body`.
     public nonisolated static func withSpeakerLock<T>(at session: URL, timeout: Duration = .seconds(2),
                                                       _ body: () throws -> T) throws -> T {
         try SessionLockFile.requireSession(session)
         guard let fd = try SessionLockFile.acquire(SessionLockFile.speakers, in: session, timeout: timeout) else {
-            throw HolosError.unavailable("Speaker labels are being saved by another Holos window or command; try again.")
+            throw HolosError.unavailable("Speaker labels are being saved by another Voice is Local window or command; try again.")
         }
         defer { SessionLockFile.unlockAndClose(fd) }
         return try body()
@@ -395,7 +395,7 @@ enum SessionLockFile {
         var info = stat()
         guard fstatat(folder, "manifest.json", &info, AT_SYMLINK_NOFOLLOW) == 0,
               (info.st_mode & S_IFMT) == S_IFREG else {
-            throw HolosError.invalidInput("\(session.lastPathComponent) is not a Holos session folder.")
+            throw HolosError.invalidInput("\(session.lastPathComponent) is not a Voice is Local session folder.")
         }
     }
 

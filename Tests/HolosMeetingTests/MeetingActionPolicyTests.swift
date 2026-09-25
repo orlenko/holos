@@ -32,7 +32,7 @@ private func actionSummary(state: SessionState = .complete, manifestStatus: Stri
         #expect(!Policy.recovers(actionSummary(state: state)), "\(state) keeps a readable transcript.")
         #expect(Policy.recovers(actionSummary(state: state, transcriptID: nil)), "\(state) with none is rebuilt.")
         #expect(!Policy.recovers(actionSummary(state: state, transcriptID: nil, transcriptRefused: true)),
-                "\(state) with a transcript from a newer Holos is refused.")
+                "\(state) with a transcript from a newer version of Voice is Local is refused.")
     }
     #expect(!Policy.recovers(actionSummary(state: .interrupted, transcriptID: nil, transcriptRefused: true)))
     for state in [SessionState.complete, .audioOnly, .failed, .damaged] {
@@ -77,9 +77,9 @@ private func actionSummary(state: SessionState = .complete, manifestStatus: Stri
                                          hasExport: false).contains(.deleteAudio))
 }
 
-/// The Recover button and `holos session recover` agree on real sessions: the catalog's summary of a
+/// The Recover button and `voiceislocal session recover` agree on real sessions: the catalog's summary of a
 /// transcriptionIncomplete meeting whose transcript is unreadable (the revision is missing) enables Recover, and the
-/// command rebuilds it; a readable transcript is kept by both; one from a newer Holos is refused by both.
+/// command rebuilds it; a readable transcript is kept by both; one from a newer version of Voice is Local is refused by both.
 @Test func recoverButtonAgreesWithTheCommandOnSavedSessions() async throws {
     let temp = try TemporaryDirectory("actions")
     defer { temp.remove() }

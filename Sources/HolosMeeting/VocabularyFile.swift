@@ -2,7 +2,7 @@ import Foundation
 import HolosCore
 import HolosStorage
 
-/// The vocabulary hand-off file the app writes for `holos record start --vocabulary-file` (docs/meeting-design.md
+/// The vocabulary hand-off file the app writes for `voiceislocal record start --vocabulary-file` (docs/meeting-design.md
 /// §4.12).
 public enum VocabularyFile {
     /// Reads the vocabulary from `url` and deletes the file, since it holds private names: once it is opened and
@@ -16,7 +16,7 @@ public enum VocabularyFile {
         }
         guard let vocabulary = try? HolosJSON.decoder().decode(MeetingVocabulary.self, from: data),
               vocabulary.schemaVersion == 1 else {
-            throw HolosError.invalidInput("The vocabulary file is not a Holos vocabulary (schemaVersion 1 with strings).")
+            throw HolosError.invalidInput("The vocabulary file is not a Voice is Local vocabulary (schemaVersion 1 with strings).")
         }
         return vocabulary.strings
     }

@@ -145,7 +145,7 @@ public final class AudioCapture {
             let granted = await AVCaptureDevice.requestAccess(for: .audio)
             try Task.checkCancellation()
             guard granted else {
-                throw HolosError.permissionDenied("Microphone access is required. Enable it for Holos or your terminal in System Settings > Privacy & Security > Microphone.")
+                throw HolosError.permissionDenied("Microphone access is required. Enable it for Voice is Local or your terminal in System Settings > Privacy & Security > Microphone.")
             }
         }
         // The pinned device, looked up just before the capture starts.

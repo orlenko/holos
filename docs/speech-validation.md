@@ -33,7 +33,7 @@ more accurate or faster in general.
 
 ## Repeatable opt-in test
 
-First install assets for the selected backend with `holos setup`. Then run:
+First install assets for the selected backend with `voiceislocal setup`. Then run:
 
 ```sh
 HOLOS_SPEECH_TEST_AUDIO=/absolute/path/to/sample.wav \

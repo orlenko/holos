@@ -6,14 +6,14 @@ import HolosMeeting
 import HolosSpeakers
 import HolosStorage
 
-/// `holos people …` (docs/meeting-design.md §5.9): the people Holos knows by name, and their opt-in voice samples.
+/// `voiceislocal people …` (docs/meeting-design.md §5.9): the people Holos knows by name, and their opt-in voice samples.
 /// Names and counts go to stdout; notes and warnings to stderr (§1.4). Voice vectors are printed only by
 /// `export --include-voiceprints`, and never to a terminal.
 struct People: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
-        abstract: "Manage the people Holos knows by name, and their remembered voices.",
+        abstract: "Manage the people Voice is Local knows by name, and their remembered voices.",
         discussion: """
-            People are created when you link a speaker to a person (holos speakers link or me). Their names carry \
+            People are created when you link a speaker to a person (voiceislocal speakers link or me). Their names carry \
             across meetings whatever the Remember voices setting says. With Remember voices on, linking with \
             --learn-voice learns a person's voice from that meeting, and later meetings suggest them (\"Maybe Jim\"). \
             Voiceprints are biometric data: only remember people who agreed to it. They stay on this Mac, in \
@@ -57,16 +57,16 @@ struct People: AsyncParsableCommand {
             if !database.isCalibrated, database.rememberVoices, database.calibrationResetAt == nil,
                database.profiles.contains(where: { !$0.samples.isEmpty }) {
                 Console.output("Automatic names: off for new meetings until you calibrate "
-                               + "(holos people calibrate --apply). Meetings already named keep their names.")
+                               + "(voiceislocal people calibrate --apply). Meetings already named keep their names.")
             }
             if !database.isCalibrated, database.calibrationResetAt != nil {
                 Console.output("Automatic names: off for new meetings; the calibration was reset when the voice "
-                               + "samples changed (calibrate again with holos people calibrate --apply). Meetings "
+                               + "samples changed (calibrate again with voiceislocal people calibrate --apply). Meetings "
                                + "already named keep the names they were given.")
             }
             let people = VoiceProfileService.sortedPeople(database.profiles)
             guard !people.isEmpty else {
-                Console.output("No people yet. Link a speaker to a person with holos speakers link.")
+                Console.output("No people yet. Link a speaker to a person with voiceislocal speakers link.")
                 return
             }
             let rows = people.map { profile -> [String] in
@@ -124,7 +124,7 @@ struct People: AsyncParsableCommand {
                 } else if samples > 0 {
                     Console.error("Kept \(PeopleCommand.count(samples, "voice sample")) from "
                                   + "\(PeopleCommand.count(meetings, "meeting")); forget them with "
-                                  + "holos people forget --all --yes.")
+                                  + "voiceislocal people forget --all --yes.")
                 }
             }
         }
@@ -345,7 +345,7 @@ enum PeopleCommand {
         case 1:
             return named[0].id
         case 0:
-            throw HolosError.invalidInput("There is no person \(trimmed); list people with holos people list, or "
+            throw HolosError.invalidInput("There is no person \(trimmed); list people with voiceislocal people list, or "
                                           + "use new:NAME to create one.")
         default:
             throw HolosError.invalidInput("\(named.count) people are named \(wanted); use an ID: "

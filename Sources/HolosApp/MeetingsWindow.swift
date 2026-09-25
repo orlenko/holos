@@ -7,7 +7,7 @@ import Quartz
 import UniformTypeIdentifiers
 
 /// The saved meetings (docs/meeting-design.md §5.8, §4.13): a table of the session catalog and the actions on the
-/// selected meeting. Recover, Label Speakers, and the deletions run `holos` commands through the app delegate, which
+/// selected meeting. Recover, Label Speakers, and the deletions run `voiceislocal` commands through the app delegate, which
 /// also opens Review (PR9, §5.10); the rest (Show in Finder, the Quick Look preview, Save Transcript As…, Clean Up)
 /// happen here. Double-click opens Review for a labelled meeting and the preview otherwise. Refreshes every 2 s
 /// while visible; the listing is read off the main actor.
@@ -74,7 +74,7 @@ final class MeetingsWindow: NSObject, NSWindowDelegate, NSTableViewDataSource, N
                                   styleMask: [.titled, .closable, .miniaturizable, .resizable],
                                   backing: .buffered, defer: true)
         super.init()
-        window.title = "Holos Meetings"
+        window.title = "Voice is Local Meetings"
         window.isReleasedWhenClosed = false
         window.contentMinSize = NSSize(width: 640, height: 320)
         window.delegate = self
@@ -389,7 +389,7 @@ final class MeetingsWindow: NSObject, NSWindowDelegate, NSTableViewDataSource, N
         let session = summary.directory
         let id = summary.id
         guard beginUsing(id, "Saving the transcript…") else {
-            showSheet("Holos could not save the transcript.", Self.inUseText(running[id]))
+            showSheet("Voice is Local could not save the transcript.", Self.inUseText(running[id]))
             return
         }
         Task { [weak self] in
@@ -412,7 +412,7 @@ final class MeetingsWindow: NSObject, NSWindowDelegate, NSTableViewDataSource, N
             guard let self else { return }
             self.endUsing(id)
             guard let failure else { return }
-            self.showSheet("Holos could not save the transcript.", failure)
+            self.showSheet("Voice is Local could not save the transcript.", failure)
         }
     }
 
@@ -423,7 +423,7 @@ final class MeetingsWindow: NSObject, NSWindowDelegate, NSTableViewDataSource, N
         let session = summary.directory
         let id = summary.id
         guard beginUsing(id, "Cleaning up…") else {
-            showSheet("Holos could not clean up this meeting.", Self.inUseText(running[id]))
+            showSheet("Voice is Local could not clean up this meeting.", Self.inUseText(running[id]))
             return
         }
         Task { [weak self] in
@@ -439,7 +439,7 @@ final class MeetingsWindow: NSObject, NSWindowDelegate, NSTableViewDataSource, N
             self.endUsing(id)
             self.refresh()
             guard let failure else { return }
-            self.showSheet("Holos could not clean up this meeting.", failure)
+            self.showSheet("Voice is Local could not clean up this meeting.", failure)
         }
     }
 
@@ -451,7 +451,7 @@ final class MeetingsWindow: NSObject, NSWindowDelegate, NSTableViewDataSource, N
     }
 
     private static func inUseText(_ doing: String?) -> String {
-        "Holos is working on this meeting" + (doing.map { " (\($0))" } ?? "") + ". Try again when it finishes."
+        "Voice is Local is working on this meeting" + (doing.map { " (\($0))" } ?? "") + ". Try again when it finishes."
     }
 
     // MARK: - Quick Look

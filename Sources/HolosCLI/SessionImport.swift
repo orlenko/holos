@@ -8,7 +8,7 @@ import HolosStorage
 import Synchronization
 
 extension Session {
-    /// `holos session import` (docs/meeting-design.md §5.5 PR7c).
+    /// `voiceislocal session import` (docs/meeting-design.md §5.5 PR7c).
     struct Import: AsyncParsableCommand {
         static let configuration = CommandConfiguration(
             abstract: "Create a session from an audio file, transcribe it, and label its speakers.",
@@ -69,7 +69,7 @@ extension Session {
             return outcome.exitCode
         }
 
-        /// The vocabulary file, in the format `holos record start --vocabulary-file` takes. It is only read, so a
+        /// The vocabulary file, in the format `voiceislocal record start --vocabulary-file` takes. It is only read, so a
         /// symbolic link to it is followed (the no-link rule is for files inside sessions).
         private func readVocabulary() throws -> [String] {
             guard let vocabularyFile else { return [] }
@@ -79,7 +79,7 @@ extension Session {
             }
             guard let vocabulary = try? HolosJSON.decoder().decode(MeetingVocabulary.self, from: data),
                   vocabulary.schemaVersion == 1 else {
-                throw ValidationError("The vocabulary file is not a Holos vocabulary (schemaVersion 1 with strings).")
+                throw ValidationError("The vocabulary file is not a Voice is Local vocabulary (schemaVersion 1 with strings).")
             }
             return vocabulary.strings
         }

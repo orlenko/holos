@@ -4,7 +4,7 @@ import HolosCore
 import HolosStorage
 
 extension SessionExports {
-    /// Writes `data` to a new file at `url` for `holos session export --output` (docs/meeting-design.md §5.7):
+    /// Writes `data` to a new file at `url` for `voiceislocal session export --output` (docs/meeting-design.md §5.7):
     /// never over an existing file or symbolic link, even one another process creates meanwhile, and private (0600)
     /// because the transcript may hold confidential speech.
     ///
@@ -17,7 +17,7 @@ extension SessionExports {
         let target = url.deletingLastPathComponent().resolvingSymlinksInPath()
             .appendingPathComponent(url.lastPathComponent)
         let exists = HolosError.invalidInput(
-            "\(url.path) already exists; Holos never replaces a file here. Choose another name.")
+            "\(url.path) already exists; Voice is Local never replaces a file here. Choose another name.")
         guard !entryExists(target) else { throw exists }
         do {
             try AtomicFile.create(data, at: target, permissions: 0o600)

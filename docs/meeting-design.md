@@ -1,5 +1,11 @@
 # Meeting recording: implementation design
 
+> **Renamed.** The product is now called Voice is Local: the app is built as `build/VoiceIsLocal.app`
+> and the command-line tool is `voiceislocal` (bundled as `Contents/MacOS/voiceislocal`). This design
+> predates the rename, so its `holos …` commands are now `voiceislocal …` and "Holos" in user-facing
+> text means Voice is Local. Internal names are unchanged: `Holos*` modules, bundle IDs, the
+> `Application Support/Holos` and `Logs/Holos` folders, `.holos` sessions, and `HOLOS_*` variables.
+
 Status: implementation-ready design for PR1–PR11 of
 [meeting-recording-plan.md](meeting-recording-plan.md) (PR12, minutes, is out of scope).
 Written 2026-09-23 from the code on branch `meeting-plan`, FluidAudio 0.17.1 sources
