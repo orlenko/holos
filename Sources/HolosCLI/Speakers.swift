@@ -525,13 +525,16 @@ enum SpeakerCommand {
 
     /// The change was saved, then the editor failed (`incomplete`) before it could say whether samples are
     /// affected: brings this meeting's samples in step anyway, then throws `error`.
-    static func refreshAfterSavedChange(_ error: HolosError, _ loaded: LoadedSpeakers,
+    static func refreshAfterSavedChange(_ saved: HolosError, _ loaded: LoadedSpeakers,
                                         owners: [String: String]) async throws -> Never {
         do {
             try await VoiceProfileService.refreshSamples(
-                afterSaving: error, session: loaded.session,
+                afterSaving: saved, session: loaded.session,
                 extractor: makeVoiceSampleExtractor(session: loaded.session), store: loaded.store)
         } catch {
+            // `error` here is what the refresh threw, which is the combined report when the samples could not be
+            // brought in step, or a cancellation. The parameter is named `saved` so that is plain to read: a
+            // `catch` binds `error` itself, and a parameter of that name would be shadowed rather than rethrown.
             noteRemovedSamples(owners, loaded)
             throw error
         }

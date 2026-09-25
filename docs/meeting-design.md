@@ -3437,6 +3437,10 @@ public struct SpeakerProfileDatabase: Codable, Sendable, Equatable {
     because a merge moves the samples and leaves the meeting's link as it was — unless
     `mergedInto` says where that person went and they are still there, which means a merge
     is retargeting its meetings and those links are somebody else's.
+  - A meeting can name somebody through a recognition match alone, with no link, so the
+    labels say nothing about whose speaker it is. The matched speakers are read before the
+    matches are scrubbed and their centroids and turn embeddings go with the person, or a
+    finished forget would leave their voiceprints on disk.
   - The `stored` line also records the person the meetings are cleaned of: for a `.sample`
     or `.profile` forget, the person the store write found the listed samples under, which
     a merge may have changed since the tombstone was written. Cleaning with the tombstone's
@@ -3595,7 +3599,13 @@ public struct SpeakerProfileDatabase: Codable, Sendable, Equatable {
     forgetting the samples) can write automatic names after the setting changed. Turning
     the setting off schedules no rewrite, so those names stay in that meeting's exported
     files until it is exported again. The samples themselves are untouched, and any later
-    export writes them without names.
+    export writes them without names. Stage 8 of automatic post-processing reads it the
+    same way and has the same window; the recording that runs it is the user's too.
+  - Merging a person visits the meetings under the meetings root. A `.holos` folder kept
+    elsewhere and worked on by path is not one Holos can enumerate, so its recognition
+    results keep naming the person merged away and lose that automatic name, as they did
+    before merges retargeted anything. `mergedInto` records where that person went, so
+    such a meeting can be repaired later without guessing; nothing reads it for that yet.
 - **Enrollment renders are swept.** `DiarizerVoiceSampleExtractor` renders a track to
   `holos-voice-<UUID>` in the temporary directory and deletes it in a `defer`, which a kill
   or a power loss skips; the render is a decoded copy of the meeting's audio, so

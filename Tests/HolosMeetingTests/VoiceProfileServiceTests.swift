@@ -2766,3 +2766,62 @@ func aRelinkedSpeakerDoesNotKeepTheOldPersonsVoice() async throws {
     #expect(try store.load().profiles.first { $0.id == jim }?.samples.isEmpty == true,
             "The speaker is not Jim's any more, and no merge says otherwise, so his voice from it goes.")
 }
+
+@Test(.timeLimit(.minutes(1)))
+func forgettingAPersonRemovesTheVoiceOfSpeakersOnlyAMatchNamed() async throws {
+    let temp = try TemporaryDirectory("profiles")
+    defer { temp.remove() }
+    let store = profileStore(temp)
+    try store.update { $0.rememberVoices = true }
+    let (session, record) = try await profileProcessedSession(in: temp, store: nil, forceVoiceData: true)
+    let runID = try #require(record.runID)
+    try store.update { $0.profiles = [profilePerson("JIM", "Jim", vector: profileAxis(0))] }
+    // The meeting names Jim on mic:S2 through a recognition match only: no link, so the labels say nothing about
+    // whose speaker it is.
+    try SessionArchive.withSpeakerLock(at: session) {
+        try SessionSpeakerStore.writeRecognition(
+            RecognitionResult(runID: runID, embeddingModel: profileModel,
+                              thresholds: SpeakerRecognizer.defaultThresholds,
+                              matches: [SpeakerMatch(speakerID: "mic:S2", profileID: "JIM", profileName: "Jim",
+                                                     distance: 0.05, tier: .likely)]),
+            session: session)
+    }
+    #expect(try SessionSpeakerStore.readVoiceData(runID: runID, session: session)?.centroids["mic:S2"] != nil)
+
+    try VoiceProfileService.forget(profileID: "JIM", store: store, sessionsRoot: temp.url)
+
+    let voice = try SessionSpeakerStore.readVoiceData(runID: runID, session: session)
+    #expect(voice?.centroids["mic:S2"] == nil,
+            "The match is what named them, so that speaker's voiceprints go with the person.")
+    #expect(voice?.turnEmbeddings.allSatisfy { !["T2", "T4"].contains($0.turnID) } ?? true)
+    #expect(try store.pendingForgets().isEmpty)
+}
+
+@Test func aMergeChainIsFollowedHoweverLongItIs() {
+    var database = SpeakerProfileDatabase()
+    var map: [String: String] = [:]
+    for step in 0..<200 { map["P\(step)"] = "P\(step + 1)" }
+    database.mergedInto = map
+    #expect(VoiceProfileService.mergedOnwards("P0", in: database) == "P200",
+            "No count stops the walk: a person merged onwards many times still has to be found.")
+    // A cycle a newer Holos could write still ends it.
+    database.mergedInto = ["A": "B", "B": "C", "C": "A"]
+    #expect(["A", "B", "C"].contains(VoiceProfileService.mergedOnwards("A", in: database)))
+}
+
+@Test(.timeLimit(.minutes(1)))
+func aMergeWaitsForAForgetThisBuildCannotRead() async throws {
+    let temp = try TemporaryDirectory("profiles")
+    defer { temp.remove() }
+    let store = profileStore(temp)
+    let (_, _, jim) = try await profileForgetFixture(temp, store: store)
+    try store.update { $0.profiles.append(SpeakerProfile(id: "MARIA", displayName: "Maria")) }
+    // A forget of a newer Holos: this build cannot decode its kind, so it cannot see which person it listed.
+    let line = Data("{\"schemaVersion\":1,\"id\":\"\(UUID().uuidString)\",\"kind\":\"quarantine\",\"state\":\"pending\"}\n".utf8)
+    try AtomicFile.append(line, to: store.forgetJournalURL)
+
+    #expect(throws: HolosError.self) {
+        try VoiceProfileService.merge(profileID: jim, into: "MARIA", store: store, sessionsRoot: temp.url)
+    }
+    #expect(try store.load().profiles.count == 2, "Nothing moved between them.")
+}
