@@ -75,8 +75,16 @@ enum SpeakerAnalysis {
         return SpeakerCountHint(maximum: expected + 1)
     }
 
-    /// Alignment settings for the meeting (PR11 turns on the echo filter for calls here).
-    static func alignmentParameters(meeting: MeetingInfo) -> AlignmentParameters { .v1 }
+    /// How far apart a call's system word and its microphone echo may be (PR11).
+    static let callEchoWindowSeconds = 1.0
+
+    /// Alignment settings for the meeting: `AlignmentParameters.v1`, and for a call the echo filter (PR11) with a
+    /// window of `callEchoWindowSeconds`. In person there is no system audio to echo, so nothing is filtered.
+    static func alignmentParameters(meeting: MeetingInfo) -> AlignmentParameters {
+        var parameters = AlignmentParameters.v1
+        if meeting.mode == .call { parameters.echoWindowSeconds = callEchoWindowSeconds }
+        return parameters
+    }
 
     // MARK: - Stage 4: disk check
 
@@ -175,15 +183,20 @@ enum SpeakerAnalysis {
 
     /// Under the speaker lock: checks the head again (an editor may have written meanwhile), then publishes the run
     /// (`writeRun`), the voice data only when `writeVoiceData` (hidden `forceVoiceData`, evaluation sessions; never
-    /// for normal meetings, §4.10), the carry-over edits (source "carry", the new run as base, one batch), and last
+    /// for normal meetings, §4.10) and `voiceDataStillWanted` (no forget landed while this pass ran), the
+    /// carry-over edits (source "carry", the new run as base, one batch), and last
     /// `speakers/head.json`, so a crash before that leaves the old head in place. The lock is released on return.
     static func publish(_ built: SpeakerRunBuilder.Result, session: URL, transcript: Transcript, force: Bool,
-                        writeVoiceData: Bool) throws -> PublishOutcome {
+                        writeVoiceData: Bool,
+                        voiceDataStillWanted: () -> Bool = { true }) throws -> PublishOutcome {
         try SessionArchive.withSpeakerLock(at: session) {
             let state = try headState(session: session, transcript: transcript)
             if let state, state.needsForce(force) { return .keptEditedHead(runID: state.usableRunID) }
             try SessionSpeakerStore.writeRun(built.run, session: session)
-            if writeVoiceData, let voiceData = built.voiceData {
+            // The voice file holds voiceprints, so it is written only if no forget has landed since this pass
+            // started. The check is made here, under the speaker lock a forget's clean-up takes, so a forget
+            // either cleaned this meeting before and is seen, or waits and removes what is written now.
+            if writeVoiceData, voiceDataStillWanted(), let voiceData = built.voiceData {
                 try SessionSpeakerStore.writeVoiceData(voiceData, session: session)
             }
             var carry: SpeakerCarryOver.Result?

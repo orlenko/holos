@@ -24,6 +24,10 @@ struct Record: AsyncParsableCommand {
                 10 minutes without audio), and 3 when the audio was saved but the recording stopped by itself (low \
                 disk, a long sleep, or a 6-hour pause) or speaker labelling was skipped or failed. The reason is \
                 printed on stderr.
+
+                In a mic+system call, a warning on stderr says when the laptop speakers play the call: other \
+                people's voices then reach the microphone too. Headphones give a cleaner transcript. Speaker \
+                labelling leaves the microphone's echo of the call audio out of the labelled transcript.
                 """)
         @Option(help: "Session display name.") var name = "Meeting"
         @Option(help: """

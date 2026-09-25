@@ -46,9 +46,11 @@ public enum SessionImportCommand {
     /// Throws when nothing was imported: the importer's error, or
     /// `HolosError.incomplete("The import was cancelled; nothing was imported.")` when cancelled during the import.
     /// A labelling failure or cancellation does not throw; the session is kept and the outcome's exit code is 3.
+    /// `profiles` is passed to the post-processor (voice suggestions, PR10).
     public static func run(_ request: Request, diarizer: (any SpeakerDiarizer)?,
                            makeSpeech: LiveSpeechFactory? = nil, timeouts: StopTimeouts = .standard,
                            freeSpace: any FreeSpaceProvider = VolumeFreeSpace(),
+                           profiles: SpeakerProfileStore? = nil,
                            importProgress: @escaping @Sendable (Double) -> Void = { _ in },
                            labellingProgress: @escaping @Sendable (PostProcessingProgress) -> Void = { _ in })
         async throws -> Outcome {
@@ -69,7 +71,7 @@ public enum SessionImportCommand {
         }
         do {
             let processor = MeetingPostProcessor(diarizer: diarizer, options: PostProcessingOptions(),
-                                                 freeSpace: freeSpace)
+                                                 freeSpace: freeSpace, profiles: profiles)
             let record = try await processor.run(session: session, lease: lease, progress: labellingProgress)
             // The audio and transcript are saved either way: a labelling problem is a warning (§1.4).
             let code: Int32 = SessionDiarizeCommand.exitCode(record.state) == 0 ? 0 : 3

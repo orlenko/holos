@@ -77,7 +77,7 @@ Hardware-facing and cross-app acceptance remain pending.
   (`exports/transcript.{md,json,txt}`); a hand-edited copy is moved aside, never
   overwritten. `session diarize` keeps edited labels unless `--force`, and names carry
   over to a new labelling. Without the models, recordings keep speaker-less exports and
-  a hint to install them. The app does not record meetings or label speakers yet.
+  a hint to install them. (Wave 4 added meeting recording and labelling to the app.)
 - Import and evaluation (wave 2): `session import <audio-file>` turns any audio file
   macOS reads into a session (one in-person microphone track), transcribes it, and
   labels its speakers. The session is built in a hidden `.import-<UUID>` folder in
@@ -126,6 +126,46 @@ Hardware-facing and cross-app acceptance remain pending.
   at a time; there is no redo. `session export <session> --format md|json|txt
   [--output FILE]` renders the labelled transcript (`--output` creates a new 0600 file
   and never replaces one), and `--all` rewrites `exports/`.
+- Menu bar meetings (wave 4): Holos.app records meetings from the menu bar (Start
+  Meeting Recording…, then Pause, Add Marker, Show Live Transcript, and Stop and Save).
+  The recorder is the bundled `holos` tool running as a child of the app; it keeps
+  recording if the app quits or crashes, and the app finds it again on relaunch, as it
+  does a meeting started from a terminal. Its log is
+  `~/Library/Logs/Holos/recorder-<id>.log`; `defaults write ca.orlenko.holos.app
+  meetingRecorderMode inProcess` records inside the app instead. A start that gets no
+  recording status within 2 minutes is stopped; if a permission prompt is open when
+  Stop Recording is chosen, the recorder stops once the prompt is answered. Dictation is
+  paused while a meeting records. Meetings… lists recordings and can recover them,
+  label their speakers, open or save the transcript, delete the audio or the whole
+  meeting, and clean up leftover renders. Setup has a "Speaker labels" row that installs
+  the speaker models (about 21 MB). Holos relabels a meeting automatically when its
+  labelling was interrupted, at most twice per meeting within 7 days; quitting during a
+  recording asks what to do. `build-app.sh` bundles and signs the CLI and refuses to
+  rebuild while a recorder runs from the bundle.
+- People and voices (wave 4): `speakers link <session> <speaker> <person|new:NAME>` (and
+  `speakers me`) links a speaker to a person and names it, so names carry across
+  meetings with or without voiceprints; `speakers reject` says a speaker is not a person
+  in that meeting. "Remember voices" is off by default (`people remember on|off|status
+  [--forget]`, or the People window): with it on, `link --learn-voice` learns one voice
+  sample per person and meeting from the confirmed speaker's clear turns only (2 s or
+  longer, not overlapped, not reassigned, split, or excluded; an outlier pass drops
+  turns far from the rest), extracted on demand by a fresh FluidAudio pass (the app runs
+  the bundled `holos` for it). Post-processing never stores voice embeddings; after
+  labelling it compares speakers with remembered voices and saves distances only, and
+  `speakers list` shows "suggestion: Maybe Jim". Suggestions are never exported, and
+  nothing is named automatically until thresholds are calibrated on the user's own
+  confirmed meetings (hidden `people calibrate --apply`; the default suggestion
+  threshold, 0.43 cosine distance, comes from the Otter calibration below). Samples live
+  in `Application Support/Holos/Speakers` (0700, 0600 files, excluded from Time Machine)
+  and follow later speaker edits in their meeting (a sample whose turns changed and that
+  can no longer be recomputed is removed, with a note on stderr; one from an earlier
+  labelling of the meeting is kept until new labels replace it). `people list [--json]`,
+  `rename`, `merge`, `forget` (a person, one sample, a meeting's samples, or `--all`), and
+  `export [--include-voiceprints]` manage them; People… in the menu does the same.
+  Forgetting cleans the meetings in the sessions folder, not sessions kept elsewhere with
+  `--directory`. A forget is journalled first and finished at the next app launch or
+  `people`, `speakers`, or `session` command if Holos stops midway. Known people's names
+  are added to meeting recognition vocabulary.
 - `voices list` and `say` provide native voice discovery, playback, and `.m4a`,
   `.wav`, or `.caf` export. Text comes from arguments or UTF-8 stdin.
 - `read` renders a local UTF-8 text/Markdown file or stdin as an ordered AAC
@@ -181,9 +221,15 @@ lease), speaker-model verification on fake files, `session import` and
 editors, selectors), recovery (journal rebuild, torn and corrupt journal lines,
 coverage and word-level replay, idempotence, the one-lease recover → rebuild →
 label chain), the session catalog's states and sizes, Delete Audio and Delete
-Meeting (including symbolic links in place of session folders), and the speaker
-algorithms (alignment, edit projection, carry-over, exporters, scoring) on synthetic
-data; run them with
+Meeting (including symbolic links in place of session folders), the menu bar meeting
+logic (the meeting reducer and controller, launchers and spawned children, the
+automatic relabel policy, the vocabulary hand-off file), people and voice profiles
+(recognition tiers and one-to-one assignment, enrollment rules, calibration, the
+private locked store, linking with and without voice learning, samples kept in step
+with edits and never overwritten by a stale refresh, forgetting and resuming a forget
+after a crash, the extractors' speaker-slot selection, and that post-processing stores
+distances but no vectors), and the speaker algorithms (alignment, edit projection,
+carry-over, exporters, scoring) on synthetic data; run them with
 `./scripts/test.sh`, which keeps `HOLOS_DATA_DIR` and `HOLOS_SUPPORT_DIR` in a
 temporary folder. The opt-in native fixture was exercised separately for both
 recognizers. WAV, CAF, and M4A synthesis/export were exercised without audible
@@ -232,6 +278,12 @@ Still requiring real-machine or user-data validation:
   ("Long recordings") and have not been run.
 - Label speakers on a real in-person meeting and a real 3 h call; hand-label a slice
   of a recording to measure speaker error rather than agreement with Otter.
+- Run the menu bar meeting checks in the [meeting validation guide](meeting-validation.md)
+  (permission prompts and ownership, an app or recorder killed mid-meeting, dictation
+  paused during a meeting, quitting while recording, installing speaker models from
+  Setup, automatic relabel after a shutdown) and the
+  [voice profile checks](voice-profile-validation.md) (a voice confirmed in one meeting is
+  suggested in the next; forgetting removes it). None has been run yet.
 - Measure recognition accuracy against private, human-reviewed reference audio.
   No general accuracy claim is established by the small fixture.
 - Audition native voices against the user's preferred baseline and validate export
@@ -246,13 +298,15 @@ Still requiring real-machine or user-data validation:
   may be consumed until the key is released. Copy overwrites the clipboard only
   when explicitly chosen from the menu.
 - Correction memory, correction management, or Foundation Models-assisted
-  correction. No correction or speaker database workflow is present.
-- Speaker names and edits: labels are "Speaker N" until renamed with `holos speakers`
-  (the review window is a later wave), and names and voices are not remembered across
-  meetings. Speaker counts are approximate: quieter or briefer speakers can merge into
-  others. The menu bar app has no meeting controls, Meetings window, or automatic
-  recovery yet; `session list`, `recover`, and `delete` are command-line only.
-  Nothing deletes old meetings automatically.
+  correction. No correction database workflow is present.
+- Speaker names and edits: labels are "Speaker N" until renamed or linked to a person
+  with `holos speakers`; the transcript review window is a later wave, so naming speakers
+  and learning voices are command-line only (the People window manages people and
+  voices but does not name speakers). Recognition thresholds come from a small
+  calibration (two recordings of one team); suggestions for a person recorded in the
+  other condition (room vs call) are less reliable. Speaker counts are approximate:
+  quieter or briefer speakers can merge into others. Nothing deletes old meetings
+  automatically.
 - URL/article extraction, PDF text extraction, and OCR. `read` supports local
   UTF-8 text/Markdown and stdin only.
 - Broader install/update/uninstall packaging and the T14 acceptance run.

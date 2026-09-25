@@ -46,7 +46,8 @@ Three concepts must stay separate: **transcription** produces words,
 speaker with a known person. Renaming a session's speaker is straightforward;
 recognizing that person in future sessions needs an additional opt-in enrollment
 and matching feature. Foundation Models cannot infer reliable speaker identity
-from transcript prose.
+from transcript prose. Holos now has that feature, opt-in and limited to
+confirmed labels (see "Voice profiles" below).
 
 ### Observed on this Mac
 
@@ -301,7 +302,29 @@ Meeting audio is retained by default until the user removes it. Dictation audio 
 ephemeral by default; confirmed corrections are retained, while recent raw results
 have a configurable short retention period. Debug logs contain timing/status rather
 than full documents. No recording or transcript is committed as a test fixture
-without deliberate selection. No inferred cross-meeting voiceprint database.
+without deliberate selection.
+
+### Voice profiles
+
+This reverses the earlier rule "No inferred cross-meeting voiceprint database" (user
+decision 2 in the [meeting-recording plan](meeting-recording-plan.md); details in
+[meeting-design.md](meeting-design.md) §4.10). People and voices are kept apart:
+
+- **Names are not biometric.** Linking a speaker to a person creates or reuses that
+  person whatever the settings, so names carry across meetings; each meeting also keeps
+  the name it was given as its own edit.
+- **Voiceprints are opt-in and come only from confirmed labels.** With "Remember
+  voices" on (off by default), naming a speaker with voice learning on stores one
+  sample per person and meeting: the mean embedding of that speaker's clear turns,
+  extracted on demand. Post-processing never stores voice embeddings; nothing is
+  inferred from unconfirmed speakers or automatic matches.
+- **Recognition only suggests** ("Maybe Jim — Confirm") until thresholds are calibrated
+  on the user's own confirmed meetings; suggestions never appear in exports.
+- **Storage and control.** Samples live only in Application Support/Holos/Speakers
+  (private, excluded from Time Machine), never in session exports. The People window
+  and `holos people` list, rename, merge, forget (one sample, a person, a meeting's
+  samples, or everything), and export them; forgetting is journalled so a crash cannot
+  strand voice data.
 
 ## Decisions to settle during discussion
 
@@ -314,7 +337,7 @@ without deliberate selection. No inferred cross-meeting voiceprint database.
 - **Voice bar and app coverage:** select an acceptable native narration voice and
   the actual target applications using the upcoming reference material.
 
-Deferred: cross-meeting identity enrollment, multi-language/code-switched dictation,
+Deferred: multi-language/code-switched dictation,
 automatic meeting summaries, cloud sync, calendar bots, a large meeting UI, voice
 cloning, and broad OS compatibility. A small transcript review window may follow
 the CLI once rename/edit/playback requirements are clear.

@@ -124,9 +124,10 @@ public enum SessionRecoveryCommand {
     /// is kept). A post-processing failure does not throw: it is reported in `warnings` with exit code 3. A file that
     /// the chain would read or replace and that a newer Holos wrote (the current transcript pointer or revision,
     /// vocabulary.json, postprocess.json, the speaker head or run) throws `unavailable` (schema rule 3, §1.6), with
-    /// the archive recovery kept.
+    /// the archive recovery kept. `profiles` is passed to the post-processor (voice suggestions, PR10).
     public static func run(_ request: Request, diarizer: (any SpeakerDiarizer)?, makeSpeech: LiveSpeechFactory? = nil,
                            freeSpace: any FreeSpaceProvider = VolumeFreeSpace(),
+                           profiles: SpeakerProfileStore? = nil,
                            progress: @escaping @Sendable (String) -> Void = { _ in },
                            step: @escaping @Sendable (Step) -> Void = { _ in }) async throws -> Outcome {
         let session = request.session
@@ -235,7 +236,7 @@ public enum SessionRecoveryCommand {
             } else {
                 do {
                     let processor = MeetingPostProcessor(diarizer: diarizer, options: PostProcessingOptions(),
-                                                         freeSpace: freeSpace)
+                                                         freeSpace: freeSpace, profiles: profiles)
                     let result = try await processor.run(session: session, lease: lease) { progress($0.message) }
                     record = result
                     step(.postProcessed)

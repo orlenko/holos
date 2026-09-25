@@ -5,7 +5,8 @@ import HolosMeeting
 
 /// "New Meeting Recording" (docs/meeting-design.md §5.8): name, in person or online call, the microphone that will
 /// be recorded, the disk estimate, the speaker models, and the consent reminder. Start is disabled when the disk
-/// policy refuses or, in person, the built-in microphone is missing. An ordinary window, like Setup.
+/// policy refuses or, in person, the built-in microphone is missing. A call that would record the microphone while the
+/// laptop speakers play gets the echo warning line (PR11). An ordinary window, like Setup.
 @MainActor
 final class MeetingStartPanel: NSObject, NSWindowDelegate {
     /// What the panel shows besides the user's choices; read every 2 s while it is open.
@@ -26,6 +27,8 @@ final class MeetingStartPanel: NSObject, NSWindowDelegate {
 
     private let window: NSWindow
     private let environment: () -> Environment
+    /// The system default output (PR11), looked up with the environment; nil when unknown.
+    private let findOutputRoute: () -> OutputRoute?
     /// Returns the error to show, or nil once the recording is starting.
     private let onStart: (MeetingStartSettings, Bool) -> String?
     private let onInstallSpeakerModels: () -> Void
@@ -39,6 +42,7 @@ final class MeetingStartPanel: NSObject, NSWindowDelegate {
     private let othersCheckbox = NSButton(
         checkboxWithTitle: "Others are in the room with me (label speakers on my microphone too)", target: nil, action: nil)
     private let microphoneLabel = NSTextField(wrappingLabelWithString: "")
+    private let echoLabel = NSTextField(wrappingLabelWithString: OutputRoute.echoRiskMessage)
     private let diskLabel = NSTextField(wrappingLabelWithString: "")
     private let speakersLabel = NSTextField(wrappingLabelWithString: "")
     private let installButton = NSButton(title: "Install…", target: nil, action: nil)
@@ -49,6 +53,7 @@ final class MeetingStartPanel: NSObject, NSWindowDelegate {
     private let cancelButton = NSButton(title: "Cancel", target: nil, action: nil)
     private var appRow: NSGridRow?
     private var othersRow: NSGridRow?
+    private var echoRow: NSGridRow?
     private var consentRow: NSView?
     /// Bundle IDs of the app popup's items; nil is "Any app".
     private var appIDs: [String?] = [nil]
@@ -58,8 +63,10 @@ final class MeetingStartPanel: NSObject, NSWindowDelegate {
     var isVisible: Bool { window.isVisible }
 
     init(environment: @escaping () -> Environment, onStart: @escaping (MeetingStartSettings, Bool) -> String?,
-         onInstallSpeakerModels: @escaping () -> Void, onClose: @escaping () -> Void) {
+         onInstallSpeakerModels: @escaping () -> Void, onClose: @escaping () -> Void,
+         findOutputRoute: @escaping () -> OutputRoute? = OutputRoute.current) {
         self.environment = environment
+        self.findOutputRoute = findOutputRoute
         self.onStart = onStart
         self.onInstallSpeakerModels = onInstallSpeakerModels
         self.onClose = onClose
@@ -81,10 +88,11 @@ final class MeetingStartPanel: NSObject, NSWindowDelegate {
         }
         appPopup.widthAnchor.constraint(equalToConstant: 260).isActive = true
         othersCheckbox.toolTip = "Holos then labels speakers on your microphone track too, not only in the call audio."
-        for label in [microphoneLabel, diskLabel, speakersLabel] {
+        for label in [microphoneLabel, echoLabel, diskLabel, speakersLabel] {
             label.font = .systemFont(ofSize: 12)
             label.preferredMaxLayoutWidth = 320
         }
+        echoLabel.textColor = .systemOrange
         installButton.target = self
         installButton.action = #selector(install)
         installButton.bezelStyle = .push
@@ -111,6 +119,7 @@ final class MeetingStartPanel: NSObject, NSWindowDelegate {
             [NSGridCell.emptyContentView, NSStackView(views: [NSTextField(labelWithString: "App"), appPopup])],
             [NSGridCell.emptyContentView, othersCheckbox],
             [Self.title("Mic"), microphoneLabel],
+            [NSGridCell.emptyContentView, echoLabel],
             [Self.title("Disk"), diskLabel],
             [Self.title("Speakers"), speakers],
         ])
@@ -119,6 +128,8 @@ final class MeetingStartPanel: NSObject, NSWindowDelegate {
         grid.column(at: 0).xPlacement = .trailing
         appRow = grid.row(at: 2)
         othersRow = grid.row(at: 3)
+        echoRow = grid.row(at: 5)
+        echoRow?.isHidden = true
         for index in 0..<grid.numberOfRows { grid.row(at: index).rowAlignment = .firstBaseline }
 
         consentLabel.font = .systemFont(ofSize: 12)
@@ -168,8 +179,10 @@ final class MeetingStartPanel: NSObject, NSWindowDelegate {
             errorLabel.isHidden = true
         }
         refresh()
+        // The panel is not resizable, so its size is always the one its rows need: fit it on every show, and
+        // place it only the first time.
+        window.setContentSize(window.contentView?.fittingSize ?? window.frame.size)
         if !positioned {
-            window.setContentSize(window.contentView?.fittingSize ?? window.frame.size)
             window.center()
             positioned = true
         }
@@ -209,6 +222,17 @@ final class MeetingStartPanel: NSObject, NSWindowDelegate {
             microphoneLabel.stringValue = BuiltInMicrophone.unavailableMessage
             microphoneLabel.textColor = .systemRed
             allowed = false
+        }
+        // A call recording the microphone while the laptop speakers play: other people's words reach it too (PR11).
+        let echoRisk = call && current.devices.systemDefault != nil && findOutputRoute()?.isBuiltInSpeakers == true
+        if let echoRow, echoRow.isHidden == echoRisk {
+            echoRow.isHidden = !echoRisk
+            // Also while the window is hidden: `show` refreshes before it makes the window visible, and it sizes
+            // the window itself only the first time, so a row that came or went since the panel was last open
+            // would otherwise squeeze the rows below it.
+            if positioned {
+                window.setContentSize(window.contentView?.fittingSize ?? window.frame.size)
+            }
         }
 
         let source: AudioSource = call ? .microphoneAndSystem : .microphone
