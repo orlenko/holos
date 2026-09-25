@@ -483,3 +483,14 @@ func inPersonSessionStillPostProcesses() async throws {
     #expect(run.tracks.map(\.policy) == [.diarized])
     #expect(Set(run.turns.map(\.speakerID)) == ["mic:S1", "mic:S2"])
 }
+
+@Test func microphoneOnlyWithoutADefaultInputIsRefusedBeforeASession() {
+    var options = RecordingOptions.testing(root: oneModeRoot, source: .microphone)
+    options.microphone = .systemDefault
+    let none = InputDevices(builtIn: nil, systemDefault: nil)
+    #expect(EpochPlan.make(options, devices: none) == nil)
+    #expect(EpochPlan.unavailableMessage(options, devices: none) == EpochPlan.noMicrophone)
+    options.microphone = .builtIn
+    #expect(EpochPlan.make(options, devices: none) == nil)
+    #expect(EpochPlan.unavailableMessage(options, devices: none) == BuiltInMicrophone.unavailableMessage)
+}

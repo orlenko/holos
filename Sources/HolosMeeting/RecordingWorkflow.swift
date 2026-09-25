@@ -243,10 +243,11 @@ public enum RecordingWorkflow {
         let stop = dependencies.stop
         defer { stop.restoreDefaultHandlers() }
         let options = try validated(options)
-        // In person without the built-in microphone: refused before a session exists (§4.12).
-        guard let plan = EpochPlan.make(options, devices: dependencies.findInputDevices(),
+        // A microphone-only recording without its microphone: refused before a session exists (§4.12).
+        let devices = dependencies.findInputDevices()
+        guard let plan = EpochPlan.make(options, devices: devices,
                                         lidOpen: dependencies.power?.isLidOpen() ?? true) else {
-            throw HolosError.unavailable(EpochPlan.builtInMicrophoneUnavailable)
+            throw HolosError.unavailable(EpochPlan.unavailableMessage(options, devices: devices))
         }
         try checkDisk(options, dependencies)
         let archive = try SessionArchive.create(root: options.root, name: options.name, source: options.source,
@@ -320,6 +321,7 @@ public enum RecordingWorkflow {
 /// What one capture epoch records, from the input devices present when it starts (decision 9, §4.12).
 struct EpochPlan: Sendable, Equatable {
     static let builtInMicrophoneUnavailable = BuiltInMicrophone.unavailableMessage
+    static let noMicrophone = "No microphone is connected. Connect one and try again."
 
     /// The epoch's `CaptureRequest.source`: `.system` for a call epoch without the microphone.
     var source: AudioSource
@@ -341,9 +343,10 @@ struct EpochPlan: Sendable, Equatable {
         let microphone = options.microphone == .builtIn ? devices.builtIn : devices.systemDefault
         switch options.source {
         case .microphone:
-            if options.microphone == .builtIn, microphone == nil { return nil }
-            if !lidOpen, let microphone, isBuiltIn(microphone, in: devices) { return nil }
-            return EpochPlan(source: .microphone, tracks: ["mic"], microphoneName: microphone?.name)
+            // Nothing to record: the selected microphone (built-in, or the system default input) is gone.
+            guard let microphone else { return nil }
+            if !lidOpen, isBuiltIn(microphone, in: devices) { return nil }
+            return EpochPlan(source: .microphone, tracks: ["mic"], microphoneName: microphone.name)
         case .microphoneAndSystem:
             if !lidOpen, options.microphone == .builtIn || microphone.map({ isBuiltIn($0, in: devices) }) == true {
                 return EpochPlan(source: .system, tracks: ["system"], microphoneName: nil,
@@ -354,6 +357,13 @@ struct EpochPlan: Sendable, Equatable {
         case .system:
             return EpochPlan(source: .system, tracks: ["system"], microphoneName: nil)
         }
+    }
+
+    /// Why `make` returned nil: no input device at all for a capture that follows the system default, otherwise
+    /// the built-in microphone being gone or off with the lid closed.
+    static func unavailableMessage(_ options: RecordingOptions, devices: InputDevices) -> String {
+        options.microphone == .systemDefault && devices.systemDefault == nil
+            ? noMicrophone : builtInMicrophoneUnavailable
     }
 
     /// The device is the built-in microphone: the same CoreAudio device, or the same stable UID.

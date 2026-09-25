@@ -283,7 +283,7 @@ struct MeetingControllerTuning: Sendable {
 
     // MARK: - Start checks
 
-    static let noMicrophone = "No microphone is connected. Connect one and try again."
+    static let noMicrophone = EpochPlan.noMicrophone
 
     /// Refuses a start the recorder would refuse: too little disk (`DiskPolicy.startCheck`), or a microphone-only
     /// recording without its microphone (the built-in one, or any input for `.systemDefault`). A free space that
