@@ -5866,7 +5866,13 @@ public struct OutputRoute: Sendable, Equatable {
 ```
 
 Dropped words go to `run.droppedWords` with reason `echo` and appear in no turn and no
-export. Warning text (start panel, CLI, `echoRisk`): "The laptop speakers are playing
+export. Consecutive matches extend one run only while both tracks stay inside
+`EchoFilter.echoRunGapSeconds` (2 s): matches further apart are separate utterances and
+each starts a new run, so the same short word said on both tracks three times over a call
+never adds up to the three-word minimum. A microphone cluster hidden as echo is also taken
+out of the overlap metadata of the words that survive, so no turn is marked overlapped
+with a cluster the run does not list as a speaker (which would also keep a real room
+speaker's turn out of voice enrollment). Warning text (start panel, CLI, `echoRisk`): "The laptop speakers are playing
 the call, so other people's voices also reach your microphone. Headphones give a
 cleaner transcript."
 

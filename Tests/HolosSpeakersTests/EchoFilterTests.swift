@@ -377,3 +377,69 @@ func longCallIsFilteredQuickly() {
     #expect(call.turns == plain.turns)
     #expect(call.speakers == plain.speakers)
 }
+
+@Test func isolatedRepeatsMinutesApartAreNotOneEchoRun() throws {
+    // Three separate "yes" exchanges, a minute apart: the same word on both tracks each time, each mic copy just
+    // after its system one. Each is a run of one, well under echoMinRunWords, so none of them is echo.
+    var segments: [TranscriptSegment] = []
+    for (index, start) in [10.0, 70.0, 130.0].enumerated() {
+        segments.append(echoSegment("S\(index)", ["yes"], track: "system", start: start))
+        segments.append(echoSegment("M\(index)", ["yes"], track: "mic", start: start + 0.4))
+    }
+
+    #expect(echoSpans(segments).isEmpty, "A lone acknowledgement is kept, however often the call repeats it.")
+
+    // The same three words said together are one phrase, and that is echo.
+    let together = [echoSegment("S", ["yes", "yes", "yes"], track: "system", start: 10),
+                    echoSegment("M", ["yes", "yes", "yes"], track: "mic", start: 10.4)]
+    #expect(echoSpans(together).count == 1)
+}
+
+@Test func aRunBreaksAtAPauseLongerThanTheGap() throws {
+    // Four matching words, with one pause longer than echoRunGapSeconds in the middle of both tracks: two runs of
+    // two, so neither reaches the three-word minimum.
+    let systemWords = [("one", 10.0), ("two", 10.3), ("three", 20.0), ("four", 20.3)]
+    var segments: [TranscriptSegment] = []
+    for (index, word) in systemWords.enumerated() {
+        segments.append(echoSegment("S\(index)", [word.0], track: "system", start: word.1))
+        segments.append(echoSegment("M\(index)", [word.0], track: "mic", start: word.1 + 0.4))
+    }
+    #expect(echoSpans(segments).isEmpty)
+
+    // Without the pause the same four words are one run, and echo.
+    let closeWords = [("one", 10.0), ("two", 10.3), ("three", 10.6), ("four", 10.9)]
+    var close: [TranscriptSegment] = []
+    for (index, word) in closeWords.enumerated() {
+        close.append(echoSegment("S\(index)", [word.0], track: "system", start: word.1))
+        close.append(echoSegment("M\(index)", [word.0], track: "mic", start: word.1 + 0.4))
+    }
+    #expect(!echoSpans(close).isEmpty)
+}
+
+/// A hybrid call: someone in the room speaks while the microphone's echo cluster is active. Their words survive,
+/// and must not be left overlapping a cluster the run does not list.
+@Test func aKeptWordDoesNotOverlapAHiddenEchoCluster() throws {
+    let echo = ["please", "review", "the", "budget", "before", "friday", "morning"]
+    let transcript = echoTranscript([
+        echoSegment("SYS", echo, track: "system", start: 20.0, wordSeconds: 0.4),
+        // mic:S2 hears all seven back: every word of the cluster is echo, so it is hidden.
+        echoSegment("ECHO", echo, track: "mic", start: 20.2, wordSeconds: 0.4),
+        // The room speaker starts while the echo cluster is still running.
+        echoSegment("ROOM", ["hold", "on", "a", "moment"], track: "mic", start: 23.0, wordSeconds: 0.4),
+    ])
+    // mic:S2 covers the echo and the first 0.2 s of the room speaker's first word; mic:S1 covers all of it, so
+    // that word is mic:S1's with mic:S2 over it (0.2 s, above min(0.1, 0.5 × 0.4)).
+    var micOutput = echoOutput(("S2", 20.1, 23.2), ("S1", 22.9, 24.7))
+    micOutput.centroids = ["S1": FloatVector([1, 0]), "S2": FloatVector([0, 1])]
+    let result = SpeakerRunBuilder.build(
+        sessionID: "SESSION", transcript: transcript,
+        tracks: [.init(track: "mic", policy: .diarized, output: micOutput),
+                 .init(track: "system", policy: .diarized, output: echoOutput(("S1", 19.5, 23.5)))],
+        engine: .fake, parameters: callParameters)
+    let run = result.run
+    #expect(!run.speakers.map(\.id).contains("mic:S2"), "The echo cluster is not listed.")
+    let room = try #require(run.turns.first { $0.spans.contains { $0.segmentID == "ROOM" } })
+    #expect(room.speakerID == "mic:S1")
+    #expect(room.otherClusters.isEmpty, "The hidden cluster is not named as an overlap.")
+    #expect(!room.overlap, "So the turn is not marked overlapped with a speaker the run does not have.")
+}
