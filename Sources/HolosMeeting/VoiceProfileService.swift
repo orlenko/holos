@@ -1124,14 +1124,10 @@ public enum VoiceProfileService {
             sessions = []
         }
         var failed = 0
-        var exportsOwed = 0
+        var owed: [URL] = []
         for session in sessions {
             do {
-                try clean(session, kind: kind, profileID: owner, store: store)
-            } catch is ExportRewriteFailed {
-                // The voices are gone from this meeting; only its exported transcript still holds the name.
-                exportsOwed += 1
-                log.error("Cannot rewrite a meeting's exports after a forget yet")
+                if try scrub(session, kind: kind, profileID: owner, store: store) { owed.append(session) }
             } catch {
                 failed += 1
                 log.error("Cannot remove forgotten voices from a meeting yet: \(ProcessSpawner.logCategory(error), privacy: .public)")
@@ -1139,8 +1135,18 @@ public enum VoiceProfileService {
         }
         if failed == 0, try !store.forgetIsCleaned(record.id) {
             // Nothing Holos reads names the forgotten person any more, so recognition need not wait on whatever is
-            // still owed (`recognitionAllowed`).
+            // still owed (`recognitionAllowed`). Written before the exports are rewritten, so those rewrites see
+            // the meetings as they are now and keep every name this forget does not touch.
             try store.appendForgetRecord(.cleaned(record.id))
+        }
+        var exportsOwed = 0
+        for session in owed {
+            do {
+                try rewriteExports(session, store: store)
+            } catch {
+                exportsOwed += 1
+                log.error("Cannot rewrite a meeting's exports after a forget yet: \(ProcessSpawner.logCategory(error), privacy: .public)")
+            }
         }
         guard failed == 0, exportsOwed == 0 else {
             let count = failed + exportsOwed
@@ -1149,13 +1155,6 @@ public enum VoiceProfileService {
         }
         try store.appendForgetRecord(.done(record.id))
         return removed
-    }
-
-    /// A meeting whose exported transcripts could not be rewritten after a forget. Everything the forget removes
-    /// is gone from what Holos reads; only the files the user can open still hold the name, so the tombstone stays
-    /// pending for another try while recognition carries on.
-    private struct ExportRewriteFailed: Error {
-        let underlying: any Error
     }
 
     /// Removes what a forget leaves in one meeting, under its speaker lock: every voice file and recognition result
@@ -1173,22 +1172,21 @@ public enum VoiceProfileService {
     /// recognition results, so a meeting that has them is rewritten on every run until it succeeds; `.all` deletes
     /// them, so every meeting whose exports Holos generated is rewritten. `.sample` and `.session` change no name and
     /// rewrite nothing. The rewrite itself is idempotent: it writes only the files that differ from what it renders.
-    private static func clean(_ session: URL, kind: ForgetRecord.Kind, profileID: String?,
-                              store: SpeakerProfileStore) throws {
+    private static func scrub(_ session: URL, kind: ForgetRecord.Kind, profileID: String?,
+                              store: SpeakerProfileStore) throws -> Bool {
         do {
             _ = try SessionArchive.readManifest(at: session)
         } catch {
             // The voice data goes now, because it cannot be told apart without the manifest. The exports cannot be
-            // rewritten without it either, and they may still hold a name this forget removes, so the tombstone
-            // stays pending: a repaired manifest is rewritten at the next launch.
+            // rewritten without it either, and they may still hold a name this forget removes, so they stay owed:
+            // a repaired manifest is rewritten at the next launch.
             if try SessionSpeakerStore.purgeVoiceFolders(session: session, recognition: kind != .sample) {
                 log.error("Deleted the voice data of a meeting whose manifest cannot be read: \(ProcessSpawner.logCategory(error), privacy: .public)")
             }
             var generated = stat()
-            guard kind == .profile || kind == .all,
-                  lstat(SessionPaths.generatedExports(session).path, &generated) == 0,
-                  (generated.st_mode & S_IFMT) == S_IFREG else { return }
-            throw ExportRewriteFailed(underlying: error)
+            return (kind == .profile || kind == .all)
+                && lstat(SessionPaths.generatedExports(session).path, &generated) == 0
+                && (generated.st_mode & S_IFMT) == S_IFREG
         }
         let hadRecognition = try SessionArchive.withSpeakerLock(at: session) { () throws -> Bool in
             let recognition = try SessionSpeakerStore.recognitionFiles(session: session)
@@ -1206,7 +1204,14 @@ public enum VoiceProfileService {
                 let known = Set(database.profiles.map(\.id))
                 let isThePerson: (String?) -> Bool = { linked in
                     guard let linked else { return false }
-                    return linked == profileID || !known.contains(linked)
+                    if linked == profileID { return true }
+                    guard !known.contains(linked) else { return false }
+                    // A link naming somebody the store no longer holds is this person's, because a merge moves
+                    // the samples and leaves the meeting's link as it was. Unless the store says where that
+                    // person went: a merge still retargeting its meetings has links that belong to whoever they
+                    // were merged into, and a forget of anybody else must leave them alone.
+                    let moved = Self.mergedOnwards(linked, in: database)
+                    return moved == profileID || !known.contains(moved)
                 }
                 if kind == .profile {
                     _ = try removeMatches(isThePerson, files: recognition, session: session)
@@ -1225,14 +1230,16 @@ public enum VoiceProfileService {
         }
         let owesExports = kind == .all || (kind == .profile && hadRecognition)
         var generated = stat()
-        guard owesExports, lstat(SessionPaths.generatedExports(session).path, &generated) == 0,
-              (generated.st_mode & S_IFMT) == S_IFREG else { return }
-        do {
-            try SessionExports.regenerate(session: session, profileNames: profileNames(store: store),
-                                          applyRecognition: recognitionAllowed(store: store))
-        } catch {
-            throw ExportRewriteFailed(underlying: error)
-        }
+        return owesExports && lstat(SessionPaths.generatedExports(session).path, &generated) == 0
+            && (generated.st_mode & S_IFMT) == S_IFREG
+    }
+
+    /// Rewrites one meeting's generated exports after a forget has scrubbed every meeting, so the names they show
+    /// are the ones that survive it: the people who were forgotten are gone from the recognition results by now,
+    /// and `recognitionAllowed` no longer holds this forget against them, so everybody else keeps their name.
+    private static func rewriteExports(_ session: URL, store: SpeakerProfileStore) throws {
+        try SessionExports.regenerate(session: session, profileNames: profileNames(store: store),
+                                      applyRecognition: recognitionAllowed(store: store))
     }
 
     /// Removes every reference to the person (`isThePerson`: matches, merge suggestions, skipped people; one helper,

@@ -3414,7 +3414,10 @@ public struct SpeakerProfileDatabase: Codable, Sendable, Equatable {
     and its `stored` line makes the next run sweep once more, which forgets slightly more
     than it had to, never less.
   - A `cleaned` line follows, once every meeting's voice data and recognition results are
-    done and only some meeting's exported transcript is still owed. Nothing Holos reads
+    done, and before any exported transcript is rewritten. The forget visits the meetings
+    twice for that reason: scrubbing them all, then rewriting the exports of those that
+    owe one. A rewrite that ran while the forget still held recognition back would have
+    dropped every other person's automatic name from that meeting for good. Nothing Holos reads
     names the forgotten person from then on, so `recognitionAllowed` stops waiting on that
     tombstone: a meeting whose manifest cannot be read keeps its forget pending for a
     readable one without suppressing voice suggestions everywhere in the meantime.
@@ -3427,6 +3430,10 @@ public struct SpeakerProfileDatabase: Codable, Sendable, Equatable {
     is reported as not saved and is not tried again, since a retry would put back what they
     have just forgotten. `perform` acts only on a tombstone the journal still holds as
     unfinished, so replaying a finished one changes nothing at all.
+  - A link naming somebody the store no longer holds counts as the forgotten person's,
+    because a merge moves the samples and leaves the meeting's link as it was — unless
+    `mergedInto` says where that person went and they are still there, which means a merge
+    is retargeting its meetings and those links are somebody else's.
   - The `stored` line also records the person the meetings are cleaned of: for a `.sample`
     or `.profile` forget, the person the store write found the listed samples under, which
     a merge may have changed since the tombstone was written. Cleaning with the tombstone's

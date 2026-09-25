@@ -2528,3 +2528,70 @@ func anEditThatNeedsWholeLabelsIsRefusedUnderTheLock() async throws {
                                 requirePeople: ["JIM": "Jim"])
     #expect(try SessionSpeakerStore.readEdits(session: session).edits.count > before)
 }
+
+@Test(.timeLimit(.minutes(1)))
+func forgettingOnePersonKeepsTheOtherAutomaticNames() async throws {
+    let temp = try TemporaryDirectory("profiles")
+    defer { temp.remove() }
+    let store = profileStore(temp)
+    try store.update { $0.rememberVoices = true }
+    let (session, record) = try await profileProcessedSession(in: temp, store: nil, forceVoiceData: true)
+    let runID = try #require(record.runID)
+    try store.update {
+        $0.profiles = [profilePerson("JIM", "Jim", vector: profileAxis(0)),
+                       profilePerson("MARIA", "Maria", vector: profileAxis(1))]
+    }
+    // The meeting names both automatically: a likely match each.
+    try SessionArchive.withSpeakerLock(at: session) {
+        try SessionSpeakerStore.writeRecognition(
+            RecognitionResult(runID: runID, embeddingModel: profileModel,
+                              thresholds: SpeakerRecognizer.defaultThresholds,
+                              matches: [SpeakerMatch(speakerID: "mic:S1", profileID: "JIM", profileName: "Jim",
+                                                     distance: 0.05, tier: .likely),
+                                        SpeakerMatch(speakerID: "mic:S2", profileID: "MARIA", profileName: "Maria",
+                                                     distance: 0.05, tier: .likely)]),
+            session: session)
+    }
+    try SessionExports.regenerate(session: session, profileNames: VoiceProfileService.profileNames(store: store))
+    let markdown = SessionPaths.export("md", in: session)
+    #expect(SessionFixtures.text(markdown).contains("Jim"))
+    #expect(SessionFixtures.text(markdown).contains("Maria"))
+
+    try VoiceProfileService.forget(profileID: "JIM", store: store, sessionsRoot: temp.url)
+
+    let text = SessionFixtures.text(markdown)
+    #expect(!text.contains("Jim"), "The forgotten person's automatic name is gone from the exports.")
+    #expect(text.contains("Maria"),
+            "And everybody else keeps theirs: the rewrite runs once the meetings are cleaned.")
+    #expect(try store.pendingForgets().isEmpty)
+}
+
+@Test(.timeLimit(.minutes(1)))
+func aForgetLeavesAnotherPendingMergeAlone() async throws {
+    let temp = try TemporaryDirectory("profiles")
+    defer { temp.remove() }
+    let store = profileStore(temp)
+    let (session, runID, jim) = try await profileForgetFixture(temp, store: store)
+    try store.update {
+        $0.profiles.append(SpeakerProfile(id: "MARIA", displayName: "Maria"))
+        $0.profiles.append(profilePerson("SAM", "Sam", vector: profileAxis(5)))
+    }
+    // Jim was merged into Maria and the meetings have not been retargeted yet, so the meeting still names Jim,
+    // who is no longer in the store.
+    let pending = ForgetRecord(kind: .merge, profileID: jim, targetProfileID: "MARIA")
+    try store.appendForgetRecord(pending)
+    try store.appendForgetRecord(.stored(pending.id))
+    try store.update { database in
+        database.profiles.removeAll { $0.id == jim }
+        database.mergedInto = [jim: "MARIA"]
+    }
+
+    // An unrelated person is forgotten meanwhile.
+    try VoiceProfileService.forget(profileID: "SAM", store: store, sessionsRoot: temp.url)
+
+    #expect(try SessionSpeakerStore.readRecognition(runID: runID, session: session)?.matches.first?.profileID == jim,
+            "Sam's forget must not take a link that belongs to the person Jim was merged into.")
+    try VoiceProfileService.resumePendingForgets(store: store, sessionsRoot: temp.url)
+    #expect(try SessionSpeakerStore.readRecognition(runID: runID, session: session)?.matches.first?.profileID
+            == "MARIA", "And the merge can still finish its meetings.")
+}
