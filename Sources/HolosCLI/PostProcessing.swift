@@ -7,22 +7,23 @@ import HolosStorage
 
 /// The post-processor the CLI runs, after a recording and (from PR7b) for `holos session diarize`.
 ///
-/// The diarizer is `FluidDiarizer` with `options.engineOverrides` applied when the speaker models are verified
-/// (`FluidModels.status() == .verified`), else nil (speaker-less exports and the setup hint). Invalid engine
-/// overrides give a diarizer that fails with the reason, so the diarize stage records it. The people store
+/// The diarizer is `makeDiarizer(engineOverrides: options.engineOverrides)`. The people store
 /// (`SpeakerProfileStore()`) lets stage 7 suggest known people when "Remember voices" is on (PR10).
 func makeMeetingPostProcessor(options: PostProcessingOptions = .init()) -> MeetingPostProcessor {
     MeetingPostProcessor(diarizer: makeDiarizer(engineOverrides: options.engineOverrides), options: options,
                          profiles: SpeakerProfileStore())
 }
 
-/// `FluidDiarizer` over the installed models, or nil when they are not verified.
+/// `FluidDiarizer` over the installed models with `engineOverrides` applied (`FluidDiarizer.forInstalledModels`):
+/// nil only when the models are not installed (speaker-less exports and the setup hint). Damaged models give a
+/// diarizer that fails with "missing or damaged", and invalid engine overrides one that fails with the reason, so
+/// the diarize stage records the failure.
 func makeDiarizer(engineOverrides: [String: String]) -> (any SpeakerDiarizer)? {
-    guard FluidModels.status() == .verified else { return nil }
     do {
         let configuration = try FluidDiarizerConfiguration.default.overridden(by: engineOverrides)
-        return FluidDiarizer(configuration: configuration)
+        return FluidDiarizer.forInstalledModels(configuration: configuration)
     } catch {
+        guard FluidModels.status() != .notInstalled else { return nil }
         return RejectedSettingsDiarizer(error: error as? HolosError ?? .invalidInput(error.localizedDescription))
     }
 }
@@ -32,12 +33,25 @@ func makeDiarizer(engineOverrides: [String: String]) -> (any SpeakerDiarizer)? {
 /// `DiarizerVoiceSampleExtractor`. Nil when the speaker models are not verified.
 func makeVoiceSampleExtractor(session: URL) -> (any VoiceSampleExtractor)? {
     var overrides: [String: String] = [:]
-    if let head = try? SessionSpeakerStore.readHead(session: session),
-       let run = try? SessionSpeakerStore.readRun(id: head.runID, session: session),
-       let configuration = run.engine?.configuration {
-        for key in FluidDiarizerConfiguration.overrideKeys { overrides[key] = configuration[key] }
+    do {
+        // A meeting with no labels yet has no settings to match, and the defaults are right for it. One whose
+        // head or run cannot be read right now is different: taking that for "no settings" would build a
+        // default diarizer and then check it against nothing, so a voice could be learned from a pass that does
+        // not match how the meeting was labelled. No extractor is the honest answer, and the command says so.
+        if let head = try SessionSpeakerStore.readHead(session: session) {
+            let run = try SessionSpeakerStore.readRun(id: head.runID, session: session)
+            for key in FluidDiarizerConfiguration.overrideKeys {
+                overrides[key] = run.engine?.configuration[key]
+            }
+        }
+    } catch {
+        Console.error("Cannot read how this meeting's speakers were labelled, so no voice can be learned from it: "
+                      + error.localizedDescription)
+        return nil
     }
-    return makeDiarizer(engineOverrides: overrides).map { DiarizerVoiceSampleExtractor(diarizer: $0) }
+    return makeDiarizer(engineOverrides: overrides).map {
+        DiarizerVoiceSampleExtractor(diarizer: $0, expectedConfiguration: overrides)
+    }
 }
 
 /// The hook `holos record start` runs under the processing lease after the archive is finished.

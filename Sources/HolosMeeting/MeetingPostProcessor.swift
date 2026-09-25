@@ -62,7 +62,8 @@ public struct MeetingPostProcessor: Sendable {
 
     /// Runs every stage for one finished session under `lease` (nil: acquire one, retry 1 s) and returns the
     /// final postprocess.json record. Throws only when it cannot start (still recording, lease held elsewhere,
-    /// unreadable manifest); stage failures are recorded in the returned record.
+    /// unreadable manifest, a postprocess.json written by a newer Holos or that cannot be read now); stage failures
+    /// are recorded in the returned record.
     ///
     /// A given lease must be this session's and not released; it stays held afterwards (the caller releases it).
     /// The lock is held for the whole run even if the caller releases the lease meanwhile. A cancelled run deletes
@@ -91,6 +92,16 @@ public struct MeetingPostProcessor: Sendable {
     private func start(session: URL, startedAt: Date,
                        progress: @escaping @Sendable (PostProcessingProgress) -> Void) async throws -> PostProcessingRecord {
         let manifest = try SessionArchive.readManifest(at: session)
+        // The record is replaced from the first write on: one written by a newer Holos is refused (schema rule 3,
+        // §1.6), never overwritten. A damaged one is replaced.
+        do {
+            _ = try SessionFiles.postProcessingRecord(session: session, manifest: manifest)
+        } catch let error where SessionFiles.isDamage(error) {
+            Self.log.error("Session \(manifest.id, privacy: .public): replacing an unusable postprocess.json: \(error.localizedDescription, privacy: .private)")
+        }
+        // Read before anything is written, so an audio-deleted.json from a newer Holos is refused (`unavailable`)
+        // rather than read as audio that is still there; stage 4 reads it again.
+        _ = try SessionFiles.audioDeleted(session: session, sessionID: manifest.id)
         // A recorder that died leaves a status that is not exited; say so before labelling (§4.7 stage 0).
         do { try RecorderChannel.markDeadRecorderExited(session: session) } catch {
             Self.log.error("Session \(manifest.id, privacy: .public): cannot check the recorder status: \(error.localizedDescription, privacy: .public)")
@@ -174,7 +185,10 @@ public struct MeetingPostProcessor: Sendable {
         started = recorder.begin(.export, message: "Writing transcript files…")
         do {
             let names = profiles.map { VoiceProfileService.profileNames(store: $0) } ?? [:]
-            let result = try SessionExports.regenerate(session: session, profileNames: names)
+            let result = try SessionExports.regenerate(session: session, profileNames: names,
+                                                       applyRecognition: profiles.map {
+                                                           VoiceProfileService.recognitionAllowed(store: $0)
+                                                       } ?? true)
             let moved = result.movedAside.count
             recorder.end(.export, .succeeded,
                          moved == 0 ? nil : "Moved \(moved) edited transcript \(moved == 1 ? "file" : "files") aside.",
@@ -207,6 +221,25 @@ public struct MeetingPostProcessor: Sendable {
     }
 
     /// Stages 2–7. Every failure is recorded as a stage outcome; only cancellation throws.
+    /// The people store's forget counter, or nil with no store (and nil when it cannot be read, which compares
+    /// equal to itself, so a store that is unreadable throughout a pass does not stop it writing).
+    private func forgetEpochNow() -> Int? {
+        guard let profiles else { return nil }
+        return (try? profiles.load().forgetEpoch) ?? nil
+    }
+
+    /// Whether a forget is still on its way through the meetings. A pass that started after such a forget's store
+    /// write sees no change in the counter, yet its clean-up may pass this meeting before the pass publishes, so
+    /// the voice file waits for it either way.
+    private func aForgetIsStillCleaning() -> Bool {
+        guard let profiles else { return false }
+        guard let pending = try? profiles.pendingForgets() else { return true }
+        if pending.contains(where: { $0.kind != .merge }) { return true }
+        // A forget of a newer Holos is not in that list: this build cannot decode its line, and that build can
+        // scrub this meeting and finish while this pass runs.
+        return (try? profiles.forgetJournalHasUnreadableLines()) ?? true
+    }
+
     private func labelSpeakers(session: URL, manifest: SessionManifest, transcript: Transcript,
                                recorder: StageRecorder) async throws -> SpeakerResult {
         // Stage 2: track policies.
@@ -218,6 +251,14 @@ public struct MeetingPostProcessor: Sendable {
             recorder.skip([.render, .diarize, .align], message)
             return SpeakerResult(problem: message)
         }
+        // Rendering and diarizing take a while, and this pass may write a voice file (evaluation sessions only).
+        // A forget that lands meanwhile has already cleaned this meeting, so what this pass computed must not be
+        // written afterwards: the epoch it started with is compared again under the speaker lock at the publish.
+        let forgetEpoch = forgetEpochNow()
+        // And whether one was already on its way through the meetings: such a forget can reach this meeting and
+        // finish while this pass is still rendering, leaving nothing pending and the counter unchanged at the
+        // publish, so neither test would catch it on its own.
+        let forgetWasCleaning = aForgetIsStillCleaning()
         let othersInRoom = options.othersInRoom ?? meeting.othersInRoom
         recorder.journal.update { $0.othersInRoom = othersInRoom }
         var result = SpeakerResult(othersInRoom: othersInRoom)
@@ -248,7 +289,17 @@ public struct MeetingPostProcessor: Sendable {
         if diarized.isEmpty {
             recorder.skip([.render, .diarize], SpeakerAnalysis.noTrackToLabel)
         } else if let diarizer {
-            if SessionFiles.audioDeleted(session: session) {
+            let audioDeleted: Bool
+            do {
+                audioDeleted = try SessionFiles.audioDeleted(session: session, sessionID: manifest.id)
+            } catch let error where !(error is CancellationError) {
+                let message = "Cannot read audio-deleted.json: \(error.localizedDescription)"
+                recorder.skip([.render, .diarize, .align], message)
+                result.runID = head?.usableRunID
+                result.problem = message
+                return result
+            }
+            if audioDeleted {
                 recorder.skip([.render, .diarize, .align], SpeakerAnalysis.audioDeleted)
                 result.runID = head?.usableRunID
                 result.problem = SpeakerAnalysis.audioDeleted
@@ -296,7 +347,11 @@ public struct MeetingPostProcessor: Sendable {
         try Task.checkCancellation()
         do {
             switch try SpeakerAnalysis.publish(built, session: session, transcript: transcript, force: options.force,
-                                               writeVoiceData: options.forceVoiceData) {
+                                               writeVoiceData: options.forceVoiceData,
+                                               voiceDataStillWanted: {
+                                                   self.forgetEpochNow() == forgetEpoch && !forgetWasCleaning
+                                                       && !self.aForgetIsStillCleaning()
+                                               }) {
             case .keptEditedHead(let runID):
                 recorder.end(.align, .skipped, SpeakerAnalysis.editedHead, since: started)
                 result.runID = runID

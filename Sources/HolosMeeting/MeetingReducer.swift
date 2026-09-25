@@ -88,6 +88,8 @@ public enum MeetingEffect: Sendable, Equatable {
     case terminateChild(sessionID: String)
     case announce(String)                // first menu line / status item tooltip
     case setDictationPaused(Bool)
+    /// `speakersReady` from the reducer: post-processing ran to its end, so labels may be saved; `MeetingController`
+    /// replaces it with the result of checking the saved labels.
     case finished(sessionID: String, summary: String, speakersReady: Bool)
     /// "Name Speakers — <name>…" at the top of the menu and a dot on the status item, until reviewed.
     case offerNaming(sessionID: String, name: String)
@@ -300,7 +302,9 @@ public struct MeetingReducer: Sendable, Equatable {
             }
         }
         state = .idle
-        let ready = status.exit?.postprocessing == .succeeded
+        // Post-processing ran to its end, perhaps with a warning (partial): labels may be saved. `MeetingController`
+        // checks the saved labels before it reports them ready or offers naming.
+        let ready = status.exit?.postprocessing == .succeeded || status.exit?.postprocessing == .partial
         var effects: [MeetingEffect] = [.finished(sessionID: sessionID, summary: Self.summary(status),
                                                   speakersReady: ready)]
         if ready { effects.append(.offerNaming(sessionID: sessionID, name: status.name)) }

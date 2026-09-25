@@ -325,6 +325,31 @@ func editedHeadNeedsForce() async throws {
 }
 
 @Test(.timeLimit(.minutes(1)))
+func damagedHeadIsReplaced() async throws {
+    let temp = try TemporaryDirectory("postprocess")
+    defer { temp.remove() }
+    let (session, _) = try await postProcessorSession(in: temp.url)
+    let first = try await postProcessor().run(session: session, lease: nil)
+    let firstRun = try #require(first.runID)
+    try SessionFixtures.appendEdits([.rename(speakerID: "mic:S1", name: "Jim")], session: session)
+    try AtomicFile.write(Data("not json".utf8), to: SessionPaths.head(session))
+    // The snapshot tells the user to relabel (SpeakerSnapshotDiagnostics.notes); relabelling must then work.
+    #expect(try SpeakerSessionSnapshot.load(session: session).diagnostics.notes.first?
+        .contains("holos session diarize --force") == true)
+
+    let relabelled = try await postProcessor(options: PostProcessingOptions(force: true))
+        .run(session: session, lease: nil)
+    #expect(relabelled.state == .succeeded)
+    let newRun = try #require(relabelled.runID)
+    #expect(newRun != firstRun)
+    #expect(try SessionSpeakerStore.readHead(session: session)?.runID == newRun)
+    #expect(relabelled.message?.contains(SpeakerAnalysis.previousUnreadable) == true)
+    let snapshot = try SpeakerSessionSnapshot.load(session: session)
+    #expect(snapshot.runProblem == nil && snapshot.run?.id == newRun)
+    #expect(snapshot.diagnostics.notes == [])
+}
+
+@Test(.timeLimit(.minutes(1)))
 func changedTranscriptRelabels() async throws {
     let temp = try TemporaryDirectory("postprocess")
     defer { temp.remove() }

@@ -138,6 +138,95 @@ private final class ReaperProbe {
     #expect(try SessionArchive.isProcessing(at: session), "A failed spawn leaves the lease with this process.")
 }
 
+/// A log folder that cannot be made, or a log that cannot be opened, is dropped: the labelling child still starts,
+/// with its stderr discarded, instead of the labelling being reported as failed because of the log.
+@Test @MainActor func unusableLabellingLogDoesNotStopTheLabelling() async throws {
+    let temp = try TemporaryDirectory("launcher")
+    defer { temp.remove() }
+    // A regular file where the log folder should be: the folder cannot be made.
+    let blocker = temp.url.appendingPathComponent("not-a-folder")
+    try Data().write(to: blocker)
+    let folder = blocker.appendingPathComponent("logs", isDirectory: true)
+    #expect(InProcessLauncher.labellingLog(in: folder, sessionID: "3F2A9C1E-0000-4000-8000-000000000001") == nil)
+    let usable = temp.url.appendingPathComponent("logs", isDirectory: true)
+    #expect(InProcessLauncher.labellingLog(in: usable, sessionID: "3F2A9C1E-0000-4000-8000-000000000001")?
+        .lastPathComponent == "recorder-3F2A9C1E-0000-4000-8000-000000000001.log")
+
+    let session = try await launcherSession(in: temp.url)
+    let lease = try SessionArchive.acquireProcessingLease(at: session)
+    defer { lease.release() }
+    let record = await InProcessLauncher.handOffPostProcessing(
+        session: session, lease: lease, executable: URL(fileURLWithPath: "/usr/bin/true"), arguments: [],
+        log: folder.appendingPathComponent("recorder.log"), progress: { _ in }, pollInterval: .milliseconds(20))
+    // /usr/bin/true ran (and printed no record): not "could not start", and no log is named.
+    #expect(record.message?.contains("could not start") == false)
+    #expect(record.message?.contains("exit code 0") == true)
+    #expect(record.message?.contains("Details:") == false)
+}
+
+/// A quit once the transcript is saved (§5.8): the in-process recording stops waiting for its labelling child, writes
+/// exited with post-processing still running, and ends; the child keeps the processing lease and finishes on its own.
+/// A recording that has not reached labelling is not told.
+@Test(.timeLimit(.minutes(1))) @MainActor
+func quitLeavesLabellingToTheChildAndEndsTheRecording() async throws {
+    let temp = try TemporaryDirectory("launcher")
+    defer { temp.remove() }
+    // The labelling child runs until the test opens the gate (10 s at most).
+    let gate = temp.url.appendingPathComponent("gate")
+    let script = try launcherScript(
+        "i=0\nwhile [ ! -e '\(gate.path)' ] && [ $i -lt 200 ]; do sleep 0.05; i=$((i+1)); done", in: temp.url)
+    defer { try? Data().write(to: gate) }
+    let captures = FakeCaptureFactory([FakeCaptureScript(frames: FakeFrame.run(count: 2))])
+    let launcher = InProcessLauncher(executable: script,
+                                     logDirectory: temp.url.appendingPathComponent("logs", isDirectory: true))
+    launcher.makeDependencies = { stop, hook in
+        recorderDependencies(captures: captures, postProcess: hook, stop: stop)
+    }
+    let id = UUID().uuidString
+    let session = temp.url.appendingPathComponent("\(id).holos", isDirectory: true)
+    let exits = SharedValue(0)
+    launcher.onExit = { _, _ in exits.update { $0 += 1 } }
+    _ = try launcher.launch(MeetingStartSettings(name: "Standup", source: .microphone), sessionID: id,
+                            root: temp.url, vocabularyFile: nil)
+    #expect(await eventually { (captures.captures.first?.consumedFrames ?? 0) >= 2 })
+    #expect(!launcher.leaveLabellingToItsChild(), "A recording that has not reached labelling is left alone.")
+    #expect(launcher.terminate(sessionID: id))
+    #expect(await eventually { launcher.leaveLabellingToItsChild() })
+    #expect(await eventually(timeout: .seconds(5)) { !launcher.isRecording },
+            "The recording ends without waiting for the labelling child.")
+    #expect(!exists(gate), "The child was still labelling.")
+    let status = try #require(try RecorderChannel.readStatus(session: session))
+    #expect(status.phase == .exited)
+    #expect(status.exit?.postprocessing == .running)
+    #expect(status.exit?.archiveStatus == ArchiveStatus.complete)
+    #expect(exits.value == 1)
+    #expect(try SessionArchive.isProcessing(at: session), "The labelling child keeps the lease.")
+    try Data().write(to: gate)
+    #expect(await eventually(timeout: .seconds(10)) { (try? SessionArchive.isProcessing(at: session)) == false })
+}
+
+/// A waiting quit goes ahead in child mode once capture stopped; in-process only once the recording here has ended,
+/// whatever phase the followed status shows (post-processing included).
+@Test func quitReadinessByLauncherMode() {
+    let id = "3F2A9C1E-0000-4000-8000-000000000001"
+    let finishing = MeetingState.finishing(sessionID: id, status: nil)
+    let starting = MeetingState.starting(sessionID: id, since: Date(), pid: nil)
+    let failed = MeetingState.failed(sessionID: id, message: "The recorder did not start within 2 minutes.")
+    for state in [MeetingState.idle, finishing, failed] {
+        #expect(QuitReadiness.ready(state, inProcess: false, recordingHere: false))
+        #expect(!QuitReadiness.ready(state, inProcess: true, recordingHere: true))
+        #expect(QuitReadiness.ready(state, inProcess: true, recordingHere: false))
+    }
+    #expect(!QuitReadiness.ready(starting, inProcess: false, recordingHere: false))
+    #expect(!QuitReadiness.ready(starting, inProcess: true, recordingHere: true))
+    #expect(QuitReadiness.ready(starting, inProcess: true, recordingHere: false), "The recording here ended.")
+}
+
+private func exists(_ url: URL) -> Bool {
+    var info = stat()
+    return lstat(url.path, &info) == 0
+}
+
 @Test @MainActor func childLauncherLogsAndReportsTheExit() async throws {
     let temp = try TemporaryDirectory("launcher")
     defer { temp.remove() }

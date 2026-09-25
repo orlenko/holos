@@ -17,6 +17,12 @@ private final class ControllerProbe {
     var states: [MeetingState] = []
     var effects: [MeetingEffect] = []
     var attempts: [String: Int] = [:]
+    /// The saved launched recorders (UserDefaults "meeting.launchedRecorders" in the app).
+    var launched: [String: [Int]] = [:]
+    /// The dismissed naming offers (UserDefaults "meeting.namingOffersDismissed" in the app).
+    var dismissed: [String: String] = [:]
+
+    var offers: [MeetingEffect] { effects.filter { if case .offerNaming = $0 { true } else { false } } }
 
     var dictation: [Bool] {
         effects.compactMap { if case .setDictationPaused(let paused) = $0 { paused } else { nil } }
@@ -43,6 +49,10 @@ private func makeController(root: URL, launcher: FakeRecorderLauncher, probe: Co
     try? FileManager.default.createDirectory(at: controller.vocabularyDirectory, withIntermediateDirectories: true)
     controller.loadRelabelAttempts = { probe.attempts }
     controller.saveRelabelAttempts = { probe.attempts = $0 }
+    controller.loadLaunchedRecorders = { probe.launched }
+    controller.saveLaunchedRecorders = { probe.launched = $0 }
+    controller.loadDismissedOffers = { probe.dismissed }
+    controller.saveDismissedOffers = { probe.dismissed = $0 }
     return controller
 }
 
@@ -313,8 +323,105 @@ private final class ControllerHeartbeat {
     #expect(launcher.launches.count == 1)
     // Once that recorder is gone, a new start goes ahead.
     try await archive.finish(status: ArchiveStatus.failed)
+    launcher.exit(id, code: 1, logTail: nil)
     try controller.start(MeetingStartSettings(name: "Again", source: .microphone))
     #expect(launcher.launches.count == 2)
+}
+
+/// A timed-out start whose recorder is still at a permission prompt before creating its session folder (liveness
+/// says dead) blocks a second recorder until the launcher reports that the first one exited, even after the failure
+/// was dismissed.
+@Test @MainActor func startAfterTimedOutStartWithoutAFolderWaitsForItsExit() throws {
+    let temp = try TemporaryDirectory("controller")
+    defer { temp.remove() }
+    let launcher = FakeRecorderLauncher()
+    var clock = Date()
+    let controller = makeController(root: temp.url, launcher: launcher, probe: ControllerProbe(), now: { clock })
+    defer { controller.stopMonitoring() }
+    try controller.start(MeetingStartSettings(name: "Council", source: .microphone))
+    let id = try #require(launcher.launches.first?.sessionID)
+    clock = clock.addingTimeInterval(121)
+    controller.poll()
+    #expect(launcher.terminated == [id])
+    guard case .failed(let failedID, _) = controller.state, failedID == id else {
+        Issue.record("Expected failed, got \(controller.state).")
+        return
+    }
+    #expect(!exists(controller.sessionURL(id)), "The recorder has not created its session yet.")
+    let error = #expect(throws: HolosError.self) {
+        try controller.start(MeetingStartSettings(name: "Again", source: .microphone))
+    }
+    #expect(error?.localizedDescription == MeetingReducer.stillStopping)
+    controller.dismissFailure()
+    #expect(controller.state == .idle)
+    #expect(throws: HolosError.self) { try controller.start(MeetingStartSettings(name: "Again", source: .microphone)) }
+    #expect(launcher.launches.count == 1)
+    // The prompt was answered; the recorder saw SIGTERM and exited.
+    launcher.exit(id, code: 1, logTail: nil)
+    try controller.start(MeetingStartSettings(name: "Again", source: .microphone))
+    #expect(launcher.launches.count == 2)
+}
+
+/// The app quit from a timed-out start's failure (or crashed) while its recorder still waited at a permission prompt
+/// without a session folder: the relaunched app, which did not launch that recorder and cannot wait for it, finds it
+/// by its saved pid and start time and launches no second recorder until that process is gone.
+@Test @MainActor func timedOutRecorderStillBlocksAStartAfterARelaunch() throws {
+    let temp = try TemporaryDirectory("controller")
+    defer { temp.remove() }
+    let pid = getpid()
+    let started = try #require(ProcessSpawner.startTime(of: pid))
+    let launcher = FakeRecorderLauncher()
+    // A process that runs for the whole test: this one.
+    launcher.pid = pid
+    var clock = Date()
+    let probe = ControllerProbe()
+    // A saved recorder of an even earlier run that has ended (no such pid) is forgotten on launch.
+    probe.launched = ["ended": [Int(Int32.max), 1]]
+    let first = makeController(root: temp.url, launcher: launcher, probe: probe, now: { clock })
+    first.attachOnLaunch()
+    first.stopMonitoring()
+    #expect(probe.launched.isEmpty)
+    try first.start(MeetingStartSettings(name: "Council", source: .microphone))
+    let id = try #require(launcher.launches.first?.sessionID)
+    #expect(probe.launched == [id: [Int(pid), Int(started)]])
+    clock = clock.addingTimeInterval(121)
+    first.poll()
+    guard case .failed = first.state else {
+        Issue.record("Expected failed, got \(first.state).")
+        return
+    }
+    // Quit from the failure, then relaunched: a new controller and launcher, the saved records kept.
+    let relaunched = FakeRecorderLauncher()
+    let second = makeController(root: temp.url, launcher: relaunched, probe: probe, now: { clock })
+    defer { second.stopMonitoring() }
+    second.attachOnLaunch()
+    #expect(probe.launched == [id: [Int(pid), Int(started)]])
+    let error = #expect(throws: HolosError.self) {
+        try second.start(MeetingStartSettings(name: "Again", source: .microphone))
+    }
+    #expect(error?.localizedDescription == MeetingReducer.stillStopping)
+    #expect(relaunched.launches.isEmpty)
+    // The pid now names a process that started at another time (the recorder exited and its pid was reused).
+    probe.launched[id] = [Int(pid), Int(started) - 1]
+    try second.start(MeetingStartSettings(name: "Again", source: .microphone))
+    #expect(relaunched.launches.count == 1)
+    #expect(probe.launched[id] == nil)
+}
+
+/// The launcher reporting the recorder's exit forgets its saved pid.
+@Test @MainActor func recorderExitForgetsItsSavedPid() throws {
+    let temp = try TemporaryDirectory("controller")
+    defer { temp.remove() }
+    let launcher = FakeRecorderLauncher()
+    launcher.pid = getpid()
+    let probe = ControllerProbe()
+    let controller = makeController(root: temp.url, launcher: launcher, probe: probe)
+    defer { controller.stopMonitoring() }
+    try controller.start(MeetingStartSettings(name: "Council", source: .microphone))
+    let id = try #require(launcher.launches.first?.sessionID)
+    #expect(probe.launched.keys.sorted() == [id])
+    launcher.exit(id, code: 1, logTail: nil)
+    #expect(probe.launched.isEmpty)
 }
 
 @Test @MainActor func startRefusedOnLowDisk() throws {
@@ -469,10 +576,21 @@ private final class ControllerHeartbeat {
     }
     let link = folder.appendingPathComponent("holos-vocabulary-link.json")
     try FileManager.default.createSymbolicLink(at: link, withDestinationURL: unrelated)
+    // A vocabulary file whose removal a crash interrupted after it was moved aside (AtomicFile.removeIfSame).
+    let handedOff = folder.appendingPathComponent("holos-vocabulary-\(UUID().uuidString).json")
+    try Data("{}".utf8).write(to: handedOff)
+    var info = stat()
+    #expect(lstat(handedOff.path, &info) == 0)
+    let aside = folder.appendingPathComponent(
+        ".holos-remove-\(UInt32(bitPattern: info.st_dev)).\(info.st_ino).\(UUID().uuidString)", isDirectory: true)
+    #expect(mkdir(aside.path, 0o700) == 0)
+    #expect(rename(handedOff.path, aside.appendingPathComponent("file").path) == 0)
+    try FileManager.default.setAttributes([.modificationDate: old], ofItemAtPath: aside.path)
     let controller = makeController(root: temp.url, launcher: FakeRecorderLauncher(), probe: ControllerProbe(),
                                     vocabularyDirectory: folder)
     defer { controller.stopMonitoring() }
     controller.attachOnLaunch()
+    #expect(!exists(aside), "An interrupted removal is finished on launch.")
     #expect(!exists(stale))
     #expect(exists(fresh))
     #expect(exists(unrelated))
@@ -507,7 +625,9 @@ private final class ControllerHeartbeat {
     try AtomicFile.writeJSON(meetingStatus(id, phase: .exited, exit: exit), to: SessionPaths.status(archive.directory))
     controller.poll()
     #expect(controller.state == .idle)
-    #expect(probe.effects.contains { if case .finished(id, _, false) = $0 { true } else { false } })
+    #expect(await eventually {
+        probe.effects.contains { if case .finished(id, _, false) = $0 { true } else { false } }
+    })
     #expect(!probe.effects.contains { if case .offerNaming = $0 { true } else { false } })
     #expect(probe.dictation == [true, false])
     // The child's exit afterwards changes nothing.
@@ -515,7 +635,10 @@ private final class ControllerHeartbeat {
     #expect(controller.state == .idle)
 }
 
-@Test @MainActor func finishedMeetingWithLabelsOffersNaming() async throws {
+/// A recording whose post-processing ran to its end, even with a warning (partial), and saved labels that load is
+/// offered for naming.
+@Test(arguments: [PostProcessingState.succeeded, .partial]) @MainActor
+func finishedMeetingWithLabelsOffersNaming(postprocessing: PostProcessingState) async throws {
     let temp = try TemporaryDirectory("controller")
     defer { temp.remove() }
     let labelled = try await SessionFixtures.labelledSession(in: temp.url)
@@ -532,15 +655,230 @@ private final class ControllerHeartbeat {
         Issue.record("Expected finishing, got \(controller.state).")
         return
     }
+    let exit = RecorderExit(archiveStatus: ArchiveStatus.complete, reason: .requested, postprocessing: postprocessing)
+    try AtomicFile.writeJSON(meetingStatus(manifest.id, phase: .exited, name: manifest.name, exit: exit),
+                             to: SessionPaths.status(labelled.session))
+    lease.release()
+    controller.poll()
+    #expect(await eventually {
+        probe.effects.contains(.offerNaming(sessionID: manifest.id, name: manifest.name))
+    })
+    #expect(probe.effects.contains { if case .finished(manifest.id, _, true) = $0 { true } else { false } })
+    #expect(probe.effects.filter { if case .offerNaming = $0 { true } else { false } }.count == 1)
+    controller.reviewOpened(sessionID: manifest.id)
+    #expect(probe.effects.last == .clearNamingOffer(sessionID: manifest.id))
+}
+
+/// A recording whose post-processing ended without labels (speaker models not installed: succeeded or partial) is
+/// reported without speakers and not offered for naming.
+@Test(arguments: [PostProcessingState.succeeded, .partial]) @MainActor
+func finishedMeetingWithoutLabelsOffersNothing(postprocessing: PostProcessingState) async throws {
+    let temp = try TemporaryDirectory("controller")
+    defer { temp.remove() }
+    let probe = ControllerProbe()
+    let controller = makeController(root: temp.url, launcher: FakeRecorderLauncher(), probe: probe)
+    defer { controller.stopMonitoring() }
+    let id = UUID().uuidString
+    // Followed while labelling (the recording saved, the processing lease held), then exited without labels.
+    let archive = try liveSession(in: temp.url, id: id, phase: .postprocessing)
+    try await archive.finish(status: ArchiveStatus.complete)
+    let lease = try SessionArchive.acquireProcessingLease(at: archive.directory)
+    defer { lease.release() }
+    controller.attachOnLaunch()
+    guard case .finishing = controller.state else {
+        Issue.record("Expected finishing, got \(controller.state).")
+        return
+    }
+    let exit = RecorderExit(archiveStatus: ArchiveStatus.complete, reason: .requested, postprocessing: postprocessing,
+                            postprocessingMessage: "No speaker labels: speaker models are not installed.")
+    try AtomicFile.writeJSON(meetingStatus(id, phase: .exited, exit: exit), to: SessionPaths.status(archive.directory))
+    lease.release()
+    controller.poll()
+    #expect(controller.state == .idle)
+    #expect(await eventually {
+        probe.effects.contains { if case .finished(id, _, false) = $0 { true } else { false } }
+    })
+    try await Task.sleep(for: .milliseconds(100))
+    #expect(!probe.effects.contains { if case .offerNaming = $0 { true } else { false } })
+}
+
+/// Recover and Label Speakers from the Meetings window or the launch prompt: `labellingCommandEnded` tells the result
+/// alert whether the command ran to its end (0, or 3 with a warning) and left labels that load. The offer itself comes
+/// from the end of the command's use of the meeting (`endUsing`), once.
+@Test @MainActor func labellingCommandThatLeavesLabelsOffersNaming() async throws {
+    let temp = try TemporaryDirectory("controller")
+    defer { temp.remove() }
+    // Labels still being written while the command runs: the head is put back when it "ends".
+    let labelled = try await SessionFixtures.labelledSession(in: temp.url)
+    let manifest = try SessionArchive.readManifest(at: labelled.session)
+    let head = SessionPaths.head(labelled.session)
+    let aside = temp.url.appendingPathComponent("head.json")
+    try FileManager.default.moveItem(at: head, to: aside)
+    let probe = ControllerProbe()
+    let controller = makeController(root: temp.url, launcher: FakeRecorderLauncher(), probe: probe)
+    defer { controller.stopMonitoring() }
+
+    #expect(controller.beginUsing(manifest.id, for: "Labelling speakers…"))
+    try FileManager.default.moveItem(at: aside, to: head)
+    #expect(!(await controller.labellingCommandEnded(session: labelled.session, code: 1)), "A failed command.")
+    #expect(await controller.labellingCommandEnded(session: labelled.session, code: 0))
+    #expect(await controller.labellingCommandEnded(session: labelled.session, code: 3))
+    #expect(probe.offers.isEmpty, "The result check offers nothing by itself.")
+    controller.endUsing(manifest.id)
+    #expect(await eventually { probe.offers == [.offerNaming(sessionID: manifest.id, name: manifest.name)] })
+    #expect(controller.namingOffer?.sessionID == manifest.id)
+    #expect(controller.state == .idle)
+    // Another command that changed nothing: the offer stands and is not repeated.
+    #expect(controller.beginUsing(manifest.id, for: "Recovering…"))
+    controller.endUsing(manifest.id)
+    try await Task.sleep(for: .milliseconds(200))
+    #expect(probe.offers.count == 1)
+
+    // Labels that do not load (the run's transcript is gone): the result says so, and the offer is withdrawn.
+    try FileManager.default.removeItem(at: SessionPaths.transcript(labelled.run.transcriptID, in: labelled.session))
+    #expect(!(await controller.labellingCommandEnded(session: labelled.session, code: 0)))
+    controller.refreshNamingOffer()
+    #expect(await eventually { probe.effects.last == .clearNamingOffer(sessionID: manifest.id) })
+    #expect(controller.namingOffer == nil)
+}
+
+/// A meeting labelled while Holos was not running (the recorder finished its labelling after a quit, or a command ran
+/// in a terminal) is offered on the next launch; the offer is not repeated by later refreshes, and once the user
+/// opens it the dismissal survives a relaunch. New labels for the meeting (another run) are offered again.
+@Test @MainActor func meetingLabelledWhileHolosWasNotRunningIsOfferedOnLaunch() async throws {
+    let temp = try TemporaryDirectory("controller")
+    defer { temp.remove() }
+    let labelled = try await SessionFixtures.labelledSession(in: temp.url)
+    let manifest = try SessionArchive.readManifest(at: labelled.session)
+    // The recorder wrote exited after labelling, while no app was running.
+    let exit = RecorderExit(archiveStatus: ArchiveStatus.complete, reason: .requested, postprocessing: .succeeded)
+    try AtomicFile.writeJSON(meetingStatus(manifest.id, phase: .exited, name: manifest.name, exit: exit),
+                             to: SessionPaths.status(labelled.session))
+    let probe = ControllerProbe()
+    let first = makeController(root: temp.url, launcher: FakeRecorderLauncher(), probe: probe)
+    first.attachOnLaunch()
+    #expect(first.state == .idle)
+    #expect(await eventually { first.namingOffer?.sessionID == manifest.id })
+    #expect(probe.offers == [.offerNaming(sessionID: manifest.id, name: manifest.name)])
+    first.refreshNamingOffer()
+    try await Task.sleep(for: .milliseconds(200))
+    #expect(probe.offers.count == 1)
+    first.stopMonitoring()
+
+    // Quit and relaunched before it was opened: offered again.
+    let second = makeController(root: temp.url, launcher: FakeRecorderLauncher(), probe: probe)
+    second.attachOnLaunch()
+    #expect(await eventually { second.namingOffer?.sessionID == manifest.id })
+    second.reviewOpened(sessionID: manifest.id)
+    #expect(second.namingOffer == nil)
+    #expect(probe.effects.last == .clearNamingOffer(sessionID: manifest.id))
+    #expect(probe.dismissed == [manifest.id: labelled.run.id])
+    second.stopMonitoring()
+
+    // Opened, then relaunched: not offered.
+    let third = makeController(root: temp.url, launcher: FakeRecorderLauncher(), probe: probe)
+    let offersBefore = probe.offers.count
+    third.attachOnLaunch()
+    try await Task.sleep(for: .milliseconds(300))
+    #expect(third.namingOffer == nil)
+    #expect(probe.offers.count == offersBefore)
+
+    // Labelled again (a new run): offered again.
+    let run = try SessionFixtures.writeHeadRun(session: labelled.session, transcript: labelled.transcript,
+                                               outputs: ["system": SessionFixtures.alternatingOutput()])
+    third.refreshNamingOffer()
+    #expect(await eventually { third.namingOffer?.runID == run.id })
+    third.stopMonitoring()
+}
+
+/// A meeting whose speakers were edited (named) is not offered, and one deleted meanwhile has its offer withdrawn.
+@Test @MainActor func namingOfferFollowsEditsAndDeletion() async throws {
+    let temp = try TemporaryDirectory("controller")
+    defer { temp.remove() }
+    let labelled = try await SessionFixtures.labelledSession(in: temp.url)
+    let manifest = try SessionArchive.readManifest(at: labelled.session)
+    let probe = ControllerProbe()
+    let controller = makeController(root: temp.url, launcher: FakeRecorderLauncher(), probe: probe)
+    defer { controller.stopMonitoring() }
+    controller.refreshNamingOffer()
+    #expect(await eventually { controller.namingOffer?.sessionID == manifest.id })
+    let speaker = try #require(labelled.run.speakers.first)
+    try SessionFixtures.appendEdits([.rename(speakerID: speaker.id, name: "Ada")], session: labelled.session)
+    controller.refreshNamingOffer()
+    #expect(await eventually { controller.namingOffer == nil })
+    #expect(probe.effects.last == .clearNamingOffer(sessionID: manifest.id))
+
+    let other = try await SessionFixtures.labelledSession(in: temp.url)
+    let otherManifest = try SessionArchive.readManifest(at: other.session)
+    controller.refreshNamingOffer()
+    #expect(await eventually { controller.namingOffer?.sessionID == otherManifest.id })
+    try FileManager.default.removeItem(at: other.session)
+    controller.refreshNamingOffer()
+    #expect(await eventually { controller.namingOffer == nil })
+}
+
+/// One set of meetings in use: a second use of a meeting is turned down until the first ends, and each change is
+/// reported.
+@Test @MainActor func sessionsInUseTurnDownASecondUse() throws {
+    let temp = try TemporaryDirectory("controller")
+    defer { temp.remove() }
+    let controller = makeController(root: temp.url, launcher: FakeRecorderLauncher(), probe: ControllerProbe())
+    var changes = 0
+    controller.onSessionsInUseChanged = { changes += 1 }
+    #expect(controller.beginUsing("A", for: "Cleaning up…"))
+    #expect(!controller.beginUsing("A", for: "Recovering…"))
+    #expect(controller.sessionsInUse == ["A": "Cleaning up…"])
+    #expect(controller.beginUsing("B", for: "Saving the transcript…"))
+    controller.endUsing("A")
+    controller.endUsing("A")
+    #expect(controller.sessionsInUse == ["B": "Saving the transcript…"])
+    #expect(controller.beginUsing("A", for: "Recovering…"))
+    #expect(changes == 4)
+}
+
+/// A meeting whose post-processing succeeded but whose head names a run that cannot be used (its transcript is
+/// missing) is not offered for naming and does not report speakers ready: the catalog calls those labels unreadable
+/// and the exports leave them out.
+@Test @MainActor func finishedMeetingWithUnusableLabelsIsNotOfferedForNaming() async throws {
+    let temp = try TemporaryDirectory("controller")
+    defer { temp.remove() }
+    let labelled = try await SessionFixtures.labelledSession(in: temp.url)
+    let manifest = try SessionArchive.readManifest(at: labelled.session)
+    try FileManager.default.removeItem(at: SessionPaths.transcript(labelled.run.transcriptID,
+                                                               in: labelled.session))
+    #expect(try SessionSpeakerStore.readHead(session: labelled.session) != nil, "The head alone still reads.")
+    #expect(!MeetingController.speakerLabelsReady(session: labelled.session))
+    let probe = ControllerProbe()
+    let controller = makeController(root: temp.url, launcher: FakeRecorderLauncher(), probe: probe)
+    defer { controller.stopMonitoring() }
+    let lease = try SessionArchive.acquireProcessingLease(at: labelled.session)
+    try AtomicFile.writeJSON(meetingStatus(manifest.id, phase: .postprocessing, name: manifest.name),
+                             to: SessionPaths.status(labelled.session))
+    controller.attachOnLaunch()
     let exit = RecorderExit(archiveStatus: ArchiveStatus.complete, reason: .requested, postprocessing: .succeeded)
     try AtomicFile.writeJSON(meetingStatus(manifest.id, phase: .exited, name: manifest.name, exit: exit),
                              to: SessionPaths.status(labelled.session))
     lease.release()
     controller.poll()
-    #expect(probe.effects.contains(.offerNaming(sessionID: manifest.id, name: manifest.name)))
-    #expect(probe.effects.contains { if case .finished(manifest.id, _, true) = $0 { true } else { false } })
-    controller.reviewOpened(sessionID: manifest.id)
-    #expect(probe.effects.last == .clearNamingOffer(sessionID: manifest.id))
+    #expect(await eventually {
+        probe.effects.contains { if case .finished(manifest.id, _, false) = $0 { true } else { false } }
+    })
+    #expect(!probe.effects.contains { if case .offerNaming = $0 { true } else { false } })
+}
+
+@Test func speakerLabelsReadyFollowsTheSharedValidation() async throws {
+    let temp = try TemporaryDirectory("controller")
+    defer { temp.remove() }
+    let labelled = try await SessionFixtures.labelledSession(in: temp.url)
+    #expect(MeetingController.speakerLabelsReady(session: labelled.session))
+    // A damaged run file: the head still reads, the labels do not load.
+    try Data("{".utf8).write(to: SessionPaths.run(labelled.run.id, in: labelled.session))
+    #expect(!MeetingController.speakerLabelsReady(session: labelled.session))
+    let unlabelled = try await SessionFixtures.makeSession(
+        in: temp.url, mode: .inPerson,
+        transcript: SessionFixtures.transcript(SessionFixtures.alternatingSegments(track: "mic")))
+    #expect(!MeetingController.speakerLabelsReady(session: unlabelled))
+    #expect(!MeetingController.speakerLabelsReady(session: temp.url.appendingPathComponent("missing.holos")))
 }
 
 @Test @MainActor func interruptedSessionsAreListedOnce() async throws {
@@ -576,13 +914,15 @@ private final class ControllerHeartbeat {
     let controller = makeController(root: temp.url, launcher: FakeRecorderLauncher(), probe: probe,
                                     maintenance: MaintenanceLauncher(executable: script), modelsInstalled: true)
     defer { controller.stopMonitoring() }
-    // While the app runs a command for the meeting (Meetings window), the relabel leaves it alone.
-    controller.sessionsInUse = { [manifest.id] }
-    controller.runAutoRelabel()
-    #expect(await eventually(timeout: .seconds(10)) { !controller.relabelling })
+    // While the app uses the meeting (a Meetings command, Clean Up, Save Transcript As…), the relabel leaves it alone.
+    for doing in ["Recovering…", "Cleaning up…", "Saving the transcript…"] {
+        #expect(controller.beginUsing(manifest.id, for: doing))
+        controller.runAutoRelabel()
+        #expect(await eventually(timeout: .seconds(10)) { !controller.relabelling })
+        controller.endUsing(manifest.id)
+    }
     #expect(!exists(arguments))
     #expect(probe.attempts.isEmpty)
-    controller.sessionsInUse = { [] }
     controller.runAutoRelabel()
     #expect(controller.relabelling)
     #expect(await eventually(timeout: .seconds(10)) { !controller.relabelling && exists(arguments) })
@@ -597,6 +937,79 @@ private final class ControllerHeartbeat {
     #expect(probe.attempts[manifest.id] == 2)
     let lines = ((try? String(contentsOf: arguments, encoding: .utf8)) ?? "").split(separator: "\n")
     #expect(lines.count == 2)
+    // The command succeeded without labelling anything: no naming offer.
+    try await Task.sleep(for: .milliseconds(200))
+    #expect(!probe.effects.contains { if case .offerNaming = $0 { true } else { false } })
+}
+
+/// A relabel whose command could not start (here the bundled tool is missing) uses up no attempt: once the tool is
+/// back, the meeting is still relabelled.
+@Test @MainActor func automaticRelabelThatCannotStartUsesNoAttempt() async throws {
+    let temp = try TemporaryDirectory("controller")
+    defer { temp.remove() }
+    let session = try await SessionFixtures.makeSession(
+        in: temp.url, mode: .inPerson,
+        transcript: SessionFixtures.transcript(SessionFixtures.alternatingSegments(track: "mic")))
+    let manifest = try SessionArchive.readManifest(at: session)
+    try AtomicFile.writeJSON(PostProcessingRecord(sessionID: manifest.id, state: .running, pid: Int32.max,
+                                                  startedAt: Date(), updatedAt: Date()),
+                             to: SessionPaths.postprocess(session))
+    let arguments = temp.url.appendingPathComponent("arguments.txt")
+    let script = temp.url.appendingPathComponent("fake-holos.sh")
+    let probe = ControllerProbe()
+    let controller = makeController(root: temp.url, launcher: FakeRecorderLauncher(), probe: probe,
+                                    maintenance: MaintenanceLauncher(executable: script), modelsInstalled: true)
+    defer { controller.stopMonitoring() }
+    // More failed launches than `AutoRelabelPolicy.maxAttempts`.
+    for _ in 0...AutoRelabelPolicy.maxAttempts {
+        controller.runAutoRelabel()
+        #expect(controller.relabelling)
+        #expect(await eventually(timeout: .seconds(10)) { !controller.relabelling })
+        #expect(probe.attempts[manifest.id] == nil, "A command that did not start is not an attempt.")
+    }
+    #expect(controller.relabellingSessionID == nil)
+    try Data("#!/bin/sh\necho \"$*\" >> '\(arguments.path)'\n".utf8).write(to: script)
+    #expect(chmod(script.path, 0o700) == 0)
+    controller.runAutoRelabel()
+    #expect(await eventually(timeout: .seconds(10)) { !controller.relabelling && exists(arguments) })
+    #expect(probe.attempts == [manifest.id: 1])
+}
+
+/// A meeting labelled by the automatic relabel is offered for naming once, as a meeting that just ended is, also when
+/// the labelling ended with a warning (exit code 3); one the relabel did not label is not.
+@Test(arguments: [Int32(0), 3]) @MainActor
+func automaticRelabelThatLabelsOffersNamingOnce(code: Int32) async throws {
+    let temp = try TemporaryDirectory("controller")
+    defer { temp.remove() }
+    let labelled = try await SessionFixtures.labelledSession(in: temp.url)
+    let session = labelled.session
+    let manifest = try SessionArchive.readManifest(at: session)
+    // Labelling was cut short before the head was written: a running record and no head. The fake command writes
+    // the head (moves it back).
+    let head = SessionPaths.head(session)
+    let aside = temp.url.appendingPathComponent("head.json")
+    try FileManager.default.moveItem(at: head, to: aside)
+    try AtomicFile.writeJSON(PostProcessingRecord(sessionID: manifest.id, state: .running, pid: Int32.max,
+                                                  startedAt: Date(), updatedAt: Date()),
+                             to: SessionPaths.postprocess(session))
+    let script = temp.url.appendingPathComponent("fake-holos.sh")
+    try Data("#!/bin/sh\nmv '\(aside.path)' '\(head.path)' || exit 1\nexit \(code)\n".utf8).write(to: script)
+    #expect(chmod(script.path, 0o700) == 0)
+    let probe = ControllerProbe()
+    let controller = makeController(root: temp.url, launcher: FakeRecorderLauncher(), probe: probe,
+                                    maintenance: MaintenanceLauncher(executable: script), modelsInstalled: true)
+    defer { controller.stopMonitoring() }
+    controller.runAutoRelabel()
+    #expect(await eventually {
+        probe.effects.contains(.offerNaming(sessionID: manifest.id, name: manifest.name))
+    })
+    #expect(!controller.relabelling)
+    // The record still says running, so the meeting is picked once more; that attempt labels nothing new (the
+    // command fails), and no second offer follows.
+    controller.runAutoRelabel()
+    #expect(await eventually { probe.attempts[manifest.id] == 2 && !controller.relabelling })
+    try await Task.sleep(for: .milliseconds(200))
+    #expect(probe.effects.filter { if case .offerNaming = $0 { true } else { false } }.count == 1)
 }
 
 @Test @MainActor func automaticRelabelNamesTheMeetingWhileItRuns() async throws {
@@ -622,10 +1035,15 @@ private final class ControllerHeartbeat {
     defer { try? Data().write(to: gate) }
     #expect(controller.relabellingSessionID == nil)
     controller.runAutoRelabel()
-    // While it runs, the app turns down Meetings commands for this meeting (they would contend for its lease).
+    // While it runs, the meeting is in use: the app turns down Meetings commands, Clean Up, and Save Transcript As…
+    // for it (they would contend for its lease).
     #expect(await eventually(timeout: .seconds(10)) { controller.relabellingSessionID == manifest.id })
     #expect(controller.relabelling)
+    #expect(controller.sessionsInUse == [manifest.id: MeetingController.relabelDoing])
+    #expect(!controller.beginUsing(manifest.id, for: "Cleaning up…"))
     try Data().write(to: gate)
     #expect(await eventually(timeout: .seconds(10)) { !controller.relabelling })
     #expect(controller.relabellingSessionID == nil)
+    #expect(controller.sessionsInUse.isEmpty)
+    #expect(controller.beginUsing(manifest.id, for: "Cleaning up…"))
 }

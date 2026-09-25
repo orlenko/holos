@@ -46,9 +46,25 @@ struct People: AsyncParsableCommand {
                 return
             }
             let database = try store.load()
+            // Calibrated thresholds are kept when the setting goes off, and an unfinished forget holds recognition
+            // back too, so what is said here is what `recognitionAllowed` actually does, not just what is stored.
+            let automatic = database.isCalibrated && VoiceProfileService.recognitionAllowed(store: store)
             Console.output("Remember voices: \(database.rememberVoices ? "on" : "off")"
-                           + (database.calibratedThresholds != nil ? " · automatic names: on (calibrated)" : ""))
-            let people = VoiceProfileService.knownPeople(store: store)
+                           + (automatic ? " · automatic names: on (calibrated)" : ""))
+            if database.isCalibrated, !automatic, database.rememberVoices {
+                Console.output("Automatic names: off for now; a request to forget voices is still being finished.")
+            }
+            if !database.isCalibrated, database.rememberVoices, database.calibrationResetAt == nil,
+               database.profiles.contains(where: { !$0.samples.isEmpty }) {
+                Console.output("Automatic names: off for new meetings until you calibrate "
+                               + "(holos people calibrate --apply). Meetings already named keep their names.")
+            }
+            if !database.isCalibrated, database.calibrationResetAt != nil {
+                Console.output("Automatic names: off for new meetings; the calibration was reset when the voice "
+                               + "samples changed (calibrate again with holos people calibrate --apply). Meetings "
+                               + "already named keep the names they were given.")
+            }
+            let people = VoiceProfileService.sortedPeople(database.profiles)
             guard !people.isEmpty else {
                 Console.output("No people yet. Link a speaker to a person with holos speakers link.")
                 return
@@ -99,10 +115,11 @@ struct People: AsyncParsableCommand {
                 Console.output("Remember voices: on. A voice is learned only when you link a speaker with "
                                + "--learn-voice; only remember people who agreed to it.")
             case .off:
-                try VoiceProfileService.setRemember(false, forgetExisting: forget, store: store)
+                let forgotten = try VoiceProfileService.setRemember(false, forgetExisting: forget, store: store)
                 Console.output("Remember voices: off.")
+                PeopleCommand.noteCalibrationReset(before: before, store: store)
                 if forget {
-                    Console.output("Forgot \(PeopleCommand.count(samples, "voice sample")) and the voice data of "
+                    Console.output("Forgot \(PeopleCommand.count(forgotten, "voice sample")) and the voice data of "
                                    + "every meeting in \(HolosPaths.sessions.path). Names are kept.")
                 } else if samples > 0 {
                     Console.error("Kept \(PeopleCommand.count(samples, "voice sample")) from "
@@ -148,9 +165,11 @@ struct People: AsyncParsableCommand {
             let store = SpeakerProfileStore()
             let source = try PeopleCommand.profileID(person, store: store)
             let target = try PeopleCommand.profileID(into, store: store)
+            let before = try? store.load()
             try VoiceProfileService.merge(profileID: source, into: target, store: store)
             let name = try store.load().profiles.first { $0.id == target }?.displayName ?? target
             Console.output("Merged \(person) into \(name).")
+            PeopleCommand.noteCalibrationReset(before: before, store: store)
         }
     }
 
@@ -184,15 +203,14 @@ struct People: AsyncParsableCommand {
         mutating func run() throws {
             let store = SpeakerProfileStore()
             let database = try store.load()
+            defer { PeopleCommand.noteCalibrationReset(before: database, store: store) }
             if all {
-                let count = database.sampleCount
-                try VoiceProfileService.forgetAll(store: store)
+                let count = try VoiceProfileService.forgetAll(store: store)
                 Console.output("Forgot \(PeopleCommand.count(count, "voice sample")) and the voice data of every "
                                + "meeting in \(HolosPaths.sessions.path). Names are kept.")
             } else if let session {
                 let (sessionID, name) = try PeopleCommand.session(session)
-                let count = database.profiles.flatMap(\.samples).filter { $0.sessionID == sessionID }.count
-                try VoiceProfileService.forget(sessionID: sessionID, store: store)
+                let count = try VoiceProfileService.forget(sessionID: sessionID, store: store)
                 Console.output("Forgot \(PeopleCommand.count(count, "voice sample")) learned from \(name ?? sessionID).")
             } else if let person {
                 let profileID = try PeopleCommand.profileID(person, store: store)
@@ -206,9 +224,9 @@ struct People: AsyncParsableCommand {
                     try VoiceProfileService.forget(sampleID: sample, store: store)
                     Console.output("Forgot one voice sample of \(profile.displayName).")
                 } else {
-                    try VoiceProfileService.forget(profileID: profileID, store: store)
+                    let count = try VoiceProfileService.forget(profileID: profileID, store: store)
                     Console.output("Forgot \(profile.displayName) and "
-                                   + "\(PeopleCommand.count(profile.samples.count, "voice sample")). Meetings keep "
+                                   + "\(PeopleCommand.count(count, "voice sample")). Meetings keep "
                                    + "the name.")
                 }
             }
@@ -267,7 +285,27 @@ struct People: AsyncParsableCommand {
         mutating func run() throws {
             let store = SpeakerProfileStore()
             let database = try store.load()
-            let measured = RecognitionCalibration.distances(database: database)
+            // Each embedding model is measured on its own: distances of different models are not comparable.
+            let models = RecognitionCalibration.models(database)
+            if models.isEmpty {
+                Console.output("Meetings with voice samples: 0 · people with samples from 2 or more meetings: 0")
+            }
+            for model in models {
+                if models.count > 1 { Console.output("Speaker model \(model.id) (\(model.revision)):") }
+                Self.report(RecognitionCalibration.distances(database: database, model: model))
+            }
+            if let calibration = RecognitionCalibration.calibration(database: database) {
+                Self.reportThresholds(calibration.thresholds, prefix: "Thresholds")
+            }
+            guard apply else { return }
+            // Computed again under the store's lock, from the samples present when the thresholds are saved.
+            let saved = try VoiceProfileService.applyCalibration(store: store)
+            Self.reportThresholds(saved.thresholds, prefix: "Saved thresholds")
+            Console.output("New meetings name clear matches automatically, shown as \"Jim (auto)\".")
+        }
+
+        /// Counts and percentiles of one model's distances.
+        private static func report(_ measured: RecognitionCalibration.Distances) {
             Console.output("Meetings with voice samples: \(measured.meetings) · people with samples from 2 or more "
                            + "meetings: \(measured.repeatedPeople)")
             let rows = [("Same person", measured.samePerson), ("Different people", measured.differentPerson)]
@@ -281,20 +319,11 @@ struct People: AsyncParsableCommand {
                                          alignments: [.left, .right, .right, .right, .right, .right, .right]) {
                 Console.output(line)
             }
-            let calibrated = RecognitionCalibration.thresholds(database: database)?.thresholds
-            if let calibrated {
-                Console.output(String(format: "Thresholds: automatic names at distance ≤ %.3f, suggestions ≤ %.3f.",
-                                      calibrated.likelyMaxDistance, calibrated.possibleMaxDistance))
-            }
-            guard apply else { return }
-            guard let calibrated else {
-                throw HolosError.invalidInput(
-                    "Calibration needs voice samples from at least \(RecognitionCalibration.minimumMeetings) "
-                        + "meetings and at least \(RecognitionCalibration.minimumRepeatedPeople) people with samples "
-                        + "from 2 or more meetings; there are \(measured.meetings) and \(measured.repeatedPeople).")
-            }
-            try store.update { $0.calibratedThresholds = calibrated }
-            Console.output("Saved. New meetings name clear matches automatically, shown as \"Jim (auto)\".")
+        }
+
+        private static func reportThresholds(_ thresholds: RecognitionThresholds, prefix: String) {
+            Console.output(String(format: "\(prefix): automatic names at distance ≤ %.3f, suggestions ≤ %.3f.",
+                                  thresholds.likelyMaxDistance, thresholds.possibleMaxDistance))
         }
     }
 }
@@ -346,6 +375,14 @@ enum PeopleCommand {
         }
         let manifest = try SessionArchive.readManifest(at: try SessionLocator.resolve(trimmed))
         return (manifest.id, manifest.name)
+    }
+
+    /// On stderr, when the calibration saved in `before` (read before a change) has been reset since
+    /// (`VoiceProfileService.calibrationResetNote`).
+    static func noteCalibrationReset(before: SpeakerProfileDatabase?, store: SpeakerProfileStore) {
+        if let note = VoiceProfileService.calibrationResetNote(before: before, after: try? store.load()) {
+            Console.error(note)
+        }
     }
 
     /// "Jim", or "Maria (you)".

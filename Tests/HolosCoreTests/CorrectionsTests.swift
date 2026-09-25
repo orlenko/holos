@@ -149,3 +149,31 @@ import Testing
     queue.receive([.init(heard: "Bull", meant: "Pull")], edit: editB)
     #expect(queue.items == [.init(correction: .init(heard: "Bull", meant: "Pull"), edit: editB)])
 }
+
+@Test func replacingEditsInPlaceAndDropsTheSameHeardPhrase() {
+    var list = CorrectionList(entries: [.init(heard: "Gwen", meant: "Gwyn"),
+                                        .init(heard: "bull request", meant: "pull request"),
+                                        .init(heard: "holus", meant: "Holos")])
+    let replaced1 = list.replace(.init(heard: "Gwen", meant: "Gwyn"), with: .init(heard: " Gwen ", meant: "Gwynne "))
+    #expect(replaced1)
+    #expect(list.entries.first == .init(heard: "Gwen", meant: "Gwynne"))
+
+    let old = Correction(heard: "bull request", meant: "pull request")
+    let new = Correction(heard: "HOLUS", meant: "Holos app")
+    #expect(list.conflicts(replacing: old, with: new) == [.init(heard: "holus", meant: "Holos")])
+    let replaced2 = list.replace(old, with: new)
+    #expect(replaced2)
+    #expect(list.entries == [.init(heard: "Gwen", meant: "Gwynne"), .init(heard: "HOLUS", meant: "Holos app")])
+}
+
+@Test func replacingRefusesBlankOrIdenticalPairsAndAddsAMissingOriginal() {
+    var list = CorrectionList(entries: [.init(heard: "Gwen", meant: "Gwyn")])
+    let replaced3 = list.replace(.init(heard: "Gwen", meant: "Gwyn"), with: .init(heard: "Gwen", meant: " "))
+    #expect(!replaced3)
+    let replaced4 = list.replace(.init(heard: "Gwen", meant: "Gwyn"), with: .init(heard: "Gwyn", meant: "Gwyn"))
+    #expect(!replaced4)
+    #expect(list.entries == [.init(heard: "Gwen", meant: "Gwyn")])
+    let replaced5 = list.replace(.init(heard: "gone", meant: "went"), with: .init(heard: "holus", meant: "Holos"))
+    #expect(replaced5)
+    #expect(list.entries == [.init(heard: "Gwen", meant: "Gwyn"), .init(heard: "holus", meant: "Holos")])
+}

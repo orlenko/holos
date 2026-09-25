@@ -330,6 +330,21 @@ and recovery reads a chunk's format and hash from one descriptor opened through 
 (`ChunkFile`, `AudioFileOpenWithCallbacks`), refusing it when the path no longer leads to that file. A `create` whose folder fsync fails removes the new
 file, so a retry is not refused as "already exists".
 
+**Threat model.** Holos protects session data against crashes and kills at any point, against
+concurrent Holos processes (the app, the recorder, CLI commands), and against accidental outside
+changes to the sessions folder (a folder renamed, moved, or replaced by a sync tool, the Finder,
+or a script while Holos works in it). It does not protect against a hostile process running as
+the same user: such a process can already read, change, or delete every session directly, so no
+check inside Holos can keep data from it. The descriptor-based checks (`openat` with
+`O_NOFOLLOW`, device and inode comparisons, verifying an entry after a rename and rolling it
+back when it is not the expected folder) exist so that Holos fails safely when the folder
+changes under it: it writes nothing into a folder it did not make, reports success only for the
+folder it verified, and says where anything it left behind is. The check-then-act windows that
+remain (for example between checking an entry and renaming it by name, which macOS cannot bind
+to a descriptor) are accepted; their consequence is closed by the check afterwards, not the
+window itself. Review findings that need a same-user process racing those windows are out of
+scope.
+
 Locks are `flock` on files in the session folder, one open file description per holder.
 
 | Lock file | Holders | Held for | How it is taken |
@@ -337,7 +352,7 @@ Locks are `flock` on files in the session folder, one open file description per 
 | `.writer.lock` | recorder's `SessionArchive` actor; `SessionArchive.recover`; `openForMaintenance` | capture start → `finish`; maintenance: one save | `LOCK_EX\|LOCK_NB`, retried every 20 ms for up to 1 s |
 | `.processing.lock` (the processing lease) | recorder from just before `finish` until exit (§4.6); `holos session diarize`, `recover`, `delete`; the app's automatic relabel runs the CLI | one post-processing, rebuild, or deletion | `LOCK_EX\|LOCK_NB`, retried every 20 ms for up to 1 s |
 | `.speakers.lock` | `SpeakerEditor`; `SessionExports.regenerate`; post-processor while publishing run, head, voice data, recognition | one write (milliseconds) | polled every 20 ms up to 2 s |
-| `<support>/Speakers/profiles.lock` | `SpeakerProfileStore.update` | one read-modify-write | polled every 20 ms up to 2 s (PR10) |
+| `<support>/Speakers/profiles.lock` | `SpeakerProfileStore.update`; `withLockedDatabase` (recognition's saved comparison, a forget's per-meeting clean-up), always inside the speaker lock when both are held | one read-modify-write, or one read and the session write made from it | polled every 20 ms up to 2 s (PR10) |
 
 Rules:
 
@@ -589,6 +604,14 @@ diarization times (after the render time map, §4.7), markers, and gaps. An expo
 - On load, every turn span is validated (the segment exists and
   `0 ≤ first < end ≤ effectiveWords.count`). A run with any invalid span is reported as
   unusable (`runProblem`), exports fall back to speaker-less output, and nothing traps.
+- Every fallback or skipped piece of data in a snapshot (an unusable head, run, or run
+  transcript; stale edits; a changed transcript; unreadable or torn journal lines; an
+  unreadable recognition result; a damaged meeting.json; skipped event log entries) is in
+  `SpeakerSnapshotDiagnostics`, whose notes every command that shows or writes speaker
+  labels prints on stderr. An unusable head says the labels were left out and to run
+  `holos session diarize --force`, which replaces a damaged `head.json` too. After an edit
+  or undo, the diagnostics merge the journal as read before the append, since the append
+  repairs a torn last line (`SpeakerSnapshotDiagnostics.merging`).
 
 ## 3. Contract files (wave 0; copy verbatim)
 
@@ -2767,7 +2790,8 @@ public struct MeetingPostProcessor: Sendable {
                 freeSpace: any FreeSpaceProvider = VolumeFreeSpace())
     /// Runs every stage for one finished session under `lease` (nil: acquire one, retry 1 s) and returns the
     /// final postprocess.json record. Throws only when it cannot start (still recording, lease held elsewhere,
-    /// unreadable manifest); stage failures are recorded in the returned record.
+    /// unreadable manifest, a postprocess.json written by a newer Holos); stage failures are recorded in the
+    /// returned record.
     public func run(session: URL, lease: ProcessingLease?,
                     progress: @escaping @Sendable (PostProcessingProgress) -> Void = { _ in })
         async throws -> PostProcessingRecord
@@ -2782,7 +2806,7 @@ Stages (PR7b):
 
 | # | Stage | Does | On failure or not applicable |
 |---|---|---|---|
-| 0 | — | refuse if `SessionArchive.isActive` ("still recording"); use the given lease or acquire one; `RecorderChannel.markDeadRecorderExited`; delete leftover `derived/`; write `postprocess.json` `{state: running}` | throw |
+| 0 | — | refuse if `SessionArchive.isActive` ("still recording"); use the given lease or acquire one; refuse (`unavailable`) an existing `postprocess.json` written by a newer Holos, never overwriting it (a damaged one is replaced); `RecorderChannel.markDeadRecorderExited`; delete leftover `derived/`; write `postprocess.json` `{state: running}` | throw |
 | 1 | `transcript` | load the current transcript (`transcripts/current.json`, §2.4) | none → `skipped`, no exports; state `skipped` |
 | 2 | — | track policies from `meeting.json` (or `MeetingInfo.inferred`), with `options.othersInRoom` overriding: a track is `diarized` if it is `system`, or the mode is `inPerson`, or others are in the room; otherwise `channel("mic:me", "Me")`; tracks without words are `skipped` | — |
 | 3 | — | if a head run exists, was built from the current transcript, has applied edits, and `!force`: skip 4–7 with "Speaker labels were edited; relabel with --force (names carry over)". If the head was built from another transcript, relabel. | stages `skipped` |
@@ -3267,9 +3291,14 @@ public struct SpeakerProfileDatabase: Codable, Sendable, Equatable {
     public var schemaVersion: Int                // 1
     /// Off by default. Governs voice samples, per-session voice data, and recognition. Never names.
     public var rememberVoices: Bool
-    /// Set by `holos people calibrate --apply`; `likely` exists only when this is set.
+    /// Set by `holos people calibrate --apply`; `likely` exists only when this is set, and only for runs of
+    /// `calibratedModel`.
     public var calibratedThresholds: RecognitionThresholds?
+    /// The embedding model the thresholds were measured on; set with them.
+    public var calibratedModel: EmbeddingModelID?
     public var profiles: [SpeakerProfile]
+    /// When a change to the samples last cleared the calibration; nil after `calibrate --apply`.
+    public var calibrationResetAt: Date?
 }
 ```
 
@@ -3279,7 +3308,37 @@ public struct SpeakerProfileDatabase: Codable, Sendable, Equatable {
   empty database (`rememberVoices: false`) when the file is missing.
   `update(_ body: (inout SpeakerProfileDatabase) throws -> T)` takes `profiles.lock`
   (2 s), reads, mutates, validates (unique IDs, one sample per session per profile,
-  one `isSelf`), and writes atomically. Centroids are computed, never stored.
+  one `isSelf`, finite sample values, and calibrated thresholds that are finite, in
+  range, `likely ≤ possible`, with a margin of 0 … 2, a non-negative minimum length,
+  and a calibrated model only with thresholds), and writes atomically; `load()` applies
+  the same validation and refuses a damaged store. Centroids are computed, never stored.
+  When the write changes the sample population (a sample learned, refreshed into another
+  vector, moved by a merge, or forgotten in any scope, or a person's embedding model), the
+  same write clears `calibratedThresholds` and `calibratedModel` and sets
+  `calibrationResetAt` (`SpeakerProfileDatabase.resetCalibrationIfSamplesChanged`), unless
+  the write saved new thresholds itself; `holos people list`, the People window, and the
+  CLI commands that changed samples say the calibration was reset.
+  `withLockedDatabase(_:)` takes `profiles.lock`, reads, and runs its body with the lock
+  held, writing nothing to the store: for a write elsewhere made from the people.
+- **Snapshot, then write.** Every operation that computes from an unlocked read and then
+  writes either computes inside the locked update (merge, rename, suggestions, `calibrate
+  --apply`, the store step of every forget) or checks under the lock that its inputs are
+  unchanged and otherwise starts again: enrollment and refresh publish only when the
+  speaker generation is unchanged and the store still gives the same sample plan;
+  recognition compares again and writes its result while holding the speaker lock and then
+  `profiles.lock` (`withLockedDatabase`, the §1.7 order), so every store change (a
+  suggestion or Remember voices setting, a merge, a forget, a sample, a calibration) is
+  either reflected in the result or made after it is written; a forget's per-meeting
+  clean-up reads the people the same way. Nothing takes a speaker lock while holding
+  `profiles.lock` (a forget releases it before cleaning meetings). The first
+  run of a forget removes every sample matching its scope at its store write (`.all`:
+  every sample; `.session`: every sample of the meeting; `.profile`: the person;
+  `.sample`: the sample).
+- **Incomplete edit journals.** When `edits.jsonl` has a torn or unreadable line, a
+  meeting's labels may miss a link, a rejection, or a reassignment: no voice sample is
+  learned, recomputed, or removed from them (`unavailable`, said once there is
+  something to do), recognition results are not applied to the projection (no
+  suggestion, no automatic name), and "Confirm all" is refused.
 - **People without voiceprints.** Linking a speaker to a person always creates or links
   the profile, whatever the setting, so names carry across meetings: the review
   window's name field is a combo box of known people (most recently used first) and the
@@ -3333,17 +3392,238 @@ public struct SpeakerProfileDatabase: Codable, Sendable, Equatable {
   audio was deleted, so this voice can't be learned." `refreshSamples` re-extracts the
   affected `(profile, session)` samples the same way. Meetings processed while Remember
   voices was off need nothing special: confirming a person later extracts on demand.
-- **Forgetting is resumable.** Every forget operation first appends a tombstone to
+- **Forgetting is resumable.** What a forget lists and the tombstone that records it are
+  one locked step (`SpeakerProfileStore.appendForgetRecord(listing:)`), so no merge can
+  move a sample out from between them, and a merge that starts afterwards is refused while
+  the forget is unfinished. Every forget operation first appends a tombstone to
   `Support/Speakers/forget-journal.jsonl` (0600, fsync; `{id, kind, profileID?, sampleIDs,
-  sessionIDs, state: "pending"}`), then updates the profile store, then cleans each
-  affected session under its speaker lock (drops the profile from `recognition.json`,
-  removes any evaluation voice file entries, regenerates exports), then appends
-  `{id, state: "done"}`. `VoiceProfileService.resumePendingForgets(store:sessionsRoot:)`
-  runs at app launch and at the start of every `holos people`, `speakers`, and `session`
-  command and finishes any pending tombstone; each step is idempotent, so a crash at any
-  point leaves nothing behind once the next run completes. Tests (PR10):
-  `forgetResumesAfterCrashBetweenStoreAndSessions` (failure injected after the store
-  update; resume removes every reference), `forgetJournalReplayIsIdempotent`.
+  sessionIDs, turnRememberOff?, state: "pending"}`), then updates the profile store, then
+  appends `{id, profileID?, state: "stored"}`, then cleans each affected session under its
+  speaker lock (drops every reference to the profile from each recognition result, that is
+  its matches, merge suggestions, and `skippedProfiles` entries, through the one helper
+  `RecognitionResult.removeProfiles`; removes any evaluation voice file entries;
+  regenerates exports), then appends `{id, state: "done"}`.
+  `VoiceProfileService.resumePendingForgets(store:sessionsRoot:)` runs at app launch and
+  at the start of every `holos people`, `speakers`, and `session` command and finishes any
+  pending tombstone; each step is idempotent, so a crash at any point leaves nothing
+  behind once the next run completes.
+  - The `stored` line is what tells a resumed forget which phase it is in, rather than the
+    caller. While it is missing, the store write is still owed in full: it turns "Remember
+    voices" off when the tombstone asked for that, and it removes every sample the scope
+    covers in the store at that write, not only the IDs the tombstone listed. Once it is
+    there, a later run removes only the listed samples and never touches the setting
+    again, so a forget that keeps failing on one meeting cannot undo the user turning
+    remembering back on or take a sample learned since. A crash between the store write
+    and its `stored` line makes the next run sweep once more, which forgets slightly more
+    than it had to, never less.
+  - A `cleaned` line follows, once every meeting's voice data and recognition results are
+    done, and before any exported transcript is rewritten. The forget visits the meetings
+    twice for that reason: scrubbing them all, then rewriting the exports of those that
+    owe one. A rewrite that ran while the forget still held recognition back would have
+    dropped every other person's automatic name from that meeting for good. Nothing Holos reads
+    names the forgotten person from then on, so `recognitionAllowed` stops waiting on that
+    tombstone: a meeting whose manifest cannot be read keeps its forget pending for a
+    readable one without suppressing voice suggestions everywhere in the meantime.
+  - Every forget's store write bumps `SpeakerProfileDatabase.forgetEpoch`, whatever it had
+    left to remove, and `syncSamples` publishes a voice sample only while that counter is
+    the one its plan was made on; the hidden `--voice-data` evaluation pass checks it too,
+    under the speaker lock, before writing a voice file. Comparing the samples cannot see a
+    forget when the person had none from this meeting either way, which is exactly a first
+    enrollment. A refresh that loses the race says nothing; a voice the user asked to learn
+    is reported as not saved and is not tried again, since a retry would put back what they
+    have just forgotten. `perform` acts only on a tombstone the journal still holds as
+    unfinished, so replaying a finished one changes nothing at all.
+  - A link naming somebody the store no longer holds counts as the forgotten person's,
+    because a merge moves the samples and leaves the meeting's link as it was — unless
+    `mergedInto` says where that person went and they are still there, which means a merge
+    is retargeting its meetings and those links are somebody else's.
+  - Whose a speaker is, for the voice data, is `ProjectedSpeaker.effectiveProfileID`: the
+    linked person, else the one a `likely` match named automatically. So a meeting that
+    names somebody through a match alone still gives up their voiceprints, and a "Not Jim",
+    a link to somebody else or an explicit name takes that back, without the forget
+    repeating any of those rules. The voice data is therefore cleaned before the matches
+    are scrubbed, and each run is read with its own result, since a speaker ID means
+    something only inside its run. A result that cannot be read leaves the question
+    undecidable, so that meeting's voice data goes; so do labels written by a newer Holos,
+    which is the one place `unavailable` is not a reason to keep a file.
+  - The `stored` line also records the person the meetings are cleaned of: for a `.sample`
+    or `.profile` forget, the person the store write found the listed samples under, which
+    a merge may have changed since the tombstone was written. Cleaning with the tombstone's
+    own ID would then miss the person the samples moved to, whose matches a merge has
+    already retargeted.
+  - Compaction keeps a `stored` line while its tombstone is kept, and, like an unmatched
+    `done` line, whenever some line cannot be read here: that tombstone may be one of them
+    (a newer Holos's forget kind), and dropping its marker would have that Holos run its
+    store write a second time.
+  - The exports of a cleaned meeting are rewritten because they show the names recognition
+    gave, and a failure there keeps the tombstone pending. Whether the rewrite is owed
+    cannot be read back from the recognition file the run has already scrubbed, so
+    `.profile` rewrites every meeting that has recognition results and `.all` every
+    meeting whose exports Holos generated; the rewrite itself only writes files that
+    differ.
+  - A forget also removes atomic-write leftovers (`.<token>.tmp`) from the Speakers
+    folder: one holds a whole copy of the database, voiceprints and all, that a kill
+    between an fsync and a rename left behind.
+  - When a forgotten person's turn was won by a cluster that is not one of their speaker's
+    (the user reassigned it, or moved it to a speaker they made), that cluster's centroid
+    holds their voice and cannot be told apart from the rest of the cluster's, so the
+    meeting's evaluation voice data is deleted instead of filtered.
+  A `.profile` forget owes its meetings' exported transcripts on every run, not only when
+  it found recognition results: an earlier attempt may have scrubbed or deleted the files
+  that would say a rewrite is still due.
+  Tests (PR10): `forgetResumesAfterCrashBetweenStoreAndSessions` (failure injected after
+  the store update; resume removes every reference), `forgetJournalReplayIsIdempotent`,
+  `aForgetThatCrashedBeforeItsStoreWriteStillTurnsRememberingOff`,
+  `aResumedForgetLeavesRememberingAndNewerSamplesAlone`,
+  `forgettingASampleFollowsItToThePersonItWasMergedInto`,
+  `forgetStaysPendingUntilTheExportsAreRewritten`,
+  `forgetDeletesVoiceDataWhoseCentroidStillHoldsAReassignedTurn`,
+  `leftoverTemporaryFilesArePurgedFromTheStore`,
+  `compactionKeepsAStoredLineWhoseTombstoneThisBuildCannotRead`,
+  `aVoiceForgottenWhileItWasLearnedIsNotPutBack`, `forgetJournalReplayIsIdempotent`,
+  `forgetCleansMeetingsWhoseManifestCannotBeRead`.
+- **A merge takes the meetings with it.** Merging person A into B removes A from the
+  store, and a projection drops a recognition match whose person is not in the store, so
+  the meetings A's voice was recognised in would lose their automatic name (or
+  suggestion) rather than showing B. `VoiceProfileService.merge` therefore journals a
+  `.merge` record (`{id, kind: "merge", profileID, targetProfileID, state: "pending"}`) in
+  the forget journal before its store write, then points every meeting's recognition
+  results at B under that meeting's speaker lock (`RecognitionResult.retargetProfiles`:
+  matches, merge suggestions and `skippedProfiles`, joining what the merge made one
+  person; the nearer match wins where a speaker then names B twice) and rewrites the
+  generated exports of the meetings that changed. A meeting that cannot be written now
+  leaves the record pending and `merge` throws `incomplete`; `resumePendingForgets`
+  finishes it, which is why the record carries the two IDs the store no longer holds
+  together. A `stored` line is appended only once the store write has committed, and
+  nothing is retargeted without it: the record is written before that write, so a merge
+  refused there (samples of different speaker models) or lost to a crash leaves a record
+  that a resume drops rather than acts on. Which of the two it was comes from the store,
+  not from the missing marker, and not from the person's absence either: a merge records
+  what it did in the same write that removes the person
+  (`SpeakerProfileDatabase.mergedInto`, source ID -> target ID), because a forget or
+  another merge leaves the same shape behind. A resume that finds its own entry there
+  writes the marker the crash cost it and finishes the meetings. That map is also how the
+  destination is followed onwards (`A -> B` then `B -> C` retargets `A` to `C`, at most
+  `mergeChainLimit` steps and never around a cycle), so only merges that committed are
+  followed; a destination no longer in the store drops the record. The map is kept rather
+  than cleared: clearing it raced with the next merge's own commit, and it is resolved
+  again for each meeting, because another window can merge the destination onwards while a
+  pass is running. A merge is also refused while a `.profile` forget of either person is
+  unfinished (checked in the merge's own locked write): that forget removes the samples it
+  listed, and one learned since and moved by the merge would survive on the other person. Unlike a forget, this never deletes what it cannot
+  read: a meeting is skipped only when its manifest is absent (ENOENT or ENOTDIR; any other
+  inspection failure keeps the record pending), a recognition folder holding an entry this
+  build does not know keeps it pending too, and a recognition result that cannot be read
+  keeps the record pending for a Holos that can read it. The exports
+  of every meeting that has recognition results and generated exports are rewritten, not
+  only of those a run changed, since a retry finds them already retargeted. Tests (PR10):
+  `mergePointsMeetingsAtThePersonTheyWereMergedInto`,
+  `aMergeThatCouldNotReachAMeetingIsFinishedLater`,
+  `retargetingProfilesJoinsWhatTheMergeMadeTheSamePerson`,
+  `aMergeWhoseStoreWriteNeverHappenedIsDroppedNotReplayed`,
+  `aMergeStaysPendingWhenAMeetingsRecognitionCannotBeRead`,
+  `aMergeStaysPendingUntilTheExportsAreRewritten`,
+  `aMergeThatCommittedBeforeItsMarkerIsStillFinished`, `aPersonAMergeAdoptedIsNotRolledBack`,
+  `forgettingAPersonFollowsTheirSamplesThroughAMerge`,
+  `aMergeIsNotRecoveredWhenSomethingElseRemovedItsSource`,
+  `aMergeChainFollowsOnlyCommittedMerges`,
+  `aMergeStaysPendingWhenAMeetingHoldsUnknownRecognitionFiles`,
+  `aMergeStaysPendingWhenAMeetingFolderCannotBeInspected`,
+  `aMergeWaitsWhileOneOfItsPeopleIsBeingForgotten`, `whatAMergeRemovedIsKeptForLaterChains`.
+- **A no-op is decided on the current labels, and still finishes what an earlier run
+  left.** `SpeakerEditor.applyUnlessUnchanged` makes that decision under the speaker lock,
+  and linking, `speakers reject` (`VoiceProfileService.reject`, which returns nil for it)
+  and the other `holos speakers` commands all go through it rather than testing the
+  caller's view. A confirmed no-op then still runs the sample refresh, because the run
+  before it may have saved its edit and failed to bring the samples in step, which would
+  leave a voiceprint holding speech the edit moved to someone else; the refresh is decided
+  by input digests, so it costs nothing when they are already in step. Tests (PR10):
+  `aRejectionThatChangesNothingIsDecidedOnTheCurrentLabels`; the CLI half has no test
+  target (`HolosCLI`).
+- **A link is saved against the people and the labels as they are at the write.** The
+  batch's people are checked and marked used under `profiles.lock`, inside the meeting's
+  speaker lock, immediately before the lines are appended
+  (`SpeakerEditor.apply(requirePeople:)`), so a person another window forgot or merged
+  away is refused instead of being linked to by a meeting, and so is one another window
+  renamed: the batch's lines and the caller's view were both made from the name the user
+  saw, so saving a different one would give the meeting a name they never chose. A batch the caller's view says
+  changes nothing appends no line, so it is checked against the meeting's current labels
+  under the speaker lock instead of being reported as success. A person created for a link
+  that is then refused is taken back only while nobody has taken them up: no samples, and
+  still `provisional`, the state such a person is created with. It is cleared by any store
+  write that changes them, and by the operations that take a person up without necessarily
+  changing anything about them: a merge into them (the target of a merge from a person
+  with no samples can come out byte for byte the same), a rename, a suggestions setting,
+  and the locked claim of a saved link. The state is explicit because `HolosJSON` stores dates to the
+  second, so `createdAt` and `lastUsedAt` cannot tell a person another window linked
+  inside that second from one nobody has touched. Tests (PR10): `anEditIsRefusedWhenThePersonItLinksIsGone`,
+  `aLinkThatChangesNothingIsRefusedWhenAnotherWindowChangedIt`,
+  `aPersonAnotherLinkHasTakenUpIsNotRolledBack`, `aRefusedNewPersonIsStillRemoved`,
+  `aLinkIsRefusedWhenThePersonWasRenamedMeanwhile`, `anEditThatNeedsWholeLabelsIsRefusedUnderTheLock`.
+  `confirmAll` also asks the editor to refuse under the lock when the meeting's edit journal
+  has a line this build cannot read (`requireCompleteJournal`): its suggestions were read
+  from labels such a line may contradict, and another Holos can append one between the
+  caller's own check and the lock.
+- **"Remember voices" governs recognition, not only new voice data.** Turning it off
+  without forgetting the samples keeps them, and the People window promises that "Kept
+  samples are not used while Remember voices is off." `SpeakerSessionSnapshot.load`
+  therefore takes `applyRecognition`, and with it false neither reads nor applies the
+  meeting's stored recognition result, exactly as it does for an incomplete edit journal:
+  no suggestion and no automatic name, in the review window, the CLI, or the exports. The
+  callers that read the people store pass `VoiceProfileService.recognitionAllowed` (the
+  editor's reload and export rewrite, the forget and merge export rewrites,
+  post-processing's export write, `holos speakers`, `holos session export`, the Meetings
+  window's Save As, and `VoiceProfileService.reject`, which takes the store for it). Nothing is
+  deleted, so turning the setting back on brings the suggestions back. Names are not
+  governed by the setting, as they never were. `recognitionAllowed` is also false while
+  any forget other than a merge has not reached its `cleaned` line, and while the journal
+  holds a line this build cannot read (a newer Holos's forget, which cannot be resumed or
+  accounted for here): a crash between a forget's store write and
+  its meetings leaves results naming people it was meant to remove, and
+  `resumePendingForgets` clears them in the background, so until it has, those results are
+  not shown or exported. Tests (PR10): `keptSamplesAreNotUsedWhileRememberVoicesIsOff`,
+  `recognitionIsNotUsedWhileAForgetIsUnfinished`,
+  `recognitionIsNotUsedWhileAForgetLineCannotBeRead`.
+- **A person created for a link is taken back only by the call that created them.** They
+  are created `provisional`; `claimPeople` leaves a call's own creations alone until its
+  lines are appended, and the call takes them up afterwards, so a link refused in that run
+  removes them (`rollBack`) and one that is saved keeps them. Nothing removes a person on
+  the strength of the flag alone. A launch sweep used to, and it was the wrong trade: a
+  crash between saving a link and clearing the flag would have cost that meeting its
+  person, which is worse than the leftover it cleaned. So a crash between creating the
+  person and saving the link leaves a person in People with no meetings, which the user can
+  remove and which nothing else acts on. Tests (PR10):
+  `aPersonStaysUnfinishedUntilTheirLinkIsSaved`, `aPersonIsTakenUpEvenWhenTheLinkReportsAFailure`.
+- **A name a meeting was already given keeps it.** Calibration governs the decisions
+  recognition makes, not the ones it has made: resetting it (a sample changed) stops new
+  meetings being named automatically, and a meeting whose stored result already names
+  somebody `likely` keeps showing and exporting that name. `holos people list` says so in
+  those words, since "automatic names: off" on its own would claim more than Holos does.
+  Demoting stored decisions would mean rewriting every meeting's recognition result on
+  every sample change, and would take back a name the user has already seen and kept.
+- **Accepted races.** Two user-initiated Holos operations on the same data, started in
+  different windows inside the same lock-free window, can interleave in ways Holos does not
+  coordinate. §1.7 is not the reason: it excludes a hostile process running as the user,
+  and Holos does defend against its own concurrent processes elsewhere. These are listed
+  once, deliberately, rather than answered with more coordination:
+  - `holos session export --all` reads "Remember voices" before it takes the meeting's
+    speaker lock, so an export that began just before `holos people remember off` (without
+    forgetting the samples) can write automatic names after the setting changed. Turning
+    the setting off schedules no rewrite, so those names stay in that meeting's exported
+    files until it is exported again. The samples themselves are untouched, and any later
+    export writes them without names. Stage 8 of automatic post-processing reads it the
+    same way and has the same window; the recording that runs it is the user's too.
+  - Merging a person visits the meetings under the meetings root. A `.holos` folder kept
+    elsewhere and worked on by path is not one Holos can enumerate, so its recognition
+    results keep naming the person merged away and lose that automatic name, as they did
+    before merges retargeted anything. `mergedInto` records where that person went, so
+    such a meeting can be repaired later without guessing; nothing reads it for that yet.
+- **Enrollment renders are swept.** `DiarizerVoiceSampleExtractor` renders a track to
+  `holos-voice-<UUID>` in the temporary directory and deletes it in a `defer`, which a kill
+  or a power loss skips; the render is a decoded copy of the meeting's audio, so
+  `removeStaleRenders` removes such folders older than six hours (at most 64 per run) at
+  app launch and at the start of every `holos people`, `speakers`, and `session` command.
+  Test (PR10): `leftoverVoiceRendersAreSweptOnceTheyAreOldEnough`.
 - **Recognition** (`SpeakerRecognizer.recognize`, HolosSpeakers, pure; stage 7, only
   with "Remember voices" on):
   1. Candidates: machine speakers of diarized tracks with a centroid. Condition: `system`
@@ -3353,8 +3633,10 @@ public struct SpeakerProfileDatabase: Codable, Sendable, Equatable {
   3. Distance(speaker, profile) = minimum cosine distance (1 − cosine similarity) to the
      profile's non-weak samples of the same condition. If there are none, use its other
      samples and cap the tier at `possible`.
-  4. Thresholds: `database.calibratedThresholds ?? SpeakerRecognizer.defaultThresholds`.
-     **`likely` is possible only when `database.calibratedThresholds != nil`.** With the
+  4. Thresholds: `database.calibratedThresholds(for: run's embedding model) ??
+     SpeakerRecognizer.defaultThresholds` (calibrated thresholds apply only to runs of the
+     model they were measured on, `calibratedModel`).
+     **`likely` is possible only with calibrated thresholds for the run's model.** With the
      default thresholds the recognizer never produces `likely`, whatever the distance
      (an identical vector has distance 0, so a zero threshold alone would not prevent it).
      So **v1 only suggests** (`possible`, shown as "Maybe Jim — Confirm"); nothing is
@@ -3380,8 +3662,13 @@ public struct SpeakerProfileDatabase: Codable, Sendable, Equatable {
   same from the user's confirmed meetings (samples of one profile across sessions vs.
   samples of different profiles), prints percentiles and counts, and with `--apply`
   stores `calibratedThresholds` (`likelyMaxDistance` at ≤ 1 % false accepts,
-  `possibleMaxDistance` at ≤ 5 %). `--apply` requires at least 3 meetings with
-  confirmed links and at least 2 people with samples from 2 or more meetings.
+  `possibleMaxDistance` at ≤ 5 %) with `calibratedModel`. `--apply` requires at least 3
+  meetings with confirmed links and at least 2 people with samples from 2 or more
+  meetings, all samples of one embedding model (distances of different models are not
+  comparable; each model is reported separately), and computes the thresholds inside the
+  store's locked update. The thresholds hold only for the population they were measured
+  on: any later change to the samples resets them in that change's store write (see
+  **Store**), and automatic names stay off until `--apply` is run again.
 - **Enrollment** (`VoiceEnrollment.sample`, HolosSpeakers, pure): qualifying turns are
   the linked speakers' projected turns that are not reassigned, not `modified`, not
   overlapped, at least 2 s long, not excluded, and get a turn embedding from
@@ -3634,9 +3921,17 @@ replay, rebuild, and import read `vocabulary.json`. Because the temporary file h
 names and correction terms, the app side owns cleanup too: `MeetingController` deletes it
 on `launchFailed`, when the child exits for any reason, and as soon as the first
 `status.json` for that session appears (the recorder has copied it by then). On launch the
-app also removes any `$TMPDIR/holos-vocabulary-*.json` older than one hour. Tests (PR4):
+app also removes any `$TMPDIR/holos-vocabulary-*.json` older than one hour. A hand-off
+file is removed by moving it into a new 0700 folder `.holos-remove-<device>.<inode>.<UUID>`
+beside it and unlinking it there (`AtomicFile.readAndRemove`, `removeRegularFile`), so a
+file renamed onto its name meanwhile is never deleted. If the process ends, or the unlink
+fails, after the move, the same launch sweep finishes it: in each such folder older than
+five minutes that is a real folder owned by this user with mode 0700, it removes `file`
+only if it is the regular file the folder's name records (same device and inode), then the
+folder if empty; anything else stays. Tests (PR4):
 `vocabularyFileRemovedOnLaunchFailure` (spawn fails), `vocabularyFileRemovedOnEarlyExit`
-(child exits before any status), `staleVocabularyFilesSwept`.
+(child exits before any status), `staleVocabularyFilesSwept`,
+`strandedRemovalFolderIsFinishedBySweep`, `strandedRemovalSweepRemovesOnlyTheRecordedFile`.
 
 ### 4.13 Retention and deletion
 
@@ -3645,7 +3940,11 @@ Nothing expired meetings before; a 3 h call is about 2 GB even with mono system 
 - **Storage (PR3, `Sources/HolosStorage/SessionDeletion.swift`).**
   `SessionDeletion.deleteAudio(session:lease:)` requires the lease and no writer, removes
   `audio/`, `derived/`, and `speakers/voice/`, and writes `audio-deleted.json`
-  `{schemaVersion, deletedAt, chunkCount, seconds}`. Transcript, runs, edits, and exports
+  `{schemaVersion, sessionID, deletedAt, chunkCount, seconds}` (`sessionID` optional:
+  markers written before it are accepted). The marker is decoded wherever it is read
+  (`AudioDeletedRecord.read`/`isDeleted`): one from a newer Holos is refused; a damaged one,
+  or another session's, does not count as deleted audio, and Delete Audio replaces it.
+  Transcript, runs, edits, and exports
   stay. `SessionDeletion.moveToTrash(session:lease:)` moves the folder to the Trash
   (`FileManager.trashItem`) and deletes `~/Library/Logs/Holos/recorder-<id>.log`.
   Both hold the writer lock (retry 1 s; held means a recorder is running, so they refuse)
@@ -4190,9 +4489,12 @@ public enum DiarizationScoring {
     /// (Hungarian up to 20 × 20, greedy by overlap above that).
     public static func der(reference: [LabelledInterval], hypothesis: [LabelledInterval], collar: Double = 0.25) -> DiarizationScore
     /// For Otter references (turns cover silence): over frames where both sides have a speaker, the share whose
-    /// mapped speaker differs. Reported as "agreement with Otter", not DER.
+    /// mapped speaker differs. Reported as "agreement with Otter", not DER. `confusion` is nil (not comparable) when
+    /// no scored frame has both; `referenceSeconds` and `hypothesisSeconds` (scored time per side) say why.
     public static func agreement(reference: [LabelledInterval], hypothesis: [LabelledInterval],
-                                 collar: Double = 0.25) -> (confusion: Double, comparedSeconds: Double, mapping: [String: String])
+                                 collar: Double = 0.25) -> DiarizationAgreement
+    // DiarizationAgreement { confusion: Double?, comparedSeconds, referenceSeconds, hypothesisSeconds: Double,
+    //                        mapping: [String: String] }; prints no labels.
 }
 ```
 
@@ -4726,6 +5028,9 @@ public struct SpeakerSessionSnapshot: Sendable {
     /// Why the head run could not be used (missing transcript, invalid span), if so.
     public let runProblem: String?
     public let audioDeleted: Bool
+    public let meetingInfoDamaged: Bool        // meeting.json damaged or of another session; inferred used
+    public let recognitionUnreadable: Bool     // recognition result left out
+    public let skippedEvents: Int              // event log lines/events the gaps and markers skipped
     /// Throws unavailable when the session has no transcript.
     public static func load(session: URL, profileNames: [String: String] = [:]) throws -> SpeakerSessionSnapshot
     public func exportDocument(timeZone: TimeZone = .current) -> ExportDocument
@@ -4847,7 +5152,11 @@ holos session score <path> --otter <transcript.txt> [--collar 0.25] [--json]    
 - `session score` prints only numbers: reference speakers, Holos speakers, agreement
   confusion, compared seconds, mapping size. With `--json`, the mapping is keyed by
   the first 12 hex characters of the SHA-256 of each Otter label, so scripts can match
-  people across files without printing names. It never prints text.
+  people across files without printing names. It never prints text. It fails rather
+  than print zeros when nothing can be compared: no audio, no speaker segments, Otter
+  times that go backwards or start after the audio ends (another recording), no Otter
+  turn inside the audio, every turn inside the collar, or no overlap. A run without
+  labelled turns reports the turn score as not comparable.
 - `scripts/evaluate-references.swift --speakers` (with `--reference-format otter`): for
   each pair, `holos session import` (transcribed once) into
   `.local/evaluation/<run>/sessions`, then for each configuration `holos session diarize
@@ -4932,6 +5241,8 @@ public enum SpeakerLabelState: String, Codable, Sendable {
     case notLabelled
     case failed
     case interrupted
+    /// postprocess.json or speakers/head.json cannot be read (damaged, newer Holos, I/O); see `labelMessage`.
+    case unreadable
 }
 
 public struct SessionSummary: Codable, Sendable, Equatable, Identifiable {
@@ -4946,7 +5257,10 @@ public struct SessionSummary: Codable, Sendable, Equatable, Identifiable {
     /// Longest track's total chunk duration.
     public var savedSeconds: Double
     public var chunkCount: Int
+    /// Set once the current revision was read and holds this ID.
     public var transcriptID: String?
+    /// Why the current transcript cannot be read (missing, damaged, other ID, newer Holos).
+    public var transcriptProblem: String?
     public var speakerState: SpeakerLabelState
     public var labelMessage: String?
     public var runID: String?
@@ -4990,13 +5304,21 @@ public enum SessionDeletion {
 4. If `transcribe`: `TrackReplayer.replay(from: max(0, coverageEnd − 2))` with the
    session vocabulary; `TranscriptCoverage.merge` keeps journal words before coverage and
    replayed words from it on, cutting segments at word boundaries.
-5. Sort by `(start, track)`; `openForMaintenance(at:lease:)`;
-   `saveTranscript(_:writeLegacyExports: false)` (pointer updated); append
-   `transcriptRebuilt {transcriptID, journalSegments, replayedSeconds}`; set status
-   `recovered`; `finish`.
+5. Sort by `(start, track)`; `openForMaintenance(at:lease:)`; append
+   `transcriptRebuilding` with the details `transcriptRebuilt` will have (so a transcript
+   a rebuild made current is never taken for one the recorder saved at stop);
+   `saveTranscript(_:writeLegacyExports: false)` (pointer updated); set status
+   `recovered`; append `transcriptRebuilt {transcriptID, journalSegments,
+   replayedSeconds}`; `finish`. A failure after the save is reported, not thrown; the next
+   rebuild (and recover, even for a session that keeps its saved transcript) finds the
+   `transcriptRebuilding` naming the current transcript and finishes writing the missing
+   status and event instead of rebuilding again.
 6. Idempotence by sequence numbers, not dates: if a `transcriptRebuilt` event exists with
    a higher `sequence` than the last `archiveRecovered` event, its `transcriptID` is the
-   current pointer, and `!force`, return it with `reused: true` and change nothing.
+   current pointer, that revision decodes and holds its own ID, and `!force`, return it
+   with `reused: true` and change nothing. A truncated, damaged, or mislabelled current
+   revision is rebuilt. A current pointer or revision, or a `vocabulary.json` the replay
+   would use, written by a newer Holos is refused (`unavailable`), even with `force`.
 
 **State mapping (`SessionCatalog`).** Unreadable manifest → `damaged`. Manifest
 `recording`/`processing`: liveness `capturing` → `recording`; `processing` or
@@ -5004,7 +5326,27 @@ public enum SessionDeletion {
 Speaker state: `postprocess.json` `running` with liveness `processing` or `maintenance`
 → `running`; `running` otherwise → `interrupted`; `failed` → `failed`; a finished record
 with a run → `labelled`; a finished record without a run → `notLabelled` with the record's
-message; no record → `none`.
+message; no record → `none`. A head counts as labels only when
+`SpeakerSessionSnapshot.load` (the loader the exports and speaker commands use) loads its
+run: the run and the transcript revision it was built from exist and decode, and every
+span fits that transcript. A postprocess.json, speakers/head.json, head run, or run
+transcript that exists but cannot be read (damaged, of another session, written by a
+newer Holos, I/O), a head whose run or run transcript is missing, a span outside that
+transcript, or a record that names a run while the head is missing → `unreadable` with
+why, never the state of a session without it. `recover` validates the same files the same
+way (one shared reader, `SavedSpeakerState`, which delegates to the snapshot loader)
+before it decides to post-process, and refuses (`unavailable`) when one was written by a
+newer Holos.
+
+**Saved files are read, never only found.** Every versioned file recover, the catalog,
+delete, relabel, and the exports read (meeting.json, vocabulary.json, postprocess.json,
+`transcripts/current.json` and revisions, `speakers/head.json`, runs, recognition results,
+`audio-deleted.json`, `exports/.generated.json`) is decoded with its version checked
+first: newer → `unavailable`; a version below 1 or data that does not decode → damage,
+never present-and-authoritative. A record that names a session (meeting.json,
+postprocess.json, runs, voice data, and `audio-deleted.json` when it names one) is
+checked against the manifest's ID; another session's is damage.
+`manifest.json` stays strictly version 1 (schema rule 4).
 
 **CLI.**
 
@@ -5337,7 +5679,8 @@ public enum AutoRelabelPolicy {
 - `statusRead` phase `transcribing`/`postprocessing` → `finishing`,
   `setDictationPaused(false)`.
 - `statusRead` phase `exited` → `idle`, `finished(id, summary, speakersReady)`, and
-  `offerNaming` when speakers are ready. Summary: "Saved Council meeting (2:58:12).
+  `offerNaming` when speakers are ready (post-processing `succeeded` or `partial`, then
+  checked against the saved labels by `MeetingController`). Summary: "Saved Council meeting (2:58:12).
   Speakers labelled." or the exit's post-processing message ("… No speaker labels:
   speaker models are not installed.").
 - `active` + (liveness `dead`, or `childExited` without an `exited` status) →
@@ -5425,7 +5768,14 @@ failed, interrupted; runs `holos session diarize <path>`), `Show in Finder`,
 `Save Transcript As…` (NSSavePanel: md or txt), `Delete Audio…`, `Delete Meeting…`, and
 `Clean Up` when `derivedBytes > 0`. Footer: "Meetings use 12.4 GB · 21.3 GB free".
 Double-click opens the Quick Look preview (PR9 changes it to Review). Refreshes every
-2 s while visible.
+2 s while visible. Button enablement is `MeetingActionPolicy.enabled`, the rules of the
+commands behind the buttons: Recover when `SessionRecoveryCommand.rebuilds` would rebuild
+(asked with the catalog's readable transcript, so a `transcriptionIncomplete` or `incomplete`
+meeting whose transcript cannot be read qualifies) or the meeting is interrupted, never for a
+damaged manifest or a transcript from a newer Holos; Label Speakers for speaker state none,
+notLabelled, failed, or interrupted with a readable transcript and audio, not interrupted. No
+lease-taking action while the app uses the meeting or another process holds it (liveness
+capturing, processing, maintenance).
 
 Live transcript window: read-only text view with the last 500 `transcriptFinalized`
 events from `events.jsonl`, `[01:02:03] Mic: …`, refreshed every second, scrolled to the
@@ -5441,12 +5791,54 @@ picks at most one session and `MaintenanceLauncher` runs `holos session diarize 
 --json`; attempts are counted in `UserDefaults "meeting.relabelAttempts"`. This covers a
 Mac shut down or put to sleep while labelling.
 
+Naming offer: derived from saved state, never emitted per path
+(`MeetingController.refreshNamingOffer`, rule `NamingOfferPolicy.offer`). Among recorded
+meetings with liveness exited or dead whose labels are ready and were made in the last 7 days
+(`SessionSummary.labelsReadyAt`, the head run's `createdAt`), the one labelled last is offered,
+unless its speakers were edited or the user opened the offer for that run (UserDefaults
+`meeting.namingOffersDismissed`, session ID → run ID; another run of the meeting is offered
+again). It is derived on launch, when a followed recording finishes, and whenever the app's use
+of a meeting ends (`endUsing`: a Meetings command, the interrupted prompt's Recover, Clean Up,
+Save Transcript As…, the automatic relabel), so a meeting labelled after Holos quit, by a
+command in a terminal, or by any of those paths is offered, also after a relaunch. Each change
+is reported once, as `offerNaming` or `clearNamingOffer`; `reviewOpened` dismisses it.
+
+Meetings in use: `MeetingController.sessionsInUse` (session ID → what the app is doing) is the
+one set of meetings the app works on. Every operation of the app that takes a meeting's
+processing lease, or reads it for the user, holds an entry while it runs (`beginUsing` refuses a
+second one): Recover, Label Speakers, Delete Audio, Delete Meeting, the interrupted prompt's
+Recover, Clean Up, Save Transcript As…, and the automatic relabel. The relabel skips these
+meetings, every Meetings action refuses them, and the State column shows what is running.
+
+Labels are ready (a finished meeting's `speakersReady`, the naming offer, the Label Speakers
+result) only when `SavedSpeakerState` finds them usable, the validation the catalog, recovery,
+and the exports share (`MeetingController.speakerLabelsReady`, run off the main actor);
+`speakers/head.json` alone is not enough.
+
+Launched recorders: the pid and start time of each recorder child are kept in
+`UserDefaults "meeting.launchedRecorders"` until its exit is seen. A start timed out while a
+permission prompt is open leaves a child with no session folder; after a quit or crash the
+relaunched app refuses a new start ("The last recording is still stopping…") while that pid
+still names a process with the saved start time.
+
 Quit (`applicationShouldTerminate`) while `active`: alert "A meeting is recording."
 Child mode: `[Stop and Save]` (send stop; `.terminateLater`; reply once the status phase
 is `transcribing` or later, at most 10 s; the recorder finishes labelling on its own),
 `[Keep Recording]` (quit the app only), `[Cancel]`. In-process mode: `[Stop and Save]`
-shows progress and replies once the phase is `postprocessing` or later (the transcript
-is saved; labelling continues in its child), at most 10 minutes; `[Cancel]`.
+shows progress and replies once the recording in the app has ended, at most 10 minutes;
+`[Cancel]`. Labelling continues in its child: once the recording's post-process hook has
+handed the lease over, the quit calls `InProcessLauncher.leaveLabellingToItsChild()`,
+which cancels the recording task; the hook stops mirroring the child and returns a
+`running` record, and the recording writes `exited` (post-processing `running`) before it
+ends. Replying at phase `postprocessing` alone would kill the app while the recording
+still waits for the child, leaving `status.json` stuck in `postprocessing`. The readiness
+rule is `QuitReadiness.ready`; any quit while a recording still runs in the app waits.
+Test `quitLeavesLabellingToTheChildAndEndsTheRecording`. An in-process
+recording whose exited status could not be written yet (`ExitRetry` still retrying it and
+holding the locks) has not ended: `InProcessLauncher` keeps it running, reports its exit
+only once `status.json` says exited (or the retry stops because the folder is gone, as a
+failure), and a quit waits for it the same way (`isRecording` stays true, `isWritingExit`).
+Test `inProcessRecordingEndsOnlyOnceItsExitedStatusIsWritten`.
 
 About Holos: `NSApp.orderFrontStandardAboutPanel(options: [.credits: …])` with the
 credits text of §4.8 embedded as a string constant (the app has no resource bundle).

@@ -21,6 +21,11 @@ public struct ProjectedSpeaker: Sendable, Equatable, Identifiable {
     public let provenance: LabelProvenance
     /// A `likely` match applied automatically and not confirmed.
     public let isAutomatic: Bool
+    /// Who this speaker is as the meeting shows it: the linked person, else the person a `likely` match named
+    /// automatically. Nil when the meeting names nobody. A rejection, a link to somebody else or an explicit
+    /// name has already taken an automatic name back by the time this is set, so this is the one place that
+    /// answers "whose speaker is this" for a reader who must not have to repeat those rules.
+    public let effectiveProfileID: String?
     /// A `possible` match, not applied; the UI shows "Maybe Maria — Confirm". Never exported.
     /// `profileName` is the profile's current name.
     public let suggestion: SpeakerMatch?
@@ -33,11 +38,13 @@ public struct ProjectedSpeaker: Sendable, Equatable, Identifiable {
 
     public init(id: String, ordinal: Int, name: String, label: String, explicitName: String?, profileID: String?,
                 provenance: LabelProvenance, isAutomatic: Bool, suggestion: SpeakerMatch?,
-                rejectedProfileIDs: [String], clusterIDs: [String], talkSeconds: Double, turnCount: Int) {
+                rejectedProfileIDs: [String], clusterIDs: [String], talkSeconds: Double, turnCount: Int,
+                effectiveProfileID: String? = nil) {
         self.id = id; self.ordinal = ordinal; self.name = name; self.label = label
         self.explicitName = explicitName; self.profileID = profileID; self.provenance = provenance
         self.isAutomatic = isAutomatic; self.suggestion = suggestion; self.rejectedProfileIDs = rejectedProfileIDs
         self.clusterIDs = clusterIDs; self.talkSeconds = talkSeconds; self.turnCount = turnCount
+        self.effectiveProfileID = effectiveProfileID ?? profileID
     }
 }
 
@@ -394,14 +401,15 @@ extension SpeakerProjection {
             self.profileNames = known
             var matches: [String: [SpeakerMatch]] = [:]
             var suggestions: [MergeSuggestion] = []
-            if let recognition, recognition.runID == run.id {
+            if var recognition, recognition.runID == run.id {
+                recognition.removeProfiles { known[$0] == nil }
                 for match in recognition.matches {
                     guard let name = known[match.profileID] else { continue }
                     var current = match
                     current.profileName = name
                     matches[match.speakerID, default: []].append(current)
                 }
-                suggestions = recognition.mergeSuggestions.filter { known[$0.profileID] != nil }
+                suggestions = recognition.mergeSuggestions
             }
             self.matches = matches
             self.mergeSuggestions = suggestions
@@ -809,7 +817,8 @@ extension SpeakerProjection {
                     profileID: speaker.profileID, provenance: provenance, isAutomatic: automatic != nil,
                     suggestion: suggestion, rejectedProfileIDs: speaker.rejectedProfileIDs,
                     clusterIDs: speaker.clusterIDs, talkSeconds: talk[speaker.id] ?? 0,
-                    turnCount: turnCounts[speaker.id] ?? 0))
+                    turnCount: turnCounts[speaker.id] ?? 0,
+                    effectiveProfileID: effectiveProfiles[speaker.id]))
             }
             let merges = mergeSuggestions(listed: projectedSpeakers, effectiveProfiles: effectiveProfiles,
                                           context: context)

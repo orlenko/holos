@@ -9,9 +9,21 @@ public struct ExportWriteResult: Sendable, Equatable {
     public var written: [URL]
     /// Hand-edited exports moved to `exports/edited-<YYYYMMDD-HHMMSS>.<ext>` before regeneration.
     public var movedAside: [URL]
+    /// What the snapshot the exports were written from skipped or could not use; nil when nothing was written.
+    public var diagnostics: SpeakerSnapshotDiagnostics?
 
-    public init(written: [URL] = [], movedAside: [URL] = []) {
-        self.written = written; self.movedAside = movedAside
+    public init(written: [URL] = [], movedAside: [URL] = [], diagnostics: SpeakerSnapshotDiagnostics? = nil) {
+        self.written = written; self.movedAside = movedAside; self.diagnostics = diagnostics
+    }
+}
+
+/// One format rendered by `SessionExports.renderChecked`, with what its snapshot skipped or could not use.
+public struct RenderedExport: Sendable, Equatable {
+    public var data: Data
+    public var diagnostics: SpeakerSnapshotDiagnostics
+
+    public init(data: Data, diagnostics: SpeakerSnapshotDiagnostics) {
+        self.data = data; self.diagnostics = diagnostics
     }
 }
 
@@ -30,9 +42,10 @@ public enum SessionExports {
 
     /// Takes the speaker lock, loads the snapshot, writes exports/transcript.{md,json,txt}, releases the lock.
     @discardableResult
-    public static func regenerate(session: URL, profileNames: [String: String] = [:]) throws -> ExportWriteResult {
+    public static func regenerate(session: URL, profileNames: [String: String] = [:],
+                                  applyRecognition: Bool = true) throws -> ExportWriteResult {
         try SessionArchive.withSpeakerLock(at: session) {
-            try regenerateLocked(session: session, profileNames: profileNames)
+            try regenerateLocked(session: session, profileNames: profileNames, applyRecognition: applyRecognition)
         }
     }
 
@@ -48,8 +61,10 @@ public enum SessionExports {
     /// is moved aside. A `.generated.json` from a newer Holos is refused (`unavailable`); a damaged one records
     /// nothing, so every existing file that differs is moved aside.
     @discardableResult
-    public static func regenerateLocked(session: URL, profileNames: [String: String] = [:]) throws -> ExportWriteResult {
-        let snapshot = try SpeakerSessionSnapshot.load(session: session, profileNames: profileNames)
+    public static func regenerateLocked(session: URL, profileNames: [String: String] = [:],
+                                        applyRecognition: Bool = true) throws -> ExportWriteResult {
+        let snapshot = try SpeakerSessionSnapshot.load(session: session, profileNames: profileNames,
+                                                       applyRecognition: applyRecognition)
         let rendered = try renderAll(exportDocument(snapshot))
         let result = try write(rendered, session: session, snapshot: snapshot)
         log.info("Session \(snapshot.manifest.id, privacy: .public): wrote \(result.written.count, privacy: .public) exports; moved \(result.movedAside.count, privacy: .public) edited exports aside")
@@ -57,10 +72,19 @@ public enum SessionExports {
     }
 
     /// One format, not written anywhere.
-    public static func render(_ format: ExportFormat, session: URL,
-                              profileNames: [String: String] = [:]) throws -> Data {
-        let snapshot = try SpeakerSessionSnapshot.load(session: session, profileNames: profileNames)
-        return try TranscriptExporter.render(exportDocument(snapshot), format: format)
+    public static func render(_ format: ExportFormat, session: URL, profileNames: [String: String] = [:],
+                              applyRecognition: Bool = true) throws -> Data {
+        try renderChecked(format, session: session, profileNames: profileNames,
+                          applyRecognition: applyRecognition).data
+    }
+
+    /// `render`, with the diagnostics of the snapshot it was rendered from (to report after the export).
+    public static func renderChecked(_ format: ExportFormat, session: URL, profileNames: [String: String] = [:],
+                                     applyRecognition: Bool = true) throws -> RenderedExport {
+        let snapshot = try SpeakerSessionSnapshot.load(session: session, profileNames: profileNames,
+                                                       applyRecognition: applyRecognition)
+        return RenderedExport(data: try TranscriptExporter.render(exportDocument(snapshot), format: format),
+                              diagnostics: snapshot.diagnostics)
     }
 
     /// The document the exports are written from: the snapshot's, except when the transcript changed after speakers
@@ -104,7 +128,8 @@ public enum SessionExports {
 
     private static func write(_ rendered: [(format: ExportFormat, data: Data)], session: URL,
                               snapshot: SpeakerSessionSnapshot) throws -> ExportWriteResult {
-        var result = ExportWriteResult(movedAside: try beginWrite(rendered, session: session, snapshot: snapshot))
+        var result = ExportWriteResult(movedAside: try beginWrite(rendered, session: session, snapshot: snapshot),
+                                       diagnostics: snapshot.diagnostics)
         for entry in rendered {
             let url = SessionPaths.export(entry.format.rawValue, in: session)
             try AtomicFile.write(entry.data, to: url, permissions: generatedPermissions)
@@ -173,10 +198,9 @@ public enum SessionExports {
         guard let data = try AtomicFile.readIfPresent(SessionPaths.generatedExports(session), maxBytes: 1 << 20) else {
             return nil
         }
-        try SessionFiles.checkVersion(data, current: 1, name: name)
         do {
-            return try HolosJSON.decoder().decode(GeneratedRecord.self, from: data)
-        } catch {
+            return try SessionFiles.decode(GeneratedRecord.self, from: data, current: 1, name: name)
+        } catch let error where SessionFiles.isDamage(error) {
             log.error("\(name, privacy: .public) is damaged; every edited export will be moved aside")
             return GeneratedRecord(files: [:])
         }

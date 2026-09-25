@@ -65,7 +65,8 @@ private let calibrated = RecognitionThresholds(likelyMaxDistance: 0.25, likelyMi
                                                possibleMaxDistance: 0.43, minSampleSeconds: 20)
 
 private func database(_ profiles: [SpeakerProfile], thresholds: RecognitionThresholds? = nil) -> SpeakerProfileDatabase {
-    SpeakerProfileDatabase(rememberVoices: true, calibratedThresholds: thresholds, profiles: profiles)
+    SpeakerProfileDatabase(rememberVoices: true, calibratedThresholds: thresholds,
+                           calibratedModel: thresholds == nil ? nil : model, profiles: profiles)
 }
 
 private let oneSpeaker = recognizerRun([("system:S1", "system")])
@@ -85,6 +86,28 @@ private let oneCentroid = voiceData(["system:S1": axis(0)])
     #expect(SpeakerRecognizer.defaultThresholds.likelyMaxDistance == 0)
     #expect(SpeakerRecognizer.defaultThresholds.likelyMinMargin == 0.10)
     #expect(SpeakerRecognizer.defaultThresholds.minSampleSeconds == 20)
+}
+
+@Test func calibrationAppliesOnlyToItsEmbeddingModel() throws {
+    let profiles = [person("jim", [sample(away(0.20, towards: 1))]), person("maria", [sample(away(0.60, towards: 2))])]
+    // Thresholds measured on another model: this run uses the defaults, so nothing is named automatically.
+    var otherModel = database(profiles, thresholds: calibrated)
+    otherModel.calibratedModel = EmbeddingModelID(id: "other", revision: "2")
+    let other = try #require(SpeakerRecognizer.recognize(run: oneSpeaker, voiceData: oneCentroid,
+                                                         database: otherModel, now: date))
+    #expect(other.matches.first?.tier == .possible)
+    #expect(other.thresholds == SpeakerRecognizer.defaultThresholds)
+    // Thresholds without their model (saved before the model was recorded) are never applied either.
+    var noModel = otherModel
+    noModel.calibratedModel = nil
+    #expect(!noModel.isCalibrated)
+    #expect(SpeakerRecognizer.thresholds(noModel, model: model).calibrated == false)
+    // The run's own model: calibrated.
+    let same = try #require(SpeakerRecognizer.recognize(run: oneSpeaker, voiceData: oneCentroid,
+                                                        database: database(profiles, thresholds: calibrated),
+                                                        now: date))
+    #expect(same.matches.first?.tier == .likely)
+    #expect(same.thresholds == calibrated)
 }
 
 @Test func likelyNeedsCalibrationDistanceAndMargin() throws {

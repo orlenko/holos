@@ -190,6 +190,7 @@ func enrollmentNeverFromAutomaticMatch() async throws {
     try store.update {
         $0.rememberVoices = true
         $0.calibratedThresholds = calibrated
+        $0.calibratedModel = profileModel
         $0.profiles = [jim]
     }
     let (session, record) = try await profileProcessedSession(in: temp, store: store)
@@ -997,9 +998,9 @@ func rememberOffForgetsSamplesLearnedAfterTheyWereListed() async throws {
     let store = profileStore(temp)
     _ = try await profileForgetFixture(temp, store: store)
     // The tombstone listed no sample: one was learned between the listing and the store write.
-    let stale = ForgetRecord(kind: .all, sampleIDs: [])
+    let stale = ForgetRecord(kind: .all, sampleIDs: [], turnRememberOff: true)
     try store.appendForgetRecord(stale)
-    try VoiceProfileService.perform(stale, store: store, sessionsRoot: temp.url, turnRememberOff: true, initial: true)
+    try VoiceProfileService.perform(stale, store: store, sessionsRoot: temp.url)
     #expect(try !store.load().rememberVoices)
     #expect(try store.load().sampleCount == 0)
     #expect(try store.pendingForgets().isEmpty)
@@ -1009,10 +1010,13 @@ func rememberOffForgetsSamplesLearnedAfterTheyWereListed() async throws {
         $0.rememberVoices = true
         $0.profiles.append(profilePerson("MARIA", "Maria", vector: profileAxis(2)))
     }
-    let resumed = ForgetRecord(kind: .all, sampleIDs: [])
+    let resumed = ForgetRecord(kind: .all, sampleIDs: [], turnRememberOff: true)
     try store.appendForgetRecord(resumed)
+    // Its store write is done: a crash left only the meetings to clean.
+    try store.appendForgetRecord(.stored(resumed.id))
     try VoiceProfileService.perform(resumed, store: store, sessionsRoot: temp.url)
     #expect(try store.load().sampleCount == 1)
+    #expect(try store.load().rememberVoices, "A resumed forget never turns remembering off again.")
 }
 
 @Test(.timeLimit(.minutes(1)))
@@ -1053,14 +1057,25 @@ func forgetCleansMeetingsWhoseManifestCannotBeRead() async throws {
     // A damaged manifest: the speaker lock is taken and the voice data and recognition results are deleted.
     let (first, _, jim) = try await profileForgetFixture(temp, store: store)
     try profileDamage(SessionPaths.manifest(first))
-    try VoiceProfileService.forget(profileID: jim, store: store, sessionsRoot: temp.url)
+    // The voice data and the recognition results go at once. The exported transcript cannot be rewritten without
+    // the manifest, and it may still hold a name recognition gave, so the tombstone waits for a readable one.
+    #expect(throws: HolosError.self) {
+        try VoiceProfileService.forget(profileID: jim, store: store, sessionsRoot: temp.url)
+    }
     #expect(!SessionFixtures.exists(SessionPaths.voiceDirectory(first)))
     #expect(!SessionFixtures.exists(first.appendingPathComponent("speakers/recognition")))
-    #expect(try store.pendingForgets().isEmpty)
+    let waiting = try #require(try store.pendingForgets().first)
+    #expect(try store.forgetIsCleaned(waiting.id),
+            "Nothing Holos reads names them any more, so voice suggestions carry on meanwhile.")
+    #expect(VoiceProfileService.recognitionAllowed(store: store))
+    try FileManager.default.removeItem(at: SessionPaths.exports(first))
+    try VoiceProfileService.resumePendingForgets(store: store, sessionsRoot: temp.url)
+    #expect(try store.pendingForgets().isEmpty, "With no exports left to rewrite, it finishes.")
 
     // A missing manifest, for everything.
     let (second, _, _) = try await profileForgetFixture(temp, store: store)
     try FileManager.default.removeItem(at: SessionPaths.manifest(second))
+    try FileManager.default.removeItem(at: SessionPaths.exports(second))
     try VoiceProfileService.forgetAll(store: store, sessionsRoot: temp.url)
     #expect(!SessionFixtures.exists(SessionPaths.voiceDirectory(second)))
     #expect(!SessionFixtures.exists(second.appendingPathComponent("speakers/recognition")))
@@ -1170,6 +1185,364 @@ func recognitionDropsPeopleWhoseSuggestionsWereTurnedOffMeanwhile() async throws
     #expect(result.skippedProfiles == ["MARIA"])
     let saved = try #require(try SessionSpeakerStore.readRecognition(runID: runID, session: session))
     #expect(saved.matches.isEmpty)
+}
+
+@Test(.timeLimit(.minutes(1)))
+func recognitionIsComparedAgainWithTheSamplesPresentWhenSaved() async throws {
+    let temp = try TemporaryDirectory("profiles")
+    defer { temp.remove() }
+    let root = temp.url
+    let store = profileStore(temp)
+    let (session, record) = try await profileProcessedSession(in: temp, store: nil, forceVoiceData: true)
+    let runID = try #require(record.runID)
+    let run = try SessionSpeakerStore.readRun(id: runID, session: session)
+    let voiceData = try SessionSpeakerStore.readVoiceData(runID: runID, session: session)
+    // Jim has two samples: one matches mic:S1 (axis 0), the other matches nobody.
+    var jim = profilePerson("JIM", "Jim", vector: profileAxis(0))
+    jim.samples += profilePerson("X", "X", vector: profileAxis(5)).samples
+    let matching = jim.samples[0].id
+    try store.update {
+        $0.rememberVoices = true
+        $0.profiles = [jim]
+    }
+
+    // The matching sample is forgotten after the first read: Jim stays eligible (he has another sample), but the
+    // match rested on the forgotten sample, so it is not saved.
+    let forgotten = RecognizeStage.$beforeSaving.withValue({
+        try VoiceProfileService.forget(sampleID: matching, store: store, sessionsRoot: root)
+    }) {
+        RecognizeStage.run(run, voiceData: voiceData, session: session, store: store)
+    }
+    guard case .recognized(let result) = forgotten else {
+        Issue.record("Expected a recognition result, got \(forgotten)")
+        return
+    }
+    #expect(result.matches.isEmpty)
+    #expect(try SessionSpeakerStore.readRecognition(runID: runID, session: session)?.matches.isEmpty == true)
+
+    // A person learned meanwhile is compared too.
+    let learned = RecognizeStage.$beforeSaving.withValue({
+        try store.update { $0.profiles.append(profilePerson("MARIA", "Maria", vector: profileAxis(1))) }
+    }) {
+        RecognizeStage.run(run, voiceData: voiceData, session: session, store: store)
+    }
+    guard case .recognized(let second) = learned else {
+        Issue.record("Expected a recognition result, got \(learned)")
+        return
+    }
+    #expect(second.matches.map(\.profileID) == ["MARIA"])
+}
+
+@Test(.timeLimit(.minutes(1)))
+func refreshRedoesItsPlanWhenTheStoreChangedMeanwhile() async throws {
+    let temp = try TemporaryDirectory("profiles")
+    defer { temp.remove() }
+    let root = temp.url
+    let store = profileStore(temp)
+    try store.update { $0.rememberVoices = true }
+    let (session, _) = try await profileSession(in: temp)
+    _ = try await VoiceProfileService.link(
+        session: session, speakerID: "system:S1", to: .new(name: "Jim"), view: try SessionFixtures.view(session),
+        learnVoice: true, extractor: ProfileFakeExtractor(), store: store)
+    // T3 is left out, so the sample (which holds T3) must be recomputed or removed.
+    try SessionFixtures.appendEdits([.excludeFromEnrollment(turnIDs: ["T3"])], session: session)
+
+    // Remember voices is turned off (samples kept) while the sample is recomputed. The recomputed sample may not be
+    // saved, and the stale one must not stay either: the plan is made again from the store as it now is.
+    let turnedOff = ProfileFakeExtractor { _ in
+        try VoiceProfileService.setRemember(false, forgetExisting: false, store: store, sessionsRoot: root)
+    }
+    try await VoiceProfileService.refreshSamples(session: session, extractor: turnedOff, store: store)
+    #expect(turnedOff.requests.count == 1, "The second attempt removes the sample without extracting.")
+    #expect(try store.load().sampleCount == 0)
+}
+
+@Test(.timeLimit(.minutes(1)))
+func forgetSessionRemovesSamplesLearnedAfterTheListing() throws {
+    let temp = try TemporaryDirectory("profiles")
+    defer { temp.remove() }
+    let store = profileStore(temp)
+    let a = UUID().uuidString
+    let b = UUID().uuidString
+    try store.update {
+        $0.profiles = [profilePerson("JIM", "Jim", vector: profileAxis(0), session: a),
+                       profilePerson("MARIA", "Maria", vector: profileAxis(1), session: b)]
+    }
+    // The tombstone listed no sample: Jim's was learned from meeting A between the listing and the store write.
+    let stale = ForgetRecord(kind: .session, sampleIDs: [], sessionIDs: [a])
+    try store.appendForgetRecord(stale)
+    #expect(try VoiceProfileService.perform(stale, store: store, sessionsRoot: temp.url) == 1)
+    #expect(try store.load().profiles.first { $0.id == "JIM" }?.samples.isEmpty == true)
+    #expect(try store.load().profiles.first { $0.id == "MARIA" }?.samples.count == 1)
+    #expect(try store.pendingForgets().isEmpty)
+
+    // A resumed `.session` removes only the samples it lists: meeting A may have been linked again since.
+    try store.update { database in
+        let index = try #require(database.profiles.firstIndex { $0.id == "JIM" })
+        database.profiles[index] = profilePerson("JIM", "Jim", vector: profileAxis(0), session: a)
+    }
+    let resumed = ForgetRecord(kind: .session, sampleIDs: [], sessionIDs: [a])
+    try store.appendForgetRecord(resumed)
+    // Its store write is done: a crash left only the meetings to clean.
+    try store.appendForgetRecord(.stored(resumed.id))
+    #expect(try VoiceProfileService.perform(resumed, store: store, sessionsRoot: temp.url) == 0)
+    #expect(try store.load().sampleCount == 2)
+}
+
+@Test(.timeLimit(.minutes(1)))
+func forgetPersonRemovesEveryReferenceInRecognition() async throws {
+    let temp = try TemporaryDirectory("profiles")
+    defer { temp.remove() }
+    let store = profileStore(temp)
+    let (session, runID, jim) = try await profileForgetFixture(temp, store: store)
+    try store.update { $0.profiles.append(SpeakerProfile(id: "OTHER", displayName: "Other")) }
+    // This result names Jim only as skipped (his samples were of another model when it was made).
+    try SessionArchive.withSpeakerLock(at: session) {
+        try SessionSpeakerStore.writeRecognition(
+            RecognitionResult(runID: runID, embeddingModel: profileModel,
+                              thresholds: SpeakerRecognizer.defaultThresholds, matches: [],
+                              skippedProfiles: [jim, "OTHER"]),
+            session: session)
+    }
+    try VoiceProfileService.forget(profileID: jim, store: store, sessionsRoot: temp.url)
+    let result = try #require(try SessionSpeakerStore.readRecognition(runID: runID, session: session))
+    #expect(result.skippedProfiles == ["OTHER"])
+    #expect(try store.pendingForgets().isEmpty)
+
+    // The one helper every scrub uses covers each field that holds a person's ID.
+    var all = RecognitionResult(
+        runID: runID, embeddingModel: profileModel, thresholds: SpeakerRecognizer.defaultThresholds,
+        matches: [SpeakerMatch(speakerID: "mic:S1", profileID: "JIM", profileName: "Jim", distance: 0.2,
+                               tier: .possible)],
+        mergeSuggestions: [MergeSuggestion(speakerIDs: ["mic:S1", "mic:S2"], profileID: "JIM")],
+        skippedProfiles: ["JIM", "OTHER"])
+    #expect(all.removeProfiles { $0 == "JIM" })
+    #expect(all.matches.isEmpty && all.mergeSuggestions.isEmpty && all.skippedProfiles == ["OTHER"])
+    #expect(!all.removeProfiles { $0 == "JIM" }, "Nothing left to remove.")
+}
+
+@Test(.timeLimit(.minutes(1)))
+func noVoiceIsLearnedOrSuggestedWhenEditsCannotAllBeRead() async throws {
+    let temp = try TemporaryDirectory("profiles")
+    defer { temp.remove() }
+    let store = profileStore(temp)
+    try store.update {
+        $0.rememberVoices = true
+        $0.profiles = [SpeakerProfile(id: "MARIA", displayName: "Maria")]
+    }
+
+    // A torn last line: the sample Jim has from this meeting is neither recomputed nor removed, and the caller is
+    // told why.
+    let (first, _) = try await profileSession(in: temp)
+    let extractor = ProfileFakeExtractor()
+    _ = try await VoiceProfileService.link(
+        session: first, speakerID: "system:S1", to: .new(name: "Jim"), view: try SessionFixtures.view(first),
+        learnVoice: true, extractor: extractor, store: store)
+    let sample = try #require(try store.load().profiles.flatMap(\.samples).first)
+    let torn = try FileHandle(forWritingTo: SessionPaths.edits(first))
+    try torn.seekToEnd()
+    try torn.write(contentsOf: Data(#"{"schemaVersion": 1, "id": "#.utf8))
+    try torn.close()
+    do {
+        try await VoiceProfileService.refreshSamples(session: first, extractor: extractor, store: store)
+        Issue.record("A refresh over an incomplete journal must say so.")
+    } catch let HolosError.unavailable(message) {
+        #expect(message == VoiceProfileService.incompleteEdits)
+    }
+    #expect(try store.load().profiles.flatMap(\.samples) == [sample])
+    #expect(extractor.requests.count == 1)
+
+    // A line from a newer Holos (it may reject or move a speaker): the suggestion is not shown, confirming it is
+    // refused, and no voice is learned.
+    let (second, run) = try await profileSession(in: temp)
+    try SessionFixtures.appendEdits([.linkProfile(speakerID: "system:S1", profileID: "MARIA")], session: second)
+    try SessionArchive.withSpeakerLock(at: second) {
+        try SessionSpeakerStore.writeRecognition(
+            RecognitionResult(runID: run.id, embeddingModel: profileModel,
+                              thresholds: SpeakerRecognizer.defaultThresholds,
+                              matches: [SpeakerMatch(speakerID: "system:S2", profileID: "MARIA", profileName: "Maria",
+                                                     distance: 0.2, tier: .possible)]),
+            session: second)
+    }
+    let before = try profileView(second, store: store)
+    #expect(before.speakers.first { $0.id == "system:S2" }?.suggestion != nil)
+    let newer = try FileHandle(forWritingTo: SessionPaths.edits(second))
+    try newer.seekToEnd()
+    try newer.write(contentsOf: Data(#"{"schemaVersion": 99, "id": "FUTURE"}"#.utf8 + [0x0A]))
+    try newer.close()
+
+    let after = try SpeakerSessionSnapshot.load(session: second,
+                                                profileNames: VoiceProfileService.profileNames(store: store))
+    #expect(after.recognition == nil)
+    let s2 = try #require(after.projection?.speakers.first { $0.id == "system:S2" })
+    #expect(s2.suggestion == nil && s2.profileID == nil)
+    do {
+        _ = try await VoiceProfileService.confirmAll(session: second, view: before, learnVoices: false, extractor: nil,
+                                                     store: store)
+        Issue.record("Confirming suggestions over an incomplete journal must be refused.")
+    } catch let HolosError.unavailable(message) {
+        #expect(message == VoiceProfileService.incompleteEdits)
+    }
+    let learner = ProfileFakeExtractor()
+    do {
+        try await VoiceProfileService.syncSamples(session: second, extractor: learner, store: store,
+                                                  enroll: ["MARIA"])
+        Issue.record("Learning a voice over an incomplete journal must be refused.")
+    } catch let HolosError.unavailable(message) {
+        #expect(message == VoiceProfileService.incompleteEdits)
+    }
+    #expect(learner.requests.isEmpty)
+    #expect(try store.load().profiles.first { $0.id == "MARIA" }?.samples.isEmpty == true)
+}
+
+@Test(.timeLimit(.minutes(1)))
+func applyCalibrationStoresItsModelAndRefusesMixedModels() throws {
+    let temp = try TemporaryDirectory("profiles")
+    defer { temp.remove() }
+    let store = profileStore(temp)
+    func person(_ id: String, _ samples: [(String, [Float])]) -> SpeakerProfile {
+        SpeakerProfile(id: id, displayName: id, embeddingModel: profileModel, samples: samples.map { session, vector in
+            VoiceprintSample(sessionID: session, sessionName: "Meeting", speakerIDs: ["system:S1"], speechSeconds: 60,
+                             embedding: FloatVector(profileUnit(vector)), condition: .call, weak: false)
+        })
+    }
+    let (m1, m2, m3) = (UUID().uuidString, UUID().uuidString, UUID().uuidString)
+    try store.update {
+        $0.rememberVoices = true
+        $0.profiles = [person("JIM", [(m1, profileAxis(0)), (m2, [1, 0.1, 0, 0, 0, 0, 0, 0]),
+                                      (m3, [1, 0, 0.1, 0, 0, 0, 0, 0])]),
+                       person("MARIA", [(m1, profileAxis(3)), (m3, [0, 0, 0, 1, 0.1, 0, 0, 0])])]
+    }
+    let calibration = try VoiceProfileService.applyCalibration(store: store)
+    let saved = try store.load()
+    #expect(saved.calibratedModel == profileModel)
+    #expect(saved.calibratedThresholds == calibration.thresholds)
+    #expect(saved.calibratedThresholds(for: profileModel) != nil)
+    #expect(saved.calibratedThresholds(for: EmbeddingModelID(id: "other", revision: "2")) == nil)
+
+    // A person with samples of another model: refused, and the saved calibration stays as it was.
+    try store.update {
+        $0.profiles.append(SpeakerProfile(
+            id: "SAM", displayName: "Sam", embeddingModel: EmbeddingModelID(id: "other", revision: "2"),
+            samples: [VoiceprintSample(sessionID: m2, sessionName: "Meeting", speakerIDs: ["system:S2"],
+                                       speechSeconds: 60, embedding: FloatVector(profileAxis(6)), condition: .call,
+                                       weak: false)]))
+    }
+    // Adding Sam's samples reset the calibration; it is restored by hand to check that a refusal keeps it.
+    #expect(try store.load().calibratedThresholds == nil)
+    try store.update { $0.calibratedThresholds = calibration.thresholds; $0.calibratedModel = profileModel }
+    #expect(throws: HolosError.self) { try VoiceProfileService.applyCalibration(store: store) }
+    #expect(try store.load().calibratedThresholds == calibration.thresholds)
+}
+
+@Test(.timeLimit(.minutes(1)))
+func calibrationIsResetWhenTheSamplesItWasMeasuredOnChange() async throws {
+    let temp = try TemporaryDirectory("profiles")
+    defer { temp.remove() }
+    let store = profileStore(temp)
+    func person(_ id: String, _ samples: [(String, [Float])]) -> SpeakerProfile {
+        SpeakerProfile(id: id, displayName: id, embeddingModel: profileModel, samples: samples.map { session, vector in
+            VoiceprintSample(sessionID: session, sessionName: "Meeting", speakerIDs: ["system:S1"], speechSeconds: 60,
+                             embedding: FloatVector(profileUnit(vector)), condition: .call, weak: false)
+        })
+    }
+    let (m1, m2, m3) = (UUID().uuidString, UUID().uuidString, UUID().uuidString)
+    try store.update {
+        $0.rememberVoices = true
+        $0.profiles = [person("JIM", [(m1, profileAxis(0)), (m2, [1, 0.1, 0, 0, 0, 0, 0, 0]),
+                                      (m3, [1, 0, 0.1, 0, 0, 0, 0, 0])]),
+                       person("MARIA", [(m1, profileAxis(3)), (m3, [0, 0, 0, 1, 0.1, 0, 0, 0])]),
+                       person("SAM", [(m2, profileAxis(6))]),
+                       SpeakerProfile(id: "ANNA", displayName: "Anna")]
+    }
+    /// Calibrates, runs `change`, and returns whether the calibration was reset (and the note says so).
+    func resets(_ change: () async throws -> Void) async throws -> Bool {
+        try VoiceProfileService.applyCalibration(store: store)
+        let before = try store.load()
+        #expect(before.isCalibrated && before.calibrationResetAt == nil)
+        try await change()
+        let after = try store.load()
+        let note = VoiceProfileService.calibrationResetNote(before: before, after: after)
+        #expect((note != nil) == (after.calibratedThresholds == nil))
+        return after.calibratedThresholds == nil && after.calibratedModel == nil && after.calibrationResetAt != nil
+    }
+
+    // Names, settings, and people without samples leave it.
+    #expect(try await !resets { try VoiceProfileService.rename(profileID: "JIM", to: "James", store: store) })
+    #expect(try await !resets { try VoiceProfileService.setSuggestions(false, profileID: "JIM", store: store) })
+    #expect(try await !resets {
+        try VoiceProfileService.setRemember(false, forgetExisting: false, store: store, sessionsRoot: temp.url)
+        try VoiceProfileService.setRemember(true, forgetExisting: false, store: store, sessionsRoot: temp.url)
+    })
+    #expect(try await !resets { try VoiceProfileService.forget(profileID: "ANNA", store: store, sessionsRoot: temp.url) })
+
+    // A merge regroups samples: reset.
+    #expect(try await resets { try VoiceProfileService.merge(profileID: "SAM", into: "MARIA", store: store) })
+
+    // A voice learned from a meeting (enrollment): reset.
+    let (session, _) = try await profileSession(in: temp)
+    #expect(try await resets {
+        _ = try await VoiceProfileService.link(
+            session: session, speakerID: "system:S1", to: .existing(profileID: "JIM"),
+            view: try SessionFixtures.view(session), learnVoice: true, extractor: ProfileFakeExtractor(), store: store)
+    })
+    // That sample recomputed after an edit (refresh) into another voiceprint: reset.
+    try SessionFixtures.appendEdits([.excludeFromEnrollment(turnIDs: ["T3"])], session: session)
+    let refreshed = ProfileFakeExtractor(fallback: profileUnit([0.8, 0.6, 0, 0, 0, 0, 0, 0]))
+    #expect(try await resets {
+        try await VoiceProfileService.refreshSamples(session: session, extractor: refreshed, store: store)
+    })
+    #expect(refreshed.requests.count == 1)
+    // One sample forgotten: reset.
+    let sample = try #require(try store.load().profiles.first { $0.id == "JIM" }?.samples.first)
+    #expect(try await resets {
+        try VoiceProfileService.forget(sampleID: sample.id, store: store, sessionsRoot: temp.url)
+    })
+    // The samples of one meeting forgotten (Delete Meeting's "Also forget voice samples"): reset.
+    #expect(try await resets {
+        let tombstone = ForgetRecord(kind: .session, sampleIDs: [], sessionIDs: [m2])
+        try store.appendForgetRecord(tombstone)
+        try VoiceProfileService.perform(tombstone, store: store, sessionsRoot: temp.url)
+    })
+    // Every voice forgotten: reset (a model change is covered by the store's own test).
+    #expect(try await resets { try VoiceProfileService.forgetAll(store: store, sessionsRoot: temp.url) })
+}
+
+@Test(.timeLimit(.minutes(1)))
+func recognitionIsWrittenWhileNoPeopleChangeCanLand() async throws {
+    let temp = try TemporaryDirectory("profiles")
+    defer { temp.remove() }
+    let store = profileStore(temp)
+    let (session, record) = try await profileProcessedSession(in: temp, store: nil, forceVoiceData: true)
+    let runID = try #require(record.runID)
+    let run = try SessionSpeakerStore.readRun(id: runID, session: session)
+    let voiceData = try SessionSpeakerStore.readVoiceData(runID: runID, session: session)
+    try store.update {
+        $0.rememberVoices = true
+        $0.profiles = [profilePerson("JIM", "Jim", vector: profileAxis(0))]
+    }
+
+    // Jim's suggestions are turned off between the people's last read and the write of the comparison: the change
+    // waits for the write (and here gives up after 2 s), so it can never be lost behind a stale comparison.
+    let outcome = RecognizeStage.$whileSaving.withValue({
+        #expect(throws: HolosError.self) {
+            try VoiceProfileService.setSuggestions(false, profileID: "JIM", store: store)
+        }
+    }) {
+        RecognizeStage.run(run, voiceData: voiceData, session: session, store: store)
+    }
+    guard case .recognized(let result) = outcome else {
+        Issue.record("Expected a recognition result, got \(outcome)")
+        return
+    }
+    #expect(result.matches.map(\.profileID) == ["JIM"])
+    #expect(try store.load().profiles.first?.recognitionEnabled == true, "The refused change wrote nothing.")
+    // Once the comparison is written the change goes through, and the next meeting uses it.
+    try VoiceProfileService.setSuggestions(false, profileID: "JIM", store: store)
+    guard case .skipped = RecognizeStage.run(run, voiceData: voiceData, session: session, store: store) else {
+        Issue.record("Nobody is left to suggest.")
+        return
+    }
 }
 
 // MARK: - Export
@@ -1321,4 +1694,1163 @@ func subprocessExtractorReadsEmbeddingsFromAPipe() async throws {
     }
     let logs = (try FileManager.default.contentsOfDirectory(atPath: temp.url.path)).filter { $0.hasPrefix("holos-embed-") }
     #expect(logs.isEmpty, "The child's error log is deleted.")
+}
+
+// MARK: - Forgetting: the phase a crash left
+
+@Test(.timeLimit(.minutes(1)))
+func aForgetThatCrashedBeforeItsStoreWriteStillTurnsRememberingOff() async throws {
+    let temp = try TemporaryDirectory("profiles")
+    defer { temp.remove() }
+    let store = profileStore(temp)
+    _ = try await profileForgetFixture(temp, store: store)
+    #expect(try store.load().sampleCount == 1)
+    // The tombstone of "Remember voices off, and forget": written, then the process died before the store write.
+    // Nothing in the store or the journal said so before; the resume replayed it as a later cleanup retry, which
+    // left remembering on and removed only the samples the tombstone listed.
+    let tombstone = ForgetRecord(kind: .all, sampleIDs: [], turnRememberOff: true)
+    try store.appendForgetRecord(tombstone)
+    let leftover = store.directory.appendingPathComponent(".\(UUID().uuidString).tmp", isDirectory: false)
+    try AtomicFile.write(Data("an older database".utf8), to: leftover)
+
+    try VoiceProfileService.resumePendingForgets(store: store, sessionsRoot: temp.url)
+
+    #expect(try !store.load().rememberVoices, "Turning the setting off is part of the store phase the crash skipped.")
+    #expect(try store.load().sampleCount == 0, "So is the sweep of everything the scope covers.")
+    #expect(!FileManager.default.fileExists(atPath: leftover.path), "A forget clears atomic-write leftovers.")
+    #expect(try store.pendingForgets().isEmpty)
+}
+
+@Test(.timeLimit(.minutes(1)))
+func aResumedForgetLeavesRememberingAndNewerSamplesAlone() async throws {
+    let temp = try TemporaryDirectory("profiles")
+    defer { temp.remove() }
+    let store = profileStore(temp)
+    _ = try await profileForgetFixture(temp, store: store)
+    // A tombstone whose store write is done (its `stored` line) and that only failed to clean a meeting: the user
+    // has turned remembering back on and a voice was learned since.
+    let tombstone = ForgetRecord(kind: .all, sampleIDs: [], turnRememberOff: true)
+    try store.appendForgetRecord(tombstone)
+    try store.appendForgetRecord(.stored(tombstone.id))
+
+    try VoiceProfileService.resumePendingForgets(store: store, sessionsRoot: temp.url)
+
+    #expect(try store.load().rememberVoices, "A forget that already had its store write never turns it off again.")
+    #expect(try store.load().sampleCount == 1, "And removes only the samples it listed.")
+    #expect(try store.pendingForgets().isEmpty)
+}
+
+@Test(.timeLimit(.minutes(1)))
+func forgettingASampleFollowsItToThePersonItWasMergedInto() async throws {
+    let temp = try TemporaryDirectory("profiles")
+    defer { temp.remove() }
+    let store = profileStore(temp)
+    let (session, runID, jim) = try await profileForgetFixture(temp, store: store)
+    // A second person in the same meeting, so the meeting holds a speaker linked to each.
+    _ = try await VoiceProfileService.link(session: session, speakerID: "mic:S2", to: .new(name: "Maria"),
+                                           view: try profileView(session, store: store), learnVoice: true,
+                                           extractor: ProfileFakeExtractor(), store: store)
+    let maria = try #require(try store.load().profiles.first { $0.displayName == "Maria" }?.id)
+    let sample = try #require(try store.load().profiles.first { $0.id == jim }?.samples.first?.id)
+    let sessionID = try profileManifestID(session)
+
+    // The tombstone was listed while the sample was Jim's; the merge moved it to Maria before the store write.
+    let stale = ForgetRecord(kind: .sample, profileID: jim, sampleIDs: [sample], sessionIDs: [sessionID])
+    try store.appendForgetRecord(stale)
+    try VoiceProfileService.merge(profileID: jim, into: maria, store: store)
+    try VoiceProfileService.perform(stale, store: store, sessionsRoot: temp.url)
+
+    // Cleanup followed the sample to Maria, so her speaker's entries went with the ones of the link that named the
+    // person she was merged from. With the tombstone's stale ID, mic:S2's centroid (hers) would have stayed.
+    let voice = try #require(try SessionSpeakerStore.readVoiceData(runID: runID, session: session))
+    #expect(voice.centroids.isEmpty, "Both linked speakers' centroids are gone.")
+    #expect(voice.turnEmbeddings.isEmpty)
+    #expect(try store.storedForget(stale.id)?.profileID == maria, "The owner is journalled for a later retry.")
+    #expect(try store.pendingForgets().isEmpty)
+}
+
+@Test(.timeLimit(.minutes(1)))
+func forgetDeletesVoiceDataWhoseCentroidStillHoldsAReassignedTurn() async throws {
+    let temp = try TemporaryDirectory("profiles")
+    defer { temp.remove() }
+    let store = profileStore(temp)
+    let (session, runID, _) = try await profileForgetFixture(temp, store: store)
+    // T2 was the machine's mic:S2; the user moved it to a speaker of their own and linked that speaker to Sam.
+    // Sam's speech is therefore inside mic:S2's centroid, which no filter of Sam's clusters can take out.
+    _ = try SpeakerEditor.apply([.newSpeaker(speakerID: "user:U1", name: "Sam", turnIDs: ["T2"])],
+                                view: try profileView(session, store: store), session: session, source: "cli")
+    _ = try await VoiceProfileService.link(session: session, speakerID: "user:U1", to: .new(name: "Sam"),
+                                           view: try profileView(session, store: store), learnVoice: false,
+                                           extractor: nil, store: store)
+    let sam = try #require(try store.load().profiles.first { $0.displayName == "Sam" }?.id)
+    #expect(try SessionSpeakerStore.readVoiceData(runID: runID, session: session)?.centroids["mic:S2"] != nil)
+
+    try VoiceProfileService.forget(profileID: sam, store: store, sessionsRoot: temp.url)
+
+    #expect(try SessionSpeakerStore.readVoiceData(runID: runID, session: session) == nil,
+            "A centroid that still mixes in the forgotten person's speech is not kept: the voice data goes.")
+    #expect(try store.pendingForgets().isEmpty)
+}
+
+@Test(.timeLimit(.minutes(1)))
+func forgetStaysPendingUntilTheExportsAreRewritten() async throws {
+    let temp = try TemporaryDirectory("profiles")
+    defer { temp.remove() }
+    let store = profileStore(temp)
+    let (session, _, jim) = try await profileForgetFixture(temp, store: store)
+    let markdown = SessionPaths.export("md", in: session)
+    try FileManager.default.removeItem(at: markdown)
+    let exports = SessionPaths.exports(session)
+    try FileManager.default.setAttributes([.posixPermissions: 0o500], ofItemAtPath: exports.path)
+
+    #expect(throws: HolosError.self) {
+        try VoiceProfileService.forget(profileID: jim, store: store, sessionsRoot: temp.url)
+    }
+    #expect(try store.load().profiles.isEmpty, "The store write happened; only the meeting is unfinished.")
+    #expect(try store.pendingForgets().count == 1, "The tombstone stays pending until the exports are written.")
+    #expect(!SessionFixtures.exists(markdown))
+
+    try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: exports.path)
+    try VoiceProfileService.resumePendingForgets(store: store, sessionsRoot: temp.url)
+
+    #expect(SessionFixtures.exists(markdown),
+            "The retry rewrites them, though the recognition file it scrubbed no longer says they are owed.")
+    #expect(try store.pendingForgets().isEmpty)
+}
+
+// MARK: - Linking: people and labels as they are at the write
+
+@Test(.timeLimit(.minutes(1)))
+func anEditIsRefusedWhenThePersonItLinksIsGone() async throws {
+    let temp = try TemporaryDirectory("profiles")
+    defer { temp.remove() }
+    let store = profileStore(temp)
+    let (session, _) = try await profileProcessedSession(in: temp, store: nil)
+    try store.update { $0.profiles = [SpeakerProfile(id: "JIM", displayName: "Jim")] }
+    let view = try profileView(session, store: store)
+    let before = try SessionSpeakerStore.readEdits(session: session).edits.count
+
+    // Another window forgot Jim between this caller reading him and the lines being appended.
+    try store.update { $0.profiles.removeAll() }
+    #expect(throws: HolosError.self) {
+        try SpeakerEditor.apply([.linkProfile(speakerID: "mic:S1", profileID: "JIM"),
+                                 .rename(speakerID: "mic:S1", name: "Jim")],
+                                view: view, session: session, source: "cli", profiles: store,
+                                requirePeople: ["JIM": "Jim"])
+    }
+    #expect(try SessionSpeakerStore.readEdits(session: session).edits.count == before, "Nothing was appended.")
+    #expect(try SessionFixtures.view(session).speakers.first { $0.id == "mic:S1" }?.profileID == nil)
+
+    // A person who is there is marked used in that same locked step, before the lines are appended.
+    try store.update { $0.profiles = [SpeakerProfile(id: "JIM", displayName: "Jim", createdAt: Date(),
+                                                     lastUsedAt: Date(timeIntervalSince1970: 0))] }
+    _ = try SpeakerEditor.apply([.linkProfile(speakerID: "mic:S1", profileID: "JIM"),
+                                 .rename(speakerID: "mic:S1", name: "Jim")],
+                                view: try profileView(session, store: store), session: session, source: "cli",
+                                profiles: store, requirePeople: ["JIM": "Jim"])
+    let jim = try #require(try store.load().profiles.first)
+    #expect(jim.lastUsedAt > Date(timeIntervalSince1970: 0))
+}
+
+@Test(.timeLimit(.minutes(1)))
+func aLinkThatChangesNothingIsRefusedWhenAnotherWindowChangedIt() async throws {
+    let temp = try TemporaryDirectory("profiles")
+    defer { temp.remove() }
+    let store = profileStore(temp)
+    let (session, _) = try await profileProcessedSession(in: temp, store: nil)
+    _ = try await VoiceProfileService.link(session: session, speakerID: "mic:S1", to: .new(name: "Jim"),
+                                           view: try profileView(session, store: store), learnVoice: false,
+                                           extractor: nil, store: store)
+    let jim = try #require(try store.load().profiles.first { $0.displayName == "Jim" }?.id)
+    // The view this caller holds: mic:S1 is Jim, so linking Jim again changes nothing in it.
+    let view = try profileView(session, store: store)
+    // Another window links the same speaker to Maria.
+    _ = try await VoiceProfileService.link(session: session, speakerID: "mic:S1", to: .new(name: "Maria"),
+                                           view: try profileView(session, store: store), learnVoice: false,
+                                           extractor: nil, store: store)
+
+    await #expect(throws: HolosError.self) {
+        _ = try await VoiceProfileService.link(session: session, speakerID: "mic:S1", to: .existing(profileID: jim),
+                                               view: view, learnVoice: false, extractor: nil, store: store)
+    }
+    let speaker = try #require(try SessionFixtures.view(session).speakers.first { $0.id == "mic:S1" })
+    #expect(speaker.name == "Maria", "The other window's link stands; the caller is told to reload.")
+}
+
+@Test func aPersonAnotherLinkHasTakenUpIsNotRolledBack() throws {
+    let temp = try TemporaryDirectory("profiles")
+    defer { temp.remove() }
+    let store = profileStore(temp)
+    let made = Date(timeIntervalSince1970: 1_790_000_000)
+    var withSample = profilePerson("WITHSAMPLE", "With a sample", vector: profileAxis(0))
+    withSample.provisional = true
+    try store.update {
+        $0.profiles = [
+            // Created for the link this call is about to have refused, and never taken up.
+            SpeakerProfile(id: "FRESH", displayName: "Fresh", createdAt: made, lastUsedAt: made, provisional: true),
+            // Created the same way, but another window linked them in another meeting meanwhile, which clears
+            // `provisional` under `profiles.lock` before its lines are appended. Both windows were inside one
+            // second, so the two dates are equal and cannot tell this person from the one above: the state is
+            // explicit for that reason.
+            SpeakerProfile(id: "TAKEN", displayName: "Taken", createdAt: made, lastUsedAt: made),
+            // Created, refused, and a voice was learned for them meanwhile.
+            withSample,
+        ]
+    }
+
+    VoiceProfileService.rollBack(["FRESH", "TAKEN", "WITHSAMPLE"], store: store)
+
+    #expect(try store.load().profiles.map(\.id).sorted() == ["TAKEN", "WITHSAMPLE"],
+            "Only a person nobody has taken up is removed; the others' meetings would be left pointing at nobody.")
+}
+
+@Test(.timeLimit(.minutes(1)))
+func aLinkIsRefusedWhenThePersonWasRenamedMeanwhile() async throws {
+    let temp = try TemporaryDirectory("profiles")
+    defer { temp.remove() }
+    let store = profileStore(temp)
+    let (session, _) = try await profileProcessedSession(in: temp, store: nil)
+    try store.update { $0.profiles = [SpeakerProfile(id: "JIM", displayName: "Jim")] }
+    let view = try profileView(session, store: store)
+    let before = try SessionSpeakerStore.readEdits(session: session).edits.count
+
+    // Another window renames Jim between this caller reading him and the lines being appended. The batch's
+    // `rename` line still carries "Jim", which is the name the user saw and chose.
+    try VoiceProfileService.rename(profileID: "JIM", to: "James", store: store)
+    #expect(throws: HolosError.self) {
+        try SpeakerEditor.apply([.linkProfile(speakerID: "mic:S1", profileID: "JIM"),
+                                 .rename(speakerID: "mic:S1", name: "Jim")],
+                                view: view, session: session, source: "cli", profiles: store,
+                                requirePeople: ["JIM": "Jim"])
+    }
+    #expect(try SessionSpeakerStore.readEdits(session: session).edits.count == before, "Nothing was appended.")
+    #expect(try store.load().profiles.first?.lastUsedAt == store.load().profiles.first?.createdAt,
+            "A refused claim writes nothing at all.")
+
+    // Saving the name the store now has is what goes through.
+    _ = try SpeakerEditor.apply([.linkProfile(speakerID: "mic:S1", profileID: "JIM"),
+                                 .rename(speakerID: "mic:S1", name: "James")],
+                                view: try profileView(session, store: store), session: session, source: "cli",
+                                profiles: store, requirePeople: ["JIM": "James"])
+    #expect(try SessionFixtures.view(session).speakers.first { $0.id == "mic:S1" }?.name == "James")
+}
+
+@Test(.timeLimit(.minutes(1)))
+func aRefusedNewPersonIsStillRemoved() async throws {
+    let temp = try TemporaryDirectory("profiles")
+    defer { temp.remove() }
+    let store = profileStore(temp)
+    let (session, _) = try await profileProcessedSession(in: temp, store: nil)
+    let stale = try profileView(session, store: store)
+    // Someone renames the speaker, so the view this call holds is stale and its link is refused.
+    _ = try SpeakerEditor.apply([.rename(speakerID: "mic:S1", name: "Chair")], view: stale, session: session,
+                                source: "cli")
+
+    await #expect(throws: HolosError.self) {
+        _ = try await VoiceProfileService.link(session: session, speakerID: "mic:S1", to: .new(name: "Jim"),
+                                               view: stale, learnVoice: false, extractor: nil, store: store)
+    }
+    #expect(try store.load().profiles.isEmpty, "The person created for a refused link is taken back.")
+}
+
+// MARK: - Leftover voice renders
+
+@Test func leftoverVoiceRendersAreSweptOnceTheyAreOldEnough() throws {
+    let temp = try TemporaryDirectory("profiles")
+    defer { temp.remove() }
+    let renders = temp.url.appendingPathComponent("tmp", isDirectory: true)
+    try FileManager.default.createDirectory(at: renders, withIntermediateDirectories: true)
+    let left = renders.appendingPathComponent("holos-voice-\(UUID().uuidString)", isDirectory: true)
+    let unrelated = renders.appendingPathComponent("holos-voice", isDirectory: true)
+    for folder in [left, unrelated] {
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+    }
+    try Data("rendered meeting audio".utf8).write(to: left.appendingPathComponent("mic-16k.caf"))
+
+    #expect(DiarizerVoiceSampleExtractor.removeStaleRenders(in: renders) == 0,
+            "A render another Holos may be using right now is left alone.")
+    #expect(SessionFixtures.exists(left))
+
+    let later = Date().addingTimeInterval(DiarizerVoiceSampleExtractor.staleRenderAge + 60)
+    #expect(DiarizerVoiceSampleExtractor.removeStaleRenders(in: renders, now: later) == 1)
+    #expect(!SessionFixtures.exists(left), "The rendered copy of the meeting's audio is gone.")
+    #expect(SessionFixtures.exists(unrelated), "Only `holos-voice-<token>` folders are swept.")
+}
+
+// MARK: - Merging: the meetings follow the person
+
+@Test(.timeLimit(.minutes(1)))
+func mergePointsMeetingsAtThePersonTheyWereMergedInto() async throws {
+    let temp = try TemporaryDirectory("profiles")
+    defer { temp.remove() }
+    let store = profileStore(temp)
+    let (session, runID, jim) = try await profileForgetFixture(temp, store: store)
+    // The meeting's recognition suggests Jim for mic:S2 (the fixture's match).
+    try store.update { $0.profiles.append(SpeakerProfile(id: "MARIA", displayName: "Maria")) }
+
+    try VoiceProfileService.merge(profileID: jim, into: "MARIA", store: store, sessionsRoot: temp.url)
+
+    let recognition = try #require(try SessionSpeakerStore.readRecognition(runID: runID, session: session))
+    #expect(recognition.matches.map(\.profileID) == ["MARIA"],
+            "The suggestion is the person they were merged into, not a profile ID that is gone.")
+    let speaker = try #require(try profileView(session, store: store).speakers.first { $0.id == "mic:S2" })
+    #expect(speaker.suggestion?.profileID == "MARIA", "So the meeting still offers a name to confirm.")
+    #expect(speaker.suggestion?.profileName == "Maria")
+    #expect(try store.pendingForgets().isEmpty)
+}
+
+@Test(.timeLimit(.minutes(1)))
+func aMergeThatCouldNotReachAMeetingIsFinishedLater() async throws {
+    let temp = try TemporaryDirectory("profiles")
+    defer { temp.remove() }
+    let store = profileStore(temp)
+    let (session, runID, jim) = try await profileForgetFixture(temp, store: store)
+    try store.update { $0.profiles.append(SpeakerProfile(id: "MARIA", displayName: "Maria")) }
+    let recognition = session.appendingPathComponent("speakers/recognition", isDirectory: true)
+    try FileManager.default.setAttributes([.posixPermissions: 0o500], ofItemAtPath: recognition.path)
+
+    #expect(throws: HolosError.self) {
+        try VoiceProfileService.merge(profileID: jim, into: "MARIA", store: store, sessionsRoot: temp.url)
+    }
+    #expect(try store.load().profiles.map(\.id) == ["MARIA"], "The merge itself stands.")
+    #expect(try store.pendingForgets().first?.kind == .merge, "The meetings are unfinished business.")
+    #expect(try SessionSpeakerStore.readRecognition(runID: runID, session: session)?.matches.first?.profileID == jim)
+
+    try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: recognition.path)
+    try VoiceProfileService.resumePendingForgets(store: store, sessionsRoot: temp.url)
+
+    #expect(try SessionSpeakerStore.readRecognition(runID: runID, session: session)?.matches.first?.profileID
+            == "MARIA")
+    #expect(try store.pendingForgets().isEmpty)
+}
+
+@Test(.timeLimit(.minutes(1)))
+func aMergeWhoseStoreWriteNeverHappenedIsDroppedNotReplayed() async throws {
+    let temp = try TemporaryDirectory("profiles")
+    defer { temp.remove() }
+    let store = profileStore(temp)
+    let (session, runID, jim) = try await profileForgetFixture(temp, store: store)
+    // Maria's sample comes from another speaker model, which is what the merge refuses.
+    try store.update {
+        $0.profiles.append(SpeakerProfile(
+            id: "MARIA", displayName: "Maria", embeddingModel: EmbeddingModelID(id: "other", revision: "1"),
+            samples: [VoiceprintSample(sessionID: UUID().uuidString, sessionName: "Earlier meeting",
+                                       speakerIDs: ["mic:S1"], speechSeconds: 60,
+                                       embedding: FloatVector(profileAxis(3)), condition: .room, weak: false)]))
+    }
+    // What a refused merge leaves: the record is written before the store update, and that update threw (here,
+    // because the two people's samples come from different speaker models).
+    #expect(throws: HolosError.self) {
+        try VoiceProfileService.merge(profileID: jim, into: "MARIA", store: store, sessionsRoot: temp.url)
+    }
+    #expect(try store.load().profiles.count == 2, "Both people are still there.")
+
+    try VoiceProfileService.resumePendingForgets(store: store, sessionsRoot: temp.url)
+
+    #expect(try SessionSpeakerStore.readRecognition(runID: runID, session: session)?.matches.first?.profileID == jim,
+            "A merge that never committed must not point any meeting at the other person.")
+    #expect(try store.pendingForgets().isEmpty, "And it is dropped, not carried forever.")
+    #expect(try store.load().profiles.count == 2)
+}
+
+@Test(.timeLimit(.minutes(1)))
+func aMergeStaysPendingWhenAMeetingsRecognitionCannotBeRead() async throws {
+    let temp = try TemporaryDirectory("profiles")
+    defer { temp.remove() }
+    let store = profileStore(temp)
+    let (session, runID, jim) = try await profileForgetFixture(temp, store: store)
+    try store.update { $0.profiles.append(SpeakerProfile(id: "MARIA", displayName: "Maria")) }
+    let file = session.appendingPathComponent("speakers/recognition/\(runID).json")
+    let readable = try Data(contentsOf: file)
+    try AtomicFile.write(Data("not a recognition result".utf8), to: file)
+
+    #expect(throws: HolosError.self) {
+        try VoiceProfileService.merge(profileID: jim, into: "MARIA", store: store, sessionsRoot: temp.url)
+    }
+    #expect(try store.pendingForgets().first?.kind == .merge,
+            "A merge deletes nothing it cannot read; it waits for a Holos that can.")
+    #expect(try Data(contentsOf: file) == Data("not a recognition result".utf8), "And leaves the file alone.")
+
+    try AtomicFile.write(readable, to: file)
+    try VoiceProfileService.resumePendingForgets(store: store, sessionsRoot: temp.url)
+    #expect(try SessionSpeakerStore.readRecognition(runID: runID, session: session)?.matches.first?.profileID
+            == "MARIA")
+    #expect(try store.pendingForgets().isEmpty)
+}
+
+@Test(.timeLimit(.minutes(1)))
+func aMergeStaysPendingUntilTheExportsAreRewritten() async throws {
+    let temp = try TemporaryDirectory("profiles")
+    defer { temp.remove() }
+    let store = profileStore(temp)
+    let (session, _, jim) = try await profileForgetFixture(temp, store: store)
+    try store.update { $0.profiles.append(SpeakerProfile(id: "MARIA", displayName: "Maria")) }
+    let markdown = SessionPaths.export("md", in: session)
+    try FileManager.default.removeItem(at: markdown)
+    let exports = SessionPaths.exports(session)
+    try FileManager.default.setAttributes([.posixPermissions: 0o500], ofItemAtPath: exports.path)
+
+    #expect(throws: HolosError.self) {
+        try VoiceProfileService.merge(profileID: jim, into: "MARIA", store: store, sessionsRoot: temp.url)
+    }
+    #expect(try store.pendingForgets().first?.kind == .merge)
+
+    try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: exports.path)
+    try VoiceProfileService.resumePendingForgets(store: store, sessionsRoot: temp.url)
+
+    #expect(SessionFixtures.exists(markdown),
+            "The retry rewrites them, though the recognition it retargeted no longer says they are owed.")
+    #expect(try store.pendingForgets().isEmpty)
+}
+
+// MARK: - Remember voices governs recognition, not only new voice data
+
+@Test(.timeLimit(.minutes(1)))
+func keptSamplesAreNotUsedWhileRememberVoicesIsOff() async throws {
+    let temp = try TemporaryDirectory("profiles")
+    defer { temp.remove() }
+    let store = profileStore(temp)
+    let (session, _, _) = try await profileForgetFixture(temp, store: store)
+    let suggestion = { try profileView(session, store: store).speakers.first { $0.id == "mic:S2" }?.suggestion }
+    #expect(try suggestion()?.profileName == "Jim", "With the setting on, the stored result suggests a name.")
+
+    // Turned off, keeping the samples: "Kept samples are not used while Remember voices is off" (People window).
+    #expect(try VoiceProfileService.setRemember(false, forgetExisting: false, store: store,
+                                                sessionsRoot: temp.url) == 0)
+
+    let snapshot = try SpeakerSessionSnapshot.load(
+        session: session, profileNames: VoiceProfileService.profileNames(store: store),
+        applyRecognition: VoiceProfileService.recognitionAllowed(store: store))
+    #expect(snapshot.recognition == nil, "The stored result is not even read.")
+    #expect(snapshot.projection?.speakers.first { $0.id == "mic:S2" }?.suggestion == nil)
+    #expect(try store.load().sampleCount == 1, "The samples are kept, as the user chose.")
+    #expect(SessionFixtures.exists(session.appendingPathComponent("speakers/recognition")),
+            "And nothing is deleted, so turning it back on brings the suggestions back.")
+
+    try VoiceProfileService.setRemember(true, forgetExisting: false, store: store, sessionsRoot: temp.url)
+    #expect(try suggestion()?.profileName == "Jim")
+}
+
+@Test(.timeLimit(.minutes(1)))
+func aMergeThatCommittedBeforeItsMarkerIsStillFinished() async throws {
+    let temp = try TemporaryDirectory("profiles")
+    defer { temp.remove() }
+    let store = profileStore(temp)
+    let (session, runID, jim) = try await profileForgetFixture(temp, store: store)
+    try store.update { $0.profiles.append(SpeakerProfile(id: "MARIA", displayName: "Maria")) }
+    // The crash window on the other side of the store write: the merge committed, the process went before its
+    // `stored` line. The journal alone cannot tell this from a merge that was refused; the store can.
+    let record = ForgetRecord(kind: .merge, profileID: jim, targetProfileID: "MARIA")
+    try store.appendForgetRecord(record)
+    try store.update { database in
+        let samples = database.profiles.first { $0.id == jim }?.samples ?? []
+        database.profiles.removeAll { $0.id == jim }
+        guard let target = database.profiles.firstIndex(where: { $0.id == "MARIA" }) else { return }
+        database.profiles[target].samples = samples
+        database.profiles[target].embeddingModel = profileModel
+        // What the merge's own write records: this merge is what removed Jim.
+        database.mergedInto = [jim: "MARIA"]
+    }
+
+    try VoiceProfileService.resumePendingForgets(store: store, sessionsRoot: temp.url)
+
+    #expect(try SessionSpeakerStore.readRecognition(runID: runID, session: session)?.matches.first?.profileID
+            == "MARIA", "The meetings are finished, not dropped: the merge did happen.")
+    #expect(try store.pendingForgets().isEmpty, "And it is finished, not left behind.")
+}
+
+@Test func aPersonAMergeAdoptedIsNotRolledBack() throws {
+    let temp = try TemporaryDirectory("profiles")
+    defer { temp.remove() }
+    let store = profileStore(temp)
+    // Created for a link that has not been saved, as `link(to: .new)` creates one.
+    try store.update {
+        $0.profiles = [SpeakerProfile(id: "FRESH", displayName: "Fresh", provisional: true),
+                       SpeakerProfile(id: "OLD", displayName: "Old")]
+    }
+    // Another window merges an existing person into them: adoption without any link.
+    try VoiceProfileService.merge(profileID: "OLD", into: "FRESH", store: store, sessionsRoot: temp.url)
+    #expect(try store.load().profiles.first?.provisional == nil,
+            "Any write that changes the person ends the provisional state, not only a link's claim.")
+
+    VoiceProfileService.rollBack(["FRESH"], store: store)
+
+    #expect(try store.load().profiles.map(\.id) == ["FRESH"],
+            "Removing them would have lost both people: the merge already took the other one away.")
+}
+
+@Test(.timeLimit(.minutes(1)))
+func forgettingAPersonFollowsTheirSamplesThroughAMerge() async throws {
+    let temp = try TemporaryDirectory("profiles")
+    defer { temp.remove() }
+    let store = profileStore(temp)
+    let (session, runID, jim) = try await profileForgetFixture(temp, store: store)
+    _ = try await VoiceProfileService.link(session: session, speakerID: "mic:S2", to: .new(name: "Maria"),
+                                           view: try profileView(session, store: store), learnVoice: true,
+                                           extractor: ProfileFakeExtractor(), store: store)
+    let maria = try #require(try store.load().profiles.first { $0.displayName == "Maria" }?.id)
+    let samples = try #require(try store.load().profiles.first { $0.id == jim }?.samples.map(\.id))
+
+    // A tombstone listed while the samples were Jim's, with the samples already moved to Maria by the time it is
+    // performed. `merge` refuses to start while a person's forget is pending, so this is what an older Holos, or
+    // a tombstone carried across an upgrade, can still leave; the owner is resolved in the store write either way.
+    let stale = ForgetRecord(kind: .profile, profileID: jim, sampleIDs: samples,
+                             sessionIDs: [try profileManifestID(session)])
+    try VoiceProfileService.merge(profileID: jim, into: maria, store: store, sessionsRoot: temp.url)
+    try store.appendForgetRecord(stale)
+    try VoiceProfileService.perform(stale, store: store, sessionsRoot: temp.url)
+
+    // Cleanup followed the samples to Maria, so her entries went too. With the tombstone's stale ID, the match the
+    // merge had already pointed at her would have survived its only supporting sample being forgotten.
+    let voice = try #require(try SessionSpeakerStore.readVoiceData(runID: runID, session: session))
+    #expect(voice.centroids.isEmpty)
+    #expect(try SessionSpeakerStore.readRecognition(runID: runID, session: session)?.matches.isEmpty == true)
+    #expect(try store.storedForget(stale.id)?.profileID == maria)
+    #expect(try store.pendingForgets().isEmpty)
+}
+
+@Test(.timeLimit(.minutes(1)))
+func aRejectionThatChangesNothingIsDecidedOnTheCurrentLabels() async throws {
+    let temp = try TemporaryDirectory("profiles")
+    defer { temp.remove() }
+    let store = profileStore(temp)
+    let (session, _, jim) = try await profileForgetFixture(temp, store: store)
+
+    let first = try VoiceProfileService.reject(session: session, speakerID: "mic:S2", profileID: jim,
+                                               view: try profileView(session, store: store), store: store)
+    #expect(first != nil, "The first rejection is saved.")
+    let again = try VoiceProfileService.reject(session: session, speakerID: "mic:S2", profileID: jim,
+                                               view: try profileView(session, store: store), store: store)
+    #expect(again == nil, "Repeating it changes nothing, and the editor says so from the current labels.")
+
+    // With Remember voices off, the labels this returns carry no automatic name either: it passes the store.
+    try VoiceProfileService.setRemember(false, forgetExisting: false, store: store, sessionsRoot: temp.url)
+    let saved = try VoiceProfileService.reject(session: session, speakerID: "mic:S1", profileID: jim,
+                                               view: try profileView(session, store: store), store: store)
+    #expect(saved?.recognition == nil, "Kept samples are not used while Remember voices is off.")
+}
+
+@Test(.timeLimit(.minutes(1)))
+func aVoiceForgottenWhileItWasLearnedIsNotPutBack() async throws {
+    let temp = try TemporaryDirectory("profiles")
+    defer { temp.remove() }
+    let store = profileStore(temp)
+    try store.update { $0.rememberVoices = true }
+    let (session, _) = try await profileProcessedSession(in: temp, store: nil, forceVoiceData: true)
+    let sessionID = try profileManifestID(session)
+    // Another window forgets this meeting's voices while the extractor is still working.
+    let extractor = ProfileFakeExtractor(hook: { _ in
+        try VoiceProfileService.forget(sessionID: sessionID, store: store)
+    })
+
+    await #expect(throws: HolosError.self) {
+        _ = try await VoiceProfileService.link(session: session, speakerID: "mic:S1", to: .new(name: "Jim"),
+                                               view: try SessionFixtures.view(session), learnVoice: true,
+                                               extractor: extractor, store: store)
+    }
+
+    #expect(try store.load().sampleCount == 0,
+            "The forget was the later request, so the voice computed before it is not saved after it.")
+    #expect(try store.load().profiles.map(\.displayName) == ["Jim"], "The name is saved; only the voice is not.")
+    #expect(try store.pendingForgets().isEmpty)
+}
+
+@Test(.timeLimit(.minutes(1)))
+func aMergeFollowsItsTargetOnwards() async throws {
+    let temp = try TemporaryDirectory("profiles")
+    defer { temp.remove() }
+    let store = profileStore(temp)
+    let (session, runID, jim) = try await profileForgetFixture(temp, store: store)
+    try store.update {
+        $0.profiles.append(SpeakerProfile(id: "MARIA", displayName: "Maria"))
+        $0.profiles.append(SpeakerProfile(id: "CARLOS", displayName: "Carlos"))
+    }
+    // Jim was merged into Maria and the store write committed, but the meetings were not reached yet.
+    let pending = ForgetRecord(kind: .merge, profileID: jim, targetProfileID: "MARIA")
+    try store.appendForgetRecord(pending)
+    try store.appendForgetRecord(.stored(pending.id))
+    try store.update { database in
+        let samples = database.profiles.first { $0.id == jim }?.samples ?? []
+        database.profiles.removeAll { $0.id == jim }
+        guard let target = database.profiles.firstIndex(where: { $0.id == "MARIA" }) else { return }
+        database.profiles[target].samples = samples
+        database.profiles[target].embeddingModel = profileModel
+        database.mergedInto = [jim: "MARIA"]
+    }
+    // Meanwhile another window merges Maria onwards into Carlos.
+    try VoiceProfileService.merge(profileID: "MARIA", into: "CARLOS", store: store, sessionsRoot: temp.url)
+
+    try VoiceProfileService.resumePendingForgets(store: store, sessionsRoot: temp.url)
+
+    #expect(try SessionSpeakerStore.readRecognition(runID: runID, session: session)?.matches.first?.profileID
+            == "CARLOS", "Writing the person Maria became, not the ID she had when the merge was recorded.")
+    #expect(try store.pendingForgets().isEmpty)
+}
+
+@Test(.timeLimit(.minutes(1)))
+func aMergeStaysPendingWhenAMeetingsManifestCannotBeRead() async throws {
+    let temp = try TemporaryDirectory("profiles")
+    defer { temp.remove() }
+    let store = profileStore(temp)
+    let (session, runID, jim) = try await profileForgetFixture(temp, store: store)
+    try store.update { $0.profiles.append(SpeakerProfile(id: "MARIA", displayName: "Maria")) }
+    let manifest = SessionPaths.manifest(session)
+    let readable = try Data(contentsOf: manifest)
+    try AtomicFile.write(Data("{\"schemaVersion\":1,".utf8), to: manifest)
+
+    #expect(throws: HolosError.self) {
+        try VoiceProfileService.merge(profileID: jim, into: "MARIA", store: store, sessionsRoot: temp.url)
+    }
+    #expect(try store.pendingForgets().first?.kind == .merge,
+            "A manifest that cannot be read now is not an absent one; the meeting is tried again.")
+
+    try AtomicFile.write(readable, to: manifest)
+    try VoiceProfileService.resumePendingForgets(store: store, sessionsRoot: temp.url)
+    #expect(try SessionSpeakerStore.readRecognition(runID: runID, session: session)?.matches.first?.profileID
+            == "MARIA")
+    #expect(try store.pendingForgets().isEmpty)
+}
+
+@Test(.timeLimit(.minutes(1)))
+func recognitionIsNotUsedWhileAForgetIsUnfinished() async throws {
+    let temp = try TemporaryDirectory("profiles")
+    defer { temp.remove() }
+    let store = profileStore(temp)
+    _ = try await profileForgetFixture(temp, store: store)
+    #expect(VoiceProfileService.recognitionAllowed(store: store))
+
+    // What a crash between a forget's store write and its meetings leaves: the results still name the person.
+    let stranded = ForgetRecord(kind: .profile, profileID: "SOMEONE", sampleIDs: [])
+    try store.appendForgetRecord(stranded)
+    try store.appendForgetRecord(.stored(stranded.id))
+    #expect(!VoiceProfileService.recognitionAllowed(store: store),
+            "Until the meetings are cleaned, a name the user asked to forget is not shown or exported.")
+
+    try store.appendForgetRecord(.done(stranded.id))
+    #expect(VoiceProfileService.recognitionAllowed(store: store))
+
+    // A merge is not a forget: it renames, it removes nothing, so it does not hold recognition back.
+    let merge = ForgetRecord(kind: .merge, profileID: "A", targetProfileID: "B")
+    try store.appendForgetRecord(merge)
+    #expect(VoiceProfileService.recognitionAllowed(store: store))
+}
+
+@Test(.timeLimit(.minutes(1)))
+func aMergeIsNotRecoveredWhenSomethingElseRemovedItsSource() async throws {
+    let temp = try TemporaryDirectory("profiles")
+    defer { temp.remove() }
+    let store = profileStore(temp)
+    let (session, runID, jim) = try await profileForgetFixture(temp, store: store)
+    try store.update { $0.profiles.append(SpeakerProfile(id: "MARIA", displayName: "Maria")) }
+    // A merge whose store write never happened, and a forget that removed the same person afterwards. The person
+    // is gone and the target is there, which is what a committed merge looks like from outside.
+    let record = ForgetRecord(kind: .merge, profileID: jim, targetProfileID: "MARIA")
+    try store.appendForgetRecord(record)
+    try VoiceProfileService.forget(profileID: jim, store: store, sessionsRoot: temp.url)
+
+    try VoiceProfileService.resumePendingForgets(store: store, sessionsRoot: temp.url)
+
+    let recognition = try SessionSpeakerStore.readRecognition(runID: runID, session: session)
+    #expect(recognition?.matches.isEmpty == true,
+            "The forget took the name out; a merge that never happened must not put Maria's in.")
+    #expect(try store.pendingForgets().isEmpty)
+}
+
+@Test(.timeLimit(.minutes(1)))
+func aMergeChainFollowsOnlyCommittedMerges() async throws {
+    let temp = try TemporaryDirectory("profiles")
+    defer { temp.remove() }
+    let store = profileStore(temp)
+    let (session, runID, jim) = try await profileForgetFixture(temp, store: store)
+    try store.update {
+        $0.profiles.append(SpeakerProfile(id: "MARIA", displayName: "Maria"))
+        $0.profiles.append(profilePerson("CARLOS", "Carlos", vector: profileAxis(3)))
+    }
+    // Jim into Maria: committed, meetings not reached.
+    let pending = ForgetRecord(kind: .merge, profileID: jim, targetProfileID: "MARIA")
+    try store.appendForgetRecord(pending)
+    try store.appendForgetRecord(.stored(pending.id))
+    try store.update { database in
+        database.profiles.removeAll { $0.id == jim }
+        database.mergedInto = [jim: "MARIA"]
+    }
+    // Maria into Carlos: refused, because their samples come from different speaker models. Its record is written
+    // before the store update that throws, so the journal holds a merge that never happened.
+    try store.update { database in
+        guard let maria = database.profiles.firstIndex(where: { $0.id == "MARIA" }) else { return }
+        database.profiles[maria].embeddingModel = EmbeddingModelID(id: "other", revision: "1")
+        database.profiles[maria].samples = [VoiceprintSample(
+            sessionID: UUID().uuidString, sessionName: "Earlier", speakerIDs: ["mic:S1"], speechSeconds: 60,
+            embedding: FloatVector(profileAxis(4)), condition: .room, weak: false)]
+    }
+    #expect(throws: HolosError.self) {
+        try VoiceProfileService.merge(profileID: "MARIA", into: "CARLOS", store: store, sessionsRoot: temp.url)
+    }
+
+    try VoiceProfileService.resumePendingForgets(store: store, sessionsRoot: temp.url)
+
+    #expect(try SessionSpeakerStore.readRecognition(runID: runID, session: session)?.matches.first?.profileID
+            == "MARIA", "Maria is still there, so the chain stops at her; a refused merge leads nowhere.")
+    #expect(try store.pendingForgets().isEmpty)
+}
+
+@Test(.timeLimit(.minutes(1)))
+func recognitionIsNotUsedWhileAForgetLineCannotBeRead() async throws {
+    let temp = try TemporaryDirectory("profiles")
+    defer { temp.remove() }
+    let store = profileStore(temp)
+    _ = try await profileForgetFixture(temp, store: store)
+    #expect(VoiceProfileService.recognitionAllowed(store: store))
+
+    // A forget of a newer Holos: this build cannot decode its kind, so it cannot resume it either, and its
+    // meetings may still name whoever it removed.
+    let line = Data("{\"schemaVersion\":1,\"id\":\"\(UUID().uuidString)\",\"kind\":\"quarantine\",\"state\":\"pending\"}\n".utf8)
+    try AtomicFile.append(line, to: store.forgetJournalURL)
+
+    #expect(!VoiceProfileService.recognitionAllowed(store: store))
+    #expect(try store.pendingForgets().isEmpty, "This build cannot see it as pending; the gate still holds.")
+}
+
+@Test(.timeLimit(.minutes(1)))
+func aMergeStaysPendingWhenAMeetingHoldsUnknownRecognitionFiles() async throws {
+    let temp = try TemporaryDirectory("profiles")
+    defer { temp.remove() }
+    let store = profileStore(temp)
+    let (session, runID, jim) = try await profileForgetFixture(temp, store: store)
+    try store.update { $0.profiles.append(SpeakerProfile(id: "MARIA", displayName: "Maria")) }
+    let unknown = session.appendingPathComponent("speakers/recognition/from-a-newer-holos.txt")
+    try AtomicFile.write(Data("{}".utf8), to: unknown)
+
+    #expect(throws: HolosError.self) {
+        try VoiceProfileService.merge(profileID: jim, into: "MARIA", store: store, sessionsRoot: temp.url)
+    }
+    #expect(try store.pendingForgets().first?.kind == .merge,
+            "An entry this build does not know may name the person too; a merge deletes nothing, so it waits.")
+    #expect(SessionFixtures.exists(unknown), "And leaves it alone.")
+
+    try FileManager.default.removeItem(at: unknown)
+    try VoiceProfileService.resumePendingForgets(store: store, sessionsRoot: temp.url)
+    #expect(try SessionSpeakerStore.readRecognition(runID: runID, session: session)?.matches.first?.profileID
+            == "MARIA")
+    #expect(try store.pendingForgets().isEmpty)
+}
+
+@Test(.timeLimit(.minutes(1)))
+func aMergeStaysPendingWhenAMeetingFolderCannotBeInspected() async throws {
+    let temp = try TemporaryDirectory("profiles")
+    defer { temp.remove() }
+    let store = profileStore(temp)
+    let (session, _, jim) = try await profileForgetFixture(temp, store: store)
+    try store.update { $0.profiles.append(SpeakerProfile(id: "MARIA", displayName: "Maria")) }
+    #expect(chmod(session.path, 0) == 0)
+    defer { chmod(session.path, 0o700) }
+
+    #expect(throws: HolosError.self) {
+        try VoiceProfileService.merge(profileID: jim, into: "MARIA", store: store, sessionsRoot: temp.url)
+    }
+    #expect(try store.pendingForgets().first?.kind == .merge,
+            "A folder that cannot be inspected has not been visited; only a missing manifest means not a meeting.")
+}
+
+@Test(.timeLimit(.minutes(1)))
+func aMergeWaitsWhileOneOfItsPeopleIsBeingForgotten() async throws {
+    let temp = try TemporaryDirectory("profiles")
+    defer { temp.remove() }
+    let store = profileStore(temp)
+    let (_, _, jim) = try await profileForgetFixture(temp, store: store)
+    try store.update { $0.profiles.append(SpeakerProfile(id: "MARIA", displayName: "Maria")) }
+    // A forget of Jim that has listed his samples and not yet written: a merge now would move a sample learned
+    // since out to Maria, where the forget's own write would not find it.
+    let listing = ForgetRecord(kind: .profile, profileID: jim, sampleIDs: [])
+    try store.appendForgetRecord(listing)
+
+    #expect(throws: HolosError.self) {
+        try VoiceProfileService.merge(profileID: jim, into: "MARIA", store: store, sessionsRoot: temp.url)
+    }
+    #expect(throws: HolosError.self) {
+        try VoiceProfileService.merge(profileID: "MARIA", into: jim, store: store, sessionsRoot: temp.url)
+    }
+    #expect(try store.load().profiles.count == 2, "Neither direction moved anything.")
+
+    try VoiceProfileService.resumePendingForgets(store: store, sessionsRoot: temp.url)
+    #expect(try store.load().profiles.map(\.id) == ["MARIA"])
+}
+
+@Test(.timeLimit(.minutes(1)))
+func whatAMergeRemovedIsKeptForLaterChains() async throws {
+    let temp = try TemporaryDirectory("profiles")
+    defer { temp.remove() }
+    let store = profileStore(temp)
+    try store.update {
+        $0.profiles = [SpeakerProfile(id: "A", displayName: "A"), SpeakerProfile(id: "B", displayName: "B"),
+                       SpeakerProfile(id: "C", displayName: "C")]
+    }
+    try VoiceProfileService.merge(profileID: "A", into: "B", store: store, sessionsRoot: temp.url)
+    #expect(try store.load().mergedInto == ["A": "B"],
+            "Kept after the merge finished: an interrupted merge still has to find where its target went.")
+
+    try VoiceProfileService.merge(profileID: "B", into: "C", store: store, sessionsRoot: temp.url)
+    let map = try #require(try store.load().mergedInto)
+    #expect(map == ["A": "B", "B": "C"])
+    #expect(VoiceProfileService.mergedOnwards("A", in: try store.load()) == "C", "And the chain resolves through it.")
+}
+
+@Test(.timeLimit(.minutes(1)))
+func anEditThatNeedsWholeLabelsIsRefusedUnderTheLock() async throws {
+    let temp = try TemporaryDirectory("profiles")
+    defer { temp.remove() }
+    let store = profileStore(temp)
+    let (session, _) = try await profileProcessedSession(in: temp, store: nil)
+    try store.update { $0.profiles = [SpeakerProfile(id: "JIM", displayName: "Jim")] }
+    // One ordinary edit first, so the meeting has an edit journal at all.
+    _ = try SpeakerEditor.apply([.rename(speakerID: "mic:S2", name: "Chair")],
+                                view: try profileView(session, store: store), session: session, source: "cli")
+    let view = try profileView(session, store: store)
+    let before = try SessionSpeakerStore.readEdits(session: session).edits.count
+    // Another Holos appends a line this build cannot read, after the caller looked and before the lock is taken.
+    let torn = try FileHandle(forWritingTo: SessionPaths.edits(session))
+    try torn.seekToEnd()
+    try torn.write(contentsOf: Data(#"{"schemaVersion": 99, "id": "x"}"#.utf8 + [0x0A]))
+    try torn.close()
+
+    #expect(throws: HolosError.self) {
+        try SpeakerEditor.apply([.linkProfile(speakerID: "mic:S1", profileID: "JIM"),
+                                 .rename(speakerID: "mic:S1", name: "Jim")],
+                                view: view, session: session, source: "cli", profiles: store,
+                                requirePeople: ["JIM": "Jim"], requireCompleteJournal: true)
+    }
+    #expect(try SessionSpeakerStore.readEdits(session: session).edits.count == before, "Nothing was appended.")
+
+    // Without that requirement the same batch is saved, as every other speaker edit is.
+    _ = try SpeakerEditor.apply([.linkProfile(speakerID: "mic:S1", profileID: "JIM"),
+                                 .rename(speakerID: "mic:S1", name: "Jim")],
+                                view: view, session: session, source: "cli", profiles: store,
+                                requirePeople: ["JIM": "Jim"])
+    #expect(try SessionSpeakerStore.readEdits(session: session).edits.count > before)
+}
+
+@Test(.timeLimit(.minutes(1)))
+func forgettingOnePersonKeepsTheOtherAutomaticNames() async throws {
+    let temp = try TemporaryDirectory("profiles")
+    defer { temp.remove() }
+    let store = profileStore(temp)
+    try store.update { $0.rememberVoices = true }
+    let (session, record) = try await profileProcessedSession(in: temp, store: nil, forceVoiceData: true)
+    let runID = try #require(record.runID)
+    try store.update {
+        $0.profiles = [profilePerson("JIM", "Jim", vector: profileAxis(0)),
+                       profilePerson("MARIA", "Maria", vector: profileAxis(1))]
+    }
+    // The meeting names both automatically: a likely match each.
+    try SessionArchive.withSpeakerLock(at: session) {
+        try SessionSpeakerStore.writeRecognition(
+            RecognitionResult(runID: runID, embeddingModel: profileModel,
+                              thresholds: SpeakerRecognizer.defaultThresholds,
+                              matches: [SpeakerMatch(speakerID: "mic:S1", profileID: "JIM", profileName: "Jim",
+                                                     distance: 0.05, tier: .likely),
+                                        SpeakerMatch(speakerID: "mic:S2", profileID: "MARIA", profileName: "Maria",
+                                                     distance: 0.05, tier: .likely)]),
+            session: session)
+    }
+    try SessionExports.regenerate(session: session, profileNames: VoiceProfileService.profileNames(store: store))
+    let markdown = SessionPaths.export("md", in: session)
+    #expect(SessionFixtures.text(markdown).contains("Jim"))
+    #expect(SessionFixtures.text(markdown).contains("Maria"))
+
+    try VoiceProfileService.forget(profileID: "JIM", store: store, sessionsRoot: temp.url)
+
+    let text = SessionFixtures.text(markdown)
+    #expect(!text.contains("Jim"), "The forgotten person's automatic name is gone from the exports.")
+    #expect(text.contains("Maria"),
+            "And everybody else keeps theirs: the rewrite runs once the meetings are cleaned.")
+    #expect(try store.pendingForgets().isEmpty)
+}
+
+@Test(.timeLimit(.minutes(1)))
+func aForgetLeavesAnotherPendingMergeAlone() async throws {
+    let temp = try TemporaryDirectory("profiles")
+    defer { temp.remove() }
+    let store = profileStore(temp)
+    let (session, runID, jim) = try await profileForgetFixture(temp, store: store)
+    try store.update {
+        $0.profiles.append(SpeakerProfile(id: "MARIA", displayName: "Maria"))
+        $0.profiles.append(profilePerson("SAM", "Sam", vector: profileAxis(5)))
+    }
+    // Jim was merged into Maria and the meetings have not been retargeted yet, so the meeting still names Jim,
+    // who is no longer in the store.
+    let pending = ForgetRecord(kind: .merge, profileID: jim, targetProfileID: "MARIA")
+    try store.appendForgetRecord(pending)
+    try store.appendForgetRecord(.stored(pending.id))
+    try store.update { database in
+        database.profiles.removeAll { $0.id == jim }
+        database.mergedInto = [jim: "MARIA"]
+    }
+
+    // An unrelated person is forgotten meanwhile.
+    try VoiceProfileService.forget(profileID: "SAM", store: store, sessionsRoot: temp.url)
+
+    #expect(try SessionSpeakerStore.readRecognition(runID: runID, session: session)?.matches.first?.profileID == jim,
+            "Sam's forget must not take a link that belongs to the person Jim was merged into.")
+    try VoiceProfileService.resumePendingForgets(store: store, sessionsRoot: temp.url)
+    #expect(try SessionSpeakerStore.readRecognition(runID: runID, session: session)?.matches.first?.profileID
+            == "MARIA", "And the merge can still finish its meetings.")
+}
+
+@Test(.timeLimit(.minutes(1)))
+func whatAForgetListsAndItsTombstoneAreOneStep() async throws {
+    let temp = try TemporaryDirectory("profiles")
+    defer { temp.remove() }
+    let store = profileStore(temp)
+    let (_, _, jim) = try await profileForgetFixture(temp, store: store)
+    try store.update { $0.profiles.append(SpeakerProfile(id: "MARIA", displayName: "Maria")) }
+    // A merge that runs while the forget is listing would move a sample the listing never saw. The listing and the
+    // tombstone are one locked step, so the merge either lands before the listing (and its samples are listed on
+    // the person they moved to) or after the tombstone (and is refused while the forget is unfinished).
+    let listed = SharedValue<[String]>([])
+    try VoiceProfileService.forget(profileID: jim, store: store, sessionsRoot: temp.url)
+    listed.set(try store.load().profiles.flatMap(\.samples).map(\.id))
+
+    #expect(try store.load().sampleCount == 0, "Everything that was the person's is gone.")
+    #expect(listed.value.isEmpty)
+    // And a merge afterwards is free again.
+    try store.update { $0.profiles.append(SpeakerProfile(id: "SAM", displayName: "Sam")) }
+    try VoiceProfileService.merge(profileID: "SAM", into: "MARIA", store: store, sessionsRoot: temp.url)
+    #expect(try store.load().profiles.map(\.id) == ["MARIA"])
+}
+
+@Test(.timeLimit(.minutes(1)))
+func aRepeatedLinkStillBringsTheSamplesInStep() async throws {
+    let temp = try TemporaryDirectory("profiles")
+    defer { temp.remove() }
+    let store = profileStore(temp)
+    try store.update { $0.rememberVoices = true }
+    let (session, _) = try await profileProcessedSession(in: temp, store: nil, forceVoiceData: true)
+    let extractor = ProfileFakeExtractor()
+    _ = try await VoiceProfileService.link(session: session, speakerID: "mic:S1", to: .new(name: "Jim"),
+                                           view: try SessionFixtures.view(session), learnVoice: true,
+                                           extractor: extractor, store: store)
+    let jim = try #require(try store.load().profiles.first?.id)
+    let requests = extractor.requests.count
+    // The sample is left stale, as a refresh that failed after the link was saved would leave it: its inputs no
+    // longer match the labels, so it may hold turns that now belong to somebody else.
+    try store.update { database in
+        guard let index = database.profiles.firstIndex(where: { $0.id == jim }),
+              !database.profiles[index].samples.isEmpty else { return }
+        database.profiles[index].samples[0].inputDigest = "stale"
+    }
+
+    // Running the same link again changes no label at all; it must still bring the samples in step.
+    _ = try await VoiceProfileService.link(session: session, speakerID: "mic:S1", to: .existing(profileID: jim),
+                                           view: try profileView(session, store: store), learnVoice: false,
+                                           extractor: extractor, store: store)
+
+    #expect(extractor.requests.count > requests, "The refresh ran from the no-op path.")
+    #expect(try store.load().profiles.first?.samples.first?.inputDigest != "stale",
+            "And the sample is back in step with the labels.")
+}
+
+@Test(.timeLimit(.minutes(1)))
+func aPersonStaysUnfinishedUntilTheirLinkIsSaved() async throws {
+    let temp = try TemporaryDirectory("profiles")
+    defer { temp.remove() }
+    let store = profileStore(temp)
+    let (session, _) = try await profileProcessedSession(in: temp, store: nil)
+    // The meeting's speaker folder cannot be written, so the link's lines are refused at the append, after the
+    // people have been checked.
+    let speakers = session.appendingPathComponent("speakers", isDirectory: true)
+    #expect(chmod(speakers.path, 0o500) == 0)
+
+    await #expect(throws: HolosError.self) {
+        _ = try await VoiceProfileService.link(session: session, speakerID: "mic:S1", to: .new(name: "Jim"),
+                                               view: try SessionFixtures.view(session), learnVoice: false,
+                                               extractor: nil, store: store)
+    }
+    #expect(chmod(speakers.path, 0o700) == 0)
+
+    #expect(try store.load().profiles.isEmpty,
+            "A person created for a link whose lines never landed is taken back, not left in People.")
+
+    // And one whose link is saved is taken up, so neither the rollback nor the launch sweep touches them.
+    _ = try await VoiceProfileService.link(session: session, speakerID: "mic:S1", to: .new(name: "Jim"),
+                                           view: try SessionFixtures.view(session), learnVoice: false,
+                                           extractor: nil, store: store)
+    let jim = try #require(try store.load().profiles.first)
+    #expect(jim.provisional == nil, "Taken up once the lines were appended, so nothing takes them back.")
+    #expect(try store.load().profiles.count == 1)
+}
+
+@Test(.timeLimit(.minutes(1)))
+func aPersonIsTakenUpEvenWhenTheLinkReportsAFailure() async throws {
+    let temp = try TemporaryDirectory("profiles")
+    defer { temp.remove() }
+    let store = profileStore(temp)
+    let (session, _) = try await profileProcessedSession(in: temp, store: nil)
+    // The lines are appended, then the exports cannot be rewritten: the link is saved and reports `incomplete`.
+    let exports = SessionPaths.exports(session)
+    #expect(chmod(exports.path, 0o500) == 0)
+
+    await #expect(throws: HolosError.self) {
+        _ = try await VoiceProfileService.link(session: session, speakerID: "mic:S1", to: .new(name: "Jim"),
+                                               view: try SessionFixtures.view(session), learnVoice: false,
+                                               extractor: nil, store: store)
+    }
+    #expect(chmod(exports.path, 0o700) == 0)
+
+    let jim = try #require(try store.load().profiles.first)
+    #expect(jim.provisional == nil, "The meeting links them, so they are not an unfinished link any more.")
+    #expect(try SessionFixtures.view(session).speakers.first { $0.id == "mic:S1" }?.profileID == jim.id)
+    #expect(try store.load().profiles.count == 1, "And they stay, though the link reported a failure.")
+}
+
+@Test(.timeLimit(.minutes(1)))
+func aForgetsExportsKeepNamesAnotherForgetHasNotReachedYet() async throws {
+    let temp = try TemporaryDirectory("profiles")
+    defer { temp.remove() }
+    let store = profileStore(temp)
+    try store.update { $0.rememberVoices = true }
+    let (session, record) = try await profileProcessedSession(in: temp, store: nil, forceVoiceData: true)
+    let runID = try #require(record.runID)
+    try store.update {
+        $0.profiles = [profilePerson("JIM", "Jim", vector: profileAxis(0)),
+                       profilePerson("MARIA", "Maria", vector: profileAxis(1))]
+    }
+    try SessionArchive.withSpeakerLock(at: session) {
+        try SessionSpeakerStore.writeRecognition(
+            RecognitionResult(runID: runID, embeddingModel: profileModel,
+                              thresholds: SpeakerRecognizer.defaultThresholds,
+                              matches: [SpeakerMatch(speakerID: "mic:S1", profileID: "JIM", profileName: "Jim",
+                                                     distance: 0.05, tier: .likely),
+                                        SpeakerMatch(speakerID: "mic:S2", profileID: "MARIA", profileName: "Maria",
+                                                     distance: 0.05, tier: .likely)]),
+            session: session)
+    }
+    try SessionExports.regenerate(session: session, profileNames: VoiceProfileService.profileNames(store: store))
+    // Somebody else's forget stopped after its store phase and is still pending.
+    let stranded = ForgetRecord(kind: .sample, profileID: "SOMEONE", sampleIDs: ["NOTHERE"])
+    try store.appendForgetRecord(stranded)
+    try store.appendForgetRecord(.stored(stranded.id))
+
+    try VoiceProfileService.forget(profileID: "JIM", store: store, sessionsRoot: temp.url)
+
+    let text = SessionFixtures.text(SessionPaths.export("md", in: session))
+    #expect(!text.contains("Jim"))
+    #expect(text.contains("Maria"),
+            "Another forget being unfinished must not cost everybody else their automatic name for good.")
+}
+
+@Test(.timeLimit(.minutes(1)))
+func aRelinkedSpeakerDoesNotKeepTheOldPersonsVoice() async throws {
+    let temp = try TemporaryDirectory("profiles")
+    defer { temp.remove() }
+    let store = profileStore(temp)
+    try store.update { $0.rememberVoices = true }
+    let (session, _) = try await profileProcessedSession(in: temp, store: nil, forceVoiceData: true)
+    let extractor = ProfileFakeExtractor()
+    _ = try await VoiceProfileService.link(session: session, speakerID: "mic:S1", to: .new(name: "Jim"),
+                                           view: try SessionFixtures.view(session), learnVoice: true,
+                                           extractor: extractor, store: store)
+    let jim = try #require(try store.load().profiles.first { $0.displayName == "Jim" }?.id)
+    #expect(try store.load().profiles.first { $0.id == jim }?.samples.count == 1)
+    try store.update { $0.profiles.append(SpeakerProfile(id: "MARIA", displayName: "Maria")) }
+
+    // The speaker is given to Maria by an edit whose sample refresh does not run (a crash, or a refresh that
+    // failed), so Jim's voice from this meeting is still there, and then Maria is forgotten. The meeting's link
+    // now names a person the store no longer holds, exactly as a merge would leave it.
+    _ = try SpeakerEditor.apply([.linkProfile(speakerID: "mic:S1", profileID: "MARIA")],
+                                view: try profileView(session, store: store), session: session, source: "cli")
+    #expect(try store.load().profiles.first { $0.id == jim }?.samples.count == 1)
+    try VoiceProfileService.forget(profileID: "MARIA", store: store, sessionsRoot: temp.url)
+
+    try await VoiceProfileService.refreshSamples(session: session, extractor: extractor, store: store)
+
+    #expect(try store.load().profiles.first { $0.id == jim }?.samples.isEmpty == true,
+            "The speaker is not Jim's any more, and no merge says otherwise, so his voice from it goes.")
+}
+
+@Test(.timeLimit(.minutes(1)))
+func forgettingAPersonRemovesTheVoiceOfSpeakersOnlyAMatchNamed() async throws {
+    let temp = try TemporaryDirectory("profiles")
+    defer { temp.remove() }
+    let store = profileStore(temp)
+    try store.update { $0.rememberVoices = true }
+    let (session, record) = try await profileProcessedSession(in: temp, store: nil, forceVoiceData: true)
+    let runID = try #require(record.runID)
+    try store.update { $0.profiles = [profilePerson("JIM", "Jim", vector: profileAxis(0))] }
+    // The meeting names Jim on mic:S2 through a recognition match only: no link, so the labels say nothing about
+    // whose speaker it is.
+    try SessionArchive.withSpeakerLock(at: session) {
+        try SessionSpeakerStore.writeRecognition(
+            RecognitionResult(runID: runID, embeddingModel: profileModel,
+                              thresholds: SpeakerRecognizer.defaultThresholds,
+                              matches: [SpeakerMatch(speakerID: "mic:S2", profileID: "JIM", profileName: "Jim",
+                                                     distance: 0.05, tier: .likely)]),
+            session: session)
+    }
+    #expect(try SessionSpeakerStore.readVoiceData(runID: runID, session: session)?.centroids["mic:S2"] != nil)
+
+    try VoiceProfileService.forget(profileID: "JIM", store: store, sessionsRoot: temp.url)
+
+    let voice = try SessionSpeakerStore.readVoiceData(runID: runID, session: session)
+    #expect(voice?.centroids["mic:S2"] == nil,
+            "The match is what named them, so that speaker's voiceprints go with the person.")
+    #expect(voice?.turnEmbeddings.allSatisfy { !["T2", "T4"].contains($0.turnID) } ?? true)
+    #expect(try store.pendingForgets().isEmpty)
+}
+
+@Test func aMergeChainIsFollowedHoweverLongItIs() {
+    var database = SpeakerProfileDatabase()
+    var map: [String: String] = [:]
+    for step in 0..<200 { map["P\(step)"] = "P\(step + 1)" }
+    database.mergedInto = map
+    #expect(VoiceProfileService.mergedOnwards("P0", in: database) == "P200",
+            "No count stops the walk: a person merged onwards many times still has to be found.")
+    // A cycle a newer Holos could write still ends it.
+    database.mergedInto = ["A": "B", "B": "C", "C": "A"]
+    #expect(["A", "B", "C"].contains(VoiceProfileService.mergedOnwards("A", in: database)))
+}
+
+@Test(.timeLimit(.minutes(1)))
+func aMergeWaitsForAForgetThisBuildCannotRead() async throws {
+    let temp = try TemporaryDirectory("profiles")
+    defer { temp.remove() }
+    let store = profileStore(temp)
+    let (_, _, jim) = try await profileForgetFixture(temp, store: store)
+    try store.update { $0.profiles.append(SpeakerProfile(id: "MARIA", displayName: "Maria")) }
+    // A forget of a newer Holos: this build cannot decode its kind, so it cannot see which person it listed.
+    let line = Data("{\"schemaVersion\":1,\"id\":\"\(UUID().uuidString)\",\"kind\":\"quarantine\",\"state\":\"pending\"}\n".utf8)
+    try AtomicFile.append(line, to: store.forgetJournalURL)
+
+    #expect(throws: HolosError.self) {
+        try VoiceProfileService.merge(profileID: jim, into: "MARIA", store: store, sessionsRoot: temp.url)
+    }
+    #expect(try store.load().profiles.count == 2, "Nothing moved between them.")
+}
+
+@Test(.timeLimit(.minutes(1)))
+func forgettingAPersonLeavesASpeakerTheUserSaidIsNotThem() async throws {
+    let temp = try TemporaryDirectory("profiles")
+    defer { temp.remove() }
+    let store = profileStore(temp)
+    try store.update { $0.rememberVoices = true }
+    let (session, record) = try await profileProcessedSession(in: temp, store: nil, forceVoiceData: true)
+    let runID = try #require(record.runID)
+    try store.update { $0.profiles = [profilePerson("JIM", "Jim", vector: profileAxis(0))] }
+    // The meeting named mic:S2 as Jim automatically, and the user said it is not him.
+    try SessionArchive.withSpeakerLock(at: session) {
+        try SessionSpeakerStore.writeRecognition(
+            RecognitionResult(runID: runID, embeddingModel: profileModel,
+                              thresholds: SpeakerRecognizer.defaultThresholds,
+                              matches: [SpeakerMatch(speakerID: "mic:S2", profileID: "JIM", profileName: "Jim",
+                                                     distance: 0.05, tier: .likely)]),
+            session: session)
+    }
+    _ = try VoiceProfileService.reject(session: session, speakerID: "mic:S2", profileID: "JIM",
+                                       view: try profileView(session, store: store), store: store)
+
+    try VoiceProfileService.forget(profileID: "JIM", store: store, sessionsRoot: temp.url)
+
+    let voice = try #require(try SessionSpeakerStore.readVoiceData(runID: runID, session: session))
+    #expect(voice.centroids["mic:S2"] != nil,
+            "The user said that speaker is not Jim, so their voice data is not Jim's to remove.")
+    #expect(try store.pendingForgets().isEmpty)
 }
