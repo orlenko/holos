@@ -35,6 +35,10 @@ mkdir -p "$holos_app_bundle/Contents/MacOS"
 cp Resources/App-Info.plist "$holos_app_bundle/Contents/Info.plist"
 mkdir -p "$holos_app_bundle/Contents/Resources"
 cp Resources/Icon/VoiceIsLocal.icns "$holos_app_bundle/Contents/Resources/VoiceIsLocal.icns"
+# The license, the trademark terms for the name and icon, and the notices the About panel points to, as in a release.
+cp LICENSE "$holos_app_bundle/Contents/Resources/LICENSE.txt"
+cp TRADEMARKS.md "$holos_app_bundle/Contents/Resources/TRADEMARKS.md"
+cp THIRD_PARTY_NOTICES.md "$holos_app_bundle/Contents/Resources/THIRD_PARTY_NOTICES.md"
 cp "$holos_app_bin_dir/HolosApp" "$holos_app_bundle/Contents/MacOS/HolosApp"
 # The recorder and maintenance commands the app starts (docs/meeting-design.md §4.1): signed on its own first,
 # then sealed into the bundle's signature.
