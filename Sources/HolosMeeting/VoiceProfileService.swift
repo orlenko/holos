@@ -236,6 +236,12 @@ public enum VoiceProfileService {
                 throw HolosError.unavailable("One of these people is being forgotten; try the merge again in a "
                                              + "moment.")
             }
+            // Both questions again, under this write's own hold of the lock: the outer check released it, and a
+            // newer Holos can have appended its tombstone in between, readable or not.
+            guard try !store.forgetJournalHasUnreadableLines() else {
+                throw HolosError.unavailable("A newer Holos is forgetting voices; merge these people once it has "
+                                             + "finished.")
+            }
             let fromIndex = try profileIndex(profileID, in: database)
             let intoIndex = try profileIndex(target, in: database)
             let from = database.profiles[fromIndex]

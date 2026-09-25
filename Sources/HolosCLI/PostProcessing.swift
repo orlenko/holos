@@ -33,10 +33,21 @@ func makeDiarizer(engineOverrides: [String: String]) -> (any SpeakerDiarizer)? {
 /// `DiarizerVoiceSampleExtractor`. Nil when the speaker models are not verified.
 func makeVoiceSampleExtractor(session: URL) -> (any VoiceSampleExtractor)? {
     var overrides: [String: String] = [:]
-    if let head = try? SessionSpeakerStore.readHead(session: session),
-       let run = try? SessionSpeakerStore.readRun(id: head.runID, session: session),
-       let configuration = run.engine?.configuration {
-        for key in FluidDiarizerConfiguration.overrideKeys { overrides[key] = configuration[key] }
+    do {
+        // A meeting with no labels yet has no settings to match, and the defaults are right for it. One whose
+        // head or run cannot be read right now is different: taking that for "no settings" would build a
+        // default diarizer and then check it against nothing, so a voice could be learned from a pass that does
+        // not match how the meeting was labelled. No extractor is the honest answer, and the command says so.
+        if let head = try SessionSpeakerStore.readHead(session: session) {
+            let run = try SessionSpeakerStore.readRun(id: head.runID, session: session)
+            for key in FluidDiarizerConfiguration.overrideKeys {
+                overrides[key] = run.engine?.configuration[key]
+            }
+        }
+    } catch {
+        Console.error("Cannot read how this meeting's speakers were labelled, so no voice can be learned from it: "
+                      + error.localizedDescription)
+        return nil
     }
     return makeDiarizer(engineOverrides: overrides).map {
         DiarizerVoiceSampleExtractor(diarizer: $0, expectedConfiguration: overrides)
