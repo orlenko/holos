@@ -307,6 +307,44 @@ public struct SpeakerProfileStore: Sendable {
         }
     }
 
+    /// What the forget journal says, from one read of it: the tombstones without a `done` line, which of those
+    /// have reached `stored` or `cleaned`, and whether any line is a record this build cannot read. The callers
+    /// that ask several of these at once (`VoiceProfileService.recognitionAllowed`, on every reload of a meeting's
+    /// labels and every export) would otherwise read and decode the file once per question.
+    public struct ForgetState: Sendable {
+        public var pending: [ForgetRecord]
+        public var cleaned: Set<String>
+        public var unreadable: Bool
+
+        public func isCleaned(_ id: String) -> Bool { cleaned.contains(id) }
+    }
+
+    public func forgetState() throws -> ForgetState {
+        guard let data = try AtomicFile.readIfPresent(forgetJournalURL, maxBytes: Self.maxJournalBytes) else {
+            return ForgetState(pending: [], cleaned: [], unreadable: false)
+        }
+        let decoder = HolosJSON.decoder()
+        var records: [ForgetRecord] = []
+        var unreadable = false
+        for line in JournalLines.split(data).lines {
+            guard let version = SchemaVersion.probe(line), version >= 1 else { continue }
+            guard SchemaVersion.readable(version, current: ForgetRecord.currentSchemaVersion),
+                  let record = try? decoder.decode(ForgetRecord.self, from: line) else {
+                unreadable = true
+                continue
+            }
+            records.append(record)
+        }
+        let finished = Set(records.filter { $0.state == ForgetRecord.done }.map(\.id))
+        var seen = Set<String>()
+        let pending = records.filter {
+            $0.state == ForgetRecord.pending && $0.kind != nil && !finished.contains($0.id)
+                && seen.insert($0.id).inserted
+        }
+        let cleaned = Set(records.filter { $0.state == ForgetRecord.cleaned }.map(\.id))
+        return ForgetState(pending: pending, cleaned: cleaned, unreadable: unreadable)
+    }
+
     /// Whether the journal holds a record this build cannot read: one written by a newer Holos (a newer schema
     /// version, or a forget kind this build does not know). Such a record may be an unfinished forget, which this
     /// build can neither resume nor account for, so callers that must not act while one is outstanding
