@@ -41,6 +41,9 @@ open build/VoiceIsLocal.app
 
 The build does not install or launch the app, add a login item, or enable dictation.
 
+To build a signed, notarized DMG for download, run `./scripts/release-app.sh`; see [releasing](docs/release.md) for
+the one-time Apple Developer setup. Without a Developer ID it makes an ad-hoc signed dry run in `build/release`.
+
 To update the running app in one step, run `./scripts/restart-app.sh`. It compiles first while the app keeps
 running, asks Voice is Local to quit (the first time, macOS asks whether your terminal may control it), rebuilds
 the bundle, and opens it again. It never force-quits: while the app asks what to do with a meeting in progress or
