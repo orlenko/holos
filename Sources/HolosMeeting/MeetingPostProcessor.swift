@@ -252,6 +252,10 @@ public struct MeetingPostProcessor: Sendable {
         // A forget that lands meanwhile has already cleaned this meeting, so what this pass computed must not be
         // written afterwards: the epoch it started with is compared again under the speaker lock at the publish.
         let forgetEpoch = forgetEpochNow()
+        // And whether one was already on its way through the meetings: such a forget can reach this meeting and
+        // finish while this pass is still rendering, leaving nothing pending and the counter unchanged at the
+        // publish, so neither test would catch it on its own.
+        let forgetWasCleaning = aForgetIsStillCleaning()
         let othersInRoom = options.othersInRoom ?? meeting.othersInRoom
         recorder.journal.update { $0.othersInRoom = othersInRoom }
         var result = SpeakerResult(othersInRoom: othersInRoom)
@@ -342,7 +346,7 @@ public struct MeetingPostProcessor: Sendable {
             switch try SpeakerAnalysis.publish(built, session: session, transcript: transcript, force: options.force,
                                                writeVoiceData: options.forceVoiceData,
                                                voiceDataStillWanted: {
-                                                   self.forgetEpochNow() == forgetEpoch
+                                                   self.forgetEpochNow() == forgetEpoch && !forgetWasCleaning
                                                        && !self.aForgetIsStillCleaning()
                                                }) {
             case .keptEditedHead(let runID):

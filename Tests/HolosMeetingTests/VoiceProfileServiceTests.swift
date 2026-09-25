@@ -2710,3 +2710,64 @@ func aPersonStaysUnfinishedUntilTheirLinkIsSaved() async throws {
     #expect(VoiceProfileService.removeAbandonedProvisionalPeople(store: store, now: later) == 0)
     #expect(try store.load().profiles.count == 1)
 }
+
+@Test(.timeLimit(.minutes(1)))
+func aPersonIsTakenUpEvenWhenTheLinkReportsAFailure() async throws {
+    let temp = try TemporaryDirectory("profiles")
+    defer { temp.remove() }
+    let store = profileStore(temp)
+    let (session, _) = try await profileProcessedSession(in: temp, store: nil)
+    // The lines are appended, then the exports cannot be rewritten: the link is saved and reports `incomplete`.
+    let exports = SessionPaths.exports(session)
+    #expect(chmod(exports.path, 0o500) == 0)
+
+    await #expect(throws: HolosError.self) {
+        _ = try await VoiceProfileService.link(session: session, speakerID: "mic:S1", to: .new(name: "Jim"),
+                                               view: try SessionFixtures.view(session), learnVoice: false,
+                                               extractor: nil, store: store)
+    }
+    #expect(chmod(exports.path, 0o700) == 0)
+
+    let jim = try #require(try store.load().profiles.first)
+    #expect(jim.provisional == nil, "The meeting links them, so they are not an unfinished link any more.")
+    #expect(try SessionFixtures.view(session).speakers.first { $0.id == "mic:S1" }?.profileID == jim.id)
+    let later = Date().addingTimeInterval(VoiceProfileService.abandonedProvisionalAge + 60)
+    #expect(VoiceProfileService.removeAbandonedProvisionalPeople(store: store, now: later) == 0,
+            "And the launch sweep leaves them, though the link reported a failure.")
+}
+
+@Test(.timeLimit(.minutes(1)))
+func aForgetsExportsKeepNamesAnotherForgetHasNotReachedYet() async throws {
+    let temp = try TemporaryDirectory("profiles")
+    defer { temp.remove() }
+    let store = profileStore(temp)
+    try store.update { $0.rememberVoices = true }
+    let (session, record) = try await profileProcessedSession(in: temp, store: nil, forceVoiceData: true)
+    let runID = try #require(record.runID)
+    try store.update {
+        $0.profiles = [profilePerson("JIM", "Jim", vector: profileAxis(0)),
+                       profilePerson("MARIA", "Maria", vector: profileAxis(1))]
+    }
+    try SessionArchive.withSpeakerLock(at: session) {
+        try SessionSpeakerStore.writeRecognition(
+            RecognitionResult(runID: runID, embeddingModel: profileModel,
+                              thresholds: SpeakerRecognizer.defaultThresholds,
+                              matches: [SpeakerMatch(speakerID: "mic:S1", profileID: "JIM", profileName: "Jim",
+                                                     distance: 0.05, tier: .likely),
+                                        SpeakerMatch(speakerID: "mic:S2", profileID: "MARIA", profileName: "Maria",
+                                                     distance: 0.05, tier: .likely)]),
+            session: session)
+    }
+    try SessionExports.regenerate(session: session, profileNames: VoiceProfileService.profileNames(store: store))
+    // Somebody else's forget stopped after its store phase and is still pending.
+    let stranded = ForgetRecord(kind: .sample, profileID: "SOMEONE", sampleIDs: ["NOTHERE"])
+    try store.appendForgetRecord(stranded)
+    try store.appendForgetRecord(.stored(stranded.id))
+
+    try VoiceProfileService.forget(profileID: "JIM", store: store, sessionsRoot: temp.url)
+
+    let text = SessionFixtures.text(SessionPaths.export("md", in: session))
+    #expect(!text.contains("Jim"))
+    #expect(text.contains("Maria"),
+            "Another forget being unfinished must not cost everybody else their automatic name for good.")
+}

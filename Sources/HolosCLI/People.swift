@@ -46,8 +46,14 @@ struct People: AsyncParsableCommand {
                 return
             }
             let database = try store.load()
+            // Calibrated thresholds are kept when the setting goes off, and an unfinished forget holds recognition
+            // back too, so what is said here is what `recognitionAllowed` actually does, not just what is stored.
+            let automatic = database.isCalibrated && VoiceProfileService.recognitionAllowed(store: store)
             Console.output("Remember voices: \(database.rememberVoices ? "on" : "off")"
-                           + (database.isCalibrated ? " · automatic names: on (calibrated)" : ""))
+                           + (automatic ? " · automatic names: on (calibrated)" : ""))
+            if database.isCalibrated, !automatic, database.rememberVoices {
+                Console.output("Automatic names: off for now; a request to forget voices is still being finished.")
+            }
             if !database.isCalibrated, database.calibrationResetAt != nil {
                 Console.output("Automatic names: off; the calibration was reset when the voice samples changed "
                                + "(calibrate again with holos people calibrate --apply).")

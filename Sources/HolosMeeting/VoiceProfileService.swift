@@ -702,25 +702,14 @@ public enum VoiceProfileService {
                 rollBack(created, store: store)
                 throw error
             }
-            // The link is saved; only reloading or the exports failed, so the editor could not say whether samples
-            // are affected. Samples are brought in step anyway (cheap when nothing changed), then the error is
-            // reported.
+            // The link is saved, so the people this call created are taken up before anything else: the path
+            // below always rethrows, and leaving them marked unfinished would have the launch sweep remove a
+            // person the meeting links. Then samples are brought in step anyway (cheap when nothing changed),
+            // and the error is reported.
+            takeUp(created, named: linked, store: store)
             try await syncAfterSavedEdit(error, session: session, extractor: extractor, store: store, enroll: enroll)
         }
-        // The lines are saved, so the people this call created are no longer a link that might not happen: they
-        // are taken up here, which is what keeps the launch sweep and a later rollback off them. A failure leaves
-        // them looking abandoned, so it is retried once and said out loud.
-        if !created.isEmpty {
-            let take = { try SpeakerEditor.claimPeople(linked.filter { created.contains($0.key) },
-                                                       profiles: store, at: Date()) }
-            do {
-                try take()
-            } catch {
-                do { try take() } catch {
-                    log.error("The link was saved, but the person it created is still marked unfinished: \(ProcessSpawner.logCategory(error), privacy: .public)")
-                }
-            }
-        }
+        takeUp(created, named: linked, store: store)
         guard !enroll.isEmpty || needsRefresh else { return snapshot }
         do {
             try await syncSamples(session: session, extractor: extractor, store: store, enroll: enroll)
@@ -731,6 +720,24 @@ public enum VoiceProfileService {
                                         + error.localizedDescription)
         }
         return snapshot
+    }
+
+    /// Marks the people this call created as no longer a link that might not happen, once its lines are appended:
+    /// what keeps the launch sweep and a later rollback off them (`SpeakerEditor.claimPeople` leaves a call's own
+    /// creations alone until here). Idempotent, so every path that saved lines can call it. A failure is retried
+    /// once and then said out loud: it leaves a person the sweep would take back in an hour, and any later rename,
+    /// merge, suggestions setting or link of them clears it first.
+    private static func takeUp(_ created: Set<String>, named: [String: String], store: SpeakerProfileStore) {
+        guard !created.isEmpty else { return }
+        let take = { try SpeakerEditor.claimPeople(named.filter { created.contains($0.key) }, profiles: store,
+                                                   at: Date()) }
+        do {
+            try take()
+        } catch {
+            do { try take() } catch {
+                log.error("The link was saved, but the person it created is still marked unfinished: \(ProcessSpawner.logCategory(error), privacy: .public)")
+            }
+        }
     }
 
     /// Takes back the people this call created, after the link they were created for was refused.
@@ -1238,10 +1245,8 @@ public enum VoiceProfileService {
             if try SessionSpeakerStore.purgeVoiceFolders(session: session, recognition: kind != .sample) {
                 log.error("Deleted the voice data of a meeting whose manifest cannot be read: \(ProcessSpawner.logCategory(error), privacy: .public)")
             }
-            var generated = stat()
-            return (kind == .profile || kind == .all)
-                && lstat(SessionPaths.generatedExports(session).path, &generated) == 0
-                && (generated.st_mode & S_IFMT) == S_IFREG
+            guard kind == .profile || kind == .all else { return false }
+            return try hasGeneratedExports(session)
         }
         _ = try SessionArchive.withSpeakerLock(at: session) { () throws -> Bool in
             let recognition = try SessionSpeakerStore.recognitionFiles(session: session)
@@ -1285,18 +1290,36 @@ public enum VoiceProfileService {
         }
         // Owed on every run, not only when this one found recognition results: a previous attempt may have
         // scrubbed or deleted the very files that would say a rewrite is still due.
-        let owesExports = kind == .all || kind == .profile
+        guard kind == .all || kind == .profile else { return false }
+        return try hasGeneratedExports(session)
+    }
+
+    /// Whether the meeting has exports Holos generated. Only their absence says no: a marker that cannot be
+    /// inspected right now (no traversal permission, an I/O error) is thrown, so the forget stays pending rather
+    /// than finishing over an exported transcript that may still hold the name.
+    private static func hasGeneratedExports(_ session: URL) throws -> Bool {
         var generated = stat()
-        return owesExports && lstat(SessionPaths.generatedExports(session).path, &generated) == 0
-            && (generated.st_mode & S_IFMT) == S_IFREG
+        if lstat(SessionPaths.generatedExports(session).path, &generated) != 0 {
+            let code = errno
+            guard code == ENOENT || code == ENOTDIR else {
+                throw HolosError.io("Cannot inspect a meeting's exports: \(String(cString: strerror(code))).")
+            }
+            return false
+        }
+        return (generated.st_mode & S_IFMT) == S_IFREG
     }
 
     /// Rewrites one meeting's generated exports after a forget has scrubbed every meeting, so the names they show
     /// are the ones that survive it: the people who were forgotten are gone from the recognition results by now,
     /// and `recognitionAllowed` no longer holds this forget against them, so everybody else keeps their name.
     private static func rewriteExports(_ session: URL, store: SpeakerProfileStore) throws {
+        // "Remember voices" alone, not `recognitionAllowed`: this forget has scrubbed every meeting by now, so
+        // what it removed is gone, and another forget still on its way must not make these exports lose every
+        // other person's automatic name for good. A meeting that still holds a name that other forget removes is
+        // rewritten again when it reaches it; those two forgets each rewrite what they clean.
+        let remembers = (try? store.load().rememberVoices) ?? false
         try SessionExports.regenerate(session: session, profileNames: profileNames(store: store),
-                                      applyRecognition: recognitionAllowed(store: store))
+                                      applyRecognition: remembers)
     }
 
     /// Removes every reference to the person (`isThePerson`: matches, merge suggestions, skipped people; one helper,
