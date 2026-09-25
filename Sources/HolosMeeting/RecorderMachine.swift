@@ -85,6 +85,9 @@ public struct RecorderMachine: Sendable, Equatable {
     static let lidClosedReason = "builtInMicrophoneLidClosed"
     /// The `retryNow` reason when the loop sees the lid open again.
     public static let lidOpened = "lidOpened"
+    /// The `retryNow` reason when the loop sees the lid close while the current epoch records the built-in
+    /// microphone: Core Audio may keep the device listed and deliver silence, so no stall or device change shows it.
+    public static let lidClosed = "lidClosed"
 
     /// starting, recording, paused, waiting, sleeping, stopping.
     public private(set) var phase: RecorderPhase = .starting
@@ -295,11 +298,29 @@ public struct RecorderMachine: Sendable, Equatable {
     /// recording without the microphone restarts with it when the device list changes, and one without the built-in
     /// microphone because the lid was closed also when the lid opens or the screen is unlocked. The loop sends these
     /// only when the next epoch would record the microphone.
+    ///
+    /// `lidClosed` (the loop sends it only when the next epoch would lack the built-in microphone): an epoch that
+    /// records the microphone restarts once, so a call goes on with the computer's audio alone and a microphone-only
+    /// recording waits for the lid. Nothing happens while a restart is in flight, while the microphone is already
+    /// missing, or in any other phase.
     private mutating func retryNow(reason: String, at: Double) -> [RecorderEffect] {
         switch phase {
         case .waiting:
+            // A waiting recorder already starts its next epoch with the lid as it is.
+            guard reason != Self.lidClosed else { return [] }
             return [retry(at: at)]
         case .starting, .recording:
+            if reason == Self.lidClosed {
+                let microphone = TrackWatchdog.microphoneTrack
+                guard watching, tracks.contains(microphone), !microphoneMissing else { return [] }
+                return [
+                    .recordEvent(kind: MeetingEventKind.deviceChanged, details: [
+                        "track": microphone, "at": String(at), "reason": reason,
+                    ]),
+                    .stopCapture(reason: .deviceChanged),
+                    startNextEpoch(),
+                ]
+            }
             // `starting` too: a call epoch 0 without the microphone may deliver nothing while nothing plays.
             guard microphoneMissing, watching else { return [] }
             let lidReasons = [Self.lidOpened, AudioEnvironmentEvents.screenUnlocked]

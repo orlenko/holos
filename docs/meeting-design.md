@@ -3915,7 +3915,11 @@ builtIn }`:
   closed, exactly as `--microphone built-in` does.
 - In person, if the built-in microphone disappears mid-recording (lid closed with an
   external display), the recorder enters `waiting` with "The built-in microphone is off.
-  Open the lid to continue recording." and resumes on lid open.
+  Open the lid to continue recording." and resumes on lid open. The loop does not rely on
+  the device disappearing: when a tick sees the lid close while the epoch records the
+  built-in microphone (explicitly or as the default input), it sends `retryNow(lidClosed)`
+  and the machine restarts once, so a call continues with system audio alone and a
+  microphone-only recording waits.
 - Dictation keeps the system default input (unchanged).
 - Test seam: `findInputDevices: @Sendable () -> InputDevices` (`builtIn` and
   `systemDefault`, each `Device?`) in `RecordingDependencies` and

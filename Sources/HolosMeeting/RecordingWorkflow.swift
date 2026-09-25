@@ -213,7 +213,8 @@ public enum RecordingWorkflow {
     /// microphone is restarted. The microphone (§4.12): in person the built-in one, a call the system default input;
     /// a call without any input device records system audio alone until one appears, and a call whose microphone is
     /// the built-in one records system audio alone while the lid is closed, until the lid opens (or the screen is
-    /// unlocked with it open).
+    /// unlocked with it open). Closing the lid mid-recording on the built-in microphone restarts capture: a call goes
+    /// on with system audio alone, a microphone-only recording waits for the lid.
     ///
     /// Throws before creating a session for invalid options, when the disk has too little space, and in person when
     /// the built-in microphone is missing. Capture never started: the archive is finished `failed` and the error is
@@ -696,6 +697,8 @@ private final class Recorder {
                 let lid = power?.isLidOpen() ?? true
                 if lid, !lidOpen, !microphoneStillMissing() {
                     await apply(.retryNow(reason: Self.lidOpened, at: clock.now()))
+                } else if !lid, lidOpen, closingLidDropsMicrophone() {
+                    await apply(.retryNow(reason: RecorderMachine.lidClosed, at: clock.now()))
                 }
                 lidOpen = lid
                 let free = try? dependencies.freeSpace.availableBytes(at: archive.directory)
@@ -716,6 +719,17 @@ private final class Recorder {
         let next = EpochPlan.make(options, devices: dependencies.findInputDevices(),
                                   lidOpen: dependencies.power?.isLidOpen() ?? true)
         return next?.tracks.contains(TrackWatchdog.microphoneTrack) != true
+    }
+
+    /// The lid just closed while the current epoch records a microphone that the next epoch would drop: the built-in
+    /// one, chosen explicitly or as the system default input. Core Audio may keep it listed and deliver silence, so
+    /// neither the stall watchdog nor a device change would restart capture. An external default input keeps going.
+    private func closingLidDropsMicrophone() -> Bool {
+        let microphone = TrackWatchdog.microphoneTrack
+        guard machine.phase == .recording || machine.phase == .starting, options.source != .system,
+              plan.tracks.contains(microphone), !machine.microphoneMissing else { return false }
+        let next = EpochPlan.make(options, devices: dependencies.findInputDevices(), lidOpen: false)
+        return next?.tracks.contains(microphone) != true
     }
 
     /// Feeds one input to the machine and executes its effects in order, then any inputs they produced. A cancelled

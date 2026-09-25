@@ -209,7 +209,12 @@ Hardware-facing and cross-app acceptance remain pending.
   the lid is closed; recording the computer's audio only. Open the lid to include the
   microphone.", and journals `deviceChanged` (`builtInMicrophoneLidClosed`) on the
   microphone track; opening the lid (or unlocking the screen with it open) restarts capture
-  with the microphone.
+  with the microphone. Closing the lid mid-meeting on the built-in microphone restarts
+  capture the same way (`deviceChanged` `lidClosed` on the microphone track), even when
+  Core Audio keeps the device listed: a microphone-and-system meeting goes on with the
+  computer's audio alone and that warning, and a microphone-only meeting waits with "The
+  built-in microphone is off. Open the lid to continue recording." An external default
+  input keeps recording.
 - Review window (wave 5): Review… in Meetings (or double-click, or the "Name Speakers —
   …" menu line after a meeting, which then goes away) opens a window to name a labelled
   meeting's speakers: a name field per speaker that links or creates a person (a known
