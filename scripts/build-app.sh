@@ -33,6 +33,8 @@ holos_app_bin_dir=$(swift build --show-bin-path "$@")
 # Build locally only. This does not install, launch, or enable a login item.
 mkdir -p "$holos_app_bundle/Contents/MacOS"
 cp Resources/App-Info.plist "$holos_app_bundle/Contents/Info.plist"
+mkdir -p "$holos_app_bundle/Contents/Resources"
+cp Resources/Icon/VoiceIsLocal.icns "$holos_app_bundle/Contents/Resources/VoiceIsLocal.icns"
 cp "$holos_app_bin_dir/HolosApp" "$holos_app_bundle/Contents/MacOS/HolosApp"
 # The recorder and maintenance commands the app starts (docs/meeting-design.md §4.1): signed on its own first,
 # then sealed into the bundle's signature.

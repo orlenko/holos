@@ -4,6 +4,7 @@
 <dict>
     <key>CFBundleIdentifier</key><string>ca.orlenko.holos.app</string>
     <key>CFBundleName</key><string>Voice is Local</string>
+    <key>CFBundleIconFile</key><string>VoiceIsLocal</string>
     <key>CFBundleDisplayName</key><string>Voice is Local</string>
     <key>CFBundleExecutable</key><string>HolosApp</string>
     <key>CFBundlePackageType</key><string>APPL</string>

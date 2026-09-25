@@ -255,6 +255,7 @@ transcripts. It is gitignored; keep originals out of commits.
 
 ## Project notes
 
+- [Future mobile apps (notes, not started)](docs/mobile-apps.md)
 - [Implementation status and validation gaps](docs/status.md)
 - [Design and feasibility](docs/design.md)
 - [Component and data contracts](docs/contracts.md)
