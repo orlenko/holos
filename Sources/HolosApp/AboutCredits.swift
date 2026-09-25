@@ -3,6 +3,13 @@ import AppKit
 /// The credits of the About panel (docs/meeting-design.md §4.8): the app has no resource bundle, so the text of
 /// THIRD_PARTY_NOTICES.md's speaker-model section and the FluidAudio line are embedded here.
 enum AboutCredits {
+    /// The notice GPLv3 §5(d) asks an interactive program to show.
+    static let license = """
+        Copyright © 2026 Vlad Orlenko. Voice is Local is free software under the GNU General Public License, \
+        version 3 or later, and comes with no warranty. Source code: https://github.com/orlenko/holos. The name \
+        and icon are not covered by the license; see TRADEMARKS.md.
+        """
+
     static let fluidAudio = """
         Speaker labels are made by the bundled voiceislocal tool with FluidAudio 0.17.1 \
         (https://github.com/FluidInference/FluidAudio, tag v0.17.1, commit 5c51c5c9), licensed under the Apache \
@@ -32,7 +39,7 @@ enum AboutCredits {
         Speech & Language, 2022.
         """
 
-    static var text: String { fluidAudio + "\n\n" + models }
+    static var text: String { license + "\n\n" + fluidAudio + "\n\n" + models }
 
     /// The credits as the About panel shows them.
     static func attributed() -> NSAttributedString {

@@ -275,3 +275,15 @@ transcripts. It is gitignored; keep originals out of commits.
   [implementation design](docs/meeting-design.md) (in progress)
 - [Speaker labelling evaluation](docs/speaker-evaluation.md) and
   [third-party notices](THIRD_PARTY_NOTICES.md)
+
+## License
+
+Voice is Local is free software: you can redistribute it and/or modify it under the terms of the
+GNU General Public License as published by the Free Software Foundation, either version 3 of the
+License, or (at your option) any later version. It is distributed in the hope that it will be
+useful, but without any warranty; see [LICENSE](LICENSE) for the full terms. Copyright © 2026
+Vlad Orlenko.
+
+The name and the app icon are not covered by the license; forks that others can download ship
+under their own name and icon. See [TRADEMARKS.md](TRADEMARKS.md). Third-party components keep
+their own licenses: [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

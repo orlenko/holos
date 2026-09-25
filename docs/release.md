@@ -126,6 +126,11 @@ The script:
 7. submits the DMG, staples it, and validates both staples;
 8. runs `spctl --assess` on the app and the DMG, then prints the DMG path and its SHA-256.
 
+Voice is Local is licensed under the GPL, version 3 or later. Every build given or sold to anyone must have its
+exact source available: push a tag for the release (`git tag v<version> && git push origin v<version>`) before the DMG
+goes out, and keep the repository public. `LICENSE` ships as `LICENSE.txt` in the app and the DMG, and the About panel
+shows the license notice.
+
 A notarization that ends in any status other than Accepted stops the script with the submission ID and the command
 that shows Apple's reasons: `xcrun notarytool log <id> --keychain-profile voiceislocal-notary`. Each submission
 usually takes a few minutes.
