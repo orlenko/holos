@@ -634,7 +634,10 @@ private final class Recorder {
             power?.detach()
             pendingSleepTokens.removeAll()
         }
-        lidOpen = power?.isLidOpen() ?? true
+        // Epoch 0 was planned before the speech sessions and permissions were set up. A plan that records the
+        // microphone counts as made with the lid open, so a lid that closed during that setup is caught as a closing
+        // on the first tick (and restarts without a built-in microphone that went silent).
+        lidOpen = plan.tracks.contains(TrackWatchdog.microphoneTrack) ? true : (power?.isLidOpen() ?? true)
         // Epoch 0's capture started just before the loop: its stall timers start now, at session time ~0.
         await apply(.captureStarted(epoch: 0, tracks: plan.tracks, at: clock.now(),
                                     lidClosed: plan.microphoneOffWithLidClosed))
