@@ -62,12 +62,12 @@ private func sessionImporterImport(_ file: URL, root: URL, speech: FakeSpeechFac
                                           makeSpeech: speech.factory, progress: progress)
 }
 
-/// Polls `condition` every 5 ms for up to 10 s.
+/// Polls `condition` every 5 ms on a 10 s `PollBudget`.
 private func sessionImporterEventually(_ condition: () async -> Bool) async -> Bool {
-    let deadline = ContinuousClock.now.advanced(by: .seconds(10))
-    while ContinuousClock.now < deadline {
+    var budget = PollBudget(timeout: .seconds(10))
+    while !budget.isSpent {
         if await condition() { return true }
-        try? await Task.sleep(for: .milliseconds(5))
+        await budget.poll()
     }
     return await condition()
 }

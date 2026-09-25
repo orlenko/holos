@@ -41,16 +41,46 @@ struct TemporaryDirectory: Sendable {
     func remove() { try? FileManager.default.removeItem(at: url) }
 }
 
-/// Polls `condition` every 5 ms until it holds or `timeout` passes, and returns its last value. The default is
-/// generous so a heavily loaded machine (many test runs in parallel) still passes; a condition that holds returns at
-/// once, so only a failing test waits that long.
+/// How long an `eventually` loop may keep polling. `timeout` is a budget of *polling* time, not of wall-clock
+/// time: when a 5 ms sleep returns far later than it asked for, the cooperative thread pool was starved, and the
+/// work the condition is waiting for was stalled exactly as hard as the poll was. Charging that overshoot to the
+/// budget is what made a loaded suite fail tests whose background work had simply not been given a thread yet —
+/// the whole suite finishes in about 45 s, and the tests in this family were failing after waiting 36-40 s of it,
+/// one of them having managed a single poll in 30 s. A stall costs the budget what the poll asked for, so the
+/// wait grows with the load instead of expiring under it; `hardDeadline` still ends a wait for something that is
+/// never coming.
+struct PollBudget {
+    static let interval = Duration.milliseconds(5)
+
+    private let clock = ContinuousClock()
+    private let hardDeadline: ContinuousClock.Instant
+    private let timeout: Duration
+    private var spent = Duration.zero
+
+    init(timeout: Duration) {
+        self.timeout = timeout
+        hardDeadline = ContinuousClock().now.advanced(by: max(timeout * 4, .seconds(60)))
+    }
+
+    var isSpent: Bool { spent >= timeout || clock.now >= hardDeadline }
+
+    /// Waits one interval and charges the budget for it, never more than four intervals of scheduling jitter.
+    mutating func poll() async {
+        let before = clock.now
+        try? await Task.sleep(for: Self.interval)
+        spent += min(before.duration(to: clock.now), Self.interval * 4)
+    }
+}
+
+/// Polls `condition` every 5 ms until it holds or the poll budget runs out, and returns its last value. The
+/// default budget is generous so a heavily loaded machine still passes; a condition that holds returns at once,
+/// so only a failing test waits that long.
 @MainActor
 func eventually(timeout: Duration = .seconds(30), _ condition: () -> Bool) async -> Bool {
-    let clock = ContinuousClock()
-    let deadline = clock.now.advanced(by: timeout)
-    while clock.now < deadline {
+    var budget = PollBudget(timeout: timeout)
+    while !budget.isSpent {
         if condition() { return true }
-        try? await Task.sleep(for: .milliseconds(5))
+        await budget.poll()
     }
     return condition()
 }

@@ -328,13 +328,12 @@ private final class CensusSpeech: LiveSpeechSession {
     #expect(census.count == 0)
 }
 
-/// Polls `condition` every 5 ms for up to 30 s (outside the main actor).
+/// Polls `condition` every 5 ms on a 30 s `PollBudget` (outside the main actor).
 private func eventuallyAsync(_ condition: @Sendable () -> Bool) async -> Bool {
-    let clock = ContinuousClock()
-    let deadline = clock.now.advanced(by: .seconds(30))
-    while clock.now < deadline {
+    var budget = PollBudget(timeout: .seconds(30))
+    while !budget.isSpent {
         if condition() { return true }
-        try? await Task.sleep(for: .milliseconds(5))
+        await budget.poll()
     }
     return condition()
 }

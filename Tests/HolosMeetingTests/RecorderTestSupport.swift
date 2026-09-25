@@ -181,14 +181,13 @@ func recorderLateSpeechFactory(_ speech: FakeSpeechFactory, after seconds: Doubl
     }
 }
 
-/// Polls the async `condition` every 5 ms until it holds or `timeout` passes, and returns its last value.
+/// Polls the async `condition` every 5 ms until it holds or its `PollBudget` runs out, and returns its last value.
 @MainActor
 func recorderEventually(timeout: Duration = .seconds(30), _ condition: () async -> Bool) async -> Bool {
-    let clock = ContinuousClock()
-    let deadline = clock.now.advanced(by: timeout)
-    while clock.now < deadline {
+    var budget = PollBudget(timeout: timeout)
+    while !budget.isSpent {
         if await condition() { return true }
-        try? await Task.sleep(for: .milliseconds(5))
+        await budget.poll()
     }
     return await condition()
 }

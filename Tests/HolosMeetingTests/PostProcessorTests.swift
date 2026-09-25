@@ -55,12 +55,12 @@ private func postProcessorExports(_ session: URL) -> [String] {
     ["md", "json", "txt"].filter { SessionFixtures.exists(SessionPaths.export($0, in: session)) }
 }
 
-/// Polls `condition` every 5 ms for up to 10 s.
+/// Polls `condition` every 5 ms on a 10 s `PollBudget`.
 private func postProcessorEventually(_ condition: @Sendable () -> Bool) async -> Bool {
-    let deadline = ContinuousClock.now.advanced(by: .seconds(10))
-    while ContinuousClock.now < deadline {
+    var budget = PollBudget(timeout: .seconds(10))
+    while !budget.isSpent {
         if condition() { return true }
-        try? await Task.sleep(for: .milliseconds(5))
+        await budget.poll()
     }
     return condition()
 }
