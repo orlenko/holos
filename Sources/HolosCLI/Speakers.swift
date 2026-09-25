@@ -330,15 +330,22 @@ struct Speakers: AsyncParsableCommand {
             let speakerID = try SpeakerCommand.speakerID(speaker, in: loaded.view)
             let profileID = try PeopleCommand.profileID(person, store: loaded.store)
             let action = SpeakerEditAction.rejectProfile(speakerID: speakerID, profileID: profileID)
-            if SpeakerEditor.changesNothing([action], on: loaded.view) {
-                Console.output("Nothing to change; the speaker labels already look like that.")
-                return
-            }
             let owners = SpeakerCommand.sampleOwners(loaded)
             let snapshot: SpeakerSessionSnapshot
             do {
-                snapshot = try VoiceProfileService.reject(session: loaded.session, speakerID: speakerID,
-                                                          profileID: profileID, view: loaded.view)
+                // Whether this changes nothing is decided on the meeting's current labels under the speaker lock,
+                // not on the loaded view: another window may have undone the rejection, or linked the speaker to
+                // the person, since the load.
+                guard let saved = try VoiceProfileService.reject(session: loaded.session, speakerID: speakerID,
+                                                                 profileID: profileID, view: loaded.view,
+                                                                 store: loaded.store) else {
+                    Console.output("Nothing to change; the speaker labels already look like that.")
+                    try await SpeakerCommand.finishChange(needsSampleRefresh: true, rewritingExports: false, loaded,
+                                                          owners: owners,
+                                                          diagnostics: loaded.snapshot.diagnostics)
+                    return
+                }
+                snapshot = saved
             } catch HolosError.incomplete(let message) {
                 // Saved, but the exports (rewritten by the editor here) or the reload failed.
                 try await SpeakerCommand.refreshAfterSavedChange(HolosError.incomplete(message), loaded,
@@ -468,8 +475,13 @@ enum SpeakerCommand {
                 actions, view: loaded.view, session: loaded.session, source: source, regenerateExports: false,
                 profileNames: loaded.people, profiles: loaded.store) else {
                 Console.output("Nothing to change; the speaker labels already look like that.")
+                // An earlier run of this same change may have saved its edit and then failed to bring this
+                // meeting's samples in step, which would leave a voiceprint holding speech the edit moved to
+                // someone else. Repeating the change lands here, so the refresh runs from here too; it is decided
+                // by input digests, so it costs nothing when the samples are already in step.
                 // The editor found the current labels as loaded, so the loaded snapshot's warnings still hold.
-                printNotes(loaded.snapshot.diagnostics)
+                try await finishChange(needsSampleRefresh: true, rewritingExports: false, loaded, owners: owners,
+                                       diagnostics: loaded.snapshot.diagnostics)
                 return
             }
             result = saved

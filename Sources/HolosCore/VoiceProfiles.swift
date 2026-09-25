@@ -64,8 +64,10 @@ public struct SpeakerProfile: Codable, Sendable, Equatable, Identifiable {
     public var recognitionEnabled: Bool
     /// At most one per sessionID; may be empty.
     public var samples: [VoiceprintSample]
-    /// Set while this person exists only for a link that has not been saved yet, and cleared in the locked step
-    /// that saves one (`SpeakerEditor.claimPeople`). A link that is then refused takes back only a person who is
+    /// Set while this person exists only for a link that has not been saved yet. It is cleared by any store write
+    /// that changes them (`SpeakerProfileStore.update`), and by the operations that take a person up without
+    /// necessarily changing anything about them: a merge into them, a rename, a suggestions setting, and the
+    /// link's own claim (`SpeakerEditor.claimPeople`). A link that is then refused takes back only a person who is
     /// still provisional, so one another window has linked meanwhile is never removed. It is an explicit state
     /// rather than a comparison of `createdAt` and `lastUsedAt`, which `HolosJSON` stores to the second and which
     /// two windows can therefore share. Absent (nil) in stores written by an earlier Holos, and in every person
@@ -150,6 +152,19 @@ public struct SpeakerProfileDatabase: Codable, Sendable, Equatable {
     /// A change that saved new thresholds itself (`calibrate --apply`) is left alone. Returns whether it cleared
     /// anything. `SpeakerProfileStore.update` calls this on every write, inside the same locked update.
     @discardableResult
+    /// Clears `provisional` on every person this write changed, keeping it only on those it left exactly as they
+    /// were. A person created by this write keeps whatever it was created with.
+    public mutating func clearProvisionalOfChangedProfiles(since before: SpeakerProfileDatabase) {
+        guard profiles.contains(where: { $0.provisional == true }) else { return }
+        let earlier = Dictionary(before.profiles.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        for index in profiles.indices where profiles[index].provisional == true {
+            guard let was = earlier[profiles[index].id] else { continue }
+            var now = profiles[index]
+            now.provisional = was.provisional
+            if now != was { profiles[index].provisional = nil }
+        }
+    }
+
     public mutating func resetCalibrationIfSamplesChanged(since before: SpeakerProfileDatabase,
                                                           now: Date = Date()) -> Bool {
         guard calibratedThresholds != nil || calibratedModel != nil,

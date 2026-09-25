@@ -131,6 +131,11 @@ public struct SpeakerProfileStore: Sendable {
     /// nothing), lets `body` change it, validates the result (`validate`), and writes it atomically when it changed.
     /// Nothing is written when the read, `body`, or the validation throws.
     ///
+    /// A person `body` changed in any way stops being `provisional` in the same write: the flag means "created for
+    /// a link that has not been saved and that nothing has touched since", so any operation that takes the person
+    /// up — a link's claim, a merge into them, a rename, a setting — ends it, and a refused link never takes back
+    /// a person another window has adopted.
+    ///
     /// When `body` changed the voice-sample population (a sample learned, refreshed, merged, or forgotten, or a
     /// model changed), the calibration is cleared in this same write
     /// (`SpeakerProfileDatabase.resetCalibrationIfSamplesChanged`): thresholds measured on other samples no longer
@@ -140,6 +145,7 @@ public struct SpeakerProfileStore: Sendable {
             var database = try load()
             let before = database
             let result = try body(&database)
+            database.clearProvisionalOfChangedProfiles(since: before)
             if database.resetCalibrationIfSamplesChanged(since: before) {
                 Self.log.notice("The voice samples changed, so the recognition calibration was reset")
             }

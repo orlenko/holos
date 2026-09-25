@@ -365,7 +365,12 @@ final class MeetingsWindow: NSObject, NSWindowDelegate, NSTableViewDataSource, N
         Task { [weak self] in
             let failure = await Task.detached { () -> String? in
                 do {
-                    let data = try SessionExports.render(format, session: session)
+                    // People's current names, and "Remember voices": off means the kept voice samples, and the
+                    // suggestions made from them, are not used, so this export names nobody automatically.
+                    let store = SpeakerProfileStore()
+                    let data = try SessionExports.render(
+                        format, session: session, profileNames: VoiceProfileService.profileNames(store: store),
+                        applyRecognition: VoiceProfileService.recognitionAllowed(store: store))
                     let target = destination.deletingLastPathComponent().resolvingSymlinksInPath()
                         .appendingPathComponent(destination.lastPathComponent)
                     try AtomicFile.write(data, to: target, permissions: 0o600)

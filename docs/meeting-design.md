@@ -3414,8 +3414,10 @@ public struct SpeakerProfileDatabase: Codable, Sendable, Equatable {
     and its `stored` line makes the next run sweep once more, which forgets slightly more
     than it had to, never less.
   - The `stored` line also records the person the meetings are cleaned of: for a `.sample`
-    forget, the person the store write found the sample under, which a merge may have
-    changed since the tombstone was written.
+    or `.profile` forget, the person the store write found the listed samples under, which
+    a merge may have changed since the tombstone was written. Cleaning with the tombstone's
+    own ID would then miss the person the samples moved to, whose matches a merge has
+    already retargeted.
   - Compaction keeps a `stored` line while its tombstone is kept, and, like an unmatched
     `done` line, whenever some line cannot be read here: that tombstone may be one of them
     (a newer Holos's forget kind), and dropping its marker would have that Holos run its
@@ -3457,7 +3459,10 @@ public struct SpeakerProfileDatabase: Codable, Sendable, Equatable {
   together. A `stored` line is appended only once the store write has committed, and
   nothing is retargeted without it: the record is written before that write, so a merge
   refused there (samples of different speaker models) or lost to a crash leaves a record
-  that a resume drops rather than acts on. Unlike a forget, this never deletes what it
+  that a resume drops rather than acts on. Which of the two it was comes from the store,
+  not from the missing marker: the merge committed exactly when the source is gone and the
+  target is there, and a resume that finds that state writes the marker the crash cost it
+  and finishes the meetings. Unlike a forget, this never deletes what it
   cannot read: a meeting whose manifest is unreadable is skipped, and a recognition result
   that cannot be read keeps the record pending for a Holos that can read it. The exports
   of every meeting that has recognition results and generated exports are rewritten, not
@@ -3467,7 +3472,19 @@ public struct SpeakerProfileDatabase: Codable, Sendable, Equatable {
   `retargetingProfilesJoinsWhatTheMergeMadeTheSamePerson`,
   `aMergeWhoseStoreWriteNeverHappenedIsDroppedNotReplayed`,
   `aMergeStaysPendingWhenAMeetingsRecognitionCannotBeRead`,
-  `aMergeStaysPendingUntilTheExportsAreRewritten`.
+  `aMergeStaysPendingUntilTheExportsAreRewritten`,
+  `aMergeThatCommittedBeforeItsMarkerIsStillFinished`, `aPersonAMergeAdoptedIsNotRolledBack`,
+  `forgettingAPersonFollowsTheirSamplesThroughAMerge`.
+- **A no-op is decided on the current labels, and still finishes what an earlier run
+  left.** `SpeakerEditor.applyUnlessUnchanged` makes that decision under the speaker lock,
+  and linking, `speakers reject` (`VoiceProfileService.reject`, which returns nil for it)
+  and the other `holos speakers` commands all go through it rather than testing the
+  caller's view. A confirmed no-op then still runs the sample refresh, because the run
+  before it may have saved its edit and failed to bring the samples in step, which would
+  leave a voiceprint holding speech the edit moved to someone else; the refresh is decided
+  by input digests, so it costs nothing when they are already in step. Tests (PR10):
+  `aRejectionThatChangesNothingIsDecidedOnTheCurrentLabels`; the CLI half has no test
+  target (`HolosCLI`).
 - **A link is saved against the people and the labels as they are at the write.** The
   batch's people are checked and marked used under `profiles.lock`, inside the meeting's
   speaker lock, immediately before the lines are appended
@@ -3478,8 +3495,11 @@ public struct SpeakerProfileDatabase: Codable, Sendable, Equatable {
   changes nothing appends no line, so it is checked against the meeting's current labels
   under the speaker lock instead of being reported as success. A person created for a link
   that is then refused is taken back only while nobody has taken them up: no samples, and
-  still `provisional`, the state such a person is created with and that the locked step of
-  a saved link clears. The state is explicit because `HolosJSON` stores dates to the
+  still `provisional`, the state such a person is created with. It is cleared by any store
+  write that changes them, and by the operations that take a person up without necessarily
+  changing anything about them: a merge into them (the target of a merge from a person
+  with no samples can come out byte for byte the same), a rename, a suggestions setting,
+  and the locked claim of a saved link. The state is explicit because `HolosJSON` stores dates to the
   second, so `createdAt` and `lastUsedAt` cannot tell a person another window linked
   inside that second from one nobody has touched. Tests (PR10): `anEditIsRefusedWhenThePersonItLinksIsGone`,
   `aLinkThatChangesNothingIsRefusedWhenAnotherWindowChangedIt`,
@@ -3493,7 +3513,8 @@ public struct SpeakerProfileDatabase: Codable, Sendable, Equatable {
   no suggestion and no automatic name, in the review window, the CLI, or the exports. The
   callers that read the people store pass `VoiceProfileService.recognitionAllowed` (the
   editor's reload and export rewrite, the forget and merge export rewrites,
-  post-processing's export write, `holos speakers`, `holos session export`). Nothing is
+  post-processing's export write, `holos speakers`, `holos session export`, the Meetings
+  window's Save As, and `VoiceProfileService.reject`, which takes the store for it). Nothing is
   deleted, so turning the setting back on brings the suggestions back. Names are not
   governed by the setting, as they never were. Test (PR10):
   `keptSamplesAreNotUsedWhileRememberVoicesIsOff`.

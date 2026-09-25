@@ -2118,3 +2118,98 @@ func keptSamplesAreNotUsedWhileRememberVoicesIsOff() async throws {
     try VoiceProfileService.setRemember(true, forgetExisting: false, store: store, sessionsRoot: temp.url)
     #expect(try suggestion()?.profileName == "Jim")
 }
+
+@Test(.timeLimit(.minutes(1)))
+func aMergeThatCommittedBeforeItsMarkerIsStillFinished() async throws {
+    let temp = try TemporaryDirectory("profiles")
+    defer { temp.remove() }
+    let store = profileStore(temp)
+    let (session, runID, jim) = try await profileForgetFixture(temp, store: store)
+    try store.update { $0.profiles.append(SpeakerProfile(id: "MARIA", displayName: "Maria")) }
+    // The crash window on the other side of the store write: the merge committed, the process went before its
+    // `stored` line. The journal alone cannot tell this from a merge that was refused; the store can.
+    let record = ForgetRecord(kind: .merge, profileID: jim, targetProfileID: "MARIA")
+    try store.appendForgetRecord(record)
+    try store.update { database in
+        let samples = database.profiles.first { $0.id == jim }?.samples ?? []
+        database.profiles.removeAll { $0.id == jim }
+        guard let target = database.profiles.firstIndex(where: { $0.id == "MARIA" }) else { return }
+        database.profiles[target].samples = samples
+        database.profiles[target].embeddingModel = profileModel
+    }
+
+    try VoiceProfileService.resumePendingForgets(store: store, sessionsRoot: temp.url)
+
+    #expect(try SessionSpeakerStore.readRecognition(runID: runID, session: session)?.matches.first?.profileID
+            == "MARIA", "The meetings are finished, not dropped: the merge did happen.")
+    #expect(try store.pendingForgets().isEmpty, "And it is finished, not left behind.")
+}
+
+@Test func aPersonAMergeAdoptedIsNotRolledBack() throws {
+    let temp = try TemporaryDirectory("profiles")
+    defer { temp.remove() }
+    let store = profileStore(temp)
+    // Created for a link that has not been saved, as `link(to: .new)` creates one.
+    try store.update {
+        $0.profiles = [SpeakerProfile(id: "FRESH", displayName: "Fresh", provisional: true),
+                       SpeakerProfile(id: "OLD", displayName: "Old")]
+    }
+    // Another window merges an existing person into them: adoption without any link.
+    try VoiceProfileService.merge(profileID: "OLD", into: "FRESH", store: store, sessionsRoot: temp.url)
+    #expect(try store.load().profiles.first?.provisional == nil,
+            "Any write that changes the person ends the provisional state, not only a link's claim.")
+
+    VoiceProfileService.rollBack(["FRESH"], store: store)
+
+    #expect(try store.load().profiles.map(\.id) == ["FRESH"],
+            "Removing them would have lost both people: the merge already took the other one away.")
+}
+
+@Test(.timeLimit(.minutes(1)))
+func forgettingAPersonFollowsTheirSamplesThroughAMerge() async throws {
+    let temp = try TemporaryDirectory("profiles")
+    defer { temp.remove() }
+    let store = profileStore(temp)
+    let (session, runID, jim) = try await profileForgetFixture(temp, store: store)
+    _ = try await VoiceProfileService.link(session: session, speakerID: "mic:S2", to: .new(name: "Maria"),
+                                           view: try profileView(session, store: store), learnVoice: true,
+                                           extractor: ProfileFakeExtractor(), store: store)
+    let maria = try #require(try store.load().profiles.first { $0.displayName == "Maria" }?.id)
+    let samples = try #require(try store.load().profiles.first { $0.id == jim }?.samples.map(\.id))
+
+    // The tombstone was listed while the samples were Jim's; the merge moved them to Maria before the store write.
+    let stale = ForgetRecord(kind: .profile, profileID: jim, sampleIDs: samples,
+                             sessionIDs: [try profileManifestID(session)])
+    try store.appendForgetRecord(stale)
+    try VoiceProfileService.merge(profileID: jim, into: maria, store: store, sessionsRoot: temp.url)
+    try VoiceProfileService.perform(stale, store: store, sessionsRoot: temp.url)
+
+    // Cleanup followed the samples to Maria, so her entries went too. With the tombstone's stale ID, the match the
+    // merge had already pointed at her would have survived its only supporting sample being forgotten.
+    let voice = try #require(try SessionSpeakerStore.readVoiceData(runID: runID, session: session))
+    #expect(voice.centroids.isEmpty)
+    #expect(try SessionSpeakerStore.readRecognition(runID: runID, session: session)?.matches.isEmpty == true)
+    #expect(try store.storedForget(stale.id)?.profileID == maria)
+    #expect(try store.pendingForgets().isEmpty)
+}
+
+@Test(.timeLimit(.minutes(1)))
+func aRejectionThatChangesNothingIsDecidedOnTheCurrentLabels() async throws {
+    let temp = try TemporaryDirectory("profiles")
+    defer { temp.remove() }
+    let store = profileStore(temp)
+    let (session, _, jim) = try await profileForgetFixture(temp, store: store)
+
+    let first = try VoiceProfileService.reject(session: session, speakerID: "mic:S2", profileID: jim,
+                                               view: try profileView(session, store: store), store: store)
+    #expect(first != nil, "The first rejection is saved.")
+    let again = try VoiceProfileService.reject(session: session, speakerID: "mic:S2", profileID: jim,
+                                               view: try profileView(session, store: store), store: store)
+    #expect(again == nil, "Repeating it changes nothing, and the editor says so from the current labels.")
+
+    // With Remember voices off, the labels this returns carry no automatic name either: it passes the store.
+    try VoiceProfileService.setRemember(false, forgetExisting: false, store: store, sessionsRoot: temp.url)
+    let saved = try VoiceProfileService.reject(session: session, speakerID: "mic:S1", profileID: jim,
+                                               view: try profileView(session, store: store), store: store)
+    #expect(saved?.recognition == nil, "Kept samples are not used while Remember voices is off.")
+}

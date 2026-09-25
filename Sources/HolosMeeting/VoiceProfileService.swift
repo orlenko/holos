@@ -108,12 +108,16 @@ public enum VoiceProfileService {
     /// caller then awaits `refreshSamples` (which does nothing when no sample is affected), or, when this throws
     /// `HolosError.incomplete` (the rejection was saved, then reloading or the exports failed),
     /// `refreshSamples(afterSaving:session:extractor:store:)`.
-    public static func reject(session: URL, speakerID: String, profileID: String,
-                              view: SpeakerProjection) throws -> SpeakerSessionSnapshot {
-        let result = try SpeakerEditor.apply([.rejectProfile(speakerID: speakerID, profileID: profileID)], view: view,
-                                             session: session, source: editSource,
-                                             profileNames: profileNames(store: SpeakerProfileStore()))
-        return result.snapshot
+    ///
+    /// Nil when the meeting's current labels already say this, decided by the editor under the speaker lock rather
+    /// than on the caller's view: another window may have undone this rejection, or linked the speaker to the
+    /// person, since the view was made, and reporting success then would leave the match or link in place.
+    public static func reject(session: URL, speakerID: String, profileID: String, view: SpeakerProjection,
+                              store: SpeakerProfileStore = SpeakerProfileStore()) throws -> SpeakerSessionSnapshot? {
+        let result = try SpeakerEditor.applyUnlessUnchanged(
+            [.rejectProfile(speakerID: speakerID, profileID: profileID)], view: view, session: session,
+            source: editSource, profileNames: profileNames(store: store), profiles: store)
+        return result?.snapshot
     }
 
     /// After an edit in a meeting that contributed samples: recomputes each person's sample from this meeting whose
@@ -176,6 +180,7 @@ public enum VoiceProfileService {
         try store.update { database in
             let index = try profileIndex(profileID, in: database)
             database.profiles[index].recognitionEnabled = on
+            database.profiles[index].provisional = nil
         }
     }
 
@@ -186,6 +191,7 @@ public enum VoiceProfileService {
         try store.update { database in
             let index = try profileIndex(profileID, in: database)
             database.profiles[index].displayName = clean
+            database.profiles[index].provisional = nil
         }
     }
 
@@ -227,6 +233,9 @@ public enum VoiceProfileService {
             }
             if into.embeddingModel == nil { into.embeddingModel = from.embeddingModel }
             if into.samples.isEmpty { into.embeddingModel = nil }
+            // The target is taken up by this merge whether or not anything about them changes (a person with no
+            // samples can leave every field as it was), so a link that is refused later must not take them back.
+            into.provisional = nil
             into.isSelf = into.isSelf || from.isSelf
             into.createdAt = min(into.createdAt, from.createdAt)
             into.lastUsedAt = max(into.lastUsedAt, from.lastUsedAt)
@@ -245,12 +254,19 @@ public enum VoiceProfileService {
     private static func retargetMeetings(_ record: ForgetRecord, store: SpeakerProfileStore,
                                          sessionsRoot: URL) throws {
         guard let from = record.profileID, let to = record.targetProfileID else { return }
-        guard try store.storedForget(record.id) != nil else {
-            // The store write never committed (refused, or lost to a crash), so these two are still two people and
-            // nothing may be pointed from one to the other.
-            log.notice("Dropped a merge whose store write never happened")
-            try store.appendForgetRecord(.done(record.id))
-            return
+        if try store.storedForget(record.id) == nil {
+            // No marker: the store write either never committed (the merge was refused, or the process went before
+            // it) or committed and the process went before the marker. The store itself says which, and it is the
+            // authority here: the merge committed exactly when the source is gone and the target is there.
+            let database = try store.load()
+            let ids = Set(database.profiles.map(\.id))
+            guard !ids.contains(from), ids.contains(to) else {
+                log.notice("Dropped a merge whose store write never happened")
+                try store.appendForgetRecord(.done(record.id))
+                return
+            }
+            // It did commit; write the marker the crash cost it and carry on with the meetings.
+            try store.appendForgetRecord(.stored(record.id))
         }
         var failed = 0
         for session in try sessionFolders(sessionsRoot) {
@@ -948,6 +964,8 @@ public enum VoiceProfileService {
         let sessionIDs = Set(record.sessionIDs ?? [])
         let stored = try store.storedForget(record.id)
         var removed = 0
+        /// The person the meetings are cleaned of. The tombstone's until the store write finds the samples under
+        /// someone else (a merge since it was written), and then that person's.
         var owner = stored?.profileID ?? record.profileID
         if stored == nil {
             var found: String?
@@ -957,9 +975,11 @@ public enum VoiceProfileService {
                 if kind == .profile, let profileID = record.profileID {
                     database.profiles.removeAll { $0.id == profileID }
                 }
-                // The person the sample is under now, read in the write that removes it: a merge since the tombstone
-                // was written moves a sample to the person it was merged into.
-                if kind == .sample {
+                // The person the samples are under now, read in the write that removes them: a merge since the
+                // tombstone was written moves them to the person it was merged into, and the meetings are then
+                // cleaned of that person. Both scopes that name a person need this; `.session` and `.all` clean
+                // every meeting whole and name nobody.
+                if kind == .sample || kind == .profile {
                     found = database.profiles.first { $0.samples.contains { sampleIDs.contains($0.id) } }?.id
                 }
                 let inScope: (VoiceprintSample) -> Bool = { sample in
