@@ -41,6 +41,29 @@ import Testing
     #expect(pick([]) == "en-CA")
 }
 
+@Test func languageIsUnknownUntilTheSupportedListLoadsUnlessSaved() {
+    func resolve(_ saved: String?, _ supported: [String]?) -> String? {
+        DictationLanguage.resolved(saved: saved, supported: supported, preferredLanguages: ["fr-CA"], region: "CA")
+    }
+    // Not loaded yet: a saved choice stands; the default is not known (not en-CA).
+    #expect(resolve(nil, nil) == nil)
+    #expect(resolve("", nil) == nil)
+    #expect(resolve("de-DE", nil) == "de-DE")
+    // Loaded: the default follows the preferred languages; a failed load (empty) falls back to en-CA.
+    #expect(resolve(nil, ["en_CA", "fr_CA"]) == "fr-CA")
+    #expect(resolve(nil, []) == "en-CA")
+    #expect(resolve("de-DE", ["en_CA", "fr_CA"]) == "de-DE")
+}
+
+@Test func meetingLanguagesDefaultToTheDictationLanguageOnceKnown() {
+    #expect(DictationLanguage.meetingLocales(saved: ["es-MX"], dictation: nil) == ["es-MX"])
+    #expect(DictationLanguage.meetingLocales(saved: ["", "es-MX"], dictation: "fr-CA") == ["es-MX"])
+    #expect(DictationLanguage.meetingLocales(saved: [""], dictation: "fr-CA") == ["fr-CA"])
+    #expect(DictationLanguage.meetingLocales(saved: nil, dictation: "fr-CA") == ["fr-CA"])
+    #expect(DictationLanguage.meetingLocales(saved: [], dictation: nil) == nil)
+    #expect(DictationLanguage.meetingLocales(saved: nil, dictation: nil) == nil)
+}
+
 @Test func dictationLanguageNamesAndCodes() {
     let display = Locale(identifier: "en-US")
     #expect(DictationLanguage.name(of: "fr-CA", in: display) == "French (Canada)")

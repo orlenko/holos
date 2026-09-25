@@ -106,7 +106,9 @@ Result: Pending.
 ### Meeting language
 
 1. With no meeting language chosen yet (`defaults delete ca.orlenko.holos.app meetingLocales`),
-   open the start panel: the Language pop-up shows the dictation language.
+   open the start panel: the Language pop-up shows the dictation language. Right after launch,
+   before the supported languages load, the line reads "Finding the meeting language…" and
+   Start stays off until the pop-up fills in.
 2. Choose French (Canada) (or another language whose speech model is not installed). The panel
    says the speech model is not installed and offers **Install…**; nothing downloads until you
    click it. Click it: the line says it is installing, then "Speech model ready".

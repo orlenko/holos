@@ -121,26 +121,31 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
     private var assetState: String?
     private var shortcut: HotkeyChoice = .rightOption
     /// The dictation language, chosen in Setup or the menu; until then, the supported one closest to the user's
-    /// languages (`defaultLanguage`). Meetings keep their own (`meetingLocales`).
+    /// languages (`DictationLanguage.preferred`). Meetings keep their own (`meetingLocales`). Shown as
+    /// `DictationLanguage.standard` while that default is not known yet (`resolvedLocale` nil): an action that uses
+    /// the language (enabling dictation, installing its speech model) awaits `loadLanguages` first.
     private var locale: String {
-        get { UserDefaults.standard.string(forKey: "dictationLocale") ?? defaultLanguage }
+        get { resolvedLocale ?? DictationLanguage.standard }
         set { UserDefaults.standard.set(newValue, forKey: "dictationLocale") }
     }
+    /// The dictation language, or nil while there is no saved choice and the supported languages have not loaded.
+    private var resolvedLocale: String? {
+        DictationLanguage.resolvedForSystem(saved: UserDefaults.standard.string(forKey: "dictationLocale"),
+                                            supported: supportedLocales)
+    }
     /// The meeting languages chosen in the meeting start panel (exactly one today; the recorder transcribes in the
-    /// first); until then, the dictation language.
-    var meetingLocales: [String] {
+    /// first); until then, the dictation language. Nil while that is not known yet (`resolvedLocale`): the start
+    /// panel keeps Start off until it is.
+    var meetingLocales: [String]? {
         get {
-            let saved = UserDefaults.standard.stringArray(forKey: MeetingAppState.localesKey)?.filter { !$0.isEmpty }
-            if let saved, !saved.isEmpty { return saved }
-            return [locale]
+            DictationLanguage.meetingLocales(
+                saved: UserDefaults.standard.stringArray(forKey: MeetingAppState.localesKey), dictation: resolvedLocale)
         }
         set { UserDefaults.standard.set(newValue, forKey: MeetingAppState.localesKey) }
     }
-    /// The supported language closest to the user's preferred languages; `DictationLanguage.standard` until the
-    /// supported languages are loaded, or when none of the user's is supported.
-    private var defaultLanguage: String { DictationLanguage.preferredForSystem(supported: supportedLocales) }
-    /// The languages Apple's speech transcriber supports; empty until loaded.
-    private var supportedLocales: [String] = []
+    /// The languages Apple's speech transcriber supports; nil until a load finished, empty when it failed (the
+    /// default is then `DictationLanguage.standard`, and the next `loadLanguages` tries again).
+    private var supportedLocales: [String]?
     /// The same, grouped for a picker (`DictationLanguage.groups`).
     private(set) var localeGroups: [[String]] = []
     private var languagesTask: Task<Void, Never>?
@@ -413,18 +418,19 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
     }
 
     /// Loads the languages Apple's speech transcriber supports, for Setup, the menu, the meeting start panel, and the
-    /// default language; returns once they are loaded (or could not be). Loads them once.
+    /// default language; returns once they are loaded (or could not be: the default is then
+    /// `DictationLanguage.standard`, and a later call tries again). Loads them once.
     func loadLanguages() async {
-        guard supportedLocales.isEmpty else { return }
+        if let supportedLocales, !supportedLocales.isEmpty { return }
         if let languagesTask { return await languagesTask.value }
         let task = Task { [weak self] in
             let supported = await AppleSpeechEngine.capabilities(backend: .speech).supportedLocales
             guard let self else { return }
             self.languagesTask = nil
-            guard !supported.isEmpty else { return }
             let before = self.locale
+            // Also when empty: the default is then known to be `standard`, so what waited for it can go on.
             self.supportedLocales = supported
-            self.localeGroups = DictationLanguage.groups(supported)
+            if !supported.isEmpty { self.localeGroups = DictationLanguage.groups(supported) }
             // The default language may have changed from the provisional one; enabling uses the new one.
             if self.locale != before {
                 self.assetState = nil
@@ -1129,11 +1135,19 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
     private func installAssets() {
         guard !installingAssets, !isBusy, !enabled, !enabling else { return }
         installingAssets = true  // also keeps the language from changing until the install ends
-        let locale = locale
-        let name = languageName
-        show("Installing the speech model for \(name) — this may download Apple's model")
+        updateSetupWindow()
         assetTask = Task { [weak self] in
             guard let self else { return }
+            // Without a saved choice the language is the default one, known once the languages are loaded: installing
+            // before then would install `DictationLanguage.standard` for a user whose language is another.
+            await self.loadLanguages()
+            guard !Task.isCancelled else {
+                self.installingAssets = false
+                return
+            }
+            let locale = self.locale
+            let name = self.languageName
+            self.show("Installing the speech model for \(name) — this may download Apple's model")
             do {
                 try await AppleSpeechEngine.installAssets(locale: locale, backend: .speech)
                 self.installingAssets = false

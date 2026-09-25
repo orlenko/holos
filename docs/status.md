@@ -13,6 +13,7 @@ Hardware-facing and cross-app acceptance remain pending.
   `record start`, and `session import` use the supported locale closest to the macOS
   preferred languages and region (`en-CA` when none is supported), and
   `session retranscribe` uses the locale the session was recorded with.
+  `doctor --json` names the locale its asset statuses describe (`locale`).
 - `transcribe` processes a local audio file using Apple's Speech framework. It can
   print finalized timestamped segments, emit JSON, or write JSON to a new file.
 - `record start` captures microphone, system audio, or both into a `.holos` session
@@ -213,7 +214,9 @@ Hardware-facing and cross-app acceptance remain pending.
   assets, and enables the chosen
   hold-to-talk shortcut. Right Option is the default choice, with
   Control–Option–Space available instead. It previews speech and finalizes on
-  release; Esc cancels even during finalization.
+  release; Esc cancels even during finalization. Until the default language is
+  known (the supported list loads just after launch), installing its speech model
+  and enabling dictation wait for it, and the meeting start panel keeps Start off.
 - The app attempts one direct `AXSelectedText` insertion only into a writable,
   non-secure text field whose focus, selection, and nearby text still match the
   key-down snapshot. Unsupported or changed targets retain the result for explicit

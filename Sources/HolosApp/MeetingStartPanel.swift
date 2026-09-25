@@ -326,7 +326,9 @@ final class MeetingStartPanel: NSObject, NSWindowDelegate {
             }
         }
         let speechLine = (speechLabel.stringValue, speechInstallButton.isHidden)
-        refreshLanguage(current)
+        // No language yet: the default one is known once the supported languages load (`languagesChanged`), and a
+        // meeting started before then would be transcribed in `DictationLanguage.standard`.
+        if !refreshLanguage(current) { allowed = false }
         // The speech model's line arrives after the panel is shown and can wrap onto a second line: fit the window
         // to it, as for the echo row.
         if positioned, speechLine != (speechLabel.stringValue, speechInstallButton.isHidden) {
@@ -336,8 +338,9 @@ final class MeetingStartPanel: NSObject, NSWindowDelegate {
     }
 
     /// The language popup, and whether the chosen language's speech model is installed. A missing model does not
-    /// block Start (the audio is still saved); it is installed only when the user clicks Install.
-    private func refreshLanguage(_ current: Environment) {
+    /// block Start (the audio is still saved); it is installed only when the user clicks Install. False while there is
+    /// no language yet (the app is still finding the default one).
+    private func refreshLanguage(_ current: Environment) -> Bool {
         var groups = current.languages
         if let chosen = chosenLocales.first, !groups.joined().contains(chosen) { groups.insert([chosen], at: 0) }
         if groups != shownLanguages {
@@ -353,9 +356,10 @@ final class MeetingStartPanel: NSObject, NSWindowDelegate {
             }
         }
         guard let locale = chosenLocales.first else {
-            speechLabel.stringValue = ""
+            speechLabel.stringValue = "Finding the meeting language…"
+            speechLabel.textColor = .secondaryLabelColor
             speechInstallButton.isHidden = true
-            return
+            return false
         }
         if languagePopup.selectedItem?.representedObject as? String != locale {
             languagePopup.selectItem(at: languagePopup.indexOfItem(withRepresentedObject: locale))
@@ -368,13 +372,13 @@ final class MeetingStartPanel: NSObject, NSWindowDelegate {
             speechLabel.stringValue = "Installing the speech model for \(name)…"
             speechLabel.textColor = .secondaryLabelColor
             speechInstallButton.isHidden = false
-            return
+            return true
         }
         let state = current.speechModels[locale]
         if state != "installed", state != nil, let error = current.speechInstallErrors[locale] {
             speechLabel.stringValue = "Speech model not installed: \(error)"
             speechInstallButton.isHidden = false
-            return
+            return true
         }
         switch state {
         case "installed":
@@ -396,6 +400,7 @@ final class MeetingStartPanel: NSObject, NSWindowDelegate {
             speechLabel.stringValue = "Checking the speech model…"
             speechLabel.textColor = .secondaryLabelColor
         }
+        return true
     }
 
     /// "Any app" and the running apps with a bundle ID, plus a saved app that is not running.

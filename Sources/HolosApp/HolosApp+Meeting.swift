@@ -456,7 +456,9 @@ extension HolosAppDelegate: NSMenuDelegate {
         setDockPresence(true, for: "start")
         meeting.startPanel?.show(
             name: MeetingStartSettings.defaultName(now: Date(), timeZone: .current), saved: saved,
-            locales: meetingLocales, consentDismissed: UserDefaults.standard.bool(forKey: MeetingAppState.consentKey))
+            // No languages yet while the default one is not known: the panel keeps Start off until they arrive.
+            locales: meetingLocales ?? [],
+            consentDismissed: UserDefaults.standard.bool(forKey: MeetingAppState.consentKey))
         if localeGroups.isEmpty { Task { await loadLanguages() } }
         if meeting.speakerModels != "verified" { refreshSpeakerModels() }
     }
@@ -474,6 +476,10 @@ extension HolosAppDelegate: NSMenuDelegate {
     /// Starts from the panel; returns the error text to show there, or nil once the recorder is starting.
     private func startMeeting(_ settings: MeetingStartSettings, hideConsentReminder: Bool) -> String? {
         guard let controller = meeting.controller else { return "Meetings are not available." }
+        // The panel keeps Start off until it has a language; without one the recorder would take its own default.
+        guard !settings.normalized().locales.isEmpty else {
+            return "Still finding the meeting language; try again in a moment."
+        }
         meeting.notice = nil
         do {
             try controller.start(settings)

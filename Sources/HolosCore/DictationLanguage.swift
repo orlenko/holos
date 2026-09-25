@@ -33,6 +33,30 @@ public enum DictationLanguage {
                   region: Locale.current.region?.identifier)
     }
 
+    /// The dictation language: the saved choice, else the default (`preferred`). Nil while the default is not known
+    /// yet (`supported` nil: the supported languages have not loaded), so an action that uses the language (an
+    /// install, a meeting start) waits instead of taking `standard` for a user whose language is another. An empty
+    /// `supported` (the list could not be loaded) gives `standard`.
+    public static func resolved(saved: String?, supported: [String]?, preferredLanguages: [String],
+                                region: String? = nil) -> String? {
+        if let saved, !saved.isEmpty { return saved }
+        guard let supported else { return nil }
+        return preferred(supported: supported, preferredLanguages: preferredLanguages, region: region)
+    }
+
+    /// `resolved` for this Mac: the user's preferred languages and region.
+    public static func resolvedForSystem(saved: String?, supported: [String]?) -> String? {
+        resolved(saved: saved, supported: supported, preferredLanguages: Locale.preferredLanguages,
+                 region: Locale.current.region?.identifier)
+    }
+
+    /// The meeting languages: the saved ones (blanks left out), else the dictation language (`resolved`); nil while
+    /// that is not known yet.
+    public static func meetingLocales(saved: [String]?, dictation: String?) -> [String]? {
+        if let saved = saved?.filter({ !$0.isEmpty }), !saved.isEmpty { return saved }
+        return dictation.map { [$0] }
+    }
+
     /// A locale identifier's language, script (filled in when implied: "zh-CN" is Hans), and region.
     private struct Tag {
         var language: String

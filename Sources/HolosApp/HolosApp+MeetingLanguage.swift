@@ -15,10 +15,10 @@ extension HolosAppDelegate {
         environment.speechInstallErrors = meeting.speechModelErrors
     }
 
-    /// The supported languages loaded (`loadLanguages`): the start panel fills its popup, and takes the default
-    /// language if it opened before it was known.
+    /// The supported languages loaded, or could not be (`loadLanguages`): the start panel fills its popup, and takes
+    /// the default language if it opened before it was known (it keeps Start off until then).
     func languagesLoaded() {
-        meeting.startPanel?.languagesChanged(to: meetingLocales)
+        meeting.startPanel?.languagesChanged(to: meetingLocales ?? [])
         meeting.startPanel?.refresh()
     }
 
