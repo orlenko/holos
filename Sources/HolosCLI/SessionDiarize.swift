@@ -14,12 +14,17 @@ extension Session {
                 Exits 0 when speakers were labelled, 3 when the exports were written but speaker labelling was \
                 skipped or failed (the reason is printed), and 1 when nothing could be done. Needs the speaker \
                 models (voiceislocal setup --speakers). Edited speaker labels are kept unless --force is given; names carry \
-                over to the new labels.
+                over to the new labels. For a meeting in several languages, a language missed before is detected \
+                first once it can be (its speech model is installed now); that runs without the speaker models too, \
+                leaving the speakers unlabelled. --force does not detect languages over edited labels; use \
+                voiceislocal session languages --force for that.
                 """)
 
         @Argument(help: "Path to a .holos directory.") var path: String
         @Flag(help: "Relabel even when speaker labels were edited; names, links, and rejections carry over.")
         var force = false
+        @Flag(help: "Label speakers on the current transcript as it is, without detecting a meeting's languages again.")
+        var keepTranscript = false
         @Option(help: "The exact number of speakers.") var speakers: Int?
         @Option(help: "At least this many speakers.") var minSpeakers: Int?
         @Option(help: "At most this many speakers.") var maxSpeakers: Int?
@@ -58,7 +63,7 @@ extension Session {
             if let exclusiveSegments { overrides["exclusiveSegments"] = String(exclusiveSegments) }
             let options = PostProcessingOptions(speakers: hint, force: force, keepDerived: keepDerived,
                                                 othersInRoom: othersInRoom, engineOverrides: overrides,
-                                                forceVoiceData: voiceData)
+                                                forceVoiceData: voiceData, keepTranscript: keepTranscript)
             let request = SessionDiarizeCommand.Request(session: fileURL(path), options: options,
                                                         afterRecording: afterRecording, leaseDescriptor: leaseFd)
             let outcome = try await SessionDiarizeCommand.run(

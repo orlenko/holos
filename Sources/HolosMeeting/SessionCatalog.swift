@@ -24,6 +24,36 @@ public enum SpeakerLabelState: String, Codable, Sendable {
     case unreadable
 }
 
+/// meeting.json's languages that the current transcript of a meeting in several languages misses, or that the
+/// recorded transcript stands in for, which Label Speakers would detect again (docs/meeting-design.md §4.14).
+public struct LanguageWork: Codable, Sendable, Equatable {
+    /// The languages missed or stood in for, in meeting.json's order ("en-CA").
+    public var languages: [String]
+    /// The speaker labels were edited, so Label Speakers does not detect them (`voiceislocal session languages
+    /// --force` does).
+    public var labelsEdited: Bool
+    /// A run would detect a language now (`LanguageStage.hasPendingWork`: one of them can be had, such as a speech
+    /// model installed since). Set by `SessionCatalog.checkingLanguageModels`; false as listed.
+    public var ready: Bool
+
+    public init(languages: [String], labelsEdited: Bool = false, ready: Bool = false) {
+        self.languages = languages; self.labelsEdited = labelsEdited; self.ready = ready
+    }
+
+    /// What the Meetings window says while the work is left: nil when the post-processing record's message says it
+    /// (a language that cannot be had yet: the record names the reason and what to install).
+    public var message: String? {
+        let missing = LanguageStage.names(languages) + (languages.count == 1 ? " is" : " are")
+            + " missing from the transcript."
+        if labelsEdited {
+            return "\(missing) Speaker labels were edited, so Label Speakers does not detect the languages again. To "
+                + "detect them and label speakers again (names carry over), run voiceislocal session languages with "
+                + "--force."
+        }
+        return ready ? "\(missing) Choose Label Speakers to detect the languages again." : nil
+    }
+}
+
 /// One session in the catalog. Reading it takes no lock and changes nothing.
 public struct SessionSummary: Codable, Sendable, Equatable, Identifiable {
     public var id: String
@@ -59,6 +89,8 @@ public struct SessionSummary: Codable, Sendable, Equatable, Identifiable {
     public var bytes: Int64
     public var derivedBytes: Int64
     public var audioDeleted: Bool
+    /// A meeting in several languages whose current transcript misses one of them (`LanguageWork`); nil otherwise.
+    public var languageWork: LanguageWork?
 
     public init(id: String, directory: URL, name: String, createdAt: Date, source: AudioSource,
                 origin: MeetingOrigin = .recorded, state: SessionState, manifestStatus: String,
@@ -67,7 +99,8 @@ public struct SessionSummary: Codable, Sendable, Equatable, Identifiable {
                 speakerState: SpeakerLabelState = .none, labelMessage: String? = nil, runID: String? = nil,
                 labelsReadyAt: Date? = nil,
                 hasSpeakerEdits: Bool = false, phase: RecorderPhase? = nil, pid: Int32? = nil,
-                liveness: RecorderLiveness, bytes: Int64 = 0, derivedBytes: Int64 = 0, audioDeleted: Bool = false) {
+                liveness: RecorderLiveness, bytes: Int64 = 0, derivedBytes: Int64 = 0, audioDeleted: Bool = false,
+                languageWork: LanguageWork? = nil) {
         self.id = id; self.directory = directory; self.name = name; self.createdAt = createdAt
         self.source = source; self.origin = origin; self.state = state; self.manifestStatus = manifestStatus
         self.savedSeconds = savedSeconds; self.chunkCount = chunkCount; self.transcriptID = transcriptID
@@ -76,6 +109,7 @@ public struct SessionSummary: Codable, Sendable, Equatable, Identifiable {
         self.labelsReadyAt = labelsReadyAt
         self.hasSpeakerEdits = hasSpeakerEdits; self.phase = phase; self.pid = pid; self.liveness = liveness
         self.bytes = bytes; self.derivedBytes = derivedBytes; self.audioDeleted = audioDeleted
+        self.languageWork = languageWork
     }
 }
 
@@ -127,8 +161,13 @@ public enum SessionCatalog {
         var transcriptID: String?
         var transcriptProblem: String?
         var transcriptRefused = false
+        var languageWork: LanguageWork?
         do {
-            transcriptID = try SessionFiles.currentTranscript(session: session)?.id
+            if let current = try SessionFiles.currentTranscript(session: session) {
+                transcriptID = current.id
+                languageWork = LanguageStage.pendingLanguages(session: session, manifest: manifest, transcript: current)
+                    .map { LanguageWork(languages: $0.languages, labelsEdited: $0.labelsEdited) }
+            }
         } catch {
             log.error("Session \(manifest.id, privacy: .public): current transcript unreadable: \(error.localizedDescription, privacy: .private)")
             transcriptProblem = error.localizedDescription
@@ -144,7 +183,28 @@ public enum SessionCatalog {
             runID: speakers.runID, labelsReadyAt: speakers.readyAt,
             hasSpeakerEdits: hasSpeakerEdits(session), phase: phase, pid: pid, liveness: liveness,
             bytes: sizes.bytes, derivedBytes: sizes.derived,
-            audioDeleted: audioDeleted(session, sessionID: manifest.id))
+            audioDeleted: audioDeleted(session, sessionID: manifest.id), languageWork: languageWork)
+    }
+
+    /// `summaries` with `LanguageWork.ready` set where a run would detect a language now
+    /// (`LanguageStage.hasPendingWork`, which asks `dependencies.modelStatus` for the languages not transcribed yet).
+    /// Only meetings with `languageWork` whose labels were not edited are checked, so a listing without any costs
+    /// nothing. The Meetings window lists through this, off the main actor.
+    public static func checkingLanguageModels(_ summaries: [SessionSummary],
+                                              dependencies: LanguageDetectionDependencies = .live) async
+        -> [SessionSummary] {
+        var checked = summaries
+        for index in checked.indices {
+            let session = checked[index].directory
+            guard let work = checked[index].languageWork, !work.labelsEdited,
+                  let manifest = try? SessionArchive.readManifest(at: session),
+                  let current = try? SessionFiles.currentTranscript(session: session),
+                  current.id == checked[index].transcriptID else { continue }
+            let ready = await LanguageStage.hasPendingWork(session: session, manifest: manifest, transcript: current,
+                                                           dependencies: dependencies)
+            checked[index].languageWork?.ready = ready
+        }
+        return checked
     }
 
     // MARK: - State mapping

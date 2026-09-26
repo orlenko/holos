@@ -61,7 +61,9 @@ public struct LanguageDetectionDependencies: Sendable {
 /// audio) is left out and said why (`problem`, which makes the post-processing partial); without the first language,
 /// or with fewer than two where several were asked for, the current transcript stays as it is, and nothing is
 /// transcribed when that is known beforehand. A transcript whose speaker labels were edited is replaced only with
-/// `force` (names carry over when speakers are labelled again).
+/// `force` and languages asked for by name (names carry over when speakers are labelled again). Languages asked for
+/// by name that the current transcript already answers are journaled for it (`recordRequest`), so it is never
+/// replaced automatically afterwards.
 enum LanguageStage {
     private static let log = Logger(subsystem: "ca.orlenko.holos.app", category: "postprocess")
 
@@ -74,6 +76,10 @@ enum LanguageStage {
         var lease: ProcessingLease
         /// `PostProcessingOptions.languages`.
         var requested: [String]?
+        /// `PostProcessingOptions.force`. It lets the stage replace a transcript whose speaker labels were edited
+        /// only together with languages asked for by name (`voiceislocal session languages --force`,
+        /// `replacesEditedLabels`): a forced relabel alone (`session diarize --force`, Find More Speakers) never
+        /// detects the languages over edited labels.
         var force: Bool
     }
 
@@ -130,8 +136,12 @@ enum LanguageStage {
         let baseComplete = base.map { !isIncomplete($0, manifest: request.manifest, events: events) } ?? false
         if let current, alreadyMade(current, target: target, previousStandIn: previousStandIn,
                                     complete: baseComplete) {
-            recorder.end(.languages, .succeeded, "The transcript was already made from \(names(target)).",
-                         since: started)
+            let made = "The transcript was already made from \(names(target))."
+            if let problem = try await recordRequest(target, answeredBy: current, events: events, request: request) {
+                recorder.end(.languages, .failed, "\(made) \(problem)", since: started)
+                return Outcome(transcript: current, note: note(target), problem: problem)
+            }
+            recorder.end(.languages, .succeeded, made, since: started)
             return Outcome(transcript: current, note: note(target))
         }
         if let problem = editedHeadProblem(request) {
@@ -164,8 +174,8 @@ enum LanguageStage {
             sources[language] = reusablePass(language, events: events, session: request.session,
                                              backend: request.manifest.backend, expectsWords: expectsWords)
         }
-        let plan = try await planTranscriptions(target.filter { sources[$0] == nil }, request: request,
-                                                dependencies: dependencies)
+        let plan = try await planTranscriptions(target.filter { sources[$0] == nil }, session: request.session,
+                                                manifest: request.manifest, dependencies: dependencies)
         var reasons = plan.reasons
         // Nothing is transcribed when the languages that can be had would not make a merge anyway.
         let reachable = target.filter { sources[$0] != nil || plan.languages.contains($0) || fallbackLocale == $0 }
@@ -208,11 +218,13 @@ enum LanguageStage {
         let merging = [note(available), standInNote].compactMap { $0 }.joined(separator: " ")
         if let current, canonical(current.languages) == available && previousStandIn == standIn {
             // Nothing new could be added (a language is still missing, or still stood in for): the current merge
-            // stands.
-            let message = [standInNote, failure].compactMap { $0 }.joined(separator: " ")
-            recorder.end(.languages, failure == nil ? .succeeded : .failed, message.isEmpty ? nil : message,
+            // stands, now as the answer to languages asked for by name too.
+            let unrecorded = try await recordRequest(target, answeredBy: current, events: events, request: request)
+            let problem = [failure, unrecorded].compactMap { $0 }.joined(separator: " ")
+            let message = [standInNote, problem.isEmpty ? nil : problem].compactMap { $0 }.joined(separator: " ")
+            recorder.end(.languages, problem.isEmpty ? .succeeded : .failed, message.isEmpty ? nil : message,
                          since: started)
-            return Outcome(transcript: current, note: merging, problem: failure)
+            return Outcome(transcript: current, note: merging, problem: problem.isEmpty ? nil : problem)
         }
 
         // The merge (pure), then its publication under the writer lock.
@@ -272,20 +284,84 @@ enum LanguageStage {
 
     // MARK: - Which languages
 
-    /// Whether a run without languages asked for by name (Label Speakers, an automatic relabel, recovery) would try to
-    /// change `transcript`: meeting.json names several languages and it is not merged from them yet, or it was merged
-    /// from them automatically and missed one or had the recorded transcript stand in for one. Recovery asks this
-    /// before it calls the speaker labels up to date, so the missed language is retried once its model is installed.
-    /// False when the journal or meeting.json cannot be read (the stage would do nothing either).
-    static func hasPendingWork(session: URL, manifest: SessionManifest, transcript: Transcript) -> Bool {
-        guard let events = try? SessionArchive.readEvents(at: session).events,
+    /// meeting.json's languages that a transcript misses, as `pendingLanguages` reports them.
+    struct PendingLanguages: Sendable, Equatable {
+        /// The languages missed, or that the recorded transcript stands in for, in meeting.json's order.
+        var languages: [String]
+        /// The transcript's speaker labels were edited, so only `voiceislocal session languages --force` detects
+        /// them (the stage skips with `editedHead` otherwise).
+        var labelsEdited: Bool
+    }
+
+    /// What a run without languages asked for by name (Label Speakers, an automatic relabel, recovery) would still
+    /// want of `transcript`: meeting.json names several languages and it is not merged from them yet, or it was
+    /// merged from them automatically and missed one or had the recorded transcript stand in for one. Nil when there
+    /// is nothing (one language, languages asked for by name, already made), or when the journal, meeting.json, or
+    /// the speaker labels cannot be read (the stage would do nothing either). Reads files only: whether the missing
+    /// languages can be transcribed now is `hasPendingWork`'s question. meeting.json is read first, so a meeting in
+    /// one language costs no journal read (the Meetings window asks this of every meeting).
+    static func pendingLanguages(session: URL, manifest: SessionManifest,
+                                 transcript: Transcript) -> PendingLanguages? {
+        pending(session: session, manifest: manifest, transcript: transcript)?.pending
+    }
+
+    /// Whether a run without languages asked for by name would change `transcript` now, as the stage would decide
+    /// (`run`): there are `pendingLanguages`, the speaker labels were not edited (the stage would skip), and the
+    /// languages that can be had now (an earlier run's transcription, a language whose speech model is installed while
+    /// the audio is kept, the recorded transcript standing in) make a merge other than the current one. So a language
+    /// still missing its speech model is no work, and Recover settles instead of labelling the speakers again for
+    /// nothing. Recovery asks this before it calls the speaker labels up to date, `session diarize` before it runs
+    /// without speaker models, and the Meetings window before it offers Label Speakers for labelled speakers. Asks
+    /// `dependencies.modelStatus` for each language not transcribed yet.
+    static func hasPendingWork(session: URL, manifest: SessionManifest, transcript: Transcript,
+                               dependencies: LanguageDetectionDependencies) async -> Bool {
+        guard let state = pending(session: session, manifest: manifest, transcript: transcript),
+              !state.pending.labelsEdited else { return false }
+        let target = state.target
+        let fallbackLocale = state.baseComplete ? state.base.map { canonical($0.locale) } : nil
+        let expectsWords = hasWords(transcript.segments)
+        var obtainable = Set(target.filter { language in
+            reusablePass(language, events: state.events, session: session, backend: manifest.backend,
+                         expectsWords: expectsWords) != nil
+        })
+        guard let plan = try? await planTranscriptions(target.filter { !obtainable.contains($0) }, session: session,
+                                                       manifest: manifest, dependencies: dependencies) else {
+            return false
+        }
+        obtainable.formUnion(plan.languages)
+        let standIn = fallbackLocale.flatMap { target.contains($0) && !obtainable.contains($0) ? $0 : nil }
+        let available = target.filter { obtainable.contains($0) || $0 == standIn }
+        guard mergeable(available, target: target) else { return false }
+        return !(canonical(transcript.languages) == available && state.previousStandIn == standIn)
+    }
+
+    /// What `pendingLanguages` and `hasPendingWork` share: the stage's view of `transcript` for a run without
+    /// languages asked for by name.
+    private static func pending(session: URL, manifest: SessionManifest, transcript: Transcript)
+        -> (pending: PendingLanguages, target: [String], events: [ArchiveEvent], base: Transcript?,
+            baseComplete: Bool, previousStandIn: String?)? {
+        guard let meeting = try? SessionFiles.meetingInfo(session: session, manifest: manifest),
+              DictationLanguage.meetingLanguages(meeting.languages ?? []).count > 1,
+              let events = try? SessionArchive.readEvents(at: session).events,
               let target = targetLanguages(requested: nil, session: session, manifest: manifest,
                                            transcript: transcript, events: events),
-              !target.isEmpty else { return false }
+              !target.isEmpty else { return nil }
+        let previousStandIn = standIn(of: transcript, events: events)
         let base = baseTranscript(transcript, events: events, session: session)
-        return !alreadyMade(transcript, target: target,
-                            previousStandIn: standIn(of: transcript, events: events),
-                            complete: base.map { !isIncomplete($0, manifest: manifest, events: events) } ?? false)
+        let baseComplete = base.map { !isIncomplete($0, manifest: manifest, events: events) } ?? false
+        guard !alreadyMade(transcript, target: target, previousStandIn: previousStandIn, complete: baseComplete)
+        else { return nil }
+        let labelsEdited: Bool
+        do {
+            labelsEdited = try SpeakerAnalysis.headState(session: session, transcript: transcript)?.needsForce(false)
+                ?? false
+        } catch {
+            return nil
+        }
+        let has = canonical(transcript.languages) ?? (baseComplete ? [canonical(transcript.locale)] : [])
+        let missed = target.filter { !has.contains($0) || $0 == previousStandIn }
+        return (PendingLanguages(languages: missed, labelsEdited: labelsEdited), target, events, base, baseComplete,
+                previousStandIn)
     }
 
     /// The languages to merge, the preferred one first; nil when there is nothing to do (always, without languages
@@ -307,12 +383,16 @@ enum LanguageStage {
         }
         let languages = DictationLanguage.meetingLanguages(meeting.languages ?? [])
         guard languages.count > 1 else { return nil }
+        let recorded = mergeEvent(of: current.id, events: events)
+        // A transcript that answers languages asked for by name (`voiceislocal session languages`; its last
+        // `languagesDetected` names others than meeting.json's) stays, merged or not (`recordRequest`).
+        if let recorded, canonical(DictationLanguage.list(recorded.details["requested"] ?? "")) != languages {
+            return nil
+        }
         guard current.languages != nil else { return languages }
-        // A merged transcript: redo it only when it was made from meeting.json's languages and missed some. One made
-        // from languages asked for by name (`voiceislocal session languages`) stays.
+        // A merged transcript: redo it only when it was made from meeting.json's languages and missed some.
         // A language the recorded transcript stood in for counts as missed.
-        guard let merge = mergeEvent(of: current.id, events: events),
-              canonical(DictationLanguage.list(merge.details["requested"] ?? "")) == languages,
+        guard recorded != nil,
               canonical(current.languages) != languages || standIn(of: current, events: events) != nil
         else { return nil }
         return languages
@@ -347,9 +427,50 @@ enum LanguageStage {
         return canonical(fallback)
     }
 
-    /// The `languagesDetected` event of the merged transcript `transcriptID`, if it was journaled.
+    /// The `languagesDetected` event of the merged transcript `transcriptID`, if it was journaled: the last one naming
+    /// it (`recordRequest` can add one with other `requested` languages). For a transcript that is not merged, one
+    /// only records the languages asked for by name that it answers (its `base` is empty).
     static func mergeEvent(of transcriptID: String, events: [ArchiveEvent]) -> ArchiveEvent? {
         events.last { $0.kind == MeetingEventKind.languagesDetected && $0.details["transcriptID"] == transcriptID }
+    }
+
+    /// Records that `current` answers the languages asked for by name (`request.requested`, as `target`) when it is
+    /// kept as it is (already made from them, or the merge stands because nothing new can be added): journals
+    /// `languagesDetected` for it again with `requested` set to `target`, the rest of its merge's details kept (for a
+    /// transcript that is not merged: its `languages`, and an empty `base`). So a request narrower than meeting.json's
+    /// languages is durable, and an automatic run later never replaces the transcript with meeting.json's
+    /// (`targetLanguages`). Nothing is journaled without languages asked for by name, or when the last event for
+    /// `current` already names `target`. Returns why it could not be journaled (the transcript stays either way);
+    /// throws only `CancellationError`.
+    private static func recordRequest(_ target: [String], answeredBy current: Transcript, events: [ArchiveEvent],
+                                      request: Request) async throws -> String? {
+        guard request.requested != nil else { return nil }
+        let recorded = mergeEvent(of: current.id, events: events)
+        if let recorded, canonical(DictationLanguage.list(recorded.details["requested"] ?? "")) == target {
+            return nil
+        }
+        var details = recorded?.details ?? [
+            "transcriptID": current.id, "base": "",
+            "languages": (canonical(current.languages) ?? [canonical(current.locale)]).joined(separator: ","),
+        ]
+        details["requested"] = target.joined(separator: ",")
+        do {
+            let archive = try SessionArchive.openForMaintenance(at: request.session, lease: request.lease)
+            do {
+                try Task.checkCancellation()
+                try await archive.recordEvent(kind: MeetingEventKind.languagesDetected, details: details)
+            } catch {
+                await archive.releaseLock()
+                throw error
+            }
+            await archive.releaseLock()
+            return nil
+        } catch {
+            if error is CancellationError || Task.isCancelled { throw CancellationError() }
+            log.error("Session \(request.manifest.id, privacy: .public): the languages asked for were not journaled: \(error.localizedDescription, privacy: .private)")
+            return "The languages asked for could not be recorded, so a later relabel may detect meeting.json's "
+                + "languages again: \(error.localizedDescription)"
+        }
     }
 
     /// A locale identifier as the stage compares and journals it ("en-CA" for "en_CA" or "en-ca",
@@ -365,18 +486,26 @@ enum LanguageStage {
         segments.contains { !$0.words.isEmpty || !$0.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
     }
 
-    /// Why the transcript must not be replaced now: its speaker labels were edited and `force` is off. Nil when it
-    /// may be (a head that cannot be read counts as replaceable only when it is damaged, as stage 3 decides), and
-    /// when there is no transcript, whose labels there would be.
+    /// Why the transcript must not be replaced now: its speaker labels were edited and the request does not replace
+    /// edited labels (`replacesEditedLabels`). Nil when it may be (a head that cannot be read counts as replaceable
+    /// only when it is damaged, as stage 3 decides), and when there is no transcript, whose labels there would be.
     private static func editedHeadProblem(_ request: Request) -> String? {
         guard let transcript = request.transcript else { return nil }
         do {
             guard let head = try SpeakerAnalysis.headState(session: request.session, transcript: transcript),
-                  head.needsForce(request.force) else { return nil }
+                  head.needsForce(replacesEditedLabels(request)) else { return nil }
             return editedHead
         } catch {
             return "Cannot read the current speaker labels, so the transcript was kept: \(error.localizedDescription)"
         }
+    }
+
+    /// Whether the request may replace a transcript whose speaker labels were edited: `force` with languages asked
+    /// for by name (`voiceislocal session languages --force`). `force` alone is a forced relabel of the speakers
+    /// (`session diarize --force`, the review window's Find More Speakers), which must not replace the transcript
+    /// under the edited labels.
+    private static func replacesEditedLabels(_ request: Request) -> Bool {
+        request.force && request.requested != nil
     }
 
     // MARK: - The transcription in each language
@@ -417,13 +546,13 @@ enum LanguageStage {
 
     /// Which of `languages` can be transcribed now (their speech model is installed and the audio is there), and why
     /// each other one cannot.
-    private static func planTranscriptions(_ languages: [String], request: Request,
+    private static func planTranscriptions(_ languages: [String], session: URL, manifest: SessionManifest,
                                            dependencies: LanguageDetectionDependencies) async throws
         -> (languages: [String], reasons: [String: String]) {
         guard !languages.isEmpty else { return ([], [:]) }
         var reasons: [String: String] = [:]
         do {
-            if try SessionFiles.audioDeleted(session: request.session, sessionID: request.manifest.id) {
+            if try SessionFiles.audioDeleted(session: session, sessionID: manifest.id) {
                 for language in languages {
                     reasons[language] = "\(name(language)) was not transcribed: the meeting's audio was deleted."
                 }
@@ -437,7 +566,7 @@ enum LanguageStage {
         }
         var planned: [String] = []
         let check = dependencies.modelStatus
-        let backend = request.manifest.backend
+        let backend = manifest.backend
         for language in languages {
             try Task.checkCancellation()
             // The asset inventory is a platform call; it is waited for within the stop path's limit (§1.3).
@@ -666,8 +795,10 @@ enum LanguageStage {
         }
     }
 
-    /// What detects the languages again from the app: Label Speakers runs `session diarize`, which runs this stage
-    /// first and picks up a language missed before (unless speaker labels were edited).
+    /// What detects the languages again from the app: Meetings offers Label Speakers while a language missed before
+    /// can be had (`hasPendingWork`, `MeetingActionPolicy.labels`), and it runs `session diarize`, which runs this
+    /// stage first, also without speaker models (unless speaker labels were edited: then only `session languages
+    /// --force` does, as the Meetings window says).
     static let detectAgain = "choose Label Speakers in Meetings to detect the languages again"
 
     /// "Kept French (Canada) in 70 % of the passages and English (Canada) in 30 %, with 212 switches."

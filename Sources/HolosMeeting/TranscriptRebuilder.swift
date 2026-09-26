@@ -47,7 +47,9 @@ public enum TranscriptRebuilder {
     ///   meeting's languages were detected (§4.14), it is returned with `reused: true` (naming the current transcript)
     ///   and nothing changes, unless
     ///   `force`, or unless this call may transcribe audio and that rebuild could not (it ran without `transcribe`,
-    ///   recorded as `transcribed: false`, while the audio still exists). The current transcript counts only once its
+    ///   recorded as `transcribed: false`, while the audio still exists, and the current transcript is not a merge of
+    ///   the meeting's languages, which transcribed all of the audio again, `mergeHoldsAllAudio`). The current
+    ///   transcript counts only once its
     ///   revision was read and holds its own ID (`SessionFiles.readableCurrentTranscriptID`): a truncated, damaged, or
     ///   mislabelled revision is rebuilt.
     /// - Refuses (`unavailable`), even with `force`, a current pointer or revision, an audio-deleted.json, or a
@@ -242,12 +244,16 @@ public enum TranscriptRebuilder {
     /// The report of the last rebuild, when it came after the last recovery and its transcript is still current (or
     /// is the one the current transcript was merged from, `recordedTranscriptID`), and (with `needsTranscription`) it
     /// was allowed to transcribe audio too. The report names the current transcript, so its labels are checked.
+    /// A transcript merged from the meeting's languages holds all of the saved audio even when the rebuild it was
+    /// merged from did not transcribe (`mergeHoldsAllAudio`), so such a rebuild is reused rather than done again,
+    /// which would replace the merge.
     static func reusedReport(_ events: [ArchiveEvent], currentTranscriptID: String?,
                              needsTranscription: Bool) -> RebuildReport? {
         guard let rebuilt = events.last(where: { $0.kind == MeetingEventKind.transcriptRebuilt }),
               let transcriptID = rebuilt.details["transcriptID"],
               let current = currentTranscriptID, recordedTranscriptID(current, events: events) == transcriptID,
-              !needsTranscription || rebuilt.details["transcribed"] != "false" else { return nil }
+              !needsTranscription || rebuilt.details["transcribed"] != "false"
+                || mergeHoldsAllAudio(current, events: events) else { return nil }
         guard rebuilt.sequence > lastRecovery(events) else { return nil }
         return report(rebuilt.details, transcriptID: current, reused: true)
     }
@@ -255,15 +261,18 @@ public enum TranscriptRebuilder {
     /// The `transcriptRebuilding` event of a rebuild that made `currentTranscriptID` current (or the transcript it was
     /// merged from, `recordedTranscriptID`) after the last recovery but was never recorded: no `transcriptRebuilt`
     /// naming that transcript follows it. Nil when there is none, or (with `needsTranscription`) that rebuild could
-    /// not transcribe audio (then it is done again).
+    /// not transcribe audio (then it is done again) and the current transcript is not a merge that holds all of the
+    /// audio anyway (`mergeHoldsAllAudio`).
     static func unrecordedRebuild(_ events: [ArchiveEvent], currentTranscriptID: String?,
                                   needsTranscription: Bool) -> ArchiveEvent? {
-        guard let current = currentTranscriptID.map({ recordedTranscriptID($0, events: events) }),
-              let started = events.last(where: { event in
+        guard let currentID = currentTranscriptID else { return nil }
+        let current = recordedTranscriptID(currentID, events: events)
+        guard let started = events.last(where: { event in
                   event.kind == MeetingEventKind.transcriptRebuilding && event.details["transcriptID"] == current
               }),
               started.sequence > lastRecovery(events),
-              !needsTranscription || started.details["transcribed"] != "false" else { return nil }
+              !needsTranscription || started.details["transcribed"] != "false"
+                || mergeHoldsAllAudio(currentID, events: events) else { return nil }
         let recorded = events.contains { event in
             event.kind == MeetingEventKind.transcriptRebuilt && event.sequence > started.sequence
                 && event.details["transcriptID"] == current
@@ -290,6 +299,24 @@ public enum TranscriptRebuilder {
         guard let base = LanguageStage.mergeEvent(of: transcriptID, events: events)?.details["base"], !base.isEmpty
         else { return transcriptID }
         return base
+    }
+
+    /// Whether `transcriptID` is a transcript merged from the meeting's languages (docs/meeting-design.md §4.14) that
+    /// holds all of the saved audio: its `languagesDetected` event names a `base` (the rebuild's transcript), and each
+    /// `source.<language>` is a transcription of the saved audio (`languagePass`) made after the last recovery, or the
+    /// base itself, which the stage lets stand in only when it leaves no audio out. Such a merge re-transcribed the
+    /// audio that a rebuild without `transcribe` (`transcribed: false`) left out, so that rebuild counts as
+    /// transcribed for it.
+    static func mergeHoldsAllAudio(_ transcriptID: String, events: [ArchiveEvent]) -> Bool {
+        guard let merge = LanguageStage.mergeEvent(of: transcriptID, events: events),
+              let base = merge.details["base"], !base.isEmpty else { return false }
+        let recovered = lastRecovery(events)
+        let passes = Set(events.compactMap { event in
+            event.kind == MeetingEventKind.languagePass && event.sequence > recovered
+                ? event.details["transcriptID"] : nil
+        })
+        let sources = merge.details.filter { $0.key.hasPrefix("source.") }.map(\.value)
+        return !sources.isEmpty && sources.allSatisfy { passes.contains($0) || $0 == base }
     }
 
     /// Whether transcript `transcriptID` was saved by a rebuild that did not transcribe audio (`transcribed: false`:

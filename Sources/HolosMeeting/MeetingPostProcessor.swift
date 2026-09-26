@@ -27,16 +27,21 @@ public struct PostProcessingOptions: Sendable, Equatable {
     public var stopReason: StopReason?
     /// The meeting's languages for this run, the preferred one first (`voiceislocal session languages`): the
     /// transcript is merged from one transcription in each (docs/meeting-design.md §4.14). Nil: meeting.json's, unless
-    /// the current transcript was already merged for languages asked for this way. `force` also lets it replace a
-    /// transcript whose speaker labels were edited.
+    /// the current transcript was already merged for languages asked for this way. `force` with these also lets it
+    /// replace a transcript whose speaker labels were edited (`force` alone never does).
     public var languages: [String]?
+    /// Label speakers on the current transcript as it is: the languages stage does not run
+    /// (`voiceislocal session diarize --keep-transcript`, which the review window's relabels use, so a speaker action
+    /// there never transcribes the meeting again or replaces the transcript under the open review).
+    public var keepTranscript: Bool
 
     public init(speakers: SpeakerCountHint? = nil, force: Bool = false, keepDerived: Bool = false,
                 othersInRoom: Bool? = nil, engineOverrides: [String: String] = [:], forceVoiceData: Bool = false,
-                stopReason: StopReason? = nil, languages: [String]? = nil) {
+                stopReason: StopReason? = nil, languages: [String]? = nil, keepTranscript: Bool = false) {
         self.speakers = speakers; self.force = force; self.keepDerived = keepDerived
         self.othersInRoom = othersInRoom; self.engineOverrides = engineOverrides
         self.forceVoiceData = forceVoiceData; self.stopReason = stopReason; self.languages = languages
+        self.keepTranscript = keepTranscript
     }
 }
 
@@ -192,10 +197,13 @@ public struct MeetingPostProcessor: Sendable {
         }
 
         // Stage 1b: a meeting in several languages (§4.14), before the speakers, so they are labelled on the final text.
-        let languages = try await LanguageStage.run(
-            LanguageStage.Request(session: session, manifest: manifest, transcript: current, lease: lease,
-                                  requested: options.languages, force: options.force),
-            dependencies: languageDetection, recorder: recorder)
+        // Not run for a relabel that keeps the transcript (`keepTranscript`).
+        let languages = options.keepTranscript && options.languages == nil
+            ? LanguageStage.Outcome(transcript: current)
+            : try await LanguageStage.run(
+                LanguageStage.Request(session: session, manifest: manifest, transcript: current, lease: lease,
+                                      requested: options.languages, force: options.force),
+                dependencies: languageDetection, recorder: recorder)
         guard let transcript = languages.transcript else {
             let message = languages.problem ?? "This meeting has no transcript, so there is nothing to label."
             return recorder.finalRecord(state: .failed, message: message)

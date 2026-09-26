@@ -4032,7 +4032,10 @@ digests describe the wave-0 text):
 - `MeetingEventKind.languagePass` (`transcriptID, language, tracks, seconds`) and
   `MeetingEventKind.languagesDetected` (`transcriptID, base, languages, requested,
   source.<language>, windows, windows.<language>, switches`, and `fallback`: the language
-  the recorded transcript stood in for, when it did).
+  the recorded transcript stood in for, when it did). It can be journaled again for the same
+  transcript with another `requested` (step 2); the last one naming a transcript counts. One
+  whose `base` is empty names a transcript that is not merged (the recording's own) and
+  only records the languages named for it.
 
 Outside the frozen files: `Transcript.languages: [String]?` and `TranscriptSegment.language:
 String?` in `Models.swift` (optional, left out of the JSON when nil, so older transcripts
@@ -4056,7 +4059,11 @@ recorder, `session diarize`, `recover`, `import`, the app's relabels):
    merged, or when it was merged automatically from them (`requested` of its
    `languagesDetected`) but missed one (a speech model installed since) or had the
    recorded transcript stand in for one (`fallback`). A transcript
-   merged from languages named on the command line is never replaced automatically. A
+   merged from languages named on the command line, or kept for them (step 2), is never
+   replaced automatically: its last `languagesDetected` names other languages than
+   meeting.json's. `PostProcessingOptions.keepTranscript` (`session diarize
+   --keep-transcript`, which every relabel from the review window passes) skips the stage,
+   so a speaker action there never transcribes the meeting again under the open review. A
    meeting in one language records no stage at all, so its `postprocess.json` is unchanged.
    A session with saved audio and no transcript (`record start --record-only`, `session
    import --no-transcribe`) gets its first transcript from languages named on the command
@@ -4065,12 +4072,23 @@ recorder, `session diarize`, `recover`, `import`, the app's relabels):
    `failed`. Without languages named, such a session still has nothing to label.
 2. *Done already.* A current transcript merged from exactly these languages, with none
    stood in for (or, for one language, the recording's own when it is complete, as step 4
-   defines), is kept: `succeeded`, "The transcript was already made from …".
+   defines), is kept: `succeeded`, "The transcript was already made from …". When the
+   languages were named on the command line and the transcript's last `languagesDetected`
+   names others (a merge made automatically from meeting.json's three languages that missed
+   one, then `session languages` with the two it has), `languagesDetected` is journaled
+   again for the same transcript with `requested` set to them, its other details kept (for
+   the recording's own transcript: its `languages` and an empty `base`), under the writer
+   lock; so is a merge that stands for them (step 5). A narrower request is thereby durable,
+   and a later run without languages named keeps the transcript. A failure to journal it
+   keeps the transcript and makes the record `partial` with why.
 3. *Edited labels.* When the head run was built from the current transcript and has
-   applied edits, the stage is `skipped` without `force` ("Speaker labels were edited, so
-   the languages were not detected again. To detect them and label speakers again (names
-   carry over), run voiceislocal session languages with --force."), checked again when the
-   merge is published, under the speaker lock the publication holds (step 6).
+   applied edits (names carried over by a relabel count), the stage is `skipped` unless
+   languages were named with `force` (`session languages --force`) ("Speaker labels were
+   edited, so the languages were not detected again. To detect them and label speakers again
+   (names carry over), run voiceislocal session languages with --force."), checked again
+   when the merge is published, under the speaker lock the publication holds (step 6).
+   `force` alone (`session diarize --force`, Find More Speakers) relabels the speakers but
+   never detects the languages over edited labels.
 4. *Transcriptions.* For each language: the last `languagePass` after the last
    `archiveRecovered` whose revision reads (resumable); else a new one, one language after
    another, every track through `TrackReplayer` (the session vocabulary, the stop path's
@@ -4106,7 +4124,19 @@ recorder, `session diarize`, `recover`, `import`, the app's relabels):
    not transcribed: its speech model is not installed. Install it from the meeting start
    panel or with voiceislocal setup --locale en-CA, then choose Label Speakers in Meetings
    to detect the languages again."). Label Speakers runs this stage first, so it picks the
-   language up once its model is installed (nothing does so on its own). A
+   language up once its model is installed (nothing does so on its own). Meetings offers
+   it for labelled speakers too while that is so: the catalog lists the languages missed
+   or stood in for (`SessionSummary.languageWork`, `LanguageStage.pendingLanguages`, files
+   only), the window checks their speech models off the main actor
+   (`SessionCatalog.checkingLanguageModels`, `LanguageWork.ready` from
+   `LanguageStage.hasPendingWork`), and `MeetingActionPolicy.labels` enables Label Speakers
+   when it is ready. The status line keeps the reason: the record's message while the
+   model is missing, "Spanish (Spain) is missing from the transcript. Choose Label
+   Speakers to detect the languages again." once it can be detected, and, with edited
+   labels (which Label Speakers keeps), that `session languages --force` detects it.
+   `session diarize` without speaker models runs when there is such work (`hasPendingWork`,
+   not with `--keep-transcript`): the languages are detected and the speakers stay
+   unlabelled, as after a recording without speaker models; otherwise it still refuses. A
    missing language makes the post-processing `partial` (exit 3) with that reason first in
    the message; speakers are still labelled. When nothing new can be added (the same
    languages as the current merge, the same one stood in for), the current merge stands.
@@ -4125,10 +4155,19 @@ recorder, `session diarize`, `recover`, `import`, the app's relabels):
    cancellation is checked again with the locks held, before a pass is saved and before
    the journal and save of the merge (the rebuild's save too).
 7. *Recovery.* `session recover` keeps a rebuild whose transcript was merged since (the
-   merge's `base` names it, `TranscriptRebuilder.recordedTranscriptID`), and does not call
-   the labels up to date while this stage has work left (`LanguageStage.hasPendingWork`: a
-   language stood in for or missed), so Recover after installing a missing speech model
-   detects it.
+   merge's `base` names it, `TranscriptRebuilder.recordedTranscriptID`). A merge whose
+   sources are all transcriptions of the saved audio after the last recovery (or the base
+   standing in, which it does only when it leaves no audio out) holds all of the audio
+   (`TranscriptRebuilder.mergeHoldsAllAudio`), so a rebuild made with `--no-transcribe`
+   (`transcribed: false`) counts as transcribed for it: Recover reuses the rebuild instead of
+   rebuilding over the merge. Recover does not call the labels up to date while this stage
+   would do work now (`LanguageStage.hasPendingWork`, as the stage decides: a language
+   stood in for or missed that can be had now, such as its speech model installed since,
+   and speaker labels that were not edited), so Recover after installing a missing speech
+   model detects it; while it cannot be had, or with edited labels, Recover changes nothing
+   (a `partial` record whose speaker stages went as they would again, the languages stage
+   having made it partial, counts as up to date: `SessionRecoveryCommand.
+   speakerStagesSettled`), rather than labelling the speakers again on every run.
 
 The stage runs inside the recorder's post-processing, so the app's next meeting can start
 only once it ends (`.finishing`, `stillSaving`): about 3 more minutes for a 3-hour meeting
@@ -4185,7 +4224,10 @@ pure; `NaturalLanguageScorer` in `LanguageIdentification.swift` is the live scor
   kept after a failure) and the head run was built from it, the speaker stages are
   skipped ("The transcript did not change, so the speaker labels were kept."), so a
   second run changes no labels and edited labels need no `--force`; `--force` matters only
-  for replacing the transcript.
+  for replacing the transcript. `session diarize` takes `--keep-transcript` (label the
+  speakers of the current transcript as it is; the review window passes it) and runs
+  without speaker models when a missed language can be detected now (step 5).
+- *Meetings window.* Label Speakers and the status line follow step 5.
 - *Exports.* Markdown adds "- Languages: French (Canada), English (Canada)" (English names)
   to the header of a transcript merged from several; the text carries no language marks,
   because the language changes every few seconds, often inside a sentence, and marks would
@@ -4219,11 +4261,18 @@ publication holds the speaker lock; a cancellation while the locks are taken pub
 nothing; newer vocabulary.json and meeting.json are refused; an "en_CA" recording and
 locales in any case count as their language; an audio-only session gets its first
 transcript from `session languages`; Recover retries a language stood in for, then changes
-nothing, and a rebuild that left audio untranscribed never stands in; cut pieces labelled and exported; a call's echo
+nothing, and a rebuild that left audio untranscribed never stands in; Recover settles
+while a missed language's model is missing or the labels were edited; Recover keeps a
+`session languages` merge of a `--no-transcribe` rebuild; cut pieces labelled and exported; a call's echo
 still dropped; cancellation; `session
 languages` with order, one language, and invalid lists; edited labels and `--force` with
 names carried, then the same languages again keeping edited labels without `--force`;
-`session import --languages`), `MeetingLanguageTests` (meeting.json from a
+a narrower request, and one language for the recording's own transcript, recorded and
+kept by later relabels; `session diarize --force` and `--keep-transcript` never detect
+languages over edited labels; the catalog's `languageWork` and Label Speakers once the
+model is installed, not with edited labels; `session diarize` without speaker models
+detecting a missed language; `session import --languages`), `MeetingActionPolicyTests`
+(Label Speakers for `LanguageWork.ready`, its messages), `MeetingLanguageTests` (meeting.json from a
 recording, refused lists, launcher arguments, start settings), `MeetingLanguagesTests`
 (HolosCore lists and optional fields), `TranscriptRevisionTests`, `LanguageExportTests`.
 
@@ -5338,7 +5387,8 @@ public enum SessionTimelineReader {
 ```
 holos session diarize <path> [--force] [--speakers N | --min-speakers N --max-speakers N]
                              [--others-in-room | --no-others-in-room] [--keep-derived]
-                             [--after-recording] [--json]
+                             [--after-recording] [--keep-transcript] [--json]
+                             # --keep-transcript: no language detection (§4.14), the review window's relabels
                              # hidden: [--exclusive-segments true|false] [--voice-data]
                              #         [--lease-fd N]
 ```
@@ -5559,12 +5609,18 @@ public struct SessionSummary: Codable, Sendable, Equatable, Identifiable {
     public var bytes: Int64
     public var derivedBytes: Int64
     public var audioDeleted: Bool
+    /// LANG2 (§4.14 step 5): languages of a meeting in several that the transcript misses.
+    public var languageWork: LanguageWork?
 }
 
 public enum SessionCatalog {
     /// Newest first. A folder whose manifest cannot be read is `damaged` (named by its folder).
     public static func list(root: URL = HolosPaths.sessions, now: Date = Date()) -> [SessionSummary]
     public static func summary(session: URL, now: Date = Date()) -> SessionSummary
+    /// LANG2: sets `languageWork.ready` where a missed language can be detected now (speech model check).
+    public static func checkingLanguageModels(_ summaries: [SessionSummary],
+                                              dependencies: LanguageDetectionDependencies = .live) async
+        -> [SessionSummary]
 }
 
 public enum SessionDeletion {
@@ -6061,7 +6117,9 @@ commands behind the buttons: Recover when `SessionRecoveryCommand.rebuilds` woul
 (asked with the catalog's readable transcript, so a `transcriptionIncomplete` or `incomplete`
 meeting whose transcript cannot be read qualifies) or the meeting is interrupted, never for a
 damaged manifest or a transcript from a newer Holos; Label Speakers for speaker state none,
-notLabelled, failed, or interrupted with a readable transcript and audio, not interrupted. No
+notLabelled, failed, or interrupted, or (any state but unreadable) while a missed language of
+a meeting in several can be detected now (`LanguageWork.ready`, §4.14 step 5), with a
+readable transcript and audio, not interrupted. No
 lease-taking action while the app uses the meeting or another process holds it (liveness
 capturing, processing, maintenance).
 
@@ -6426,9 +6484,10 @@ speakers, undo, export.
     public func confirmAllSuggestions() async throws
     public func markSelf(speakerID: String) async throws   // passes learnVoices to VoiceProfileService.markSelf
     public func rejectSuggestion(speakerID: String) async throws
-    /// `holos session diarize --force --min-speakers <current + 1>`; names carry over (§4.9).
+    /// `holos session diarize --keep-transcript --force --min-speakers <current + 1>`; names carry over (§4.9).
+    /// Every relabel from here passes --keep-transcript: a meeting's languages are not detected again (§4.14).
     public func findMoreSpeakers() async throws
-    /// `holos session diarize --force --others-in-room` (call recordings).
+    /// `holos session diarize --keep-transcript --force --others-in-room` (call recordings).
     public func labelMicrophoneSpeakers() async throws
     /// Regenerates exports now if an edit is pending. Call when the window closes.
     public func close() async

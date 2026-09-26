@@ -207,7 +207,10 @@ overwritten. `voiceislocal session diarize <session>` labels a finished session 
 it keeps edited speaker labels unless `--force` is given, and names carry over.
 It exits 0 when speakers were labelled, 3 when the exports were written but
 labelling was skipped or failed, and 1 when nothing was done (including when the
-speaker models are not installed).
+speaker models are not installed, unless a language missed in a meeting in several
+languages can now be detected: that runs without them and leaves the speakers
+unlabelled). `--keep-transcript` labels the speakers without detecting the meeting's
+languages again.
 `voiceislocal session import <audio-file>` creates a session from any audio file macOS
 reads (its channels mixed into one in-person microphone track), transcribes it,
 and labels its speakers; it prints the new session's path once labelling ends. The

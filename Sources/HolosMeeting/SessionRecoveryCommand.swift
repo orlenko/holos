@@ -228,10 +228,13 @@ public enum SessionRecoveryCommand {
                 }
                 unreadable = error
             }
+            // Asked only of labels that are otherwise up to date: it can check speech models.
+            let languageWork = unreadable == nil && unchanged && labels != nil
+                ? await languageWorkPending(session, transcriptID: transcriptID, dependencies: languages) : false
             if let unreadable {
                 warnings.append("Speaker labels were not updated: \(unreadable.localizedDescription)")
                 exitCode = 3
-            } else if unchanged, let current = labels, !languageWorkPending(session, transcriptID: transcriptID) {
+            } else if unchanged, let current = labels, !languageWork {
                 // A success without labels repeats why (the setup hint) instead of calling them up to date.
                 parts.append(current.runID == nil ? (current.message ?? "No speaker labels.")
                     : "Speaker labels are up to date.")
@@ -318,16 +321,11 @@ public enum SessionRecoveryCommand {
     /// replace: one written by a newer Holos throws `unavailable` (schema rule 3, §1.6), and one that cannot be read
     /// now throws too. A damaged or missing postprocess.json, head, run, or transcript gives nil (post-processing
     /// replaces it).
-    /// Whether post-processing still has language work for transcript `transcriptID` (`LanguageStage.hasPendingWork`):
-    /// a merge in which the recorded transcript stood in for a language, or that missed one of meeting.json's
-    /// languages, is retried, so Recover after installing the missing speech model does not call the labels up to
-    /// date. False when the manifest or the transcript cannot be read.
-    static func languageWorkPending(_ session: URL, transcriptID: String) -> Bool {
-        guard let manifest = try? SessionArchive.readManifest(at: session),
-              let transcript = try? SessionFiles.transcript(id: transcriptID, session: session) else { return false }
-        return LanguageStage.hasPendingWork(session: session, manifest: manifest, transcript: transcript)
-    }
-
+    ///
+    /// A `partial` record counts like a success when what kept it from one would be met again unchanged
+    /// (`speakerStagesSettled`: a language missed or not recorded, or edited labels of this transcript): labelling
+    /// again would change nothing unless the languages stage has work now, which the caller asks next
+    /// (`languageWorkPending`), so Recover settles.
     static func currentLabels(_ session: URL, transcriptID: String, canLabel: Bool) throws -> PostProcessingRecord? {
         let saved = SavedSpeakerState.read(session: session)
         if let refusal = saved.refusal { throw refusal }
@@ -335,7 +333,9 @@ public enum SessionRecoveryCommand {
             let message = saved.problems.map(\.localizedDescription).joined(separator: " ")
             log.error("Speaker files are unusable and will be replaced: \(message, privacy: .private)")
         }
-        guard let record = saved.record, record.state == .succeeded, record.transcriptID == transcriptID else {
+        guard let record = saved.record,
+              record.state == .succeeded || (record.state == .partial && speakerStagesSettled(record)),
+              record.transcriptID == transcriptID else {
             return nil
         }
         guard record.runID != nil else { return canLabel ? nil : record }
@@ -343,5 +343,46 @@ public enum SessionRecoveryCommand {
         // spans fit), so this only adds that the run was built from `transcriptID`.
         guard saved.problems.isEmpty, let run = saved.headRun, run.transcriptID == transcriptID else { return nil }
         return record
+    }
+
+    /// Whether the speaker stages and the exports of `record` went as they would again: each speaker stage that ran
+    /// succeeded, or was skipped for a reason a new run would meet unchanged (speaker models not installed, no track
+    /// to label, the transcript unchanged, speaker labels of this transcript that were edited), recognition did not
+    /// fail, and the exports were written. What made such a record `partial` is the languages stage (a language
+    /// missed, or languages asked for that could not be recorded) or edited labels, which a run without `--force`
+    /// keeps again. A stage this build does not know counts as unsettled.
+    static func speakerStagesSettled(_ record: PostProcessingRecord) -> Bool {
+        let unchangedSkips: Set<String> = [
+            SpeakerAnalysis.modelsMissing, SpeakerAnalysis.noTrackToLabel, SpeakerAnalysis.transcriptUnchanged,
+            SpeakerAnalysis.editedHead,
+        ]
+        guard record.stages.contains(where: { $0.stage == .export && $0.result == .succeeded }) else { return false }
+        return record.stages.allSatisfy { outcome in
+            switch outcome.stage {
+            case .transcript, .languages, .export:
+                return true
+            case .recognize:
+                return outcome.result != .failed
+            case .render, .diarize, .align:
+                return outcome.result == .succeeded
+                    || (outcome.result == .skipped && outcome.message.map(unchangedSkips.contains) == true)
+            default:
+                return false
+            }
+        }
+    }
+
+    /// Whether post-processing still has language work for transcript `transcriptID` that it would do now
+    /// (`LanguageStage.hasPendingWork`): a merge in which the recorded transcript stood in for a language, or that
+    /// missed one of meeting.json's languages, is retried once that language can be had (its speech model is
+    /// installed), so Recover after installing the missing speech model does not call the labels up to date, and
+    /// Recover before that (or with edited speaker labels) does not label the speakers again for nothing. False when
+    /// the manifest or the transcript cannot be read.
+    static func languageWorkPending(_ session: URL, transcriptID: String,
+                                    dependencies: LanguageDetectionDependencies) async -> Bool {
+        guard let manifest = try? SessionArchive.readManifest(at: session),
+              let transcript = try? SessionFiles.transcript(id: transcriptID, session: session) else { return false }
+        return await LanguageStage.hasPendingWork(session: session, manifest: manifest, transcript: transcript,
+                                                  dependencies: dependencies)
     }
 }
