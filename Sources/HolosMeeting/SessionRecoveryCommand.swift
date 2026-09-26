@@ -124,10 +124,12 @@ public enum SessionRecoveryCommand {
     /// is kept). A post-processing failure does not throw: it is reported in `warnings` with exit code 3. A file that
     /// the chain would read or replace and that a newer Holos wrote (the current transcript pointer or revision,
     /// vocabulary.json, postprocess.json, the speaker head or run) throws `unavailable` (schema rule 3, §1.6), with
-    /// the archive recovery kept. `profiles` is passed to the post-processor (voice suggestions, PR10).
+    /// the archive recovery kept. `profiles` is passed to the post-processor (voice suggestions, PR10), and
+    /// `languages` too (a meeting in several languages, §4.14).
     public static func run(_ request: Request, diarizer: (any SpeakerDiarizer)?, makeSpeech: LiveSpeechFactory? = nil,
                            freeSpace: any FreeSpaceProvider = VolumeFreeSpace(),
                            profiles: SpeakerProfileStore? = nil,
+                           languages: LanguageDetectionDependencies = .live,
                            progress: @escaping @Sendable (String) -> Void = { _ in },
                            step: @escaping @Sendable (Step) -> Void = { _ in }) async throws -> Outcome {
         let session = request.session
@@ -229,14 +231,15 @@ public enum SessionRecoveryCommand {
             if let unreadable {
                 warnings.append("Speaker labels were not updated: \(unreadable.localizedDescription)")
                 exitCode = 3
-            } else if unchanged, let current = labels {
+            } else if unchanged, let current = labels, !languageWorkPending(session, transcriptID: transcriptID) {
                 // A success without labels repeats why (the setup hint) instead of calling them up to date.
                 parts.append(current.runID == nil ? (current.message ?? "No speaker labels.")
                     : "Speaker labels are up to date.")
             } else {
                 do {
                     let processor = MeetingPostProcessor(diarizer: diarizer, options: PostProcessingOptions(),
-                                                         freeSpace: freeSpace, profiles: profiles)
+                                                         freeSpace: freeSpace, profiles: profiles,
+                                                         languages: languages)
                     let result = try await processor.run(session: session, lease: lease) { progress($0.message) }
                     record = result
                     step(.postProcessed)
@@ -315,6 +318,16 @@ public enum SessionRecoveryCommand {
     /// replace: one written by a newer Holos throws `unavailable` (schema rule 3, §1.6), and one that cannot be read
     /// now throws too. A damaged or missing postprocess.json, head, run, or transcript gives nil (post-processing
     /// replaces it).
+    /// Whether post-processing still has language work for transcript `transcriptID` (`LanguageStage.hasPendingWork`):
+    /// a merge in which the recorded transcript stood in for a language, or that missed one of meeting.json's
+    /// languages, is retried, so Recover after installing the missing speech model does not call the labels up to
+    /// date. False when the manifest or the transcript cannot be read.
+    static func languageWorkPending(_ session: URL, transcriptID: String) -> Bool {
+        guard let manifest = try? SessionArchive.readManifest(at: session),
+              let transcript = try? SessionFiles.transcript(id: transcriptID, session: session) else { return false }
+        return LanguageStage.hasPendingWork(session: session, manifest: manifest, transcript: transcript)
+    }
+
     static func currentLabels(_ session: URL, transcriptID: String, canLabel: Bool) throws -> PostProcessingRecord? {
         let saved = SavedSpeakerState.read(session: session)
         if let refusal = saved.refusal { throw refusal }

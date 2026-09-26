@@ -99,9 +99,10 @@ private func languageStageDependencies(_ speech: LanguageStageSpeech,
 /// A finished in-person session in `root`: 20 s of quiet microphone audio, meeting.json with `languages`, the English
 /// recording's transcript as current, finished as `status`.
 private func languageStageSession(in root: URL, languages: [String]? = [languageStageEnglish, languageStageFrench],
-                                  status: String = ArchiveStatus.complete) async throws -> (URL, Transcript) {
+                                  status: String = ArchiveStatus.complete,
+                                  locale: String = languageStageEnglish) async throws -> (URL, Transcript) {
     let archive = try SessionArchive.create(root: root, name: "Bilingual meeting", source: .microphone,
-                                            locale: languageStageEnglish, backend: .speech)
+                                            locale: locale, backend: .speech)
     try AtomicFile.writeJSON(MeetingInfo(sessionID: archive.id, mode: .inPerson, othersInRoom: false,
                                          createdAt: SessionFixtures.date, languages: languages),
                              to: SessionPaths.meetingInfo(archive.directory))
@@ -110,7 +111,8 @@ private func languageStageSession(in root: URL, languages: [String]? = [language
     try await writer.append(CapturedAudio(track: "mic", frame: try PCMFrame(samples: samples, sampleRate: 16_000,
                                                                             channels: 1, startTime: 0)))
     try await writer.finish()
-    let transcript = SessionFixtures.transcript(languageStageHeard(by: "en", prefix: "E"))
+    var transcript = SessionFixtures.transcript(languageStageHeard(by: "en", prefix: "E"))
+    transcript.locale = locale
     try await archive.saveTranscript(transcript, writeLegacyExports: false)
     try await archive.finish(status: status)
     return (archive.directory, transcript)
@@ -483,6 +485,103 @@ func nothingNewIsAddedWhileALanguageIsStillMissing() async throws {
     #expect(speech.locales == [languageStageEnglish, languageStageFrench], "Nothing is transcribed again.")
 }
 
+@Test(.timeLimit(.minutes(1)))
+func passesWithoutWordsNeverReplaceTheTranscript() async throws {
+    let temp = try TemporaryDirectory("languages")
+    defer { temp.remove() }
+    let (session, recorded) = try await languageStageSession(in: temp.url)
+    // Both recognizers finish without a single final result, though the recording's transcript has words.
+    let speech = LanguageStageSpeech([languageStageEnglish: FakeSpeechScript(), languageStageFrench: FakeSpeechScript()])
+    let record = try await languageStageProcessor(speech, diarizer: nil).run(session: session, lease: nil)
+
+    #expect(record.state == .partial)
+    let stage = try #require(languageStageOutcome(record))
+    #expect(stage.result == .failed)
+    #expect(stage.message == "Kept the transcript as it was. French (Canada) was not transcribed: no words were "
+        + "recognized.")
+    #expect(speech.locales == [languageStageEnglish, languageStageFrench])
+    #expect(try languageStageCurrent(session) == recorded, "The words of the recording stay.")
+    #expect(try languageStageEvents(session, MeetingEventKind.languagesDetected).isEmpty)
+    #expect(try languageStageEvents(session, MeetingEventKind.languagePass).isEmpty,
+            "A transcription without words is not kept for reuse.")
+}
+
+@Test(.timeLimit(.minutes(1)))
+func aPassWithoutWordsLetsTheRecordedTranscriptStandIn() async throws {
+    let temp = try TemporaryDirectory("languages")
+    defer { temp.remove() }
+    let (session, _) = try await languageStageSession(in: temp.url)
+    let speech = LanguageStageSpeech([
+        languageStageEnglish: FakeSpeechScript(),
+        languageStageFrench: FakeSpeechScript(segments: languageStageHeard(by: "fr", prefix: "F")),
+    ])
+    let record = try await languageStageProcessor(speech, diarizer: nil).run(session: session, lease: nil)
+    #expect(record.state == .succeeded)
+    #expect(try languageStageCurrent(session).segments.map(\.id) == ["E1", "F2"])
+    let detected = try #require(try languageStageEvents(session, MeetingEventKind.languagesDetected).first)
+    #expect(detected.details["fallback"] == languageStageEnglish)
+    #expect(languageStageOutcome(record)?.message?.hasSuffix(
+        "English (Canada) was not transcribed: no words were recognized. " + LanguageStage.standsIn) == true)
+    #expect(try languageStageEvents(session, MeetingEventKind.languagePass).map { $0.details["language"] }
+        == [languageStageFrench])
+}
+
+@Test(.timeLimit(.minutes(1)))
+func aSpeakerEditSavedJustBeforePublicationKeepsTheLabels() async throws {
+    let temp = try TemporaryDirectory("languages")
+    defer { temp.remove() }
+    let (session, recorded) = try await languageStageSession(in: temp.url)
+    try SessionFixtures.writeHeadRun(session: session, transcript: recorded,
+                                     outputs: ["mic": SessionFixtures.alternatingOutput()])
+    let head = try #require(try SessionSpeakerStore.readHead(session: session)).runID
+    // A speaker is named in Review after the merge was made, as its publication is about to start.
+    let saved = SharedValue<Bool?>(nil)
+    let processor = languageStageProcessor(LanguageStageSpeech.standard())
+    let record = try await LanguageStage.$beforePublish.withValue({
+        let done = (try? SessionFixtures.appendEdits([.rename(speakerID: "mic:S1", name: "Alice")],
+                                                     session: session)) != nil
+        saved.set(done)
+    }) {
+        try await processor.run(session: session, lease: nil)
+    }
+
+    #expect(saved.value == true)
+    #expect(record.state == .partial)
+    let stage = try #require(languageStageOutcome(record))
+    #expect(stage.result == .skipped)
+    #expect(stage.message == LanguageStage.editedHead)
+    #expect(try languageStageCurrent(session) == recorded, "The merge is not published.")
+    #expect(try languageStageEvents(session, MeetingEventKind.languagesDetected).isEmpty)
+    #expect(try SessionSpeakerStore.readHead(session: session)?.runID == head)
+    #expect(try SpeakerSessionSnapshot.load(session: session).projection?.speakers
+        .contains { $0.name == "Alice" } == true)
+}
+
+@Test(.timeLimit(.minutes(1)))
+func theMergeIsPublishedUnderTheSpeakerLock() async throws {
+    let temp = try TemporaryDirectory("languages")
+    defer { temp.remove() }
+    let (session, _) = try await languageStageSession(in: temp.url)
+    // What a speaker edit would find while the merged transcript is published: the speaker lock taken (the editor
+    // waits or is refused), and the writer lock too.
+    let observed = SharedValue<(speakerLockRefused: Bool, writerHeld: Bool)?>(nil)
+    let processor = languageStageProcessor(LanguageStageSpeech.standard(), diarizer: nil)
+    let record = try await LanguageStage.$whilePublishing.withValue({
+        let refused = (try? SessionArchive.withSpeakerLock(at: session, timeout: .zero) {}) == nil
+        let writer = (try? SessionArchive.isActive(at: session)) ?? false
+        observed.set((refused, writer))
+    }) {
+        try await processor.run(session: session, lease: nil)
+    }
+    #expect(record.state == .succeeded)
+    let seen = try #require(observed.value)
+    #expect(seen.speakerLockRefused, "The edited-labels check and the publication are one step under the lock.")
+    #expect(seen.writerHeld)
+    #expect(try languageStageCurrent(session).languages == [languageStageEnglish, languageStageFrench])
+    #expect(try SessionArchive.withSpeakerLock(at: session, timeout: .zero) { true }, "Released afterwards.")
+    #expect(try !SessionArchive.isActive(at: session))
+}
+
 /// The meeting as one segment per transcription: English for 9 s, then French for 9 s, as `code`'s model hears it,
 /// so the merge cuts it in two.
 private func languageStageOneSegment(heardBy code: String, id: String) -> TranscriptSegment {
@@ -614,10 +713,13 @@ func echoInACallStaysEchoAcrossLanguages() async throws {
 
 private func languageStageCommand(_ session: URL, _ languages: [String], force: Bool = false,
                                   speech: LanguageStageSpeech,
-                                  diarizer: (any SpeakerDiarizer)? = nil) async throws -> SessionLanguagesCommand.Outcome {
+                                  diarizer: (any SpeakerDiarizer)? = nil,
+                                  installed: SharedValue<Set<String>> = SharedValue([
+                                      languageStageEnglish, languageStageFrench, languageStageSpanish,
+                                  ])) async throws -> SessionLanguagesCommand.Outcome {
     try await SessionLanguagesCommand.run(
         SessionLanguagesCommand.Request(session: session, languages: languages, force: force), diarizer: diarizer,
-        freeSpace: FixedFreeSpace(.max), languages: languageStageDependencies(speech))
+        freeSpace: FixedFreeSpace(.max), languages: languageStageDependencies(speech, installed: installed))
 }
 
 @Test(.timeLimit(.minutes(1)))
@@ -756,4 +858,112 @@ func importRecordsLanguagesAndMergesThem() async throws {
             "The import's transcription, then one per language.")
     #expect(try languageStageCurrent(outcome.session).segments.map(\.language) == [languageStageEnglish,
                                                                                   languageStageFrench])
+}
+
+@Test(.timeLimit(.minutes(1)))
+func anUnderscoreLocaleRecordingCountsAsItsLanguage() async throws {
+    let temp = try TemporaryDirectory("languages")
+    defer { temp.remove() }
+    // An older session, recorded when "en_CA" was accepted as it was given.
+    let (session, recorded) = try await languageStageSession(in: temp.url, languages: nil, locale: "en_CA")
+    let speech = LanguageStageSpeech.standard()
+
+    // Its own language alone: the recording's transcript already is that.
+    let same = try await languageStageCommand(session, ["en-CA"], speech: speech)
+    #expect(same.exitCode == 0)
+    #expect(languageStageOutcome(same.record)?.message == "The transcript was already made from English (Canada).")
+    #expect(speech.locales.isEmpty)
+    #expect(try languageStageCurrent(session) == recorded)
+
+    // With English not installed, the recorded transcript stands in for en-CA.
+    let outcome = try await languageStageCommand(session, ["en-CA", "fr-CA"], speech: speech,
+                                                 installed: SharedValue([languageStageFrench]))
+    #expect(outcome.exitCode == 0)
+    let merged = try languageStageCurrent(session)
+    #expect(merged.languages == [languageStageEnglish, languageStageFrench])
+    #expect(merged.segments.map(\.id) == ["E1", "F2"])
+    #expect(merged.segments.map(\.language) == [languageStageEnglish, languageStageFrench])
+    let detected = try #require(try languageStageEvents(session, MeetingEventKind.languagesDetected).first)
+    #expect(detected.details["fallback"] == languageStageEnglish)
+    #expect(detected.details["source.en-CA"] == recorded.id)
+    #expect(speech.locales == [languageStageFrench])
+}
+
+// MARK: - voiceislocal session recover
+
+/// A bilingual in-person meeting whose recorder died: 20 s of microphone audio, meeting.json with English and
+/// French, and the English phrases live transcription journaled; the manifest still says `recording`.
+private func languageStageDeadMeeting(in root: URL) async throws -> URL {
+    let archive = try SessionArchive.create(root: root, name: "Bilingual meeting", source: .microphone,
+                                            locale: languageStageEnglish, backend: .speech)
+    try AtomicFile.writeJSON(MeetingInfo(sessionID: archive.id, mode: .inPerson, othersInRoom: false,
+                                         createdAt: SessionFixtures.date,
+                                         languages: [languageStageEnglish, languageStageFrench]),
+                             to: SessionPaths.meetingInfo(archive.directory))
+    let writer = AudioChunkWriter(archive: archive)
+    let samples = (0..<(20 * 16_000)).map { Float(sin(Double($0) * 0.05)) * 0.01 }
+    try await writer.append(CapturedAudio(track: "mic", frame: try PCMFrame(samples: samples, sampleRate: 16_000,
+                                                                            channels: 1, startTime: 0)))
+    try await writer.finish()
+    for segment in languageStageHeard(by: "en", prefix: "E") {
+        let words = String(decoding: try HolosJSON.encoder(pretty: false).encode(segment.words), as: UTF8.self)
+        try await archive.recordEvent(kind: MeetingEventKind.transcriptFinalized, details: [
+            "track": "mic", "text": segment.text, "start": String(segment.start), "end": String(segment.end),
+            "segmentID": segment.id, "words": words,
+        ])
+    }
+    return archive.directory
+}
+
+@Test(.timeLimit(.minutes(1)))
+func recoverRetriesALanguageTheRecordedTranscriptStoodIn() async throws {
+    let temp = try TemporaryDirectory("languages")
+    defer { temp.remove() }
+    let session = try await languageStageDeadMeeting(in: temp.url)
+    let speech = LanguageStageSpeech.standard()
+    let installed = SharedValue<Set<String>>([languageStageFrench])
+    let request = SessionRecoveryCommand.Request(session: session, transcribe: false)
+    func recover(_ steps: SharedValue<[SessionRecoveryCommand.Step]>) async throws -> SessionRecoveryCommand.Outcome {
+        try await SessionRecoveryCommand.run(
+            request, diarizer: FakeDiarizer(outputs: ["mic": SessionFixtures.alternatingOutput()]),
+            freeSpace: FixedFreeSpace(.max), languages: languageStageDependencies(speech, installed: installed),
+            step: { step in steps.update { $0.append(step) } })
+    }
+
+    // English's speech model is missing: the rebuilt English transcript stands in for it.
+    let first = try await recover(SharedValue([]))
+    #expect(first.exitCode == 0)
+    let rebuiltID = try #require(first.rebuild?.transcriptID)
+    let standIn = try #require(try languageStageEvents(session, MeetingEventKind.languagesDetected).last)
+    #expect(standIn.details["fallback"] == languageStageEnglish)
+    #expect(standIn.details["base"] == rebuiltID)
+    #expect(speech.locales == [languageStageFrench])
+
+    // Once it is installed, Recover keeps the rebuild (the merge did not undo it) and detects English again,
+    // instead of calling the labels up to date.
+    installed.update { $0.insert(languageStageEnglish) }
+    let steps = SharedValue<[SessionRecoveryCommand.Step]>([])
+    let second = try await recover(steps)
+    #expect(second.exitCode == 0)
+    #expect(second.rebuild?.reused == true)
+    #expect(steps.value == [.recovered, .rebuilt, .postProcessed])
+    #expect(speech.locales == [languageStageFrench, languageStageEnglish], "The French transcription is reused.")
+    let merged = try languageStageCurrent(session)
+    #expect(merged.segments.map(\.id) == ["P1", "F2"])
+    let redone = try #require(try languageStageEvents(session, MeetingEventKind.languagesDetected).last)
+    #expect(redone.details["transcriptID"] == merged.id)
+    #expect(redone.details["fallback"] == nil)
+    #expect(redone.details["base"] == rebuiltID)
+    #expect(try SpeakerSessionSnapshot.load(session: session).run?.transcriptID == merged.id)
+
+    // Nothing is left to do: the next Recover changes nothing.
+    let thirdSteps = SharedValue<[SessionRecoveryCommand.Step]>([])
+    let third = try await recover(thirdSteps)
+    #expect(third.rebuild?.reused == true)
+    #expect(third.rebuild?.transcriptID == merged.id)
+    #expect(third.postProcessing == nil)
+    #expect(thirdSteps.value == [.recovered, .rebuilt])
+    #expect(third.summary.hasSuffix("Speaker labels are up to date."))
+    #expect(try languageStageCurrent(session).id == merged.id)
+    #expect(speech.locales == [languageStageFrench, languageStageEnglish])
 }

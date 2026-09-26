@@ -43,7 +43,9 @@ public enum TranscriptRebuilder {
     ///   `recording` or `processing`: `SessionArchive.recover` must mark it interrupted first. A dead recorder's
     ///   status.json is marked exited.
     /// - Idempotent: when the last `transcriptRebuilt` event comes after the last `archiveRecovered` event (by
-    ///   sequence) and names the current transcript, it is returned with `reused: true` and nothing changes, unless
+    ///   sequence) and names the current transcript, or the one the current transcript was merged from when the
+    ///   meeting's languages were detected (§4.14), it is returned with `reused: true` (naming the current transcript)
+    ///   and nothing changes, unless
     ///   `force`, or unless this call may transcribe audio and that rebuild could not (it ran without `transcribe`,
     ///   recorded as `transcribed: false`, while the audio still exists). The current transcript counts only once its
     ///   revision was read and holds its own ID (`SessionFiles.readableCurrentTranscriptID`): a truncated, damaged, or
@@ -234,24 +236,26 @@ public enum TranscriptRebuilder {
 
     // MARK: - Idempotence
 
-    /// The report of the last rebuild, when it came after the last recovery and its transcript is still current, and
-    /// (with `needsTranscription`) it was allowed to transcribe audio too.
+    /// The report of the last rebuild, when it came after the last recovery and its transcript is still current (or
+    /// is the one the current transcript was merged from, `recordedTranscriptID`), and (with `needsTranscription`) it
+    /// was allowed to transcribe audio too. The report names the current transcript, so its labels are checked.
     static func reusedReport(_ events: [ArchiveEvent], currentTranscriptID: String?,
                              needsTranscription: Bool) -> RebuildReport? {
         guard let rebuilt = events.last(where: { $0.kind == MeetingEventKind.transcriptRebuilt }),
               let transcriptID = rebuilt.details["transcriptID"],
-              let current = currentTranscriptID, current == transcriptID,
+              let current = currentTranscriptID, recordedTranscriptID(current, events: events) == transcriptID,
               !needsTranscription || rebuilt.details["transcribed"] != "false" else { return nil }
         guard rebuilt.sequence > lastRecovery(events) else { return nil }
-        return report(rebuilt.details, transcriptID: transcriptID, reused: true)
+        return report(rebuilt.details, transcriptID: current, reused: true)
     }
 
-    /// The `transcriptRebuilding` event of a rebuild that made `currentTranscriptID` current after the last recovery
-    /// but was never recorded: no `transcriptRebuilt` naming that transcript follows it. Nil when there is none, or
-    /// (with `needsTranscription`) that rebuild could not transcribe audio (then it is done again).
+    /// The `transcriptRebuilding` event of a rebuild that made `currentTranscriptID` current (or the transcript it was
+    /// merged from, `recordedTranscriptID`) after the last recovery but was never recorded: no `transcriptRebuilt`
+    /// naming that transcript follows it. Nil when there is none, or (with `needsTranscription`) that rebuild could
+    /// not transcribe audio (then it is done again).
     static func unrecordedRebuild(_ events: [ArchiveEvent], currentTranscriptID: String?,
                                   needsTranscription: Bool) -> ArchiveEvent? {
-        guard let current = currentTranscriptID,
+        guard let current = currentTranscriptID.map({ recordedTranscriptID($0, events: events) }),
               let started = events.last(where: { event in
                   event.kind == MeetingEventKind.transcriptRebuilding && event.details["transcriptID"] == current
               }),
@@ -264,13 +268,25 @@ public enum TranscriptRebuilder {
         return recorded ? nil : started
     }
 
-    /// Whether a rebuild saved transcript `transcriptID` (a `transcriptRebuilding` or `transcriptRebuilt` event names
-    /// it), so it is not a transcript the recorder saved when it stopped.
+    /// Whether a rebuild saved transcript `transcriptID`, or the one it was merged from (`recordedTranscriptID`): a
+    /// `transcriptRebuilding` or `transcriptRebuilt` event names it, so it is not a transcript the recorder saved
+    /// when it stopped.
     static func rebuildSaved(_ transcriptID: String, events: [ArchiveEvent]) -> Bool {
-        events.contains { event in
+        let recorded = recordedTranscriptID(transcriptID, events: events)
+        return events.contains { event in
             (event.kind == MeetingEventKind.transcriptRebuilding || event.kind == MeetingEventKind.transcriptRebuilt)
-                && event.details["transcriptID"] == transcriptID
+                && event.details["transcriptID"] == recorded
         }
+    }
+
+    /// The transcript that stands for `transcriptID` in the rebuild's bookkeeping: for a transcript merged from the
+    /// meeting's languages (docs/meeting-design.md §4.14; its `languagesDetected` event names it), the recorded
+    /// transcript it was merged from (`base`), which the merge replaced as current without undoing the rebuild; else
+    /// `transcriptID` itself.
+    static func recordedTranscriptID(_ transcriptID: String, events: [ArchiveEvent]) -> String {
+        guard let base = LanguageStage.mergeEvent(of: transcriptID, events: events)?.details["base"], !base.isEmpty
+        else { return transcriptID }
+        return base
     }
 
     /// The sequence of the last `archiveRecovered` event; 0 when there is none.

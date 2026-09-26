@@ -359,7 +359,7 @@ Locks are `flock` on files in the session folder, one open file description per 
 |---|---|---|---|
 | `.writer.lock` | recorder's `SessionArchive` actor; `SessionArchive.recover`; `openForMaintenance` | capture start → `finish`; maintenance: one save | `LOCK_EX\|LOCK_NB`, retried every 20 ms for up to 1 s |
 | `.processing.lock` (the processing lease) | recorder from just before `finish` until exit (§4.6); `holos session diarize`, `recover`, `delete`; the app's automatic relabel runs the CLI | one post-processing, rebuild, or deletion | `LOCK_EX\|LOCK_NB`, retried every 20 ms for up to 1 s |
-| `.speakers.lock` | `SpeakerEditor`; `SessionExports.regenerate`; post-processor while publishing run, head, voice data, recognition | one write (milliseconds) | polled every 20 ms up to 2 s |
+| `.speakers.lock` | `SpeakerEditor`; `SessionExports.regenerate`; post-processor while publishing run, head, voice data, recognition, and a merged transcript (§4.14, inside the writer lock) | one write (milliseconds) | polled every 20 ms up to 2 s |
 | `<support>/Speakers/profiles.lock` | `SpeakerProfileStore.update`; `withLockedDatabase` (recognition's saved comparison, a forget's per-meeting clean-up), always inside the speaker lock when both are held | one read-modify-write, or one read and the session write made from it | polled every 20 ms up to 2 s (PR10) |
 
 Rules:
@@ -4064,8 +4064,8 @@ recorder, `session diarize`, `recover`, `import`, the app's relabels):
 3. *Edited labels.* When the head run was built from the current transcript and has
    applied edits, the stage is `skipped` without `force` ("Speaker labels were edited, so
    the languages were not detected again. To detect them and label speakers again (names
-   carry over), run voiceislocal session languages with --force."), checked again just
-   before the merge is published.
+   carry over), run voiceislocal session languages with --force."), checked again when the
+   merge is published, under the speaker lock the publication holds (step 6).
 4. *Transcriptions.* For each language: the last `languagePass` after the last
    `archiveRecovered` whose revision reads (resumable); else a new one, one language after
    another, every track through `TrackReplayer` (the session vocabulary, the stop path's
@@ -4073,8 +4073,11 @@ recorder, `session diarize`, `recover`, `import`, the app's relabels):
    once per whole percent, as rendering does) with
    `AppleSpeechSession.make(accurate: true)`, saved with `saveTranscriptRevision` and
    `languagePass` under the writer lock (held only for the save). A transcription whose
-   save fails still goes into this merge (logged; a later run cannot reuse it). The
-   recorded transcript
+   save fails still goes into this merge (logged; a later run cannot reuse it). A
+   transcription with no words at all, while the current transcript has some, counts as
+   failed ("… was not transcribed: no words were recognized."): it is neither saved nor
+   reused. Languages are compared as `DictationLanguage.identifier` spells them, so an older
+   recording's "en_CA" is "en-CA". The recorded transcript
    (the base: the current one, or the one a merge's event names) stands in for its own
    language only when that language cannot be transcribed again, and never when the
    manifest says `transcriptionIncomplete`; the stage message and the record's message
@@ -4095,13 +4098,22 @@ recorder, `session diarize`, `recover`, `import`, the app's relabels):
    missing language makes the post-processing `partial` (exit 3) with that reason first in
    the message; speakers are still labelled. When nothing new can be added (the same
    languages as the current merge, the same one stood in for), the current merge stands.
-6. *Merge and publish.* `LanguageMerge.merge` (pure), then, under the writer lock,
-   `languagesDetected` and `saveTranscript(merged)`. The stage message: "Kept French
+6. *Merge and publish.* `LanguageMerge.merge` (pure); a merge that kept no words never
+   replaces a transcript that has some (`failed`, "Kept the transcript as it was: no words
+   were recognized in …"). Then, under the writer lock and the speaker lock (in that order,
+   as deletion takes them), the edited-labels check of step 3 once more, and
+   `languagesDetected` and `saveTranscript(merged)`, so a speaker edit is either seen by the
+   check or waits until the merged transcript is current. The stage message: "Kept French
    (Canada) in 61 % of the passages and English (Canada) in 39 %, with 171 switches."; the
    record's message (and so the app's finished message) starts "Transcribed in French
    (Canada) and English (Canada)." Speaker
    labelling then sees a new transcript and relabels (names carry over, §4.9). A
    cancellation publishes nothing; saved transcriptions stay for the next run.
+7. *Recovery.* `session recover` keeps a rebuild whose transcript was merged since (the
+   merge's `base` names it, `TranscriptRebuilder.recordedTranscriptID`), and does not call
+   the labels up to date while this stage has work left (`LanguageStage.hasPendingWork`: a
+   language stood in for or missed), so Recover after installing a missing speech model
+   detects it.
 
 The stage runs inside the recorder's post-processing, so the app's next meeting can start
 only once it ends (`.finishing`, `stillSaving`): about 3 more minutes for a 3-hour meeting
@@ -4184,8 +4196,11 @@ again; a missing model or a failed transcription
 keeps the transcript and says why; nothing new while a language is still missing; the
 recorded transcript stands in (said, journaled, and replaced once it can be), but never an
 incomplete one; a language added once its model is installed; labels edited while
-transcribing are kept; cut pieces labelled and exported; a call's echo still dropped;
-cancellation; `session
+transcribing are kept; passes without words never replace the transcript, and the recorded
+transcript stands in for one; an edit saved just before publication keeps the labels; the
+publication holds the speaker lock; an "en_CA" recording counts as en-CA; Recover retries a
+language stood in for, then changes nothing; cut pieces labelled and exported; a call's echo
+still dropped; cancellation; `session
 languages` with order, one language, and invalid lists; edited labels and `--force` with
 names carried, then the same languages again keeping edited labels without `--force`;
 `session import --languages`), `MeetingLanguageTests` (meeting.json from a
