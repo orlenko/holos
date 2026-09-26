@@ -4058,9 +4058,14 @@ recorder, `session diarize`, `recover`, `import`, the app's relabels):
    recorded transcript stand in for one (`fallback`). A transcript
    merged from languages named on the command line is never replaced automatically. A
    meeting in one language records no stage at all, so its `postprocess.json` is unchanged.
+   A session with saved audio and no transcript (`record start --record-only`, `session
+   import --no-transcribe`) gets its first transcript from languages named on the command
+   line (stage 1 is `skipped`, "This meeting has no transcript yet; it is made from the
+   saved audio."); a failure then says "No transcript was made. …" and the record is
+   `failed`. Without languages named, such a session still has nothing to label.
 2. *Done already.* A current transcript merged from exactly these languages, with none
-   stood in for (or, for one language, the recording's own), is kept: `succeeded`, "The
-   transcript was already made from …".
+   stood in for (or, for one language, the recording's own when it is complete, as step 4
+   defines), is kept: `succeeded`, "The transcript was already made from …".
 3. *Edited labels.* When the head run was built from the current transcript and has
    applied edits, the stage is `skipped` without `force` ("Speaker labels were edited, so
    the languages were not detected again. To detect them and label speakers again (names
@@ -4076,11 +4081,18 @@ recorder, `session diarize`, `recover`, `import`, the app's relabels):
    save fails still goes into this merge (logged; a later run cannot reuse it). A
    transcription with no words at all, while the current transcript has some, counts as
    failed ("… was not transcribed: no words were recognized."): it is neither saved nor
-   reused. Languages are compared as `DictationLanguage.identifier` spells them, so an older
-   recording's "en_CA" is "en-CA". The recorded transcript
+   reused. Languages are compared as `DictationLanguage.identifier` spells them (hyphens and
+   BCP 47 case), so an older recording's "en_CA" and a given "en-ca" are both "en-CA". The
+   session vocabulary is read as the rebuild reads it: missing or damaged is none, but one
+   written by a newer Holos is refused (`failed`, "Kept the transcript as it was.
+   vocabulary.json was written by a newer version…"), never read as none; likewise
+   meeting.json, which gives the echo parameters. The recorded transcript
    (the base: the current one, or the one a merge's event names) stands in for its own
-   language only when that language cannot be transcribed again, and never when the
-   manifest says `transcriptionIncomplete`; the stage message and the record's message
+   language only when that language cannot be transcribed again, and never when it is
+   incomplete: the manifest says `transcriptionIncomplete`, or a rebuild saved it without
+   transcribing while saved audio runs past its phrases (`transcribed: false` and a track's
+   audio beyond its `coverageEnd`, `TranscriptRebuilder.leftAudioUntranscribed`: `recover
+   --no-transcribe`, whose status is `recovered`); the stage message and the record's message
    then say so ("… The recorded transcript stands in for it."), `languagesDetected`
    records it as `fallback`, and a later run tries that language again. Speech models are
    checked first (`assetStatus`, each check within `speechFinishBase`; only `installed`
@@ -4108,7 +4120,10 @@ recorder, `session diarize`, `recover`, `import`, the app's relabels):
    record's message (and so the app's finished message) starts "Transcribed in French
    (Canada) and English (Canada)." Speaker
    labelling then sees a new transcript and relabels (names carry over, §4.9). A
-   cancellation publishes nothing; saved transcriptions stay for the next run.
+   cancellation publishes nothing; saved transcriptions stay for the next run. Taking a lock
+   can wait without seeing a cancellation (the speaker lock polls for up to 2 s), so
+   cancellation is checked again with the locks held, before a pass is saved and before
+   the journal and save of the merge (the rebuild's save too).
 7. *Recovery.* `session recover` keeps a rebuild whose transcript was merged since (the
    merge's `base` names it, `TranscriptRebuilder.recordedTranscriptID`), and does not call
    the labels up to date while this stage has work left (`LanguageStage.hasPendingWork`: a
@@ -4124,7 +4139,8 @@ when it also detects languages" and that the next meeting can start once it has.
 pure; `NaturalLanguageScorer` in `LanguageIdentification.swift` is the live scorer):
 
 1. Per track, words go into fixed 3 s windows of session time from 0 by their middle
-   ((start + end) / 2); a segment without timed words moves as one unit.
+   ((start + end) / 2); a segment without timed words moves as one unit that weighs its
+   whitespace-separated words (for echo, rule 5, its echoed words among them).
 2. A window where one language has words takes it. Where several do, each scores its
    words' mean confidence (0 without any) plus the probability that its text there is in
    its own language, from `NLLanguageRecognizer` with `languageConstraints` set to the
@@ -4187,7 +4203,8 @@ do not break a run; a window heard only in one language takes it; a lone window 
 in the other keeps nothing; ties; tracks apart; three languages; one candidate; word
 middles; cuts at recognizer offsets and the fallback; untimed segments; unique IDs;
 determinism; smoothing cases; echo windows follow the system track, need half the
-window's words, and take no part in smoothing; the NaturalLanguage scorer),
+window's words (counted in words for an untimed segment), and take no part in smoothing;
+the NaturalLanguage scorer),
 `LanguageStageTests` (merged,
 kept, and labelled end to end with scripted speech, progress once per percent; one
 language records nothing; a second
@@ -4198,8 +4215,11 @@ recorded transcript stands in (said, journaled, and replaced once it can be), bu
 incomplete one; a language added once its model is installed; labels edited while
 transcribing are kept; passes without words never replace the transcript, and the recorded
 transcript stands in for one; an edit saved just before publication keeps the labels; the
-publication holds the speaker lock; an "en_CA" recording counts as en-CA; Recover retries a
-language stood in for, then changes nothing; cut pieces labelled and exported; a call's echo
+publication holds the speaker lock; a cancellation while the locks are taken publishes
+nothing; newer vocabulary.json and meeting.json are refused; an "en_CA" recording and
+locales in any case count as their language; an audio-only session gets its first
+transcript from `session languages`; Recover retries a language stood in for, then changes
+nothing, and a rebuild that left audio untranscribed never stands in; cut pieces labelled and exported; a call's echo
 still dropped; cancellation; `session
 languages` with order, one language, and invalid lists; edited labels and `--force` with
 names carried, then the same languages again keeping edited labels without `--force`;

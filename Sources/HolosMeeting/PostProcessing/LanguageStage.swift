@@ -47,7 +47,9 @@ public struct LanguageDetectionDependencies: Sendable {
 /// measured about 3 points of word error rate worse), each transcription is kept as a revision that is not current
 /// (`languagePass`), and the transcript merged from them (`LanguageMerge`) becomes current (`languagesDetected`, then
 /// the save), so the later stages label speakers on it. The recorded transcript (the base) stands in for its own
-/// language only when that language cannot be transcribed again, and never when it is incomplete.
+/// language only when that language cannot be transcribed again, and never when it is incomplete (`isIncomplete`).
+/// For a session with saved audio and no transcript yet (`record start --record-only`, `session import
+/// --no-transcribe`), languages asked for by name make its first transcript the same way.
 ///
 /// Which languages: `requested` (`PostProcessingOptions.languages`) when given; else meeting.json's `languages`,
 /// when the current transcript is not merged yet, or was merged automatically from them but missed some. Nothing is
@@ -66,8 +68,9 @@ enum LanguageStage {
     struct Request {
         var session: URL
         var manifest: SessionManifest
-        /// The current transcript.
-        var transcript: Transcript
+        /// The current transcript; nil for a session that has none yet (recorded or imported without transcribing),
+        /// which only languages asked for by name (`requested`) transcribe.
+        var transcript: Transcript?
         var lease: ProcessingLease
         /// `PostProcessingOptions.languages`.
         var requested: [String]?
@@ -75,8 +78,9 @@ enum LanguageStage {
     }
 
     struct Outcome {
-        /// The transcript the later stages use: the merged one when this stage made or found it, else the current.
-        var transcript: Transcript
+        /// The transcript the later stages use: the merged one when this stage made or found it, else the current
+        /// (nil when there is none and none was made).
+        var transcript: Transcript?
         /// For the final record's message: "Transcribed in French (Canada) and English (Canada)."
         var note: String?
         /// Why the stage did not do all it was asked; makes the post-processing partial.
@@ -101,6 +105,8 @@ enum LanguageStage {
                     recorder: StageRecorder) async throws -> Outcome {
         let current = request.transcript
         let unchanged = Outcome(transcript: current)
+        // What a failure's message says first: what became of the current transcript.
+        let kept = current == nil ? "No transcript was made." : "Kept the transcript as it was."
         let events: [ArchiveEvent]
         do {
             events = try SessionArchive.readEvents(at: request.session).events
@@ -118,8 +124,12 @@ enum LanguageStage {
 
         let started = recorder.begin(.languages, message: "Checking the meeting's languages…")
         // The language the recorded transcript stood in for in the current merge, which is tried again.
-        let previousStandIn = standIn(of: current, events: events)
-        if alreadyMade(current, target: target, previousStandIn: previousStandIn) {
+        let previousStandIn = current.flatMap { standIn(of: $0, events: events) }
+        // The recorded transcript the merged ones are made from, and whether it holds all of the saved audio.
+        let base = current.flatMap { baseTranscript($0, events: events, session: request.session) }
+        let baseComplete = base.map { !isIncomplete($0, manifest: request.manifest, events: events) } ?? false
+        if let current, alreadyMade(current, target: target, previousStandIn: previousStandIn,
+                                    complete: baseComplete) {
             recorder.end(.languages, .succeeded, "The transcript was already made from \(names(target)).",
                          since: started)
             return Outcome(transcript: current, note: note(target))
@@ -128,17 +138,27 @@ enum LanguageStage {
             recorder.end(.languages, .skipped, problem, since: started)
             return Outcome(transcript: current, problem: problem)
         }
+        // Read before anything is transcribed: one written by a newer Holos is refused (schema rule 3, §1.6), never
+        // merged as if its meeting had no echo.
+        let echo: AlignmentParameters?
+        do {
+            echo = try echoParameters(request)
+        } catch let error where !(error is CancellationError) {
+            let message = "\(kept) Cannot read meeting.json: \(error.localizedDescription)"
+            recorder.end(.languages, .failed, message, since: started)
+            return Outcome(transcript: current, problem: message)
+        }
 
         // The transcription in each language: an earlier run's, else one made now from the saved audio (final
         // results only, which measured better than the live transcript's fast ones); the recorded transcript stands in
-        // for its own language only when that language cannot be transcribed again.
-        let base = baseTranscript(current, events: events, session: request.session)
-        let fallback = request.manifest.status == ArchiveStatus.transcriptionIncomplete ? nil : base
+        // for its own language only when that language cannot be transcribed again, and never when it is incomplete.
+        let fallback = baseComplete ? base : nil
         // The language the recorded transcript is in, as the targets name it ("en_CA" in an older session is "en-CA").
         let fallbackLocale = fallback.map { canonical($0.locale) }
-        // A transcription with no words where the current transcript has some failed rather than heard silence: it
-        // never replaces those words (nor is it reused), and the recorded transcript may stand in for it.
-        let expectsWords = hasWords(current.segments)
+        // A transcription with no words where the current transcript has some (or where there is none, so it would
+        // be the first) failed rather than heard silence: it never replaces those words (nor is it reused), and the
+        // recorded transcript may stand in for it.
+        let expectsWords = current.map { hasWords($0.segments) } ?? true
         var sources: [String: Transcript] = [:]
         for language in target {
             sources[language] = reusablePass(language, events: events, session: request.session,
@@ -150,8 +170,19 @@ enum LanguageStage {
         // Nothing is transcribed when the languages that can be had would not make a merge anyway.
         let reachable = target.filter { sources[$0] != nil || plan.languages.contains($0) || fallbackLocale == $0 }
         if mergeable(reachable, target: target) {
-            let transcribed = try await transcribe(plan.languages, request: request, dependencies: dependencies,
-                                                   recorder: recorder, expectsWords: expectsWords)
+            // The meeting's vocabulary, as the recording used it. A missing or damaged one is none; one written by a
+            // newer Holos is refused rather than read as none (schema rule 3, §1.6).
+            let vocabulary: [String]
+            do {
+                vocabulary = plan.languages.isEmpty ? [] : try TranscriptRebuilder.sessionVocabulary(request.session)
+            } catch let error where !(error is CancellationError) {
+                let message = "\(kept) \(error.localizedDescription)"
+                recorder.end(.languages, .failed, message, since: started)
+                return Outcome(transcript: current, problem: message)
+            }
+            let transcribed = try await transcribe(plan.languages, request: request, vocabulary: vocabulary,
+                                                   dependencies: dependencies, recorder: recorder,
+                                                   expectsWords: expectsWords)
             sources.merge(transcribed.sources) { _, new in new }
             reasons.merge(transcribed.failures) { _, new in new }
         }
@@ -170,12 +201,12 @@ enum LanguageStage {
         let failures = target.compactMap { sources[$0] == nil ? reasons[$0] : nil }
         let failure = failures.isEmpty ? nil : failures.joined(separator: " ")
         guard let primary = target.first, mergeable(available, target: target) else {
-            let message = "Kept the transcript as it was. " + (failure ?? "")
-            recorder.end(.languages, .failed, message.trimmingCharacters(in: .whitespaces), since: started)
-            return Outcome(transcript: current, problem: message.trimmingCharacters(in: .whitespaces))
+            let message = [kept, failure].compactMap { $0 }.joined(separator: " ")
+            recorder.end(.languages, .failed, message, since: started)
+            return Outcome(transcript: current, problem: message)
         }
         let merging = [note(available), standInNote].compactMap { $0 }.joined(separator: " ")
-        if canonical(current.languages) == available && previousStandIn == standIn {
+        if let current, canonical(current.languages) == available && previousStandIn == standIn {
             // Nothing new could be added (a language is still missing, or still stood in for): the current merge
             // stands.
             let message = [standInNote, failure].compactMap { $0 }.joined(separator: " ")
@@ -187,7 +218,6 @@ enum LanguageStage {
         // The merge (pure), then its publication under the writer lock.
         recorder.progress(.languages, track: nil, fraction: nil, message: "Choosing the language of each passage…")
         let tracks = sessionTracks(request.manifest)
-        let echo = echoParameters(request)
         let candidates = available.map { language in
             let segments = attributed(sources[language]?.segments ?? [], tracks: tracks)
             // Microphone echo of a call, found in each language's own transcription, where both tracks were heard
@@ -202,8 +232,8 @@ enum LanguageStage {
         let result = LanguageMerge.merge(candidates, scorer: dependencies.makeScorer())
         try Task.checkCancellation()
         guard !expectsWords || hasWords(result.segments) else {
-            // A merge that kept no words never replaces a transcript that has some.
-            let message = "Kept the transcript as it was: no words were recognized in \(names(available))."
+            // A merge that kept no words never replaces a transcript that has some, nor becomes the first one.
+            let message = "\(kept.dropLast()): no words were recognized in \(names(available))."
             recorder.end(.languages, .failed, message, since: started)
             return Outcome(transcript: current, problem: message)
         }
@@ -252,17 +282,21 @@ enum LanguageStage {
               let target = targetLanguages(requested: nil, session: session, manifest: manifest,
                                            transcript: transcript, events: events),
               !target.isEmpty else { return false }
+        let base = baseTranscript(transcript, events: events, session: session)
         return !alreadyMade(transcript, target: target,
-                            previousStandIn: standIn(of: transcript, events: events))
+                            previousStandIn: standIn(of: transcript, events: events),
+                            complete: base.map { !isIncomplete($0, manifest: manifest, events: events) } ?? false)
     }
 
-    /// The languages to merge, the preferred one first; nil when there is nothing to do.
+    /// The languages to merge, the preferred one first; nil when there is nothing to do (always, without languages
+    /// asked for by name, for a session that has no transcript).
     private static func targetLanguages(requested: [String]?, session: URL, manifest: SessionManifest,
-                                        transcript current: Transcript, events: [ArchiveEvent]) -> [String]? {
+                                        transcript current: Transcript?, events: [ArchiveEvent]) -> [String]? {
         if let requested {
             let languages = DictationLanguage.meetingLanguages(requested)
             return languages.isEmpty ? nil : languages
         }
+        guard let current else { return nil }
         let meeting: MeetingInfo
         do {
             meeting = try SessionFiles.meetingInfo(session: session, manifest: manifest)
@@ -285,10 +319,23 @@ enum LanguageStage {
     }
 
     /// Whether `current` is already the transcript `target` asks for: merged from exactly those languages with none
-    /// stood in for, or, for one language, the recording's own transcript in it.
-    private static func alreadyMade(_ current: Transcript, target: [String], previousStandIn: String?) -> Bool {
+    /// stood in for, or, for one language, the recording's own transcript in it when that is `complete` (holds all
+    /// of the saved audio, `isIncomplete`); an incomplete one is transcribed again.
+    private static func alreadyMade(_ current: Transcript, target: [String], previousStandIn: String?,
+                                    complete: Bool) -> Bool {
         if let languages = canonical(current.languages) { return languages == target && previousStandIn == nil }
-        return target == [canonical(current.locale)]
+        return complete && target == [canonical(current.locale)]
+    }
+
+    /// Whether the recorded transcript `transcript` is known to leave saved audio out, so it never stands in for its
+    /// language (nor counts as that language's transcript): the recorder stopped with transcription unfinished
+    /// (`transcriptionIncomplete`), or it was rebuilt from the journaled phrases alone while audio after them was not
+    /// transcribed (`session recover --no-transcribe`, whose status is `recovered`;
+    /// `TranscriptRebuilder.leftAudioUntranscribed`).
+    private static func isIncomplete(_ transcript: Transcript, manifest: SessionManifest,
+                                     events: [ArchiveEvent]) -> Bool {
+        manifest.status == ArchiveStatus.transcriptionIncomplete
+            || TranscriptRebuilder.leftAudioUntranscribed(transcript.id, events: events, manifest: manifest)
     }
 
     /// The language the recorded transcript stood in for in the merge `current` is (its `languagesDetected`
@@ -305,9 +352,10 @@ enum LanguageStage {
         events.last { $0.kind == MeetingEventKind.languagesDetected && $0.details["transcriptID"] == transcriptID }
     }
 
-    /// A locale identifier as the stage compares and journals it ("en-CA" for "en_CA"): every comparison of a
-    /// transcript's, pass's, or journaled language with the targets goes through this, since an older session
-    /// can have recorded an underscore identifier.
+    /// A locale identifier as the stage compares and journals it ("en-CA" for "en_CA" or "en-ca",
+    /// `DictationLanguage.identifier`): every comparison of a transcript's, pass's, or journaled language with the
+    /// targets (which `DictationLanguage.meetingLanguages` made canonical the same way) goes through this, since an
+    /// older session can have recorded an underscore identifier, and a locale can be given in any case.
     private static func canonical(_ locale: String) -> String { DictationLanguage.identifier(locale) }
 
     private static func canonical(_ locales: [String]?) -> [String]? { locales.map { $0.map(canonical) } }
@@ -318,10 +366,12 @@ enum LanguageStage {
     }
 
     /// Why the transcript must not be replaced now: its speaker labels were edited and `force` is off. Nil when it
-    /// may be (a head that cannot be read counts as replaceable only when it is damaged, as stage 3 decides).
+    /// may be (a head that cannot be read counts as replaceable only when it is damaged, as stage 3 decides), and
+    /// when there is no transcript, whose labels there would be.
     private static func editedHeadProblem(_ request: Request) -> String? {
+        guard let transcript = request.transcript else { return nil }
         do {
-            guard let head = try SpeakerAnalysis.headState(session: request.session, transcript: request.transcript),
+            guard let head = try SpeakerAnalysis.headState(session: request.session, transcript: transcript),
                   head.needsForce(request.force) else { return nil }
             return editedHead
         } catch {
@@ -414,11 +464,11 @@ enum LanguageStage {
         return (planned, reasons)
     }
 
-    /// Transcribes the saved audio of every track in each of `languages`, one after the other, and saves each
-    /// transcription (`languagePass`). A language whose transcription fails is left out with the reason, and so is
-    /// one that recognized no words at all when `expectsWords` (the current transcript has some): nothing is saved
-    /// for it, so a later run tries again.
-    private static func transcribe(_ languages: [String], request: Request,
+    /// Transcribes the saved audio of every track in each of `languages`, one after the other, with the meeting's
+    /// `vocabulary`, and saves each transcription (`languagePass`). A language whose transcription fails is left out
+    /// with the reason, and so is one that recognized no words at all when `expectsWords`: nothing is saved for it,
+    /// so a later run tries again.
+    private static func transcribe(_ languages: [String], request: Request, vocabulary: [String],
                                    dependencies: LanguageDetectionDependencies,
                                    recorder: StageRecorder, expectsWords: Bool) async throws
         -> (sources: [String: Transcript], failures: [String: String]) {
@@ -426,8 +476,6 @@ enum LanguageStage {
         let session = request.session
         let manifest = request.manifest
         let tracks = sessionTracks(manifest)
-        // The meeting's vocabulary, as the recording used it; an unreadable one is left out rather than stopping.
-        let vocabulary = (try? TranscriptRebuilder.sessionVocabulary(session)) ?? []
         let journal = recorder.journal
         var sources: [String: Transcript] = [:]
         var failures: [String: String] = [:]
@@ -499,12 +547,14 @@ enum LanguageStage {
     }
 
     /// Saves a transcription as a revision that is not current, then journals it (`languagePass`), so a later run
-    /// can reuse it. The writer lock is held only for this.
+    /// can reuse it. The writer lock is held only for this. Taking it can wait without seeing a cancellation, so a
+    /// run cancelled meanwhile saves nothing.
     private static func savePass(_ pass: Transcript, tracks: [String], manifest: SessionManifest, session: URL,
                                  lease: ProcessingLease) async throws {
         let seconds = tracks.reduce(0.0) { $0 + manifest.audioSeconds(track: $1) }
         let archive = try SessionArchive.openForMaintenance(at: session, lease: lease)
         do {
+            try Task.checkCancellation()
             try await archive.saveTranscriptRevision(pass)
             try await archive.recordEvent(kind: MeetingEventKind.languagePass, details: [
                 "transcriptID": pass.id, "language": pass.locale, "tracks": tracks.joined(separator: ","),
@@ -524,6 +574,11 @@ enum LanguageStage {
     /// either saved before the check and keeps the merge from being published, or waits until the merged transcript
     /// is current and is then an edit of the replaced transcript's labels, which the speaker stages treat as they do
     /// after any new transcript (names carry over). Both locks are held only for this.
+    ///
+    /// Taking either lock can wait (the speaker lock polls for up to 2 s) without seeing a cancellation, so
+    /// cancellation is checked again with both held, just before the journal and the save: a run cancelled
+    /// meanwhile throws `CancellationError` and publishes nothing, rather than reporting a cancellation after
+    /// replacing the transcript.
     private static func publish(_ merged: Transcript, details: [String: String],
                                 request: Request) async throws -> String? {
         let archive = try SessionArchive.openForMaintenance(at: request.session, lease: request.lease)
@@ -531,6 +586,7 @@ enum LanguageStage {
             let problem = try await SessionArchive.withSpeakerLockAsync(at: request.session) { () async throws -> String? in
                 if let problem = editedHeadProblem(request) { return problem }
                 whilePublishing?()
+                try Task.checkCancellation()
                 try await archive.recordEvent(kind: MeetingEventKind.languagesDetected, details: details)
                 try await archive.saveTranscript(merged, writeLegacyExports: false)
                 return nil
@@ -546,10 +602,15 @@ enum LanguageStage {
     // MARK: - Helpers
 
     /// The speaker stages' alignment parameters when they look for microphone echo (a call); nil otherwise, or when
-    /// meeting.json cannot be read (stage 2 reports that).
-    private static func echoParameters(_ request: Request) -> AlignmentParameters? {
-        guard let meeting = try? SessionFiles.meetingInfo(session: request.session, manifest: request.manifest)
-        else { return nil }
+    /// meeting.json is damaged or another session's (stage 2 reports that). Throws when it was written by a newer
+    /// Holos (`unavailable`) or cannot be read now: the merge is never made as if the meeting had no echo.
+    private static func echoParameters(_ request: Request) throws -> AlignmentParameters? {
+        let meeting: MeetingInfo
+        do {
+            meeting = try SessionFiles.meetingInfo(session: request.session, manifest: request.manifest)
+        } catch let error where SessionFiles.isDamage(error) {
+            return nil
+        }
         let parameters = SpeakerAnalysis.alignmentParameters(meeting: meeting)
         return parameters.echoWindowSeconds == nil ? nil : parameters
     }

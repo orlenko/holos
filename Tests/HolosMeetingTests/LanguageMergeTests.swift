@@ -450,6 +450,29 @@ private func languageMergeEchoCall(echo: Bool) -> [LanguageMerge.Candidate] {
     #expect(languageMergeRun(candidates).segments.filter { $0.track == "mic" }.map(\.id) == ["F1", "FE", "F3"])
 }
 
+@Test func echoInAnUntimedSegmentIsMeasuredInWords() {
+    // The English transcription heard the echoed phrase as one untimed (legacy) segment of 12 words, which moves as
+    // one unit; echo is still counted by its words, not by that one unit.
+    func candidates(echoedWords: Int) -> [LanguageMerge.Candidate] {
+        var calls = languageMergeEchoCall(echo: false)
+        let words = (0..<12).map { "en-\(12 + $0)@en" }.joined(separator: " ")
+        calls[1].segments = calls[1].segments.map { segment in
+            segment.id == "EE" ? TranscriptSegment(id: "EE", start: 6.1, end: 9.1, text: words, track: "mic") : segment
+        }
+        calls[1].echo = [WordSpan(segmentID: "EE", first: 0, end: echoedWords)]
+        return calls
+    }
+    func mic(_ result: LanguageMerge.Result) -> [String] {
+        result.segments.filter { $0.track == "mic" }.map(\.id)
+    }
+    // 3 echoed words of 12 are not half of the window's words: the window is smoothed to French as without echo.
+    #expect(mic(languageMergeRun(candidates(echoedWords: 3))) == ["F1", "FE", "F3"])
+    #expect(mic(languageMergeRun(candidates(echoedWords: 5))) == ["F1", "FE", "F3"])
+    // Half of them, or all, pin it to the system track's language.
+    #expect(mic(languageMergeRun(candidates(echoedWords: 6))) == ["F1", "EE", "F3"])
+    #expect(mic(languageMergeRun(candidates(echoedWords: 12))) == ["F1", "EE", "F3"])
+}
+
 @Test func pinnedWindowsTakeNoPartInSmoothing() {
     #expect(LanguageMerge.smooth([0, 0, 1, 0, 0], switchWindows: 2, pinned: [nil, nil, 1, nil, nil])
         == [0, 0, 1, 0, 0])

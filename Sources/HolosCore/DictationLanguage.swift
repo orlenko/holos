@@ -129,9 +129,28 @@ public enum DictationLanguage {
         }
     }
 
-    /// "fr-CA" for "fr_CA", the form Holos saves and hands to the recognizer.
+    /// "fr-CA" for "fr_CA", "fr-ca", or "FR_ca", the form Holos saves, compares, and hands to the recognizer: hyphens,
+    /// and BCP 47 case (language lowercase, a four-letter script titlecase, a two-letter region uppercase, everything
+    /// else lowercase, "zh-Hans-CN", "es-419"), so two spellings of one locale are one identifier. Keywords after "@"
+    /// are kept as given.
     public static func identifier(_ raw: String) -> String {
-        raw.replacingOccurrences(of: "_", with: "-")
+        let keywords = raw.firstIndex(of: "@")
+        let tag = raw[..<(keywords ?? raw.endIndex)].replacingOccurrences(of: "_", with: "-")
+        var afterSingleton = false
+        let subtags = tag.split(separator: "-", omittingEmptySubsequences: false).enumerated().map { index, part in
+            let subtag = String(part)
+            let letters = subtag.allSatisfy { $0.isASCII && $0.isLetter }
+            // The language, and everything after an extension or private-use singleton ("-u-", "-x-"), is lowercase.
+            if index == 0 || afterSingleton { return subtag.lowercased() }
+            if subtag.count == 1 {
+                afterSingleton = true
+                return subtag.lowercased()
+            }
+            if letters, subtag.count == 4 { return subtag.prefix(1).uppercased() + subtag.dropFirst().lowercased() }
+            if letters, subtag.count == 2 { return subtag.uppercased() }
+            return subtag.lowercased()
+        }
+        return subtags.joined(separator: "-") + (keywords.map { String(raw[$0...]) } ?? "")
     }
 
     /// "fr" for "fr-CA", "fr_FR", or "fr".

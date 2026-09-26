@@ -97,10 +97,10 @@ private func languageStageDependencies(_ speech: LanguageStageSpeech,
 }
 
 /// A finished in-person session in `root`: 20 s of quiet microphone audio, meeting.json with `languages`, the English
-/// recording's transcript as current, finished as `status`.
+/// recording's transcript as current (unless `transcribed` is false: then there is none), finished as `status`.
 private func languageStageSession(in root: URL, languages: [String]? = [languageStageEnglish, languageStageFrench],
-                                  status: String = ArchiveStatus.complete,
-                                  locale: String = languageStageEnglish) async throws -> (URL, Transcript) {
+                                  status: String = ArchiveStatus.complete, locale: String = languageStageEnglish,
+                                  transcribed: Bool = true) async throws -> (URL, Transcript) {
     let archive = try SessionArchive.create(root: root, name: "Bilingual meeting", source: .microphone,
                                             locale: locale, backend: .speech)
     try AtomicFile.writeJSON(MeetingInfo(sessionID: archive.id, mode: .inPerson, othersInRoom: false,
@@ -113,7 +113,7 @@ private func languageStageSession(in root: URL, languages: [String]? = [language
     try await writer.finish()
     var transcript = SessionFixtures.transcript(languageStageHeard(by: "en", prefix: "E"))
     transcript.locale = locale
-    try await archive.saveTranscript(transcript, writeLegacyExports: false)
+    if transcribed { try await archive.saveTranscript(transcript, writeLegacyExports: false) }
     try await archive.finish(status: status)
     return (archive.directory, transcript)
 }
@@ -355,6 +355,43 @@ func incompleteRecordedTranscriptNeverStandsIn() async throws {
     #expect(languageStageOutcome(record)?.message
         == "Kept the transcript as it was. English (Canada) was not transcribed: The speech service is busy.")
     #expect(try languageStageCurrent(session) == recorded)
+
+    // Nor does it count as its language's own transcript: asked for English alone, the audio is transcribed again.
+    let english = LanguageStageSpeech.standard()
+    let alone = try await languageStageCommand(session, [languageStageEnglish], speech: english)
+    #expect(alone.exitCode == 0)
+    #expect(english.locales == [languageStageEnglish])
+    let made = try languageStageCurrent(session)
+    #expect(made.languages == [languageStageEnglish])
+    #expect(made.segments.map(\.id) == ["P1", "P2"])
+}
+
+@Test(.timeLimit(.minutes(1)))
+func aRebuildThatLeftAudioUntranscribedNeverStandsIn() async throws {
+    let temp = try TemporaryDirectory("languages")
+    defer { temp.remove() }
+    // The journaled phrases end at 18 s of 20 s of audio, and Recover runs without transcribing: the rebuilt
+    // transcript leaves the last 2 s out, though the manifest then says `recovered`.
+    let session = try await languageStageDeadMeeting(in: temp.url, coveredToEnd: false)
+    let speech = LanguageStageSpeech.standard()
+    let outcome = try await SessionRecoveryCommand.run(
+        SessionRecoveryCommand.Request(session: session, transcribe: false), diarizer: nil,
+        freeSpace: FixedFreeSpace(.max),
+        languages: languageStageDependencies(speech, installed: SharedValue([languageStageFrench])))
+    let rebuiltID = try #require(outcome.rebuild?.transcriptID)
+    #expect(try SessionArchive.readManifest(at: session).status == ArchiveStatus.recovered)
+    #expect(TranscriptRebuilder.leftAudioUntranscribed(rebuiltID,
+                                                        events: try SessionArchive.readEvents(at: session).events,
+                                                        manifest: try SessionArchive.readManifest(at: session)))
+
+    // English cannot be transcribed again, and the incomplete rebuild does not stand in for it: nothing is merged.
+    let stage = try #require(outcome.postProcessing.flatMap(languageStageOutcome))
+    #expect(stage.result == .failed)
+    #expect(stage.message == "Kept the transcript as it was. " + LanguageStage.modelProblem(languageStageEnglish,
+                                                                                          status: "supported"))
+    #expect(speech.locales.isEmpty, "Nothing is transcribed when no merge could be made.")
+    #expect(try languageStageCurrent(session).id == rebuiltID)
+    #expect(try languageStageEvents(session, MeetingEventKind.languagesDetected).isEmpty)
 }
 
 @Test(.timeLimit(.minutes(1)))
@@ -580,6 +617,63 @@ func theMergeIsPublishedUnderTheSpeakerLock() async throws {
     #expect(try languageStageCurrent(session).languages == [languageStageEnglish, languageStageFrench])
     #expect(try SessionArchive.withSpeakerLock(at: session, timeout: .zero) { true }, "Released afterwards.")
     #expect(try !SessionArchive.isActive(at: session))
+}
+
+@Test(.timeLimit(.minutes(1)))
+func aCancellationWhileWaitingForThePublicationLocksPublishesNothing() async throws {
+    let temp = try TemporaryDirectory("languages")
+    defer { temp.remove() }
+    let (session, recorded) = try await languageStageSession(in: temp.url)
+    // The run is cancelled once the locks are held (as when it waited for a contended speaker lock, which does not
+    // see a cancellation), before the journal and the save.
+    let processor = languageStageProcessor(LanguageStageSpeech.standard(), diarizer: nil)
+    await #expect(throws: CancellationError.self) {
+        try await LanguageStage.$whilePublishing.withValue({
+            withUnsafeCurrentTask { $0?.cancel() }
+        }) {
+            try await processor.run(session: session, lease: nil)
+        }
+    }
+    #expect(try languageStageCurrent(session) == recorded, "The merge is not published.")
+    #expect(try languageStageEvents(session, MeetingEventKind.languagesDetected).isEmpty)
+    let saved = try AtomicFile.readJSON(PostProcessingRecord.self, from: SessionPaths.postprocess(session))
+    #expect(saved.state == .failed && saved.message == "Post-processing was cancelled.")
+    #expect(try SessionArchive.withSpeakerLock(at: session, timeout: .zero) { true }, "Both locks are let go.")
+    #expect(try !SessionArchive.isActive(at: session))
+    #expect(try !SessionArchive.isProcessing(at: session))
+}
+
+@Test(.timeLimit(.minutes(1)))
+func filesFromANewerVersionAreRefusedNotIgnored() async throws {
+    let temp = try TemporaryDirectory("languages")
+    defer { temp.remove() }
+    let refusal = "was written by a newer version of Voice is Local; update Voice is Local to read it."
+
+    // vocabulary.json from a newer Holos: nothing is transcribed without the meaning it may carry.
+    let (session, recorded) = try await languageStageSession(in: temp.url.appendingPathComponent("vocabulary"))
+    try Data(#"{"schemaVersion": 2, "strings": ["Holos"], "added": "later"}"#.utf8)
+        .write(to: SessionPaths.vocabulary(session))
+    let speech = LanguageStageSpeech.standard()
+    let vocabulary = try await languageStageCommand(session, [languageStageEnglish, languageStageFrench],
+                                                    speech: speech)
+    #expect(vocabulary.exitCode == 3)
+    #expect(languageStageOutcome(vocabulary.record)?.result == .failed)
+    #expect(languageStageOutcome(vocabulary.record)?.message
+        == "Kept the transcript as it was. vocabulary.json " + refusal)
+    #expect(speech.locales.isEmpty)
+    #expect(try languageStageCurrent(session) == recorded)
+    #expect(try languageStageEvents(session, MeetingEventKind.languagePass).isEmpty)
+
+    // meeting.json from a newer Holos: the merge is never made as if the meeting had no echo.
+    let (other, otherRecorded) = try await languageStageSession(in: temp.url.appendingPathComponent("meeting"))
+    let manifest = try SessionArchive.readManifest(at: other)
+    try Data(#"{"schemaVersion": 2, "sessionID": "\#(manifest.id)"}"#.utf8).write(to: SessionPaths.meetingInfo(other))
+    let meeting = try await languageStageCommand(other, [languageStageEnglish, languageStageFrench], speech: speech)
+    #expect(languageStageOutcome(meeting.record)?.result == .failed)
+    #expect(languageStageOutcome(meeting.record)?.message
+        == "Kept the transcript as it was. Cannot read meeting.json: meeting.json " + refusal)
+    #expect(speech.locales.isEmpty)
+    #expect(try languageStageCurrent(other) == otherRecorded)
 }
 
 /// The meeting as one segment per transcription: English for 9 s, then French for 9 s, as `code`'s model hears it,
@@ -889,11 +983,93 @@ func anUnderscoreLocaleRecordingCountsAsItsLanguage() async throws {
     #expect(speech.locales == [languageStageFrench])
 }
 
+@Test(.timeLimit(.minutes(1)))
+func localesInAnyCaseCountAsTheirLanguage() async throws {
+    let temp = try TemporaryDirectory("languages")
+    defer { temp.remove() }
+    // Recorded as en-CA; the languages are given in lowercase, which names the same locales.
+    let (session, recorded) = try await languageStageSession(in: temp.url, languages: nil)
+    let speech = LanguageStageSpeech.standard()
+    let same = try await languageStageCommand(session, ["en-ca"], speech: speech)
+    #expect(languageStageOutcome(same.record)?.message == "The transcript was already made from English (Canada).")
+
+    // With English not installed, the recorded transcript stands in for en-ca, and French is transcribed as fr-CA.
+    let outcome = try await languageStageCommand(session, ["en-ca", "FR_ca"], speech: speech,
+                                                 installed: SharedValue([languageStageFrench]))
+    #expect(outcome.exitCode == 0)
+    let merged = try languageStageCurrent(session)
+    #expect(merged.languages == [languageStageEnglish, languageStageFrench])
+    #expect(merged.segments.map(\.id) == ["E1", "F2"])
+    let detected = try #require(try languageStageEvents(session, MeetingEventKind.languagesDetected).first)
+    #expect(detected.details["fallback"] == languageStageEnglish)
+    #expect(detected.details["source.en-CA"] == recorded.id)
+    #expect(speech.locales == [languageStageFrench])
+
+    // A session recorded with a lowercase locale counts as that language too.
+    let (lower, lowerRecorded) = try await languageStageSession(in: temp.url.appendingPathComponent("lower"),
+                                                                languages: nil, locale: "en-ca")
+    let again = try await languageStageCommand(lower, [languageStageEnglish], speech: speech)
+    #expect(languageStageOutcome(again.record)?.message == "The transcript was already made from English (Canada).")
+    #expect(try languageStageCurrent(lower) == lowerRecorded)
+}
+
+@Test(.timeLimit(.minutes(1)))
+func languagesCommandMakesTheFirstTranscriptOfAnAudioOnlySession() async throws {
+    let temp = try TemporaryDirectory("languages")
+    defer { temp.remove() }
+    // Recorded with --record-only: saved audio, no transcript.
+    let (session, _) = try await languageStageSession(in: temp.url, languages: nil, status: ArchiveStatus.audioOnly,
+                                                      transcribed: false)
+    #expect(try SessionArchive.currentTranscriptID(at: session) == nil)
+
+    // Without the speech models nothing can be made: said, and nothing is published.
+    let speech = LanguageStageSpeech.standard()
+    let missing = try await languageStageCommand(session, [languageStageEnglish, languageStageFrench], speech: speech,
+                                                 installed: SharedValue([languageStageFrench]))
+    #expect(missing.exitCode == 1)
+    #expect(missing.record.state == .failed)
+    let reason = "No transcript was made. "
+        + LanguageStage.modelProblem(languageStageEnglish, status: "supported")
+    #expect(languageStageOutcome(missing.record)?.message == reason)
+    #expect(missing.record.message == reason)
+    #expect(speech.locales.isEmpty)
+    #expect(try SessionArchive.currentTranscriptID(at: session) == nil)
+
+    // With them, the audio is transcribed in each language and the merge becomes its first transcript.
+    let outcome = try await languageStageCommand(session, [languageStageEnglish, languageStageFrench],
+                                                 speech: speech)
+    #expect(outcome.exitCode == 0)
+    #expect(outcome.record.stages.first { $0.stage == .transcript }?.result == .skipped)
+    #expect(speech.locales == [languageStageEnglish, languageStageFrench])
+    let merged = try languageStageCurrent(session)
+    #expect(outcome.record.transcriptID == merged.id)
+    #expect(merged.languages == [languageStageEnglish, languageStageFrench])
+    #expect(merged.segments.map(\.id) == ["P1", "F2"])
+    let detected = try #require(try languageStageEvents(session, MeetingEventKind.languagesDetected).first)
+    #expect(detected.details["base"] == "")
+    #expect(detected.details["fallback"] == nil)
+    #expect(SessionFixtures.exists(SessionPaths.export("md", in: session)))
+
+    // Then it is like any merged transcript: the same languages again change nothing.
+    let again = try await languageStageCommand(session, [languageStageEnglish, languageStageFrench], speech: speech)
+    #expect(languageStageOutcome(again.record)?.message
+        == "The transcript was already made from English (Canada) and French (Canada).")
+    #expect(try languageStageCurrent(session).id == merged.id)
+
+    // Label Speakers on another audio-only session still has nothing to label.
+    let (plain, _) = try await languageStageSession(in: temp.url.appendingPathComponent("plain"),
+                                                    status: ArchiveStatus.audioOnly, transcribed: false)
+    let relabel = try await languageStageProcessor(speech, diarizer: nil).run(session: plain, lease: nil)
+    #expect(relabel.state == .skipped)
+    #expect(try SessionArchive.currentTranscriptID(at: plain) == nil)
+}
+
 // MARK: - voiceislocal session recover
 
 /// A bilingual in-person meeting whose recorder died: 20 s of microphone audio, meeting.json with English and
-/// French, and the English phrases live transcription journaled; the manifest still says `recording`.
-private func languageStageDeadMeeting(in root: URL) async throws -> URL {
+/// French, and the English phrases live transcription journaled (to the end of the audio when `coveredToEnd`, else
+/// only to 18 s); the manifest still says `recording`.
+private func languageStageDeadMeeting(in root: URL, coveredToEnd: Bool = true) async throws -> URL {
     let archive = try SessionArchive.create(root: root, name: "Bilingual meeting", source: .microphone,
                                             locale: languageStageEnglish, backend: .speech)
     try AtomicFile.writeJSON(MeetingInfo(sessionID: archive.id, mode: .inPerson, othersInRoom: false,
@@ -905,7 +1081,8 @@ private func languageStageDeadMeeting(in root: URL) async throws -> URL {
     try await writer.append(CapturedAudio(track: "mic", frame: try PCMFrame(samples: samples, sampleRate: 16_000,
                                                                             channels: 1, startTime: 0)))
     try await writer.finish()
-    for segment in languageStageHeard(by: "en", prefix: "E") {
+    let tail = [languageStagePassage("en", heardBy: "en", from: 18, seconds: 2, id: "E3")]
+    for segment in languageStageHeard(by: "en", prefix: "E") + (coveredToEnd ? tail : []) {
         let words = String(decoding: try HolosJSON.encoder(pretty: false).encode(segment.words), as: UTF8.self)
         try await archive.recordEvent(kind: MeetingEventKind.transcriptFinalized, details: [
             "track": "mic", "text": segment.text, "start": String(segment.start), "end": String(segment.end),

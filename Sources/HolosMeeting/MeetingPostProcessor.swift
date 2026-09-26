@@ -177,26 +177,35 @@ public struct MeetingPostProcessor: Sendable {
             recorder.end(.transcript, .failed, error.localizedDescription, since: started)
             return recorder.finalRecord(state: .failed, message: "Cannot read the transcript: \(error.localizedDescription)")
         }
-        guard let current else {
+        if let current {
+            recorder.end(.transcript, .succeeded, since: started)
+            journal.update { $0.transcriptID = current.id }
+        } else if options.languages == nil {
             recorder.end(.transcript, .skipped, "This meeting has no transcript.", since: started)
             return recorder.finalRecord(state: .skipped,
                                         message: "This meeting has no transcript, so there is nothing to label.")
+        } else {
+            // Languages asked for by name (`voiceislocal session languages`) transcribe the saved audio of a meeting
+            // recorded or imported without a transcript, and make the first one (§4.14).
+            recorder.end(.transcript, .skipped, "This meeting has no transcript yet; it is made from the saved audio.",
+                         since: started)
         }
-        recorder.end(.transcript, .succeeded, since: started)
-        journal.update { $0.transcriptID = current.id }
 
         // Stage 1b: a meeting in several languages (§4.14), before the speakers, so they are labelled on the final text.
         let languages = try await LanguageStage.run(
             LanguageStage.Request(session: session, manifest: manifest, transcript: current, lease: lease,
                                   requested: options.languages, force: options.force),
             dependencies: languageDetection, recorder: recorder)
-        let transcript = languages.transcript
-        if transcript.id != current.id { journal.update { $0.transcriptID = transcript.id } }
+        guard let transcript = languages.transcript else {
+            let message = languages.problem ?? "This meeting has no transcript, so there is nothing to label."
+            return recorder.finalRecord(state: .failed, message: message)
+        }
+        if transcript.id != current?.id { journal.update { $0.transcriptID = transcript.id } }
 
         // Stages 2–7. Languages asked for by name (`voiceislocal session languages`) that left the transcript as it
         // was also leave its speaker labels as they are, edited or not (§4.14).
         let speakers: SpeakerResult
-        if options.languages != nil, transcript.id == current.id,
+        if options.languages != nil, transcript.id == current?.id,
            let kept = keptLabels(session: session, manifest: manifest, transcript: transcript, recorder: recorder) {
             speakers = kept
         } else {

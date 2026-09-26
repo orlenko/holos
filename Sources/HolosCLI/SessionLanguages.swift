@@ -45,7 +45,8 @@ extension Session {
                 over) and the transcript files rewritten. Transcriptions made before are reused, and running it \
                 again with the same languages leaves the transcript and the speaker labels as they are. With one \
                 language the transcript becomes that \
-                language's alone. Exits 0 when done (also when the speaker models are not installed), 3 when the \
+                language's alone. A session recorded or imported without a transcript (--record-only, \
+                --no-transcribe) gets its first one this way. Exits 0 when done (also when the speaker models are not installed), 3 when the \
                 transcript files were written but a language could not be transcribed or speaker labelling was \
                 skipped or failed (it is printed), and 1 when nothing could be done.
                 """)

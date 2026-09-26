@@ -105,7 +105,10 @@ public enum LanguageMerge {
                 for var unit in units(of: segment, candidate: candidateIndex, segmentIndex: segmentIndex) {
                     // Only microphone words are echo, even when a system segment shares a microphone one's ID.
                     if segment.track != echoSourceTrack, let words = echo[segment.id] {
-                        unit.isEcho = unit.word.map { words.contains($0) } ?? !words.isEmpty
+                        // A timed word is echo or not; a whole untimed segment counts its echoed words, which are
+                        // its effective words (`WordTiming`: whitespace-separated, as `wordCount` counts them).
+                        unit.echoWords = unit.word.map { words.contains($0) ? 1 : 0 }
+                            ?? words.count { $0 >= 0 && $0 < unit.wordCount }
                     }
                     let window = windowIndex(unit.middle, windowSeconds: windowSeconds)
                     tracks[segment.track, default: [:]][window, default: empty][candidateIndex].append(unit)
@@ -189,8 +192,8 @@ public enum LanguageMerge {
         var text: String
         var confidence: Double?
         var wordCount: Int
-        /// Echo of the system track in its candidate's transcription (rule 5).
-        var isEcho = false
+        /// How many of its `wordCount` words are echo of the system track in its candidate's transcription (rule 5).
+        var echoWords = 0
     }
 
     /// The word indexes `spans` cover, by segment ID.
@@ -203,12 +206,14 @@ public enum LanguageMerge {
     }
 
     /// Rule 5: the candidate a window must take because at least half of its words there are echo; nil when none.
+    /// Counted in words, so a whole untimed segment weighs as many words as it holds.
     private static func echoChoice(_ perCandidate: [[Unit]], system: Int?) -> Int? {
         var best: (candidate: Int, echo: Int)?
         var echoing: [Int] = []
         for (candidate, units) in perCandidate.enumerated() where !units.isEmpty {
-            let echo = units.filter(\.isEcho).count
-            guard echo > 0, echo * 2 >= units.count else { continue }
+            let echo = units.reduce(0) { $0 + $1.echoWords }
+            let words = units.reduce(0) { $0 + $1.wordCount }
+            guard echo > 0, echo * 2 >= words else { continue }
             echoing.append(candidate)
             if echo > best?.echo ?? 0 { best = (candidate, echo) }
         }

@@ -190,6 +190,9 @@ public enum TranscriptRebuilder {
         }
         // The only moment the writer lock is held: the save.
         let archive = try SessionArchive.openForMaintenance(at: session, lease: lease)
+        // Taking the lock can wait without seeing a cancellation: a rebuild cancelled meanwhile saves nothing (the
+        // unfinished archive lets go of the lock as it is released).
+        try Task.checkCancellation()
         // Journaled before the save, so a transcript this rebuild made current is never taken for one the recorder
         // saved, even when recording the rebuild below fails; a failure here changes nothing else.
         try await archive.recordEvent(kind: MeetingEventKind.transcriptRebuilding, details: details)
@@ -287,6 +290,24 @@ public enum TranscriptRebuilder {
         guard let base = LanguageStage.mergeEvent(of: transcriptID, events: events)?.details["base"], !base.isEmpty
         else { return transcriptID }
         return base
+    }
+
+    /// Whether transcript `transcriptID` was saved by a rebuild that did not transcribe audio (`transcribed: false`:
+    /// `--no-transcribe`, or the audio was deleted) while some track's saved audio runs past the journaled phrases
+    /// it kept (its `coverageEnd.<track>`, by more than `uncoveredTolerance`), so the transcript is known to leave
+    /// that audio out, though the manifest then says `recovered`. False for a transcript no rebuild saved.
+    static func leftAudioUntranscribed(_ transcriptID: String, events: [ArchiveEvent],
+                                       manifest: SessionManifest) -> Bool {
+        guard let rebuild = events.last(where: { event in
+            (event.kind == MeetingEventKind.transcriptRebuilt || event.kind == MeetingEventKind.transcriptRebuilding)
+                && event.details["transcriptID"] == transcriptID
+        }), rebuild.details["transcribed"] == "false" else { return false }
+        var ends: [String: Double] = [:]
+        for chunk in manifest.chunks { ends[chunk.track] = max(ends[chunk.track] ?? chunk.end, chunk.end) }
+        return ends.contains { track, end in
+            let covered = rebuild.details["coverageEnd.\(track)"].flatMap(Double.init) ?? 0
+            return !covered.isFinite || end - covered > uncoveredTolerance
+        }
     }
 
     /// The sequence of the last `archiveRecovered` event; 0 when there is none.
