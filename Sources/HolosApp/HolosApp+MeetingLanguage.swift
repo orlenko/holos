@@ -3,9 +3,10 @@ import HolosCore
 import HolosMeeting
 import HolosSpeech
 
-/// The meeting language: chosen in the start panel from the same list as dictation, remembered in `meetingLocales`
-/// (a list, so a later version can transcribe mixed-language meetings; one language today), and its speech model,
-/// which is checked when the panel shows it and installed only when the user clicks Install.
+/// The meeting languages: chosen in the start panel from the same list as dictation (the Language pop-up, then up to
+/// two more under "Also detect", docs/meeting-design.md §4.14), remembered in `meetingLocales` (the meeting language
+/// first), and their speech models, which are checked when the panel shows them and installed only when the user
+/// clicks Install. Dictation keeps its own single language.
 extension HolosAppDelegate {
     /// The languages and speech model states for the start panel.
     func addLanguages(to environment: inout MeetingStartPanel.Environment) {

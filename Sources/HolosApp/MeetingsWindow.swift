@@ -174,8 +174,11 @@ final class MeetingsWindow: NSObject, NSWindowDelegate, NSTableViewDataSource, N
         loading = true
         let root = self.root
         Task { [weak self] in
+            // A meeting that misses a language is checked for its speech model, so Label Speakers is offered once
+            // the language can be detected (§4.14).
             let listed = await Task.detached { () -> ([SessionSummary], Int64?) in
-                (SessionCatalog.list(root: root), try? VolumeFreeSpace().availableBytes(at: root))
+                (await SessionCatalog.checkingLanguageModels(SessionCatalog.list(root: root)),
+                 try? VolumeFreeSpace().availableBytes(at: root))
             }.value
             guard let self else { return }
             self.loading = false
@@ -296,7 +299,15 @@ final class MeetingsWindow: NSObject, NSWindowDelegate, NSTableViewDataSource, N
         if let summary {
             var parts: [String] = []
             if let doing = running[summary.id] { parts.append(doing) }
-            if let message = summary.labelMessage, summary.speakerState != .labelled { parts.append(message) }
+            // While a language is missing, why and what to do stay shown, also for labelled speakers: the window's
+            // own message once Label Speakers can detect it (or edited labels keep it from doing so), else the
+            // record's, which names the reason and what to install.
+            if let work = summary.languageWork, let message = work.message {
+                parts.append(message)
+            } else if let message = summary.labelMessage,
+                      summary.speakerState != .labelled || summary.languageWork != nil {
+                parts.append(message)
+            }
             if PendingExports().contains(summary.id) {
                 parts.append("The transcript files are older than the speaker labels; open Review to update them.")
             }

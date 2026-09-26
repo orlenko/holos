@@ -73,3 +73,20 @@ import Testing
     #expect(DictationLanguage.languageCode(of: "yue_CN") == "yue")
     #expect(DictationLanguage.identifier("en_CA") == "en-CA")
 }
+
+@Test func identifiersAreOneSpellingPerLocale() {
+    // Case variants of a valid BCP 47 tag are the same locale, so they compare equal once canonical.
+    #expect(DictationLanguage.identifier("en-ca") == "en-CA")
+    #expect(DictationLanguage.identifier("EN_ca") == "en-CA")
+    #expect(DictationLanguage.identifier("zh-hans-cn") == "zh-Hans-CN")
+    #expect(DictationLanguage.identifier("ZH_HANT_tw") == "zh-Hant-TW")
+    #expect(DictationLanguage.identifier("es-419") == "es-419")
+    #expect(DictationLanguage.identifier("yue_CN") == "yue-CN")
+    #expect(DictationLanguage.identifier("fr") == "fr")
+    #expect(DictationLanguage.identifier("") == "")
+    #expect(DictationLanguage.identifier("de-DE-u-CO-phonebk") == "de-DE-u-co-phonebk")
+    #expect(DictationLanguage.identifier("en_US@rg=CAzzzz") == "en-US@rg=CAzzzz")
+    // Every comparison built on it treats the spellings alike.
+    #expect(DictationLanguage.meetingLanguages(["fr-ca", "en-CA", "EN-ca"]) == ["fr-CA", "en-CA"])
+    #expect(DictationLanguage.meetingLanguagesProblem(["en-CA", "en-ca"]) == "en-CA is listed twice.")
+}

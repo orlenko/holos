@@ -48,18 +48,23 @@ import Synchronization
         Bundle.main.bundleURL.appendingPathComponent("Contents/MacOS/voiceislocal", isDirectory: false)
     }
 
-    /// ["record", "start", "--session-id", id, "--name=<name>", "--source", src, ("--locale=<locale>")?,
-    ///  ("--app", id)?, ("--others-in-room")?, ("--microphone", "default" | "built-in")?,
-    ///  ("--expected-speakers", n)?, ("--vocabulary-file", path)?,
+    /// ["record", "start", "--session-id", id, "--name=<name>", "--source", src,
+    ///  ("--locale=<locale>" | "--languages=<first>,<second>…")?, ("--app", id)?, ("--others-in-room")?,
+    ///  ("--microphone", "default" | "built-in")?, ("--expected-speakers", n)?, ("--vocabulary-file", path)?,
     ///  "--no-live-text", "--directory", root.path]
     ///
     /// The name is joined to its option: as a separate element, a name starting with "-" ("- standup") would be
-    /// parsed as an option and the recorder would exit with a usage error. The locale is joined the same way.
+    /// parsed as an option and the recorder would exit with a usage error. The language is joined the same way:
+    /// `--locale` for one, `--languages` for several (the first transcribed live, docs/meeting-design.md §4.14).
     public nonisolated static func arguments(_ settings: MeetingStartSettings, sessionID: String, root: URL,
                                              vocabularyFile: URL?) -> [String] {
         var arguments = ["record", "start", "--session-id", sessionID, "--name=\(settings.name)",
                          "--source", settings.source.rawValue]
-        if let locale = settings.locale { arguments.append("--locale=\(locale)") }
+        if settings.locales.count > 1 {
+            arguments.append("--languages=\(settings.locales.joined(separator: ","))")
+        } else if let locale = settings.locale {
+            arguments.append("--locale=\(locale)")
+        }
         if let app = settings.applicationBundleID { arguments += ["--app", app] }
         if settings.othersInRoom { arguments.append("--others-in-room") }
         if let microphone = settings.microphone { arguments += ["--microphone", microphone.argument] }
@@ -148,7 +153,8 @@ import Synchronization
                                        vocabulary: vocabulary, sessionID: sessionID,
                                        othersInRoom: settings.othersInRoom,
                                        expectedSpeakers: settings.expectedSpeakers, liveText: false,
-                                       microphone: settings.microphone)
+                                       microphone: settings.microphone,
+                                       languages: settings.locales.count > 1 ? settings.locales : [])
         let stop = ManualStopSource()
         let log = Self.labellingLog(in: logDirectory, sessionID: sessionID)
         let labelling = LabellingStarted()

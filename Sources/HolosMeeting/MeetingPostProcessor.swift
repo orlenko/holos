@@ -25,20 +25,32 @@ public struct PostProcessingOptions: Sendable, Equatable {
     public var forceVoiceData: Bool
     /// The stop reason when called right after a recording; `diskLow` skips rendering.
     public var stopReason: StopReason?
+    /// The meeting's languages for this run, the preferred one first (`voiceislocal session languages`): the
+    /// transcript is merged from one transcription in each (docs/meeting-design.md §4.14). Nil: meeting.json's, unless
+    /// the current transcript was already merged for languages asked for this way. `force` with these also lets it
+    /// replace a transcript whose speaker labels were edited (`force` alone never does).
+    public var languages: [String]?
+    /// Label speakers on the current transcript as it is: the languages stage does not run
+    /// (`voiceislocal session diarize --keep-transcript`, which the review window's relabels use, so a speaker action
+    /// there never transcribes the meeting again or replaces the transcript under the open review).
+    public var keepTranscript: Bool
 
     public init(speakers: SpeakerCountHint? = nil, force: Bool = false, keepDerived: Bool = false,
                 othersInRoom: Bool? = nil, engineOverrides: [String: String] = [:], forceVoiceData: Bool = false,
-                stopReason: StopReason? = nil) {
+                stopReason: StopReason? = nil, languages: [String]? = nil, keepTranscript: Bool = false) {
         self.speakers = speakers; self.force = force; self.keepDerived = keepDerived
         self.othersInRoom = othersInRoom; self.engineOverrides = engineOverrides
-        self.forceVoiceData = forceVoiceData; self.stopReason = stopReason
+        self.forceVoiceData = forceVoiceData; self.stopReason = stopReason; self.languages = languages
+        self.keepTranscript = keepTranscript
     }
 }
 
 /// Speaker labelling and exports for a finished session (docs/meeting-design.md §4.7).
 ///
-/// Stages, in order: 0 checks and `postprocess.json` `running`; 1 `transcript` (the current revision); 2 track
-/// policies; 3 the head decision (an edited head of this transcript is kept unless `force`); 4 `render` each
+/// Stages, in order: 0 checks and `postprocess.json` `running`; 1 `transcript` (the current revision); 1b
+/// `languages` for a meeting in several languages: the audio transcribed again in each language and the transcript
+/// merged passage by passage, which becomes current (§4.14; nothing is recorded for one language);
+/// 2 track policies; 3 the head decision (an edited head of this transcript is kept unless `force`); 4 `render` each
 /// diarized track to `derived/<track>-16k.caf`; 5 `diarize` them one at a time and map the times back to the
 /// session; 6 `align`: build and publish the run (no voice embeddings; `speakers/voice/` only with
 /// `forceVoiceData`) with names carried over; 7 `recognize` (PR10); 8 `export`; 9 delete `derived/` and write the
@@ -50,14 +62,18 @@ public struct MeetingPostProcessor: Sendable {
     let options: PostProcessingOptions
     let freeSpace: any FreeSpaceProvider
     let profiles: SpeakerProfileStore?
+    let languageDetection: LanguageDetectionDependencies
 
     /// `diarizer == nil` (speaker models not installed) gives speaker-less exports and the setup hint.
     /// `freeSpace` measures the volume before rendering. With `profiles` (PR10) whose "Remember voices" is on and
     /// some person has voice samples, stage 7 compares the new run's speakers with them (distances only), and the
-    /// exports show people's current names; without it nothing is recognized.
+    /// exports show people's current names; without it nothing is recognized. `languages` transcribes and tells
+    /// languages apart for a meeting in several (stage 1b); it is used only for such a meeting.
     public init(diarizer: (any SpeakerDiarizer)? = nil, options: PostProcessingOptions = .init(),
-                freeSpace: any FreeSpaceProvider = VolumeFreeSpace(), profiles: SpeakerProfileStore? = nil) {
+                freeSpace: any FreeSpaceProvider = VolumeFreeSpace(), profiles: SpeakerProfileStore? = nil,
+                languages: LanguageDetectionDependencies = .live) {
         self.diarizer = diarizer; self.options = options; self.freeSpace = freeSpace; self.profiles = profiles
+        self.languageDetection = languages
     }
 
     /// Runs every stage for one finished session under `lease` (nil: acquire one, retry 1 s) and returns the
@@ -83,13 +99,13 @@ public struct MeetingPostProcessor: Sendable {
             throw HolosError.unavailable("Another Voice is Local process is processing this session.")
         }
         return try await held.withUse(for: session) {
-            try await start(session: session, startedAt: startedAt, progress: progress)
+            try await start(session: session, lease: held, startedAt: startedAt, progress: progress)
         }
     }
 
     // MARK: - Stages 0 and 9
 
-    private func start(session: URL, startedAt: Date,
+    private func start(session: URL, lease: ProcessingLease, startedAt: Date,
                        progress: @escaping @Sendable (PostProcessingProgress) -> Void) async throws -> PostProcessingRecord {
         let manifest = try SessionArchive.readManifest(at: session)
         // The record is replaced from the first write on: one written by a newer Holos is refused (schema rule 3,
@@ -116,7 +132,7 @@ public struct MeetingPostProcessor: Sendable {
         Self.log.notice("Session \(manifest.id, privacy: .public): post-processing started")
         var final: PostProcessingRecord
         do {
-            final = try await stages(session: session, manifest: manifest, journal: journal)
+            final = try await stages(session: session, manifest: manifest, journal: journal, lease: lease)
         } catch is CancellationError {
             finishDerived(session, manifestID: manifest.id)
             var record = journal.current
@@ -153,30 +169,57 @@ public struct MeetingPostProcessor: Sendable {
 
     // MARK: - Stages 1–8
 
-    private func stages(session: URL, manifest: SessionManifest,
-                        journal: ProcessingJournal) async throws -> PostProcessingRecord {
+    private func stages(session: URL, manifest: SessionManifest, journal: ProcessingJournal,
+                        lease: ProcessingLease) async throws -> PostProcessingRecord {
         let recorder = StageRecorder(journal: journal)
 
         // Stage 1: the current transcript.
         var started = recorder.begin(.transcript, message: "Reading the transcript…")
-        let transcript: Transcript?
+        let current: Transcript?
         do {
-            transcript = try SessionFiles.currentTranscript(session: session)
+            current = try SessionFiles.currentTranscript(session: session)
         } catch let error where !(error is CancellationError) {
             recorder.end(.transcript, .failed, error.localizedDescription, since: started)
             return recorder.finalRecord(state: .failed, message: "Cannot read the transcript: \(error.localizedDescription)")
         }
-        guard let transcript else {
+        if let current {
+            recorder.end(.transcript, .succeeded, since: started)
+            journal.update { $0.transcriptID = current.id }
+        } else if options.languages == nil {
             recorder.end(.transcript, .skipped, "This meeting has no transcript.", since: started)
             return recorder.finalRecord(state: .skipped,
                                         message: "This meeting has no transcript, so there is nothing to label.")
+        } else {
+            // Languages asked for by name (`voiceislocal session languages`) transcribe the saved audio of a meeting
+            // recorded or imported without a transcript, and make the first one (§4.14).
+            recorder.end(.transcript, .skipped, "This meeting has no transcript yet; it is made from the saved audio.",
+                         since: started)
         }
-        recorder.end(.transcript, .succeeded, since: started)
-        journal.update { $0.transcriptID = transcript.id }
 
-        // Stages 2–7.
-        let speakers = try await labelSpeakers(session: session, manifest: manifest, transcript: transcript,
+        // Stage 1b: a meeting in several languages (§4.14), before the speakers, so they are labelled on the final text.
+        // Not run for a relabel that keeps the transcript (`keepTranscript`).
+        let languages = options.keepTranscript && options.languages == nil
+            ? LanguageStage.Outcome(transcript: current)
+            : try await LanguageStage.run(
+                LanguageStage.Request(session: session, manifest: manifest, transcript: current, lease: lease,
+                                      requested: options.languages, force: options.force),
+                dependencies: languageDetection, recorder: recorder)
+        guard let transcript = languages.transcript else {
+            let message = languages.problem ?? "This meeting has no transcript, so there is nothing to label."
+            return recorder.finalRecord(state: .failed, message: message)
+        }
+        if transcript.id != current?.id { journal.update { $0.transcriptID = transcript.id } }
+
+        // Stages 2–7. Languages asked for by name (`voiceislocal session languages`) that left the transcript as it
+        // was also leave its speaker labels as they are, edited or not (§4.14).
+        let speakers: SpeakerResult
+        if options.languages != nil, transcript.id == current?.id,
+           let kept = keptLabels(session: session, manifest: manifest, transcript: transcript, recorder: recorder) {
+            speakers = kept
+        } else {
+            speakers = try await labelSpeakers(session: session, manifest: manifest, transcript: transcript,
                                                recorder: recorder)
+        }
         // Once a new head is published, the exports are written from it before a cancellation is honoured, so the
         // head and the exports never disagree.
         if !speakers.published { try Task.checkCancellation() }
@@ -199,12 +242,18 @@ public struct MeetingPostProcessor: Sendable {
                                         runID: speakers.runID, othersInRoom: speakers.othersInRoom)
         }
         try Task.checkCancellation()
-        if let problem = speakers.problem {
-            return recorder.finalRecord(state: .partial, message: problem, runID: speakers.runID,
+        // A language that could not be detected, like a speaker stage that failed, makes the result partial; the
+        // speakers' own message follows a language problem when they were labelled.
+        let problems = [languages.problem, speakers.problem].compactMap { $0 }
+        if !problems.isEmpty {
+            let message = (problems + (speakers.problem == nil ? [speakers.message].compactMap { $0 } : []))
+                .joined(separator: " ")
+            return recorder.finalRecord(state: .partial, message: message, runID: speakers.runID,
                                         othersInRoom: speakers.othersInRoom)
         }
-        return recorder.finalRecord(state: .succeeded, message: speakers.message, runID: speakers.runID,
-                                    othersInRoom: speakers.othersInRoom)
+        let notes = [languages.note, speakers.message].compactMap { $0 }
+        return recorder.finalRecord(state: .succeeded, message: notes.isEmpty ? nil : notes.joined(separator: " "),
+                                    runID: speakers.runID, othersInRoom: speakers.othersInRoom)
     }
 
     /// What the speaker stages left for the final record.
@@ -238,6 +287,19 @@ public struct MeetingPostProcessor: Sendable {
         // A forget of a newer Holos is not in that list: this build cannot decode its line, and that build can
         // scrub this meeting and finish while this pass runs.
         return (try? profiles.forgetJournalHasUnreadableLines()) ?? true
+    }
+
+    /// The speaker labels of `transcript` kept as they are (stages 4–6 recorded as skipped), when they were built from
+    /// it and can still be shown; nil otherwise, so speakers are labelled as usual.
+    private func keptLabels(session: URL, manifest: SessionManifest, transcript: Transcript,
+                            recorder: StageRecorder) -> SpeakerResult? {
+        guard let head = try? SpeakerAnalysis.headState(session: session, transcript: transcript),
+              let runID = head.usableRunID else { return nil }
+        let meeting = try? SessionFiles.meetingInfo(session: session, manifest: manifest)
+        let othersInRoom = options.othersInRoom ?? meeting?.othersInRoom
+        if let othersInRoom { recorder.journal.update { $0.othersInRoom = othersInRoom } }
+        recorder.skip([.render, .diarize, .align], SpeakerAnalysis.transcriptUnchanged)
+        return SpeakerResult(runID: runID, othersInRoom: othersInRoom, message: SpeakerAnalysis.transcriptUnchanged)
     }
 
     private func labelSpeakers(session: URL, manifest: SessionManifest, transcript: Transcript,
@@ -479,7 +541,7 @@ public struct MeetingPostProcessor: Sendable {
 // MARK: - Stage bookkeeping
 
 /// The stage outcomes of one run, kept in the journal as they happen. Used by one task.
-private final class StageRecorder {
+final class StageRecorder {
     let journal: ProcessingJournal
     private var outcomes: [StageOutcome] = []
     private let clock = ContinuousClock()

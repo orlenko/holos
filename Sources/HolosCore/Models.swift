@@ -64,11 +64,14 @@ public struct TranscriptSegment: Codable, Sendable, Equatable, Identifiable {
     public var words: [TimedWord]
     public var track: String?
     public var speakerID: String?
+    /// The language this segment was transcribed in ("fr-CA"), in a transcript merged from several languages
+    /// (`Transcript.languages`, docs/meeting-design.md §4.14); nil in a transcript made in one language.
+    public var language: String?
 
     public init(id: String = UUID().uuidString, start: Double, end: Double, text: String,
-                words: [TimedWord] = [], track: String? = nil, speakerID: String? = nil) {
+                words: [TimedWord] = [], track: String? = nil, speakerID: String? = nil, language: String? = nil) {
         self.id = id; self.start = start; self.end = end; self.text = text
-        self.words = words; self.track = track; self.speakerID = speakerID
+        self.words = words; self.track = track; self.speakerID = speakerID; self.language = language
     }
 }
 
@@ -89,11 +92,16 @@ public struct Transcript: Codable, Sendable, Equatable {
     public var locale: String
     public var backend: SpeechBackend
     public var segments: [TranscriptSegment]
+    /// For a transcript merged from one transcription per language (docs/meeting-design.md §4.14): the languages it
+    /// chose from, the first one (`locale`) preferred on a tie; each segment names its own (`language`). Nil for a
+    /// transcript made in `locale` alone.
+    public var languages: [String]?
 
     public init(id: String = UUID().uuidString, createdAt: Date = Date(), source: String,
-                locale: String, backend: SpeechBackend, segments: [TranscriptSegment] = []) {
+                locale: String, backend: SpeechBackend, segments: [TranscriptSegment] = [],
+                languages: [String]? = nil) {
         self.id = id; self.createdAt = createdAt; self.source = source
-        self.locale = locale; self.backend = backend; self.segments = segments
+        self.locale = locale; self.backend = backend; self.segments = segments; self.languages = languages
     }
 
     public var text: String { segments.map(\.text).joined(separator: " ") }

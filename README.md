@@ -87,7 +87,14 @@ a terminal. The start panel's Language pop-up (the same languages as dictation) 
 the language the meeting is transcribed in; it starts as the dictation language and
 remembers your last choice. When that language's speech model is not installed, the
 panel says so and offers Install… (a download from Apple, only when you click it); a
-meeting recorded without it saves its audio but no transcript. The recorder's log is
+meeting recorded without it saves its audio but no transcript. **Also detect** adds up
+to two more languages for a meeting that mixes them (French and English in Montreal,
+say): the live transcript stays in the first language; once the meeting is saved, Voice
+is Local transcribes the audio again in each language and keeps, every few seconds, the
+language that fits, before it labels the speakers (about 3 more minutes for a 3-hour
+meeting in two languages). Their speech models are checked and offered for
+Install… the same way; a language whose model is missing is left out and the finished
+message says so. Dictation keeps its one language. The recorder's log is
 `~/Library/Logs/Holos/recorder-<id>.log`;
 `defaults write ca.orlenko.holos.app meetingRecorderMode inProcess` records inside
 the app instead. Dictation is paused while a meeting records. If a permission prompt
@@ -133,11 +140,13 @@ voiceislocal="$BIN_DIR/voiceislocal"
 
 "$voiceislocal" record start --name Planning --source mic+system
 # Press Ctrl-C to stop and save, or use `record stop <session-id>` from another shell.
+"$voiceislocal" record start --name Board --languages fr-CA,en-CA   # French live; English detected after
 "$voiceislocal" record status
 "$voiceislocal" record pause <session-id>      # also resume, marker, stop
 
 "$voiceislocal" session import ./meeting.m4a   # an audio file to a transcribed, labelled session
 "$voiceislocal" session diarize /path/to/session.holos
+"$voiceislocal" session languages <session> --languages fr-CA,en-CA   # mixed French and English
 "$voiceislocal" session list                   # sessions, newest first, with state and size
 "$voiceislocal" speakers list <session>        # a session's speakers; also rename, merge, assign, ...
 "$voiceislocal" speakers rename <session> S2 "Maria"
@@ -198,7 +207,10 @@ overwritten. `voiceislocal session diarize <session>` labels a finished session 
 it keeps edited speaker labels unless `--force` is given, and names carry over.
 It exits 0 when speakers were labelled, 3 when the exports were written but
 labelling was skipped or failed, and 1 when nothing was done (including when the
-speaker models are not installed).
+speaker models are not installed, unless a language missed in a meeting in several
+languages can now be detected: that runs without them and leaves the speakers
+unlabelled). `--keep-transcript` labels the speakers without detecting the meeting's
+languages again.
 `voiceislocal session import <audio-file>` creates a session from any audio file macOS
 reads (its channels mixed into one in-person microphone track), transcribes it,
 and labels its speakers; it prints the new session's path once labelling ends. The
@@ -206,6 +218,24 @@ session appears in the sessions folder only once the import is complete. It exit
 when the session was imported (and labelled, or the speaker models are not
 installed), 3 when labelling failed, was skipped for another reason, or was
 cancelled, and 1 when nothing was imported.
+
+A meeting in several languages: `record start` and `session import` take
+`--languages fr-CA,en-CA` (at most 3, each a different language; instead of `--locale`).
+The first is transcribed live (or by the import); after the recording, post-processing
+transcribes the saved audio again in each language (final results only, which are more
+accurate than the live ones), groups the words into 3-second passages, keeps each
+passage in the language whose transcription scores higher (the
+recognizer's word confidence plus how much its text reads as that language, with a switch
+only when two passages in a row agree), makes that the session's transcript, and then
+labels the speakers on it. Each language's transcription is kept in the session and
+reused. `voiceislocal session languages <session> --languages fr-CA,en-CA` does the same
+for a saved or imported session (and relabels its speakers; `--force` when their labels
+were edited, names carry over); with one language the transcript becomes that
+language's alone. It exits 0 when done (also without speaker models), 3 when a language
+could not be transcribed (its speech model is not installed, say: `voiceislocal setup
+--locale <language>`) or speaker labelling was skipped, and 1 when nothing could be done.
+The Markdown export then lists the languages in its header, the JSON export names each
+turn's languages, and the text carries no language marks.
 
 `voiceislocal speakers list <session>` shows a session's speakers (`--turns` adds every
 turn); `rename`, `merge`, `assign`, `split`, `exclude`, and `undo` correct them.

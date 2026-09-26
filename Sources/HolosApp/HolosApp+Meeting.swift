@@ -453,6 +453,7 @@ extension HolosAppDelegate: NSMenuDelegate {
         guard let progress = status.progress else { return "Saving \(meetingName)…" }
         let percent = progress.fraction.map { " \(Int((min(1, max(0, $0)) * 100).rounded()))%" } ?? ""
         let what = switch progress.stage {
+        case .languages: "detecting languages"
         case .render, .diarize, .align, .recognize: "labelling speakers"
         case .export: "writing transcript files"
         default: "reading the transcript"
@@ -530,7 +531,7 @@ extension HolosAppDelegate: NSMenuDelegate {
         guard let controller = meeting.controller, case .active(_, let status) = controller.state else { return }
         let alert = NSAlert()
         alert.messageText = "Stop and save “\(Self.short(status.name))”?"
-        alert.informativeText = "Voice is Local then labels speakers, which takes about 2 minutes for a 3-hour meeting. Keep the lid open until it finishes."
+        alert.informativeText = "Voice is Local then labels speakers, which takes about 2 minutes for a 3-hour meeting, or about 5 when it also detects languages. Keep the lid open until it finishes; the next meeting can start once it has."
         alert.addButton(withTitle: "Stop and Save")
         alert.addButton(withTitle: "Keep Recording")
         NSApplication.shared.activate()
