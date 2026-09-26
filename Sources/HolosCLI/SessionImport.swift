@@ -27,6 +27,7 @@ extension Session {
         @Option(help: "Session output root (default: HOLOS_DATA_DIR or Application Support/Holos/Sessions).")
         var directory: String?
         @OptionGroup var recognition: RecognitionOptions
+        @OptionGroup var meetingLanguages: MeetingLanguageOptions
         @Option(help: "A JSON file of names and terms to recognize ({\"schemaVersion\": 1, \"strings\": [...]}).")
         var vocabularyFile: String?
         @Flag(help: "Import the audio without transcribing it (and without labelling speakers).")
@@ -37,17 +38,19 @@ extension Session {
             if let name, name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 throw ValidationError("--name must not be empty.")
             }
+            try meetingLanguages.validate(with: recognition)
         }
 
         mutating func run() async throws {
             let file = fileURL(audioFile)
             let fallbackName = file.deletingPathExtension().lastPathComponent
-            let locale = await recognition.resolvedLocale()
+            // With --languages, the import transcribes in the first; post-processing adds the others (§4.14).
+            let (locale, languages) = await meetingLanguages.resolved(recognition)
             let request = SessionImportCommand.Request(
                 file: file, name: name ?? (fallbackName.isEmpty ? "Imported meeting" : fallbackName),
                 root: directory.map(fileURL) ?? HolosPaths.sessions, locale: locale,
                 backend: recognition.backend, vocabulary: try readVocabulary(), transcribe: !noTranscribe,
-                postprocess: !noTranscribe && !noPostprocess)
+                postprocess: !noTranscribe && !noPostprocess, languages: languages)
             // Ctrl-C (or SIGTERM) cancels the work, so a partial import is removed; a second one ends the process.
             // The handling is installed before the work starts, so a signal in between cancels it too.
             let work = CancellableStart<Int32>()

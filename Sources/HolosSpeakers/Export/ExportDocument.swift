@@ -168,6 +168,9 @@ struct ExportTurn: Sendable, Equatable {
     let score: Double
     let timing: WordTimingQuality
     let spans: [WordSpan]
+    /// In a transcript merged from several languages (`Transcript.languages`): the languages of the turn's segments,
+    /// in the order they first appear; nil otherwise.
+    let languages: [String]?
 }
 
 /// The document resolved once for every format: turns with text and labels, sorted annotations, and blocks.
@@ -229,6 +232,7 @@ struct ExportContent {
             }
         }
         let text = TranscriptText(transcript)
+        let languages = SegmentLanguages(transcript)
         return projection.turns.map { turn in
             var others: [String] = []
             for clusterID in turn.otherClusters {
@@ -244,7 +248,7 @@ struct ExportContent {
                 groupKey: turn.speakerID.map { "speaker:\($0)" } ?? "unknown:\(turn.track)",
                 label: label, track: turn.track, start: turn.start, end: turn.end, text: text.text(of: turn.spans),
                 overlap: turn.overlap, otherSpeakerIDs: others, score: turn.assignmentScore, timing: turn.timing,
-                spans: turn.spans)
+                spans: turn.spans, languages: languages.of(turn.spans))
         }
     }
 
@@ -278,7 +282,8 @@ struct ExportContent {
                 id: "T\(turns.count + 1)", speakerID: nil, groupKey: "track:\(track ?? "")", label: label,
                 track: track, start: segment.start, end: segment.end, text: text, overlap: false, otherSpeakerIDs: [],
                 score: 0, timing: WordTimingQuality(estimated: estimated, of: entry.words.count),
-                spans: [WordSpan(segmentID: segment.id, first: 0, end: entry.words.count)]))
+                spans: [WordSpan(segmentID: segment.id, first: 0, end: entry.words.count)],
+                languages: transcript.mergedLanguages == nil ? nil : [segment.language].compactMap { $0 }))
         }
         return turns
     }
@@ -412,6 +417,41 @@ struct TranscriptText {
             if !piece.isEmpty { pieces.append(piece) }
         }
         return pieces.joined(separator: " ")
+    }
+}
+
+extension Transcript {
+    /// The languages of a transcript merged from several (docs/meeting-design.md §4.14); nil for one language,
+    /// including a transcript made one language's alone (`voiceislocal session languages` with one), so the exports
+    /// name languages only when there is a choice between them.
+    var mergedLanguages: [String]? {
+        guard let languages, languages.count > 1 else { return nil }
+        return languages
+    }
+}
+
+/// Segment languages by segment ID (the first segment wins when IDs repeat), for a transcript merged from several
+/// languages (docs/meeting-design.md §4.14).
+struct SegmentLanguages {
+    private let merged: Bool
+    private var languages: [String: String] = [:]
+
+    init(_ transcript: Transcript) {
+        merged = transcript.mergedLanguages != nil
+        guard merged else { return }
+        for segment in transcript.segments where languages[segment.id] == nil {
+            if let language = segment.language { languages[segment.id] = language }
+        }
+    }
+
+    /// The languages of the spans' segments in the order they first appear; nil for a transcript in one language.
+    func of(_ spans: [WordSpan]) -> [String]? {
+        guard merged else { return nil }
+        var result: [String] = []
+        for span in spans {
+            if let language = languages[span.segmentID], !result.contains(language) { result.append(language) }
+        }
+        return result
     }
 }
 

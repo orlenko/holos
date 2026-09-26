@@ -415,6 +415,26 @@ public actor SessionArchive {
         }
     }
 
+    /// Saves an immutable transcript revision without making it current: one transcription of the session in another
+    /// language, kept so the merged transcript can be made from it again (docs/meeting-design.md §4.14). An archive
+    /// saved before `transcripts/current.json` existed first gets the pointer, naming the revision that is current
+    /// now, so the new revision never becomes current by being the newest. Refuses an existing revision, and an
+    /// archive with no current transcript (the new revision would be the only one, and so current).
+    public func saveTranscriptRevision(_ transcript: Transcript) throws {
+        try ensureOpen()
+        guard TranscriptPointer.validTranscriptID(transcript.id) else {
+            throw HolosError.invalidInput("Invalid transcript ID.")
+        }
+        if try TranscriptPointer.read(session: directory) == nil {
+            guard let current = try Self.legacyCurrentTranscriptID(at: directory) else {
+                throw HolosError.invalidInput("This session has no current transcript to keep another revision beside.")
+            }
+            try AtomicFile.writeJSON(TranscriptPointer(transcriptID: current),
+                                     to: SessionPaths.transcriptPointer(directory))
+        }
+        try AtomicFile.create(try Self.encode(transcript), at: SessionPaths.transcript(transcript.id, in: directory))
+    }
+
     /// The speaker-less exports `saveTranscript(_:writeLegacyExports: true)` writes for `transcript` in a session
     /// named `name`, by file extension: "txt" (exports/transcript.txt) and "md" (exports/transcript.md). Speaker
     /// exports (PR7b `SessionExports`) replace them, and use this to tell them from files someone edited.

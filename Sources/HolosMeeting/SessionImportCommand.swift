@@ -17,11 +17,17 @@ public enum SessionImportCommand {
         public var transcribe: Bool
         /// Label speakers after the import; ignored without `transcribe`.
         public var postprocess: Bool
+        /// The meeting's languages, `locale` first, when there are several (docs/meeting-design.md §4.14): recorded in
+        /// meeting.json, and post-processing merges the transcript from one transcription in each. Empty: `locale`
+        /// only.
+        public var languages: [String]
 
         public init(file: URL, name: String, root: URL, locale: String, backend: SpeechBackend,
-                    vocabulary: [String] = [], transcribe: Bool = true, postprocess: Bool = true) {
+                    vocabulary: [String] = [], transcribe: Bool = true, postprocess: Bool = true,
+                    languages: [String] = []) {
             self.file = file; self.name = name; self.root = root; self.locale = locale; self.backend = backend
             self.vocabulary = vocabulary; self.transcribe = transcribe; self.postprocess = postprocess
+            self.languages = languages
         }
     }
 
@@ -46,11 +52,13 @@ public enum SessionImportCommand {
     /// Throws when nothing was imported: the importer's error, or
     /// `HolosError.incomplete("The import was cancelled; nothing was imported.")` when cancelled during the import.
     /// A labelling failure or cancellation does not throw; the session is kept and the outcome's exit code is 3.
-    /// `profiles` is passed to the post-processor (voice suggestions, PR10).
+    /// `profiles` is passed to the post-processor (voice suggestions, PR10), and `languages` too (a meeting in several
+    /// languages, §4.14).
     public static func run(_ request: Request, diarizer: (any SpeakerDiarizer)?,
                            makeSpeech: LiveSpeechFactory? = nil, timeouts: StopTimeouts = .standard,
                            freeSpace: any FreeSpaceProvider = VolumeFreeSpace(),
                            profiles: SpeakerProfileStore? = nil,
+                           languages: LanguageDetectionDependencies = .live,
                            importProgress: @escaping @Sendable (Double) -> Void = { _ in },
                            labellingProgress: @escaping @Sendable (PostProcessingProgress) -> Void = { _ in })
         async throws -> Outcome {
@@ -59,7 +67,7 @@ public enum SessionImportCommand {
             imported = try await SessionImporter.importSession(
                 from: request.file, name: request.name, root: request.root, locale: request.locale,
                 backend: request.backend, vocabulary: request.vocabulary, transcribe: request.transcribe,
-                makeSpeech: makeSpeech, timeouts: timeouts, progress: importProgress)
+                makeSpeech: makeSpeech, timeouts: timeouts, languages: request.languages, progress: importProgress)
         } catch is CancellationError {
             throw HolosError.incomplete("The import was cancelled; nothing was imported.")
         }
@@ -71,7 +79,7 @@ public enum SessionImportCommand {
         }
         do {
             let processor = MeetingPostProcessor(diarizer: diarizer, options: PostProcessingOptions(),
-                                                 freeSpace: freeSpace, profiles: profiles)
+                                                 freeSpace: freeSpace, profiles: profiles, languages: languages)
             let record = try await processor.run(session: session, lease: lease, progress: labellingProgress)
             // The audio and transcript are saved either way: a labelling problem is a warning (§1.4).
             let code: Int32 = SessionDiarizeCommand.exitCode(record.state) == 0 ? 0 : 3

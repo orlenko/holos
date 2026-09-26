@@ -259,6 +259,19 @@ extension SessionArchive {
         defer { SessionLockFile.unlockAndClose(fd) }
         return try body()
     }
+
+    /// `withSpeakerLock` for a body that awaits: the lock (an `flock` on its own descriptor) stays held across the
+    /// body's suspension points until it returns or throws. The same rules apply: not re-entrant, and a caller that
+    /// also needs the writer lock takes it first (§1.7, as deletion does).
+    public nonisolated static func withSpeakerLockAsync<T>(at session: URL, timeout: Duration = .seconds(2),
+                                                           _ body: () async throws -> T) async throws -> T {
+        try SessionLockFile.requireSession(session)
+        guard let fd = try SessionLockFile.acquire(SessionLockFile.speakers, in: session, timeout: timeout) else {
+            throw HolosError.unavailable("Speaker labels are being saved by another Voice is Local window or command; try again.")
+        }
+        defer { SessionLockFile.unlockAndClose(fd) }
+        return try await body()
+    }
 }
 
 /// `flock` files in the session folder (docs/meeting-design.md §1.7).

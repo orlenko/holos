@@ -52,13 +52,17 @@ public enum MeetingActionPolicy {
         return SessionRecoveryCommand.rebuilds(status: summary.manifestStatus) { summary.transcriptID }
     }
 
-    /// `voiceislocal session diarize` labels the meeting: its speaker state is none, notLabelled, failed, or interrupted, it
-    /// has a readable transcript and its audio, and it is not an interrupted recording (Recover rebuilds and labels
-    /// that).
+    /// `voiceislocal session diarize` labels the meeting: its speaker state is none, notLabelled, failed, or
+    /// interrupted, or (for labelled speakers too) a language of a meeting in several was missed and can be detected
+    /// now (`LanguageWork.ready`: `session diarize` detects it first, also without speaker models,
+    /// docs/meeting-design.md §4.14); it has a readable transcript and its audio, and it is not an interrupted
+    /// recording (Recover rebuilds and labels that). Speaker files that cannot be read (`unreadable`) are left to
+    /// Recover.
     public static func labels(_ summary: SessionSummary) -> Bool {
         let states: Set<SpeakerLabelState> = [.none, .notLabelled, .failed, .interrupted]
-        return states.contains(summary.speakerState) && summary.transcriptID != nil && !summary.audioDeleted
-            && summary.state != .interrupted && summary.state != .damaged
+        let languagesReady = summary.languageWork?.ready == true && summary.speakerState != .unreadable
+        return (states.contains(summary.speakerState) || languagesReady) && summary.transcriptID != nil
+            && !summary.audioDeleted && summary.state != .interrupted && summary.state != .damaged
     }
 
     /// `voiceislocal session delete --audio-only` has audio to delete: the manifest reads and lists chunks, and the audio was

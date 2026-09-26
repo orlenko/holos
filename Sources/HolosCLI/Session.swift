@@ -17,6 +17,7 @@ struct Session: AsyncParsableCommand {
             Export.self,
             Score.self,
             Delete.self,
+            Languages.self,
         ])
 
     struct Inspect: ParsableCommand {

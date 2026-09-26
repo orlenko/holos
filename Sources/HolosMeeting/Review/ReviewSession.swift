@@ -518,7 +518,8 @@ public struct ReviewWord: Sendable, Equatable {
         try await apply([.rejectProfile(speakerID: speakerID, profileID: profileID)])
     }
 
-    /// `voiceislocal session diarize --force --min-speakers <current + 1>`; names carry over (§4.9).
+    /// `voiceislocal session diarize --keep-transcript --force --min-speakers <current + 1>`; names carry over
+    /// (§4.9). The transcript under review is kept: a meeting's languages are not detected again.
     ///
     /// "Current" is the number of speakers the diarizer found on the one track it split. Turn-level changes are not
     /// carried; the window's undo history ends here. Throws when the relabel fails (`unavailable`) or finished with
@@ -533,7 +534,7 @@ public struct ReviewWord: Sendable, Equatable {
                                                 othersInRoom: othersInRoomFlag))
     }
 
-    /// `voiceislocal session diarize --force --others-in-room` (call recordings).
+    /// `voiceislocal session diarize --keep-transcript --force --others-in-room` (call recordings).
     public func labelMicrophoneSpeakers() async throws {
         try requireEditable()
         guard canLabelMicrophoneSpeakers else {
@@ -544,7 +545,8 @@ public struct ReviewWord: Sendable, Equatable {
                                                 othersInRoom: true))
     }
 
-    /// Labels the speakers again after the transcript changed (`voiceislocal session diarize`); names carry over.
+    /// Labels the speakers again after the transcript changed (`voiceislocal session diarize --keep-transcript`);
+    /// names carry over.
     public func labelAgain() async throws {
         try requireEditable()
         guard maintenance != nil else { throw HolosError.unavailable("Speakers cannot be labelled from here.") }
@@ -629,10 +631,13 @@ public struct ReviewWord: Sendable, Equatable {
 
     // MARK: - Relabel arguments
 
-    /// `session diarize <path> [--force] [--min-speakers N] [--others-in-room | --no-others-in-room] --json`.
+    /// `session diarize <path> --keep-transcript [--force] [--min-speakers N] [--others-in-room | --no-others-in-room]
+    /// --json`. The review window's relabels label the speakers of the transcript under review: `--keep-transcript`
+    /// keeps a meeting's languages from being detected again (docs/meeting-design.md §4.14), which would transcribe
+    /// the meeting again and replace that transcript.
     nonisolated static func relabelArguments(session: URL, force: Bool, minimumSpeakers: Int?,
                                              othersInRoom: Bool?) -> [String] {
-        var arguments = ["session", "diarize", session.path]
+        var arguments = ["session", "diarize", session.path, "--keep-transcript"]
         if force { arguments.append("--force") }
         if let minimumSpeakers { arguments += ["--min-speakers", String(minimumSpeakers)] }
         if let othersInRoom { arguments.append(othersInRoom ? "--others-in-room" : "--no-others-in-room") }

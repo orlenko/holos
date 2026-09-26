@@ -19,6 +19,7 @@ enum SpeakerAnalysis {
     static let noDiskSpace = "Not enough disk space to label speakers. Free some space, then use Label Speakers."
     static let audioDeleted = "The recording's audio was deleted, so speakers can't be labelled."
     static let noTrackToLabel = "No track needs speaker labels."
+    static let transcriptUnchanged = "The transcript did not change, so the speaker labels were kept."
     static let previousUnreadable = "The previous speaker labels could not be read, so their names were not carried over."
 
     /// The channel speaker of a call's microphone when nobody else is in the room.

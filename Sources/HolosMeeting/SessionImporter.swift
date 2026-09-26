@@ -50,13 +50,17 @@ public enum SessionImporter {
     ///   `CancellationError` passes through unchanged. A staging folder left by a killed import is removed by a
     ///   later import in the same root once it is an hour old. Throws before creating anything when the file is not a readable audio file
     ///   with at least one frame, or the name or locale is empty.
+    /// - `languages`, when there are several (`locale` first, as `DictationLanguage.meetingLanguages` keeps them), go
+    ///   into meeting.json, so post-processing merges the transcript from one transcription in each (§4.14); the
+    ///   import itself transcribes in `locale` only. A list that does not start with `locale` is refused.
     public static func importAudio(from file: URL, name: String, root: URL, locale: String, backend: SpeechBackend,
                                    vocabulary: [String] = [], transcribe: Bool = true,
                                    makeSpeech: LiveSpeechFactory? = nil, timeouts: StopTimeouts = .standard,
+                                   languages: [String] = [],
                                    progress: @escaping @Sendable (Double) -> Void = { _ in }) async throws -> URL {
         let imported = try await importSession(from: file, name: name, root: root, locale: locale, backend: backend,
                                                vocabulary: vocabulary, transcribe: transcribe, makeSpeech: makeSpeech,
-                                               timeouts: timeouts, progress: progress)
+                                               timeouts: timeouts, languages: languages, progress: progress)
         imported.lease.release()
         return imported.directory
     }
@@ -73,12 +77,16 @@ public enum SessionImporter {
     /// `importAudio`, returning the processing lease with the session.
     static func importSession(from file: URL, name: String, root: URL, locale: String, backend: SpeechBackend,
                               vocabulary: [String], transcribe: Bool, makeSpeech: LiveSpeechFactory?,
-                              timeouts: StopTimeouts,
+                              timeouts: StopTimeouts, languages: [String] = [],
                               progress: @escaping @Sendable (Double) -> Void) async throws -> ImportedSession {
         let name = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !name.isEmpty else { throw HolosError.invalidInput("The imported meeting needs a name.") }
         guard !locale.isEmpty else { throw HolosError.invalidInput("Choose a locale for the transcription.") }
         guard root.isFileURL else { throw HolosError.invalidInput("The sessions folder must be a local folder.") }
+        let languages = DictationLanguage.meetingLanguages(languages)
+        if let first = languages.first, first != DictationLanguage.identifier(locale) {
+            throw HolosError.invalidInput("The meeting's first language must be the one it is transcribed in (\(locale)).")
+        }
         let audio = try openAudio(file)
         try Task.checkCancellation()
         let vocabulary = cleaned(vocabulary)
@@ -98,7 +106,8 @@ public enum SessionImporter {
         var lease: ProcessingLease?
         do {
             let info = MeetingInfo(sessionID: archive.id, mode: .inPerson, othersInRoom: false, origin: .imported,
-                                   importedFileName: file.lastPathComponent)
+                                   importedFileName: file.lastPathComponent,
+                                   languages: languages.count > 1 ? languages : nil)
             try AtomicFile.create(try HolosJSON.encoder().encode(info), at: SessionPaths.meetingInfo(directory))
             if !vocabulary.isEmpty {
                 try AtomicFile.create(try HolosJSON.encoder().encode(MeetingVocabulary(strings: vocabulary)),
@@ -822,8 +831,8 @@ private final class ProgressMeter: Sendable {
     }
 }
 
-/// A speech session that reports the seconds of audio each `append` fed, for import progress.
-private struct CountingSpeechSession: LiveSpeechSession {
+/// A speech session that reports the seconds of audio each `append` fed, for import and language-pass progress.
+struct CountingSpeechSession: LiveSpeechSession {
     let base: any LiveSpeechSession
     let fed: @Sendable (Double) -> Void
 

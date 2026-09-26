@@ -17,8 +17,10 @@ public struct MeetingStartSettings: Codable, Sendable, Equatable {
     /// Which input the microphone track records; nil: the recorder's choice for `source` (the built-in microphone
     /// for `mic`, the system default input otherwise). Meetings from the app say `.systemDefault`.
     public var microphone: MicrophoneSelection? = nil
-    /// The meeting's languages, as locale identifiers ("fr-CA"); the recorder transcribes in the first (`locale`).
-    /// The start panel chooses exactly one today. Empty leaves the choice to the recorder's own default.
+    /// The meeting's languages, as locale identifiers ("fr-CA"): the recorder transcribes live in the first
+    /// (`locale`); after the recording, post-processing transcribes the audio again in each and keeps, passage
+    /// by passage, the language that fits (docs/meeting-design.md §4.14). The start panel's Language pop-up chooses
+    /// the first, "Also detect" up to two more. Empty leaves the choice to the recorder's own default.
     public var locales: [String]
 
     /// The language the recorder transcribes in, or nil for the recorder's default.
@@ -59,7 +61,8 @@ public struct MeetingStartSettings: Codable, Sendable, Equatable {
 
     /// The settings as the recorder accepts them: system audio options only for a source with system audio, others
     /// in the room only for a call, a trimmed name (the default name when it is empty), a speaker count only
-    /// within 1...20, and each language once, as "fr-CA" ("fr_CA" and blanks are cleaned up).
+    /// within 1...20, and each language once, as "fr-CA" ("fr_CA" and blanks are cleaned up, and so is a language that
+    /// is another region of an earlier one), at most three (`DictationLanguage.meetingLanguages`).
     public func normalized(now: Date = Date(), timeZone: TimeZone = .current) -> MeetingStartSettings {
         var settings = self
         settings.name = name.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -71,10 +74,7 @@ public struct MeetingStartSettings: Codable, Sendable, Equatable {
             settings.applicationBundleID = bundleID.isEmpty ? nil : bundleID
         }
         if let expected = expectedSpeakers, !(1...20).contains(expected) { settings.expectedSpeakers = nil }
-        var seen = Set<String>()
-        settings.locales = locales
-            .map { DictationLanguage.identifier($0.trimmingCharacters(in: .whitespacesAndNewlines)) }
-            .filter { !$0.isEmpty && seen.insert($0).inserted }
+        settings.locales = DictationLanguage.meetingLanguages(locales)
         return settings
     }
 }

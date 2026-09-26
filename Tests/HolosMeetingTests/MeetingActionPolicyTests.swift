@@ -53,6 +53,41 @@ private func actionSummary(state: SessionState = .complete, manifestStatus: Stri
     }
 }
 
+@Test func labelSpeakersIsOfferedWhileAMissedLanguageCanBeDetected() {
+    typealias Policy = MeetingActionPolicy
+    func summary(_ work: LanguageWork?, speakers: SpeakerLabelState = .labelled, state: SessionState = .complete,
+                 audioDeleted: Bool = false, transcriptID: String? = UUID().uuidString) -> SessionSummary {
+        var summary = actionSummary(state: state, transcriptID: transcriptID, speakers: speakers,
+                                    audioDeleted: audioDeleted)
+        summary.languageWork = work
+        return summary
+    }
+    let ready = LanguageWork(languages: ["es-ES"], ready: true)
+    // Labelled speakers: offered once `session diarize` would detect the language (its model is installed now).
+    #expect(Policy.labels(summary(ready)))
+    #expect(Policy.enabled(summary(ready), inUse: false, hasExport: false).contains(.labelSpeakers))
+    #expect(!Policy.labels(summary(LanguageWork(languages: ["es-ES"]))), "Its speech model is still missing.")
+    #expect(!Policy.labels(summary(LanguageWork(languages: ["es-ES"], labelsEdited: true))),
+            "Edited labels: only session languages --force detects it.")
+    #expect(!Policy.labels(summary(nil)))
+    // The command's other conditions still hold.
+    #expect(!Policy.labels(summary(ready, audioDeleted: true)))
+    #expect(!Policy.labels(summary(ready, transcriptID: nil)))
+    #expect(!Policy.labels(summary(ready, state: .interrupted)), "Recover labels those.")
+    #expect(!Policy.labels(summary(ready, speakers: .unreadable)), "Recover replaces unreadable speaker files.")
+    #expect(!Policy.enabled(summary(ready, speakers: .running), inUse: false, hasExport: false)
+        .contains(.labelSpeakers))
+}
+
+@Test func languageWorkSaysWhatToDo() {
+    #expect(LanguageWork(languages: ["es-ES"], ready: true).message
+        == "Spanish (Spain) is missing from the transcript. Choose Label Speakers to detect the languages again.")
+    #expect(LanguageWork(languages: ["en-CA", "es-ES"], labelsEdited: true).message?.hasPrefix(
+        "English (Canada) and Spanish (Spain) are missing from the transcript. Speaker labels were edited, so Label "
+            + "Speakers does not detect the languages again.") == true)
+    #expect(LanguageWork(languages: ["es-ES"]).message == nil, "The record's message says why and what to install.")
+}
+
 @Test func meetingActionsAreOffWhileTheMeetingIsInUseOrLive() {
     let summary = actionSummary(state: .interrupted, speakers: .none, derivedBytes: 10)
     let all = MeetingActionPolicy.enabled(summary, inUse: false, hasExport: true)

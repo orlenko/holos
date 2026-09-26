@@ -36,10 +36,10 @@ private func launcherMode(_ url: URL) -> mode_t? {
     let id = "3F2A9C1E-0000-4000-8000-000000000001"
     let root = URL(fileURLWithPath: "/Users/me/Library/Application Support/Holos/Sessions", isDirectory: true)
     let vocabulary = URL(fileURLWithPath: "/private/tmp/holos-vocabulary-\(id).json")
-    // The recorder transcribes in the first language.
+    // The recorder transcribes in the first language live, and detects the others afterwards (§4.14).
     #expect(ChildProcessLauncher.arguments(settings, sessionID: id, root: root, vocabularyFile: vocabulary) == [
-        "record", "start", "--session-id", id, "--name=Council meeting", "--source", "mic+system", "--locale=fr-CA",
-        "--app", "us.zoom.xos", "--others-in-room", "--expected-speakers", "8",
+        "record", "start", "--session-id", id, "--name=Council meeting", "--source", "mic+system",
+        "--languages=fr-CA,en-CA", "--app", "us.zoom.xos", "--others-in-room", "--expected-speakers", "8",
         "--vocabulary-file", vocabulary.path, "--no-live-text", "--directory", root.path,
     ])
     let inPerson = MeetingStartSettings(name: "Board", source: .microphone)

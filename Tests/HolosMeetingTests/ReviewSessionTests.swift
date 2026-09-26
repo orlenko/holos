@@ -670,14 +670,16 @@ func invalidChangeIsRefusedBeforeItIsQueued() async throws {
     #expect(!review.canUndo)
 }
 
-@Test func relabelArgumentsKeepTheRoomChoice() {
+@Test func relabelArgumentsKeepTheRoomChoiceAndTheTranscript() {
     let session = URL(fileURLWithPath: "/tmp/A.holos")
+    // Every relabel from the review window keeps the transcript under review (no language detection).
     #expect(ReviewSession.relabelArguments(session: session, force: true, minimumSpeakers: 4, othersInRoom: false)
-        == ["session", "diarize", "/tmp/A.holos", "--force", "--min-speakers", "4", "--no-others-in-room", "--json"])
+        == ["session", "diarize", "/tmp/A.holos", "--keep-transcript", "--force", "--min-speakers", "4",
+            "--no-others-in-room", "--json"])
     #expect(ReviewSession.relabelArguments(session: session, force: true, minimumSpeakers: nil, othersInRoom: true)
-        == ["session", "diarize", "/tmp/A.holos", "--force", "--others-in-room", "--json"])
+        == ["session", "diarize", "/tmp/A.holos", "--keep-transcript", "--force", "--others-in-room", "--json"])
     #expect(ReviewSession.relabelArguments(session: session, force: false, minimumSpeakers: nil, othersInRoom: nil)
-        == ["session", "diarize", "/tmp/A.holos", "--json"])
+        == ["session", "diarize", "/tmp/A.holos", "--keep-transcript", "--json"])
 }
 
 @Test(.timeLimit(.minutes(1))) @MainActor

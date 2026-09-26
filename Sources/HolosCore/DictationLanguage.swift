@@ -57,6 +57,59 @@ public enum DictationLanguage {
         return dictation.map { [$0] }
     }
 
+    // MARK: - Meeting languages (docs/meeting-design.md §4.14)
+
+    /// At most this many meeting languages: the one the meeting is transcribed in live, and two more that
+    /// post-processing transcribes the audio in again and chooses from.
+    public static let maximumMeetingLanguages = 3
+
+    /// Whether two identifiers name the same language in the same script ("fr-CA" and "fr-FR", but not "zh-CN" and
+    /// "zh-TW"): language detection cannot tell such a pair apart.
+    public static func sameLanguage(_ first: String, _ second: String) -> Bool {
+        let a = Tag(identifier(first))
+        let b = Tag(identifier(second))
+        return !a.language.isEmpty && a.language == b.language && a.script == b.script
+    }
+
+    /// The meeting's languages as the recorder and post-processing take them: each as "fr-CA", in order, without
+    /// blanks or repeats, leaving out one that is the same language as an earlier one (`sameLanguage`), and at most
+    /// `maximumMeetingLanguages`. The first is the language the meeting is transcribed in live.
+    public static func meetingLanguages(_ identifiers: [String]) -> [String] {
+        var kept: [String] = []
+        for raw in identifiers {
+            let candidate = identifier(raw.trimmingCharacters(in: .whitespacesAndNewlines))
+            guard !candidate.isEmpty, !kept.contains(where: { sameLanguage($0, candidate) || $0 == candidate }) else {
+                continue
+            }
+            kept.append(candidate)
+            if kept.count == maximumMeetingLanguages { break }
+        }
+        return kept
+    }
+
+    /// A comma-separated list ("fr-CA,en-CA"), for a command-line option: the entries, trimmed, without blanks.
+    public static func list(_ text: String) -> [String] {
+        text.split(separator: ",").map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
+    }
+
+    /// Why `identifiers` cannot be a meeting's languages as given (a repeat, two regions of one language, more than
+    /// `maximumMeetingLanguages`, none at all), for a command that refuses rather than drops; nil when they can.
+    public static func meetingLanguagesProblem(_ identifiers: [String]) -> String? {
+        let cleaned = identifiers.map { identifier($0.trimmingCharacters(in: .whitespacesAndNewlines)) }
+            .filter { !$0.isEmpty }
+        guard !cleaned.isEmpty else { return "Name at least one language, like fr-CA." }
+        guard cleaned.count <= maximumMeetingLanguages else {
+            return "A meeting can have at most \(maximumMeetingLanguages) languages."
+        }
+        for (index, candidate) in cleaned.enumerated() {
+            if let earlier = cleaned[..<index].first(where: { sameLanguage($0, candidate) || $0 == candidate }) {
+                return earlier == candidate ? "\(candidate) is listed twice."
+                    : "\(earlier) and \(candidate) are the same language; list one of them."
+            }
+        }
+        return nil
+    }
+
     /// A locale identifier's language, script (filled in when implied: "zh-CN" is Hans), and region.
     private struct Tag {
         var language: String
@@ -76,9 +129,28 @@ public enum DictationLanguage {
         }
     }
 
-    /// "fr-CA" for "fr_CA", the form Holos saves and hands to the recognizer.
+    /// "fr-CA" for "fr_CA", "fr-ca", or "FR_ca", the form Holos saves, compares, and hands to the recognizer: hyphens,
+    /// and BCP 47 case (language lowercase, a four-letter script titlecase, a two-letter region uppercase, everything
+    /// else lowercase, "zh-Hans-CN", "es-419"), so two spellings of one locale are one identifier. Keywords after "@"
+    /// are kept as given.
     public static func identifier(_ raw: String) -> String {
-        raw.replacingOccurrences(of: "_", with: "-")
+        let keywords = raw.firstIndex(of: "@")
+        let tag = raw[..<(keywords ?? raw.endIndex)].replacingOccurrences(of: "_", with: "-")
+        var afterSingleton = false
+        let subtags = tag.split(separator: "-", omittingEmptySubsequences: false).enumerated().map { index, part in
+            let subtag = String(part)
+            let letters = subtag.allSatisfy { $0.isASCII && $0.isLetter }
+            // The language, and everything after an extension or private-use singleton ("-u-", "-x-"), is lowercase.
+            if index == 0 || afterSingleton { return subtag.lowercased() }
+            if subtag.count == 1 {
+                afterSingleton = true
+                return subtag.lowercased()
+            }
+            if letters, subtag.count == 4 { return subtag.prefix(1).uppercased() + subtag.dropFirst().lowercased() }
+            if letters, subtag.count == 2 { return subtag.uppercased() }
+            return subtag.lowercased()
+        }
+        return subtags.joined(separator: "-") + (keywords.map { String(raw[$0...]) } ?? "")
     }
 
     /// "fr" for "fr-CA", "fr_FR", or "fr".

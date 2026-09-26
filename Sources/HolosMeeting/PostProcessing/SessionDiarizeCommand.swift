@@ -37,12 +37,16 @@ public enum SessionDiarizeCommand {
 
     /// Runs `MeetingPostProcessor` for one session. Throws, with nothing changed, when it cannot start:
     /// `leaseDescriptor` is not this session's processing lease ("The inherited lock is not this session's
-    /// processing lease."), `diarizer` is nil without `afterRecording` (the setup hint), the session is still
+    /// processing lease."), `diarizer` is nil without `afterRecording` (the setup hint) unless the meeting's languages
+    /// have work to do now (`languageWorkPending`, not with `keepTranscript`: that run detects them and leaves the
+    /// speakers unlabelled, as after a recording without speaker models), the session is still
     /// recording, or another process holds the lease. An adopted lease is released (its descriptor closed) when the
-    /// run ends. `profiles` is passed to the post-processor (voice suggestions, PR10).
+    /// run ends. `profiles` is passed to the post-processor (voice suggestions, PR10), and `languages` too (a meeting
+    /// in several languages, §4.14).
     public static func run(_ request: Request, diarizer: (any SpeakerDiarizer)?,
                            freeSpace: any FreeSpaceProvider = VolumeFreeSpace(),
                            profiles: SpeakerProfileStore? = nil,
+                           languages: LanguageDetectionDependencies = .live,
                            progress: @escaping @Sendable (PostProcessingProgress) -> Void = { _ in })
         async throws -> Outcome {
         let session = request.session
@@ -52,17 +56,28 @@ public enum SessionDiarizeCommand {
         }
         defer { lease?.release() }
         if diarizer == nil, !request.afterRecording {
-            throw HolosError.unavailable(SpeakerAnalysis.modelsMissing)
+            let languagesOnly = request.options.keepTranscript
+                ? false : await languageWorkPending(session, dependencies: languages)
+            if !languagesOnly { throw HolosError.unavailable(SpeakerAnalysis.modelsMissing) }
         }
         if request.afterRecording, lease == nil {
             try await waitForWriter(session, timeout: request.writerWait)
             lease = try SessionArchive.acquireProcessingLease(at: session)
         }
         let processor = MeetingPostProcessor(diarizer: diarizer, options: request.options, freeSpace: freeSpace,
-                                             profiles: profiles)
+                                             profiles: profiles, languages: languages)
         let record = try await processor.run(session: session, lease: lease, progress: progress)
         return Outcome(record: record, exitCode: exitCode(record.state),
                        summary: summary(record, session: session))
+    }
+
+    /// Whether the current transcript of `session` has language work a run would do now
+    /// (`LanguageStage.hasPendingWork`); false when the manifest or the transcript cannot be read.
+    static func languageWorkPending(_ session: URL, dependencies: LanguageDetectionDependencies) async -> Bool {
+        guard let manifest = try? SessionArchive.readManifest(at: session),
+              let current = try? SessionFiles.currentTranscript(session: session) else { return false }
+        return await LanguageStage.hasPendingWork(session: session, manifest: manifest, transcript: current,
+                                                  dependencies: dependencies)
     }
 
     /// 0 succeeded; 3 partial; 1 otherwise.

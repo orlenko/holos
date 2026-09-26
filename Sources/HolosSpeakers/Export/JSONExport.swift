@@ -32,6 +32,10 @@ import HolosCore
 /// before it starts) are left out, and the rest are sorted by time. Without a projection, `speakers` is empty, each segment with text
 /// is a turn with `speakerID` `null` and `score` 0, and the `edits` counts are 0. Suggestions and the profile IDs of
 /// automatic matches are never written.
+///
+/// A transcript merged from several languages (docs/meeting-design.md §4.14) adds two keys, left out otherwise:
+/// top-level `languages` (the languages it chose from, the preferred one first) and each turn's `languages` (those of
+/// its words, in the order they first appear).
 enum JSONExport {
     static func render(_ content: ExportContent) throws -> Data {
         let encoder = HolosJSON.encoder()
@@ -66,11 +70,13 @@ private struct TranscriptFile: Encodable {
     let gaps: [TimelineGap]
     let markers: [TimelineMarker]
     let edits: EditCounts
+    let languages: [String]?
 
     init(_ content: ExportContent) {
         let document = content.document
         session = SessionEntry(document.metadata)
         transcriptID = document.transcript.id
+        languages = document.transcript.mergedLanguages
         runID = content.run?.id
         engine = content.run?.engine
         alignment = content.run?.alignment
@@ -85,7 +91,7 @@ private struct TranscriptFile: Encodable {
 
     enum CodingKeys: String, CodingKey {
         case schemaVersion, format, session, transcriptID, runID, engine, alignment, speakers, turns, gaps, markers
-        case edits
+        case edits, languages
     }
 
     func encode(to encoder: any Encoder) throws {
@@ -94,6 +100,7 @@ private struct TranscriptFile: Encodable {
         try container.encode(JSONExport.format, forKey: .format)
         try container.encode(session, forKey: .session)
         try container.encode(transcriptID, forKey: .transcriptID)
+        try container.encodeIfPresent(languages, forKey: .languages)
         try container.encodeOrNull(runID, forKey: .runID)
         try container.encodeOrNull(engine, forKey: .engine)
         try container.encodeOrNull(alignment, forKey: .alignment)
@@ -153,12 +160,13 @@ private struct TurnEntry: Encodable {
     init(_ turn: ExportTurn) { self.turn = turn }
 
     enum CodingKeys: String, CodingKey {
-        case id, speakerID, track, start, end, text, overlap, otherSpeakers, score, timing, words
+        case id, speakerID, track, start, end, text, overlap, otherSpeakers, score, timing, words, languages
     }
 
     func encode(to encoder: any Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(turn.id, forKey: .id)
+        try container.encodeIfPresent(turn.languages, forKey: .languages)
         try container.encodeOrNull(turn.speakerID, forKey: .speakerID)
         try container.encodeOrNull(turn.track, forKey: .track)
         try container.encodeNumber(turn.start, forKey: .start)

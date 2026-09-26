@@ -140,9 +140,9 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
         DictationLanguage.resolvedForSystem(saved: UserDefaults.standard.string(forKey: "dictationLocale"),
                                             supported: supportedLocales)
     }
-    /// The meeting languages chosen in the meeting start panel (exactly one today; the recorder transcribes in the
-    /// first); until then, the dictation language. Nil while that is not known yet (`resolvedLocale`): the start
-    /// panel keeps Start off until it is.
+    /// The meeting languages chosen in the meeting start panel (the recorder transcribes live in the first; the others,
+    /// at most two, are detected after the recording, docs/meeting-design.md §4.14); until then, the dictation
+    /// language. Nil while that is not known yet (`resolvedLocale`): the start panel keeps Start off until it is.
     var meetingLocales: [String]? {
         get {
             DictationLanguage.meetingLocales(
