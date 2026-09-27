@@ -142,6 +142,11 @@ public enum AudioBookWriter {
 
     public static func write(parts: [AudioBookPart], metadata: AudioBookMetadata,
                              to output: URL) async throws -> AudioBookSummary {
+        try await write(parts: parts, metadata: metadata, to: output, faults: Faults())
+    }
+
+    static func write(parts: [AudioBookPart], metadata: AudioBookMetadata, to output: URL,
+                      faults: Faults) async throws -> AudioBookSummary {
         guard !parts.isEmpty else { throw HolosError.invalidInput("A reading needs at least one audio part.") }
         guard output.isFileURL else { throw HolosError.invalidInput("Reading output must be a file URL.") }
         guard !FileManager.default.fileExists(atPath: output.path) else {
@@ -231,20 +236,32 @@ public enum AudioBookWriter {
 
         // The writer interleaves the two tracks and holds back whichever input runs ahead, so
         // chapters and audio are appended concurrently: appending either one alone can wait
-        // forever for the other.
+        // forever for the other. They fail together: each side finishes its own input however it
+        // ends, which releases an append the other side is waiting in (neither task cancellation
+        // nor `cancelWriting` does), and the first error cancels the other side, which stops at
+        // its next sample. Only then, with neither side appending, is the writer cancelled (by
+        // the `defer` above).
         let chapterSamples = chapterMarks.enumerated().map { index, mark in
             ChapterMark(title: mark.title, start: mark.frame,
                         end: index + 1 < chapterMarks.count ? chapterMarks[index + 1].frame : total)
         }
-        async let chaptersWritten: Void = appendChapters(chapterSamples, to: text, format: textFormat, rate: rate)
-        do {
-            try await appendAudio(parts: parts, starts: starts, lengths: lengths, format: format, to: audio)
-        } catch {
-            if writer.status == .writing { writer.cancelWriting() }
-            _ = try? await chaptersWritten
-            throw error
+        // Each receiver is used by its own task alone, and never again here.
+        nonisolated(unsafe) let chapterReceiver = text
+        nonisolated(unsafe) let audioReceiver = audio
+        let chapterFormat = textFormat
+        try await withThrowingTaskGroup(of: Void.self) { group in
+            group.addTask {
+                try await appendChapters(chapterSamples, to: chapterReceiver, format: chapterFormat, rate: rate,
+                                         fault: faults.chapter)
+            }
+            group.addTask { [starts, lengths] in
+                try await appendAudio(parts: parts, starts: starts, lengths: lengths, format: format, to: audioReceiver,
+                                      fault: faults.audio)
+            }
+            // `next()` rethrows the first error at once; leaving the group then cancels the other
+            // side and waits for it.
+            while try await group.next() != nil {}
         }
-        try await chaptersWritten
         await writer.finishWriting()
         guard writer.status == .completed else {
             throw HolosError.io("Could not write the reading audio: \(writer.error?.localizedDescription ?? "unknown error")")
@@ -260,16 +277,27 @@ public enum AudioBookWriter {
         let end: Int64
     }
 
+    /// Errors a test makes the writer meet: before the chapter at an index, or before the audio
+    /// buffer at a frame, is appended.
+    struct Faults: Sendable {
+        var chapter: (@Sendable (Int) async throws -> Void)?
+        var audio: (@Sendable (Int64) async throws -> Void)?
+    }
+
     private static func appendChapters(_ marks: [ChapterMark],
                                        to receiver: sending AVAssetWriterInput.SampleBufferReceiver?,
-                                       format: CMFormatDescription?, rate: Double) async throws {
+                                       format: CMFormatDescription?, rate: Double,
+                                       fault: (@Sendable (Int) async throws -> Void)?) async throws {
         guard let receiver, let format else { return }
-        for mark in marks {
+        // Finished on failure too, so the audio side is never left waiting for chapters.
+        defer { receiver.finish() }
+        for (index, mark) in marks.enumerated() {
+            try Task.checkCancellation()
+            try await fault?(index)
             let sample = try chapterSample(mark.title, format: format, start: time(mark.start, rate),
                                            duration: time(max(1, mark.end - mark.start), rate))
             try await receiver.append(CMReadySampleBuffer(unsafeBuffer: sample))
         }
-        receiver.finish()
     }
 
     private static func openPart(_ url: URL) throws -> AVAudioFile {
@@ -277,7 +305,10 @@ public enum AudioBookWriter {
     }
 
     private static func appendAudio(parts: [AudioBookPart], starts: [Int64], lengths: [Int64], format: AVAudioFormat,
-                                    to receiver: AVAssetWriterInput.SampleBufferReceiver) async throws {
+                                    to receiver: sending AVAssetWriterInput.SampleBufferReceiver,
+                                    fault: (@Sendable (Int64) async throws -> Void)?) async throws {
+        // Finished on failure too, so the chapter side is never left waiting for audio.
+        defer { receiver.finish() }
         let rate = format.sampleRate
         guard let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: framesPerBuffer),
               let silence = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: framesPerBuffer) else {
@@ -297,6 +328,7 @@ public enum AudioBookWriter {
                 try Task.checkCancellation()
                 let length = min(Int64(framesPerBuffer), starts[index] - frame)
                 silence.frameLength = AVAudioFrameCount(length)
+                try await fault?(frame)
                 try await receiver.append(CMReadySampleBuffer(unsafeBuffer: try sampleBuffer(silence, at: frame, rate: rate)))
                 frame += length
             }
@@ -308,11 +340,11 @@ public enum AudioBookWriter {
                 guard buffer.frameLength > 0 else {
                     throw HolosError.incomplete("Reading part ended before its declared length: \(parts[index].url.lastPathComponent)")
                 }
+                try await fault?(frame)
                 try await receiver.append(CMReadySampleBuffer(unsafeBuffer: try sampleBuffer(buffer, at: frame, rate: rate)))
                 frame += Int64(buffer.frameLength)
             }
         }
-        receiver.finish()
     }
 
     private static func time(_ frames: Int64, _ rate: Double) -> CMTime {

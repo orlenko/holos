@@ -305,6 +305,134 @@ import Testing
         }
     }
 
+    private func paragraphs(_ html: String) -> [String] {
+        HTMLReader.document(from: Data(html.utf8)).sections.flatMap(\.paragraphs)
+    }
+
+    /// Skipped elements go with everything inside them, however they nest: the parser keeps
+    /// HTML5 elements as elements, and the tree is walked.
+    @Test func nestedSkippedElementsAreSkippedWhole() {
+        #expect(paragraphs("""
+        <!DOCTYPE html><html><head><title>T</title></head><body>
+        <header><p>Header text</p></header>
+        <nav>Menu <nav>Inner menu</nav> menu tail <ul><li>Link</li></ul></nav>
+        <main><article><section><p>First.</p>
+        <template>Outer <template>inner</template> outer tail <p>template paragraph</p></template>
+        <aside>Aside <aside>inner aside</aside> aside tail</aside>
+        <p>Second <my-widget>custom inline</my-widget> and <mark>marked</mark> text.</p>
+        <figure><svg viewBox="0 0 1 1"><title>Icon title</title><path d="M0 0"/><text>svg text</text></svg><figcaption>Caption.</figcaption></figure>
+        <table><tr><template><td>template cell</td></template><td>Real cell</td></tr></table>
+        <p>Price <svg><g><svg><text>nested</text></svg></g><desc>desc</desc></svg> now.</p>
+        </section></article></main>
+        <NAV CLASS="upper">Upper nav</NAV>
+        <footer><p>Footer <footer>inner footer</footer> tail</p></footer>
+        <p>Last.</p></body></html>
+        """) == ["Header text", "First.", "Second custom inline and marked text.", "Caption.", "Real cell",
+                 "Price now.", "Last."])
+    }
+
+    /// Tags inside comments and raw text elements are not tags.
+    @Test func commentsAndScriptsDoNotOpenElements() {
+        #expect(paragraphs("""
+        <html><head><style>nav > a { color: red } /* </nav> */</style></head><body>
+        <!-- <nav> a commented-out tag -->
+        <script>if (a <template) { document.write("</template><p>not read</p>") }</script>
+        <p>Kept one.</p>
+        <template><script>var s = "</template>";</script>hidden</template>
+        <p>Kept two.</p>
+        <textarea><nav>typed text</nav></textarea>
+        <p>Kept three.</p></body></html>
+        """) == ["Kept one.", "Kept two.", "Kept three."])
+        // A quote opens an attribute value only after `=`.
+        #expect(paragraphs(##"<p><a title=It's href="#">Link</a> <b class='x'>bold</b></p><nav>Menu's</nav><p>After.</p>"##)
+            == ["Link bold", "After."])
+        let title = HTMLReader.document(from: Data("<html><head><title>Less <nav> more</title></head><body><p>x</p></body></html>".utf8))
+        #expect(title.title == "Less <nav> more")
+    }
+
+    @Test func hiddenElementsAreSkipped() {
+        #expect(paragraphs("""
+        <html><body>
+        <p hidden>Hidden attribute.</p>
+        <div HIDDEN="until-found"><p>Until found.</p></div>
+        <p aria-hidden="TRUE">Aria hidden.</p>
+        <p aria-hidden="false">Aria visible.</p>
+        <p style="color: red; DISPLAY : none !important">Display none.</p>
+        <p style="display:block">Display block.</p>
+        <section style="display:none"><p>Hidden section.</p></section>
+        <p>Inline <span style="display: none">hidden span </span>text.</p>
+        <dialog><p>Closed dialog.</p></dialog>
+        <dialog open><p>Open dialog.</p></dialog>
+        </body></html>
+        """) == ["Aria visible.", "Display block.", "Inline text.", "Open dialog."])
+    }
+
+    /// Legacy-encoded pages are decoded before parsing and read like UTF-8 ones, navigation and
+    /// footers skipped.
+    @Test func legacyEncodedPagesSkipNavigationToo() throws {
+        let body = "<body><nav>Menü</nav><h1>Café</h1><p>Crème “brûlée” – 5 €.</p><footer>© Pied</footer></body></html>"
+        let pages: [(String, String.Encoding)] = [
+            (#"<html><head><meta charset="ISO-8859-1"><title>T</title></head>"#, .windowsCP1252),
+            (#"<html><head><META HTTP-EQUIV="Content-Type" CONTENT="text/html; charset=iso-8859-1"></head>"#, .windowsCP1252),
+            (#"<html><head><meta http-equiv='content-type' content='text/html;charset=Windows-1252'></head>"#, .windowsCP1252),
+            (#"<html><head><meta charset=windows-1252></head>"#, .windowsCP1252),
+            // No declaration and not UTF-8: Windows-1252, HTML's default.
+            ("<html><head></head>", .windowsCP1252),
+            (#"<html><head><meta charset="x-unknown-charset"></head>"#, .windowsCP1252),
+        ]
+        for (head, encoding) in pages {
+            let data = try #require((head + body).data(using: encoding), "\(head)")
+            #expect(DocumentText.decode(data) == nil, "\(head)")
+            let document = HTMLReader.document(from: data)
+            #expect(document.title == "Café", "\(head)")
+            #expect(document.sections.flatMap(\.paragraphs) == ["Crème “brûlée” – 5 €."], "\(head)")
+        }
+        // Any charset Foundation knows by its IANA name.
+        let russian = try #require(#"<html><head><meta charset="KOI8-R"></head><body><aside>Реклама</aside><p>Привет, мир.</p></body></html>"#
+            .data(using: String.Encoding(rawValue: CFStringConvertEncodingToNSStringEncoding(CFStringEncoding(CFStringEncodings.KOI8_R.rawValue)))))
+        #expect(HTMLReader.document(from: russian).sections.flatMap(\.paragraphs) == ["Привет, мир."])
+    }
+
+    @Test func pagesInUTF16WithAByteOrderMarkSkipNavigation() {
+        let html = "<html><head><meta charset=\"iso-8859-1\"></head><body><nav>Menu</nav><p>Zoë’s text.</p><footer>Foot</footer></body></html>"
+        for data in [Data([0xFF, 0xFE]) + html.data(using: .utf16LittleEndian)!,
+                     Data([0xFE, 0xFF]) + html.data(using: .utf16BigEndian)!] {
+            #expect(HTMLReader.document(from: data).sections.flatMap(\.paragraphs) == ["Zoë’s text."])
+        }
+    }
+
+    @Test func encodingIsPickedAsBrowsersPickIt() {
+        let text = "<p>Café</p>"
+        // A byte order mark wins over a declaration.
+        #expect(HTMLReader.decode(Data([0xEF, 0xBB, 0xBF]) + Data(#"<meta charset="iso-8859-1">\#(text)"#.utf8))
+            == #"<meta charset="iso-8859-1">\#(text)"#)
+        // A declaration wins over valid UTF-8: these bytes are "CafÃ©" in Windows-1252.
+        #expect(HTMLReader.decode(Data(#"<meta charset="latin1">\#(text)"#.utf8)) == #"<meta charset="latin1">\#(text)"#
+            .replacingOccurrences(of: "é", with: "Ã©"))
+        // UTF-16 declared without a byte order mark is read as UTF-8.
+        #expect(HTMLReader.decode(Data(#"<META Charset="UTF-16">\#(text)"#.utf8)) == #"<META Charset="UTF-16">\#(text)"#)
+        // Declared UTF-8 with an invalid byte: UTF-8 with a replacement character.
+        #expect(HTMLReader.decode(Data(#"<meta charset="utf-8"><p>A"#.utf8) + Data([0xE9]) + Data("</p>".utf8))
+            == "<meta charset=\"utf-8\"><p>A\u{FFFD}</p>")
+        // A declaration past the first 1024 bytes is not looked for; the bytes are valid UTF-8.
+        let late = String(repeating: " ", count: 1_024) + #"<meta charset="iso-8859-1">"# + text
+        #expect(HTMLReader.decode(Data(late.utf8)) == late)
+        // Undeclared, invalid UTF-8: Windows-1252, where 0x80 is the euro sign and the undefined
+        // 0x81 stands for itself.
+        #expect(HTMLReader.decode(Data([0x3C, 0x70, 0x3E, 0x80, 0xE9, 0x81])) == "<p>€é\u{81}")
+        #expect(HTMLReader.encoding(named: "US-ASCII") == .windowsCP1252)
+        #expect(HTMLReader.encoding(named: "utf-32") == .utf8)
+        #expect(HTMLReader.encoding(named: "not-a-charset") == nil)
+    }
+
+    /// Fragments the parser rejects without `<html>` are read after all.
+    @Test func fragmentsAndPlainTextAreRead() {
+        #expect(paragraphs("<p>Unclosed paragraph") == ["Unclosed paragraph"])
+        #expect(paragraphs("<b>Bold") == ["Bold"])
+        #expect(paragraphs("Just text.") == ["Just text."])
+        #expect(paragraphs("<nav>Menu</nav><p>Body.") == ["Body."])
+    }
+
     @Test func titleElementWhenThereIsNoH1() {
         let document = HTMLReader.document(from: Data("<html><head><title> Plain  Page </title></head><body><p>Text.</p></body></html>".utf8))
         #expect(document.title == "Plain Page")

@@ -1,6 +1,7 @@
 import AVFoundation
 import Foundation
 import HolosCore
+import Synchronization
 import Testing
 @testable import HolosSynthesis
 
@@ -161,6 +162,83 @@ import Testing
         // Blank titles, and a chapter at or before the previous one's start, are dropped.
         #expect(titles([("One", 0), (" \n", 3), ("Same", 0), ("Two", 5)]) == ["One", "Two"])
         #expect(Plan.titles([nil, "A", "B"], bookTitle: "Book") == ["Book", "A", "B"])
+    }
+
+    private struct InjectedFailure: Error, Equatable {
+        let side: String
+    }
+
+    /// The furthest audio frame the writer has come to append.
+    private final class Furthest: Sendable {
+        private let frame = Mutex<Int64>(0)
+        var value: Int64 { frame.withLock { $0 } }
+        func reach(_ value: Int64) { frame.withLock { $0 = max($0, value) } }
+    }
+
+    /// Four ten-second chapters: long enough that each side runs ahead of the other and waits.
+    private func fourChapters(in folder: URL) throws -> [AudioBookPart] {
+        try ["One", "Two", "Three", "Four"].enumerated().map { index, chapter in
+            let url = folder.appendingPathComponent("part\(index).caf")
+            try tone(seconds: 10, to: url)
+            return AudioBookPart(url: url, silenceBefore: index == 0 ? 0 : 0.5, chapter: chapter)
+        }
+    }
+
+    /// A chapter that fails before the chapter input is finished ends the render with that error:
+    /// the audio side, which the writer holds back behind the chapters, is released and stopped,
+    /// and the partial file is removed. The failure waits for the audio to pass the last appended
+    /// chapter's start, then a moment more, so the audio is being held back when it comes.
+    @Test(.timeLimit(.minutes(1))) func aChapterFailureEndsTheRenderAndLeavesNoFile() async throws {
+        let folder = try directory()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let parts = try fourChapters(in: folder)
+        // Where each chapter starts, in frames: at the half second of silence before its part.
+        let chapterStarts: [Int64] = [0, 220_500, 452_025]
+        for failing in [0, 1, 3] {
+            let output = folder.appendingPathComponent("chapter\(failing).m4a")
+            let audioFrame = Furthest()
+            // The writer lets the audio run a few seconds past the start of the last chapter
+            // appended (or the beginning), then holds it back: four buffers in, it gets there.
+            let reachable = (failing == 0 ? 0 : chapterStarts[failing - 1]) + 4 * 8_192
+            let faults = AudioBookWriter.Faults(
+                chapter: { index in
+                    guard index == failing else { return }
+                    // A poll budget, not a deadline: the failure comes either way.
+                    for _ in 0..<500 where audioFrame.value < reachable {
+                        try await Task.sleep(for: .milliseconds(10))
+                    }
+                    try await Task.sleep(for: .milliseconds(100))
+                    throw InjectedFailure(side: "chapter")
+                },
+                audio: { frame in audioFrame.reach(frame) })
+            await #expect(throws: InjectedFailure(side: "chapter"), "\(failing)") {
+                try await AudioBookWriter.write(parts: parts, metadata: AudioBookMetadata(title: "Book"), to: output,
+                                                faults: faults)
+            }
+            #expect(!FileManager.default.fileExists(atPath: output.path), "\(failing)")
+        }
+    }
+
+    /// The same for audio that fails partway, with the chapter side waiting on it.
+    @Test(.timeLimit(.minutes(1))) func anAudioFailureEndsTheRenderAndLeavesNoFile() async throws {
+        let folder = try directory()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let parts = try fourChapters(in: folder)
+        for failing: Int64 in [0, 15 * 22_050, 35 * 22_050] {
+            let output = folder.appendingPathComponent("audio\(failing).m4a")
+            let faults = AudioBookWriter.Faults(audio: { frame in
+                if frame >= failing { throw InjectedFailure(side: "audio") }
+            })
+            await #expect(throws: InjectedFailure(side: "audio"), "\(failing)") {
+                try await AudioBookWriter.write(parts: parts, metadata: AudioBookMetadata(title: "Book"), to: output,
+                                                faults: faults)
+            }
+            #expect(!FileManager.default.fileExists(atPath: output.path), "\(failing)")
+        }
+        // Without a fault the same parts make a book with all four chapters.
+        let output = folder.appendingPathComponent("whole.m4a")
+        let summary = try await AudioBookWriter.write(parts: parts, metadata: AudioBookMetadata(title: "Book"), to: output)
+        #expect(summary.chapters.map(\.title) == ["One", "Two", "Three", "Four"])
     }
 
     /// Silence that would overflow the frame count (or is not a number) is an error, never a trap.

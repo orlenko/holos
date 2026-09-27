@@ -46,16 +46,25 @@ public enum DocumentLoader {
 /// is dropped, so it never hides YAML front matter or ends up in a title. Nil for anything else.
 public enum DocumentText {
     public static func decode(_ data: Data) -> String? {
+        if let (length, encoding) = byteOrderMark(data) { return decode(data.dropFirst(length), as: encoding) }
+        return decode(data, as: .utf8)
+    }
+
+    /// The Unicode encoding a leading byte order mark names, and the mark's length in bytes.
+    static func byteOrderMark(_ data: Data) -> (length: Int, encoding: String.Encoding)? {
         let marks: [([UInt8], String.Encoding)] = [
             ([0xFF, 0xFE, 0x00, 0x00], .utf32LittleEndian), ([0x00, 0x00, 0xFE, 0xFF], .utf32BigEndian),
-            ([0xFF, 0xFE], .utf16LittleEndian), ([0xFE, 0xFF], .utf16BigEndian),
+            ([0xFF, 0xFE], .utf16LittleEndian), ([0xFE, 0xFF], .utf16BigEndian), ([0xEF, 0xBB, 0xBF], .utf8),
         ]
         let head = [UInt8](data.prefix(4))
-        for (mark, encoding) in marks where head.starts(with: mark) {
-            return String(data: data.dropFirst(mark.count), encoding: encoding)
-        }
-        // Validated as is: Foundation's UTF-8 decoding drops a second leading mark as well.
-        return String(validating: head.starts(with: [0xEF, 0xBB, 0xBF]) ? data.dropFirst(3) : data, as: UTF8.self)
+        return marks.first { head.starts(with: $0.0) }.map { ($0.0.count, $0.1) }
+    }
+
+    /// `data` in `encoding`, or nil when it is not valid in it.
+    static func decode(_ data: Data, as encoding: String.Encoding) -> String? {
+        // Validated as is: Foundation's UTF-8 decoding drops a leading byte order mark.
+        if encoding == .utf8 { return String(validating: data, as: UTF8.self) }
+        return String(data: data, encoding: encoding)
     }
 
     /// `text` without one leading U+FEFF.
@@ -196,47 +205,31 @@ public enum MarkdownReader {
 
 /// HTML through Foundation's tidying XML parser: h1-h6 start sections, block elements become
 /// paragraphs (ordered list items keep their numbers), table rows are read cell by cell, and
-/// scripts, styles, navigation, forms, footers, asides, and preformatted code are skipped. Title
-/// from the first h1, else `<title>`; author and language from the page's metadata (see
-/// `Metadata`).
+/// scripts, styles, templates, navigation, forms, footers, asides, media, preformatted code, and
+/// hidden elements (`hidden`, `aria-hidden="true"`, inline `display: none`) are skipped with
+/// everything inside them. Title from the first h1, else `<title>`; author and language from the
+/// page's metadata (see `Metadata`).
+///
+/// Every page takes the same path: its bytes are decoded to text (see `decode`), HTML5 elements
+/// are renamed so the parser keeps them (see `prepared`), the text is parsed once, and the tree
+/// is walked, leaving out skipped elements.
 public enum HTMLReader {
     static let skipped: Set<String> = [
         "script", "style", "noscript", "template", "nav", "footer", "aside", "form", "button",
-        "svg", "iframe", "select", "textarea", "pre", "img", "picture", "video", "audio", "canvas",
-        "head", "object", "embed",
+        "svg", "math", "iframe", "select", "textarea", "pre", "img", "picture", "video", "audio", "canvas",
+        "head", "object", "embed", "datalist",
     ]
     static let blocks: Set<String> = [
         "p", "div", "section", "article", "main", "header", "li", "ul", "ol", "dl", "dt", "dd",
         "blockquote", "figure", "figcaption", "address", "table", "thead", "tbody", "tfoot", "tr",
-        "caption", "hr", "br", "body", "html", "center", "details", "summary",
+        "caption", "hr", "br", "body", "html", "center", "details", "summary", "hgroup", "search", "dialog",
     ]
 
-    /// HTML5 elements the tidying parser does not know: it drops their tags but keeps their text,
-    /// so they are removed before parsing.
-    static let strippedBeforeParsing = ["nav", "footer", "aside", "template", "svg", "noscript", "script", "style"]
-
     public static func document(from source: Data) -> ReadableDocument {
-        var plain = String(decoding: source, as: UTF8.self)
-        let parsed: XMLDocument?
-        // UTF-8, or UTF-16/32 with a byte order mark; the mark itself is dropped.
-        if var html = DocumentText.decode(source) {
-            for name in strippedBeforeParsing {
-                html = html.replacingOccurrences(of: "(?s)<\(name)\\b[^>]*>.*?</\(name)\\s*>", with: " ",
-                                                 options: [.regularExpression, .caseInsensitive])
-            }
-            plain = html
-            // Parsed as a string, not bytes: from bytes the tidying parser ignores the declared
-            // charset, dropping non-ASCII UTF-8 without one and reading it as Windows-1252 with
-            // `<meta charset="utf-8">` ("Café" -> "CafÃ©").
-            parsed = try? XMLDocument(xmlString: html, options: [.documentTidyHTML])
-        } else {
-            // Text in another encoding is parsed as bytes, for the parser to guess.
-            parsed = try? XMLDocument(data: source, options: [.documentTidyHTML])
-        }
-        guard let xml = parsed, let root = xml.rootElement() else {
-            let text = plain.replacingOccurrences(of: "<[^>]+>", with: " ", options: .regularExpression)
-            return PlainTextReader.document(from: text)
-        }
+        let html = prepared(decode(source))
+        // The parser gives up on some fragments without `<html>` ("<p>Text"); wrapped, they parse.
+        guard let xml = parse(html) ?? parse("<html><body>" + html + "</body></html>"),
+              let root = xml.rootElement() else { return ReadableDocument(sections: []) }
         var walker = Walker()
         walker.walk(root)
         walker.flush()
@@ -244,6 +237,300 @@ public enum HTMLReader {
         let firstH1 = walker.builder.sections.first { $0.level == 1 }?.heading
         return ReadableDocument(title: firstH1 ?? metadata.title.map(collapse), author: metadata.author,
                                 language: metadata.language, sections: walker.builder.sections)
+    }
+
+    /// Parsed from a string, never bytes: from bytes the tidying parser ignores the declared
+    /// charset, dropping non-ASCII UTF-8 without one and reading it as Windows-1252 with
+    /// `<meta charset="utf-8">` ("Café" -> "CafÃ©"). From a string it ignores any declaration.
+    private static func parse(_ html: String) -> XMLDocument? {
+        try? XMLDocument(xmlString: html, options: [.documentTidyHTML])
+    }
+
+    // MARK: Encoding
+
+    /// A page's bytes as text, the encoding picked as a browser picks it:
+    /// 1. a byte order mark: UTF-8, UTF-16, or UTF-32;
+    /// 2. else the charset declared in the first 1024 bytes, by `<meta charset>` or
+    ///    `<meta http-equiv="Content-Type" content="…; charset=…">` (any ASCII case). As in
+    ///    browsers, ISO-8859-1 and ASCII mean Windows-1252, and UTF-16 or UTF-32 without a mark
+    ///    means UTF-8;
+    /// 3. else UTF-8 when the bytes are valid UTF-8;
+    /// 4. else Windows-1252, HTML's default.
+    /// A declared UTF-8 page with invalid bytes is read as UTF-8 with replacement characters; bytes
+    /// invalid in another declared encoding fall through to 3 and 4. One leading U+FEFF is dropped.
+    static func decode(_ data: Data) -> String {
+        DocumentText.withoutByteOrderMark(decodeKeepingMark(data))
+    }
+
+    private static func decodeKeepingMark(_ data: Data) -> String {
+        if let (length, encoding) = DocumentText.byteOrderMark(data),
+           let text = DocumentText.decode(data.dropFirst(length), as: encoding) {
+            return text
+        }
+        if let declared = declaredEncoding(data) {
+            if declared == .windowsCP1252 { return windows1252(data) }
+            if let text = DocumentText.decode(data, as: declared) { return text }
+            if declared == .utf8 { return String(decoding: data, as: UTF8.self) }
+        }
+        return DocumentText.decode(data, as: .utf8) ?? windows1252(data)
+    }
+
+    /// Characters for bytes 0x80-0x9F in Windows-1252; the five it leaves undefined stand for
+    /// themselves, as in browsers. Every other byte is the code point of the same number.
+    private static let windows1252High: [UInt32] = [
+        0x20AC, 0x81, 0x201A, 0x0192, 0x201E, 0x2026, 0x2020, 0x2021, 0x02C6, 0x2030, 0x0160, 0x2039,
+        0x0152, 0x8D, 0x017D, 0x8F, 0x90, 0x2018, 0x2019, 0x201C, 0x201D, 0x2022, 0x2013, 0x2014,
+        0x02DC, 0x2122, 0x0161, 0x203A, 0x0153, 0x9D, 0x017E, 0x0178,
+    ]
+
+    /// `data` in Windows-1252, which decodes every byte (Foundation's decoder fails on the five
+    /// undefined ones).
+    static func windows1252(_ data: Data) -> String {
+        var scalars = String.UnicodeScalarView()
+        for byte in data {
+            let value = (0x80...0x9F).contains(byte) ? windows1252High[Int(byte) - 0x80] : UInt32(byte)
+            scalars.append(Unicode.Scalar(value)!)
+        }
+        return String(scalars)
+    }
+
+    private static let metaTag = try! NSRegularExpression(pattern: "<meta(?=[\\s/>])[^>]*>", options: .caseInsensitive)
+    private static let tagAttribute = try! NSRegularExpression(
+        pattern: #"([^\s"'<>/=]+)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>"']+))"#)
+    private static let contentCharset = try! NSRegularExpression(
+        pattern: #"charset\s*=\s*["']?([^"';\s]+)"#, options: .caseInsensitive)
+
+    /// The encoding named by the first `<meta>` in the first 1024 bytes that declares one Foundation
+    /// knows.
+    static func declaredEncoding(_ data: Data) -> String.Encoding? {
+        // Declarations are ASCII: other bytes stand in as spaces, so no encoding is assumed here.
+        let head = String(decoding: data.prefix(1024).map { $0 < 0x80 ? $0 : 0x20 }, as: UTF8.self) as NSString
+        for tag in metaTag.matches(in: head as String, range: NSRange(location: 0, length: head.length)) {
+            let text = head.substring(with: tag.range) as NSString
+            var attributes: [String: String] = [:]
+            for match in tagAttribute.matches(in: text as String, range: NSRange(location: 0, length: text.length)) {
+                let name = text.substring(with: match.range(at: 1)).lowercased()
+                let value = (2...4).map { match.range(at: $0) }.first { $0.location != NSNotFound }
+                    .map { text.substring(with: $0) } ?? ""
+                if attributes[name] == nil { attributes[name] = value }
+            }
+            var charset = attributes["charset"]
+            if charset == nil,
+               attributes["http-equiv"]?.trimmingCharacters(in: .whitespaces).lowercased() == "content-type",
+               let content = attributes["content"].map({ $0 as NSString }),
+               let match = contentCharset.firstMatch(in: content as String,
+                                                     range: NSRange(location: 0, length: content.length)) {
+                charset = content.substring(with: match.range(at: 1))
+            }
+            if let charset, let encoding = encoding(named: charset) { return encoding }
+        }
+        return nil
+    }
+
+    /// The encoding an IANA charset name ("utf-8", "ISO-8859-1", "shift_jis") stands for in HTML.
+    static func encoding(named name: String) -> String.Encoding? {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        let encoding = CFStringConvertIANACharSetNameToEncoding(trimmed as CFString)
+        guard encoding != kCFStringEncodingInvalidId else { return nil }
+        switch String.Encoding(rawValue: CFStringConvertEncodingToNSStringEncoding(encoding)) {
+        case .utf16, .utf16BigEndian, .utf16LittleEndian, .utf32, .utf32BigEndian, .utf32LittleEndian: return .utf8
+        case .isoLatin1, .ascii: return .windowsCP1252
+        case let other: return other
+        }
+    }
+
+    // MARK: Elements the parser does not know
+
+    /// The attribute that carries an element's own name after `prepared` renamed it.
+    static let originalNameAttribute = "data-holos-tag"
+
+    /// Elements the tidying parser keeps (HTML 4 and its legacy extensions). It drops the tags of
+    /// any other element, HTML5's included, and keeps their contents as if the tags were not there.
+    static let knownToParser: Set<String> = [
+        "a", "abbr", "acronym", "address", "applet", "area", "b", "base", "basefont", "bdo", "big",
+        "blockquote", "body", "br", "button", "caption", "center", "cite", "code", "col", "colgroup",
+        "dd", "del", "dfn", "dir", "div", "dl", "dt", "em", "fieldset", "font", "form", "frame",
+        "frameset", "h1", "h2", "h3", "h4", "h5", "h6", "head", "hr", "html", "i", "iframe", "img",
+        "input", "ins", "isindex", "kbd", "label", "legend", "li", "link", "map", "menu", "meta",
+        "noframes", "noscript", "object", "ol", "optgroup", "option", "p", "param", "pre", "q", "s",
+        "samp", "script", "select", "small", "span", "strike", "strong", "style", "sub", "sup",
+        "table", "tbody", "td", "textarea", "tfoot", "th", "thead", "title", "tr", "tt", "u", "ul",
+        "var", "embed", "nobr", "wbr", "marquee", "blink", "xmp", "listing", "plaintext", "layer",
+        "ilayer", "spacer", "bgsound", "keygen", "rb", "rbc", "rp", "rt", "rtc", "ruby", "multicol",
+        "nolayer",
+    ]
+    /// Unknown elements that stand as blocks become `div`s; every other one becomes a `span`.
+    static let blockReplaced: Set<String> = [
+        "article", "aside", "details", "dialog", "figcaption", "figure", "footer", "header", "hgroup",
+        "main", "nav", "search", "section", "summary", "template",
+    ]
+    /// Elements none of whose contents is read. Every element inside one becomes a `span` (raw
+    /// text elements aside), so the parser keeps the contents in place: it moves a template's
+    /// table cells into the table around the template otherwise.
+    static let opaque: Set<String> = ["template", "svg", "math"]
+    /// Elements whose contents is text, never tags.
+    static let rawText: Set<String> = ["script", "style", "textarea", "title", "xmp", "iframe", "noembed", "noframes"]
+
+    /// `html` with every element the tidying parser does not know renamed to one it does, its own
+    /// name kept in `originalNameAttribute`: `<nav class="x">` becomes
+    /// `<div data-holos-tag="nav" class="x">`. The parser then keeps it as an element with all its
+    /// contents, nested ones included, for `Walker` to read or skip. Only tag names change, and
+    /// `<` in raw text elements other than scripts and styles (which the parser reads as text)
+    /// is escaped; comments are copied as they are.
+    static func prepared(_ html: String) -> String {
+        let bytes = Array(html.utf8)
+        let count = bytes.count
+        var output: [UInt8] = []
+        output.reserveCapacity(count + count / 16)
+        // Open opaque elements, innermost last.
+        var opaqueOpen: [String] = []
+        var index = 0
+
+        func starts(_ text: String, at position: Int) -> Bool {
+            let pattern = Array(text.utf8)
+            guard position + pattern.count <= count else { return false }
+            return zip(bytes[position...], pattern).allSatisfy { lowercased($0) == $1 }
+        }
+        func isNameEnd(_ byte: UInt8) -> Bool {
+            isSpace(byte) || byte == UInt8(ascii: "/") || byte == UInt8(ascii: ">")
+        }
+        func replacement(_ name: String) -> String { blockReplaced.contains(name) ? "div" : "span" }
+
+        while index < count {
+            guard bytes[index] == UInt8(ascii: "<") else {
+                output.append(bytes[index])
+                index += 1
+                continue
+            }
+            if starts("<!--", at: index) {
+                var end = index + 4
+                while end < count, bytes[end] != UInt8(ascii: "-") || !starts("-->", at: end) { end += 1 }
+                end = min(count, end + 3)
+                output += bytes[index..<end]
+                index = end
+                continue
+            }
+            var cursor = index + 1
+            let closing = cursor < count && bytes[cursor] == UInt8(ascii: "/")
+            if closing { cursor += 1 }
+            guard cursor < count, isLetter(bytes[cursor]) else {
+                output.append(bytes[index])
+                index += 1
+                continue
+            }
+            let tagStart = index
+            let nameStart = cursor
+            while cursor < count, !isNameEnd(bytes[cursor]) { cursor += 1 }
+            let name = String(decoding: bytes[nameStart..<cursor].map(lowercased), as: UTF8.self)
+            // The tag ends at the first `>` outside a quoted attribute value. A quote opens a value
+            // only right after `=` (`title=It's` is unquoted).
+            var end = cursor
+            var quote: UInt8?
+            var afterEquals = false
+            while end < count {
+                let byte = bytes[end]
+                if let open = quote {
+                    if byte == open { quote = nil }
+                } else if afterEquals, byte == UInt8(ascii: "\"") || byte == UInt8(ascii: "'") {
+                    quote = byte
+                } else if byte == UInt8(ascii: ">") {
+                    break
+                }
+                if quote == nil, !isSpace(byte) { afterEquals = byte == UInt8(ascii: "=") }
+                end += 1
+            }
+            guard end < count else {
+                // An unfinished tag: the rest is copied for the parser to make of it what it can.
+                output += bytes[tagStart...]
+                break
+            }
+            let attributes = bytes[cursor..<end]
+            let selfClosing = attributes.last == UInt8(ascii: "/")
+            index = end + 1
+
+            if closing {
+                let renamed: String?
+                if let innermost = opaqueOpen.last {
+                    if name == innermost {
+                        opaqueOpen.removeLast()
+                        renamed = opaqueOpen.isEmpty ? replacement(name) : "span"
+                    } else {
+                        renamed = rawText.contains(name) && name != "title" ? nil : "span"
+                    }
+                } else {
+                    renamed = knownToParser.contains(name) ? nil : replacement(name)
+                }
+                if let renamed { output += Array("</\(renamed)>".utf8) } else { output += bytes[tagStart..<index] }
+                continue
+            }
+
+            let insideOpaque = !opaqueOpen.isEmpty
+            // In an opaque element a raw text element keeps its name, so the parser still reads
+            // its contents as text; `<title>` there is an SVG title, which is markup.
+            let isRawText = rawText.contains(name) && !(insideOpaque && name == "title") && !selfClosing
+            let renamed: String?
+            if insideOpaque {
+                renamed = isRawText ? nil : "span"
+            } else {
+                renamed = knownToParser.contains(name) ? nil : replacement(name)
+            }
+            if opaque.contains(name), !selfClosing { opaqueOpen.append(name) }
+            if let renamed {
+                var tag = "<" + renamed
+                if !insideOpaque, name.allSatisfy({ $0.isASCII && ($0.isLetter || $0.isNumber || "-_:.".contains($0)) }) {
+                    tag += " \(originalNameAttribute)=\"\(name)\""
+                }
+                output += Array(tag.utf8)
+                if selfClosing {
+                    // `<path/>` becomes an explicitly empty element: `<span/>` could be taken for
+                    // an open one, hiding the text after it.
+                    output += attributes.dropLast()
+                    output += Array("></\(renamed)>".utf8)
+                } else {
+                    output += attributes
+                    output.append(UInt8(ascii: ">"))
+                }
+            } else {
+                output += bytes[tagStart..<index]
+            }
+            if isRawText {
+                // Copied as it is up to its end tag, which the loop then reads.
+                let length = name.utf8.count
+                let endTag = "</" + name
+                var close = index
+                while close < count {
+                    if bytes[close] == UInt8(ascii: "<"), starts(endTag, at: close),
+                       close + 2 + length == count || isNameEnd(bytes[close + 2 + length]) {
+                        break
+                    }
+                    close += 1
+                }
+                if name == "script" || name == "style" {
+                    output += bytes[index..<close]
+                } else {
+                    // The parser reads tags in the others (`<textarea><nav>…`), so their `<` is
+                    // escaped: all it can do there is start a tag.
+                    for byte in bytes[index..<close] {
+                        if byte == UInt8(ascii: "<") { output += Array("&lt;".utf8) } else { output.append(byte) }
+                    }
+                }
+                index = close
+            }
+        }
+        return String(decoding: output, as: UTF8.self)
+    }
+
+    private static func lowercased(_ byte: UInt8) -> UInt8 {
+        (UInt8(ascii: "A")...UInt8(ascii: "Z")).contains(byte) ? byte + 32 : byte
+    }
+
+    private static func isLetter(_ byte: UInt8) -> Bool {
+        (UInt8(ascii: "a")...UInt8(ascii: "z")).contains(lowercased(byte))
+    }
+
+    private static func isSpace(_ byte: UInt8) -> Bool {
+        byte == 0x20 || byte == 0x09 || byte == 0x0A || byte == 0x0C || byte == 0x0D
     }
 
     /// The page's `<title>`, author, and language. HTML element names, attribute names, and
@@ -321,8 +608,8 @@ public enum HTMLReader {
                 return
             }
             guard node.kind == .element else { return }
-            let name = (node.localName ?? node.name ?? "").lowercased()
-            if Self.isSkipped(name) { return }
+            if Self.isSkipped(node) { return }
+            let name = Self.name(of: node)
             if name.count == 2, name.first == "h", let level = Int(String(name.last!)), (1...6).contains(level) {
                 flush()
                 builder.heading(collapse(Self.text(of: node)), level: level)
@@ -377,7 +664,38 @@ public enum HTMLReader {
             if isBlock { flush() }
         }
 
-        static func isSkipped(_ name: String) -> Bool { HTMLReader.skipped.contains(name) }
+        /// An element's HTML name, lowercased: the one it had before `prepared` renamed it, else
+        /// its own.
+        static func name(of node: XMLNode) -> String {
+            attribute(HTMLReader.originalNameAttribute, of: node)?.lowercased()
+                ?? (node.localName ?? node.name ?? "").lowercased()
+        }
+
+        /// A skipped element (a script, a navigation bar), or one the page hides: with a `hidden`
+        /// attribute, `aria-hidden="true"`, an inline `display: none`, or a `<dialog>` that is not
+        /// open. Nothing inside it is read.
+        static func isSkipped(_ node: XMLNode) -> Bool {
+            let name = name(of: node)
+            if HTMLReader.skipped.contains(name) { return true }
+            if name == "dialog", attribute("open", of: node) == nil { return true }
+            if attribute("hidden", of: node) != nil { return true }
+            if attribute("aria-hidden", of: node)?.lowercased() == "true" { return true }
+            return attribute("style", of: node).map(hidesElement) ?? false
+        }
+
+        /// Whether an inline style sets `display: none` (in any case, `!important` or not).
+        static func hidesElement(_ style: String) -> Bool {
+            style.split(separator: ";").contains { declaration in
+                let parts = declaration.split(separator: ":", maxSplits: 1)
+                guard parts.count == 2,
+                      parts[0].trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "display" else { return false }
+                var value = parts[1].trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                if value.hasSuffix("!important") {
+                    value = value.dropLast("!important".count).trimmingCharacters(in: .whitespacesAndNewlines)
+                }
+                return value == "none"
+            }
+        }
 
         /// The attribute whose local name is `name` in any ASCII case (HTML attribute names are
         /// case-insensitive); with `qualified`, only one whose whole name is that, so `lang` is
@@ -436,10 +754,8 @@ public enum HTMLReader {
         /// Visible text of an element, without skipped descendants.
         static func text(of node: XMLNode) -> String {
             if node.kind == .text { return node.stringValue ?? "" }
-            guard node.kind == .element else { return "" }
-            let name = (node.localName ?? node.name ?? "").lowercased()
-            if isSkipped(name) { return "" }
-            let separator = HTMLReader.blocks.contains(name) ? " " : ""
+            guard node.kind == .element, !isSkipped(node) else { return "" }
+            let separator = HTMLReader.blocks.contains(name(of: node)) ? " " : ""
             return separator + (node.children ?? []).map(text(of:)).joined() + separator
         }
     }
