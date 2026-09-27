@@ -1094,17 +1094,26 @@ extension HolosAppDelegate: NSMenuDelegate {
         }
     }
 
-    /// Runs `voiceislocal setup --speakers` (about 21 MB, pinned and verified) and shows its progress.
-    func installSpeakerModels() {
+    /// Runs `voiceislocal setup --speakers` (about 21 MB, pinned and verified) and shows its progress. `resumable`
+    /// (the Setup Assistant's install): saved as pending with its process, so a launch after a quit that cut it short
+    /// resumes it (`resumeSetupAssistantWork`); cleared when it ends.
+    func installSpeakerModels(resumable: Bool = false) {
         guard let maintenance = meeting.maintenance, meeting.speakerModelInstall == nil else { return }
         let output = Self.temporaryFile("setup")
         meeting.speakerModelInstall = "Starting the download…"
         meeting.speakerModelError = nil
         updateSetupWindow()
         meeting.startPanel?.refresh()
+        let defaults = UserDefaults.standard
         do {
-            try maintenance.run(["setup", "--speakers"], standardOutput: output, standardError: output) { [weak self] code in
+            let pid = try maintenance.run(["setup", "--speakers"], standardOutput: output,
+                                          standardError: output) { [weak self] code in
                 guard let self else { return }
+                // Ended, whichever install it was: nothing is left to resume.
+                for key in [SetupAssistantFlow.speakerModelsPendingKey, Self.speakerInstallPIDKey,
+                            Self.speakerInstallStartKey] {
+                    defaults.removeObject(forKey: key)
+                }
                 let last = Self.lastLine(output)
                 Self.removeFile(output)
                 self.meeting.speakerModelInstall = nil
@@ -1114,7 +1123,15 @@ extension HolosAppDelegate: NSMenuDelegate {
                 self.updateSetupWindow()
                 self.meeting.startPanel?.refresh()
             }
+            if resumable {
+                defaults.set(true, forKey: SetupAssistantFlow.speakerModelsPendingKey)
+                defaults.set(Int(pid), forKey: Self.speakerInstallPIDKey)
+                if let started = ProcessSpawner.startTime(of: pid) {
+                    defaults.set(Int(clamping: started), forKey: Self.speakerInstallStartKey)
+                }
+            }
         } catch {
+            defaults.removeObject(forKey: SetupAssistantFlow.speakerModelsPendingKey)
             meeting.speakerModelInstall = nil
             meeting.speakerModelError = error.localizedDescription
             Self.removeFile(output)
@@ -1212,6 +1229,7 @@ extension HolosAppDelegate: NSMenuDelegate {
             if !undelivered, let self { await self.closeReviews(Array(self.meeting.reviewWindows.values)) }
             NSApplication.shared.reply(toApplicationShouldTerminate: !undelivered)
             if undelivered, let self {
+                self.reopenAfterQuit = false  // the quit was cancelled: a later quit must not reopen
                 let reason = self.meeting.notice.map { "\n\n\($0)" } ?? ""
                 self.showMeetingAlert(
                     "Voice is Local could not stop the recording.",

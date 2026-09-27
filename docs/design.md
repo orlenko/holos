@@ -133,9 +133,48 @@ with a visible copy fallback for unsupported fields.
 
 The first app matrix should include TextEdit, a browser textarea/contenteditable,
 VS Code, a terminal, and the user's actual chat/mail applications. The latter list
-can be supplied with the Wispr references. Microphone, Accessibility, and possibly
-Input Monitoring permission depend on the chosen APIs; validate under the actual
-installed app identity, not just `swift run`.
+can be supplied with the Wispr references. The app needs Microphone and
+Accessibility. Its hold-to-talk key uses an active CGEvent tap (it consumes the
+shortcut), which macOS authorises with Accessibility; Input Monitoring is what
+listen-only taps need, so it is not requested. Only if `CGEvent.tapCreate` still
+fails with Accessibility granted does the app name Input Monitoring as the fallback
+and show it in Setup. Validate under the actual installed app identity, not just
+`swift run`.
+
+### First-launch setup
+
+A first launch opens the Setup Assistant, one page at a time, ordered so the app
+reopens at most once: (1) Welcome, with Start or "Skip — Show All Settings" (the full
+Setup window); (2) the dictation language and the microphone, both in-app (macOS's own
+prompt), plus "Also set up meetings", checked by default; leaving this page starts the
+speech model download and, for meetings, the speaker models, which continue in the
+background; (3) Accessibility, granted in System Settings and effective at once: the
+page polls `AXIsProcessTrusted()` and explains removing and re-adding a stale entry;
+(4) the permissions that take effect only after a reopen, grouped: Screen & System
+Audio Recording (optional; without it meetings record the microphone only) and, only
+when the hotkey tap was refused with Accessibility on, Input Monitoring. The user is
+told to choose Later when macOS offers Quit & Reopen. Since
+`CGPreflightScreenCaptureAccess()` usually reports true only after reopening, the
+request counts, not the reported state; (5) Finish re-checks everything. When a
+reopen-requiring permission was requested, its button reopens the app through the
+normal quit (a recording meeting still asks first; a cancelled quit does not reopen):
+a detached `/bin/sh` waits for the process to exit, then `open`s the bundle, and the
+next launch shows the check page once. Dictation turns on when Microphone,
+Accessibility and the speech model allow it, or when the download ends; when the
+hotkey tap was refused, Input Monitoring is a prerequisite too: requested this run,
+enabling waits for the reopen (the check page reports the outcome), otherwise
+dictation stays off. Waiting for the download survives a quit and the reopen
+(`setupAssistantEnableAfterSpeechModel`): the next launch resumes the install and
+turns dictation on when it ends. A speaker-model install the assistant started and
+that had not ended (`setupAssistantSpeakerModelsPending`) is resumed at launch too,
+after the detached earlier run, which still holds the install lock, exits.
+
+`SetupAssistantFlow` (HolosCore) holds these decisions and is unit-tested. UserDefaults
+`setupAssistantDone` is absent before the assistant ever ran, false once it started,
+true once finished or skipped; `setupAssistantAwaitingReopenCheck` asks for the check
+page. An install from before the assistant (dictation on, or Microphone and
+Accessibility granted) is marked done silently. Closing the window keeps the progress
+for that run; the next launch shows the assistant again until it is finished.
 
 ### Learning corrections
 

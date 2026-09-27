@@ -265,7 +265,7 @@ Hardware-facing and cross-app acceptance remain pending.
   playlist, with resume and optional playback. Markdown is read verbatim.
 - `scripts/build-app.sh` builds and ad-hoc signs `build/VoiceIsLocal.app`, an accessory
   menu bar app. Dictation is disabled on first launch; the user explicitly grants
-  permissions, picks the dictation language (by default the supported one closest to
+  Microphone and Accessibility, picks the dictation language (by default the supported one closest to
   the macOS preferred languages, `en-CA` when none is; any language Apple's
   SpeechTranscriber supports), installs that language's speech model, and enables the
   chosen hold-to-talk shortcut. Right Option is the default choice, with
@@ -273,6 +273,16 @@ Hardware-facing and cross-app acceptance remain pending.
   release; Esc cancels even during finalization. Until the default language is
   known (the supported list loads just after launch), installing its speech model
   and enabling dictation wait for it, and the meeting start panel keeps Start off.
+- Setup Assistant: the first launch opens a step-by-step assistant (language and
+  microphone, then Accessibility, then the permissions that need a reopen, then a
+  re-check) that downloads the speech and speaker models in the background, reopens the
+  app once at the end when Screen & System Audio Recording was requested, and shows a
+  one-page check after the reopen. **Setup Assistant…** in the menu runs it again;
+  installs that were already set up never see it (docs/design.md "First-launch setup").
+  Input Monitoring is no longer required: the hotkey's active event tap is gated on
+  Accessibility only, and Setup shows an Input Monitoring row only when macOS refuses
+  the tap with Accessibility granted. The decisions are unit-tested; the windows and
+  the reopen have not been run on screen yet.
 - Finalized phrases are written into the focused field while the user speaks: through
   Accessibility (`AXSelectedText`) into writable native fields, and as typed keystrokes
   into terminals and web or other editors without a direct Accessibility write, only
@@ -416,6 +426,9 @@ Still requiring real-machine or user-data validation:
 - Validate the menu bar app's permission/setup flow, live microphone dictation,
   hotkey behavior, focus guard, and direct insertion across target applications.
   Neither `--check` nor unit tests exercise those interactions.
+- Run the [Setup Assistant checks](dictation-validation.md#setup-assistant), including
+  dictating with Input Monitoring switched off for Voice is Local (expected to work with
+  Accessibility alone; not yet confirmed on the target Mac).
 - Exercise capture failure/relaunch/recovery on hardware (`kill -9` a recorder, then
   `session recover`: the loss should be at most one 30 s chunk) and run multi-hour
   soak tests for memory growth, drift, interruptions, and audio continuity. The

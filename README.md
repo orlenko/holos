@@ -60,13 +60,24 @@ refuses while that old copy runs, and `restart-app.sh` quits it first. The new b
 keeps the same bundle ID, settings, sessions, corrections, and people, so they carry
 over. Because the app's path changed, macOS may ask for its permissions again. Once
 `build/VoiceIsLocal.app` works, delete `build/Holos.app`.
-On first launch, dictation is disabled and the Voice is Local Setup window opens (reopen it
-with **Setup…** in the menu). It shows live status for each step: explicitly grant
-Microphone, Accessibility, and Input Monitoring access, pick the dictation language
-(by default the supported language closest to your macOS preferred languages and
-region, English (Canada) when none of them is supported; any language Apple's speech
-transcriber supports, such as French (Canada)), install Apple's speech model for it, then enable your chosen
-hold-to-talk shortcut. The default choice
+On first launch, dictation is disabled and the Setup Assistant opens (run it again
+with **Setup Assistant…** in the menu, or click **Skip — Show All Settings** to go
+straight to the full Setup window). It goes one page at a time: pick the dictation
+language (by default the supported language closest to your macOS preferred languages
+and region, English (Canada) when none of them is supported; any language Apple's speech
+transcriber supports, such as French (Canada)) and allow the Microphone; Apple's speech
+model for that language, and the speaker models when meetings are set up, then download
+in the background. Next it walks you through Accessibility in System Settings, which
+takes effect at once. Screen & System Audio Recording, which takes effect only after
+the app reopens, comes last: switch it on, choose **Later** when macOS offers to Quit &
+Reopen, and the assistant's **Reopen Voice is Local** reopens the app once at the end
+and shows what is set up. Dictation turns on as soon as the microphone, Accessibility
+and the speech model allow it. Input Monitoring is not asked for: the hold-to-talk
+key's event tap runs on Accessibility (still to be confirmed on a real Mac; see the
+validation guide). Only if macOS refuses the tap anyway does Setup (and the
+assistant) show an Input Monitoring row. An install that was already set up never sees
+the assistant; later launches open the full Setup window (**Setup…** in the menu) while
+dictation is off. The default hold-to-talk choice
 is Right Option; Control–Option–Space is available as an alternate. The menu bar
 app shows a live preview, and releasing the shortcut finalizes one utterance.
 See the [dictation validation guide](docs/dictation-validation.md) before relying

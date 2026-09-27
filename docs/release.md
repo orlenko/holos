@@ -40,7 +40,7 @@ notarization show that name.
 users is your legal name), then ask Apple Developer Support to convert the membership to an organization later.
 Converting means new Developer ID certificates in the company's name. macOS keys permissions to the bundle ID and
 the Team ID in the signature (see [What users see](#what-users-see)): if the conversion changes the Team ID, users
-grant Microphone, Accessibility, and Input Monitoring once more after that update. Ask Apple whether the Team ID
+grant Microphone, Accessibility, and Screen & System Audio Recording once more after that update. Ask Apple whether the Team ID
 stays. **Check on developer.apple.com, as of 2026-09.**
 
 ### 2. Create a Developer ID Application certificate
@@ -166,7 +166,7 @@ Application certificate of the same team.
 The app is not sandboxed. Both entitlement files contain one entitlement,
 `com.apple.security.device.audio-input`: under the hardened runtime a process can open the microphone only with it,
 and both the app (dictation, in-process recording) and the `voiceislocal` recorder the app starts open the
-microphone. Accessibility, Input Monitoring, the CGEvent tap, speech recognition, and ScreenCaptureKit system audio
+microphone. Accessibility, the CGEvent tap (and Input Monitoring, only where macOS asks for it), speech recognition, and ScreenCaptureKit system audio
 need no entitlement outside the sandbox. Both binaries link only system libraries (FluidAudio and
 swift-argument-parser are linked statically), so library validation needs no exception.
 
@@ -175,7 +175,9 @@ swift-argument-parser are linked statically), so library validation needs no exc
 - They download the DMG, open it, and drag Voice is Local to Applications. The first open shows macOS's usual
   "downloaded from the Internet" confirmation with the developer name; there is no "cannot be opened" or
   "unidentified developer" warning.
-- The Microphone, Accessibility, Input Monitoring, speech recognition, and system audio prompts name Voice is Local.
+- The first launch opens the Setup Assistant. The Microphone, Accessibility, speech recognition, and system audio
+  prompts name Voice is Local. Input Monitoring is not requested (the hotkey's event tap runs on Accessibility);
+  Setup shows it only if macOS refuses the tap anyway.
 - Permissions persist across updates. macOS ties them to the app's designated requirement, which for a Developer ID
   signature is the bundle ID plus the Team ID, the same for every release. An ad-hoc build's requirement is the hash
   of that exact build, which is why local rebuilds could lose permissions.
@@ -186,7 +188,7 @@ swift-argument-parser are linked statically), so library validation needs no exc
 ## Why not the Mac App Store
 
 The Mac App Store requires the App Sandbox. Voice is Local inserts dictated text into other apps through the
-Accessibility API, listens for its hold-to-talk shortcut with a CGEvent tap (Input Monitoring), records system audio
+Accessibility API, listens for its hold-to-talk shortcut with an active CGEvent tap, records system audio
 with ScreenCaptureKit, and starts its bundled `voiceislocal` tool as a recorder that keeps running after the app
 quits. The sandbox forbids or heavily restricts controlling other apps and running a long-lived helper this way, so
 the app would lose its core features. Developer ID distribution has none of these limits and still gets Apple's

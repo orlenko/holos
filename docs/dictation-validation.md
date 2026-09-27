@@ -22,9 +22,12 @@ noninteractive packaging/read-only permission-status check. It does not prompt,
 record, install a keyboard event tap, inspect a focused field, or use the
 clipboard. Launch with `open` only when ready for an interactive test.
 
-On first launch, the Voice is Local Setup window opens (reopen it with **Setup…** in the
-menu). Use it to grant Microphone, Accessibility, and Input Monitoring access
-explicitly, pick the **Dictation language** (English (Canada) by default; the menu's
+On first launch, the Setup Assistant opens (run it again with **Setup Assistant…** in
+the menu); its checks are under [Setup Assistant](#setup-assistant) below. Later
+launches, and **Skip — Show All Settings**, open the full Voice is Local Setup window
+(**Setup…** in the menu). Use it to grant Microphone and Accessibility access
+explicitly (Input Monitoring is not needed; its row appears only if macOS refuses
+the hold-to-talk key with Accessibility on), pick the **Dictation language** (English (Canada) by default; the menu's
 **Language** submenu has the same list), and install Apple's speech model for it; each
 row updates live, and its button opens the matching System Settings pane. A new
 language applies from the next dictation; when its model is missing, dictation turns
@@ -40,6 +43,44 @@ holding it cancels dictation and may be consumed until the key is released. Use
 the alternate shortcut or disable dictation if Right Option is needed for other
 work. Sleep or session lock pauses dictation; re-enable it manually from the menu
 after waking. There is no automatic login launch or background installation.
+
+## Setup Assistant
+
+None of these checks has been run yet. To see the assistant as a new user would, run
+`defaults delete ca.orlenko.holos.app setupAssistantDone` with Voice is Local quit, and
+remove Voice is Local from Microphone and Accessibility in System Settings; or use
+**Setup Assistant…** in the menu, which starts at Welcome without either.
+
+1. **Welcome**: Start goes to the next page; **Skip — Show All Settings** opens the
+   full Setup window, and the next launch does not show the assistant.
+2. **Language and microphone**: Next stays off until the microphone is allowed
+   (**Allow Microphone** shows macOS's prompt once; when access was turned off before,
+   the button reads Open Settings). Clicking Next starts the speech model download, and
+   the speaker model download when "Also set up meetings" is checked; their progress
+   shows at the bottom of the following pages.
+3. **Accessibility**: the row turns green on its own within a second of switching Voice
+   is Local on, with no reopen. Continue Without is offered while it is off.
+4. **Permissions that need a reopen**: Open Settings for Screen & System Audio
+   Recording; when macOS offers Quit & Reopen, choose Later. The main button reads Skip
+   until Open Settings was clicked, then Next. The page is passed over when system audio
+   is already allowed (and Input Monitoring is not needed).
+5. **Finish**: lists each item's real state. After Open Settings on the previous page,
+   the button is **Reopen Voice is Local**: the app quits and opens again by itself, then
+   shows **Setup check** once with system audio now allowed. Start a meeting recording
+   first and click Reopen: the usual "A meeting is recording" question appears, and
+   Cancel keeps the app running and does not reopen it later when you quit. Without a
+   request the button is **Done**.
+6. Dictation turns on at the end when Microphone, Accessibility and the speech model
+   allow it; when the model is still downloading, it turns on once the download ends.
+7. Close the window midway, quit and reopen: the assistant shows again. An existing
+   install (dictation already on) does not see it after updating.
+
+**Input Monitoring is not needed** (unverified on the target Mac until this is run):
+in System Settings → Privacy & Security → Input Monitoring, switch Voice is Local off
+(or remove it), quit and reopen Voice is Local, then dictate: the hold-to-talk key
+should still work, and Setup should show no Input Monitoring row. If instead the menu
+says macOS refused the hold-to-talk shortcut although Accessibility is on, Setup shows
+an Input Monitoring row; switch it on there, quit and reopen, and note it here.
 
 ## Result and privacy behavior
 
