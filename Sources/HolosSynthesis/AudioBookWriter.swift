@@ -96,6 +96,37 @@ public struct AudioBookSummary: Sendable, Equatable {
     }
 }
 
+/// The chapter track a book gets, from each part's chapter title and where the part starts. The
+/// one set of rules `AudioBookWriter` encodes and `voiceislocal read --print-text` shows:
+/// - a part's title (trimmed, and shortened as the file stores it) starts a chapter; an empty one
+///   does not;
+/// - a chapter that would start where the previous one does, or earlier, is dropped;
+/// - when the first chapter starts after the beginning, a chapter named after the book (or
+///   "Beginning") is added at the start, so the opening is reachable too;
+/// - fewer than two chapters make no chapter track.
+public enum AudioBookChapterPlan {
+    public static func marks<Position: Comparable & AdditiveArithmetic>(
+        _ parts: [(chapter: String?, position: Position)], bookTitle: String?
+    ) -> [(title: String, position: Position)] {
+        var marks: [(title: String, position: Position)] = []
+        for part in parts {
+            guard let title = AudioBookWriter.fileText(part.chapter) else { continue }
+            if let last = marks.last, last.position >= part.position { continue }
+            marks.append((title, part.position))
+        }
+        if let first = marks.first, first.position > .zero {
+            marks.insert((AudioBookWriter.fileText(bookTitle) ?? "Beginning", .zero), at: 0)
+        }
+        return marks.count < 2 ? [] : marks
+    }
+
+    /// The chapter titles for parts in reading order, the first starting at the beginning and
+    /// each later one after the one before (every part after the first has silence before it).
+    public static func titles(_ chapters: [String?], bookTitle: String?) -> [String] {
+        marks(chapters.enumerated().map { ($0.element, $0.offset) }, bookTitle: bookTitle).map(\.title)
+    }
+}
+
 /// Joins rendered PCM parts into one AAC `.m4a` (a single encoding pass) with title, author, and
 /// encoder metadata and, when there are at least two, a chapter track (a QuickTime/MPEG-4 text
 /// track referenced from the audio track, which Apple Books, Podcasts, QuickTime, VLC, and
@@ -157,18 +188,11 @@ public enum AudioBookWriter {
             try advance(length)
         }
         let total = position
-        var chapterMarks: [(title: String, frame: Int64)] = []
-        for (index, part) in parts.enumerated() {
-            guard let title = fileText(part.chapter) else { continue }
-            // A chapter begins at the silence before its part, so skipping to it is not abrupt.
-            let frame = index == 0 ? 0 : starts[index] - silences[index]
-            if let last = chapterMarks.last, last.frame >= frame { continue }
-            chapterMarks.append((title, frame))
-        }
-        if let first = chapterMarks.first, first.frame > 0 {
-            chapterMarks.insert((fileText(metadata.title) ?? "Beginning", 0), at: 0)
-        }
-        if chapterMarks.count < 2 { chapterMarks = [] }
+        // A chapter begins at the silence before its part, so skipping to it is not abrupt.
+        let chapterMarks = AudioBookChapterPlan.marks(
+            parts.indices.map { (parts[$0].chapter, $0 == 0 ? 0 : starts[$0] - silences[$0]) },
+            bookTitle: metadata.title
+        ).map { (title: $0.title, frame: $0.position) }
 
         let language = AudioBookMetadata.languageTag(metadata.language)
         let writer = try AVAssetWriter(outputURL: output, fileType: .m4a)

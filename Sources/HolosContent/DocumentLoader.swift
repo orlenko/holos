@@ -34,11 +34,34 @@ public enum DocumentLoader {
     }
 
     private static func utf8(_ url: URL) throws -> String {
-        let data = try Data(contentsOf: url)
-        guard let text = String(data: data, encoding: .utf8) else {
+        guard let text = DocumentText.decode(try Data(contentsOf: url)) else {
             throw HolosError.invalidInput("\(url.lastPathComponent) is not UTF-8 text.")
         }
         return text
+    }
+}
+
+/// Bytes of a text file (or stdin) as a string: UTF-8, or UTF-16 or UTF-32 when a byte order
+/// mark says so (Windows Notepad saves "Unicode" as UTF-16 with one). One leading byte order mark
+/// is dropped, so it never hides YAML front matter or ends up in a title. Nil for anything else.
+public enum DocumentText {
+    public static func decode(_ data: Data) -> String? {
+        let marks: [([UInt8], String.Encoding)] = [
+            ([0xFF, 0xFE, 0x00, 0x00], .utf32LittleEndian), ([0x00, 0x00, 0xFE, 0xFF], .utf32BigEndian),
+            ([0xFF, 0xFE], .utf16LittleEndian), ([0xFE, 0xFF], .utf16BigEndian),
+        ]
+        let head = [UInt8](data.prefix(4))
+        for (mark, encoding) in marks where head.starts(with: mark) {
+            return String(data: data.dropFirst(mark.count), encoding: encoding)
+        }
+        // Validated as is: Foundation's UTF-8 decoding drops a second leading mark as well.
+        return String(validating: head.starts(with: [0xEF, 0xBB, 0xBF]) ? data.dropFirst(3) : data, as: UTF8.self)
+    }
+
+    /// `text` without one leading U+FEFF.
+    public static func withoutByteOrderMark(_ text: String) -> String {
+        guard text.unicodeScalars.first == "\u{FEFF}" else { return text }
+        return String(text.unicodeScalars.dropFirst())
     }
 }
 
@@ -46,7 +69,7 @@ public enum DocumentLoader {
 /// becomes the title.
 public enum PlainTextReader {
     public static func document(from text: String) -> ReadableDocument {
-        let paragraphs = text.replacingOccurrences(of: "\r\n", with: "\n")
+        let paragraphs = DocumentText.withoutByteOrderMark(text).replacingOccurrences(of: "\r\n", with: "\n")
             .replacingOccurrences(of: "\r", with: "\n")
             .components(separatedBy: "\n")
             .split(whereSeparator: { $0.trimmingCharacters(in: .whitespaces).isEmpty })
@@ -76,7 +99,8 @@ public enum PlainTextReader {
 /// thematic breaks are skipped. YAML front matter supplies the title and author.
 public enum MarkdownReader {
     public static func document(from markdown: String) -> ReadableDocument {
-        let (frontMatter, body) = splitFrontMatter(markdown.replacingOccurrences(of: "\r\n", with: "\n"))
+        let (frontMatter, body) = splitFrontMatter(
+            DocumentText.withoutByteOrderMark(markdown).replacingOccurrences(of: "\r\n", with: "\n"))
         let options = AttributedString.MarkdownParsingOptions(
             allowsExtendedAttributes: false, interpretedSyntax: .full,
             failurePolicy: .returnPartiallyParsedIfPossible)
@@ -173,8 +197,8 @@ public enum MarkdownReader {
 /// HTML through Foundation's tidying XML parser: h1-h6 start sections, block elements become
 /// paragraphs (ordered list items keep their numbers), table rows are read cell by cell, and
 /// scripts, styles, navigation, forms, footers, asides, and preformatted code are skipped. Title
-/// from the first h1, else `<title>`; author from `<meta name="author">`; language from
-/// `<html lang>`.
+/// from the first h1, else `<title>`; author and language from the page's metadata (see
+/// `Metadata`).
 public enum HTMLReader {
     static let skipped: Set<String> = [
         "script", "style", "noscript", "template", "nav", "footer", "aside", "form", "button",
@@ -194,8 +218,8 @@ public enum HTMLReader {
     public static func document(from source: Data) -> ReadableDocument {
         var plain = String(decoding: source, as: UTF8.self)
         let parsed: XMLDocument?
-        if var html = String(data: source, encoding: .utf8) {
-            if html.hasPrefix("\u{FEFF}") { html.removeFirst() }
+        // UTF-8, or UTF-16/32 with a byte order mark; the mark itself is dropped.
+        if var html = DocumentText.decode(source) {
             for name in strippedBeforeParsing {
                 html = html.replacingOccurrences(of: "(?s)<\(name)\\b[^>]*>.*?</\(name)\\s*>", with: " ",
                                                  options: [.regularExpression, .caseInsensitive])
@@ -216,15 +240,52 @@ public enum HTMLReader {
         var walker = Walker()
         walker.walk(root)
         walker.flush()
-        // local-name() matches whether or not tidying put the elements in the XHTML namespace.
-        let headTitle = (try? xml.nodes(forXPath: "//*[local-name()='title']").first?.stringValue).flatMap { $0 }
-        let author = (try? xml.nodes(forXPath: "//*[local-name()='meta'][@name='author']/@content")
-            .first?.stringValue).flatMap { $0 }
-        let language = root.attribute(forName: "lang")?.stringValue
-            ?? root.attribute(forName: "xml:lang")?.stringValue
+        let metadata = Metadata(root)
         let firstH1 = walker.builder.sections.first { $0.level == 1 }?.heading
-        return ReadableDocument(title: firstH1 ?? headTitle.map(collapse), author: author,
-                                language: language, sections: walker.builder.sections)
+        return ReadableDocument(title: firstH1 ?? metadata.title.map(collapse), author: metadata.author,
+                                language: metadata.language, sections: walker.builder.sections)
+    }
+
+    /// The page's `<title>`, author, and language. HTML element names, attribute names, and
+    /// metadata names are ASCII case-insensitive (`<META NAME="Author">`, `<html LANG="fr">`), so
+    /// every one is compared lowercased, whether or not tidying put the elements in the XHTML
+    /// namespace. The author is the first non-empty `<meta name>` of "author", then Dublin
+    /// Core's "dc.creator" or "dcterms.creator". (`article:author` is an Open Graph profile URL,
+    /// not a name, so it is not read.)
+    struct Metadata {
+        static let authorNames = ["author", "dc.creator", "dcterms.creator"]
+
+        var title: String?
+        var author: String?
+        var language: String?
+
+        init(_ root: XMLElement) {
+            language = Self.nonEmpty(Walker.attribute("lang", of: root, qualified: "lang")
+                ?? Walker.attribute("lang", of: root))
+            var authors: [String: String] = [:]
+            var pending: [XMLNode] = [root]
+            while let node = pending.popLast() {
+                guard node.kind == .element else { continue }
+                switch (node.localName ?? node.name ?? "").lowercased() {
+                case "title" where title == nil:
+                    title = node.stringValue
+                case "meta":
+                    if let name = Walker.attribute("name", of: node)?.lowercased(), Self.authorNames.contains(name),
+                       authors[name] == nil, let content = Self.nonEmpty(Walker.attribute("content", of: node)) {
+                        authors[name] = content
+                    }
+                default: break
+                }
+                // Children in document order: the stack takes them last to first.
+                pending += (node.children ?? []).reversed()
+            }
+            author = Self.authorNames.lazy.compactMap { authors[$0] }.first
+        }
+
+        private static func nonEmpty(_ text: String?) -> String? {
+            guard let text = text?.trimmingCharacters(in: .whitespacesAndNewlines), !text.isEmpty else { return nil }
+            return text
+        }
     }
 
     struct Walker {
@@ -318,9 +379,14 @@ public enum HTMLReader {
 
         static func isSkipped(_ name: String) -> Bool { HTMLReader.skipped.contains(name) }
 
-        static func attribute(_ name: String, of node: XMLNode) -> String? {
-            (node as? XMLElement)?.attributes?.first { ($0.localName ?? $0.name)?.lowercased() == name }?
-                .stringValue?.trimmingCharacters(in: .whitespaces)
+        /// The attribute whose local name is `name` in any ASCII case (HTML attribute names are
+        /// case-insensitive); with `qualified`, only one whose whole name is that, so `lang` is
+        /// told apart from `xml:lang`.
+        static func attribute(_ name: String, of node: XMLNode, qualified: String? = nil) -> String? {
+            (node as? XMLElement)?.attributes?.first {
+                if let qualified { return $0.name?.lowercased() == qualified }
+                return ($0.localName ?? $0.name)?.lowercased() == name
+            }?.stringValue?.trimmingCharacters(in: .whitespaces)
         }
 
         static func orderedList(_ node: XMLNode) -> OrderedList {

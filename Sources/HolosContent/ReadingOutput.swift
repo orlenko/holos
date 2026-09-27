@@ -132,37 +132,62 @@ public enum ReadingOutput {
     /// destination is an error: nothing is ever replaced.
     public static func locate(output: String?, name: String, identity: String, readingsRoot: URL,
                               resume: Bool = false, fileManager: FileManager = .default) throws -> ReadingLocation {
-        guard let output else {
+        if output == nil { try checkFolder(readingsRoot, role: "Readings folder", fileManager: fileManager) }
+        let (location, destination) = try resolve(output: output, name: name, identity: identity,
+                                                  readingsRoot: readingsRoot, fileManager: fileManager)
+        switch destination {
+        case .newReading:
+            try checkPathLength(location.output)
+        case .readingFolder:
+            // The reading's own folder: whether its finished file may exist is the pipeline's
+            // call (it is this reading's when resuming, and a clear error otherwise).
+            try checkDestination(location.output, allowExisting: true, fileManager: fileManager)
+        case .explicit:
+            try checkDestination(location.output, allowExisting: resume, fileManager: fileManager)
             try checkFolder(readingsRoot, role: "Readings folder", fileManager: fileManager)
+        }
+        return location
+    }
+
+    /// The file `locate` would give for the same arguments, resolved the same way but with
+    /// nothing checked or created: what `voiceislocal read --print-text` shows. A new reading's
+    /// folder is named when it is created, so it shows as `<new folder>`.
+    public static func previewPath(output: String?, name: String, identity: String, readingsRoot: URL,
+                                   fileManager: FileManager = .default) throws -> String {
+        let (location, destination) = try resolve(output: output, name: name, identity: identity,
+                                                  readingsRoot: readingsRoot, fileManager: fileManager)
+        guard destination == .newReading else { return location.output.path }
+        return readingsRoot.appendingPathComponent("<new folder>", isDirectory: true)
+            .appendingPathComponent(location.output.lastPathComponent).path
+    }
+
+    /// Which kind of place `--output` names (see `locate`).
+    enum Destination { case newReading, readingFolder, explicit }
+
+    /// `locate`'s resolution alone: reads the filesystem (whether `output` is a folder, holds a
+    /// reading, and its volume's name limit) but checks and creates nothing.
+    static func resolve(output: String?, name: String, identity: String, readingsRoot: URL,
+                        fileManager: FileManager) throws -> (ReadingLocation, Destination) {
+        guard let output else {
             let directory = readingsRoot.appendingPathComponent(UUID().uuidString, isDirectory: true)
             let name = fitting(name, limit: nameLimit(in: readingsRoot))
-            let location = ReadingLocation(workDirectory: directory, output: directory.appendingPathComponent(name))
-            try checkPathLength(location.output)
-            return location
+            return (ReadingLocation(workDirectory: directory, output: directory.appendingPathComponent(name)), .newReading)
         }
         let url = URL(fileURLWithPath: (output as NSString).expandingTildeInPath).standardizedFileURL
         var isDirectory: ObjCBool = false
         let exists = fileManager.fileExists(atPath: url.path, isDirectory: &isDirectory)
-        let location: ReadingLocation
         if exists && isDirectory.boolValue {
             let name = fitting(name, limit: nameLimit(in: url))
             if ReadingManifest.isReading(url.appendingPathComponent(ReadingManifest.fileName)) {
-                // The reading's own folder: whether its finished file may exist is the pipeline's
-                // call (it is this reading's when resuming, and a clear error otherwise).
-                let location = ReadingLocation(workDirectory: url, output: url.appendingPathComponent(name))
-                try checkDestination(location.output, allowExisting: true, fileManager: fileManager)
-                return location
+                return (ReadingLocation(workDirectory: url, output: url.appendingPathComponent(name)), .readingFolder)
             }
-            location = hashed(output: url.appendingPathComponent(name), identity: identity, readingsRoot: readingsRoot)
-        } else {
-            guard url.pathExtension.lowercased() == ReadingAudioFormat.fileExtension else {
-                throw HolosError.invalidInput("--output must be a .m4a file path or an existing directory: \(url.path)")
-            }
-            location = hashed(output: url, identity: identity, readingsRoot: readingsRoot)
+            return (hashed(output: url.appendingPathComponent(name), identity: identity, readingsRoot: readingsRoot),
+                    .explicit)
         }
-        try checkDestination(location.output, allowExisting: resume, fileManager: fileManager)
-        try checkFolder(readingsRoot, role: "Readings folder", fileManager: fileManager)
-        return location
+        guard url.pathExtension.lowercased() == ReadingAudioFormat.fileExtension else {
+            throw HolosError.invalidInput("--output must be a .m4a file path or an existing directory: \(url.path)")
+        }
+        return (hashed(output: url, identity: identity, readingsRoot: readingsRoot), .explicit)
     }
 
     /// Fails unless the finished file can be saved at `output`: its folder exists, is a folder,
@@ -218,7 +243,10 @@ public enum ReadingOutput {
     private static func hashed(output: URL, identity: String, readingsRoot: URL) -> ReadingLocation {
         let canonical = output.deletingLastPathComponent().resolvingSymlinksInPath()
             .appendingPathComponent(output.lastPathComponent)
-        let digest = SHA256.hash(data: Data((canonical.path + "\u{0}" + identity).utf8)).map { String(format: "%02x", $0) }.joined()
+        // Keyed by the file's filesystem identity, so every spelling of one file ("Book.m4a" and
+        // "book.m4a" on a case-insensitive volume) finds the same cache.
+        let key = ReadingPathIdentity.key(output)
+        let digest = SHA256.hash(data: Data((key + "\u{0}" + identity).utf8)).map { String(format: "%02x", $0) }.joined()
         let directory = readingsRoot.appendingPathComponent("Output-\(digest.prefix(16))", isDirectory: true)
         return ReadingLocation(workDirectory: directory, output: canonical)
     }

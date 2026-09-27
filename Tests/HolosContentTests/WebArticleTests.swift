@@ -399,7 +399,7 @@ private func isPrintable(_ text: String) -> Bool {
             Language: unknown
             Voice: Ava
             File: Notes.m4a
-            Chapters: One
+            Chapters: Notes[2J | One
 
             Notes[2J
 
@@ -428,7 +428,7 @@ private func isPrintable(_ text: String) -> Bool {
             "Language: en",
             "Voice: Ava (Premium) (com.apple.voice.premium.en-US.Ava)",
             "File: The Last Keeper of the Northern Cape.m4a",
-            "Chapters: A daily climb",
+            "Chapters: The Last Keeper of the Northern Cape | A daily climb",
             "",
         ])
         let text = lines.dropFirst(7).joined(separator: "\n")

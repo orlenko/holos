@@ -1,4 +1,5 @@
 import Foundation
+import HolosContent
 import HolosCore
 import Synchronization
 
@@ -38,7 +39,8 @@ func readText(arguments: [String]) throws -> String {
     if !arguments.isEmpty { return arguments.joined(separator: " ") }
     guard isatty(STDIN_FILENO) == 0 else { throw HolosError.invalidInput("Provide text as arguments or pipe it on stdin.") }
     let data = try FileHandle.standardInput.readToEnd() ?? Data()
-    guard let text = String(data: data, encoding: .utf8), !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+    // UTF-8 (or UTF-16 with a byte order mark), without a leading byte order mark.
+    guard let text = DocumentText.decode(data), !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
         throw HolosError.invalidInput("Input is empty or is not UTF-8 text.")
     }
     return text

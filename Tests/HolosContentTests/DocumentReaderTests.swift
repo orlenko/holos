@@ -109,6 +109,43 @@ import Testing
         #expect(PlainTextReader.document(from: "Only one paragraph").title == nil)
         #expect(PlainTextReader.document(from: "---\n\nText").title == nil)
     }
+
+    /// A byte order mark never hides front matter or ends up in a title, from a file in UTF-8,
+    /// UTF-16, or UTF-32, or from a string (stdin) that still has one.
+    @MainActor @Test func aLeadingByteOrderMarkIsDropped() throws {
+        let markdown = "---\ntitle: Front Title\nauthor: Jane\nlang: fr\n---\n\n# Heading\n\nBody text."
+        let plain = "My Article\n\nFirst paragraph."
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("holos-bom-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: false)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        func encodings(_ text: String) -> [Data] {
+            [Data([0xEF, 0xBB, 0xBF]) + Data(text.utf8),
+             Data([0xFF, 0xFE]) + text.data(using: .utf16LittleEndian)!,
+             Data([0xFE, 0xFF]) + text.data(using: .utf16BigEndian)!,
+             Data([0xFF, 0xFE, 0x00, 0x00]) + text.data(using: .utf32LittleEndian)!]
+        }
+        for (index, data) in encodings(markdown).enumerated() {
+            #expect(DocumentText.decode(data) == markdown, "\(index)")
+            let url = folder.appendingPathComponent("front\(index).md")
+            try data.write(to: url)
+            let document = try DocumentLoader.load(url)
+            #expect(document.title == "Front Title", "\(index)")
+            #expect(document.author == "Jane", "\(index)")
+            #expect(document.language == "fr", "\(index)")
+            #expect(!ReadingScript(document: document).text.contains("title:"), "\(index)")
+        }
+        for (index, data) in encodings(plain).enumerated() {
+            let url = folder.appendingPathComponent("plain\(index).txt")
+            try data.write(to: url)
+            #expect(try DocumentLoader.load(url).title == "My Article", "\(index)")
+        }
+        // Strings (stdin is decoded with `DocumentText` too) lose one mark; a second one is text.
+        #expect(MarkdownReader.document(from: "\u{FEFF}" + markdown).title == "Front Title")
+        #expect(PlainTextReader.document(from: "\u{FEFF}" + plain).title == "My Article")
+        #expect(DocumentText.decode(Data([0xEF, 0xBB, 0xBF, 0xEF, 0xBB, 0xBF, 0x41])) == "\u{FEFF}A")
+        // Without a mark, only UTF-8 is text.
+        #expect(DocumentText.decode(Data([0xFF, 0x41])) == nil)
+    }
 }
 
 @Suite struct HTMLReaderTests {
@@ -235,6 +272,37 @@ import Testing
         <body><p>By Sam</p><h1>Why Bread Rises</h1><p>Yeast makes gas.</p></body></html>
         """.utf8))
         #expect(ReadingScript(document: byline).text == "By Sam\n\nWhy Bread Rises\n\nYeast makes gas.")
+    }
+
+    /// Element, attribute, and metadata names in any ASCII case, in or out of the XHTML namespace.
+    @Test func metadataNamesMatchInAnyCase() {
+        for (html, author, language) in [
+            (#"<HTML LANG="fr-CA"><HEAD><TITLE>Upper</TITLE><META NAME="AUTHOR" CONTENT="Jane Doe"></HEAD>"#, "Jane Doe", "fr-CA"),
+            (#"<html lang="en"><head><title>Upper</title><meta name="Author" content="Jane Doe"></head>"#, "Jane Doe", "en"),
+            (#"<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="de"><head><title>Upper</title><meta Name="DC.Creator" Content="Dublin Writer"></head>"#, "Dublin Writer", "de"),
+            (#"<html><head><title>Upper</title><meta name="dcterms.creator" content="Terms Writer"><meta name="author" content=" "><meta name="AUTHOR" content="Second Author"></head>"#, "Second Author", nil),
+            (#"<html><head><title>Upper</title><meta property="article:author" content="https://example.test/jane"></head>"#, nil, nil),
+        ] as [(String, String?, String?)] {
+            let document = HTMLReader.document(from: Data((html + "<body><p>Text.</p></body></html>").utf8))
+            #expect(document.title == "Upper", "\(html)")
+            #expect(document.author == author, "\(html)")
+            #expect(document.language == language, "\(html)")
+        }
+        // "author" wins over Dublin Core, wherever it is.
+        let both = HTMLReader.document(from: Data(#"<html><head><meta name="DC.creator" content="Dublin"><meta name="Author" content="Named"></head><body><p>Text.</p></body></html>"#.utf8))
+        #expect(both.author == "Named")
+    }
+
+    /// UTF-16 (Notepad's "Unicode") and UTF-8 pages with a byte order mark read the same.
+    @Test func htmlWithAByteOrderMarkInAnyUnicodeEncoding() {
+        let html = "<html lang=\"fr\"><head><title>Café</title><meta name=\"Author\" content=\"Zoé\"></head><body><p>Crème brûlée.</p></body></html>"
+        for data in [Data([0xEF, 0xBB, 0xBF]) + Data(html.utf8), Data([0xFF, 0xFE]) + html.data(using: .utf16LittleEndian)!,
+                     Data([0xFE, 0xFF]) + html.data(using: .utf16BigEndian)!] {
+            let document = HTMLReader.document(from: data)
+            #expect(document.title == "Café")
+            #expect(document.author == "Zoé")
+            #expect(document.sections.flatMap(\.paragraphs) == ["Crème brûlée."])
+        }
     }
 
     @Test func titleElementWhenThereIsNoH1() {
@@ -599,6 +667,43 @@ import Testing
         #expect(throws: Never.self) { try ReadingOutput.checkPathLength(shared.appendingPathComponent("x.m4a")) }
         // No probe files are left behind.
         #expect(try FileManager.default.contentsOfDirectory(atPath: shared.path).filter { $0.hasPrefix(".holos-probe") }.isEmpty)
+    }
+
+    /// `--print-text` shows the file the same command would write, and creates nothing.
+    @Test func previewShowsTheFileLocateWouldGive() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("holos-preview-\(UUID().uuidString)")
+        let shared = root.appendingPathComponent("Shared")
+        let reading = root.appendingPathComponent("Reading")
+        let readings = root.appendingPathComponent("Readings")
+        try FileManager.default.createDirectory(at: shared, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: reading, withIntermediateDirectories: true)
+        try Data(#"{"kind":"voiceislocal.reading","schemaVersion":3}"#.utf8)
+            .write(to: reading.appendingPathComponent(ReadingManifest.fileName))
+        defer { try? FileManager.default.removeItem(at: root) }
+        func preview(_ output: String?) throws -> String {
+            try ReadingOutput.previewPath(output: output, name: "Title.m4a", identity: "a", readingsRoot: readings)
+        }
+        // An explicit file, not the title's name.
+        let custom = shared.appendingPathComponent("custom.m4a").path
+        #expect(try preview(custom) == shared.resolvingSymlinksInPath().appendingPathComponent("custom.m4a").path)
+        // A folder, and a reading's own folder: the title's name in it, as `locate` gives it.
+        try FileManager.default.createDirectory(at: readings, withIntermediateDirectories: false)
+        for output in [custom, shared.path, reading.path] {
+            #expect(try preview(output)
+                == ReadingOutput.locate(output: output, name: "Title.m4a", identity: "a", readingsRoot: readings,
+                                        resume: output == reading.path).output.path)
+        }
+        try FileManager.default.removeItem(at: readings)
+        // No --output: a new folder under Readings, which does not exist yet and is not created.
+        #expect(try preview(nil) == readings.appendingPathComponent("<new folder>/Title.m4a").path)
+        // A name too long for the volume is shortened as `locate` shortens it.
+        let long = String(repeating: "x", count: 300) + ".m4a"
+        #expect(try ReadingOutput.previewPath(output: shared.path, name: long, identity: "a", readingsRoot: readings)
+            .hasSuffix("/" + ReadingOutput.fitting(long, limit: 255)))
+        // An output that is neither a .m4a path nor a folder fails as the render would.
+        #expect(throws: HolosError.self) { try preview(shared.appendingPathComponent("x.mp3").path) }
+        #expect(!FileManager.default.fileExists(atPath: readings.path))
+        #expect(try FileManager.default.contentsOfDirectory(atPath: shared.path).isEmpty)
     }
 
     @Test func fileNamesAreSafeAndReadable() {

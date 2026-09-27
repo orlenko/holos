@@ -299,8 +299,8 @@ Application Support/Holos/Readings/<UUID>/; `--output` takes a `.m4a` path or a 
 The voice is the best installed one for the text's language (Premium, then Enhanced);
 `--voice` takes a name as `say -v '?'` or `voices list` prints it, such as "Ava (Premium)".
 If no Premium voice is installed, download one in System Settings › Accessibility › Spoken
-Content › System Voice › Manage Voices. `--print-text` prints the title, voice, chapters,
-and text that would be read, without rendering. Ctrl-C stops a reading (or the page load)
+Content › System Voice › Manage Voices. `--print-text` prints the title, voice, output file,
+chapters, and text that would be read, without rendering or creating anything. Ctrl-C stops a reading (or the page load)
 and keeps its rendered parts; it continues with the same command plus `--resume` (a web
 page is loaded again, and a page that changed since is refused). OCR is not supported yet.
 

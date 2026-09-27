@@ -84,7 +84,9 @@ public struct ReadingManifest: Codable, Sendable, Equatable {
     func sameSettings(voiceIdentifier: String, rate: Float?, metadata: AudioBookMetadata, output: URL) -> Bool {
         self.voiceIdentifier == voiceIdentifier && self.rate == rate
             && title == metadata.title && author == metadata.author && language == metadata.language
-            && comment == metadata.comment && format == .current && self.output == output.path
+            && comment == metadata.comment && format == .current
+            && (self.output == output.path
+                || ReadingPathIdentity.key(URL(fileURLWithPath: self.output)) == ReadingPathIdentity.key(output))
     }
 }
 
@@ -116,6 +118,8 @@ public struct AudioBookJoiner: ReadingAudioJoiner {
 /// where it stopped), then joins the parts into one AAC `.m4a` with chapters.
 @MainActor public final class ReadingPipeline {
     static let partExtension = "caf"
+    /// The longest part rendered at once, in UTF-16 units.
+    nonisolated public static let defaultMaxPartUTF16Units = 3_000
 
     private let renderer: any ReadingAudioRenderer
     private let joiner: any ReadingAudioJoiner
@@ -151,7 +155,8 @@ public struct AudioBookJoiner: ReadingAudioJoiner {
 
     public func render(script: ReadingScript, voiceIdentifier: String, rate: Float? = nil,
                        metadata: AudioBookMetadata, location: ReadingLocation,
-                       resume: Bool = false, maxPartUTF16Units: Int = 3_000) async throws -> ReadingResult {
+                       resume: Bool = false,
+                       maxPartUTF16Units: Int = defaultMaxPartUTF16Units) async throws -> ReadingResult {
         let directory = location.workDirectory
         let output = location.output
         guard directory.isFileURL, output.isFileURL else {
@@ -488,9 +493,9 @@ final class ReadingDirectoryLock {
 
     private init(descriptor: Int32) { self.descriptor = descriptor }
 
-    /// A hash of the directory's canonical path.
+    /// A hash of the directory's filesystem identity (see `ReadingPathIdentity`).
     static func key(for directory: URL) -> String {
-        sha256(Data(directory.standardizedFileURL.resolvingSymlinksInPath().path.utf8))
+        sha256(Data(ReadingPathIdentity.key(directory).utf8))
     }
 
     static func acquire(for directory: URL) throws -> ReadingDirectoryLock {
@@ -501,11 +506,11 @@ final class ReadingDirectoryLock {
     /// A lock on the finished file's path, kept beside the cache's lock. Readings of different
     /// text or settings for one explicit output have different caches (see
     /// `ReadingOutput.locate`), so this is what stops a second one before it renders anything.
+    /// It is keyed by the file's filesystem identity (see `ReadingPathIdentity`), so "Book.m4a"
+    /// and "book.m4a" on a case-insensitive volume, or one name in NFC and NFD, share it.
     static func acquire(output: URL, beside directory: URL) throws -> ReadingDirectoryLock {
-        let canonical = output.deletingLastPathComponent().standardizedFileURL.resolvingSymlinksInPath()
-            .appendingPathComponent(output.lastPathComponent)
-        return try acquire(name: ".holos-output-\(sha256(Data(canonical.path.utf8))).lock", beside: directory,
-                           busy: "Another reading is already being made for \(output.path).")
+        try acquire(name: ".holos-output-\(sha256(Data(ReadingPathIdentity.key(output).utf8))).lock",
+                    beside: directory, busy: "Another reading is already being made for \(output.path).")
     }
 
     private static func acquire(name: String, beside directory: URL, busy: String) throws -> ReadingDirectoryLock {
@@ -535,6 +540,49 @@ final class ReadingDirectoryLock {
     deinit {
         _ = flock(descriptor, LOCK_UN)
         close(descriptor)
+    }
+}
+
+/// One string for every spelling of one filesystem location, so the locks and cache keys that
+/// name a file follow the filesystem's own rules rather than the path's spelling:
+/// - the parent folder is its real path (`realpath(3)`: links resolved, "..", and on macOS each
+///   component's on-disk case);
+/// - the last component (which may not exist yet) is put in Unicode canonical composition (APFS
+///   and HFS+ treat NFC and NFD spellings as one name), and case-folded when the volume ignores
+///   case (the default on macOS), or when that cannot be told.
+/// On a stricter volume two such spellings can name different files; they then only share a
+/// lock, which serializes them, never a file.
+enum ReadingPathIdentity {
+    static func key(_ url: URL) -> String {
+        let path = url.standardizedFileURL.path
+        // An existing path resolves whole, so a link in the last component is followed too.
+        let resolved = realPath(path) ?? path
+        let name = (resolved as NSString).lastPathComponent
+        let parentPath = (resolved as NSString).deletingLastPathComponent
+        let parent = realPath(parentPath)
+            ?? URL(fileURLWithPath: parentPath).standardizedFileURL.resolvingSymlinksInPath().path
+        let folded = normalizedName(name, caseSensitive: caseSensitive(parent))
+        return parent == "/" ? "/" + folded : parent + "/" + folded
+    }
+
+    /// `name` as the volume compares names: composed, and case-folded unless `caseSensitive`.
+    static func normalizedName(_ name: String, caseSensitive: Bool) -> String {
+        let composed = name.precomposedStringWithCanonicalMapping
+        guard !caseSensitive else { return composed }
+        return composed.folding(options: [.caseInsensitive], locale: nil).precomposedStringWithCanonicalMapping
+    }
+
+    /// Whether the volume holding `folder` tells names apart by case; false when unknown.
+    static func caseSensitive(_ folder: String) -> Bool {
+        let values = try? URL(fileURLWithPath: folder, isDirectory: true)
+            .resourceValues(forKeys: [.volumeSupportsCaseSensitiveNamesKey])
+        return values?.volumeSupportsCaseSensitiveNames ?? false
+    }
+
+    private static func realPath(_ path: String) -> String? {
+        guard let resolved = realpath(path, nil) else { return nil }
+        defer { free(resolved) }
+        return String(cString: resolved)
     }
 }
 

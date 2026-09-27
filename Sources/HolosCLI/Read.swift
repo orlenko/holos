@@ -47,7 +47,7 @@ struct Read: AsyncParsableCommand {
     var resume = false
     @Flag(help: "Play the finished file.")
     var play = false
-    @Flag(help: "Print the title, voice, chapters, and text that would be read, without rendering.")
+    @Flag(help: "Print the title, voice, output file, chapters, and text that would be read, without rendering.")
     var printText = false
 
     @MainActor mutating func run() async throws {
@@ -138,16 +138,19 @@ struct Read: AsyncParsableCommand {
                 ?? document.title ?? fallbackName,
             author: document.author, language: language)
         let name = ReadingOutput.fileName(title: metadata.title, fallback: fallbackName)
+        let readings = HolosPaths.supportRoot.appendingPathComponent("Readings", isDirectory: true)
+        let identity = ReadingPipeline.identity(script: script, voiceIdentifier: selected.id, rate: request.rate,
+                                                metadata: metadata)
         if request.printText {
             let voice = "\(VoiceSelection.displayNames(NativeSpeechRenderer.voices())[selected.id] ?? selected.name) (\(selected.id))"
-            Console.output(ReadingPreview.text(script: script, metadata: metadata, voice: voice, fileName: name))
+            // The file this command would write, resolved as below but with nothing created.
+            let file = try ReadingOutput.previewPath(output: request.output, name: name, identity: identity,
+                                                     readingsRoot: readings)
+            Console.output(ReadingPreview.text(script: script, metadata: metadata, voice: voice, fileName: file))
             return nil
         }
 
-        let readings = HolosPaths.supportRoot.appendingPathComponent("Readings", isDirectory: true)
         try FileManager.default.createDirectory(at: readings, withIntermediateDirectories: true)
-        let identity = ReadingPipeline.identity(script: script, voiceIdentifier: selected.id, rate: request.rate,
-                                                metadata: metadata)
         let location = try ReadingOutput.locate(output: request.output, name: name, identity: identity,
                                                 readingsRoot: readings, resume: request.resume)
         if request.resume && !FileManager.default.fileExists(atPath: location.workDirectory.path) {

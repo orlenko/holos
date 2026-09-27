@@ -1,3 +1,4 @@
+import AVFoundation
 import CryptoKit
 import Foundation
 import HolosCore
@@ -456,6 +457,141 @@ import Testing
         renderer.release()
         #expect(try await active.value.manifest.status == "complete")
         #expect(try Data(contentsOf: output) == Data("One short paragraph.".utf8))
+    }
+
+    /// Spellings of one file on this volume: one lock and one cache. The temporary folder is on the
+    /// boot volume (APFS: normalization-insensitive, case-insensitive by default).
+    @Test func outputIdentityFollowsTheFilesystemsNameRules() throws {
+        let parent = try root()
+        defer { try? FileManager.default.removeItem(at: parent) }
+        let caseSensitive = ReadingPathIdentity.caseSensitive(parent.path)
+        func key(_ url: URL) -> String { ReadingPathIdentity.key(url) }
+        let composed = parent.appendingPathComponent("Caf\u{E9}.m4a")
+        let decomposed = parent.appendingPathComponent("Cafe\u{301}.m4a")
+        #expect(key(composed) == key(decomposed))
+        #expect(key(parent.appendingPathComponent("Book.m4a")) != key(parent.appendingPathComponent("Other.m4a")))
+        // Case: the new name, and the existing folders' names (their on-disk spelling).
+        let upper = parent.appendingPathComponent("BOOK.m4a")
+        let otherFolder = parent.deletingLastPathComponent()
+            .appendingPathComponent(parent.lastPathComponent.uppercased()).appendingPathComponent("book.m4a")
+        #expect((key(upper) == key(parent.appendingPathComponent("book.m4a"))) == !caseSensitive)
+        #expect((key(otherFolder) == key(parent.appendingPathComponent("book.m4a"))) == !caseSensitive)
+        // A link to the folder, and "..", name the same place.
+        let link = parent.appendingPathComponent("link")
+        let real = parent.appendingPathComponent("real")
+        try FileManager.default.createDirectory(at: real, withIntermediateDirectories: false)
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: real)
+        #expect(key(link.appendingPathComponent("Book.m4a")) == key(real.appendingPathComponent("Book.m4a")))
+        #expect(key(URL(fileURLWithPath: real.path + "/../real/Book.m4a")) == key(real.appendingPathComponent("Book.m4a")))
+        // An existing file matches its own not-yet-created spellings.
+        try Data().write(to: composed)
+        #expect(key(composed) == key(decomposed))
+        #expect((key(composed) == key(parent.appendingPathComponent("CAF\u{C9}.m4a"))) == !caseSensitive)
+
+        // The cache `locate` picks is the same for every spelling, too.
+        let readings = parent.appendingPathComponent("Readings")
+        try FileManager.default.createDirectory(at: readings, withIntermediateDirectories: false)
+        func cache(_ url: URL) throws -> URL {
+            try ReadingOutput.resolve(output: url.path, name: "x.m4a", identity: "i", readingsRoot: readings,
+                                      fileManager: .default).0.workDirectory
+        }
+        #expect(try cache(decomposed) == cache(composed))
+        #expect(try (cache(upper) == cache(parent.appendingPathComponent("book.m4a"))) == !caseSensitive)
+    }
+
+    /// A second reading for another spelling of the same file (NFD for NFC, and other case where
+    /// the volume ignores it) fails before it renders anything.
+    @Test func aSecondReadingForAnotherSpellingOfTheOutputFailsBeforeRendering() async throws {
+        let parent = try root()
+        defer { try? FileManager.default.removeItem(at: parent) }
+        var aliases = ["Cafe\u{301}.m4a"]
+        if !ReadingPathIdentity.caseSensitive(parent.path) { aliases.append("caf\u{E9}.m4a") }
+        let renderer = GateRenderer()
+        let pipeline = ReadingPipeline(renderer: renderer, joiner: FakeJoiner())
+        let script = ReadingScript(document: ReadableDocument(sections: [.init(paragraphs: ["One short paragraph."])]))
+        let voice = self.voice
+        let metadata = self.metadata
+        let first = ReadingLocation(workDirectory: parent.appendingPathComponent("Output-a"),
+                                    output: parent.appendingPathComponent("Caf\u{E9}.m4a"))
+        let active = Task { try await pipeline.render(script: script, voiceIdentifier: voice, metadata: metadata, location: first) }
+        await renderer.waitUntilRendering()
+        for (index, alias) in aliases.enumerated() {
+            let second = ReadingLocation(workDirectory: parent.appendingPathComponent("Output-\(index)"),
+                                         output: parent.appendingPathComponent(alias))
+            do {
+                _ = try await pipeline.render(script: script, voiceIdentifier: voice, metadata: metadata, location: second)
+                Issue.record("A second reading for \(alias) should fail while the first renders.")
+            } catch let error as HolosError {
+                if case .unavailable(let message) = error {
+                    #expect(message.contains("Another reading is already being made"))
+                } else {
+                    Issue.record("Unexpected error: \(error)")
+                }
+            }
+        }
+        #expect(renderer.calls == 1)
+        renderer.release()
+        #expect(try await active.value.manifest.status == "complete")
+        // Resuming under another spelling finds the finished reading: nothing is rendered again.
+        let alias = ReadingLocation(workDirectory: first.workDirectory, output: parent.appendingPathComponent(aliases[0]))
+        let resumed = try await pipeline.render(script: script, voiceIdentifier: voice, metadata: metadata,
+                                                location: alias, resume: true)
+        #expect(resumed.manifest.status == "complete")
+        #expect(renderer.calls == 1)
+    }
+
+    /// `--print-text` lists the chapters `AudioBookWriter` encodes for the same script: the title
+    /// added before a first heading that follows text, no track for a single chapter, and none
+    /// without headings.
+    @Test(.timeLimit(.minutes(1))) func previewChaptersAreTheChaptersTheFileGets() async throws {
+        let parent = try root()
+        defer { try? FileManager.default.removeItem(at: parent) }
+        let paragraph = "A paragraph with a few words in it."
+        let cases: [(ReadableDocument, [String])] = [
+            (ReadableDocument(sections: [.init(heading: "Only", level: 2, paragraphs: [paragraph])]), []),
+            (ReadableDocument(title: "Book", sections: [.init(heading: "Only", level: 2, paragraphs: [paragraph])]),
+             ["Book", "Only"]),
+            (ReadableDocument(sections: [.init(paragraphs: [paragraph]),
+                                         .init(heading: "Later", level: 2, paragraphs: [paragraph])]),
+             ["Beginning", "Later"]),
+            (ReadableDocument(title: "Book", sections: [.init(heading: "Book", level: 1, paragraphs: [paragraph]),
+                                                        .init(heading: "Two", level: 2, paragraphs: [paragraph]),
+                                                        .init(heading: "  ", level: 2, paragraphs: [paragraph])]),
+             ["Book", "Two"]),
+            (ReadableDocument(title: "Book", sections: [.init(paragraphs: [paragraph, paragraph])]), []),
+        ]
+        for (index, (document, expected)) in cases.enumerated() {
+            let script = ReadingScript(document: document)
+            let metadata = AudioBookMetadata(title: document.title)
+            let preview = ReadingPreview.chapters(script: script, metadata: metadata)
+            #expect(preview == expected, "case \(index)")
+            // The file the pipeline would join from the same part plan.
+            var parts: [AudioBookPart] = []
+            for part in script.parts() {
+                let url = parent.appendingPathComponent("case\(index)-part\(part.index).caf")
+                try silence(seconds: 0.2, to: url)
+                parts.append(AudioBookPart(url: url, silenceBefore: part.index == 0 ? 0
+                                               : part.startsSegment ? ReadingAudioFormat.chapterGap : ReadingAudioFormat.partGap,
+                                           chapter: part.chapter))
+            }
+            let summary = try await AudioBookWriter.write(parts: parts, metadata: metadata,
+                                                          to: parent.appendingPathComponent("case\(index).m4a"))
+            #expect(summary.chapters.map(\.title) == preview, "case \(index)")
+        }
+    }
+
+    private func silence(seconds: Double, to url: URL) throws {
+        let rate = ReadingAudioFormat.sampleRate
+        let settings: [String: Any] = [
+            AVFormatIDKey: kAudioFormatLinearPCM, AVSampleRateKey: rate, AVNumberOfChannelsKey: 1,
+            AVLinearPCMBitDepthKey: 16, AVLinearPCMIsFloatKey: false, AVLinearPCMIsBigEndianKey: false,
+        ]
+        let file = try AVAudioFile(forWriting: url, settings: settings, commonFormat: .pcmFormatInt16, interleaved: true)
+        let frames = AVAudioFrameCount(seconds * rate)
+        let buffer = try #require(AVAudioPCMBuffer(pcmFormat: file.processingFormat, frameCapacity: frames))
+        buffer.frameLength = frames
+        try #require(buffer.int16ChannelData?[0]).update(repeating: 0, count: Int(frames))
+        try file.write(from: buffer)
     }
 
     private func manifest(_ place: ReadingLocation) throws -> ReadingManifest {

@@ -147,6 +147,22 @@ import Testing
         }
     }
 
+    /// The chapter rules the writer and `--print-text` share.
+    @Test func chapterPlanRules() {
+        typealias Plan = AudioBookChapterPlan
+        func titles(_ parts: [(String?, Int)], _ book: String? = "Book") -> [String] {
+            Plan.marks(parts.map { (chapter: $0.0, position: $0.1) }, bookTitle: book).map(\.title)
+        }
+        #expect(titles([("One", 0), ("Two", 5)]) == ["One", "Two"])
+        #expect(titles([(nil, 0), ("One", 5)]) == ["Book", "One"])
+        #expect(titles([(nil, 0), ("One", 5)], "  ") == ["Beginning", "One"])
+        #expect(titles([("Only", 0), (nil, 5)]).isEmpty)
+        #expect(titles([(nil, 0), (nil, 5)]).isEmpty)
+        // Blank titles, and a chapter at or before the previous one's start, are dropped.
+        #expect(titles([("One", 0), (" \n", 3), ("Same", 0), ("Two", 5)]) == ["One", "Two"])
+        #expect(Plan.titles([nil, "A", "B"], bookTitle: "Book") == ["Book", "A", "B"])
+    }
+
     /// Silence that would overflow the frame count (or is not a number) is an error, never a trap.
     @Test(.timeLimit(.minutes(1))) func absurdSilenceIsRejected() async throws {
         let folder = try directory()
