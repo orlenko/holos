@@ -1,8 +1,8 @@
 # Third-party notices
 
-The `voiceislocal` command-line tool includes FluidAudio, and `voiceislocal setup --speakers` downloads the speaker
-diarization models it runs. Their licenses and credits follow. The Voice is Local app does not link FluidAudio or
-include the models; it runs speaker labelling through the `voiceislocal` tool.
+The `voiceislocal` command-line tool includes FluidAudio and Mozilla Readability, and `voiceislocal setup --speakers`
+downloads the speaker diarization models it runs. Their licenses and credits follow. The Voice is Local app does not
+link FluidAudio or include the models; it runs speaker labelling through the `voiceislocal` tool.
 
 ## 1. FluidAudio 0.17.1
 
@@ -903,3 +903,32 @@ Citations:
 - Federico Landini, Ján Profant, Mireia Diez, and Lukáš Burget. "Bayesian HMM
   clustering of x-vector sequences (VBx) in speaker diarization: theory,
   implementation and analysis on standard tasks." Computer Speech & Language, 2022.
+
+## 3. Mozilla Readability 0.6.0
+
+- Source: https://github.com/mozilla/readability, tag 0.6.0, commit
+  `04fd32f72b448c12b02ba6c40928b67e510bac49`. The file `Readability.js` was downloaded from
+  https://raw.githubusercontent.com/mozilla/readability/0.6.0/Readability.js and is vendored unmodified as
+  `Sources/HolosContent/Resources/Readability.js` (SHA-256
+  `34dcab3d0832d0019f02990eed6b6124e029e8c32b9f0c6f2550544ff8dff174`), compiled into the `voiceislocal` tool.
+- License: Apache License 2.0; its full text is the FluidAudio `LICENSE` in section 1. The notice of the
+  release's `LICENSE.md` follows.
+- `voiceislocal read <https URL>` runs it in an offscreen web view to find a page's article text.
+
+### Readability `LICENSE.md`
+
+````text
+Copyright (c) 2010 Arc90 Inc
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+   http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+````

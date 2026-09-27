@@ -7,11 +7,16 @@ import HolosSynthesis
 
 struct Read: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
-        abstract: "Read a document aloud into one .m4a audio file.",
+        abstract: "Read a document or a web article aloud into one .m4a audio file.",
         discussion: """
-        Reads .txt, .md, .html, .pdf, .rtf, .rtfd, .docx, .doc, and .odt files, or UTF-8 text on \
-        stdin (-). Markdown is read as text: headings, emphasis, and links read naturally; code \
-        blocks and images are skipped.
+        Reads .txt, .md, .html, .pdf, .rtf, .rtfd, .docx, .doc, and .odt files, UTF-8 text on \
+        stdin (-), or an https:// web address. Markdown is read as text: headings, emphasis, and \
+        links read naturally; code blocks and images are skipped.
+
+        A web address is loaded in an offscreen web view (no cookies or history are kept) and \
+        reduced to its article with Mozilla Readability: title, byline (the file's author), \
+        headings, paragraphs, and list items. Code blocks, tables, figures, and captions are \
+        skipped. Pages behind a sign-in or paywall usually fail; save their text to a file instead.
 
         Writes one AAC .m4a (mono, 22.05 kHz, about 32 kbit/s, about 14 MB per hour) named after \
         the document's title, with a chapter at each heading. It plays on iPhone, Android, Windows, \
@@ -22,10 +27,11 @@ struct Read: AsyncParsableCommand {
         otherwise; `voiceislocal voices list` shows each voice's quality.
 
         An interrupted reading continues where it stopped: run the same command with --resume. A \
-        reading made without --output resumes with --output set to its Readings folder.
+        reading made without --output resumes with --output set to its Readings folder. A web page \
+        is loaded again; if its text changed since, the reading is refused.
         """
     )
-    @Argument(help: "Local file path, or - for UTF-8 text on stdin. Web addresses are not supported yet.")
+    @Argument(help: "An https:// web address, a local file path, or - for UTF-8 text on stdin.")
     var source: String
     @Option(name: .shortAndLong, help: "A .m4a file path, or an existing directory to write <Title>.m4a in.")
     var output: String?
@@ -45,91 +51,158 @@ struct Read: AsyncParsableCommand {
     var printText = false
 
     @MainActor mutating func run() async throws {
-        guard !source.hasPrefix("http://"), !source.hasPrefix("https://") else {
-            throw HolosError.unavailable("Reading web addresses is not available yet. Save the page (.html) or its text and pass the file path.")
-        }
+        let address = try webAddress(source)
         guard !resume || output != nil else {
             throw HolosError.invalidInput("--resume needs --output: the same .m4a path or directory as before, or the Readings folder of a reading made without --output.")
         }
-        let document: ReadableDocument
-        let fallbackName: String?
-        if source == "-" {
-            document = PlainTextReader.document(from: try readText(arguments: []))
-            fallbackName = nil
+        // A local file or stdin is read before the interrupt handling below, so Ctrl-C while
+        // stdin is read ends the process as usual; a web page is loaded under it.
+        let pending: PendingSource
+        if let address {
+            pending = .web(address)
+        } else if source == "-" {
+            pending = .loaded(LoadedDocument(document: PlainTextReader.document(from: try readText(arguments: [])),
+                                             fallbackName: nil))
         } else {
             let input = fileURL(source)
             guard FileManager.default.fileExists(atPath: input.path) else {
                 throw HolosError.invalidInput("Reading source does not exist: \(input.path)")
             }
-            document = try DocumentLoader.load(input)
-            fallbackName = input.deletingPathExtension().lastPathComponent
+            pending = .loaded(LoadedDocument(document: try DocumentLoader.load(input),
+                                             fallbackName: input.deletingPathExtension().lastPathComponent))
         }
-        let script = ReadingScript(document: document)
-        // A declared language that is not a usable tag ("english") is ignored, not trusted.
-        let language = AudioBookMetadata.languageTag(document.language) ?? ReadingLanguage.detect(script.text)
-        let selected = try resolveVoice(voice, language: language, explainDefault: true)
-        let metadata = AudioBookMetadata(
-            title: title.flatMap { $0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : $0 }
-                ?? document.title ?? fallbackName,
-            author: document.author, language: language)
-        if printText {
-            Console.output("Title: \(metadata.title ?? "-")")
-            if let author = metadata.author { Console.output("Author: \(author)") }
-            Console.output("Language: \(language ?? "unknown")")
-            Console.output("Voice: \(VoiceSelection.displayNames(NativeSpeechRenderer.voices())[selected.id] ?? selected.name) (\(selected.id))")
-            Console.output("File: \(ReadingOutput.fileName(title: metadata.title, fallback: fallbackName))")
-            Console.output("Chapters: \(script.segments.compactMap(\.chapter).joined(separator: " | "))")
-            Console.output("")
-            Console.output(script.text)
-            return
-        }
-
-        let readings = HolosPaths.supportRoot.appendingPathComponent("Readings", isDirectory: true)
-        try FileManager.default.createDirectory(at: readings, withIntermediateDirectories: true)
-        let identity = ReadingPipeline.identity(script: script, voiceIdentifier: selected.id, rate: rate,
-                                                metadata: metadata)
-        let location = try ReadingOutput.locate(
-            output: output, name: ReadingOutput.fileName(title: metadata.title, fallback: fallbackName),
-            identity: identity, readingsRoot: readings, resume: resume)
-        let resumeHint = "To continue, run the same command with --resume --output \"\(output ?? location.workDirectory.path)\"."
-        // Ctrl-C (or SIGTERM) cancels the render, so its cleanup runs (the partly joined file is
-        // removed; rendered parts are kept for --resume), then the command exits 130 (143). A
-        // second one ends the process at once; the next run removes what that leaves behind.
-        let pipeline = ReadingPipeline()
-        let work = CancellableStart<ReadingResult>()
+        let request = ReadRequest(output: output, voice: voice, rate: rate, title: title, resume: resume,
+                                  printText: printText)
+        // Ctrl-C (or SIGTERM) cancels the page load or the render, so its cleanup runs (the partly
+        // joined file is removed; rendered parts are kept for --resume), then the command exits
+        // 130 (143). A second one ends the process at once; the next run removes what that leaves
+        // behind. The handling is installed before the work starts, so a signal in between
+        // cancels it too.
+        let progress = ReadProgress()
+        let work = CancellableStart<URL?>()
         let interrupt = InterruptCancellation(notice: {
             Console.error("Stopping… (press Ctrl-C again to quit at once)")
         }) { work.cancel() }
         defer { interrupt.restore() }
-        let voiceIdentifier = selected.id
-        let rate = rate
-        let resume = resume
-        let result: ReadingResult
+        let finished: URL?
         do {
-            result = try await work.start { @MainActor in
-                try await pipeline.render(script: script, voiceIdentifier: voiceIdentifier, rate: rate,
-                                          metadata: metadata, location: location, resume: resume)
+            finished = try await work.start { @MainActor in
+                let document: LoadedDocument
+                switch pending {
+                case .loaded(let loaded): document = loaded
+                case .web(let address): document = try await Self.load(address)
+                }
+                return try await Self.read(document, request: request, progress: progress)
             }.value
         } catch {
             interrupt.restore()
             if let signal = interrupt.signal {
-                Console.error("Reading interrupted. \(resumeHint)")
+                Console.error(progress.resumeHint.map { "Reading interrupted. \($0)" } ?? "Reading interrupted.")
                 throw ExitCode(InterruptLatch.exitCode(for: signal))
             }
-            if case HolosError.incomplete(let message) = error {
-                throw HolosError.incomplete(message + "\n" + resumeHint)
+            if case HolosError.incomplete(let message) = error, let hint = progress.resumeHint {
+                throw HolosError.incomplete(message + "\n" + hint)
             }
             throw error
         }
         // Playback is not part of the render: Ctrl-C there ends the process as usual.
         interrupt.restore()
-        Console.output(result.output.path)
+        guard let finished else { return }
+        Console.output(finished.path)
         if play {
-            guard try await SpeechPlayback.play(file: result.output) else {
-                throw HolosError.incomplete("Playback skipped: another Voice is Local playback kept it waiting. The reading is saved at \(result.output.path).")
+            guard try await SpeechPlayback.play(file: finished) else {
+                throw HolosError.incomplete("Playback skipped: another Voice is Local playback kept it waiting. The reading is saved at \(finished.path).")
             }
         }
     }
+
+    /// Loads the page at `address` and reduces it to its article, as a document to read.
+    @MainActor private static func load(_ address: URL) async throws -> LoadedDocument {
+        // Every text in a WebArticle is already sanitized (no control or format characters), so the
+        // page's title and address are safe to print.
+        let article = try await WebArticleExtractor().extract(from: address)
+        Console.error("\(article.title) (\(article.wordCount) words, \(article.address))")
+        return LoadedDocument(document: article.document, fallbackName: article.url.host())
+    }
+
+    /// Prints the reading (`--print-text`) and returns nil, or renders it and returns the finished file.
+    @MainActor private static func read(_ loaded: LoadedDocument, request: ReadRequest,
+                                        progress: ReadProgress) async throws -> URL? {
+        let document = loaded.document, fallbackName = loaded.fallbackName
+        let script = ReadingScript(document: document)
+        // A declared language that is not a usable tag ("english") is ignored, not trusted.
+        let language = AudioBookMetadata.languageTag(document.language) ?? ReadingLanguage.detect(script.text)
+        let selected = try resolveVoice(request.voice, language: language, explainDefault: true)
+        let metadata = AudioBookMetadata(
+            title: request.title.flatMap { $0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : $0 }
+                ?? document.title ?? fallbackName,
+            author: document.author, language: language)
+        let name = ReadingOutput.fileName(title: metadata.title, fallback: fallbackName)
+        if request.printText {
+            let voice = "\(VoiceSelection.displayNames(NativeSpeechRenderer.voices())[selected.id] ?? selected.name) (\(selected.id))"
+            Console.output(ReadingPreview.text(script: script, metadata: metadata, voice: voice, fileName: name))
+            return nil
+        }
+
+        let readings = HolosPaths.supportRoot.appendingPathComponent("Readings", isDirectory: true)
+        try FileManager.default.createDirectory(at: readings, withIntermediateDirectories: true)
+        let identity = ReadingPipeline.identity(script: script, voiceIdentifier: selected.id, rate: request.rate,
+                                                metadata: metadata)
+        let location = try ReadingOutput.locate(output: request.output, name: name, identity: identity,
+                                                readingsRoot: readings, resume: request.resume)
+        if request.resume && !FileManager.default.fileExists(atPath: location.workDirectory.path) {
+            // With an explicit output the cache is keyed by the text and settings, so a changed
+            // source (a web page that was edited since) or setting finds no reading here.
+            throw HolosError.invalidInput("No reading to resume for \(location.output.path): none was started with this output, or its source, voice, rate, or title has changed since.")
+        }
+        progress.resumeHint = "To continue, run the same command with --resume --output \"\(request.output ?? location.workDirectory.path)\"."
+        let result = try await ReadingPipeline().render(
+            script: script, voiceIdentifier: selected.id, rate: request.rate, metadata: metadata,
+            location: location, resume: request.resume)
+        return result.output
+    }
+}
+
+/// A `read` source before the work starts: a local file or stdin is already loaded; a web page
+/// is loaded by the work, under the interrupt handling.
+private enum PendingSource: Sendable {
+    case loaded(LoadedDocument)
+    case web(URL)
+}
+
+/// A document to read and the file name to use when it has no title.
+private struct LoadedDocument: Sendable {
+    let document: ReadableDocument
+    let fallbackName: String?
+}
+
+/// The options of one `read`, as the work task takes them.
+private struct ReadRequest: Sendable {
+    let output: String?
+    let voice: String?
+    let rate: Float?
+    let title: String?
+    let resume: Bool
+    let printText: Bool
+}
+
+/// How far a `read` got: set once rendering starts, so an interruption or failure before that
+/// suggests no `--resume`.
+@MainActor private final class ReadProgress {
+    var resumeHint: String?
+}
+
+/// The web address in a `read` source, or nil for a file path. Only https is read; http is refused with a hint.
+private func webAddress(_ source: String) throws -> URL? {
+    let lowered = source.lowercased()
+    if lowered.hasPrefix("http://") {
+        throw HolosError.invalidInput("Only https:// addresses can be read. Try the https:// form of \(source).")
+    }
+    guard lowered.hasPrefix("https://") else { return nil }
+    guard let url = URL(string: source), url.host() != nil else {
+        throw HolosError.invalidInput("Not a valid web address: \(source)")
+    }
+    return url
 }
 
 /// `--voice` by name or identifier; without it, the best installed voice for `language`.

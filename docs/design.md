@@ -271,19 +271,21 @@ metadata, plus a chapter at each heading (an MPEG-4 timed-text chapter track, wh
 Books, Podcasts, QuickTime, VLC, and ffmpeg read). The AITTS prototype's multi-part
 playlist existed only because of the OpenAI request limit; it is gone.
 
-Every extractor produces a `ReadableDocument` (title, author, language, and sections of
-paragraphs under headings); the reading pipeline reads only that. The text is split at
+Every extractor, for local files and for web pages alike, produces a `ReadableDocument`
+(title, author, language, and sections of paragraphs under headings); the reading
+pipeline reads only that. The text is split at
 semantic boundaries that never cross a section, and the parts are synthesized in order
 into a cache of lossless PCM parts with a manifest. Resume re-renders only failed,
 missing, or changed parts, keyed by hashes of the text and by voice and rate; a changed
-source, voice, rate, title, or output is refused. The parts are then joined and encoded
+source, voice, rate, title, or output is refused. A web page is loaded and extracted
+again on `--resume`, so a page whose text changed since is refused the same way. The parts are then joined and encoded
 once into the `.m4a`, with a short pause between parts and a longer one before a
 section. The checksum of the finished file is saved before it is published, and the
 cache is deleted after, so the finished file is the only large thing kept. A failed
 reading publishes nothing and returns a nonzero status. Publishing never replaces a file:
 an exclusive rename, or, on volumes without one, an exclusive create whose identity is
 saved in the manifest before the finished bytes are copied into it (so `--resume`
-recognizes a copy a crash cut off). Ctrl-C cancels the render, removes the partly joined
+recognizes a copy a crash cut off). Ctrl-C cancels the page load or the render, removes the partly joined
 file, and exits 130 (SIGTERM: 143); every run also removes temporaries earlier runs of the
 same reading left behind, recognized by a per-reading marker in their names.
 
@@ -297,11 +299,38 @@ voice for the text's language (NaturalLanguage detects it): Premium over Enhance
 default, then the user's preferred regions, then the voice macOS uses for that language.
 `--voice` takes a name as `say -v '?'` prints it or an identifier.
 
-Web articles need a separate extractor: Swift has no built-in equivalent of AITTS's
-Trafilatura, and JavaScriptCore alone supplies no browser DOM. The planned
-`ArticleExtractor` loads the page in WKWebView and runs Mozilla Readability, producing a
-`ReadableDocument`. Preserve source text for inspection; dynamic/authenticated pages can
-use a saved-page or local-text fallback. Foundation Models is not the default article
+Swift has no built-in equivalent of
+AITTS's Trafilatura, and JavaScriptCore alone supplies no browser DOM, so web articles
+use Mozilla Readability (0.6.0, Apache-2.0, vendored unmodified and compiled into the
+`voiceislocal` tool) inside an offscreen `WKWebView` (`WebArticleExtractor` in
+HolosContent). The web view loads the `https` page with a non-persistent website data
+store and Safari's user-agent suffix, refuses HTTP error pages and non-HTML documents,
+and refuses the page when the main frame leaves `https` at any point (a server
+redirect, a script or meta-refresh navigation, the response, or the page finally read);
+it opens no new windows. It
+waits for the load (up to 30 s; a parsed page is read anyway when subresources hang)
+plus a 1 s settle, then runs Readability on a copy of the live DOM, so pages built by
+JavaScript work. While the page shows no article it reads again every second for 6 s
+after that first read, the last read at the 6 s mark (7 s after loading). Back-matter
+sections (references, notes, see also, external links, further reading) are removed
+before Readability runs; headings match without case, surrounding punctuation
+("References:"), or section numbers, and a heading inside wrappers that hold nothing
+else starts its section at the outermost wrapper. The article HTML is reduced to ordered headings and paragraphs:
+list items, quotations, and definition terms become paragraphs; code blocks (`<pre>`),
+tables, figures, captions, media, forms, and bracketed marks such as `[1]` or `[edit]`
+are dropped; inline code is read as text. The article becomes a `ReadableDocument`
+(`WebArticle.document`) and is read exactly like a local file: its title (spoken first
+unless the page opens with it; a leading heading that repeats the title is already
+dropped), its byline as the author ("By " dropped; written to the file's author tag and
+not spoken, as for local files), its declared language, and a section, so a chapter, at
+each heading. The site name is dropped: the `.m4a` has no tag for it that players show,
+and Readability's title rarely needs it. The file is named after the sanitized title
+(the host when a page has none). Fewer than 50 words is "no article": the command fails and suggests
+saving the text to a file, which is also the path for sign-in and paywalled pages. The
+command-line tool hosts the web view itself: Swift's async `main` runs the main run
+loop (`CFRunLoopRun`), which is all WebKit needs; no `NSApplication` or app round trip.
+`source.txt` in the reading's cache folder preserves the text that was read, for
+inspection. Vision OCR is a later adapter. Foundation Models is not the default article
 extractor or narrator: it could omit source content.
 
 Audition and export a short set of native voices before investing in the reading

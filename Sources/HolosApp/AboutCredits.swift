@@ -2,7 +2,7 @@ import AppKit
 import HolosCore
 
 /// The credits of the About panel (docs/meeting-design.md §4.8): the app has no resource bundle, so the text of
-/// THIRD_PARTY_NOTICES.md's speaker-model section and the FluidAudio line are embedded here.
+/// THIRD_PARTY_NOTICES.md's speaker-model section and the FluidAudio and Readability lines are embedded here.
 enum AboutCredits {
     /// The notice GPLv3 §5(d) asks an interactive program to show. It points to the LICENSE.txt and TRADEMARKS.md
     /// the build scripts copy into this bundle, and to the release tag's copies online when the build recorded one.
@@ -17,6 +17,12 @@ enum AboutCredits {
         (https://github.com/FluidInference/FluidAudio, tag v0.17.1, commit 5c51c5c9), licensed under the Apache \
         License 2.0. The Voice is Local app does not link FluidAudio or include the models; see THIRD_PARTY_NOTICES.md for the \
         full license texts.
+        """
+
+    static let readability = """
+        The bundled voiceislocal tool reads web articles with Mozilla Readability 0.6.0 \
+        (https://github.com/mozilla/readability, tag 0.6.0), Copyright (c) 2010 Arc90 Inc, licensed under the \
+        Apache License 2.0; see THIRD_PARTY_NOTICES.md.
         """
 
     static let models = """
@@ -41,7 +47,7 @@ enum AboutCredits {
         Speech & Language, 2022.
         """
 
-    static var text: String { license + "\n\n" + fluidAudio + "\n\n" + models }
+    static var text: String { [license, fluidAudio, readability, models].joined(separator: "\n\n") }
 
     /// The credits as the About panel shows them.
     static func attributed() -> NSAttributedString {
