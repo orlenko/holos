@@ -35,8 +35,10 @@ struct Read: AsyncParsableCommand {
         }
         let text: String
         if let address = try webAddress(source) {
+            // Every text in a WebArticle is already sanitized (no control or format characters), so the page's
+            // title, address, and paragraphs are safe to print.
             let article = try await WebArticleExtractor().extract(from: address)
-            Console.error("\(article.title) (\(article.wordCount) words, \(article.url.absoluteString))")
+            Console.error("\(article.title) (\(article.wordCount) words, \(article.address))")
             text = article.spokenText
         } else if source == "-" {
             text = try readText(arguments: [])

@@ -98,6 +98,43 @@ private enum Fixture {
         });</script></body></html>
         """
 
+    /// An article about something else, long enough to be accepted, that `redirect` sends away after loading.
+    static func stale(_ redirect: String) -> String {
+        let text = "The ferry timetable changes every spring, and the harbour office prints a new card for each "
+            + "passenger who asks. This year the first sailing leaves at six, the last at nine, and the cafe on "
+            + "the pier opens only when the weather allows the tables to stand outside without blowing away."
+        return """
+            <!doctype html><html><head><title>Ferry Timetable</title>\(redirect)</head><body><article>
+            <h1>Ferry Timetable</h1><p>\(text)</p><p>\(text)</p></article></body></html>
+            """
+    }
+
+    /// Ways a loaded page sends the main frame on to `site://news.test/<path>`. (A `Refresh` response header
+    /// cannot be served here: WebKit hands custom-scheme responses to the navigation delegate without headers.)
+    static func redirects(to path: String) -> [String] {
+        let target = "site://news.test/\(path)"
+        return [
+            // Script redirects after the page has loaded.
+            #"<script>addEventListener("load", () => setTimeout(() => { location.href = "\#(target)"; }, 0));</script>"#,
+            #"<script>addEventListener("load", () => setTimeout(() => location.replace("\#(target)"), 0));</script>"#,
+            // A meta refresh, due at once and after a second.
+            #"<meta http-equiv="refresh" content="0; url=\#(target)">"#,
+            #"<meta http-equiv="Refresh" content="1;URL='\#(target)'">"#,
+        ]
+    }
+
+    /// A page with a hostile title, byline, and paragraph: escape sequences (C0 and C1), DEL, bidirectional
+    /// overrides and isolates, NEL, a line separator, and a soft hyphen, all set by a script.
+    static var hostile: String {
+        article(backMatter: #"""
+            <script>
+            document.title = "\u001b]0;owned\u0007The Keeper ‮txt.exe‬\u009b2J\u007f";
+            document.querySelector(".byline").textContent = "By ⁦Ada⁩ Harbour\u001b[0m‏";
+            document.querySelectorAll("article > p")[2].append(" \u0085Ends here­\u{E0041}.");
+            </script>
+            """#)
+    }
+
     private static func jsString(_ text: String) -> String {
         let data = try! JSONSerialization.data(withJSONObject: [text])
         return String(String(decoding: data, as: UTF8.self).dropFirst().dropLast())
@@ -130,7 +167,69 @@ private enum Fixture {
     }
 }
 
+/// Serves the `site` URL scheme from fixed answers by path: a page (after a pause), no answer ever, or a failure.
+/// Stands in for https in navigation tests (WebKit keeps https for itself).
+@MainActor private final class SiteSchemeHandler: NSObject, WKURLSchemeHandler {
+    enum Answer {
+        case page(String, after: Duration = .zero)
+        case never
+        case failure
+    }
+
+    private let answers: [String: Answer]
+    private var held: [ObjectIdentifier: any WKURLSchemeTask] = [:]
+
+    init(_ answers: [String: Answer]) {
+        self.answers = answers
+    }
+
+    func webView(_ webView: WKWebView, start urlSchemeTask: any WKURLSchemeTask) {
+        let url = urlSchemeTask.request.url!
+        let id = ObjectIdentifier(urlSchemeTask)
+        held[id] = urlSchemeTask
+        switch answers[url.path] ?? .failure {
+        case .never:
+            return
+        case .failure:
+            held[id] = nil
+            urlSchemeTask.didFailWithError(URLError(.cannotConnectToHost))
+        case .page(let html, let pause):
+            Task { @MainActor in
+                if pause > .zero { try? await Task.sleep(for: pause) }
+                // A task WebKit stopped meanwhile must not be answered.
+                guard let task = self.held.removeValue(forKey: id) else { return }
+                task.didReceive(HTTPURLResponse(url: url, statusCode: 200, httpVersion: "HTTP/1.1",
+                                                headerFields: ["Content-Type": "text/html; charset=utf-8"])!)
+                task.didReceive(Data(html.utf8))
+                task.didFinish()
+            }
+        }
+    }
+
+    func webView(_ webView: WKWebView, stop urlSchemeTask: any WKURLSchemeTask) {
+        held[ObjectIdentifier(urlSchemeTask)] = nil
+    }
+}
+
+/// No control or format characters, other than the line feeds that separate paragraphs.
+private func isPrintable(_ text: String) -> Bool {
+    !text.unicodeScalars.contains {
+        $0 != "\n" && ($0.properties.generalCategory == .control || $0.properties.generalCategory == .format)
+    }
+}
+
 @MainActor @Suite(.serialized) struct WebArticleTests {
+    private static let start = URL(string: "site://news.test/start")!
+
+    /// Extracts the page the `site` handler serves at `/start`.
+    private func extractSite(_ handler: SiteSchemeHandler, options: WebArticleExtractor.Options) async throws
+        -> WebArticle {
+        let extractor = WebArticleExtractor(options: options, documentSchemes: ["site"]) {
+            $0.setURLSchemeHandler(handler, forURLScheme: "site")
+        }
+        return try await extractor.extract(requested: Self.start) { $0.load(URLRequest(url: Self.start)) }
+    }
+
     private let fast = WebArticleExtractor.Options(
         loadTimeout: .seconds(20), settle: .milliseconds(100), retryWindow: .seconds(10), minimumWords: 50)
 
@@ -157,6 +256,43 @@ private enum Fixture {
                                           language: nil, raw: [(0, "Body.")])
         #expect(article.title == "blog.example.test")
         #expect(article.spokenText == "blog.example.test\n\nby Jane Doe\n\nBody.")
+    }
+
+    @Test func sanitizingRemovesEveryControlAndFormatCharacter() {
+        let hostile = "\u{1B}]0;owned\u{07}Title\u{9B}2J \u{202E}rev\u{202C} \u{2066}iso\u{2069}\u{7F}\u{200E}\n\u{85}"
+            + "\u{2028}end\u{E0041}\u{00AD}\u{FEFF}\u{FFFF}\t\r\u{0}"
+        #expect(WebArticle.sanitized(hostile) == "]0;ownedTitle2J rev iso end")
+        #expect(WebArticle.sanitized("  Plain  text, café — 東京 👍  ") == "Plain text, café — 東京 👍")
+    }
+
+    @Test func anArticleIsSanitizedHoweverItIsMade() {
+        let url = URL(string: "https://blog.example.test/post")!
+        let made = WebArticle(url: url, title: "\u{1B}[31mRed\u{202E}", byline: "By\u{9B} Jane\u{2067}",
+                              siteName: "Site\u{7}", language: "en\u{200F}",
+                              blocks: [.heading(level: 2, text: "Part\u{1B}[2J"), .paragraph("Body\u{85}text\u{2069}")])
+        #expect(made.title == "[31mRed")
+        #expect(made.byline == "By Jane")
+        #expect(made.siteName == "Site")
+        #expect(made.language == "en")
+        #expect(made.blocks == [.heading(level: 2, text: "Part[2J"), .paragraph("Body text")])
+        #expect(isPrintable(made.spokenText))
+        #expect(made.address == url.absoluteString)
+
+        let assembled = WebArticle.assemble(url: url, title: "\u{9D}8;;https://evil.test\u{9C}Title",
+                                            byline: nil, siteName: nil, language: nil,
+                                            raw: [(0, "\u{1B}[1mBold\u{1B}[0m words")])
+        #expect(assembled.title == "8;;https://evil.testTitle")
+        #expect(assembled.blocks == [.paragraph("[1mBold[0m words")])
+    }
+
+    @Test func aHostilePageYieldsPrintableText() async throws {
+        let article = try await WebArticleExtractor(options: fast).extract(html: Fixture.hostile, baseURL: Fixture.base)
+        #expect(article.title.contains("The Keeper"), "\(article.title)")
+        for text in [article.title, article.byline ?? "", article.siteName ?? "", article.address,
+                     article.spokenText] + article.blocks.map(\.text) {
+            #expect(isPrintable(text), "\(text.unicodeScalars.map { String($0.value, radix: 16) })")
+        }
+        #expect(article.blocks.map(\.text).contains(Fixture.paragraphs[1] + " Ends here."))
     }
 
     @Test func contentHTMLBecomesOrderedHeadingsAndParagraphs() async throws {
@@ -266,6 +402,84 @@ private enum Fixture {
         }
     }
 
+    @Test(.timeLimit(.minutes(1)), arguments: Fixture.redirects(to: "slow").indices)
+    func aPageThatMovesOnAfterLoadingIsReadWhereItLands(variant: Int) async throws {
+        // The first page is a whole article of its own, and the destination answers only after a pause: a
+        // read while the destination is on its way must not return the first page.
+        let redirect = Fixture.redirects(to: "slow")[variant]
+        let handler = SiteSchemeHandler([
+            "/start": .page(Fixture.stale(redirect)),
+            "/slow": .page(Fixture.article, after: .milliseconds(400)),
+        ])
+        let options = WebArticleExtractor.Options(loadTimeout: .seconds(20), settle: .milliseconds(50),
+                                                  retryWindow: .seconds(3), minimumWords: 50)
+        let article = try await extractSite(handler, options: options)
+        #expect(article.title == "The Last Keeper of the Northern Cape")
+        #expect(article.url == URL(string: "site://news.test/slow"))
+        #expect(!article.spokenText.contains("ferry"))
+    }
+
+    @Test(.timeLimit(.minutes(1)), arguments: Fixture.redirects(to: "never").indices)
+    func aPageThatMovesOnToADestinationThatNeverAnswersTimesOut(variant: Int) async throws {
+        let redirect = Fixture.redirects(to: "never")[variant]
+        let handler = SiteSchemeHandler([
+            "/start": .page(Fixture.stale(redirect)),
+            "/never": .never,
+        ])
+        let options = WebArticleExtractor.Options(loadTimeout: .seconds(2), settle: .milliseconds(50),
+                                                  retryWindow: .seconds(3), minimumWords: 50)
+        do {
+            let article = try await extractSite(handler, options: options)
+            Issue.record("Expected a timeout, read \(article.title) at \(article.address).")
+        } catch let HolosError.unavailable(message) {
+            #expect(message.contains("Timed out loading site://news.test/never"), "\(message)")
+        }
+    }
+
+    @Test(.timeLimit(.minutes(1))) func aPageThatMovesOnToADestinationThatFailsIsAnError() async throws {
+        let handler = SiteSchemeHandler([
+            "/start": .page(Fixture.stale(Fixture.redirects(to: "gone")[0])),
+            "/gone": .failure,
+        ])
+        let options = WebArticleExtractor.Options(loadTimeout: .seconds(20), settle: .milliseconds(50),
+                                                  retryWindow: .seconds(3), minimumWords: 50)
+        do {
+            let article = try await extractSite(handler, options: options)
+            Issue.record("Expected the failed navigation to be reported, read \(article.title).")
+        } catch let HolosError.unavailable(message) {
+            #expect(message.contains("Could not load the page"), "\(message)")
+        }
+    }
+
+    @Test(.timeLimit(.minutes(1)), arguments: [
+        // A slow self-refresh (a live page) is not a redirect.
+        #"<meta http-equiv="refresh" content="300">"#,
+        // Moving within the document loads nothing new.
+        ##"<script>addEventListener("load", () => { location.hash = "timetable"; history.pushState({}, "", "#later"); });</script>"##,
+    ])
+    func aPageThatStaysIsRead(head: String) async throws {
+        // A long load timeout: waiting for a navigation that never comes would outlast the time limit.
+        let handler = SiteSchemeHandler(["/start": .page(Fixture.stale(head))])
+        let options = WebArticleExtractor.Options(loadTimeout: .seconds(600), settle: .milliseconds(50),
+                                                  retryWindow: .seconds(3), minimumWords: 50)
+        let article = try await extractSite(handler, options: options)
+        #expect(article.title == "Ferry Timetable")
+        #expect(article.address.hasPrefix("site://news.test/start"))
+    }
+
+    @Test(.timeLimit(.minutes(1))) func aPageThatKeepsReloadingIsAnError() async throws {
+        let reload = #"<script>addEventListener("load", () => setTimeout(() => location.reload(), 0));</script>"#
+        let handler = SiteSchemeHandler(["/start": .page(Fixture.stale(reload))])
+        let options = WebArticleExtractor.Options(loadTimeout: .seconds(20), settle: .milliseconds(50),
+                                                  retryWindow: .seconds(3), minimumWords: 50)
+        do {
+            let article = try await extractSite(handler, options: options)
+            Issue.record("Expected an error, read \(article.title).")
+        } catch let HolosError.unavailable(message) {
+            #expect(message.contains("kept moving"), "\(message)")
+        }
+    }
+
     @Test func aLoadThatNeverCommitsReportsTheTimeout() async throws {
         // No navigation ever commits (as when DNS, TLS, or the server stalls): the web view still shows its empty
         // initial document, which must not be read as a page without an article.
@@ -355,6 +569,29 @@ private enum Fixture {
         #expect(PageLoader.refusal(of: nil) != nil)
     }
 
+    @Test func onlyFragmentMovesStayInTheDocument() {
+        let shown = URL(string: "https://example.test/a?x=1#top")!
+        let same = PageLoader.isSameDocument
+        #expect(same(URLRequest(url: URL(string: "https://example.test/a?x=1#part")!), .other, shown))
+        #expect(same(URLRequest(url: URL(string: "https://example.test/a?x=1#")!), .linkActivated, shown))
+        #expect(!same(URLRequest(url: URL(string: "https://example.test/a?x=1")!), .other, shown))
+        #expect(!same(URLRequest(url: URL(string: "https://example.test/b#part")!), .other, shown))
+        #expect(!same(URLRequest(url: URL(string: "https://example.test/a?x=1#part")!), .reload, shown))
+        var post = URLRequest(url: URL(string: "https://example.test/a?x=1#part")!)
+        post.httpMethod = "POST"
+        #expect(!same(post, .formSubmitted, shown))
+        #expect(!same(URLRequest(url: URL(string: "https://example.test/a#part")!), .other, nil))
+    }
+
+    @Test func refreshHeadersGiveTheirDelay() {
+        #expect(PageLoader.refreshDelay("5") == 5)
+        #expect(PageLoader.refreshDelay(" 0; url=https://example.test/") == 0)
+        #expect(PageLoader.refreshDelay("1.5;URL=x") == 1.5)
+        #expect(PageLoader.refreshDelay(".5") == 0.5)
+        #expect(PageLoader.refreshDelay("url=x") == nil)
+        #expect(PageLoader.refreshDelay(nil) == nil)
+    }
+
     @Test func readsAreScheduledThroughTheEndOfTheRetryWindow() {
         let schedule = WebArticleExtractor.attemptSchedule
         // Defaults: first read 1 s after loading, then every second until 6 s after the first read.
@@ -380,6 +617,10 @@ private enum Fixture {
         #"<h2>7. External Links</h2><ul><li>\#(Fixture.log)</li></ul>"#,
         #"<h2>Notes &amp; References ¶</h2><ol><li>\#(Fixture.log)</li></ol>"#,
         #"<section><header><h3>SOURCES</h3></header></section><p>\#(Fixture.log)</p>"#,
+        // Loose text right after the heading, not wrapped in any element, with comments between.
+        #"<h2>References</h2>\#(Fixture.log) Loose second reference, 2001.<br>Third loose line."#,
+        #"<h2>References</h2><!-- list -->\#(Fixture.log)<!-- end --><div><h3>Primary</h3>Loose second reference, 2001.</div>Third loose line."#,
+        #"<div class="section-heading"><h2>Notes</h2></div>\#(Fixture.log)<p>Loose second reference, 2001.</p>Third loose line."#,
     ])
     func backMatterIsDroppedWhateverItsHeadingLooksLike(backMatter: String) async throws {
         let article = try await WebArticleExtractor(options: fast).extract(
@@ -387,8 +628,25 @@ private enum Fixture {
         let spoken = article.spokenText
         #expect(spoken.contains(Fixture.paragraphs[2]))
         for noise in ["Keeper's log", "References", "Notes", "Further reading", "See also", "External",
-                      "SOURCES"] {
+                      "SOURCES", "Loose second", "Third loose", "Primary"] {
             #expect(!spoken.contains(noise), "Leaked: \(noise)")
+        }
+    }
+
+    @Test func backMatterEndsAtTheNextHeadingOfItsLevelEvenInsideAWrapper() async throws {
+        let closing = "The caretaker plans to write her own chapter in the logbook before the season ends, "
+            + "describing the winter storms and the ships that sheltered in the bay below the cape."
+        let backMatter = #"""
+            <h2>References</h2>\#(Fixture.log)<!-- more --><div class="more"><p>Loose second reference, 2001.</p>
+            <h3>Archives</h3>Third loose line.<h2>Afterword</h2><p>\#(closing)</p></div>
+            """#
+        let article = try await WebArticleExtractor(options: fast).extract(
+            html: Fixture.article(backMatter: backMatter), baseURL: Fixture.base)
+        let texts = article.blocks.map(\.text)
+        #expect(texts.contains(closing))
+        #expect(texts.contains("Afterword"))
+        for noise in ["Keeper's log", "References", "Loose second", "Archives", "Third loose"] {
+            #expect(!article.spokenText.contains(noise), "Leaked: \(noise)")
         }
     }
 

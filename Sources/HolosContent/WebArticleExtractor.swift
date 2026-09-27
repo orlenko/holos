@@ -34,14 +34,19 @@ import WebKit
 
     private let options: Options
     private let configureWebView: @MainActor (WKWebViewConfiguration) -> Void
+    /// The schemes a main-frame document may have: https, plus schemes tests serve themselves.
+    private let documentSchemes: Set<String>
 
     public convenience init(options: Options = Options()) {
         self.init(options: options, configure: { _ in })
     }
 
-    /// `configure` adjusts each web view's configuration before the view is made (tests register URL schemes).
-    init(options: Options, configure: @escaping @MainActor (WKWebViewConfiguration) -> Void) {
+    /// `configure` adjusts each web view's configuration before the view is made (tests register URL schemes);
+    /// `documentSchemes` lists the schemes a main-frame document may have (tests add the ones they serve).
+    init(options: Options, documentSchemes: Set<String> = ["https"],
+         configure: @escaping @MainActor (WKWebViewConfiguration) -> Void) {
         self.options = options
+        self.documentSchemes = documentSchemes
         self.configureWebView = configure
     }
 
@@ -51,7 +56,7 @@ import WebKit
     /// running in the page) with `CancellationError` and stops the web view.
     public func extract(from url: URL) async throws -> WebArticle {
         guard url.scheme?.lowercased() == "https", let host = url.host(), !host.isEmpty else {
-            throw HolosError.invalidInput("Only https:// web addresses can be read: \(url.absoluteString)")
+            throw HolosError.invalidInput("Only https:// web addresses can be read: \(WebArticle.address(url))")
         }
         return try await extract(requested: url) { $0.load(URLRequest(url: url)) }
     }
@@ -64,7 +69,7 @@ import WebKit
     /// Reduces article HTML (Readability's output) to headings and paragraphs, without running Readability.
     func blocks(fromContentHTML html: String) async throws -> [WebArticle.Block] {
         let webView = makeWebView()
-        let loader = PageLoader()
+        let loader = PageLoader(documentSchemes: documentSchemes)
         webView.navigationDelegate = loader
         defer {
             webView.stopLoading()
@@ -80,66 +85,120 @@ import WebKit
                                    raw: raw.map { ($0.level, $0.text) }).blocks
     }
 
-    /// Starts the main-frame navigation with `start` (which returns it, or nil when WebKit gave none), waits for
-    /// it, and reads the article.
+    /// Most documents one extraction follows through script, meta-refresh, and `Refresh`-header navigations; a
+    /// page that keeps moving (a redirect loop, a page that reloads itself) ends with an error.
+    static let maximumDocuments = 10
+    /// A page that asks to refresh within this many seconds (a `<meta http-equiv="refresh">` or a `Refresh`
+    /// response header) is an interstitial on its way elsewhere: it is never taken as the article, and the
+    /// extractor waits for it to move.
+    static let redirectRefreshLimit = 10.0
+
+    /// Starts the main-frame navigation with `start` (which returns it, or nil when WebKit gave none) and reads
+    /// the article of the document the main frame settles on.
+    ///
+    /// Every main-frame navigation counts, not only the first: while one is being decided, is provisional (the
+    /// previous document and address still shown), or has committed but not finished loading, the page is not
+    /// read; the extractor waits for it as for the first one (see `awaitDocument`). A read that overlaps the
+    /// start of a navigation is discarded. The article's address is the one of the document read, taken in the
+    /// same script that reads it.
     func extract(requested: URL, start: (WKWebView) -> WKNavigation?) async throws -> WebArticle {
         let webView = makeWebView()
-        let loader = PageLoader()
+        let loader = PageLoader(documentSchemes: documentSchemes)
         webView.navigationDelegate = loader
         // Runs on every exit, including cancellation: nothing keeps loading once the caller has stopped waiting.
         defer {
             webView.stopLoading()
             webView.navigationDelegate = nil
         }
-        let outcome = try await loader.load(timeout: options.loadTimeout) { start(webView) }
-        if outcome == .timedOut {
-            // Until the requested page commits, the web view shows its empty initial document (already
-            // "complete"): the load stalled (DNS, TLS, a server that never answers), so report the timeout. After
-            // the commit, a page whose document is parsed is read even though subresources are still loading.
-            guard loader.committed,
-                  try await Self.documentState(of: webView, timeout: options.loadTimeout) != "loading" else {
-                throw HolosError.unavailable("Timed out loading \(requested.absoluteString).")
-            }
-            webView.stopLoading()
-        }
-        let loaded = ContinuousClock.now
+        loader.begin { start(webView) }
+        let shownAddress = WebArticle.address(requested)
         var bestWords = 0
         var lastFailure: String?
-        for offset in Self.attemptSchedule(settle: options.settle, retryWindow: options.retryWindow) {
-            try await Task.sleep(until: loaded + offset, clock: .continuous)
-            if let rejection = loader.rejection { throw rejection }
-            // A page that navigates again (a script redirect) can make one read fail; the next read sees the new page.
-            let payload: Payload
-            do {
-                let json = try await Self.run(Self.extractionScript, in: webView, timeout: options.loadTimeout)
-                payload = try JSONDecoder().decode(Payload.self, from: Data(json.utf8))
-            } catch is CancellationError {
-                throw CancellationError()
-            } catch is ScriptTimeout {
-                throw HolosError.unavailable("\(requested.absoluteString) stopped responding while it was read.")
-            } catch {
-                payload = Payload(found: false, error: error.localizedDescription)
+        var documents = 0
+        documentLoop: while true {
+            documents += 1
+            guard documents <= Self.maximumDocuments else {
+                throw HolosError.unavailable("\(shownAddress) kept moving to other pages; no article was read.")
             }
-            // The page read must still be https: a navigation may have replaced it since loading.
-            let pageURL = webView.url ?? requested
-            if let refusal = PageLoader.refusal(of: pageURL) { throw loader.rejection ?? refusal }
-            lastFailure = payload.error ?? lastFailure
-            if payload.found {
-                let article = WebArticle.assemble(
-                    url: pageURL, title: payload.title, byline: payload.byline, siteName: payload.siteName,
-                    language: payload.lang, raw: (payload.blocks ?? []).map { ($0.level, $0.text) })
-                if article.wordCount >= options.minimumWords { return article }
-                bestWords = max(bestWords, article.wordCount)
+            try await awaitDocument(in: webView, loader: loader, requested: requested)
+            let ready = ContinuousClock.now
+            let mark = loader.mark
+            var refresh: Double?
+            for offset in Self.attemptSchedule(settle: options.settle, retryWindow: options.retryWindow) {
+                try await Task.sleep(until: ready + offset, clock: .continuous)
+                try loader.check()
+                if loader.moved(since: mark) { continue documentLoop }
+                let payload: Payload
+                do {
+                    let json = try await Self.run(Self.extractionScript, in: webView, timeout: options.loadTimeout)
+                    payload = try JSONDecoder().decode(Payload.self, from: Data(json.utf8))
+                } catch is CancellationError {
+                    throw CancellationError()
+                } catch is ScriptTimeout {
+                    throw HolosError.unavailable("\(shownAddress) stopped responding while it was read.")
+                } catch {
+                    // A navigation that commits while the script runs ends it; the next document is read instead.
+                    payload = Payload(found: false, error: error.localizedDescription)
+                }
+                // The document read may already be on its way out: a navigation decided or started while the
+                // script ran (the script yields once before answering, so one the page had scheduled is decided
+                // before the answer arrives). Read the next document instead.
+                try loader.check()
+                if loader.moved(since: mark) { continue documentLoop }
+                let pageURL = payload.url.flatMap { URL(string: $0) } ?? webView.url ?? requested
+                if let refusal = loader.refusal(of: pageURL) { throw refusal }
+                lastFailure = payload.error.map(WebArticle.sanitized) ?? lastFailure
+                refresh = [payload.refresh, loader.refreshHeader].compactMap { $0 }
+                    .filter { $0 <= Self.redirectRefreshLimit }.min()
+                if refresh != nil { continue }
+                if payload.found {
+                    let article = WebArticle.assemble(
+                        url: pageURL, title: payload.title, byline: payload.byline, siteName: payload.siteName,
+                        language: payload.lang, raw: (payload.blocks ?? []).map { ($0.level, $0.text) })
+                    if article.wordCount >= options.minimumWords { return article }
+                    bestWords = max(bestWords, article.wordCount)
+                }
+            }
+            guard let refresh else { break }
+            // The page said it would move (its refresh timer starts when it finishes loading): wait for that.
+            let deadline = ready + .milliseconds(Int(refresh * 1_000)) + options.loadTimeout
+            while !loader.moved(since: mark) {
+                guard ContinuousClock.now < deadline else {
+                    throw HolosError.unavailable("\(WebArticle.address(webView.url ?? requested)) asked to move "
+                        + "to another page but did not.")
+                }
+                try await Task.sleep(for: .milliseconds(50))
+                try loader.check()
             }
         }
         if bestWords == 0, let lastFailure {
-            throw HolosError.unavailable("Article extraction failed on \(requested.absoluteString): \(lastFailure)")
+            throw HolosError.unavailable("Article extraction failed on \(shownAddress): \(lastFailure)")
         }
         let found = bestWords > 0 ? " (only \(bestWords) words)" : ""
         throw HolosError.unavailable(
-            "Could not find article text on \(requested.absoluteString)\(found). The page may need a sign-in, "
+            "Could not find article text on \(shownAddress)\(found). The page may need a sign-in, "
                 + "show a paywall, or not be an article. Open it in a browser, save the article's text to a .txt "
                 + "file, and pass that file to voiceislocal read.")
+    }
+
+    /// Waits for the main frame's latest navigation to finish loading. When `loadTimeout` passes first: a
+    /// navigation that was allowed but never started (it stayed within the document) is dropped; a committed
+    /// document that has been parsed is read anyway, and its loading is stopped; anything else (a navigation
+    /// that never committed: DNS, TLS, a server that never answers) is a timeout. Until the first navigation
+    /// commits, the web view shows its empty initial document, which is never read.
+    private func awaitDocument(in webView: WKWebView, loader: PageLoader, requested: URL) async throws {
+        guard try await loader.waitUntilSettled(timeout: options.loadTimeout) == .timedOut else { return }
+        loader.dropUnstartedNavigation()
+        if loader.phase == .loading,
+           try await Self.documentState(of: webView, timeout: options.loadTimeout) != "loading",
+           loader.phase == .loading {
+            webView.stopLoading()
+            loader.stoppedLoading()
+        }
+        try loader.check()
+        guard loader.phase == .finished else {
+            throw HolosError.unavailable("Timed out loading \(WebArticle.address(loader.destination ?? requested)).")
+        }
     }
 
     /// When to read the page, as offsets from the moment loading ended: the first read after `settle`, then one
@@ -210,6 +269,10 @@ import WebKit
         }
 
         let found: Bool
+        /// The address of the document read (`location.href`, read in the same script).
+        var url: String? = nil
+        /// The shortest `<meta http-equiv="refresh">` delay the document declares, in seconds.
+        var refresh: Double? = nil
         var error: String? = nil
         var title: String? = nil
         var byline: String? = nil
@@ -245,7 +308,10 @@ import WebKit
       };
       const walk = (node) => {
         for (const child of node.childNodes) {
-          if (child.nodeType === Node.TEXT_NODE) { buffer += child.data; continue; }
+          if (child.nodeType === Node.TEXT_NODE || child.nodeType === Node.CDATA_SECTION_NODE) {
+            buffer += child.data;
+            continue;
+          }
           if (child.nodeType !== Node.ELEMENT_NODE) continue;
           const tag = child.tagName.toUpperCase();
           if (skipInline.has(tag)) continue;
@@ -272,15 +338,18 @@ import WebKit
     """#
 
     /// Removes back-matter sections (references, notes, "see also", external links, further reading) from a copy
-    /// of the page before Readability runs: each such heading and the elements after it up to the next heading of
-    /// the same or a higher level. Heading text is compared without bracketed marks (`[edit]`), leading section
-    /// numbers, surrounding punctuation or symbols ("References:", "Notes.", "See also —", "References ¶"), and
-    /// case. A heading inside wrappers that hold nothing else meaningful (Wikipedia's `<div class="mw-heading">`
-    /// with its edit link, a `<div class="section-heading">`) starts the section at the outermost such wrapper.
+    /// of the page before Readability runs: each such heading and every node after it (elements, loose text,
+    /// comments) up to the next heading of the same or a higher level. An element that holds such a heading is
+    /// entered, and only what comes before the heading inside it is removed. Heading text is compared without
+    /// bracketed marks (`[edit]`), leading section numbers, surrounding punctuation or symbols ("References:",
+    /// "Notes.", "See also —", "References ¶"), and case. A heading inside wrappers that hold nothing else
+    /// meaningful (Wikipedia's `<div class="mw-heading">` with its edit link, a `<div class="section-heading">`)
+    /// starts the section at the outermost such wrapper.
     private static let backMatterRemover = #"""
     function holosDropBackMatter(doc) {
       const names = /^(references|notes|footnotes|citations|sources|bibliography|further reading|external links|see also|notes and references|references and notes|works cited)$/;
       const headings = "h1, h2, h3, h4, h5, h6";
+      const isHeading = (node) => node.nodeType === Node.ELEMENT_NODE && /^h[1-6]$/i.test(node.localName);
       const labelOf = (text) => text
         .replace(/\[[^\]]*\]/g, " ")
         .replace(/&/g, " and ")
@@ -290,14 +359,30 @@ import WebKit
         .toLowerCase();
       // Letters and digits only, without bracketed marks: what a listener would hear.
       const meaningful = (text) => text.replace(/\[[^\]]*\]/g, "").replace(/[^\p{L}\p{N}]+/gu, "").toLowerCase();
-      const levelOf = (element) => {
-        const heading = /^H[1-6]$/.test(element.tagName) ? element : element.querySelector(headings);
-        return heading ? Number(heading.tagName[1]) : 7;
+      const levelOf = (heading) => Number(heading.localName[1]);
+      // The highest (smallest-numbered) heading level in an element, itself included; 7 when it holds none.
+      const topLevel = (element) => {
+        let level = isHeading(element) ? levelOf(element) : 7;
+        for (const inner of element.querySelectorAll(headings)) level = Math.min(level, levelOf(inner));
+        return level;
+      };
+      // Removes `node` and every sibling node after it, of any type, up to the first heading of `level` or
+      // higher; an element holding such a heading is entered instead, and what precedes the heading in it goes.
+      const dropUntilHeading = (node, level) => {
+        while (node) {
+          const after = node.nextSibling;
+          if (node.nodeType === Node.ELEMENT_NODE && topLevel(node) <= level) {
+            if (!isHeading(node)) dropUntilHeading(node.firstChild, level);
+            return;
+          }
+          node.remove();
+          node = after;
+        }
       };
       for (const heading of Array.from(doc.querySelectorAll(headings))) {
         if (!heading.isConnected) continue;
         if (!names.test(labelOf(heading.textContent))) continue;
-        const level = Number(heading.tagName[1]);
+        const level = levelOf(heading);
         const own = meaningful(heading.textContent);
         let start = heading;
         for (let parent = start.parentElement; parent && parent !== doc.body && parent !== doc.documentElement;
@@ -305,12 +390,7 @@ import WebKit
           if (meaningful(parent.textContent) !== own || parent.querySelectorAll(headings).length !== 1) break;
           start = parent;
         }
-        let next = start.nextElementSibling;
-        while (next && levelOf(next) > level) {
-          const after = next.nextElementSibling;
-          next.remove();
-          next = after;
-        }
+        dropUntilHeading(start.nextSibling, level);
         start.remove();
       }
     }
@@ -318,141 +398,331 @@ import WebKit
 
     private static let conversionScript = blockWalker + "\nreturn JSON.stringify(holosArticleBlocks(document.body));"
 
-    private static let extractionScript = readabilitySource + "\n" + backMatterRemover + "\n" + blockWalker + #"""
+    /// The shortest refresh delay, in seconds, that the document's `<meta http-equiv="refresh">` elements declare;
+    /// null when there is none.
+    private static let refreshReader = #"""
+    function holosRefreshDelay(doc) {
+      let delay = null;
+      for (const meta of doc.querySelectorAll("meta[http-equiv]")) {
+        if ((meta.getAttribute("http-equiv") || "").trim().toLowerCase() !== "refresh") continue;
+        const match = /^\s*(\d+(?:\.\d*)?|\.\d+)/.exec(meta.getAttribute("content") || "");
+        if (!match) continue;
+        const seconds = Number(match[1]);
+        if (delay === null || seconds < delay) delay = seconds;
+      }
+      return delay;
+    }
+    """#
 
+    /// Reads the document's address, refresh delay, and article in one synchronous pass (so they all describe
+    /// the same document), then yields to the page's event loop once before answering: a navigation the page had
+    /// already scheduled (a script redirect, a meta refresh whose timer is due) is then decided before the answer
+    /// arrives, and the extractor sees it.
+    private static let extractionScript = readabilitySource + "\n" + backMatterRemover + "\n" + blockWalker + "\n"
+        + refreshReader + #"""
+
+    const holosDocument = { url: location.href, refresh: holosRefreshDelay(document) };
+    let holosResult;
     try {
       const page = document.cloneNode(true);
       holosDropBackMatter(page);
       const article = new Readability(page).parse();
-      if (!article) return JSON.stringify({ found: false, title: document.title });
-      const content = new DOMParser().parseFromString(article.content || "", "text/html");
-      return JSON.stringify({
-        found: true, title: article.title, byline: article.byline, siteName: article.siteName,
-        lang: article.lang, blocks: holosArticleBlocks(content.body)
-      });
+      if (!article) {
+        holosResult = { found: false, title: document.title };
+      } else {
+        const content = new DOMParser().parseFromString(article.content || "", "text/html");
+        holosResult = {
+          found: true, title: article.title, byline: article.byline, siteName: article.siteName,
+          lang: article.lang, blocks: holosArticleBlocks(content.body)
+        };
+      }
     } catch (error) {
-      return JSON.stringify({ found: false, error: String(error) });
+      holosResult = { found: false, error: String(error) };
     }
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    return JSON.stringify(Object.assign(holosResult, holosDocument));
     """#
 }
 
-/// Waits for the main-frame navigation of one web view to finish, fail, or time out, and refuses error pages,
-/// non-HTML documents, new windows, and any main-frame address that is not https: the first request, server
-/// redirects, script and meta-refresh navigations, the response, and the committed and finished page.
+/// Follows every main-frame navigation of one web view (the first and any later one: script and meta-refresh
+/// redirects, reloads) from its policy decision through start, commit, finish, or failure, and refuses error pages,
+/// non-HTML documents, new windows, and any main-frame address whose scheme is not allowed (https): the first
+/// request, server redirects, script and meta-refresh navigations, the response, and the committed and finished
+/// page.
 @MainActor final class PageLoader: NSObject, WKNavigationDelegate {
     enum Outcome: Sendable { case finished, timedOut }
 
-    /// The wait in progress, if any.
-    private var pending: OneShot<Outcome>?
-    /// The navigation `start` returned; nil when WebKit returned none.
-    private var requested: WKNavigation?
-    /// Whether the requested main-frame navigation has committed (its document replaced the initial empty one).
-    private(set) var committed = false
+    /// Where the main frame stands. Only `finished` shows a document that may be read.
+    enum Phase: Sendable, Equatable {
+        /// Nothing is shown and nothing is on its way (a request that never started).
+        case idle
+        /// A navigation was requested or allowed and has not started; the current document is on its way out.
+        case deciding
+        /// A navigation started and has not committed: the web view still shows the previous document and address.
+        case provisional
+        /// A document committed and is still loading.
+        case loading
+        /// The document shown finished loading, or its loading was stopped after it was parsed.
+        case finished
+    }
+
+    /// A point in the main frame's history, to tell whether the page has moved since.
+    struct Mark: Equatable {
+        fileprivate let navigations: Int
+        fileprivate let commits: Int
+    }
+
+    /// The schemes a main-frame document may have.
+    let documentSchemes: Set<String>
+    /// Whether a navigation was allowed (or requested) that has not started yet.
+    private var deciding = false
+    /// The navigation that started and has not committed or failed yet.
+    private var provisional: WKNavigation?
+    /// The navigation whose document is shown, and whether that document finished loading.
+    private var shown: WKNavigation?
+    private var hasShownDocument = false
+    private var shownFinished = false
+    /// Main-frame navigations allowed or started so far (one navigation may count more than once).
+    private var navigations = 0
+    /// Main-frame documents committed so far.
+    private var commits = 0
+    /// The `Refresh` header delay of the response on its way, and of the document shown.
+    private var incomingRefreshHeader: Double?
+    private(set) var refreshHeader: Double?
+    /// Where the latest navigation is going, when known.
+    private(set) var destination: URL?
     /// Why the page was refused, once it was.
     private(set) var rejection: HolosError?
+    /// Why a navigation failed, once one did.
+    private(set) var failure: HolosError?
+    /// The wait in progress, if any.
+    private var pending: OneShot<Outcome>?
 
-    /// Starts the navigation and waits until it finishes, fails, or `timeout` passes. Cancelling the calling task
-    /// ends the wait at once with `CancellationError` (the caller then stops the web view).
+    init(documentSchemes: Set<String> = ["https"]) {
+        self.documentSchemes = documentSchemes
+    }
+
+    var phase: Phase {
+        if provisional != nil { return .provisional }
+        if deciding { return .deciding }
+        guard hasShownDocument else { return .idle }
+        return shownFinished ? .finished : .loading
+    }
+
+    var mark: Mark { Mark(navigations: navigations, commits: commits) }
+
+    /// Whether the document shown when `mark` was taken may no longer be the one to read: a navigation was
+    /// allowed, started, or committed since, or one is in progress.
+    func moved(since mark: Mark) -> Bool { phase != .finished || self.mark != mark }
+
+    /// Throws the refusal or failure, if there was one.
+    func check() throws {
+        if let rejection { throw rejection }
+        if let failure { throw failure }
+    }
+
+    /// Starts the first navigation.
+    func begin(_ start: () -> WKNavigation?) {
+        deciding = true
+        navigations += 1
+        _ = start()
+    }
+
+    /// Starts the navigation and waits until it finishes, fails, or `timeout` passes.
     func load(timeout: Duration, start: () -> WKNavigation?) async throws -> Outcome {
         try Task.checkCancellation()
+        begin(start)
+        return try await waitUntilSettled(timeout: timeout)
+    }
+
+    /// Waits until the main frame shows a finished document with no navigation on its way (`finished`), a
+    /// navigation fails or is refused (thrown), or `timeout` passes (`timedOut`). Cancelling the calling task ends
+    /// the wait at once with `CancellationError` (the caller then stops the web view).
+    func waitUntilSettled(timeout: Duration) async throws -> Outcome {
+        try Task.checkCancellation()
+        try check()
+        if phase == .finished { return .finished }
         let wait = OneShot<Outcome>()
         pending = wait
         defer { pending = nil }
-        requested = start()
         return try await wait.wait(timeout: timeout, orElse: .success(.timedOut))
     }
 
-    private func finish(_ result: Result<Outcome, any Error>) {
-        pending?.resume(with: result)
+    /// Forgets a navigation that was allowed but never started (it stayed within the document).
+    func dropUnstartedNavigation() {
+        if provisional == nil { deciding = false }
     }
 
-    /// Why a main-frame address may not be read, or nil when it is an https address.
-    nonisolated static func refusal(of url: URL?) -> HolosError? {
-        if url?.scheme?.lowercased() == "https" { return nil }
-        let address = url?.absoluteString ?? "an unknown address"
+    /// Records that the caller stopped the shown document's loading after it was parsed.
+    func stoppedLoading() {
+        shownFinished = true
+    }
+
+    /// Why a main-frame address may not be read, or nil when its scheme is allowed.
+    func refusal(of url: URL?) -> HolosError? {
+        Self.refusal(of: url, allowing: documentSchemes)
+    }
+
+    /// Why a main-frame address may not be read, or nil when it is an https address (or has a scheme in `schemes`).
+    nonisolated static func refusal(of url: URL?, allowing schemes: Set<String> = ["https"]) -> HolosError? {
+        if let scheme = url?.scheme?.lowercased(), schemes.contains(scheme) { return nil }
+        let address = url.map(WebArticle.address) ?? "an unknown address"
         return .unavailable("The page moved to \(address), which is not https://. Only https pages are read.")
     }
 
-    /// Records the first refusal, and fails a load still in progress with it.
-    private func refuse(_ error: HolosError) {
-        if rejection == nil { rejection = error }
-        finish(.failure(rejection ?? error))
+    /// Whether a navigation only moves within the document shown (a fragment link), so no new document loads.
+    nonisolated static func isSameDocument(_ request: URLRequest, type: WKNavigationType, shown: URL?) -> Bool {
+        guard type != .reload, (request.httpMethod ?? "GET").uppercased() == "GET", let target = request.url,
+              target.fragment != nil, let shown else { return false }
+        func withoutFragment(_ url: URL) -> URL? {
+            var components = URLComponents(url: url, resolvingAgainstBaseURL: false)
+            components?.fragment = nil
+            return components?.url
+        }
+        return withoutFragment(target) == withoutFragment(shown)
     }
 
-    /// Refuses the page when the main frame's current address is not https; true when it was refused.
-    @discardableResult private func refuseUnlessHTTPS(_ webView: WKWebView) -> Bool {
-        guard let refusal = Self.refusal(of: webView.url) else { return false }
+    /// The delay of a `Refresh` header value ("5" or "0; url=…"), in seconds.
+    nonisolated static func refreshDelay(_ header: String?) -> Double? {
+        guard let header, let match = header.prefixMatch(of: /\s*(\d+(?:\.\d*)?|\.\d+)/) else { return nil }
+        return Double(match.1)
+    }
+
+    /// Ends a wait in progress when the frame settled.
+    private func settleIfFinished() {
+        if phase == .finished { pending?.resume(with: .success(.finished)) }
+    }
+
+    /// Records the first refusal, and ends a wait in progress with it.
+    private func refuse(_ error: HolosError) {
+        if rejection == nil { rejection = error }
+        pending?.resume(with: .failure(rejection ?? error))
+    }
+
+    /// Records the first failure, and ends a wait in progress with it (or with the refusal that caused it).
+    private func fail(_ error: HolosError) {
+        if failure == nil { failure = error }
+        pending?.resume(with: .failure(rejection ?? failure ?? error))
+    }
+
+    /// Refuses the page when the main frame's current address is not allowed; true when it was refused.
+    @discardableResult private func refuseUnlessAllowed(_ webView: WKWebView) -> Bool {
+        guard let refusal = refusal(of: webView.url) else { return false }
         refuse(refusal)
         webView.stopLoading()
         return true
     }
 
-    func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction)
-        async -> WKNavigationActionPolicy {
+    private static func isCancellation(_ error: any Error) -> Bool {
+        (error as NSError).domain == NSURLErrorDomain && (error as NSError).code == NSURLErrorCancelled
+    }
+
+    // Answered synchronously (not with the async variant), so the navigation is recorded before WebKit hears the
+    // answer: a script result that arrives after this decision sees the page moving.
+    func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction,
+                 decisionHandler: @escaping @MainActor @Sendable (WKNavigationActionPolicy) -> Void) {
         // No new windows; subframes may load anything, since only the main frame's document is read.
-        guard let frame = navigationAction.targetFrame else { return .cancel }
-        guard frame.isMainFrame else { return .allow }
-        if let refusal = Self.refusal(of: navigationAction.request.url) {
+        guard let frame = navigationAction.targetFrame else { return decisionHandler(.cancel) }
+        guard frame.isMainFrame else { return decisionHandler(.allow) }
+        if let refusal = refusal(of: navigationAction.request.url) {
             refuse(refusal)
-            return .cancel
+            return decisionHandler(.cancel)
         }
-        return .allow
+        if !Self.isSameDocument(navigationAction.request, type: navigationAction.navigationType, shown: webView.url) {
+            deciding = true
+            navigations += 1
+            destination = navigationAction.request.url
+        }
+        decisionHandler(.allow)
+    }
+
+    func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
+        provisional = navigation
+        deciding = false
+        navigations += 1
+        if destination == nil { destination = webView.url }
     }
 
     func webView(_ webView: WKWebView, didReceiveServerRedirectForProvisionalNavigation navigation: WKNavigation!) {
-        refuseUnlessHTTPS(webView)
-    }
-
-    func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
-        // Later main-frame navigations (script redirects) start from the committed page, so they come after it.
-        if requested == nil || navigation === requested { committed = true }
-        refuseUnlessHTTPS(webView)
+        destination = webView.url ?? destination
+        refuseUnlessAllowed(webView)
     }
 
     func webView(_ webView: WKWebView, decidePolicyFor navigationResponse: WKNavigationResponse)
         async -> WKNavigationResponsePolicy {
         guard navigationResponse.isForMainFrame else { return .allow }
-        if let refusal = Self.refusal(of: navigationResponse.response.url) {
+        if let refusal = refusal(of: navigationResponse.response.url) {
             refuse(refusal)
             return .cancel
         }
-        let address = navigationResponse.response.url?.absoluteString ?? "the page"
-        if let http = navigationResponse.response as? HTTPURLResponse, http.statusCode >= 400 {
-            rejection = .unavailable("\(address) answered HTTP \(http.statusCode) "
-                + "(\(HTTPURLResponse.localizedString(forStatusCode: http.statusCode))).")
+        let address = navigationResponse.response.url.map(WebArticle.address) ?? "the page"
+        let http = navigationResponse.response as? HTTPURLResponse
+        if let http, http.statusCode >= 400 {
+            refuse(.unavailable("\(address) answered HTTP \(http.statusCode) "
+                + "(\(HTTPURLResponse.localizedString(forStatusCode: http.statusCode)))."))
             return .cancel
         }
         let type = navigationResponse.response.mimeType?.lowercased() ?? "text/html"
         guard type == "text/html" || type == "application/xhtml+xml" else {
-            rejection = .unavailable("\(address) is not a web page (\(type)). Download it and pass the file instead.")
+            refuse(.unavailable("\(address) is not a web page (\(WebArticle.sanitized(type))). "
+                + "Download it and pass the file instead."))
             return .cancel
         }
+        incomingRefreshHeader = Self.refreshDelay(http?.value(forHTTPHeaderField: "Refresh"))
         return .allow
     }
 
+    func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
+        // Any decision made before this commit belonged to this navigation (a server redirect) or is superseded:
+        // a navigation decided later starts after it.
+        provisional = nil
+        deciding = false
+        shown = navigation
+        hasShownDocument = true
+        shownFinished = false
+        commits += 1
+        refreshHeader = incomingRefreshHeader
+        incomingRefreshHeader = nil
+        refuseUnlessAllowed(webView)
+    }
+
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
-        if refuseUnlessHTTPS(webView) { return }
-        finish(.success(.finished))
+        // A document replaced since (a later navigation committed) no longer counts.
+        guard navigation === shown else { return }
+        if refuseUnlessAllowed(webView) { return }
+        shownFinished = true
+        settleIfFinished()
     }
 
     func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: any Error) {
-        failed(error)
+        // The shown document's loading ended early.
+        guard navigation === shown else { return }
+        if Self.isCancellation(error), rejection == nil {
+            // Stopped (by the page, or by a navigation that replaces it): the document is what it is.
+            shownFinished = true
+            settleIfFinished()
+            return
+        }
+        fail(.unavailable("Could not load the page: \(WebArticle.sanitized(error.localizedDescription))"))
     }
 
     func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!,
                  withError error: any Error) {
-        failed(error)
+        // A navigation replaced by a later one before it committed no longer counts.
+        guard navigation === provisional else { return }
+        provisional = nil
+        if Self.isCancellation(error), rejection == nil {
+            // Cancelled without a refusal: a later navigation replaces it (then `deciding` is set), or the frame
+            // stays on the document it shows.
+            if phase == .idle { fail(.unavailable("Could not load the page: the load was cancelled.")) }
+            settleIfFinished()
+            return
+        }
+        fail(.unavailable("Could not load the page: \(WebArticle.sanitized(error.localizedDescription))"))
     }
 
     func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
-        finish(.failure(HolosError.unavailable("The web page's content process stopped while loading.")))
-    }
-
-    private func failed(_ error: any Error) {
-        // A script or redirect that starts another navigation cancels the first one; wait for the new one.
-        if (error as NSError).domain == NSURLErrorDomain, (error as NSError).code == NSURLErrorCancelled,
-           rejection == nil { return }
-        finish(.failure(rejection ?? HolosError.unavailable("Could not load the page: \(error.localizedDescription)")))
+        fail(.unavailable("The web page's content process stopped while loading."))
     }
 }
 

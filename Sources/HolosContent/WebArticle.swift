@@ -5,6 +5,10 @@ import Foundation
 /// List items, quotations, and definition terms each become a paragraph. Code blocks (`<pre>`), tables, figures,
 /// captions, images, media, forms, bracketed marks such as `[1]` or `[edit]`, and back-matter sections (references,
 /// notes, see also, external links, further reading) are left out; inline code inside a paragraph is kept as text.
+///
+/// Every text an article holds comes from an untrusted page, so it is made safe to print when the article is made
+/// (see `sanitized(_:)`): the title, byline, site name, language, and each heading and paragraph. `address` is the
+/// page's address made safe the same way.
 public struct WebArticle: Sendable, Equatable {
     public enum Block: Sendable, Equatable {
         case heading(level: Int, text: String)
@@ -15,9 +19,16 @@ public struct WebArticle: Sendable, Equatable {
             case .heading(_, let text), .paragraph(let text): text
             }
         }
+
+        fileprivate var sanitized: Block {
+            switch self {
+            case .heading(let level, let text): .heading(level: level, text: WebArticle.sanitized(text))
+            case .paragraph(let text): .paragraph(WebArticle.sanitized(text))
+            }
+        }
     }
 
-    /// The address the page ended up at, after redirects.
+    /// The address of the document that was read (after redirects).
     public let url: URL
     public let title: String
     /// The author line as the page gives it, for example "By Jane Doe".
@@ -27,14 +38,20 @@ public struct WebArticle: Sendable, Equatable {
     public let language: String?
     public let blocks: [Block]
 
+    /// Sanitizes every text (see `sanitized(_:)`); nothing else is changed.
     public init(url: URL, title: String, byline: String?, siteName: String?, language: String?, blocks: [Block]) {
         self.url = url
-        self.title = title
-        self.byline = byline
-        self.siteName = siteName
-        self.language = language
-        self.blocks = blocks
+        self.title = Self.sanitized(title)
+        self.byline = byline.map(Self.sanitized)
+        self.siteName = siteName.map(Self.sanitized)
+        self.language = language.map(Self.sanitized)
+        self.blocks = blocks.map(\.sanitized)
     }
+
+    /// `url` as text that is safe to print.
+    public var address: String { Self.address(url) }
+
+    static func address(_ url: URL) -> String { sanitized(url.absoluteString) }
 
     /// Words in the headings and paragraphs, not counting the title and byline.
     public var wordCount: Int { blocks.reduce(0) { $0 + Self.words(in: $1.text) } }
@@ -49,17 +66,17 @@ public struct WebArticle: Sendable, Equatable {
         return parts.filter { !$0.isEmpty }.joined(separator: "\n\n")
     }
 
-    /// Builds an article from raw extracted pieces: collapses whitespace, drops empty blocks, and drops a leading
+    /// Builds an article from raw extracted pieces: sanitizes every text, drops empty blocks, and drops a leading
     /// heading that repeats the title. `level` 0 marks a paragraph, 1 through 6 a heading.
     static func assemble(url: URL, title: String?, byline: String?, siteName: String?, language: String?,
                          raw: [(level: Int, text: String)]) -> WebArticle {
         var blocks: [Block] = raw.compactMap { item in
-            let text = normalized(item.text)
+            let text = sanitized(item.text)
             guard !text.isEmpty, !isBracketMark(text) else { return nil }
             return (1...6).contains(item.level) ? .heading(level: item.level, text: text) : .paragraph(text)
         }
-        let cleanTitle = normalized(title ?? "")
-        let resolvedTitle = cleanTitle.isEmpty ? (url.host() ?? url.absoluteString) : cleanTitle
+        let cleanTitle = sanitized(title ?? "")
+        let resolvedTitle = cleanTitle.isEmpty ? sanitized(url.host() ?? url.absoluteString) : cleanTitle
         if case .heading(_, let text)? = blocks.first,
            text.caseInsensitiveCompare(resolvedTitle) == .orderedSame {
             blocks.removeFirst()
@@ -68,15 +85,21 @@ public struct WebArticle: Sendable, Equatable {
                           language: nonEmpty(language), blocks: blocks)
     }
 
-    /// Collapses every run of whitespace (including no-break spaces) to one space, removes zero-width characters,
-    /// and trims the ends.
-    static func normalized(_ text: String) -> String {
-        let invisible: Set<Unicode.Scalar> = ["\u{200B}", "\u{200C}", "\u{200D}", "\u{2060}", "\u{FEFF}", "\u{00AD}"]
+    /// Makes untrusted text safe to print on a terminal and to speak: every run of whitespace (tabs, line and
+    /// paragraph separators, no-break spaces, NEL) becomes one space; control characters (C0, DEL, C1, so no
+    /// escape sequence survives), format characters (bidirectional overrides, embeddings, isolates and marks,
+    /// zero-width characters, the soft hyphen, the byte-order mark, tag characters), and noncharacters are removed;
+    /// the ends are trimmed.
+    public static func sanitized(_ text: String) -> String {
         var result = String.UnicodeScalarView()
         var pendingSpace = false
-        for scalar in text.unicodeScalars where !invisible.contains(scalar) {
-            if scalar.properties.isWhitespace {
+        for scalar in text.unicodeScalars {
+            let properties = scalar.properties
+            if properties.isWhitespace {
                 pendingSpace = !result.isEmpty
+            } else if properties.generalCategory == .control || properties.generalCategory == .format
+                        || properties.isNoncharacterCodePoint {
+                continue
             } else {
                 if pendingSpace { result.append(" ") }
                 pendingSpace = false
@@ -94,7 +117,7 @@ public struct WebArticle: Sendable, Equatable {
 
     private static func nonEmpty(_ text: String?) -> String? {
         guard let text else { return nil }
-        let clean = normalized(text)
+        let clean = sanitized(text)
         return clean.isEmpty ? nil : clean
     }
 
