@@ -260,8 +260,7 @@ private func isPrintable(_ text: String) -> Bool {
             url: url, title: "  A  Title\n", byline: " Jane\u{00A0}Doe ", siteName: "", language: "en",
             raw: [(1, "a title"), (0, "  First\u{200B} \t\n paragraph. "), (0, "   "), (0, "[edit]"),
                   (2, "Section"), (0, "[1]"), (0, "[1][2]"), (0, " [1], [2]; [3]–[4] "), (0, "[edit] [a][note 3]"),
-                  (0, "Second [note] paragraph."), (0, "[1] and [2]"), (0, "#"), (2, "¶"), (0, " * * * "),
-                  (0, "— … —")])
+                  (0, "Second [note] paragraph."), (0, "[1] and [2]")])
         #expect(article.title == "A Title")
         #expect(article.byline == "Jane Doe")
         #expect(article.siteName == nil)
@@ -270,6 +269,17 @@ private func isPrintable(_ text: String) -> Bool {
         #expect(article.wordCount == 9)
         #expect(article.spokenText
             == "A Title\n\nBy Jane Doe\n\nFirst paragraph.\n\nSection\n\nSecond [note] paragraph.\n\n[1] and [2]")
+    }
+
+    @Test func assemblyDropsPermalinkAndBreakMarksButKeepsOtherSymbols() {
+        let url = URL(string: "https://blog.example.test/post")!
+        let noise = ["#", " ¶ ", "§", "🔗", "🔗\u{FE0F}", "Permalink", "permalink", "* * *", " *  *  * ", "***", "⁂",
+                     "~", "—", "---", "· · ·", "❧"]
+        let kept = ["🔥", "∞ ≠ ∅", "— … —", "##", "§ 3", "~/bin", "* * * *", "π", "→"]
+        let article = WebArticle.assemble(
+            url: url, title: "Title", byline: nil, siteName: nil, language: nil,
+            raw: noise.map { (0, $0) } + [(2, "🔥"), (2, "#")] + kept.map { (0, $0) })
+        #expect(article.blocks == [.heading(level: 2, text: "🔥")] + kept.map { .paragraph($0) })
     }
 
     @Test func assemblyKeepsABylineThatAlreadySaysBy() {
@@ -976,6 +986,106 @@ private func isPrintable(_ text: String) -> Bool {
         #expect(article.blocks == [.paragraph(p[0]), .heading(level: 2, text: "A daily climb"), .paragraph(p[1]),
                                    .heading(level: 2, text: "Visitors"), .paragraph(p[2]),
                                    .heading(level: 2, text: "Visitors"), .paragraph(Fixture.closing)])
+    }
+
+    /// A heading in Wikipedia's wrapper beside its edit link, which Readability drops as a short, linky block.
+    private func wrappedHeading(_ text: String, level: Int = 2) -> String {
+        #"<div class="mw-heading mw-heading\#(level)"><h\#(level)>\#(text)</h\#(level)>"#
+            + #"<span>[<a href="/edit">edit</a>]</span></div>"#
+    }
+
+    private func headings(_ article: WebArticle) -> [String] {
+        article.blocks.compactMap { block in
+            guard case .heading(let level, let text) = block else { return nil }
+            return "h\(level) \(text)"
+        }
+    }
+
+    @Test(arguments: [
+        // Widgets whose controls have accessible names and no text.
+        #"<nav role="navigation"><h3>Share this story</h3><button aria-label="Share on X"><svg viewBox="0 0 24 24"><path d="M1 1h22v22H1z"></path></svg></button><button aria-label="Email"><svg viewBox="0 0 24 24"><path d="M2 4h20v16H2z"></path></svg></button></nav>"#,
+        #"<div role="complementary"><h3>Share this story</h3><a href="/share/x" aria-label="Share on X"><svg viewBox="0 0 24 24"></svg></a></div>"#,
+        #"<aside><h3>Share this story</h3><button aria-label="Copy link"><svg viewBox="0 0 24 24"></svg></button></aside>"#,
+        #"<div role="navigation"><div class="share"><h3>Share this story</h3><button aria-label="Share on X"></button></div></div>"#,
+    ])
+    func aWidgetHeadingNeverTakesTheArticleAfterItAsItsSection(widget: String) async throws {
+        // The widget sits before the article's last paragraph, with no heading between them.
+        let article = try await WebArticleExtractor(options: fast).extract(
+            html: Fixture.article(backMatter: widget + "<p>\(Fixture.closing)</p>"), baseURL: Fixture.base)
+        #expect(!article.spokenText.contains("Share this story"))
+        #expect(article.blocks.last == .paragraph(Fixture.closing))
+        #expect(headings(article) == ["h2 A daily climb"])
+    }
+
+    @Test func duplicatedTextDoesNotTieAHeadingToTheWrongCopy() async throws {
+        let p = Fixture.paragraphs
+        // An aside repeats the article's first paragraph under its own heading; a real section later repeats it too.
+        let backMatter = """
+            <aside role="complementary"><h2>Related</h2><p>\(p[0])</p></aside>
+            <aside><h2>Also related</h2><p>\(p[0])</p></aside>
+            \(wrappedHeading("Recap"))<p>\(p[0])</p>
+            <p>\(Fixture.closing)</p>
+            """
+        let article = try await WebArticleExtractor(options: fast).extract(
+            html: Fixture.article(backMatter: backMatter), baseURL: Fixture.base)
+        #expect(!article.spokenText.contains("Related"))
+        #expect(!article.spokenText.contains("Also related"))
+        #expect(headings(article) == ["h2 A daily climb", "h2 Recap"])
+        #expect(Array(article.blocks.suffix(3))
+            == [.heading(level: 2, text: "Recap"), .paragraph(p[0]), .paragraph(Fixture.closing)])
+        #expect(article.blocks.first == .paragraph(p[0]))
+    }
+
+    @Test func aSectionWithOnlyAFigureGetsNoHeading() async throws {
+        let caption = "A long caption that describes the lamp room at dusk, the brass fittings, and the view of "
+            + "the channel from the gallery rail on a clear evening."
+        let backMatter = """
+            \(wrappedHeading("Gallery"))
+            <figure><img src="lamp.jpg" alt=""><figcaption>\(caption)</figcaption></figure>
+            <figure><img src="stairs.jpg" alt=""><p>\(caption)</p></figure>
+            \(wrappedHeading("After the storm"))<p>\(Fixture.closing)</p>
+            """
+        let article = try await WebArticleExtractor(options: fast).extract(
+            html: Fixture.article(backMatter: backMatter), baseURL: Fixture.base)
+        #expect(!article.spokenText.contains("Gallery"))
+        #expect(!article.spokenText.contains("brass fittings"))
+        #expect(headings(article) == ["h2 A daily climb", "h2 After the storm"])
+        #expect(Array(article.blocks.suffix(2)) == [.heading(level: 2, text: "After the storm"),
+                                                    .paragraph(Fixture.closing)])
+    }
+
+    @Test func sectionsOfShortBlocksKeepTheirHeadings() async throws {
+        // A FAQ of short answers, release notes of short bullets, and a section in a `div` holding only text
+        // (which Readability turns into a new paragraph).
+        let backMatter = """
+            \(wrappedHeading("Questions"))
+            \(wrappedHeading("Is it haunted?", level: 3))<p>No.</p>
+            \(wrappedHeading("Can I visit?", level: 3))<p>Yes, on Sundays.</p>
+            \(wrappedHeading("Release notes"))
+            <ul><li>New lens.</li><li>Fixed the stairs.</li><li>Brighter lamp.</li><li>Quieter foghorn.</li></ul>
+            \(wrappedHeading("Keeper's diary"))<div>\(Fixture.closing)</div>
+            """
+        let article = try await WebArticleExtractor(options: fast).extract(
+            html: Fixture.article(backMatter: backMatter), baseURL: Fixture.base)
+        let texts = article.blocks.map(\.text)
+        let start = try #require(texts.firstIndex(of: "Questions"))
+        #expect(Array(texts[start...]) == ["Questions", "Is it haunted?", "No.", "Can I visit?", "Yes, on Sundays.",
+                                           "Release notes", "New lens.", "Fixed the stairs.", "Brighter lamp.",
+                                           "Quieter foghorn.", "Keeper's diary", Fixture.closing])
+        #expect(headings(article) == ["h2 A daily climb", "h2 Questions", "h3 Is it haunted?", "h3 Can I visit?",
+                                      "h2 Release notes", "h2 Keeper's diary"])
+    }
+
+    @Test func aPagesOwnMarksDoNotBringBackAHeading() async throws {
+        // The page carries the attributes the extractor uses; they are ignored.
+        let backMatter = """
+            <aside data-holos-h="0"><h2 data-holos-h="1">Related</h2><p data-holos-b="0">Short.</p></aside>
+            <p data-holos-b="1">\(Fixture.closing)</p>
+            """
+        let article = try await WebArticleExtractor(options: fast).extract(
+            html: Fixture.article(backMatter: backMatter), baseURL: Fixture.base)
+        #expect(!article.spokenText.contains("Related"))
+        #expect(article.blocks.last == .paragraph(Fixture.closing))
     }
 
     @Test func readabilityIsTheVendoredRelease() {

@@ -66,15 +66,14 @@ public struct WebArticle: Sendable, Equatable {
         return parts.filter { !$0.isEmpty }.joined(separator: "\n\n")
     }
 
-    /// Builds an article from raw extracted pieces: sanitizes every text, drops blocks with no letters or digits (a
-    /// permalink's "#", a "* * *" break) and bracketed marks, and drops a leading heading that repeats the title.
-    /// `level` 0 marks a paragraph, 1 through 6 a heading.
+    /// Builds an article from raw extracted pieces: sanitizes every text, drops empty blocks, bracketed marks, and
+    /// known noise marks (see `noiseMarks`), and drops a leading heading that repeats the title. Every other block
+    /// stays, symbols only or not (an emoji, "∞ ≠ ∅"). `level` 0 marks a paragraph, 1 through 6 a heading.
     static func assemble(url: URL, title: String?, byline: String?, siteName: String?, language: String?,
                          raw: [(level: Int, text: String)]) -> WebArticle {
         var blocks: [Block] = raw.compactMap { item in
             let text = sanitized(item.text)
-            let readable = text.unicodeScalars.contains { $0.properties.isAlphabetic || $0.properties.numericType != nil }
-            guard readable, !isBracketMark(text) else { return nil }
+            guard !text.isEmpty, !isBracketMark(text), !noiseMarks.contains(text.lowercased()) else { return nil }
             return (1...6).contains(item.level) ? .heading(level: item.level, text: text) : .paragraph(text)
         }
         let cleanTitle = sanitized(title ?? "")
@@ -116,6 +115,13 @@ public struct WebArticle: Sendable, Equatable {
     private static func isBracketMark(_ text: String) -> Bool {
         text.wholeMatch(of: /\[[^\[\]]{0,22}\](?:\s*[,;–—-]?\s*\[[^\[\]]{0,22}\])*/) != nil
     }
+
+    /// Whole blocks (sanitized, lowercased) that are page marks, not text: a lone permalink or anchor mark beside a
+    /// heading, and ornamental section breaks.
+    static let noiseMarks: Set<String> = [
+        "#", "¶", "§", "🔗", "🔗\u{FE0F}", "permalink",
+        "* * *", "***", "⁂", "~", "—", "---", "· · ·", "❧",
+    ]
 
     private static func nonEmpty(_ text: String?) -> String? {
         guard let text else { return nil }
