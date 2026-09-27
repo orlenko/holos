@@ -446,63 +446,254 @@ import WebKit
     }
     """#
 
-    /// Keeps section headings from being dropped by Readability as page furniture, before it runs. Two cases:
+    /// Puts back section headings that Readability dropped while it kept their sections. Readability judges a
+    /// heading on its own markup, not on the text it labels: Wikipedia's `<div class="mw-heading">` beside an edit
+    /// link reads as a short, linky block, and Substack's `<h4 class="header-anchor-post">` is named like a page
+    /// header. Readability still decides what is article; nothing in the page changes before it runs. A heading comes
+    /// back only when its section's text is in Readability's output. Two steps:
     ///
-    /// - A heading inside a `<div>` wrapper that holds nothing else of substance: Wikipedia's
-    ///   `<div class="mw-heading"><h2>History</h2><span>[<a>edit</a>]</span></div>`, a docs site's
-    ///   `<div class="heading"><h2>Setup</h2><a href="#setup">#</a></div>`. Readability's conditional cleanup of
-    ///   `div`s judges such a wrapper on its own: a short heading beside an edit or anchor link reads as a short,
-    ///   linky block ("Suspiciously short", "a little linky"), and the wrapper goes, heading and all, while the
-    ///   section's paragraphs stay. The heading is moved out, right before the wrapper (after it when the wrapper
-    ///   has text before the heading); the rest of the wrapper stays where it was. A wrapper qualifies when, apart
-    ///   from the heading, it holds no other heading, paragraph, list, table, quotation, figure, media, form, or
-    ///   navigation, and at most 20 letters and digits outside bracketed marks.
-    /// - A heading whose own class or id says "header" (Substack's `<h4 class="header-anchor-post">`): Readability
-    ///   drops anything so named as a page header. On a heading the word names the heading itself, so those class
-    ///   names (and such an id) are removed from the page copy.
+    /// 1. `holosRecordHeadings`, on the page copy before Readability runs, notes every heading a reader sees (the
+    ///    heading and every element holding it pass Readability's own `_isProbablyVisible`; not in a modal dialog;
+    ///    scripts, styles, and hidden elements left out of its text), in document order. Headings with no substantial
+    ///    block between them form one group (a section heading and its first subsection, maybe with a short hatnote
+    ///    between). A substantial block is a paragraph, list item, quotation, definition, or `div` holding only
+    ///    text, with at least 40 letters and digits and no heading inside, not in a table; the group keeps the first
+    ///    ten after its last heading, up to the next heading, as its anchors, each with its text's first 64 letters
+    ///    and digits. Each heading also notes its scope, the nearest element holding it and other readable text
+    ///    (bracketed marks such as `[edit]` aside): an anchor outside a heading's scope does not belong to it. A
+    ///    widget's heading ("Related", "Share") has its widget's own links or buttons as scope, so the article
+    ///    after the widget is never its section.
+    /// 2. `holosRestoreHeadings`, on Readability's output, finds the first of a group's anchors that the output has
+    ///    (at the start of a text node, after the previous group's anchor). A group with none (Readability dropped
+    ///    the section) is left out. Each heading of the group that Readability dropped, whose scope holds that
+    ///    anchor, goes back at the start of what Readability kept of its section before the anchor (a figure
+    ///    caption, a hatnote), or before the group's next heading that Readability kept, outside every element that
+    ///    text opens. A heading Readability kept (the same text, between the previous anchor and this one) is not
+    ///    added twice. The page's title heading is not added: an `h1`, or the first `h1` or `h2`, that
+    ///    Readability's own test finds similar to the article title. A restored `h1` becomes an `h2`, as Readability
+    ///    does with the `h1`s it keeps.
     ///
-    /// Wrappers whose class or id Readability counts against the content for any other reason (sidebars, comments,
-    /// widgets, share boxes, related links) keep their headings, so those still go with them; "header" in a
-    /// wrapper's name does not count against it, since the wrapper holds only the heading.
-    private static let headingKeeper = #"""
-    function holosKeepHeadings(doc) {
-      const patterns = Readability.prototype.REGEXPS;
-      const substance = "h1, h2, h3, h4, h5, h6, p, ul, ol, dl, table, blockquote, pre, figure, img, picture, "
-        + "video, audio, iframe, object, embed, form, nav, aside, header, footer";
-      const header = /header/i;
-      // Whether Readability removes or penalizes an element for its class or id, words with "header" aside.
-      const discounted = (element) => {
-        const match = ((element.getAttribute("class") || "") + " " + (element.id || "")).replace(/header/gi, " ");
-        return (patterns.unlikelyCandidates.test(match) && !patterns.okMaybeItsACandidate.test(match))
-          || (patterns.negative.test(match) && !patterns.positive.test(match));
+    /// Text is compared as lowercase letters and digits only; heading names also leave out bracketed marks.
+    private static let headingRestorer = #"""
+    function holosLetters(text) {
+      return text.replace(/[^\p{L}\p{N}]+/gu, "").toLowerCase();
+    }
+    function holosLabel(text) {
+      return holosLetters(text.replace(/\[[^\]]*\]/g, " "));
+    }
+    const holosHeadingNames = "h1, h2, h3, h4, h5, h6";
+
+    function holosRecordHeadings(doc, visible) {
+      const skipped = new Set(["script", "style", "noscript", "template", "iframe"]);
+      const shown = (element) => visible(element)
+        && !(element.getAttribute("aria-modal") === "true" && element.getAttribute("role") === "dialog");
+      const isText = (node) => node.nodeType === Node.TEXT_NODE || node.nodeType === Node.CDATA_SECTION_NODE;
+      const readable = (node) => node.nodeType === Node.ELEMENT_NODE && !skipped.has(node.localName) && shown(node);
+      // The text a reader sees in `node`.
+      const textOf = (node) => {
+        let text = "";
+        const walk = (parent) => {
+          for (const child of parent.childNodes) {
+            if (isText(child)) text += child.data;
+            else if (readable(child)) walk(child);
+          }
+        };
+        walk(node);
+        return text;
       };
-      const meaningful = (text) => text.replace(/\[[^\]]*\]/g, "").replace(/[^\p{L}\p{N}]+/gu, "");
-      // The wrapper's own text, outside the heading, split at the heading.
-      const textAround = (wrapper, heading) => {
-        let before = "", after = "";
-        const walker = doc.createTreeWalker(wrapper, NodeFilter.SHOW_TEXT);
-        for (let node = walker.nextNode(); node; node = walker.nextNode()) {
-          if (heading.contains(node)) continue;
-          if (heading.compareDocumentPosition(node) & Node.DOCUMENT_POSITION_FOLLOWING) after += node.data;
-          else before += node.data;
+      // A copy without what a reader does not see.
+      const copyOf = (node) => {
+        const copy = node.cloneNode(false);
+        for (const child of node.childNodes) {
+          if (isText(child) || readable(child)) copy.appendChild(copyOf(child));
         }
-        return { before: meaningful(before), after: meaningful(after) };
+        return copy;
       };
-      for (const heading of Array.from(doc.querySelectorAll("h1, h2, h3, h4, h5, h6"))) {
-        const named = Array.from(heading.classList).filter((name) => header.test(name));
-        if (named.length) heading.classList.remove(...named);
-        if (header.test(heading.id)) heading.removeAttribute("id");
-        let wrapper = heading.parentElement;
-        while (wrapper && wrapper.localName === "div") {
-          if (discounted(wrapper)) break;
-          const others = Array.from(wrapper.querySelectorAll(substance))
-            .filter((element) => element !== heading && !heading.contains(element));
-          if (others.length) break;
-          const text = textAround(wrapper, heading);
-          if (text.before.length + text.after.length > 20) break;
-          if (text.before) wrapper.after(heading); else wrapper.before(heading);
-          wrapper = heading.parentElement;
+      // Whether `element` has readable text outside `heading` (bracketed marks aside). Stops at the first letter
+      // or digit outside brackets, so a large element costs little.
+      const hasOtherText = (element, heading) => {
+        let text = "";
+        let found = false;
+        const walk = (parent) => {
+          for (const child of parent.childNodes) {
+            if (found) return;
+            if (child === heading) continue;
+            if (isText(child)) {
+              text += child.data;
+              found = /[\p{L}\p{N}]/u.test(child.data) && Boolean(holosLabel(text.replace(/\[[^\]]*$/, " ")));
+            } else if (readable(child)) {
+              walk(child);
+            }
+          }
+        };
+        walk(element);
+        return found || Boolean(holosLabel(text));
+      };
+      // The nearest element holding the heading and other readable text; null when there is none.
+      const scopeOf = (heading) => {
+        for (let element = heading.parentElement; element; element = element.parentElement) {
+          if (hasOtherText(element, heading)) return element;
         }
+        return null;
+      };
+      const containers = "h1, h2, h3, h4, h5, h6, p, div, ul, ol, dl, table, pre, blockquote, section, article, "
+        + "figure, li, aside, nav, header, footer, form";
+      const isAnchor = (element) => {
+        const name = element.localName;
+        if (name === "div") {
+          if (element.querySelector(containers)) return false;
+        } else if (!["p", "li", "blockquote", "dd", "dt"].includes(name) || element.querySelector(holosHeadingNames)) {
+          return false;
+        }
+        return holosLetters(textOf(element)).length >= 40;
+      };
+      const limit = 10;
+      const groups = [];
+      let group = null;
+      let tables = 0;
+      const finish = () => {
+        if (group && group.candidates.length) {
+          groups.push({
+            before: group.before,
+            headings: group.headings.map((heading) => ({ element: heading.element, level: heading.level,
+              text: heading.text, label: heading.label, from: heading.from })),
+            candidates: group.candidates.map((candidate) => ({ key: candidate.key, end: candidate.end,
+              inScope: group.headings.map((heading) => !heading.scope || heading.scope.contains(candidate.element)) }))
+          });
+        }
+        group = null;
+      };
+      const walk = (parent) => {
+        for (const child of parent.childNodes) {
+          if (isText(child)) {
+            if (group && group.candidates.length < limit) {
+              const letters = holosLetters(child.data);
+              if (letters) group.before.push(letters);
+            }
+            continue;
+          }
+          if (!readable(child)) continue;
+          if (/^h[1-6]$/.test(child.localName)) {
+            const text = textOf(child).replace(/\s+/g, " ").trim();
+            const label = holosLabel(text);
+            if (!label) continue;
+            if (group && group.candidates.length) finish();
+            if (!group) group = { headings: [], candidates: [], before: [] };
+            group.headings.push({ element: copyOf(child), level: Number(child.localName[1]), text: text, label: label,
+              scope: scopeOf(child), from: group.before.length });
+            continue;
+          }
+          if (group && !tables && group.candidates.length < limit
+            && !(group.candidates.length && group.candidates[group.candidates.length - 1].element.contains(child))
+            && isAnchor(child)) {
+            group.candidates.push({ key: holosLetters(textOf(child)).slice(0, 64), end: group.before.length,
+              element: child });
+          }
+          const table = child.localName === "table";
+          if (table) tables += 1;
+          walk(child);
+          if (table) tables -= 1;
+        }
+      };
+      walk(doc.body || doc.documentElement);
+      finish();
+      return groups;
+    }
+
+    function holosRestoreHeadings(root, groups, similarToTitle) {
+      const doc = root.ownerDocument;
+      // The output's letters and digits, the text node starting at each offset, and the headings it has.
+      let text = "";
+      const starts = new Map();
+      const kept = [];
+      const walker = doc.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+      for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+        const letters = holosLetters(node.data);
+        if (!letters) continue;
+        starts.set(text.length, node);
+        const heading = node.parentElement ? node.parentElement.closest(holosHeadingNames) : null;
+        if (heading) {
+          const last = kept[kept.length - 1];
+          if (last && last.element === heading) last.end = text.length + letters.length;
+          else kept.push({ element: heading, start: text.length, end: text.length + letters.length });
+        }
+        text += letters;
+      }
+      for (const heading of kept) heading.label = holosLabel(heading.element.textContent);
+      const hasTextBefore = (node) => {
+        for (let sibling = node.previousSibling; sibling; sibling = sibling.previousSibling) {
+          if (/[\p{L}\p{N}]/u.test(sibling.textContent)) return true;
+        }
+        return false;
+      };
+      // Right before the text node at `offset`, outside every element that the node opens.
+      const insertAt = (offset, element) => {
+        let target = starts.get(offset);
+        while (target.parentNode !== root && !hasTextBefore(target)) target = target.parentNode;
+        target.parentNode.insertBefore(element, target);
+      };
+      // Where the kept part of `segments` (a heading's text nodes, in order) begins in the output, when the
+      // output has it right before `end`: the start of the longest run of their last segments found there,
+      // starting a text node, not before `lower`; else `end`.
+      const sectionStart = (end, segments, lower) => {
+        const joined = segments.join("");
+        let place = end;
+        let length = 0;
+        for (let index = segments.length - 1; index >= Math.max(0, segments.length - 200); index--) {
+          length += segments[index].length;
+          const start = end - length;
+          if (start < lower) break;
+          if (starts.has(start) && text.startsWith(joined.slice(joined.length - length), start)) place = start;
+        }
+        return place;
+      };
+      const copyOf = (heading) => {
+        const element = doc.createElement("h" + Math.max(heading.level, 2));
+        for (const child of heading.element.childNodes) element.appendChild(doc.importNode(child, true));
+        return element;
+      };
+      let titleSeen = false;
+      const isTitle = (heading) => {
+        if (heading.level > 2 || !similarToTitle(heading.text)) return false;
+        const first = !titleSeen;
+        titleSeen = true;
+        return heading.level === 1 || first;
+      };
+      const claimed = new Set();
+      let cursor = 0;
+      for (const group of groups) {
+        const notTitle = group.headings.map((heading) => !isTitle(heading));
+        const restorable = (candidate) => candidate.inScope.some((inScope, index) => inScope && notTitle[index]);
+        if (!group.candidates.some(restorable)) continue;
+        let anchor = null;
+        let at = -1;
+        for (const candidate of group.candidates) {
+          at = text.indexOf(candidate.key, cursor);
+          while (at !== -1 && !starts.has(at)) at = text.indexOf(candidate.key, at + 1);
+          if (at !== -1) {
+            anchor = candidate;
+            break;
+          }
+        }
+        if (!anchor) continue;
+        const found = group.headings.map((heading) => {
+          const match = kept.find((candidate) => !claimed.has(candidate) && candidate.start >= cursor
+            && candidate.end <= at && candidate.label === heading.label);
+          if (match) claimed.add(match);
+          return match;
+        });
+        group.headings.forEach((heading, index) => {
+          if (found[index] || !notTitle[index] || !anchor.inScope[index]) return;
+          const next = found.findIndex((match, later) => later > index && match);
+          const end = next === -1 ? at : found[next].start;
+          const segments = group.before.slice(heading.from, next === -1 ? anchor.end : group.headings[next].from);
+          let lower = cursor;
+          for (let earlier = 0; earlier < index; earlier++) {
+            if (found[earlier]) lower = Math.max(lower, found[earlier].end);
+          }
+          insertAt(sectionStart(end, segments, lower), copyOf(heading));
+        });
+        cursor = at + 1;
       }
     }
     """#
@@ -531,20 +722,32 @@ import WebKit
     /// the same document), then yields to the page's event loop once before answering: a navigation the page had
     /// already scheduled (a script redirect, a meta refresh whose timer is due) is then decided before the answer
     /// arrives, and the extractor sees it.
-    private static let extractionScript = readabilitySource + "\n" + backMatterRemover + "\n" + headingKeeper + "\n"
-        + blockWalker + "\n" + refreshReader + #"""
+    private static let extractionScript = readabilitySource + "\n" + backMatterRemover + "\n" + headingRestorer
+        + "\n" + blockWalker + "\n" + refreshReader + #"""
 
     const holosDocument = { url: location.href, refresh: holosRefreshDelay(document) };
     let holosResult;
     try {
       const page = document.cloneNode(true);
       holosDropBackMatter(page);
-      holosKeepHeadings(page);
-      const article = new Readability(page).parse();
+      const reader = new Readability(page);
+      let headings = [];
+      try {
+        headings = holosRecordHeadings(page, (element) => reader._isProbablyVisible(element));
+      } catch (error) {
+        // Readability's article as it is, without restored headings.
+      }
+      const article = reader.parse();
       if (!article) {
         holosResult = { found: false, title: document.title };
       } else {
         const content = new DOMParser().parseFromString(article.content || "", "text/html");
+        try {
+          holosRestoreHeadings(content.body, headings,
+            (text) => reader._textSimilarity(article.title || "", text) > 0.75);
+        } catch (error) {
+          // Readability's article as it is, without restored headings.
+        }
         holosResult = {
           found: true, title: article.title, byline: article.byline, siteName: article.siteName,
           lang: article.lang, blocks: holosArticleBlocks(content.body)

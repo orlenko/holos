@@ -66,13 +66,15 @@ public struct WebArticle: Sendable, Equatable {
         return parts.filter { !$0.isEmpty }.joined(separator: "\n\n")
     }
 
-    /// Builds an article from raw extracted pieces: sanitizes every text, drops empty blocks, and drops a leading
-    /// heading that repeats the title. `level` 0 marks a paragraph, 1 through 6 a heading.
+    /// Builds an article from raw extracted pieces: sanitizes every text, drops blocks with no letters or digits (a
+    /// permalink's "#", a "* * *" break) and bracketed marks, and drops a leading heading that repeats the title.
+    /// `level` 0 marks a paragraph, 1 through 6 a heading.
     static func assemble(url: URL, title: String?, byline: String?, siteName: String?, language: String?,
                          raw: [(level: Int, text: String)]) -> WebArticle {
         var blocks: [Block] = raw.compactMap { item in
             let text = sanitized(item.text)
-            guard !text.isEmpty, !isBracketMark(text) else { return nil }
+            let readable = text.unicodeScalars.contains { $0.properties.isAlphabetic || $0.properties.numericType != nil }
+            guard readable, !isBracketMark(text) else { return nil }
             return (1...6).contains(item.level) ? .heading(level: item.level, text: text) : .paragraph(text)
         }
         let cleanTitle = sanitized(title ?? "")

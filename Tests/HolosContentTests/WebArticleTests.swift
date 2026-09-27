@@ -260,7 +260,8 @@ private func isPrintable(_ text: String) -> Bool {
             url: url, title: "  A  Title\n", byline: " Jane\u{00A0}Doe ", siteName: "", language: "en",
             raw: [(1, "a title"), (0, "  First\u{200B} \t\n paragraph. "), (0, "   "), (0, "[edit]"),
                   (2, "Section"), (0, "[1]"), (0, "[1][2]"), (0, " [1], [2]; [3]–[4] "), (0, "[edit] [a][note 3]"),
-                  (0, "Second [note] paragraph."), (0, "[1] and [2]")])
+                  (0, "Second [note] paragraph."), (0, "[1] and [2]"), (0, "#"), (2, "¶"), (0, " * * * "),
+                  (0, "— … —")])
         #expect(article.title == "A Title")
         #expect(article.byline == "Jane Doe")
         #expect(article.siteName == nil)
@@ -868,7 +869,8 @@ private func isPrintable(_ text: String) -> Bool {
         }
         let p = Fixture.paragraphs
         // Short headings (which Readability's div cleanup took for short, linky blocks), a heading that opens its
-        // parent's section, and headings followed by a figure, an empty span, a hatnote, or a nested section.
+        // parent's section, headings followed by a figure, an empty span, a hatnote, a navigation box, or a nested
+        // section, and a heading with only a hatnote before its first subsection.
         let page = """
             <!doctype html><html lang="en"><head><meta charset="utf-8"><title>Lighthouse - Wikipedia</title></head>
             <body><div id="content"><h1 id="firstHeading">Lighthouse</h1>
@@ -881,11 +883,14 @@ private func isPrintable(_ text: String) -> Bool {
             <figure class="mw-default-size"><a href="/wiki/File:Lamp.jpg"><img src="lamp.jpg" alt=""></a>
             <figcaption>The lamp room at dusk.</figcaption></figure><p>\(p[1])</p></section></section>
             <section data-mw-section-id="4">\(heading(2, "Keepers"))
+            <div role="note" class="hatnote navigation-not-searchable">Main article: <a href="/wiki/Keeper">Keeper</a></div>
             <section data-mw-section-id="5">\(heading(3, "Mattel"))
             <div role="note" class="hatnote navigation-not-searchable">Main article: <a href="/wiki/Mattel">Mattel</a></div>
             <p>\(p[2])</p></section>
             <section data-mw-section-id="6">\(heading(4, "Diphone synthesis"))<p>\(p[0])</p></section>
-            <section data-mw-section-id="7">\(heading(3, "Artificial intelligence in lighthouses"))<p>\(p[1])</p>
+            <section data-mw-section-id="7">\(heading(3, "Artificial intelligence in lighthouses"))
+            <div class="sidebar-list" role="navigation"><ul><li><a href="/wiki/AGI">Artificial general
+            intelligence and superintelligence</a></li></ul></div><p>\(p[1])</p>
             </section></section>
             <section data-mw-section-id="8">\(heading(2, "References"))<div class="reflist"><ol>
             <li>\(Fixture.log)</li></ol></div></section>
@@ -899,21 +904,78 @@ private func isPrintable(_ text: String) -> Bool {
         #expect(headings == ["h2 History", "h3 Mechanical devices", "h3 Electronic devices", "h2 Keepers",
                              "h3 Mattel", "h4 Diphone synthesis", "h3 Artificial intelligence in lighthouses"])
         // Each heading comes right before its section's first paragraph; the links beside it are not read. (Whether
-        // Readability keeps the hatnote is its own call, not checked here.)
-        let texts = article.blocks.map(\.text).filter { $0 != "Main article: Mattel" }
+        // Readability keeps the hatnotes is its own call, not checked here.)
+        let texts = article.blocks.map(\.text).filter { !$0.hasPrefix("Main article:") }
         #expect(texts == [p[0], p[1], "History", p[2], "Mechanical devices", p[0], "Electronic devices", p[1],
                           "Keepers", "Mattel", p[2], "Diphone synthesis", p[0],
                           "Artificial intelligence in lighthouses", p[1]])
     }
 
-    @Test func aHeadingInASidebarWrapperStillGoesWithIt() async throws {
-        // The lifting leaves wrappers that Readability counts against the content alone.
-        let backMatter = #"""
-            <div class="sidebar-widget"><h3>Follow us</h3><a href="/rss">RSS</a></div>
+    @Test(arguments: [
+        // Widgets whose heading sits with their own links or buttons.
+        #"<div class="sidebar-widget"><h3>Related stories</h3><a href="/rss">RSS</a></div>"#,
+        #"<div role="navigation"><h3>Related stories</h3><button>Previous</button><button>Next</button></div>"#,
+        #"<div class="related-content" id="sidebar"><h3>Related stories</h3><a href="/more">More</a></div>"#,
+        #"<div class="widget"><h2 class="widget-header">Related stories</h2><ul><li><a href="/a">Ten gadgets you need</a></li><li><a href="/b">Weather this weekend</a></li></ul></div>"#,
+        #"<aside><h3>Related stories</h3><a href="/share/x">Share on X</a> <a href="/share/mail">Email</a></aside>"#,
+        #"<div role="navigation"><h3>Related stories</h3><ul><li><a href="/c">A much longer headline about the harbour and the storms of the winter</a></li></ul></div>"#,
+        // Hidden headings, alone or with their sections.
+        #"<div hidden><h3>Related stories</h3><p>\#(Fixture.paragraphs[2])</p></div>"#,
+        #"<div aria-hidden="true"><h3>Related stories</h3><p>\#(Fixture.paragraphs[2])</p></div>"#,
+        #"<div style="display:none"><h3>Related stories</h3><p>\#(Fixture.paragraphs[2])</p></div>"#,
+        #"<h3 hidden>Related stories</h3>"#,
+        #"<div style="visibility: hidden"><h3>Related stories</h3></div>"#,
+    ])
+    func furnitureHeadingsStayOut(furniture: String) async throws {
+        // The furniture sits in the article, before a section whose heading Readability drops with its wrapper.
+        let backMatter = furniture + #"""
+            <div class="mw-heading mw-heading2"><h2>After the storm</h2><span>[<a href="/edit">edit</a>]</span></div>
+            <p>\#(Fixture.closing)</p>
             """#
         let article = try await WebArticleExtractor(options: fast).extract(
             html: Fixture.article(backMatter: backMatter), baseURL: Fixture.base)
-        #expect(!article.spokenText.contains("Follow us"))
+        #expect(!article.spokenText.contains("Related stories"))
+        let texts = article.blocks.map(\.text)
+        #expect(Array(texts.suffix(2)) == ["After the storm", Fixture.closing])
+        #expect(article.blocks.filter { if case .heading = $0 { true } else { false } }.map(\.text)
+            == ["A daily climb", "After the storm"])
+    }
+
+    @Test func aHeadingBesideAScriptComesBackBeforeItsSection() async throws {
+        // Readability removes the script, then the short, linky wrapper with the heading in it.
+        let config = String(repeating: "window.holosWidgetConfiguration.push({ theme: 'dark', size: 12 }); ", count: 20)
+        let backMatter = #"""
+            <div class="anchored"><h2>Setup</h2><script>\#(config)</script><a href="#setup">#</a></div>
+            <p>\#(Fixture.closing)</p>
+            """#
+        let article = try await WebArticleExtractor(options: fast).extract(
+            html: Fixture.article(backMatter: backMatter), baseURL: Fixture.base)
+        #expect(Array(article.blocks.suffix(2)) == [.heading(level: 2, text: "Setup"), .paragraph(Fixture.closing)])
+        #expect(!article.spokenText.contains("holosWidgetConfiguration"))
+    }
+
+    @Test func titleAndKeptHeadingsAreNotAddedTwice() async throws {
+        let p = Fixture.paragraphs
+        // A title heading in a wrapper (Readability drops it as the title), a section heading in the same wrapper,
+        // one Readability keeps, and two with the same name.
+        func wrapped(_ text: String) -> String {
+            #"<div class="mw-heading mw-heading2"><h2>\#(text)</h2><span>[<a href="/edit">edit</a>]</span></div>"#
+        }
+        let page = """
+            <!doctype html><html lang="en"><head><meta charset="utf-8">
+            <title>The Last Keeper of the Northern Cape | Coastal News</title></head>
+            <body><main><article>
+            \(wrapped("The last keeper of the northern cape."))<p>\(p[0])</p>
+            \(wrapped("A daily climb"))<p>\(p[1])</p>
+            <h2>Visitors</h2><p>\(p[2])</p>
+            \(wrapped("Visitors"))<p>\(Fixture.closing)</p>
+            </article></main></body></html>
+            """
+        let article = try await WebArticleExtractor(options: fast).extract(html: page, baseURL: Fixture.base)
+        #expect(article.title == "The Last Keeper of the Northern Cape")
+        #expect(article.blocks == [.paragraph(p[0]), .heading(level: 2, text: "A daily climb"), .paragraph(p[1]),
+                                   .heading(level: 2, text: "Visitors"), .paragraph(p[2]),
+                                   .heading(level: 2, text: "Visitors"), .paragraph(Fixture.closing)])
     }
 
     @Test func readabilityIsTheVendoredRelease() {
