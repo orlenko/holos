@@ -158,7 +158,7 @@ public enum ReadingOutput {
     }
 
     /// The temporary file written beside the output while it is joined (see `ReadingPipeline`).
-    static let temporaryNameLength = ".holos-\(UUID().uuidString).\(ReadingAudioFormat.fileExtension)".utf8.count
+    static let temporaryNameLength = ReadingTemporaries.joinName(key: String(repeating: "0", count: 16), run: UUID()).utf8.count
 
     static func checkPathLength(_ output: URL) throws {
         let folder = output.deletingLastPathComponent().path

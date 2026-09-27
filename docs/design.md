@@ -280,7 +280,12 @@ source, voice, rate, title, or output is refused. The parts are then joined and 
 once into the `.m4a`, with a short pause between parts and a longer one before a
 section. The checksum of the finished file is saved before it is published, and the
 cache is deleted after, so the finished file is the only large thing kept. A failed
-reading publishes nothing and returns a nonzero status.
+reading publishes nothing and returns a nonzero status. Publishing never replaces a file:
+an exclusive rename, or, on volumes without one, an exclusive create whose identity is
+saved in the manifest before the finished bytes are copied into it (so `--resume`
+recognizes a copy a crash cut off). Ctrl-C cancels the render, removes the partly joined
+file, and exits 130 (SIGTERM: 143); every run also removes temporaries earlier runs of the
+same reading left behind, recognized by a per-reading marker in their names.
 
 Local files use built-in readers: text and Markdown (Foundation's Markdown parser; markup
 is dropped, link text kept, code blocks and images skipped, YAML front matter read for

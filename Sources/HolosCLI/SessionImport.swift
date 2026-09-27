@@ -54,7 +54,9 @@ extension Session {
             // Ctrl-C (or SIGTERM) cancels the work, so a partial import is removed; a second one ends the process.
             // The handling is installed before the work starts, so a signal in between cancels it too.
             let work = CancellableStart<Int32>()
-            let interrupt = InterruptCancellation { work.cancel() }
+            let interrupt = InterruptCancellation(notice: {
+                Console.error("Cancelling… (press Ctrl-C again to quit at once)")
+            }) { work.cancel() }
             defer { interrupt.restore() }
             let code = try await work.start { try await Self.perform(request) }.value
             if code != 0 { throw ExitCode(code) }
@@ -115,40 +117,4 @@ extension Session {
             }
         }
     }
-}
-
-/// While it exists, SIGINT and SIGTERM call `cancel` once instead of ending the process; after that first signal (or
-/// `restore()`) they end it as usual.
-private final class InterruptCancellation: Sendable {
-    private let sources: [any DispatchSourceSignal]
-
-    init(_ cancel: @escaping @Sendable () -> Void) {
-        let fired = Mutex(false)
-        signal(SIGINT, SIG_IGN)
-        signal(SIGTERM, SIG_IGN)
-        sources = [SIGINT, SIGTERM].map { number in
-            let source = DispatchSource.makeSignalSource(signal: number, queue: .global())
-            source.setEventHandler {
-                let first = fired.withLock { value -> Bool in
-                    defer { value = true }
-                    return !value
-                }
-                guard first else { return }
-                Console.error("Cancelling… (press Ctrl-C again to quit at once)")
-                signal(SIGINT, SIG_DFL)
-                signal(SIGTERM, SIG_DFL)
-                cancel()
-            }
-            source.resume()
-            return source
-        }
-    }
-
-    func restore() {
-        for source in sources { source.cancel() }
-        signal(SIGINT, SIG_DFL)
-        signal(SIGTERM, SIG_DFL)
-    }
-
-    deinit { for source in sources { source.cancel() } }
 }

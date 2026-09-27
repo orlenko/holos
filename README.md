@@ -295,8 +295,8 @@ Support/Holos/Readings/<UUID>/; `--output` takes a `.m4a` path or a directory. T
 is the best installed one for the text's language (Premium, then Enhanced); `--voice`
 takes a name as `say -v '?'` or `voices list` prints it, such as "Ava (Premium)". If no
 Premium voice is installed, download one in System Settings › Accessibility › Spoken
-Content › System Voice › Manage Voices. An interrupted reading continues with the same
-command plus `--resume`. Web addresses and OCR are not supported yet.
+Content › System Voice › Manage Voices. Ctrl-C stops a reading and keeps its rendered
+parts; it continues with the same command plus `--resume`. Web addresses and OCR are not supported yet.
 
 Sessions are portable `.holos` directories. Inspect, recover, and retranscribe an
 inactive archive without replacing its saved audio or original transcript:

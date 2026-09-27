@@ -62,12 +62,19 @@ public struct ReadingManifest: Codable, Sendable, Equatable {
     public var status: String
     /// The render cache. Part files are deleted once the finished file is published.
     public var parts: [ReadingPart]
+    /// The file this reading created at `output` while copying the finished file into it (on
+    /// volumes that cannot rename exclusively), saved before any byte is written: a copy cut off
+    /// by a crash is recognized on `--resume` as this reading's own partial output.
+    public var publishing: ReadingFileIdentity? = nil
+
+    /// Manifests are small (under 1 KB per part); a larger `manifest.json` is not read.
+    static let maximumBytes = 64 << 20
 
     /// Whether `url` is a manifest this app wrote (any schema version): it names
     /// `readingKind`. Anything else, including unreadable JSON, is not.
     public static func isReading(_ url: URL) -> Bool {
         struct Marker: Decodable { let kind: String?; let schemaVersion: Int? }
-        guard let data = try? Data(contentsOf: url),
+        guard let data = try? readSmallFile(url, maximumBytes: maximumBytes),
               let marker = try? JSONDecoder().decode(Marker.self, from: data) else { return false }
         return marker.kind == readingKind && marker.schemaVersion != nil
     }
@@ -176,14 +183,15 @@ public struct AudioBookJoiner: ReadingAudioJoiner {
             guard ReadingManifest.isReading(manifestURL) else {
                 throw HolosError.invalidInput("No Voice is Local reading to resume at \(directory.path).")
             }
-            guard let saved = try? JSONDecoder().decode(ReadingManifest.self, from: Data(contentsOf: manifestURL)),
+            guard let saved = try? JSONDecoder().decode(
+                      ReadingManifest.self, from: readSmallFile(manifestURL, maximumBytes: ReadingManifest.maximumBytes)),
                   saved.schemaVersion == ReadingManifest.currentSchemaVersion else {
                 throw HolosError.invalidInput("The reading at \(directory.path) was made by another version and cannot be resumed.")
             }
             manifest = saved
             guard manifest.sourceSHA256 == sourceHash,
                   manifest.sameSettings(voiceIdentifier: voiceIdentifier, rate: rate, metadata: metadata, output: output),
-                  (try? Data(contentsOf: sourceURL)) == Data(text.utf8) else {
+                  (try? fileSHA256(sourceURL)) == sourceHash else {
                 throw HolosError.invalidInput("Reading source, voice, rate, title, author, language, or output differs from the saved reading.")
             }
             guard manifest.parts.count == expected.count,
@@ -212,17 +220,34 @@ public struct AudioBookJoiner: ReadingAudioJoiner {
             try save(manifest, to: manifestURL)
         }
 
+        // This run's name for the joined file. Temporaries an interrupted earlier run left behind
+        // (killed before its cleanup ran) are removed now: the lock means no other run of this
+        // reading is active, and only names this reading's runs create are touched.
+        let run = UUID()
+        let key = ReadingTemporaries.key(for: directory)
+        ReadingTemporaries.sweep(workDirectory: directory, outputFolder: output.deletingLastPathComponent(),
+                                 key: key, currentRun: run)
+
         // Finished before (possibly interrupted right after publishing): nothing to do.
         if let published = manifest.outputSHA256,
-           (try? sha256(Data(contentsOf: output))) == published {
-            if manifest.status != "complete" {
+           (try? fileSHA256(output)) == published {
+            if manifest.status != "complete" || manifest.publishing != nil {
                 manifest.status = "complete"
+                manifest.publishing = nil
                 try save(manifest, to: manifestURL)
             }
             removeParts(in: directory)
             return ReadingResult(output: output, manifest: manifest)
         }
-        guard !FileManager.default.fileExists(atPath: output.path) else {
+        // A copy into the destination that a crash cut off is this reading's own file: it goes,
+        // and the reading is joined and published again. Anything else there is kept.
+        if let claimed = manifest.publishing {
+            ReadingPublisher.removeIfIdentical(output, to: claimed)
+            manifest.publishing = nil
+            try save(manifest, to: manifestURL)
+        }
+        var existing = stat()
+        guard lstat(output.path, &existing) != 0 else {
             throw HolosError.invalidInput("Reading output already exists and is not this reading: \(output.path)")
         }
         manifest.status = "incomplete"
@@ -237,7 +262,7 @@ public struct AudioBookJoiner: ReadingAudioJoiner {
             let part = manifest.parts[index]
             let audio = directory.appendingPathComponent(part.relativeAudioPath)
             let valid = part.status == "complete" && part.audioSHA256 != nil &&
-                (try? sha256(Data(contentsOf: audio))) == part.audioSHA256
+                (try? fileSHA256(audio)) == part.audioSHA256
             if !valid {
                 manifest.parts[index].status = "pending"
                 manifest.parts[index].audioSHA256 = nil
@@ -262,7 +287,7 @@ public struct AudioBookJoiner: ReadingAudioJoiner {
                     throw HolosError.io("Speech renderer returned an unexpected part path.")
                 }
                 manifest.parts[part.index].status = "complete"
-                manifest.parts[part.index].audioSHA256 = try sha256(Data(contentsOf: result.url))
+                manifest.parts[part.index].audioSHA256 = try fileSHA256(result.url)
                 manifest.parts[part.index].duration = result.duration
                 try save(manifest, to: manifestURL)
             } catch {
@@ -272,8 +297,10 @@ public struct AudioBookJoiner: ReadingAudioJoiner {
             }
         }
 
+        try Task.checkCancellation()
         let temporary = output.deletingLastPathComponent()
-            .appendingPathComponent(".holos-\(UUID().uuidString).\(ReadingAudioFormat.fileExtension)")
+            .appendingPathComponent(ReadingTemporaries.joinName(key: key, run: run))
+        // Runs on every exit, cancellation (Ctrl-C in `voiceislocal read`) included.
         defer { _ = unlink(temporary.path) }
         let audioParts = manifest.parts.map { part in
             AudioBookPart(url: directory.appendingPathComponent(part.relativeAudioPath),
@@ -288,17 +315,24 @@ public struct AudioBookJoiner: ReadingAudioJoiner {
             try? save(manifest, to: manifestURL)
             throw HolosError.incomplete("Reading parts are rendered, but joining them failed: \(error.localizedDescription)")
         }
-        manifest.outputSHA256 = try sha256(Data(contentsOf: temporary))
+        try Task.checkCancellation()
+        manifest.outputSHA256 = try fileSHA256(temporary)
         manifest.duration = summary.duration
         manifest.chapters = summary.chapters
         try save(manifest, to: manifestURL)
+        try Task.checkCancellation()
         do {
-            try ReadingPublisher.publish(temporary, to: output, exclusiveRename: exclusiveRename)
+            try ReadingPublisher.publish(temporary, to: output, exclusiveRename: exclusiveRename) { claimed in
+                manifest.publishing = claimed
+                try save(manifest, to: manifestURL)
+            }
         } catch {
             manifest.outputSHA256 = nil
+            manifest.publishing = nil
             try? save(manifest, to: manifestURL)
             throw error
         }
+        manifest.publishing = nil
         manifest.status = "complete"
         try save(manifest, to: manifestURL)
         removeParts(in: directory)
@@ -356,24 +390,86 @@ enum ReadingPublisher {
     static let systemExclusiveRename: ExclusiveRename = { renamex_np($0, $1, UInt32(RENAME_EXCL)) }
 
     /// `source` must be in the destination's directory (the finished file is written there), so
-    /// the move never crosses volumes. Volumes that cannot rename exclusively get the name
-    /// claimed with an exclusive create, then the file renamed over that empty placeholder.
+    /// the move never crosses volumes. Volumes that cannot rename exclusively get the destination
+    /// created exclusively and the finished bytes copied into that open file (never a rename over
+    /// the pathname, which would replace whatever is there by then); `claimed` gets the new
+    /// file's identity before any byte is written, so a copy a crash cuts off can be recognized
+    /// later. On failure only that file is removed, and only while it is still the one at
+    /// `destination`. `source` is removed once published.
     static func publish(_ source: URL, to destination: URL,
-                        exclusiveRename: ExclusiveRename = systemExclusiveRename) throws {
+                        exclusiveRename: ExclusiveRename = systemExclusiveRename,
+                        claimed: (ReadingFileIdentity) throws -> Void = { _ in }) throws {
         if exclusiveRename(source.path, destination.path) == 0 { return }
         let error = errno
         guard error == ENOTSUP || error == EINVAL || error == ENOSYS else {
             throw failure(destination, error)
         }
-        let placeholder = open(destination.path, O_CREAT | O_EXCL | O_WRONLY | O_CLOEXEC | O_NOFOLLOW, 0o600)
-        guard placeholder >= 0 else { throw failure(destination, errno) }
-        close(placeholder)
-        if rename(source.path, destination.path) != 0 {
+        try copyExclusively(source, to: destination, claimed: claimed)
+        _ = unlink(source.path)
+    }
+
+    private static func copyExclusively(_ source: URL, to destination: URL,
+                                        claimed: (ReadingFileIdentity) throws -> Void) throws {
+        let input = open(source.path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW)
+        guard input >= 0 else { throw failure(source, errno) }
+        defer { close(input) }
+        let output = open(destination.path, O_CREAT | O_EXCL | O_WRONLY | O_CLOEXEC | O_NOFOLLOW, 0o666)
+        guard output >= 0 else { throw failure(destination, errno) }
+        var metadata = stat()
+        guard fstat(output, &metadata) == 0 else {
+            // Without its identity, this empty file cannot be told apart from one put in its
+            // place, so it is left alone.
             let error = errno
-            var metadata = stat()
-            if lstat(destination.path, &metadata) == 0, metadata.st_size == 0 { unlink(destination.path) }
+            close(output)
             throw failure(destination, error)
         }
+        let identity = ReadingFileIdentity(metadata)
+        var isOpen = true
+        do {
+            try claimed(identity)
+            try copy(from: input, to: output, destination: destination)
+            if fsync(output) != 0, errno != ENOTSUP, errno != EINVAL { throw failure(destination, errno) }
+            isOpen = false
+            if close(output) != 0 { throw failure(destination, errno) }
+            guard ReadingFileIdentity.of(destination) == identity else {
+                throw HolosError.io("\(destination.path) was replaced while the reading was saved to it; the other file is kept.")
+            }
+        } catch {
+            if isOpen { close(output) }
+            removeIfIdentical(destination, to: identity)
+            throw error
+        }
+    }
+
+    private static func copy(from input: Int32, to output: Int32, destination: URL) throws {
+        let size = 1 << 20
+        let buffer = UnsafeMutableRawPointer.allocate(byteCount: size, alignment: 16)
+        defer { buffer.deallocate() }
+        while true {
+            // A cancelled render (Ctrl-C) stops here, and the partial copy is removed.
+            try Task.checkCancellation()
+            let count = read(input, buffer, size)
+            if count == 0 { return }
+            if count < 0 {
+                if errno == EINTR { continue }
+                throw failure(destination, errno)
+            }
+            var offset = 0
+            while offset < count {
+                let written = write(output, buffer + offset, count - offset)
+                if written < 0 {
+                    if errno == EINTR { continue }
+                    throw failure(destination, errno)
+                }
+                offset += written
+            }
+        }
+    }
+
+    /// Removes `url` when it is still the file `identity` describes; anything else is kept.
+    static func removeIfIdentical(_ url: URL, to identity: ReadingFileIdentity) {
+        guard ReadingFileIdentity.of(url) == identity else { return }
+        _ = unlink(url.path)
     }
 
     private static func failure(_ destination: URL, _ error: Int32) -> HolosError {
@@ -391,11 +487,14 @@ final class ReadingDirectoryLock {
 
     private init(descriptor: Int32) { self.descriptor = descriptor }
 
+    /// A hash of the directory's canonical path.
+    static func key(for directory: URL) -> String {
+        sha256(Data(directory.standardizedFileURL.resolvingSymlinksInPath().path.utf8))
+    }
+
     static func acquire(for directory: URL) throws -> ReadingDirectoryLock {
-        let canonical = directory.standardizedFileURL.resolvingSymlinksInPath()
-        let parent = canonical.deletingLastPathComponent()
-        let key = sha256(Data(canonical.path.utf8))
-        let path = parent.appendingPathComponent(".holos-reading-\(key).lock").path
+        let parent = directory.standardizedFileURL.resolvingSymlinksInPath().deletingLastPathComponent()
+        let path = parent.appendingPathComponent(".holos-reading-\(key(for: directory)).lock").path
         let descriptor = open(path, O_CREAT | O_RDWR | O_CLOEXEC | O_NOFOLLOW, 0o600)
         guard descriptor >= 0 else {
             throw HolosError.io("Could not open reading lock: \(String(cString: strerror(errno)))")
@@ -423,8 +522,129 @@ final class ReadingDirectoryLock {
     }
 }
 
+/// Which file a path named at one moment: its volume, inode, and creation time. A file removed
+/// and another created at the same path (even reusing the inode number) compare unequal.
+public struct ReadingFileIdentity: Codable, Sendable, Equatable {
+    public let device: Int64
+    public let inode: UInt64
+    public let birthSeconds: Int64
+    public let birthNanoseconds: Int64
+
+    init(_ metadata: stat) {
+        device = Int64(metadata.st_dev)
+        inode = UInt64(metadata.st_ino)
+        birthSeconds = Int64(metadata.st_birthtimespec.tv_sec)
+        birthNanoseconds = Int64(metadata.st_birthtimespec.tv_nsec)
+    }
+
+    /// The regular file at `url` (a link is not followed), or nil.
+    static func of(_ url: URL) -> ReadingFileIdentity? {
+        var metadata = stat()
+        guard lstat(url.path, &metadata) == 0, (metadata.st_mode & S_IFMT) == S_IFREG else { return nil }
+        return ReadingFileIdentity(metadata)
+    }
+}
+
+/// The names of the temporary files a reading creates, and the removal of ones an interrupted run
+/// left behind. Each name carries a marker only this reading's runs use, so a sweep never touches
+/// another reading's (or anyone else's) files:
+/// - beside the output: `.holos-join-<reading key>-<run UUID>.m4a`, the joined file before it is
+///   published. The key is a hash of the cache directory, whose lock serializes runs, so one
+///   with another run's UUID is left over from an earlier run;
+/// - in the cache: `.holos-manifest-<UUID>.tmp`, a manifest being saved;
+/// - in the cache's `parts`: `.holos-<UUID>.<ext>` from the speech renderer and
+///   `.invalid-<UUID>-<part>`, a part that failed its checksum.
+enum ReadingTemporaries {
+    static let joinPrefix = ".holos-join-"
+    static let manifestPrefix = ".holos-manifest-"
+    static let manifestSuffix = ".tmp"
+    static let rendererPrefix = ".holos-"
+    static let invalidPrefix = ".invalid-"
+
+    static func key(for directory: URL) -> String { String(ReadingDirectoryLock.key(for: directory).prefix(16)) }
+
+    static func joinName(key: String, run: UUID) -> String {
+        "\(joinPrefix)\(key)-\(run.uuidString).\(ReadingAudioFormat.fileExtension)"
+    }
+
+    static func manifestName() -> String { "\(manifestPrefix)\(UUID().uuidString)\(manifestSuffix)" }
+
+    /// Removes this reading's temporaries from earlier runs: regular files owned by this user whose
+    /// names match exactly, except the current run's.
+    static func sweep(workDirectory: URL, outputFolder: URL, key: String, currentRun: UUID) {
+        let joinStart = "\(joinPrefix)\(key)-"
+        let joinEnd = "." + ReadingAudioFormat.fileExtension
+        remove(in: outputFolder) { name in
+            guard let run = uuid(between: joinStart, and: joinEnd, in: name) else { return false }
+            return run != currentRun
+        }
+        remove(in: workDirectory) { name in
+            uuid(between: manifestPrefix, and: manifestSuffix, in: name) != nil
+        }
+        remove(in: workDirectory.appendingPathComponent("parts")) { name in
+            if name.hasPrefix(invalidPrefix) {
+                let rest = name.dropFirst(invalidPrefix.count)
+                guard rest.count > 37, UUID(uuidString: String(rest.prefix(36))) != nil else { return false }
+                return rest.dropFirst(36).first == "-"
+            }
+            guard name.hasPrefix(rendererPrefix), let dot = name.lastIndex(of: ".") else { return false }
+            let stem = name[name.index(name.startIndex, offsetBy: rendererPrefix.count)..<dot]
+            let ext = name[name.index(after: dot)...]
+            return UUID(uuidString: String(stem)) != nil && !ext.isEmpty
+                && ext.allSatisfy { $0.isASCII && ($0.isLetter || $0.isNumber) }
+        }
+    }
+
+    private static func uuid(between prefix: String, and suffix: String, in name: String) -> UUID? {
+        guard name.hasPrefix(prefix), name.hasSuffix(suffix), name.count > prefix.count + suffix.count else { return nil }
+        return UUID(uuidString: String(name.dropFirst(prefix.count).dropLast(suffix.count)))
+    }
+
+    private static func remove(in folder: URL, where matches: (String) -> Bool) {
+        guard let names = try? FileManager.default.contentsOfDirectory(atPath: folder.path) else { return }
+        for name in names where matches(name) {
+            let path = folder.appendingPathComponent(name).path
+            var metadata = stat()
+            guard lstat(path, &metadata) == 0, (metadata.st_mode & S_IFMT) == S_IFREG,
+                  metadata.st_uid == getuid() else { continue }
+            _ = unlink(path)
+        }
+    }
+}
+
 private func sha256(_ data: Data) -> String {
-    SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+    hex(SHA256.hash(data: data))
+}
+
+private func hex(_ digest: SHA256.Digest) -> String {
+    digest.map { String(format: "%02x", $0) }.joined()
+}
+
+/// SHA-256 of a file read in 1 MiB chunks, so a book-length file never sits in memory at once.
+func fileSHA256(_ url: URL) throws -> String {
+    let handle = try FileHandle(forReadingFrom: url)
+    defer { try? handle.close() }
+    var hasher = SHA256()
+    while true {
+        let done = try autoreleasepool { () throws -> Bool in
+            guard let chunk = try handle.read(upToCount: 1 << 20), !chunk.isEmpty else { return true }
+            hasher.update(data: chunk)
+            return false
+        }
+        if done { break }
+    }
+    return hex(hasher.finalize())
+}
+
+/// The contents of a file expected to be small; a larger one is an error, not read whole.
+private func readSmallFile(_ url: URL, maximumBytes: Int) throws -> Data {
+    let handle = try FileHandle(forReadingFrom: url)
+    defer { try? handle.close() }
+    let data = try handle.read(upToCount: maximumBytes + 1) ?? Data()
+    guard data.count <= maximumBytes else {
+        throw HolosError.invalidInput("\(url.path) is larger than \(maximumBytes) bytes.")
+    }
+    return data
 }
 
 private func save(_ manifest: ReadingManifest, to url: URL) throws {
@@ -434,7 +654,7 @@ private func save(_ manifest: ReadingManifest, to url: URL) throws {
 }
 
 private func atomicWrite(_ data: Data, to url: URL) throws {
-    let temporary = url.deletingLastPathComponent().appendingPathComponent(".holos-\(UUID().uuidString).tmp")
+    let temporary = url.deletingLastPathComponent().appendingPathComponent(ReadingTemporaries.manifestName())
     try data.write(to: temporary, options: [.withoutOverwriting])
     if rename(temporary.path, url.path) != 0 {
         let message = String(cString: strerror(errno))

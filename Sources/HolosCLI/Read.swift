@@ -2,6 +2,7 @@ import ArgumentParser
 import Foundation
 import HolosContent
 import HolosCore
+import HolosMeeting
 import HolosSynthesis
 
 struct Read: AsyncParsableCommand {
@@ -90,13 +91,38 @@ struct Read: AsyncParsableCommand {
         let location = try ReadingOutput.locate(
             output: output, name: ReadingOutput.fileName(title: metadata.title, fallback: fallbackName),
             identity: identity, readingsRoot: readings, resume: resume)
+        let resumeHint = "To continue, run the same command with --resume --output \"\(output ?? location.workDirectory.path)\"."
+        // Ctrl-C (or SIGTERM) cancels the render, so its cleanup runs (the partly joined file is
+        // removed; rendered parts are kept for --resume), then the command exits 130 (143). A
+        // second one ends the process at once; the next run removes what that leaves behind.
+        let pipeline = ReadingPipeline()
+        let work = CancellableStart<ReadingResult>()
+        let interrupt = InterruptCancellation(notice: {
+            Console.error("Stopping… (press Ctrl-C again to quit at once)")
+        }) { work.cancel() }
+        defer { interrupt.restore() }
+        let voiceIdentifier = selected.id
+        let rate = rate
+        let resume = resume
         let result: ReadingResult
         do {
-            result = try await ReadingPipeline().render(script: script, voiceIdentifier: selected.id, rate: rate,
-                                                        metadata: metadata, location: location, resume: resume)
-        } catch HolosError.incomplete(let message) {
-            throw HolosError.incomplete(message + "\nTo continue, run the same command with --resume --output \"\(output ?? location.workDirectory.path)\".")
+            result = try await work.start { @MainActor in
+                try await pipeline.render(script: script, voiceIdentifier: voiceIdentifier, rate: rate,
+                                          metadata: metadata, location: location, resume: resume)
+            }.value
+        } catch {
+            interrupt.restore()
+            if let signal = interrupt.signal {
+                Console.error("Reading interrupted. \(resumeHint)")
+                throw ExitCode(InterruptLatch.exitCode(for: signal))
+            }
+            if case HolosError.incomplete(let message) = error {
+                throw HolosError.incomplete(message + "\n" + resumeHint)
+            }
+            throw error
         }
+        // Playback is not part of the render: Ctrl-C there ends the process as usual.
+        interrupt.restore()
         Console.output(result.output.path)
         if play {
             guard try await SpeechPlayback.play(file: result.output) else {

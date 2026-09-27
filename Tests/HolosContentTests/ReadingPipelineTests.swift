@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import HolosCore
 import HolosSynthesis
@@ -28,6 +29,28 @@ import Testing
         for part in parts { data += try Data(contentsOf: part.url) }
         try data.write(to: output, options: [.withoutOverwriting])
         return AudioBookSummary(url: output, duration: Double(parts.count), chapters: [])
+    }
+}
+
+/// Writes part of the joined file, then waits until its task is cancelled.
+@MainActor private final class HangingJoiner: ReadingAudioJoiner {
+    private var entered = false
+    private var arrival: CheckedContinuation<Void, Never>?
+    var temporary: URL?
+
+    func join(parts: [AudioBookPart], metadata: AudioBookMetadata,
+              to output: URL) async throws -> AudioBookSummary {
+        try Data("partial".utf8).write(to: output, options: [.withoutOverwriting])
+        temporary = output
+        entered = true
+        arrival?.resume()
+        arrival = nil
+        while true { try await Task.sleep(for: .seconds(3_600)) }
+    }
+
+    func waitUntilJoining() async {
+        if entered { return }
+        await withCheckedContinuation { arrival = $0 }
     }
 }
 
@@ -402,5 +425,261 @@ import Testing
         _ = try await pipeline.render(script: script, voiceIdentifier: voice, metadata: metadata,
                                       location: place, resume: true)
         #expect(renderer.calls == 1)
+    }
+
+    private func manifest(_ place: ReadingLocation) throws -> ReadingManifest {
+        try JSONDecoder().decode(ReadingManifest.self,
+                                 from: Data(contentsOf: place.workDirectory.appendingPathComponent(ReadingManifest.fileName)))
+    }
+
+    private func write(_ manifest: ReadingManifest, _ place: ReadingLocation) throws {
+        try JSONEncoder().encode(manifest)
+            .write(to: place.workDirectory.appendingPathComponent(ReadingManifest.fileName))
+    }
+
+    private func joinTemporaries(_ folder: URL) throws -> [String] {
+        try FileManager.default.contentsOfDirectory(atPath: folder.path).filter { $0.hasPrefix(ReadingTemporaries.joinPrefix) }
+    }
+
+    @Test func streamedChecksumMatchesWholeFileChecksum() throws {
+        let parent = try root()
+        defer { try? FileManager.default.removeItem(at: parent) }
+        let file = parent.appendingPathComponent("large.bin")
+        // Several read chunks and a partial last one.
+        var data = Data(count: (3 << 20) + 12_345)
+        for index in data.indices { data[index] = UInt8(truncatingIfNeeded: index &* 31 &+ index >> 11) }
+        try data.write(to: file)
+        let whole = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+        #expect(try fileSHA256(file) == whole)
+        try Data().write(to: parent.appendingPathComponent("empty.bin"))
+        #expect(try fileSHA256(parent.appendingPathComponent("empty.bin"))
+            == SHA256.hash(data: Data()).map { String(format: "%02x", $0) }.joined())
+    }
+
+    @Test func fallbackPublicationCopiesIntoItsOwnFileAndNeverReplacesAnother() throws {
+        let parent = try root()
+        defer { try? FileManager.default.removeItem(at: parent) }
+        let source = parent.appendingPathComponent(".holos-source.m4a")
+        let destination = parent.appendingPathComponent("Book.m4a")
+        let unsupported: ReadingPublisher.ExclusiveRename = { _, _ in
+            errno = ENOTSUP
+            return -1
+        }
+        var large = Data(count: (2 << 20) + 777)
+        for index in large.indices { large[index] = UInt8(truncatingIfNeeded: index) }
+
+        // The destination's identity is reported before any byte is written, and it is the
+        // file that ends up there.
+        try large.write(to: source)
+        var claimed: ReadingFileIdentity?
+        try ReadingPublisher.publish(source, to: destination, exclusiveRename: unsupported) { identity throws in
+            #expect(try Data(contentsOf: destination).isEmpty)
+            claimed = identity
+        }
+        #expect(try Data(contentsOf: destination) == large)
+        #expect(claimed != nil && ReadingFileIdentity.of(destination) == claimed)
+        #expect(!FileManager.default.fileExists(atPath: source.path))
+        try FileManager.default.removeItem(at: destination)
+
+        // Replaced after it was claimed: the replacement is kept and publishing fails.
+        try large.write(to: source)
+        #expect(throws: HolosError.self) {
+            try ReadingPublisher.publish(source, to: destination, exclusiveRename: unsupported) { _ in
+                try FileManager.default.removeItem(at: destination)
+                try Data("theirs".utf8).write(to: destination, options: [.withoutOverwriting])
+            }
+        }
+        #expect(try Data(contentsOf: destination) == Data("theirs".utf8))
+        #expect(FileManager.default.fileExists(atPath: source.path))
+        try FileManager.default.removeItem(at: destination)
+
+        // A failure after the claim removes only the file this publication created.
+        struct Refused: Error {}
+        #expect(throws: Refused.self) {
+            try ReadingPublisher.publish(source, to: destination, exclusiveRename: unsupported) { _ in throw Refused() }
+        }
+        #expect(!FileManager.default.fileExists(atPath: destination.path))
+        #expect(FileManager.default.fileExists(atPath: source.path))
+    }
+
+    @Test func fallbackPublicationFailsWhenTheDestinationAppearsFirst() async throws {
+        let parent = try root()
+        defer { try? FileManager.default.removeItem(at: parent) }
+        let place = location(parent)
+        let destination = place.output
+        // Another process creates the file between the failed exclusive rename and the exclusive create.
+        let pipeline = ReadingPipeline(renderer: FakeRenderer(), joiner: FakeJoiner(), exclusiveRename: { _, target in
+            _ = try? Data("theirs".utf8).write(to: URL(fileURLWithPath: target), options: [.withoutOverwriting])
+            errno = ENOTSUP
+            return -1
+        })
+        await #expect(throws: HolosError.self) {
+            try await pipeline.render(script: script(3), voiceIdentifier: voice, metadata: metadata, location: place)
+        }
+        #expect(try Data(contentsOf: destination) == Data("theirs".utf8))
+        #expect(try joinTemporaries(parent).isEmpty)
+        let saved = try manifest(place)
+        #expect(saved.status == "incomplete")
+        #expect(saved.outputSHA256 == nil)
+        #expect(saved.publishing == nil)
+        // Their file stays in the way until it is moved; then the reading resumes and publishes.
+        await #expect(throws: HolosError.self) {
+            try await pipeline.render(script: script(3), voiceIdentifier: voice, metadata: metadata,
+                                      location: place, resume: true)
+        }
+        #expect(try Data(contentsOf: destination) == Data("theirs".utf8))
+        try FileManager.default.removeItem(at: destination)
+        let resumed = try await ReadingPipeline(renderer: FakeRenderer(), joiner: FakeJoiner())
+            .render(script: script(3), voiceIdentifier: voice, metadata: metadata, location: place, resume: true)
+        #expect(resumed.manifest.status == "complete")
+    }
+
+    @Test func resumeRecognizesItsOwnCopyCutOffByACrash() async throws {
+        let parent = try root()
+        defer { try? FileManager.default.removeItem(at: parent) }
+        let place = location(parent)
+        let unsupported: ReadingPublisher.ExclusiveRename = { _, _ in
+            errno = ENOTSUP
+            return -1
+        }
+        let renderer = FakeRenderer()
+        let pipeline = ReadingPipeline(renderer: renderer, joiner: FakeJoiner(), exclusiveRename: unsupported)
+        let script = script(3)
+        let finished = try await pipeline.render(script: script, voiceIdentifier: voice, metadata: metadata, location: place)
+        #expect(finished.manifest.publishing == nil)
+        let full = try Data(contentsOf: place.output)
+
+        // The state a crash in the middle of the copy leaves: the destination's identity is saved,
+        // and the file holds only part of the reading.
+        var crashed = try manifest(place)
+        crashed.status = "incomplete"
+        crashed.publishing = try #require(ReadingFileIdentity.of(place.output))
+        try write(crashed, place)
+        let handle = try FileHandle(forWritingTo: place.output)
+        try handle.truncate(atOffset: UInt64(full.count / 2))
+        try handle.close()
+        let resumed = try await pipeline.render(script: script, voiceIdentifier: voice, metadata: metadata,
+                                                location: place, resume: true)
+        #expect(resumed.manifest.status == "complete")
+        #expect(resumed.manifest.publishing == nil)
+        #expect(try Data(contentsOf: place.output) == full)
+
+        // A file someone else put there after the crash is not this reading's, whatever the manifest says.
+        var stale = try manifest(place)
+        stale.status = "incomplete"
+        stale.publishing = try #require(ReadingFileIdentity.of(place.output))
+        try write(stale, place)
+        try FileManager.default.removeItem(at: place.output)
+        try Data("theirs".utf8).write(to: place.output)
+        await #expect(throws: HolosError.self) {
+            try await pipeline.render(script: script, voiceIdentifier: voice, metadata: metadata,
+                                      location: place, resume: true)
+        }
+        #expect(try Data(contentsOf: place.output) == Data("theirs".utf8))
+    }
+
+    @Test func resumeSweepsOnlyThisReadingsStaleTemporaries() async throws {
+        let parent = try root()
+        defer { try? FileManager.default.removeItem(at: parent) }
+        let place = location(parent)
+        let renderer = FakeRenderer()
+        renderer.failOnCall = 2
+        let pipeline = ReadingPipeline(renderer: renderer, joiner: FakeJoiner())
+        let script = script(6)
+        await #expect(throws: HolosError.self) {
+            try await pipeline.render(script: script, voiceIdentifier: voice, metadata: metadata,
+                                      location: place, maxPartUTF16Units: 120)
+        }
+        let key = ReadingTemporaries.key(for: place.workDirectory)
+        let parts = place.workDirectory.appendingPathComponent("parts")
+        // Left by earlier runs of this reading that were killed before their cleanup ran.
+        let stale = [
+            parent.appendingPathComponent(ReadingTemporaries.joinName(key: key, run: UUID())),
+            parent.appendingPathComponent(ReadingTemporaries.joinName(key: key, run: UUID())),
+            place.workDirectory.appendingPathComponent(ReadingTemporaries.manifestName()),
+            parts.appendingPathComponent(".holos-\(UUID().uuidString).caf"),
+            parts.appendingPathComponent(".invalid-\(UUID().uuidString)-part0001.caf"),
+        ]
+        // Another reading's temporary, names that only look similar, and the lock.
+        let kept = [
+            parent.appendingPathComponent(ReadingTemporaries.joinName(key: "0123456789abcdef", run: UUID())),
+            parent.appendingPathComponent(".holos-\(UUID().uuidString).m4a"),
+            parent.appendingPathComponent(".holos-join-\(key)-notes.m4a"),
+            parent.appendingPathComponent("Other.m4a"),
+            place.workDirectory.appendingPathComponent(".holos-manifest-mine.tmp"),
+            parts.appendingPathComponent(".holos-notes.caf"),
+        ]
+        for file in stale + kept { try Data("x".utf8).write(to: file) }
+        let locks = try FileManager.default.contentsOfDirectory(atPath: parent.path).filter { $0.hasPrefix(".holos-reading-") }
+        #expect(locks.count == 1)
+
+        renderer.failOnCall = nil
+        let result = try await pipeline.render(script: script, voiceIdentifier: voice, metadata: metadata,
+                                               location: place, resume: true, maxPartUTF16Units: 120)
+        #expect(result.manifest.status == "complete")
+        for file in stale { #expect(!FileManager.default.fileExists(atPath: file.path), "\(file.lastPathComponent)") }
+        // The parts folder goes with its contents once the reading is published.
+        for file in kept where file.deletingLastPathComponent() != parts {
+            #expect(FileManager.default.fileExists(atPath: file.path), "\(file.lastPathComponent)")
+        }
+        #expect(try FileManager.default.contentsOfDirectory(atPath: parent.path).filter { $0.hasPrefix(".holos-reading-") } == locks)
+    }
+
+    @Test func sweepKeepsForeignNamesInsideTheCache() throws {
+        let parent = try root()
+        defer { try? FileManager.default.removeItem(at: parent) }
+        let work = parent.appendingPathComponent("work")
+        let parts = work.appendingPathComponent("parts")
+        try FileManager.default.createDirectory(at: parts, withIntermediateDirectories: true)
+        let current = UUID()
+        let key = ReadingTemporaries.key(for: work)
+        let active = parent.appendingPathComponent(ReadingTemporaries.joinName(key: key, run: current))
+        let stale = parts.appendingPathComponent(".holos-\(UUID().uuidString).m4a")
+        let kept = [active, parts.appendingPathComponent("part0001.caf"),
+                    parts.appendingPathComponent(".invalid-\(UUID().uuidString)"),
+                    parts.appendingPathComponent(".holos-\(UUID().uuidString).")]
+        for file in kept + [stale] { try Data("x".utf8).write(to: file) }
+        ReadingTemporaries.sweep(workDirectory: work, outputFolder: parent, key: key, currentRun: current)
+        #expect(!FileManager.default.fileExists(atPath: stale.path))
+        for file in kept { #expect(FileManager.default.fileExists(atPath: file.path), "\(file.lastPathComponent)") }
+    }
+
+    @Test func cancellingTheRenderRemovesThePartlyJoinedFileAndKeepsParts() async throws {
+        let parent = try root()
+        defer { try? FileManager.default.removeItem(at: parent) }
+        let place = location(parent)
+        let renderer = FakeRenderer()
+        let joiner = HangingJoiner()
+        let pipeline = ReadingPipeline(renderer: renderer, joiner: joiner)
+        let script = script(3)
+        let voice = self.voice
+        let metadata = self.metadata
+        let task = Task { try await pipeline.render(script: script, voiceIdentifier: voice, metadata: metadata, location: place) }
+        // What `voiceislocal read` does on SIGINT: the latch cancels the render task once.
+        let latch = InterruptLatch { task.cancel() }
+        await joiner.waitUntilJoining()
+        let temporary = try #require(joiner.temporary)
+        #expect(FileManager.default.fileExists(atPath: temporary.path))
+        #expect(latch.fire(SIGINT))
+        #expect(!latch.fire(SIGTERM))
+        #expect(latch.signal == SIGINT)
+        #expect(InterruptLatch.exitCode(for: SIGINT) == 130)
+        #expect(InterruptLatch.exitCode(for: SIGTERM) == 143)
+        do {
+            _ = try await task.value
+            Issue.record("A cancelled render should throw.")
+        } catch {}
+        #expect(!FileManager.default.fileExists(atPath: temporary.path))
+        #expect(try joinTemporaries(parent).isEmpty)
+        #expect(!FileManager.default.fileExists(atPath: place.output.path))
+        let saved = try manifest(place)
+        #expect(saved.parts.allSatisfy { $0.status == "complete" })
+
+        // --resume reuses every rendered part.
+        let calls = renderer.calls.count
+        let resumed = try await ReadingPipeline(renderer: renderer, joiner: FakeJoiner())
+            .render(script: script, voiceIdentifier: voice, metadata: metadata, location: place, resume: true)
+        #expect(resumed.manifest.status == "complete")
+        #expect(renderer.calls.count == calls)
     }
 }
