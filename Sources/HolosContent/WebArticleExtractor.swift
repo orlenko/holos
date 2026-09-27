@@ -11,8 +11,11 @@ import WebKit
 /// `main`, which Swift drives with `CFRunLoopRun`).
 @MainActor public final class WebArticleExtractor {
     public struct Options: Sendable {
-        /// How long to wait for the page to finish loading. When it runs out, a page whose document has been
-        /// parsed is read anyway; one still loading is an error.
+        /// How long the load phase of each document lasts in all: the wait for the page to finish loading and,
+        /// when that runs out, the check whether its document has been parsed share this one deadline (see
+        /// `waitForLoad`). A parsed page is then read anyway; one still loading is an error. Also how long the
+        /// reads may run past the last scheduled one: every read's script shares the deadline `loadTimeout` after
+        /// the end of the retry window.
         public var loadTimeout: Duration
         /// The pause after loading before the first read, so scripts can build the page; also the interval
         /// between later reads.
@@ -32,22 +35,29 @@ import WebKit
         }
     }
 
+    /// Runs a script in a web view with a time limit and returns its string result (see `run`).
+    typealias Evaluator = @MainActor (_ body: String, _ webView: WKWebView, _ timeout: Duration) async throws -> String
+
     private let options: Options
     private let configureWebView: @MainActor (WKWebViewConfiguration) -> Void
     /// The schemes a main-frame document may have: https, plus schemes tests serve themselves.
     private let documentSchemes: Set<String>
+    private let evaluate: Evaluator
 
     public convenience init(options: Options = Options()) {
         self.init(options: options, configure: { _ in })
     }
 
     /// `configure` adjusts each web view's configuration before the view is made (tests register URL schemes);
-    /// `documentSchemes` lists the schemes a main-frame document may have (tests add the ones they serve).
+    /// `documentSchemes` lists the schemes a main-frame document may have (tests add the ones they serve);
+    /// `evaluate` runs every script (tests stand in for WebKit's answers).
     init(options: Options, documentSchemes: Set<String> = ["https"],
-         configure: @escaping @MainActor (WKWebViewConfiguration) -> Void) {
+         configure: @escaping @MainActor (WKWebViewConfiguration) -> Void,
+         evaluate: @escaping Evaluator = { try await WebArticleExtractor.run($0, in: $1, timeout: $2) }) {
         self.options = options
         self.documentSchemes = documentSchemes
         self.configureWebView = configure
+        self.evaluate = evaluate
     }
 
     /// Loads an `https` page and extracts its article.
@@ -76,10 +86,13 @@ import WebKit
             webView.navigationDelegate = nil
         }
         let baseURL = URL(string: "https://example.invalid/")!
-        guard try await loader.load(timeout: options.loadTimeout, start: {
-            webView.loadHTMLString(html, baseURL: baseURL)
-        }) == .finished else { throw HolosError.unavailable("Timed out loading the article HTML.") }
-        let json = try await Self.run(Self.conversionScript, in: webView, timeout: options.loadTimeout)
+        // The load and the script share one deadline.
+        let deadline = Deadline(options.loadTimeout)
+        let loadWait = deadline.remaining(reserving: Self.scriptReserve(for: options.loadTimeout))
+        guard try await loader.load(timeout: loadWait, start: { webView.loadHTMLString(html, baseURL: baseURL) })
+            == .finished
+        else { throw HolosError.unavailable("Timed out loading the article HTML.") }
+        let json = try await evaluate(Self.conversionScript, webView, deadline.remaining())
         let raw = try JSONDecoder().decode([Payload.RawBlock].self, from: Data(json.utf8))
         return WebArticle.assemble(url: baseURL, title: nil, byline: nil, siteName: nil, language: nil,
                                    raw: raw.map { ($0.level, $0.text) }).blocks
@@ -124,13 +137,16 @@ import WebKit
             let ready = ContinuousClock.now
             let mark = loader.mark
             var refresh: Double?
-            for offset in Self.attemptSchedule(settle: options.settle, retryWindow: options.retryWindow) {
+            let schedule = Self.attemptSchedule(settle: options.settle, retryWindow: options.retryWindow)
+            // Every read's script shares one deadline: `loadTimeout` after the last scheduled read.
+            let reading = Deadline((schedule.last ?? .zero) + options.loadTimeout, from: ready)
+            for offset in schedule {
                 try await Task.sleep(until: ready + offset, clock: .continuous)
                 try loader.check()
                 if loader.moved(since: mark) { continue documentLoop }
                 let payload: Payload
                 do {
-                    let json = try await Self.run(Self.extractionScript, in: webView, timeout: options.loadTimeout)
+                    let json = try await evaluate(Self.extractionScript, webView, reading.remaining())
                     payload = try JSONDecoder().decode(Payload.self, from: Data(json.utf8))
                 } catch is CancellationError {
                     throw CancellationError()
@@ -181,24 +197,64 @@ import WebKit
                 + "file, and pass that file to voiceislocal read.")
     }
 
-    /// Waits for the main frame's latest navigation to finish loading. When `loadTimeout` passes first: a
-    /// navigation that was allowed but never started (it stayed within the document) is dropped; a committed
-    /// document that has been parsed is read anyway, and its loading is stopped; anything else (a navigation
-    /// that never committed: DNS, TLS, a server that never answers) is a timeout. Until the first navigation
+    /// Waits for the main frame's latest navigation to finish loading, within one `loadTimeout` deadline (see
+    /// `waitForLoad`). When the load wait runs out: a navigation that was allowed but never started (it stayed
+    /// within the document) is dropped; a committed document that has been parsed is read anyway, and its loading
+    /// is stopped; anything else (a navigation that never committed: DNS, TLS, a server that never answers; a
+    /// page that does not say in the time left whether it was parsed) is a timeout. Until the first navigation
     /// commits, the web view shows its empty initial document, which is never read.
     private func awaitDocument(in webView: WKWebView, loader: PageLoader, requested: URL) async throws {
-        guard try await loader.waitUntilSettled(timeout: options.loadTimeout) == .timedOut else { return }
-        loader.dropUnstartedNavigation()
-        if loader.phase == .loading,
-           try await Self.documentState(of: webView, timeout: options.loadTimeout) != "loading",
-           loader.phase == .loading {
-            webView.stopLoading()
-            loader.stoppedLoading()
-        }
+        let outcome = try await Self.waitForLoad(
+            timeout: options.loadTimeout, start: .now, now: { .now },
+            settle: { try await loader.waitUntilSettled(timeout: $0) },
+            probe: { timeLeft in
+                loader.dropUnstartedNavigation()
+                if loader.phase == .loading,
+                   try await self.documentState(of: webView, timeout: timeLeft) != "loading",
+                   loader.phase == .loading {
+                    webView.stopLoading()
+                    loader.stoppedLoading()
+                }
+            })
+        guard outcome == .timedOut else { return }
         try loader.check()
         guard loader.phase == .finished else {
             throw HolosError.unavailable("Timed out loading \(WebArticle.address(loader.destination ?? requested)).")
         }
+    }
+
+    /// One deadline shared by every wait of a phase: each wait gets the time left, never a fresh full timeout.
+    struct Deadline: Sendable, Equatable {
+        let end: ContinuousClock.Instant
+
+        init(_ duration: Duration, from start: ContinuousClock.Instant = .now) {
+            end = start + max(duration, .zero)
+        }
+
+        /// The time left at `now`, less `reserve` (kept for a later wait of the same phase); never negative.
+        func remaining(at now: ContinuousClock.Instant = .now, reserving reserve: Duration = .zero) -> Duration {
+            max((end - now) - max(reserve, .zero), .zero)
+        }
+    }
+
+    /// The part of a phase's `timeout` kept, after the wait for a load, for one script in the page (the
+    /// ready-state probe, or the conversion script): half, at most 2 s.
+    nonisolated static func scriptReserve(for timeout: Duration) -> Duration {
+        min(max(timeout, .zero) / 2, .seconds(2))
+    }
+
+    /// The load phase's waits under one deadline, `timeout` after `start`: `settle` waits for the load with the
+    /// time left less `scriptReserve(for: timeout)`; when it times out, `probe` (the ready-state check) gets
+    /// whatever is left of the same deadline, nothing more. Together they never get more than `timeout`, whatever
+    /// either does with its share. `now` reads the clock (tests pass their own). Returns `settle`'s outcome.
+    static func waitForLoad(timeout: Duration, start: ContinuousClock.Instant,
+                            now: () -> ContinuousClock.Instant,
+                            settle: (Duration) async throws -> PageLoader.Outcome,
+                            probe: (Duration) async throws -> Void) async throws -> PageLoader.Outcome {
+        let deadline = Deadline(timeout, from: start)
+        let outcome = try await settle(deadline.remaining(at: now(), reserving: scriptReserve(for: timeout)))
+        if outcome == .timedOut { try await probe(deadline.remaining(at: now())) }
+        return outcome
     }
 
     /// When to read the page, as offsets from the moment loading ended: the first read after `settle`, then one
@@ -235,9 +291,9 @@ import WebKit
 
     /// The document's `readyState`; "loading" when the page cannot say (a script error, or no answer in time).
     /// Cancellation is passed on.
-    private static func documentState(of webView: WKWebView, timeout: Duration) async throws -> String {
+    private func documentState(of webView: WKWebView, timeout: Duration) async throws -> String {
         do {
-            return try await run("return document.readyState;", in: webView, timeout: timeout)
+            return try await evaluate(Self.readyStateScript, webView, timeout)
         } catch is CancellationError {
             throw CancellationError()
         } catch {
@@ -246,10 +302,12 @@ import WebKit
     }
 
     /// Runs a function body in WebKit's client content world (the page's DOM, but not its scripts' globals) and
-    /// returns the string it resolves to. Ends with `ScriptTimeout` after `timeout`, and with `CancellationError`
-    /// as soon as the calling task is cancelled; WebKit's own completion is then ignored.
+    /// returns the string it resolves to. Ends with `ScriptTimeout` after `timeout` (at once when no time is left),
+    /// and with `CancellationError` as soon as the calling task is cancelled; WebKit's own completion is then
+    /// ignored.
     static func run(_ body: String, in webView: WKWebView, timeout: Duration) async throws -> String {
         try Task.checkCancellation()
+        guard timeout > .zero else { throw ScriptTimeout() }
         let result = OneShot<String>()
         webView.callAsyncJavaScript(body, arguments: [:], in: nil, in: .defaultClient) { outcome in
             result.resume(with: outcome.flatMap { value in
@@ -338,18 +396,20 @@ import WebKit
     """#
 
     /// Removes back-matter sections (references, notes, "see also", external links, further reading) from a copy
-    /// of the page before Readability runs: each such heading and every node after it (elements, loose text,
-    /// comments) up to the next heading of the same or a higher level. An element that holds such a heading is
-    /// entered, and only what comes before the heading inside it is removed. Heading text is compared without
-    /// bracketed marks (`[edit]`), leading section numbers, surrounding punctuation or symbols ("References:",
-    /// "Notes.", "See also —", "References ¶"), and case. A heading inside wrappers that hold nothing else
-    /// meaningful (Wikipedia's `<div class="mw-heading">` with its edit link, a `<div class="section-heading">`)
-    /// starts the section at the outermost such wrapper.
+    /// of the page before Readability runs. The section is everything after such a heading in document order
+    /// (elements, loose text, comments, across the ends of the elements that hold the heading) up to the next
+    /// heading of the same or a higher level, wherever that heading sits, or else to the end of the nearest
+    /// `article`, `main`, `aside`, or `nav` element holding the heading (the body when there is none). Elements
+    /// the section only partly covers stay, with the part before the section (the article text before the
+    /// heading, the part holding the next heading). The heading goes too, and so does each element that held it
+    /// and is left with nothing meaningful (Wikipedia's `<div class="mw-heading">` once its edit link is gone, a
+    /// `<div class="section-heading">`). Heading text is compared without bracketed marks (`[edit]`), leading
+    /// section numbers, surrounding punctuation or symbols ("References:", "Notes.", "See also —",
+    /// "References ¶"), and case.
     private static let backMatterRemover = #"""
     function holosDropBackMatter(doc) {
       const names = /^(references|notes|footnotes|citations|sources|bibliography|further reading|external links|see also|notes and references|references and notes|works cited)$/;
       const headings = "h1, h2, h3, h4, h5, h6";
-      const isHeading = (node) => node.nodeType === Node.ELEMENT_NODE && /^h[1-6]$/i.test(node.localName);
       const labelOf = (text) => text
         .replace(/\[[^\]]*\]/g, " ")
         .replace(/&/g, " and ")
@@ -360,41 +420,33 @@ import WebKit
       // Letters and digits only, without bracketed marks: what a listener would hear.
       const meaningful = (text) => text.replace(/\[[^\]]*\]/g, "").replace(/[^\p{L}\p{N}]+/gu, "").toLowerCase();
       const levelOf = (heading) => Number(heading.localName[1]);
-      // The highest (smallest-numbered) heading level in an element, itself included; 7 when it holds none.
-      const topLevel = (element) => {
-        let level = isHeading(element) ? levelOf(element) : 7;
-        for (const inner of element.querySelectorAll(headings)) level = Math.min(level, levelOf(inner));
-        return level;
-      };
-      // Removes `node` and every sibling node after it, of any type, up to the first heading of `level` or
-      // higher; an element holding such a heading is entered instead, and what precedes the heading in it goes.
-      const dropUntilHeading = (node, level) => {
-        while (node) {
-          const after = node.nextSibling;
-          if (node.nodeType === Node.ELEMENT_NODE && topLevel(node) <= level) {
-            if (!isHeading(node)) dropUntilHeading(node.firstChild, level);
-            return;
-          }
-          node.remove();
-          node = after;
-        }
-      };
+      const after = (node, other) =>
+        (node.compareDocumentPosition(other) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0 && !node.contains(other);
       for (const heading of Array.from(doc.querySelectorAll(headings))) {
         if (!heading.isConnected) continue;
         if (!names.test(labelOf(heading.textContent))) continue;
         const level = levelOf(heading);
-        const own = meaningful(heading.textContent);
-        let start = heading;
-        for (let parent = start.parentElement; parent && parent !== doc.body && parent !== doc.documentElement;
-             parent = parent.parentElement) {
-          if (meaningful(parent.textContent) !== own || parent.querySelectorAll(headings).length !== 1) break;
-          start = parent;
+        const root = heading.closest("article, main, aside, nav") || doc.body || doc.documentElement;
+        const end = Array.from(root.querySelectorAll(headings))
+          .find((other) => levelOf(other) <= level && after(heading, other));
+        // Everything between the heading and `end` in document order; a range leaves the elements it only
+        // partly covers in place, emptied of the part it covers.
+        const section = doc.createRange();
+        section.setStartAfter(heading);
+        if (end) section.setEndBefore(end); else section.setEnd(root, root.childNodes.length);
+        section.deleteContents();
+        let wrapper = heading.parentElement;
+        heading.remove();
+        while (wrapper && wrapper !== root && !meaningful(wrapper.textContent) && !wrapper.querySelector(headings)) {
+          const outer = wrapper.parentElement;
+          wrapper.remove();
+          wrapper = outer;
         }
-        dropUntilHeading(start.nextSibling, level);
-        start.remove();
       }
     }
     """#
+
+    static let readyStateScript = "return document.readyState;"
 
     private static let conversionScript = blockWalker + "\nreturn JSON.stringify(holosArticleBlocks(document.body));"
 

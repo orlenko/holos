@@ -20,6 +20,10 @@ private enum Fixture {
 
     static let log = "Harbour, A. Keeper's log, volume three. Private collection, 1998."
 
+    /// Article text that back-matter fixtures place near, or around, a back-matter heading.
+    static let closing = "The caretaker plans to write her own chapter in the logbook before the season ends, "
+        + "describing the winter storms and the ships that sheltered in the bay below the cape."
+
     static let references = "<h2>References</h2>\n<ol><li>\(log)</li></ol>"
 
     static let article = article(backMatter: references)
@@ -208,6 +212,23 @@ private enum Fixture {
 
     func webView(_ webView: WKWebView, stop urlSchemeTask: any WKURLSchemeTask) {
         held[ObjectIdentifier(urlSchemeTask)] = nil
+    }
+}
+
+/// Stands in for WebKit's script evaluation, and records each script and the time limit it was given.
+@MainActor private final class ScriptLog {
+    var calls: [(script: String, timeout: Duration)] = []
+
+    /// Records the script, then never answers: the wait ends only when its time limit does.
+    func neverAnswering(_ body: String, _ webView: WKWebView, _ timeout: Duration) async throws -> String {
+        calls.append((body, timeout))
+        return try await OneShot<String>().wait(timeout: timeout, orElse: .failure(WebArticleExtractor.ScriptTimeout()))
+    }
+
+    /// Records the script and answers at once that the page shows no article.
+    func noArticle(_ body: String, _ webView: WKWebView, _ timeout: Duration) async throws -> String {
+        calls.append((body, timeout))
+        return #"{"found":false}"#
     }
 }
 
@@ -496,7 +517,8 @@ private func isPrintable(_ text: String) -> Bool {
     @Test func aCommittedParsedPageIsReadWhenItsLoadTimesOut() async throws {
         // The page commits and parses, but an image never arrives, so loading never finishes.
         let handler = StallingSchemeHandler()
-        let options = WebArticleExtractor.Options(loadTimeout: .milliseconds(300), settle: .milliseconds(50),
+        // The load wait gets 1 s of the 2 s deadline; the ready-state probe gets what is left.
+        let options = WebArticleExtractor.Options(loadTimeout: .seconds(2), settle: .milliseconds(50),
                                                   retryWindow: .seconds(10), minimumWords: 50)
         let extractor = WebArticleExtractor(options: options) { $0.setURLSchemeHandler(handler, forURLScheme: "stall") }
         let article = try await extractor.extract(
@@ -535,6 +557,111 @@ private func isPrintable(_ text: String) -> Bool {
         await #expect(throws: WebArticleExtractor.ScriptTimeout.self) {
             _ = try await WebArticleExtractor.run("await new Promise(() => {}); return 'never';", in: webView,
                                                   timeout: .milliseconds(100))
+        }
+        // No time left: the script is not even started.
+        await #expect(throws: WebArticleExtractor.ScriptTimeout.self) {
+            _ = try await WebArticleExtractor.run("return 'late';", in: webView, timeout: .zero)
+        }
+    }
+
+    @Test func aDeadlineGivesEachWaitOnlyTheTimeLeft() {
+        let start = ContinuousClock.now
+        let deadline = WebArticleExtractor.Deadline(.seconds(10), from: start)
+        #expect(deadline.remaining(at: start) == .seconds(10))
+        #expect(deadline.remaining(at: start + .seconds(4)) == .seconds(6))
+        #expect(deadline.remaining(at: start + .seconds(4), reserving: .seconds(2)) == .seconds(4))
+        #expect(deadline.remaining(at: start + .seconds(9), reserving: .seconds(2)) == .zero)
+        #expect(deadline.remaining(at: start + .seconds(11)) == .zero)
+        #expect(WebArticleExtractor.Deadline(.seconds(-1), from: start).remaining(at: start) == .zero)
+        #expect(WebArticleExtractor.scriptReserve(for: .seconds(30)) == .seconds(2))
+        #expect(WebArticleExtractor.scriptReserve(for: .seconds(1)) == .milliseconds(500))
+        #expect(WebArticleExtractor.scriptReserve(for: .zero) == .zero)
+    }
+
+    @Test func theLoadWaitAndTheReadyStateProbeShareOneDeadline() async throws {
+        let start = ContinuousClock.now
+        let timeout = Duration.seconds(30)
+        // A load that never finishes and a probe that never answers: each uses all it is given, and the clock
+        // moves on by that much. Together they get the one timeout, no more.
+        var clock = start
+        var waits: [Duration] = []
+        var outcome = try await WebArticleExtractor.waitForLoad(
+            timeout: timeout, start: start, now: { clock },
+            settle: { waits.append($0); clock = clock + $0; return .timedOut },
+            probe: { waits.append($0); clock = clock + $0 })
+        #expect(outcome == .timedOut)
+        #expect(waits == [.seconds(28), .seconds(2)])
+        #expect(waits.reduce(.zero, +) == timeout)
+
+        // A load wait that overran its share (a late timer) leaves the probe only what is left, down to nothing.
+        for (overrun, left) in [(Duration.seconds(1), Duration.seconds(1)), (.seconds(5), .zero)] {
+            clock = start
+            waits = []
+            _ = try await WebArticleExtractor.waitForLoad(
+                timeout: timeout, start: start, now: { clock },
+                settle: { clock = clock + $0 + overrun; return .timedOut },
+                probe: { waits.append($0) })
+            #expect(waits == [left])
+        }
+
+        // Time spent in the phase before the load wait (the phase started earlier) counts too.
+        clock = start + .seconds(10)
+        waits = []
+        _ = try await WebArticleExtractor.waitForLoad(
+            timeout: timeout, start: start, now: { clock },
+            settle: { waits.append($0); clock = clock + $0; return .timedOut },
+            probe: { waits.append($0) })
+        #expect(waits == [.seconds(18), .seconds(2)])
+
+        // A load that finished needs no probe.
+        waits = []
+        outcome = try await WebArticleExtractor.waitForLoad(
+            timeout: timeout, start: start, now: { start },
+            settle: { _ in .finished }, probe: { waits.append($0) })
+        #expect(outcome == .finished)
+        #expect(waits.isEmpty)
+    }
+
+    @Test func aProbeThatNeverAnswersGetsOnlyWhatIsLeftOfTheLoadDeadline() async throws {
+        // The page commits but never finishes loading, and never answers a script: the ready-state probe must
+        // not start a fresh `loadTimeout` after the load wait used its share.
+        let handler = StallingSchemeHandler()
+        let log = ScriptLog()
+        let loadTimeout = Duration.seconds(4)
+        let options = WebArticleExtractor.Options(loadTimeout: loadTimeout, settle: .milliseconds(50),
+                                                  retryWindow: .milliseconds(100), minimumWords: 50)
+        let extractor = WebArticleExtractor(
+            options: options, configure: { $0.setURLSchemeHandler(handler, forURLScheme: "stall") },
+            evaluate: log.neverAnswering)
+        do {
+            _ = try await extractor.extract(html: Fixture.article(backMatter: Fixture.stalledImage),
+                                            baseURL: Fixture.base)
+            Issue.record("Expected the load to time out.")
+        } catch let HolosError.unavailable(message) {
+            #expect(message.contains("Timed out loading"), "\(message)")
+        }
+        #expect(log.calls.map(\.script) == [WebArticleExtractor.readyStateScript])
+        let reserve = WebArticleExtractor.scriptReserve(for: loadTimeout)
+        #expect(log.calls.allSatisfy { $0.timeout <= reserve }, "\(log.calls.map(\.timeout))")
+    }
+
+    @Test func everyReadGetsOnlyWhatIsLeftOfTheReadingDeadline() async throws {
+        let log = ScriptLog()
+        let options = WebArticleExtractor.Options(loadTimeout: .seconds(5), settle: .milliseconds(50),
+                                                  retryWindow: .milliseconds(200), minimumWords: 50)
+        let extractor = WebArticleExtractor(options: options, configure: { _ in }, evaluate: log.noArticle)
+        await #expect(throws: HolosError.self) {
+            _ = try await extractor.extract(html: Fixture.article, baseURL: Fixture.base)
+        }
+        let schedule = WebArticleExtractor.attemptSchedule(settle: options.settle, retryWindow: options.retryWindow)
+        let timeouts = log.calls.map(\.timeout)
+        #expect(timeouts.count == schedule.count)
+        // One deadline, `loadTimeout` after the last scheduled read: each read gets less than the one before, the
+        // first at most the rest of the window plus `loadTimeout`, the last at most `loadTimeout`.
+        #expect(zip(timeouts, timeouts.dropFirst()).allSatisfy { $0 > $1 }, "\(timeouts)")
+        if let first = timeouts.first, let last = timeouts.last, let window = schedule.last {
+            #expect(first <= window - schedule[0] + options.loadTimeout)
+            #expect(last <= options.loadTimeout)
         }
     }
 
@@ -633,38 +760,94 @@ private func isPrintable(_ text: String) -> Bool {
         }
     }
 
-    @Test func backMatterEndsAtTheNextHeadingOfItsLevelEvenInsideAWrapper() async throws {
-        let closing = "The caretaker plans to write her own chapter in the logbook before the season ends, "
-            + "describing the winter storms and the ships that sheltered in the bay below the cape."
-        let backMatter = #"""
-            <h2>References</h2>\#(Fixture.log)<!-- more --><div class="more"><p>Loose second reference, 2001.</p>
-            <h3>Archives</h3>Third loose line.<h2>Afterword</h2><p>\#(closing)</p></div>
-            """#
+    @Test(arguments: [
+        // The next heading of the section's level, later in a wrapper that follows the heading.
+        #"""
+        <h2>References</h2>\#(Fixture.log)<!-- more --><div class="more"><p>Loose second reference, 2001.</p>
+        <h3>Archives</h3>Third loose line.<h2>Afterword</h2><p>\#(Fixture.closing)</p></div>
+        """#,
+        // The next heading of the section's level sits in a different ancestor: the heading's wrappers end, the
+        // section crosses into the next ones, and stops at that heading. A lower-level heading on the way does not
+        // stop it.
+        #"""
+        <div class="refs"><h2>References</h2><ol><li>\#(Fixture.log)</li></ol></div>
+        <section><div><h3>Archives</h3><p>Loose second reference, 2001.</p></div>Third loose line.</section>
+        <section><div class="part"><h2>Afterword</h2><p>\#(Fixture.closing)</p></div></section>
+        """#,
+        // A higher-level heading, deeper than the back-matter heading, stops it too.
+        #"""
+        <section><header><h3>Sources</h3></header><p>\#(Fixture.log)</p></section>
+        <div><div><p>Loose second reference, 2001.</p><h2>Afterword</h2></div><p>\#(Fixture.closing)</p></div>
+        """#,
+    ])
+    func backMatterEndsAtTheNextHeadingOfItsLevelWhereverItSits(backMatter: String) async throws {
         let article = try await WebArticleExtractor(options: fast).extract(
             html: Fixture.article(backMatter: backMatter), baseURL: Fixture.base)
         let texts = article.blocks.map(\.text)
-        #expect(texts.contains(closing))
+        #expect(texts.contains(Fixture.paragraphs[2]))
+        #expect(texts.contains(Fixture.closing))
         #expect(texts.contains("Afterword"))
-        for noise in ["Keeper's log", "References", "Loose second", "Archives", "Third loose"] {
+        for noise in ["Keeper's log", "References", "Sources", "Loose second", "Archives", "Third loose"] {
+            #expect(!article.spokenText.contains(noise), "Leaked: \(noise)")
+        }
+    }
+
+    @Test(arguments: [
+        // The heading ends an inner division that holds article text; the list follows in the article.
+        #"""
+        <div class="closing"><p>\#(Fixture.closing)</p><h2>References</h2></div><ol><li>\#(Fixture.log)</li></ol>
+        """#,
+        // Deep in section > div > header, after article text in the section; the section goes on after the
+        // header's division, and loose text follows the section.
+        #"""
+        <section><p>\#(Fixture.closing)</p><div><header><h2>References</h2><a href="#r">¶</a></header>
+        <ol><li>\#(Fixture.log)</li></ol></div>
+        <ul><li>Loose second reference, 2001.</li></ul></section>Third loose line.
+        """#,
+        // Every wrapper of the heading ends right after it; the list is outside all of them.
+        #"""
+        <section><div class="closing"><p>\#(Fixture.closing)</p><div><header><h2>Notes</h2></header></div></div>
+        </section><div><ol><li>\#(Fixture.log)</li></ol></div><p>Loose second reference, 2001.</p>Third loose line.
+        """#,
+    ])
+    func backMatterGoesOnPastTheEndOfTheHeadingsWrappers(backMatter: String) async throws {
+        let article = try await WebArticleExtractor(options: fast).extract(
+            html: Fixture.article(backMatter: backMatter), baseURL: Fixture.base)
+        let texts = article.blocks.map(\.text)
+        // The article text before the heading stays, in the elements that also held the heading.
+        #expect(texts.contains(Fixture.paragraphs[2]))
+        #expect(texts.contains(Fixture.closing))
+        for noise in ["Keeper's log", "References", "Notes", "¶", "Loose second", "Third loose"] {
             #expect(!article.spokenText.contains(noise), "Leaked: \(noise)")
         }
     }
 
     @Test func otherHeadingsAndTheirWrappersStay() async throws {
         // Not a back-matter name, so the list is read; and a wrapper holding article text is never removed.
-        let closing = "The caretaker plans to write her own chapter in the logbook before the season ends, "
-            + "describing the winter storms and the ships that sheltered in the bay below the cape."
         let backMatter = #"""
             <h2>Notes on the lamp:</h2><ol><li>\#(Fixture.log)</li></ol>
-            <div class="closing"><p>\#(closing)</p><h2>References</h2></div>
+            <div class="closing"><p>\#(Fixture.closing)</p><h2>References</h2></div>
             """#
         let article = try await WebArticleExtractor(options: fast).extract(
             html: Fixture.article(backMatter: backMatter), baseURL: Fixture.base)
         let texts = article.blocks.map(\.text)
         #expect(texts.contains("Notes on the lamp:"))
         #expect(texts.contains(Fixture.log))
-        #expect(texts.contains(closing))
+        #expect(texts.contains(Fixture.closing))
         #expect(!texts.contains("References"))
+    }
+
+    @Test func backMatterStopsAtTheEndOfTheAsideThatHoldsIt() async throws {
+        // A "See also" box inside the article: only the box's list goes; the article text after the box stays.
+        let backMatter = #"""
+            <aside class="box"><h3>See also</h3><ul><li>\#(Fixture.log)</li></ul></aside><p>\#(Fixture.closing)</p>
+            """#
+        let article = try await WebArticleExtractor(options: fast).extract(
+            html: Fixture.article(backMatter: backMatter), baseURL: Fixture.base)
+        let texts = article.blocks.map(\.text)
+        #expect(texts.contains(Fixture.closing))
+        #expect(!article.spokenText.contains("Keeper's log"))
+        #expect(!article.spokenText.contains("See also"))
     }
 
     @Test func readabilityIsTheVendoredRelease() {
