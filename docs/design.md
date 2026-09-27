@@ -252,29 +252,52 @@ should claim to have solved.
 ### Text-to-speech
 
 Preserve AITTS's useful interaction patterns: immediate speech from arguments/stdin,
-queued playback, long text/URL input, saved source, ordered parts, and a playlist.
-Use a per-user playback lock and stale-message timeout so concurrent terminal
-callers do not talk over one another. Rendering and playback are separate stages.
+queued playback, long text/URL input, saved source, and resumable rendering. Use a
+per-user playback lock and stale-message timeout so concurrent terminal callers do not
+talk over one another. Rendering and playback are separate stages.
 
 Use AVSpeechSynthesizer buffer output with AVAudioFile/AVFoundation encoding.
-Start with AAC in `.m4a` plus WAV/CAF for lossless/debug use. Native MP3 encoding and
-OpenAI-style free-form voice instructions are not promised. Expose voice, rate,
-pitch, and pauses supported by the engine. Treat rate as a documented application
-setting rather than claiming parity with AITTS's speed multiplier.
+`say` writes AAC in `.m4a` plus WAV/CAF for lossless/debug use. OpenAI-style free-form
+voice instructions are not promised. Expose voice, rate, pitch, and pauses supported by
+the engine. Treat rate as a documented application setting rather than claiming parity
+with AITTS's speed multiplier.
 
-For long content, extract a clean document with title, attribution, headings, and
-paragraphs; split at semantic boundaries; synthesize sequentially first; save an
-ordered `.m3u8` playlist and manifest. Resume at failed/missing chunks using hashes
-of text, voice, engine version when available, and synthesis settings. A partial
-playlist must be explicitly identified as incomplete and return a nonzero status.
+A long reading is one file that is easy to send to a phone (AirDrop, Messages, Mail) and
+that any phone plays: AAC in `.m4a`, mono, 22.05 kHz, about 32 kbit/s (about 14 MB per
+hour; the constants live in `ReadingAudioFormat`). It plays on iPhone, Android, Windows,
+and in browsers. MP3 is not offered because macOS has no MP3 encoder. The file is named
+after the document's title and carries title, author, and "Voice is Local" as encoder
+metadata, plus a chapter at each heading (an MPEG-4 timed-text chapter track, which Apple
+Books, Podcasts, QuickTime, VLC, and ffmpeg read). The AITTS prototype's multi-part
+playlist existed only because of the OpenAI request limit; it is gone.
 
-Local text/Markdown precedes HTML articles. Swift has no assumed built-in equivalent
-of AITTS's Trafilatura: use a separately tested article-extraction adapter, potentially
-vendoring Mozilla Readability plus a suitable HTML DOM dependency. JavaScriptCore
-alone supplies no browser DOM. Freeze the extraction dependency only after a small
-prototype. Preserve source text for inspection; dynamic/authenticated pages can use
-a pasted/local-text fallback. PDFKit and Vision are later adapters. Foundation Models
-is not the default article extractor or narrator: it could omit source content.
+Every extractor produces a `ReadableDocument` (title, author, language, and sections of
+paragraphs under headings); the reading pipeline reads only that. The text is split at
+semantic boundaries that never cross a section, and the parts are synthesized in order
+into a cache of lossless PCM parts with a manifest. Resume re-renders only failed,
+missing, or changed parts, keyed by hashes of the text and by voice and rate; a changed
+source, voice, rate, title, or output is refused. The parts are then joined and encoded
+once into the `.m4a`, with a short pause between parts and a longer one before a
+section. The checksum of the finished file is saved before it is published, and the
+cache is deleted after, so the finished file is the only large thing kept. A failed
+reading publishes nothing and returns a nonzero status.
+
+Local files use built-in readers: text and Markdown (Foundation's Markdown parser; markup
+is dropped, link text kept, code blocks and images skipped, YAML front matter read for
+title and author), HTML (the tidying XML parser; scripts, navigation, forms, footers, and
+asides skipped), PDF (PDFKit text reflowed into paragraphs; scanned PDFs need OCR, which
+is not supported), and RTF, RTFD, Word, and OpenDocument (AppKit's document readers,
+headings from heading styles or larger/bold short lines). The voice is the best installed
+voice for the text's language (NaturalLanguage detects it): Premium over Enhanced over
+default, then the user's preferred regions, then the voice macOS uses for that language.
+`--voice` takes a name as `say -v '?'` prints it or an identifier.
+
+Web articles need a separate extractor: Swift has no built-in equivalent of AITTS's
+Trafilatura, and JavaScriptCore alone supplies no browser DOM. The planned
+`ArticleExtractor` loads the page in WKWebView and runs Mozilla Readability, producing a
+`ReadableDocument`. Preserve source text for inspection; dynamic/authenticated pages can
+use a saved-page or local-text fallback. Foundation Models is not the default article
+extractor or narrator: it could omit source content.
 
 Audition and export a short set of native voices before investing in the reading
 pipeline. Workflow replacement is feasible; equivalence to the preferred OpenAI

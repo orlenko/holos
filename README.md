@@ -168,7 +168,9 @@ voiceislocal="$BIN_DIR/voiceislocal"
 "$voiceislocal" say "The build is ready."      # native speech playback
 printf '%s\n' "Piped text" | "$voiceislocal" say
 "$voiceislocal" say --output greeting.m4a "Hello."
-"$voiceislocal" read ./article.md              # local UTF-8 text/Markdown to AAC playlist
+"$voiceislocal" read ./article.md              # one .m4a named after the title, to send to a phone
+"$voiceislocal" read ./paper.pdf -o ~/Desktop --voice "Ava (Premium)"
+"$voiceislocal" voices list --language en      # installed voices and their quality
 ```
 
 Recording sources are `mic`, `system`, and `mic+system`. macOS may request
@@ -284,8 +286,17 @@ good), keeping the transcript, speaker labels, and exports. Both refuse while th
 session is recording or another Voice is Local command is working on it.
 
 `say` accepts text arguments or UTF-8 stdin and can play speech or save `.m4a`,
-`.wav`, or `.caf`. `read` accepts a local UTF-8 text/Markdown file or `-` for stdin;
-Markdown is read verbatim. URL extraction and PDF/OCR are not implemented.
+`.wav`, or `.caf`. `read` turns a local .txt, .md, .html, .pdf, .rtf, .rtfd, .docx,
+.doc, or .odt file, or `-` for stdin, into one AAC `.m4a` (mono, about 14 MB per hour)
+named after the document's title, with a chapter at each heading. It plays on iPhone,
+Android, Windows, and in browsers; send it with AirDrop, Messages, or Mail. MP3 is not
+offered: macOS has no MP3 encoder. Without `--output` the file goes in Application
+Support/Holos/Readings/<UUID>/; `--output` takes a `.m4a` path or a directory. The voice
+is the best installed one for the text's language (Premium, then Enhanced); `--voice`
+takes a name as `say -v '?'` or `voices list` prints it, such as "Ava (Premium)". If no
+Premium voice is installed, download one in System Settings › Accessibility › Spoken
+Content › System Voice › Manage Voices. An interrupted reading continues with the same
+command plus `--resume`. Web addresses and OCR are not supported yet.
 
 Sessions are portable `.holos` directories. Inspect, recover, and retranscribe an
 inactive archive without replacing its saved audio or original transcript:

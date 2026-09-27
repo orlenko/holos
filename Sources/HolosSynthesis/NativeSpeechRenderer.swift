@@ -8,13 +8,21 @@ public struct VoiceDescriptor: Codable, Sendable, Equatable {
     public let id: String
     public let name: String
     public let language: String
+    /// "premium", "enhanced", "default", or "unknown".
     public let quality: String
+    /// Sound-effect voices such as Bubbles or Zarvox; never chosen as a default.
+    public let novelty: Bool
+    /// The user's own Personal Voice; never chosen as a default.
+    public let personal: Bool
 
-    public init(id: String, name: String, language: String, quality: String) {
+    public init(id: String, name: String, language: String, quality: String,
+                novelty: Bool = false, personal: Bool = false) {
         self.id = id
         self.name = name
         self.language = language
         self.quality = quality
+        self.novelty = novelty
+        self.personal = personal
     }
 }
 
@@ -45,8 +53,24 @@ public struct RenderedAudio: Codable, Sendable, Equatable {
             @unknown default: quality = "unknown"
             }
             return VoiceDescriptor(id: voice.identifier, name: voice.name,
-                                   language: voice.language, quality: quality)
+                                   language: voice.language, quality: quality,
+                                   novelty: voice.voiceTraits.contains(.isNoveltyVoice),
+                                   personal: voice.voiceTraits.contains(.isPersonalVoice))
         }
+    }
+
+    /// The voice macOS itself uses for `language` (a BCP 47 tag such as "en-US" or "fr").
+    public static func systemVoiceIdentifier(language: String) -> String? {
+        AVSpeechSynthesisVoice(language: language)?.identifier
+    }
+
+    /// The best installed voice for `language`: premium over enhanced over default, then the
+    /// user's preferred regions, then the voice macOS uses for that language.
+    public static func bestVoice(language: String) -> VoiceDescriptor? {
+        VoiceSelection.best(language: language, in: voices(),
+                            preferredLanguages: Locale.preferredLanguages,
+                            currentRegion: Locale.current.region?.identifier,
+                            systemDefault: systemVoiceIdentifier(language: language))
     }
 
     public static func defaultVoiceIdentifier() throws -> String {
