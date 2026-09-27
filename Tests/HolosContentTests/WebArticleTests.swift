@@ -17,7 +17,15 @@ private enum Fixture {
             + "the gulls that nest on the gallery rail and complain loudly whenever anyone opens the door.",
     ]
 
-    static let article = """
+    static let log = "Harbour, A. Keeper's log, volume three. Private collection, 1998."
+
+    static let references = "<h2>References</h2>\n<ol><li>\(log)</li></ol>"
+
+    static let article = article(backMatter: references)
+
+    /// The article page with `backMatter` after the last paragraph, inside the article.
+    static func article(backMatter: String) -> String {
+        """
         <!doctype html>
         <html lang="en"><head><meta charset="utf-8">
         <title>The Last Keeper of the Northern Cape | Coastal News</title>
@@ -37,12 +45,20 @@ private enum Fixture {
         <pre><code>let steps = 117 // counted by hand</code></pre>
         <ul><li>She checks the lens.</li><li>She wipes the windows with <code>fresh water</code>.</li></ul>
         <blockquote><p>\(paragraphs[2])</p></blockquote>
-        <h2>References</h2>
-        <ol><li>Harbour, A. Keeper's log, volume three. Private collection, 1998.</li></ol>
+        \(backMatter)
         </article></main>
         <footer><p>Copyright Coastal News. All rights reserved. Privacy policy. Cookie settings.</p></footer>
         </body></html>
         """
+    }
+
+    /// A page with no article whose script or meta refresh sends the main frame to `http`. The address is the
+    /// loopback discard port, and the navigation is refused before any request.
+    static func leavingHTTPS(_ head: String, _ body: String = "") -> String {
+        """
+        <!doctype html><html><head><title>Moving</title>\(head)</head><body><p>One moment.</p>\(body)</body></html>
+        """
+    }
 
     /// The same article, but the page builds it with a script a moment after loading.
     static var scripted: String {
@@ -171,6 +187,90 @@ private enum Fixture {
                 _ = try await WebArticleExtractor(options: fast).extract(from: URL(string: address)!)
             }
         }
+    }
+
+    @Test(arguments: [
+        // Script redirect while the page parses.
+        Fixture.leavingHTTPS("", #"<script>location.replace("http://127.0.0.1:9/next");</script>"#),
+        // Meta refresh.
+        Fixture.leavingHTTPS(#"<meta http-equiv="refresh" content="0; url=http://127.0.0.1:9/next">"#),
+        // Script redirect after the page has loaded and been read once.
+        Fixture.leavingHTTPS("", #"<script>setTimeout(function () { location.href = "http://127.0.0.1:9/next"; }, 250);</script>"#),
+    ])
+    func aMainFrameNavigationOffHTTPSIsRefused(page: String) async throws {
+        let options = WebArticleExtractor.Options(loadTimeout: .seconds(20), settle: .milliseconds(100),
+                                                  retryWindow: .seconds(5), minimumWords: 50)
+        do {
+            _ = try await WebArticleExtractor(options: options).extract(html: page, baseURL: Fixture.base)
+            Issue.record("Expected the http navigation to be refused.")
+        } catch let HolosError.unavailable(message) {
+            #expect(message.contains("http://127.0.0.1:9/next"), "\(message)")
+            #expect(message.contains("not https://"), "\(message)")
+        }
+    }
+
+    @Test func onlyHTTPSMainFrameAddressesPass() {
+        #expect(PageLoader.refusal(of: URL(string: "https://example.test/a")!) == nil)
+        #expect(PageLoader.refusal(of: URL(string: "HTTPS://example.test/a")!) == nil)
+        for address in ["http://example.test/a", "about:blank", "file:///etc/hosts", "data:text/html,x",
+                        "blob:https://example.test/1"] {
+            #expect(PageLoader.refusal(of: URL(string: address)!) != nil, "\(address)")
+        }
+        #expect(PageLoader.refusal(of: nil) != nil)
+    }
+
+    @Test func readsAreScheduledThroughTheEndOfTheRetryWindow() {
+        let schedule = WebArticleExtractor.attemptSchedule
+        // Defaults: first read 1 s after loading, then every second until 6 s after the first read.
+        #expect(schedule(.seconds(1), .seconds(6)) == (1...7).map { Duration.seconds($0) })
+        // A window that is not a whole number of intervals still ends with a read at its deadline.
+        #expect(schedule(.seconds(1), .milliseconds(2_500))
+            == [.seconds(1), .seconds(2), .seconds(3), .milliseconds(3_500)])
+        #expect(schedule(.milliseconds(400), .seconds(1))
+            == [.milliseconds(400), .milliseconds(800), .milliseconds(1_200), .milliseconds(1_400)])
+        #expect(schedule(.seconds(1), .zero) == [.seconds(1)])
+        #expect(schedule(.zero, .seconds(2)) == [.zero, .seconds(2)])
+        #expect(schedule(.zero, .zero) == [.zero])
+        #expect(schedule(.seconds(-1), .seconds(-1)) == [.zero])
+    }
+
+    @Test(arguments: [
+        #"<div class="section-heading"><h2>References</h2></div><ol><li>\#(Fixture.log)</li></ol>"#,
+        ##"<div class="mw-heading mw-heading2"><h2 id="References">References</h2><span class="mw-editsection"><span>[</span><a href="#e">edit</a><span>]</span></span></div><div class="reflist"><ol><li>\##(Fixture.log)</li></ol></div>"##,
+        ##"<div class="hd"><span class="title"><h2>Further reading</h2></span><a class="anchor" href="#f">#</a></div><ul><li>\##(Fixture.log)</li></ul>"##,
+        #"<h2>References:</h2><ol><li>\#(Fixture.log)</li></ol>"#,
+        #"<h2>Notes.</h2><ol><li>\#(Fixture.log)</li></ol>"#,
+        #"<h2>See also —</h2><ul><li>\#(Fixture.log)</li></ul>"#,
+        #"<h2>7. External Links</h2><ul><li>\#(Fixture.log)</li></ul>"#,
+        #"<h2>Notes &amp; References ¶</h2><ol><li>\#(Fixture.log)</li></ol>"#,
+        #"<section><header><h3>SOURCES</h3></header></section><p>\#(Fixture.log)</p>"#,
+    ])
+    func backMatterIsDroppedWhateverItsHeadingLooksLike(backMatter: String) async throws {
+        let article = try await WebArticleExtractor(options: fast).extract(
+            html: Fixture.article(backMatter: backMatter), baseURL: Fixture.base)
+        let spoken = article.spokenText
+        #expect(spoken.contains(Fixture.paragraphs[2]))
+        for noise in ["Keeper's log", "References", "Notes", "Further reading", "See also", "External",
+                      "SOURCES"] {
+            #expect(!spoken.contains(noise), "Leaked: \(noise)")
+        }
+    }
+
+    @Test func otherHeadingsAndTheirWrappersStay() async throws {
+        // Not a back-matter name, so the list is read; and a wrapper holding article text is never removed.
+        let closing = "The caretaker plans to write her own chapter in the logbook before the season ends, "
+            + "describing the winter storms and the ships that sheltered in the bay below the cape."
+        let backMatter = #"""
+            <h2>Notes on the lamp:</h2><ol><li>\#(Fixture.log)</li></ol>
+            <div class="closing"><p>\#(closing)</p><h2>References</h2></div>
+            """#
+        let article = try await WebArticleExtractor(options: fast).extract(
+            html: Fixture.article(backMatter: backMatter), baseURL: Fixture.base)
+        let texts = article.blocks.map(\.text)
+        #expect(texts.contains("Notes on the lamp:"))
+        #expect(texts.contains(Fixture.log))
+        #expect(texts.contains(closing))
+        #expect(!texts.contains("References"))
     }
 
     @Test func readabilityIsTheVendoredRelease() {

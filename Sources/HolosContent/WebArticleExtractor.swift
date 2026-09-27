@@ -13,9 +13,11 @@ import WebKit
         /// How long to wait for the page to finish loading. When it runs out, a page whose document has been
         /// parsed is read anyway; one still loading is an error.
         public var loadTimeout: Duration
-        /// The pause after loading before the first read, so scripts can build the page.
+        /// The pause after loading before the first read, so scripts can build the page; also the interval
+        /// between later reads.
         public var settle: Duration
-        /// How long to keep re-reading a page that shows no article yet (pages that render late).
+        /// How long after the first read to keep re-reading a page that shows no article yet (pages that render
+        /// late). The last read happens at the end of the window. See `attemptSchedule`.
         public var retryWindow: Duration
         /// Fewer words than this is "no article found".
         public var minimumWords: Int
@@ -80,11 +82,11 @@ import WebKit
             }
             webView.stopLoading()
         }
-        let deadline = ContinuousClock.now + options.retryWindow
+        let loaded = ContinuousClock.now
         var bestWords = 0
         var lastFailure: String?
-        while true {
-            try await Task.sleep(for: options.settle)
+        for offset in Self.attemptSchedule(settle: options.settle, retryWindow: options.retryWindow) {
+            try await Task.sleep(until: loaded + offset, clock: .continuous)
             if let rejection = loader.rejection { throw rejection }
             // A page that navigates again (a script redirect) can make one read fail; the next read sees the new page.
             let payload: Payload
@@ -94,16 +96,17 @@ import WebKit
             } catch {
                 payload = Payload(found: false, error: error.localizedDescription)
             }
+            // The page read must still be https: a navigation may have replaced it since loading.
+            let pageURL = webView.url ?? requested
+            if let refusal = PageLoader.refusal(of: pageURL) { throw loader.rejection ?? refusal }
             lastFailure = payload.error ?? lastFailure
             if payload.found {
-                let pageURL = webView.url.flatMap { $0.scheme == "about" ? nil : $0 } ?? requested
                 let article = WebArticle.assemble(
                     url: pageURL, title: payload.title, byline: payload.byline, siteName: payload.siteName,
                     language: payload.lang, raw: (payload.blocks ?? []).map { ($0.level, $0.text) })
                 if article.wordCount >= options.minimumWords { return article }
                 bestWords = max(bestWords, article.wordCount)
             }
-            if ContinuousClock.now + options.settle > deadline { break }
         }
         if bestWords == 0, let lastFailure {
             throw HolosError.unavailable("Article extraction failed on \(requested.absoluteString): \(lastFailure)")
@@ -113,6 +116,24 @@ import WebKit
             "Could not find article text on \(requested.absoluteString)\(found). The page may need a sign-in, "
                 + "show a paywall, or not be an article. Open it in a browser, save the article's text to a .txt "
                 + "file, and pass that file to voiceislocal read.")
+    }
+
+    /// When to read the page, as offsets from the moment loading ended: the first read after `settle`, then one
+    /// every `settle` until `retryWindow` after the first read, with a last read exactly at that deadline. With
+    /// the defaults (1 s, 6 s) that is 1, 2, … 7 s after loading.
+    nonisolated static func attemptSchedule(settle: Duration, retryWindow: Duration) -> [Duration] {
+        let first = max(settle, .zero)
+        let deadline = first + max(retryWindow, .zero)
+        var offsets = [first]
+        if first > .zero {
+            var next = first + first
+            while next < deadline {
+                offsets.append(next)
+                next += first
+            }
+        }
+        if let last = offsets.last, last < deadline { offsets.append(deadline) }
+        return offsets
     }
 
     private static func makeWebView() -> WKWebView {
@@ -202,22 +223,38 @@ import WebKit
 
     /// Removes back-matter sections (references, notes, "see also", external links, further reading) from a copy
     /// of the page before Readability runs: each such heading and the elements after it up to the next heading of
-    /// the same or a higher level.
+    /// the same or a higher level. Heading text is compared without bracketed marks (`[edit]`), leading section
+    /// numbers, surrounding punctuation or symbols ("References:", "Notes.", "See also —", "References ¶"), and
+    /// case. A heading inside wrappers that hold nothing else meaningful (Wikipedia's `<div class="mw-heading">`
+    /// with its edit link, a `<div class="section-heading">`) starts the section at the outermost such wrapper.
     private static let backMatterRemover = #"""
     function holosDropBackMatter(doc) {
-      const names = /^(references|notes|footnotes|citations|sources|bibliography|further reading|external links|see also|notes and references|references and notes|works cited)$/i;
+      const names = /^(references|notes|footnotes|citations|sources|bibliography|further reading|external links|see also|notes and references|references and notes|works cited)$/;
+      const headings = "h1, h2, h3, h4, h5, h6";
+      const labelOf = (text) => text
+        .replace(/\[[^\]]*\]/g, " ")
+        .replace(/&/g, " and ")
+        .replace(/\s+/g, " ")
+        .replace(/^[\s\p{P}\p{S}]+|[\s\p{P}\p{S}]+$/gu, "")
+        .replace(/^\d+(?:\.\d+)*[.)]?\s+/u, "")
+        .toLowerCase();
+      // Letters and digits only, without bracketed marks: what a listener would hear.
+      const meaningful = (text) => text.replace(/\[[^\]]*\]/g, "").replace(/[^\p{L}\p{N}]+/gu, "").toLowerCase();
       const levelOf = (element) => {
-        const heading = /^H[1-6]$/.test(element.tagName) ? element : element.querySelector("h1, h2, h3, h4, h5, h6");
+        const heading = /^H[1-6]$/.test(element.tagName) ? element : element.querySelector(headings);
         return heading ? Number(heading.tagName[1]) : 7;
       };
-      for (const heading of Array.from(doc.querySelectorAll("h1, h2, h3, h4, h5, h6"))) {
+      for (const heading of Array.from(doc.querySelectorAll(headings))) {
         if (!heading.isConnected) continue;
-        const label = heading.textContent.replace(/\[[^\]]*\]/g, "").replace(/\s+/g, " ").trim();
-        if (!names.test(label)) continue;
+        if (!names.test(labelOf(heading.textContent))) continue;
         const level = Number(heading.tagName[1]);
-        // Wikipedia wraps a heading and its edit link in <div class="mw-heading">.
-        const parent = heading.parentElement;
-        const start = parent && parent.classList.contains("mw-heading") ? parent : heading;
+        const own = meaningful(heading.textContent);
+        let start = heading;
+        for (let parent = start.parentElement; parent && parent !== doc.body && parent !== doc.documentElement;
+             parent = parent.parentElement) {
+          if (meaningful(parent.textContent) !== own || parent.querySelectorAll(headings).length !== 1) break;
+          start = parent;
+        }
         let next = start.nextElementSibling;
         while (next && levelOf(next) > level) {
           const after = next.nextElementSibling;
@@ -249,9 +286,10 @@ import WebKit
     """#
 }
 
-/// Waits for the main-frame navigation of one web view to finish, fail, or time out, and refuses error pages and
-/// non-HTML documents.
-@MainActor private final class PageLoader: NSObject, WKNavigationDelegate {
+/// Waits for the main-frame navigation of one web view to finish, fail, or time out, and refuses error pages,
+/// non-HTML documents, new windows, and any main-frame address that is not https: the first request, server
+/// redirects, script and meta-refresh navigations, the response, and the committed and finished page.
+@MainActor final class PageLoader: NSObject, WKNavigationDelegate {
     enum Outcome { case finished, timedOut }
 
     private var continuation: CheckedContinuation<Outcome, any Error>?
@@ -278,9 +316,54 @@ import WebKit
         continuation = nil
     }
 
+    /// Why a main-frame address may not be read, or nil when it is an https address.
+    nonisolated static func refusal(of url: URL?) -> HolosError? {
+        if url?.scheme?.lowercased() == "https" { return nil }
+        let address = url?.absoluteString ?? "an unknown address"
+        return .unavailable("The page moved to \(address), which is not https://. Only https pages are read.")
+    }
+
+    /// Records the first refusal, and fails a load still in progress with it.
+    private func refuse(_ error: HolosError) {
+        if rejection == nil { rejection = error }
+        finish(.failure(rejection ?? error))
+    }
+
+    /// Refuses the page when the main frame's current address is not https; true when it was refused.
+    @discardableResult private func refuseUnlessHTTPS(_ webView: WKWebView) -> Bool {
+        guard let refusal = Self.refusal(of: webView.url) else { return false }
+        refuse(refusal)
+        webView.stopLoading()
+        return true
+    }
+
+    func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction)
+        async -> WKNavigationActionPolicy {
+        // No new windows; subframes may load anything, since only the main frame's document is read.
+        guard let frame = navigationAction.targetFrame else { return .cancel }
+        guard frame.isMainFrame else { return .allow }
+        if let refusal = Self.refusal(of: navigationAction.request.url) {
+            refuse(refusal)
+            return .cancel
+        }
+        return .allow
+    }
+
+    func webView(_ webView: WKWebView, didReceiveServerRedirectForProvisionalNavigation navigation: WKNavigation!) {
+        refuseUnlessHTTPS(webView)
+    }
+
+    func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
+        refuseUnlessHTTPS(webView)
+    }
+
     func webView(_ webView: WKWebView, decidePolicyFor navigationResponse: WKNavigationResponse)
         async -> WKNavigationResponsePolicy {
         guard navigationResponse.isForMainFrame else { return .allow }
+        if let refusal = Self.refusal(of: navigationResponse.response.url) {
+            refuse(refusal)
+            return .cancel
+        }
         let address = navigationResponse.response.url?.absoluteString ?? "the page"
         if let http = navigationResponse.response as? HTTPURLResponse, http.statusCode >= 400 {
             rejection = .unavailable("\(address) answered HTTP \(http.statusCode) "
@@ -296,6 +379,7 @@ import WebKit
     }
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        if refuseUnlessHTTPS(webView) { return }
         finish(.success(.finished))
     }
 

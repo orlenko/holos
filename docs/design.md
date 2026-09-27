@@ -274,11 +274,17 @@ use Mozilla Readability (0.6.0, Apache-2.0, vendored unmodified and compiled int
 `voiceislocal` tool) inside an offscreen `WKWebView` (`WebArticleExtractor` in
 HolosContent). The web view loads the `https` page with a non-persistent website data
 store and Safari's user-agent suffix, refuses HTTP error pages and non-HTML documents,
+and refuses the page when the main frame leaves `https` at any point (a server
+redirect, a script or meta-refresh navigation, the response, or the page finally read);
+it opens no new windows. It
 waits for the load (up to 30 s; a parsed page is read anyway when subresources hang)
 plus a 1 s settle, then runs Readability on a copy of the live DOM, so pages built by
-JavaScript work. It retries for up to 6 s while the page shows no article. Back-matter
+JavaScript work. While the page shows no article it reads again every second for 6 s
+after that first read, the last read at the 6 s mark (7 s after loading). Back-matter
 sections (references, notes, see also, external links, further reading) are removed
-before Readability runs. The article HTML is reduced to ordered headings and paragraphs:
+before Readability runs; headings match without case, surrounding punctuation
+("References:"), or section numbers, and a heading inside wrappers that hold nothing
+else starts its section at the outermost wrapper. The article HTML is reduced to ordered headings and paragraphs:
 list items, quotations, and definition terms become paragraphs; code blocks (`<pre>`),
 tables, figures, captions, media, forms, and bracketed marks such as `[1]` or `[edit]`
 are dropped; inline code is read as text. The spoken text is the title, the byline,
