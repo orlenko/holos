@@ -99,30 +99,93 @@ public enum ReadingOutput {
     /// output, the cache lives in `<readings>/Output-<hash>`, a hash of the output path and
     /// `identity` (the text and settings, see `ReadingPipeline.identity`), so running the same
     /// command again with `--resume` finds it, and changed text or settings start a new reading.
+    ///
+    /// Every destination is checked here, before anything is rendered (see `checkDestination`),
+    /// and so is `readingsRoot`, which holds the cache. Without `resume`, a file already at the
+    /// destination is an error: nothing is ever replaced.
     public static func locate(output: String?, name: String, identity: String, readingsRoot: URL,
-                              fileManager: FileManager = .default) throws -> ReadingLocation {
+                              resume: Bool = false, fileManager: FileManager = .default) throws -> ReadingLocation {
         guard let output else {
+            try checkFolder(readingsRoot, role: "Readings folder", fileManager: fileManager)
             let directory = readingsRoot.appendingPathComponent(UUID().uuidString, isDirectory: true)
             let name = fitting(name, limit: nameLimit(in: readingsRoot))
-            return ReadingLocation(workDirectory: directory, output: directory.appendingPathComponent(name))
+            let location = ReadingLocation(workDirectory: directory, output: directory.appendingPathComponent(name))
+            try checkPathLength(location.output)
+            return location
         }
         let url = URL(fileURLWithPath: (output as NSString).expandingTildeInPath).standardizedFileURL
         var isDirectory: ObjCBool = false
         let exists = fileManager.fileExists(atPath: url.path, isDirectory: &isDirectory)
+        let location: ReadingLocation
         if exists && isDirectory.boolValue {
             let name = fitting(name, limit: nameLimit(in: url))
             if ReadingManifest.isReading(url.appendingPathComponent(ReadingManifest.fileName)) {
-                return ReadingLocation(workDirectory: url, output: url.appendingPathComponent(name))
+                // The reading's own folder: whether its finished file may exist is the pipeline's
+                // call (it is this reading's when resuming, and a clear error otherwise).
+                let location = ReadingLocation(workDirectory: url, output: url.appendingPathComponent(name))
+                try checkDestination(location.output, allowExisting: true, fileManager: fileManager)
+                return location
             }
-            return hashed(output: url.appendingPathComponent(name), identity: identity, readingsRoot: readingsRoot)
+            location = hashed(output: url.appendingPathComponent(name), identity: identity, readingsRoot: readingsRoot)
+        } else {
+            guard url.pathExtension.lowercased() == ReadingAudioFormat.fileExtension else {
+                throw HolosError.invalidInput("--output must be a .m4a file path or an existing directory: \(url.path)")
+            }
+            location = hashed(output: url, identity: identity, readingsRoot: readingsRoot)
         }
-        guard url.pathExtension.lowercased() == ReadingAudioFormat.fileExtension else {
-            throw HolosError.invalidInput("--output must be a .m4a file path or an existing directory: \(url.path)")
+        try checkDestination(location.output, allowExisting: resume, fileManager: fileManager)
+        try checkFolder(readingsRoot, role: "Readings folder", fileManager: fileManager)
+        return location
+    }
+
+    /// Fails unless the finished file can be saved at `output`: its folder exists, is a folder,
+    /// and accepts new files (checked by creating and removing one); its name fits the volume
+    /// and its path fits `PATH_MAX`, with room for the temporary file written beside it; and,
+    /// unless `allowExisting`, nothing (not even a broken link) is there yet.
+    public static func checkDestination(_ output: URL, allowExisting: Bool = false,
+                                        fileManager: FileManager = .default) throws {
+        guard output.isFileURL else { throw HolosError.invalidInput("Reading output must be a file path.") }
+        let folder = output.deletingLastPathComponent()
+        try checkFolder(folder, role: "Output folder", fileManager: fileManager)
+        guard fits(output.lastPathComponent, limit: nameLimit(in: folder)) else {
+            throw HolosError.invalidInput("Output file name is too long for its volume: \(output.lastPathComponent)")
         }
-        guard fits(url.lastPathComponent, limit: nameLimit(in: url.deletingLastPathComponent())) else {
-            throw HolosError.invalidInput("--output file name is too long for its volume: \(url.lastPathComponent)")
+        try checkPathLength(output)
+        var metadata = stat()
+        if !allowExisting, lstat(output.path, &metadata) == 0 {
+            throw HolosError.invalidInput("Reading output already exists: \(output.path)")
         }
-        return hashed(output: url, identity: identity, readingsRoot: readingsRoot)
+    }
+
+    /// The temporary file written beside the output while it is joined (see `ReadingPipeline`).
+    static let temporaryNameLength = ".holos-\(UUID().uuidString).\(ReadingAudioFormat.fileExtension)".utf8.count
+
+    static func checkPathLength(_ output: URL) throws {
+        let folder = output.deletingLastPathComponent().path
+        let longest = max(output.lastPathComponent.utf8.count, temporaryNameLength)
+        // The path plus "/" and the name, and a terminating NUL, within PATH_MAX bytes.
+        guard folder.utf8.count + 1 + longest < Int(PATH_MAX) else {
+            throw HolosError.invalidInput("Output path is too long (the limit is \(PATH_MAX - 1) bytes): \(output.path)")
+        }
+    }
+
+    /// Fails unless `folder` exists, is a folder, and a new file can be created in it.
+    static func checkFolder(_ folder: URL, role: String, fileManager: FileManager = .default) throws {
+        var isDirectory: ObjCBool = false
+        guard fileManager.fileExists(atPath: folder.path, isDirectory: &isDirectory) else {
+            throw HolosError.invalidInput("\(role) does not exist: \(folder.path)")
+        }
+        guard isDirectory.boolValue else {
+            throw HolosError.invalidInput("\(role) is not a folder: \(folder.path)")
+        }
+        // Permissions, ACLs, read-only volumes, and sandboxing all show in an actual create.
+        let probe = folder.appendingPathComponent(".holos-probe-\(UUID().uuidString)")
+        let descriptor = open(probe.path, O_CREAT | O_EXCL | O_WRONLY | O_CLOEXEC | O_NOFOLLOW, 0o600)
+        guard descriptor >= 0 else {
+            throw HolosError.invalidInput("\(role) is not writable: \(folder.path) (\(String(cString: strerror(errno))))")
+        }
+        close(descriptor)
+        unlink(probe.path)
     }
 
     private static func hashed(output: URL, identity: String, readingsRoot: URL) -> ReadingLocation {

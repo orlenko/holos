@@ -43,6 +43,34 @@ public struct AudioBookMetadata: Sendable, Equatable {
         self.language = language
         self.comment = comment
     }
+
+    /// `language` as a tag the file can carry: a known ISO 639 language with an optional script
+    /// and region ("en", "zh-Hant-TW", "es-419"), or nil. AVFoundation raises an uncatchable
+    /// exception for a tag it rejects (such as "english" from `<html lang>`), so nothing else is
+    /// ever passed to it. Variants and extensions are dropped.
+    public static func languageTag(_ language: String?) -> String? {
+        guard let language else { return nil }
+        let subtags = language.trimmingCharacters(in: .whitespaces)
+            .replacingOccurrences(of: "_", with: "-").split(separator: "-", omittingEmptySubsequences: false)
+            .map(String.init)
+        func letters(_ text: String, _ counts: ClosedRange<Int>) -> Bool {
+            counts.contains(text.count) && text.allSatisfy { $0.isASCII && $0.isLetter }
+        }
+        guard let first = subtags.first, letters(first, 2...3) else { return nil }
+        let code = first.lowercased()
+        guard code != "und", Locale.LanguageCode(code).isISOLanguage else { return nil }
+        var tag = code
+        var rest = subtags.dropFirst()
+        if let script = rest.first, letters(script, 4...4) {
+            tag += "-" + script.prefix(1).uppercased() + script.dropFirst().lowercased()
+            rest = rest.dropFirst()
+        }
+        if let region = rest.first,
+           letters(region, 2...2) || (region.count == 3 && region.allSatisfy { $0.isASCII && $0.isNumber }) {
+            tag += "-" + region.uppercased()
+        }
+        return tag
+    }
 }
 
 public struct AudioBookChapter: Sendable, Equatable, Codable {
@@ -112,17 +140,18 @@ public enum AudioBookWriter {
         let total = position
         var chapterMarks: [(title: String, frame: Int64)] = []
         for (index, part) in parts.enumerated() {
-            guard let title = part.chapter?.trimmingCharacters(in: .whitespacesAndNewlines), !title.isEmpty else { continue }
+            guard let title = fileText(part.chapter) else { continue }
             // A chapter begins at the silence before its part, so skipping to it is not abrupt.
             let frame = index == 0 ? 0 : starts[index] - Int64((part.silenceBefore * rate).rounded())
             if let last = chapterMarks.last, last.frame >= frame { continue }
             chapterMarks.append((title, frame))
         }
         if let first = chapterMarks.first, first.frame > 0 {
-            chapterMarks.insert((metadata.title ?? "Beginning", 0), at: 0)
+            chapterMarks.insert((fileText(metadata.title) ?? "Beginning", 0), at: 0)
         }
         if chapterMarks.count < 2 { chapterMarks = [] }
 
+        let language = AudioBookMetadata.languageTag(metadata.language)
         let writer = try AVAssetWriter(outputURL: output, fileType: .m4a)
         let audioInput = AVAssetWriterInput(mediaType: .audio, outputSettings: [
             AVFormatIDKey: kAudioFormatMPEG4AAC,
@@ -138,13 +167,13 @@ public enum AudioBookWriter {
             let description = try chapterTextFormat()
             let textInput = AVAssetWriterInput(mediaType: .text, outputSettings: nil, sourceFormatHint: description)
             textInput.marksOutputTrackAsEnabled = false
-            if let language = metadata.language { textInput.extendedLanguageTag = language }
+            if let language { textInput.extendedLanguageTag = language }
             text = writer.inputReceiver(for: textInput)
             audioInput.addTrackAssociation(withTrackOf: textInput,
                                            type: AVAssetTrack.AssociationType.chapterList.rawValue)
             textFormat = description
         }
-        if let language = metadata.language { audioInput.extendedLanguageTag = language }
+        if let language { audioInput.extendedLanguageTag = language }
         writer.metadata = metadataItems(metadata)
 
         var finished = false
@@ -247,9 +276,31 @@ public enum AudioBookWriter {
         CMTime(value: frames, timescale: CMTimeScale(rate.rounded()))
     }
 
+    /// The most UTF-8 bytes any string written into the file may take. A tx3g chapter sample
+    /// stores its text length in a 16-bit field; iTunes metadata atoms have 32-bit sizes, but
+    /// title, artist, and comment are held to the same limit so no field is unbounded.
+    static let maximumTextBytes = Int(UInt16.max)
+
+    /// `text` trimmed and, when longer than `maximumTextBytes` in UTF-8, shortened on a character
+    /// boundary (never inside a multibyte scalar or an emoji sequence); nil when empty.
+    static func fileText(_ text: String?, maximumBytes: Int = maximumTextBytes) -> String? {
+        guard let text = text?.trimmingCharacters(in: .whitespacesAndNewlines), !text.isEmpty else { return nil }
+        guard text.utf8.count > maximumBytes else { return text }
+        var bytes = 0
+        var end = text.startIndex
+        for character in text {
+            let size = character.utf8.count
+            guard bytes + size <= maximumBytes else { break }
+            bytes += size
+            end = text.index(after: end)
+        }
+        let shortened = text[..<end].trimmingCharacters(in: .whitespacesAndNewlines)
+        return shortened.isEmpty ? nil : shortened
+    }
+
     private static func metadataItems(_ metadata: AudioBookMetadata) -> [AVMetadataItem] {
         func item(_ identifier: AVMetadataIdentifier, _ value: String?) -> AVMetadataItem? {
-            guard let value = value?.trimmingCharacters(in: .whitespacesAndNewlines), !value.isEmpty else { return nil }
+            guard let value = fileText(value) else { return nil }
             let item = AVMutableMetadataItem()
             item.identifier = identifier
             item.value = value as NSString
@@ -329,10 +380,12 @@ public enum AudioBookWriter {
         return description
     }
 
-    /// One tx3g sample: a big-endian UInt16 byte count followed by the UTF-8 title.
+    /// One tx3g sample: a big-endian UInt16 byte count followed by the UTF-8 title, which
+    /// `fileText` has already fitted to that count on a character boundary.
     private static func chapterSample(_ title: String, format: CMFormatDescription,
                                       start: CMTime, duration: CMTime) throws -> sending CMSampleBuffer {
-        let utf8 = Array(title.utf8.prefix(Int(UInt16.max)))
+        let utf8 = Array(title.utf8)
+        guard utf8.count <= maximumTextBytes else { throw HolosError.invalidInput("A chapter title is too long.") }
         let bytes = [UInt8(utf8.count >> 8), UInt8(utf8.count & 0xff)] + utf8
         let block = try blockBuffer(bytes)
         var timing = CMSampleTimingInfo(duration: duration, presentationTimeStamp: start, decodeTimeStamp: .invalid)

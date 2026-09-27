@@ -38,6 +38,44 @@ public struct ReadableDocument: Sendable, Equatable, Codable {
 
     public var isEmpty: Bool { sections.isEmpty }
 
+    /// Separators between a page title and the site or series name around it:
+    /// "Title | Site", "Site — Title", "Title - Blog". A colon is not one: it starts a subtitle.
+    static let titleSeparators = [" | ", " || ", " — ", " – ", " - ", " · ", " • ", " :: ", " » ", " « "]
+
+    /// Whether `text` says the same as `title`: equal ignoring case, diacritics, punctuation, and
+    /// spacing, or equal to `title` without the site or series names around it ("Title | Site"
+    /// says "Title"), or the other way around.
+    public static func sameTitle(_ title: String, _ text: String) -> Bool {
+        let titleWords = titleKey(title), textWords = titleKey(text)
+        guard !titleWords.isEmpty, !textWords.isEmpty else { return false }
+        if titleWords == textWords { return true }
+        return titleCores(title).contains(textWords) || titleCores(text).contains(titleWords)
+    }
+
+    /// Letters and digits only, case- and diacritic-folded, one space between words.
+    static func titleKey(_ text: String) -> String {
+        text.folding(options: [.caseInsensitive, .diacriticInsensitive, .widthInsensitive], locale: nil)
+            .components(separatedBy: CharacterSet.alphanumerics.inverted)
+            .filter { !$0.isEmpty }.joined(separator: " ")
+    }
+
+    /// The keys of `title` with one or more of its leading or trailing separated parts removed.
+    static func titleCores(_ title: String) -> Set<String> {
+        var parts = [title]
+        for separator in titleSeparators {
+            parts = parts.flatMap { $0.components(separatedBy: separator) }
+        }
+        guard parts.count > 1 else { return [] }
+        var keys = Set<String>()
+        for start in 0..<parts.count {
+            for end in (start + 1)...parts.count where end - start < parts.count {
+                let key = titleKey(parts[start..<end].joined(separator: " "))
+                if !key.isEmpty && (start == 0 || end == parts.count) { keys.insert(key) }
+            }
+        }
+        return keys
+    }
+
     /// Collapses runs of spaces and tabs, keeps single line breaks, trims; nil when empty.
     static func clean(_ text: String?) -> String? {
         guard let text else { return nil }
@@ -99,13 +137,17 @@ public struct ReadingScript: Sendable, Equatable {
     public let segments: [Segment]
     public let title: String?
 
-    /// The title is read first unless the first heading already says it. Each section is
-    /// its heading followed by its paragraphs.
+    /// The title is read first unless the text says it anyway: the document opens with it (as
+    /// a heading or a paragraph, such as a PDF's first line under a metadata title), or it is the
+    /// first level-1 heading (a web page's h1 after a byline). "Title | Site" and "Title" count as
+    /// the same (see `ReadableDocument.sameTitle`). Each section is its heading followed by its
+    /// paragraphs.
     public init(document: ReadableDocument) {
         var segments: [Segment] = []
-        let firstHeading = document.sections.first?.heading
+        let opening = document.sections.first.flatMap { $0.heading ?? $0.paragraphs.first }
+        let firstTitleHeading = document.sections.first { $0.level == 1 }?.heading
         if let title = document.title,
-           firstHeading.map({ Self.sameText($0, title) }) != true {
+           ![opening, firstTitleHeading].contains(where: { $0.map { ReadableDocument.sameTitle(title, $0) } == true }) {
             segments.append(Segment(chapter: nil, text: title))
         }
         for section in document.sections {
@@ -133,11 +175,5 @@ public struct ReadingScript: Sendable, Equatable {
             offset += segment.text.utf16.count
         }
         return result
-    }
-
-    static func sameText(_ lhs: String, _ rhs: String) -> Bool {
-        lhs.trimmingCharacters(in: .whitespacesAndNewlines)
-            .compare(rhs.trimmingCharacters(in: .whitespacesAndNewlines),
-                     options: [.caseInsensitive, .diacriticInsensitive]) == .orderedSame
     }
 }

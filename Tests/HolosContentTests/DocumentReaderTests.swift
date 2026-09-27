@@ -57,6 +57,39 @@ import Testing
         #expect(document.sections == [.init(paragraphs: ["Body text without a heading."])])
     }
 
+    @Test func orderedListsKeepTheirNumbersAndBreaksAreSilent() {
+        let document = MarkdownReader.document(from: """
+        3. Preheat the *oven*
+        4. Bake
+           1. nested one
+           2. nested two
+
+           Second paragraph of four.
+        5. Serve
+
+        - bullet
+          1. inner ordered
+
+        > 1. quoted step
+
+        ---
+
+        After the break.
+        """)
+        #expect(document.sections.flatMap(\.paragraphs) == [
+            "3. Preheat the oven", "4. Bake", "1. nested one", "2. nested two", "Second paragraph of four.",
+            "5. Serve", "bullet", "1. inner ordered", "1. quoted step", "After the break.",
+        ])
+    }
+
+    @Test func frontMatterTitleIsReadOnceWhenTheTextOpensWithIt() {
+        for body in ["# Guide to Bread\n\nText.", "## Guide to Bread\n\nText.", "Guide to Bread\n\nText."] {
+            let document = MarkdownReader.document(from: "---\ntitle: Guide to Bread | My Blog\n---\n" + body)
+            #expect(document.title == "Guide to Bread | My Blog")
+            #expect(ReadingScript(document: document).text == "Guide to Bread\n\nText.", "\(body)")
+        }
+    }
+
     @Test func aLaterOrSmallerHeadingIsNotTheTitle() {
         #expect(MarkdownReader.document(from: "Intro.\n\n# Heading\n\nText.").title == nil)
         #expect(MarkdownReader.document(from: "## Heading\n\nText.").title == nil)
@@ -102,6 +135,48 @@ import Testing
         #expect(document.sections.map(\.heading) == ["Article Heading", "Details"])
         #expect(document.sections[0].paragraphs == ["First paragraph with emphasis and a link.", "Loose text in a div."])
         #expect(document.sections[1].paragraphs == ["One", "Two", "Name; Size", "Ava; 3"])
+    }
+
+    @Test func orderedListsKeepTheirNumbers() {
+        let html = """
+        <html><body>
+        <ol start="3"><li>Preheat</li><li><p>Bake</p><ol type="a"><li>Inner</li></ol></li></ol>
+        <ol reversed><li>Three</li><li>Two</li><li>One</li></ol>
+        <ol type="I"><li value="4">Four</li><li>Five</li></ol>
+        <ul><li>Dot</li></ul>
+        <ol><li><table><tr><td>Cell</td><td>Row</td></tr></table></li></ol>
+        </body></html>
+        """
+        #expect(HTMLReader.document(from: Data(html.utf8)).sections.flatMap(\.paragraphs) == [
+            "3. Preheat", "4. Bake", "a. Inner", "3. Three", "2. Two", "1. One", "IV. Four", "V. Five", "Dot",
+            "1. Cell; Row",
+        ])
+        #expect(HTMLReader.Walker.marker(28, type: "a") == "ab.")
+        #expect(HTMLReader.Walker.marker(1_994, type: "i") == "mcmxciv.")
+        #expect(HTMLReader.Walker.marker(0, type: "A") == "0.")
+    }
+
+    @Test func nonASCIITextSurvivesWithOrWithoutADeclaredCharset() {
+        for head in ["", #"<meta charset="utf-8">"#, #"<meta http-equiv="Content-Type" content="text/html; charset=iso-8859-1">"#] {
+            let document = HTMLReader.document(from: Data("\u{FEFF}<html lang=\"fr\"><head>\(head)<title>Café — Blog</title></head><body><p>Crème brûlée, 漢字, 👩🏽‍💻 &amp; “quotes”.</p></body></html>".utf8))
+            #expect(document.title == "Café — Blog", "\(head)")
+            #expect(document.sections.flatMap(\.paragraphs) == ["Crème brûlée, 漢字, 👩🏽‍💻 & “quotes”."], "\(head)")
+        }
+    }
+
+    @Test func titleIsReadOnceWhenThePageRepeatsIt() {
+        // <title> with the site name, no h1, and a first paragraph that says the title.
+        let plain = HTMLReader.document(from: Data("""
+        <html><head><title>Why Bread Rises — The Kitchen Blog</title></head>
+        <body><p>Why Bread Rises</p><p>Yeast makes gas.</p></body></html>
+        """.utf8))
+        #expect(ReadingScript(document: plain).text == "Why Bread Rises\n\nYeast makes gas.")
+        // A byline before the h1: the h1 is the title and is read where it stands.
+        let byline = HTMLReader.document(from: Data("""
+        <html><head><title>Why Bread Rises | Blog</title></head>
+        <body><p>By Sam</p><h1>Why Bread Rises</h1><p>Yeast makes gas.</p></body></html>
+        """.utf8))
+        #expect(ReadingScript(document: byline).text == "By Sam\n\nWhy Bread Rises\n\nYeast makes gas.")
     }
 
     @Test func titleElementWhenThereIsNoH1() {
@@ -233,10 +308,31 @@ import Testing
         #expect(paragraphs.contains("Another sentence on the second page."))
     }
 
+    @MainActor @Test func metadataTitleRepeatedByTheFirstLineIsReadOnce() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("holos-pdf-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        for (declared, visible) in [("Quarterly Report", "Quarterly Report"),
+                                    ("Microsoft Word - Quarterly Report.docx", "QUARTERLY REPORT"),
+                                    ("Quarterly Report | ACME Corp", "Quarterly Report")] {
+            let url = directory.appendingPathComponent("\(UUID().uuidString).pdf")
+            try makePDF(url, pages: [[visible, "", "The body of the report is a sentence that ends here."]], title: declared)
+            let script = ReadingScript(document: try DocumentLoader.load(url))
+            #expect(script.text == "\(visible)\n\nThe body of the report is a sentence that ends here.", "\(declared)")
+            #expect(script.text.lowercased().components(separatedBy: "quarterly").count == 2, "\(declared)")
+        }
+        // A metadata title the page does not show is still read first.
+        let other = directory.appendingPathComponent("other.pdf")
+        try makePDF(other, pages: [["Visible Heading", "", "The body is a sentence that ends here."]], title: "Hidden Name")
+        #expect(ReadingScript(document: try DocumentLoader.load(other)).text
+            == "Hidden Name\n\nVisible Heading\n\nThe body is a sentence that ends here.")
+    }
+
     /// One PDF page per element; each string is drawn as a line, top to bottom.
-    private func makePDF(_ url: URL, pages: [[String]]) throws {
+    private func makePDF(_ url: URL, pages: [[String]], title: String? = nil) throws {
         var box = CGRect(x: 0, y: 0, width: 612, height: 792)
-        let context = try #require(CGContext(url as CFURL, mediaBox: &box, nil))
+        let info = title.map { [kCGPDFContextTitle as String: $0] as CFDictionary }
+        let context = try #require(CGContext(url as CFURL, mediaBox: &box, info))
         let font = CTFontCreateWithName("Helvetica" as CFString, 12, nil)
         for page in pages {
             context.beginPDFPage(nil)
@@ -282,6 +378,53 @@ import Testing
         #expect(document.sections[1].paragraphs == ["Body paragraph two, also plain.", "Bold sentence that ends with a period."])
     }
 
+    @Test func numberedListsKeepTheirNumbersInEveryFormat() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("holos-doc-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let decimal = NSTextList(markerFormat: .decimal, options: 0)
+        let alpha = NSTextList(markerFormat: .lowercaseAlpha, options: 0)
+        let bullets = NSTextList(markerFormat: .disc, options: 0)
+        func style(_ lists: [NSTextList]) -> NSParagraphStyle {
+            let style = NSMutableParagraphStyle()
+            style.textLists = lists
+            return style
+        }
+        let body = NSFont.systemFont(ofSize: 12)
+        let text = NSMutableAttributedString(string: "Steps to follow in order.\n", attributes: [.font: body])
+        for (marker, item, lists, font) in [
+            ("1.", "Preheat", [decimal], body), ("2.", "Bold Step", [decimal], NSFont.boldSystemFont(ofSize: 12)),
+            ("a.", "Inner", [decimal, alpha], body), ("3.", "Serve", [decimal], body), ("•", "Dot", [bullets], body),
+        ] {
+            text.append(NSAttributedString(string: "\t\(marker)\t\(item)\n",
+                                           attributes: [.font: font, .paragraphStyle: style(lists)]))
+        }
+        for (name, type) in [("a.rtf", NSAttributedString.DocumentType.rtf), ("a.odt", .openDocument),
+                             ("a.docx", .officeOpenXML)] {
+            let url = directory.appendingPathComponent(name)
+            try text.data(from: NSRange(location: 0, length: text.length), documentAttributes: [.documentType: type])
+                .write(to: url)
+            let document = try DocumentLoader.load(url)
+            // The bold item is a list item, not a heading.
+            #expect(document.sections.compactMap(\.heading).isEmpty, "\(name)")
+            let paragraphs = document.sections.flatMap(\.paragraphs)
+            #expect(Array(paragraphs.prefix(5)) == ["Steps to follow in order.", "1. Preheat", "2. Bold Step", "a. Inner", "3. Serve"],
+                    "\(name)")
+            #expect(paragraphs.last?.hasSuffix("Dot") == true, "\(name)")
+        }
+        #expect(RichTextReader.numbered("Serve", marker: "3") == "3. Serve")
+        #expect(RichTextReader.numbered("\t3.\tServe", marker: "3") == "\t3.\tServe")
+        #expect(RichTextReader.numbered("Dot", marker: "•") == "Dot")
+        #expect(RichTextReader.numbered("Step", marker: "(iv)") == "(iv) Step")
+    }
+
+    @Test func declaredTitleRepeatedByTheFirstParagraphIsReadOnce() {
+        let text = NSAttributedString(string: "Plain Title\nBody text of the document.\n",
+                                      attributes: [.font: NSFont.systemFont(ofSize: 12)])
+        let document = RichTextReader.document(from: text, title: "Plain Title", author: nil)
+        #expect(ReadingScript(document: document).text == "Plain Title\n\nBody text of the document.")
+    }
+
     @Test func rtfAndWordFilesLoad() throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("holos-doc-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
@@ -303,7 +446,73 @@ import Testing
     }
 }
 
+@Suite struct TitleMatchTests {
+    @Test func sameTitleIgnoresCasePunctuationAndSiteNames() {
+        #expect(ReadableDocument.sameTitle("Page Title | Site", "Page Title"))
+        #expect(ReadableDocument.sameTitle("Site — Page Title", "page title."))
+        #expect(ReadableDocument.sameTitle("Café Notes", "CAFE NOTES"))
+        #expect(ReadableDocument.sameTitle("Article | Section | Site", "Article"))
+        #expect(ReadableDocument.sameTitle("Title", "Title - Blog"))
+        #expect(!ReadableDocument.sameTitle("Article | Section | Site", "Section"))
+        #expect(!ReadableDocument.sameTitle("Dune: Part Two", "Dune"))
+        #expect(!ReadableDocument.sameTitle("???", "!!!"))
+    }
+
+    @Test func aDifferentOpeningStillHearsTheTitle() {
+        let script = ReadingScript(document: ReadableDocument(title: "Dune: Part Two", sections: [
+            .init(heading: "Dune", level: 1, paragraphs: ["Text."]),
+        ]))
+        #expect(script.text == "Dune: Part Two\n\nDune\n\nText.")
+    }
+}
+
 @Suite struct ReadingOutputTests {
+    @Test func destinationIsCheckedBeforeRendering() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("holos-out-\(UUID().uuidString)")
+        let readings = root.appendingPathComponent("Readings")
+        let shared = root.appendingPathComponent("Shared")
+        let locked = root.appendingPathComponent("Locked")
+        try FileManager.default.createDirectory(at: readings, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: shared, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: locked, withIntermediateDirectories: true)
+        try Data("x".utf8).write(to: root.appendingPathComponent("file.txt"))
+        try FileManager.default.setAttributes([.posixPermissions: 0o500], ofItemAtPath: locked.path)
+        defer {
+            try? FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: locked.path)
+            try? FileManager.default.removeItem(at: root)
+        }
+        func locate(_ output: String?, readings: URL = readings, resume: Bool = false) throws -> ReadingLocation {
+            try ReadingOutput.locate(output: output, name: "T.m4a", identity: "a", readingsRoot: readings, resume: resume)
+        }
+        // The folder is missing, is a file, or cannot take new files.
+        for bad in ["Missing/x.m4a", "file.txt/x.m4a", "Locked/x.m4a", "Locked"] {
+            #expect(throws: HolosError.self, "\(bad)") { try locate(root.appendingPathComponent(bad).path) }
+        }
+        // Nothing is replaced: an existing file is an error unless resuming.
+        let taken = shared.appendingPathComponent("Taken.m4a")
+        try Data("old".utf8).write(to: taken)
+        try Data("old".utf8).write(to: shared.appendingPathComponent("T.m4a"))
+        #expect(throws: HolosError.self) { try locate(taken.path) }
+        #expect(throws: HolosError.self) { try locate(shared.path) }
+        #expect(try locate(taken.path, resume: true).output.lastPathComponent == "Taken.m4a")
+        #expect(try locate(shared.path, resume: true).output.lastPathComponent == "T.m4a")
+        // A broken link is something already there, too.
+        try FileManager.default.createSymbolicLink(atPath: shared.appendingPathComponent("Link.m4a").path,
+                                                   withDestinationPath: root.appendingPathComponent("nowhere").path)
+        #expect(throws: HolosError.self) { try locate(shared.appendingPathComponent("Link.m4a").path) }
+        // The Readings folder holds the cache in every case.
+        for output in [nil, shared.appendingPathComponent("New.m4a").path] {
+            #expect(throws: HolosError.self) { try locate(output, readings: root.appendingPathComponent("NoReadings")) }
+            #expect(throws: HolosError.self) { try locate(output, readings: locked) }
+        }
+        // Paths past PATH_MAX are rejected, counting the temporary file written beside the output.
+        let deep = URL(fileURLWithPath: "/" + String(repeating: "folder/", count: 150) + "x.m4a")
+        #expect(throws: HolosError.self) { try ReadingOutput.checkPathLength(deep) }
+        #expect(throws: Never.self) { try ReadingOutput.checkPathLength(shared.appendingPathComponent("x.m4a")) }
+        // No probe files are left behind.
+        #expect(try FileManager.default.contentsOfDirectory(atPath: shared.path).filter { $0.hasPrefix(".holos-probe") }.isEmpty)
+    }
+
     @Test func fileNamesAreSafeAndReadable() {
         #expect(ReadingOutput.fileName(title: "Why Local Speech Matters") == "Why Local Speech Matters.m4a")
         #expect(ReadingOutput.fileName(title: "A/B: C? <D>|\"E\"*") == "A-B- C D-E.m4a")
@@ -338,7 +547,7 @@ import Testing
 
     @Test func tooLongExplicitOutputNameIsRejectedUpFront() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("holos-out-\(UUID().uuidString)")
-        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: root.appendingPathComponent("Readings"), withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
         let name = String(repeating: "漢", count: 90) + ".m4a"
         #expect(throws: HolosError.self) {
@@ -352,6 +561,7 @@ import Testing
         let readings = root.appendingPathComponent("Readings")
         let shared = root.appendingPathComponent("Shared")
         try FileManager.default.createDirectory(at: shared, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: readings, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
 
         let fresh = try ReadingOutput.locate(output: nil, name: "T.m4a", identity: "a", readingsRoot: readings)

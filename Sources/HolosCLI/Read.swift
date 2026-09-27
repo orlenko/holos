@@ -64,7 +64,8 @@ struct Read: AsyncParsableCommand {
             fallbackName = input.deletingPathExtension().lastPathComponent
         }
         let script = ReadingScript(document: document)
-        let language = document.language ?? ReadingLanguage.detect(script.text)
+        // A declared language that is not a usable tag ("english") is ignored, not trusted.
+        let language = AudioBookMetadata.languageTag(document.language) ?? ReadingLanguage.detect(script.text)
         let selected = try resolveVoice(voice, language: language, explainDefault: true)
         let metadata = AudioBookMetadata(
             title: title.flatMap { $0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : $0 }
@@ -88,7 +89,7 @@ struct Read: AsyncParsableCommand {
                                                 metadata: metadata)
         let location = try ReadingOutput.locate(
             output: output, name: ReadingOutput.fileName(title: metadata.title, fallback: fallbackName),
-            identity: identity, readingsRoot: readings)
+            identity: identity, readingsRoot: readings, resume: resume)
         let result: ReadingResult
         do {
             result = try await ReadingPipeline().render(script: script, voiceIdentifier: selected.id, rate: rate,

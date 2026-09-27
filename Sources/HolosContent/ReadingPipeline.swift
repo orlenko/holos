@@ -154,6 +154,7 @@ public struct AudioBookJoiner: ReadingAudioJoiner {
         guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             throw HolosError.invalidInput("Reading source is empty.")
         }
+        try Self.checkLocation(directory: directory, output: output, resume: resume)
         let writerLock = try ReadingDirectoryLock.acquire(for: directory)
         defer { withExtendedLifetime(writerLock) {} }
         let planned = script.parts(maxUTF16Units: maxPartUTF16Units)
@@ -302,6 +303,31 @@ public struct AudioBookJoiner: ReadingAudioJoiner {
         try save(manifest, to: manifestURL)
         removeParts(in: directory)
         return ReadingResult(output: output, manifest: manifest)
+    }
+
+    /// Checks both folders before anything is rendered, so a destination that cannot take the
+    /// finished file fails now rather than after hours of rendering: the cache's parent folder
+    /// (where the cache and its lock are created) and the output's (see
+    /// `ReadingOutput.checkDestination`). An output inside a cache that does not exist yet
+    /// (a reading without `--output`) is checked through the cache's parent.
+    static func checkLocation(directory: URL, output: URL, resume: Bool) throws {
+        let cacheExists = FileManager.default.fileExists(atPath: directory.path)
+        // A new reading over an existing cache, or a resume without one, fails next with a
+        // clearer message ("use --resume", "no reading to resume").
+        if cacheExists != resume { return }
+        if !cacheExists {
+            try ReadingOutput.checkFolder(directory.deletingLastPathComponent(), role: "Reading cache folder")
+        }
+        let folder = output.deletingLastPathComponent()
+        if !cacheExists && folder.standardizedFileURL.path == directory.standardizedFileURL.path {
+            guard ReadingOutput.fits(output.lastPathComponent,
+                                     limit: ReadingOutput.nameLimit(in: directory.deletingLastPathComponent())) else {
+                throw HolosError.invalidInput("Output file name is too long for its volume: \(output.lastPathComponent)")
+            }
+            try ReadingOutput.checkPathLength(output)
+        } else {
+            try ReadingOutput.checkDestination(output, allowExisting: resume)
+        }
     }
 
     static func partPath(_ index: Int) -> String {

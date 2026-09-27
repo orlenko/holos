@@ -71,9 +71,9 @@ public enum PlainTextReader {
 }
 
 /// Markdown through Foundation's parser: headings become sections, emphasis and link markup
-/// are dropped (link text is kept), lists and quotes become paragraphs, table rows are read
-/// cell by cell, and code blocks and images are skipped. YAML front matter supplies the title
-/// and author.
+/// are dropped (link text is kept), list items and quotes become paragraphs (ordered items keep
+/// their numbers: "1. Preheat"), table rows are read cell by cell, and code blocks, images, and
+/// thematic breaks are skipped. YAML front matter supplies the title and author.
 public enum MarkdownReader {
     public static func document(from markdown: String) -> ReadableDocument {
         let (frontMatter, body) = splitFrontMatter(markdown.replacingOccurrences(of: "\r\n", with: "\n"))
@@ -89,21 +89,42 @@ public enum MarkdownReader {
         enum Kind { case heading(Int), paragraph, row }
         struct Block { var identity: Int; var kind: Kind; var text: String; var cell: Int? }
         var blocks: [Block] = []
+        // List items whose number has been read: only an item's first block starts with it.
+        var numberedItems = Set<Int>()
         for run in parsed.runs {
             guard run.imageURL == nil, let intent = run.presentationIntent else { continue }
+            // Innermost first: [paragraph, listItem 2, orderedList, listItem 4, orderedList, ...].
             let components = intent.components
-            if components.contains(where: { if case .codeBlock = $0.kind { true } else { false } }) { continue }
+            // Code is not read aloud; a thematic break ("---", parsed as "⸻") only separates blocks.
+            if components.contains(where: {
+                switch $0.kind { case .codeBlock, .thematicBreak: true; default: false }
+            }) { continue }
             let text = String(parsed[run.range].characters)
             var kind = Kind.paragraph
             var identity = components.first?.identity ?? -1
             var cell: Int?
-            for component in components {
+            var marker: String?
+            var innermostItem = true
+            for (index, component) in components.enumerated() {
                 switch component.kind {
                 case .header(let level): kind = .heading(level)
                 case .tableCell: cell = component.identity
                 case .tableRow, .tableHeaderRow:
                     kind = .row
                     identity = component.identity
+                case .listItem(let ordinal):
+                    // Foundation drops the "3." from the text and keeps the number here (it
+                    // honors a list's start number). Bullets are not read; nested items read
+                    // their own number.
+                    guard innermostItem else { break }
+                    innermostItem = false
+                    let parent = components.indices.contains(index + 1) ? components[index + 1].kind : nil
+                    if case .orderedList = parent, !numberedItems.contains(component.identity) {
+                        numberedItems.insert(component.identity)
+                        marker = "\(ordinal). "
+                    }
+                // Block quotes read as their paragraphs; lists, tables, and the document itself
+                // carry nothing to read.
                 default: break
                 }
             }
@@ -114,7 +135,7 @@ public enum MarkdownReader {
                 merged.cell = cell
                 blocks[blocks.count - 1] = merged
             } else {
-                blocks.append(Block(identity: identity, kind: kind, text: text, cell: cell))
+                blocks.append(Block(identity: identity, kind: kind, text: (marker ?? "") + text, cell: cell))
             }
         }
 
@@ -150,9 +171,10 @@ public enum MarkdownReader {
 }
 
 /// HTML through Foundation's tidying XML parser: h1-h6 start sections, block elements become
-/// paragraphs, and scripts, styles, navigation, forms, footers, asides, and preformatted code are
-/// skipped. Title from the first h1, else `<title>`; author from `<meta name="author">`; language
-/// from `<html lang>`.
+/// paragraphs (ordered list items keep their numbers), table rows are read cell by cell, and
+/// scripts, styles, navigation, forms, footers, asides, and preformatted code are skipped. Title
+/// from the first h1, else `<title>`; author from `<meta name="author">`; language from
+/// `<html lang>`.
 public enum HTMLReader {
     static let skipped: Set<String> = [
         "script", "style", "noscript", "template", "nav", "footer", "aside", "form", "button",
@@ -170,19 +192,25 @@ public enum HTMLReader {
     static let strippedBeforeParsing = ["nav", "footer", "aside", "template", "svg", "noscript", "script", "style"]
 
     public static func document(from source: Data) -> ReadableDocument {
-        var data = source
-        // Text in another encoding is parsed as is: the parser follows its declared charset.
+        var plain = String(decoding: source, as: UTF8.self)
+        let parsed: XMLDocument?
         if var html = String(data: source, encoding: .utf8) {
+            if html.hasPrefix("\u{FEFF}") { html.removeFirst() }
             for name in strippedBeforeParsing {
                 html = html.replacingOccurrences(of: "(?s)<\(name)\\b[^>]*>.*?</\(name)\\s*>", with: " ",
                                                  options: [.regularExpression, .caseInsensitive])
             }
-            data = Data(html.utf8)
+            plain = html
+            // Parsed as a string, not bytes: from bytes the tidying parser ignores the declared
+            // charset, dropping non-ASCII UTF-8 without one and reading it as Windows-1252 with
+            // `<meta charset="utf-8">` ("Café" -> "CafÃ©").
+            parsed = try? XMLDocument(xmlString: html, options: [.documentTidyHTML])
+        } else {
+            // Text in another encoding is parsed as bytes, for the parser to guess.
+            parsed = try? XMLDocument(data: source, options: [.documentTidyHTML])
         }
-        guard let xml = try? XMLDocument(data: data, options: [.documentTidyHTML]),
-              let root = xml.rootElement() else {
-            let text = String(decoding: data, as: UTF8.self)
-                .replacingOccurrences(of: "<[^>]+>", with: " ", options: .regularExpression)
+        guard let xml = parsed, let root = xml.rootElement() else {
+            let text = plain.replacingOccurrences(of: "<[^>]+>", with: " ", options: .regularExpression)
             return PlainTextReader.document(from: text)
         }
         var walker = Walker()
@@ -200,13 +228,30 @@ public enum HTMLReader {
     }
 
     struct Walker {
+        /// An `<ol>` being read: the next item's number and how items are numbered.
+        struct OrderedList {
+            var next: Int
+            var step: Int
+            var type: String
+        }
+
         var builder = ReadableDocument.Builder()
         var inline = ""
         var row: [String]?
+        /// Open lists, innermost last; nil for an unordered one.
+        var lists: [OrderedList?] = []
+        /// "3. " before the first text of an ordered list item.
+        var marker: String?
 
         mutating func flush() {
-            builder.paragraph(collapse(inline))
+            emit(collapse(inline))
             inline = ""
+        }
+
+        mutating func emit(_ text: String) {
+            guard !text.isEmpty else { return }
+            builder.paragraph((marker ?? "") + text)
+            marker = nil
         }
 
         mutating func walk(_ node: XMLNode) {
@@ -231,8 +276,32 @@ public enum HTMLReader {
                 flush()
                 row = []
                 for child in node.children ?? [] { walk(child) }
-                if let row, !row.isEmpty { builder.paragraph(row.joined(separator: "; ")) }
+                if let row, !row.isEmpty { emit(row.joined(separator: "; ")) }
                 row = nil
+                return
+            }
+            // Ordered list items keep their numbers, as the page shows them: `start`, `reversed`,
+            // `type` (1, a, A, i, I), and an item's `value` are honored. Bullets are not read.
+            if name == "ol" || name == "ul" || name == "menu" {
+                flush()
+                lists.append(name == "ol" ? Self.orderedList(node) : nil)
+                for child in node.children ?? [] { walk(child) }
+                flush()
+                lists.removeLast()
+                marker = nil
+                return
+            }
+            if name == "li", let open = lists.last {
+                flush()
+                if var list = open {
+                    if let value = Self.attribute("value", of: node).flatMap(Int.init) { list.next = value }
+                    marker = Self.marker(list.next, type: list.type) + " "
+                    list.next += list.step
+                    lists[lists.count - 1] = list
+                }
+                for child in node.children ?? [] { walk(child) }
+                flush()
+                marker = nil
                 return
             }
             let isBlock = HTMLReader.blocks.contains(name)
@@ -242,6 +311,45 @@ public enum HTMLReader {
         }
 
         static func isSkipped(_ name: String) -> Bool { HTMLReader.skipped.contains(name) }
+
+        static func attribute(_ name: String, of node: XMLNode) -> String? {
+            (node as? XMLElement)?.attributes?.first { ($0.localName ?? $0.name)?.lowercased() == name }?
+                .stringValue?.trimmingCharacters(in: .whitespaces)
+        }
+
+        static func orderedList(_ node: XMLNode) -> OrderedList {
+            let reversed = attribute("reversed", of: node) != nil
+            let items = (node.children ?? []).filter { ($0.localName ?? $0.name)?.lowercased() == "li" }.count
+            let start = attribute("start", of: node).flatMap(Int.init) ?? (reversed ? items : 1)
+            let type = attribute("type", of: node) ?? "1"
+            return OrderedList(next: start, step: reversed ? -1 : 1, type: type)
+        }
+
+        /// "3.", "c.", "iii.", "C.", "III."; decimal for numbers a letter or numeral cannot show.
+        static func marker(_ number: Int, type: String) -> String {
+            switch type {
+            case "a" where number > 0, "A" where number > 0:
+                var letters = ""
+                var rest = number
+                while rest > 0 {
+                    rest -= 1
+                    letters = String(UnicodeScalar(UInt8(97 + rest % 26))) + letters
+                    rest /= 26
+                }
+                return (type == "A" ? letters.uppercased() : letters) + "."
+            case "i" where (1..<4_000).contains(number), "I" where (1..<4_000).contains(number):
+                let numerals = [(1000, "m"), (900, "cm"), (500, "d"), (400, "cd"), (100, "c"), (90, "xc"),
+                                (50, "l"), (40, "xl"), (10, "x"), (9, "ix"), (5, "v"), (4, "iv"), (1, "i")]
+                var roman = ""
+                var rest = number
+                for (value, symbol) in numerals {
+                    while rest >= value { roman += symbol; rest -= value }
+                }
+                return (type == "I" ? roman.uppercased() : roman) + "."
+            default:
+                return "\(number)."
+            }
+        }
 
         /// Visible text of an element, without skipped descendants.
         static func text(of node: XMLNode) -> String {
@@ -285,6 +393,13 @@ public enum PDFReader {
 
     static func document(paragraphs: [String], declaredTitle: String?, author: String?) -> ReadableDocument {
         if let declaredTitle, !declaredTitle.isEmpty {
+            // The visible title under a matching metadata title is the title heading, read once.
+            if paragraphs.count > 1, PlainTextReader.looksLikeTitle(paragraphs[0]),
+               ReadableDocument.sameTitle(declaredTitle, paragraphs[0]) {
+                return ReadableDocument(title: declaredTitle, author: author, sections: [
+                    .init(heading: paragraphs[0], level: 1, paragraphs: Array(paragraphs.dropFirst())),
+                ])
+            }
             return ReadableDocument(title: declaredTitle, author: author, sections: [.init(paragraphs: paragraphs)])
         }
         if paragraphs.count > 1, PlainTextReader.looksLikeTitle(paragraphs[0]) {
@@ -436,6 +551,9 @@ public enum PDFReader {
 
 /// RTF, RTFD, Word, and OpenDocument text through AppKit's document readers. Paragraphs that are
 /// marked as headings, or are short, unpunctuated, and set larger or bold, become headings.
+/// Numbered list items keep their numbers: the Word readers leave them in the text ("\t1.\tItem"),
+/// while the RTF and OpenDocument readers move them into the paragraph's text list, from which
+/// they are put back.
 public enum RichTextReader {
     @MainActor static func document(_ url: URL, type: NSAttributedString.DocumentType) throws -> ReadableDocument {
         var attributes: NSDictionary?
@@ -452,10 +570,17 @@ public enum RichTextReader {
 
     public static func document(from text: NSAttributedString, title: String?, author: String?) -> ReadableDocument {
         let string = text.string as NSString
-        var paragraphs: [(text: String, size: CGFloat, bold: Bool, level: Int)] = []
+        var paragraphs: [(text: String, size: CGFloat, bold: Bool, level: Int, listed: Bool)] = []
         var sizes: [CGFloat: Int] = [:]
         string.enumerateSubstrings(in: NSRange(location: 0, length: string.length), options: .byParagraphs) { substring, range, _, _ in
-            guard let substring, !substring.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+            guard var substring, !substring.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+            let list = (text.attribute(.paragraphStyle, at: range.location, effectiveRange: nil) as? NSParagraphStyle)?
+                .textLists.last
+            // The Word readers keep the marker between tabs instead of a text list.
+            let markedInText = substring.range(of: #"^\t[^\s]{1,8}\t"#, options: .regularExpression) != nil
+            if let list {
+                substring = numbered(substring, marker: list.marker(forItemNumber: text.itemNumber(in: list, at: range.location)))
+            }
             var size: CGFloat = 0
             var bold = true
             var level = 0
@@ -471,13 +596,14 @@ public enum RichTextReader {
                     level = style.headerLevel
                 }
             }
-            paragraphs.append((substring, size, bold, level))
+            paragraphs.append((substring, size, bold, level, list != nil || markedInText))
         }
         let body = sizes.max { $0.value < $1.value }?.key ?? 0
         var builder = ReadableDocument.Builder()
         for paragraph in paragraphs {
             var level = paragraph.level
-            if level == 0, PlainTextReader.looksLikeTitle(paragraph.text), body > 0 {
+            // A list item is never taken for a heading, however it is set.
+            if level == 0, !paragraph.listed, PlainTextReader.looksLikeTitle(paragraph.text), body > 0 {
                 if paragraph.size >= body * 1.5 { level = 1 }
                 else if paragraph.size >= body + 2 || (paragraph.bold && paragraph.size >= body) { level = 2 }
             }
@@ -487,5 +613,18 @@ public enum RichTextReader {
         let declared = title?.trimmingCharacters(in: .whitespacesAndNewlines)
         return ReadableDocument(title: declared?.isEmpty == false ? declared : builder.leadingTitle,
                                 author: author, sections: builder.sections)
+    }
+
+    /// A list item's text starting with its number ("3. Serve"). Bullets are not read, and a
+    /// number the text already starts with is not added again.
+    static func numbered(_ text: String, marker: String) -> String {
+        let marker = marker.trimmingCharacters(in: .whitespaces)
+        guard marker.contains(where: { $0.isLetter || $0.isNumber }) else { return text }
+        let punctuation = CharacterSet(charactersIn: ".)(")
+        let body = text.trimmingCharacters(in: .whitespaces)
+        let first = body.prefix { !$0.isWhitespace }.trimmingCharacters(in: punctuation)
+        if first == marker.trimmingCharacters(in: punctuation) { return text }
+        let spoken = marker.last.map { $0.isLetter || $0.isNumber } == true ? marker + "." : marker
+        return spoken + " " + body
     }
 }

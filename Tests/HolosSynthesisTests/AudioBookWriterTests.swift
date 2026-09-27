@@ -68,6 +68,59 @@ import Testing
         #expect(tags[AVMetadataIdentifier.iTunesMetadataEncodingTool.rawValue] == "Voice is Local")
     }
 
+    @Test func textIsShortenedOnCharacterBoundaries() {
+        #expect(AudioBookWriter.fileText(String(repeating: "é", count: 5), maximumBytes: 5) == "éé")
+        let person = "👩🏽‍💻"  // 15 UTF-8 bytes, one character
+        #expect(AudioBookWriter.fileText(person + person + person, maximumBytes: 29) == person)
+        #expect(AudioBookWriter.fileText("a" + person, maximumBytes: 15) == "a")
+        #expect(AudioBookWriter.fileText(person, maximumBytes: 14) == nil)
+        #expect(AudioBookWriter.fileText("  Short  ") == "Short")
+        #expect(AudioBookWriter.fileText(" \n ") == nil)
+        #expect(AudioBookWriter.fileText(nil) == nil)
+    }
+
+    @Test func languageTagsAreOnlyOnesTheWriterAccepts() {
+        #expect(AudioBookMetadata.languageTag("en") == "en")
+        #expect(AudioBookMetadata.languageTag("EN_us") == "en-US")
+        #expect(AudioBookMetadata.languageTag("zh-hant-tw") == "zh-Hant-TW")
+        #expect(AudioBookMetadata.languageTag("es-419") == "es-419")
+        #expect(AudioBookMetadata.languageTag("en-GB-oxendict") == "en-GB")
+        for rejected in ["english", "und", "qq", "x-klingon", "", "en GB", "12"] {
+            #expect(AudioBookMetadata.languageTag(rejected) == nil, "\(rejected)")
+        }
+    }
+
+    @Test(.timeLimit(.minutes(1))) func longTitlesAndABadLanguageStillMakeAValidFile() async throws {
+        let folder = try directory()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let first = folder.appendingPathComponent("a.caf")
+        let second = folder.appendingPathComponent("b.caf")
+        try tone(seconds: 1, to: first)
+        try tone(seconds: 1, to: second)
+        // 70,000 bytes of two-byte characters: a raw 65,535-byte prefix would split the last one.
+        let long = String(repeating: "é", count: 35_000)
+        let output = folder.appendingPathComponent("long.m4a")
+        let summary = try await AudioBookWriter.write(
+            parts: [AudioBookPart(url: first, chapter: long), AudioBookPart(url: second, silenceBefore: 0.5, chapter: "Two")],
+            metadata: AudioBookMetadata(title: long, author: long, language: "english"), to: output)
+        let shortened = String(repeating: "é", count: 32_767)
+        #expect(summary.chapters.map(\.title) == [shortened, "Two"])
+
+        let asset = AVURLAsset(url: output)
+        let locales = try await asset.load(.availableChapterLocales)
+        let groups = try await asset.loadChapterMetadataGroups(withTitleLocale: try #require(locales.first),
+                                                               containingItemsWithCommonKeys: [])
+        var titles: [String] = []
+        for group in groups { titles.append(try await group.items.first?.load(.stringValue) ?? "") }
+        #expect(titles == [shortened, "Two"])
+        var tags: [String: String] = [:]
+        for item in try await asset.load(.metadata) {
+            if let identifier = item.identifier, let value = try await item.load(.stringValue) { tags[identifier.rawValue] = value }
+        }
+        #expect(tags[AVMetadataIdentifier.iTunesMetadataSongName.rawValue] == shortened)
+        #expect(tags[AVMetadataIdentifier.iTunesMetadataArtist.rawValue] == shortened)
+    }
+
     @Test(.timeLimit(.minutes(1))) func chapterBeforeTheFirstHeadingAndNoTrackForOneChapter() async throws {
         let folder = try directory()
         defer { try? FileManager.default.removeItem(at: folder) }

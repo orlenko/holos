@@ -276,6 +276,42 @@ import Testing
         #expect(ReadingPipeline.identity(script: flat, voiceIdentifier: voice, rate: 0.5, metadata: withLanguage) != base)
     }
 
+    @Test func badDestinationFailsBeforeAnythingIsRendered() async throws {
+        let parent = try root()
+        let locked = parent.appendingPathComponent("Locked")
+        try FileManager.default.createDirectory(at: locked, withIntermediateDirectories: false)
+        try FileManager.default.setAttributes([.posixPermissions: 0o500], ofItemAtPath: locked.path)
+        defer {
+            try? FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: locked.path)
+            try? FileManager.default.removeItem(at: parent)
+        }
+        try Data("x".utf8).write(to: parent.appendingPathComponent("file.txt"))
+        let renderer = FakeRenderer()
+        let pipeline = ReadingPipeline(renderer: renderer, joiner: FakeJoiner())
+        let outputs = ["Missing/Book.m4a", "file.txt/Book.m4a", "Locked/Book.m4a"].map { parent.appendingPathComponent($0) }
+        for (index, output) in outputs.enumerated() {
+            let place = ReadingLocation(workDirectory: parent.appendingPathComponent("work\(index)"), output: output)
+            await #expect(throws: HolosError.self, "\(output.path)") {
+                try await pipeline.render(script: script(2), voiceIdentifier: voice, metadata: metadata, location: place)
+            }
+            #expect(!FileManager.default.fileExists(atPath: place.workDirectory.path))
+        }
+        // A cache folder that cannot take the cache fails the same way.
+        let cacheless = ReadingLocation(workDirectory: locked.appendingPathComponent("work"),
+                                        output: parent.appendingPathComponent("Book.m4a"))
+        await #expect(throws: HolosError.self) {
+            try await pipeline.render(script: script(2), voiceIdentifier: voice, metadata: metadata, location: cacheless)
+        }
+        #expect(renderer.calls.isEmpty)
+
+        // The layout without --output: the finished file inside a cache that does not exist yet.
+        let inside = ReadingLocation(workDirectory: parent.appendingPathComponent("Reading"),
+                                     output: parent.appendingPathComponent("Reading/Book.m4a"))
+        let result = try await pipeline.render(script: script(2), voiceIdentifier: voice, metadata: metadata, location: inside)
+        #expect(result.manifest.status == "complete")
+        #expect(FileManager.default.fileExists(atPath: inside.output.path))
+    }
+
     @Test func publishesWhereExclusiveRenameIsUnsupported() async throws {
         let parent = try root()
         defer { try? FileManager.default.removeItem(at: parent) }
