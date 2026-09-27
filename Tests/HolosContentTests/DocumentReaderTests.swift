@@ -425,6 +425,88 @@ import Testing
         #expect(HTMLReader.encoding(named: "not-a-charset") == nil)
     }
 
+    /// Only a real `<meta>` tag declares a charset: one in a comment or in a raw text element's
+    /// contents (a script writing it, a title quoting it) is text, as in browsers.
+    @Test func charsetDeclarationsInCommentsAndRawTextAreIgnored() {
+        func declared(_ html: String) -> String.Encoding? { HTMLReader.declaredEncoding(Data(html.utf8)) }
+        let pages: [(String, String.Encoding?)] = [
+            ("<!-- <meta charset=windows-1252> --><meta charset=utf-8>", .utf8),
+            ("<!--<meta charset=windows-1252>--><meta charset=utf-8>", .utf8),
+            // `<!-->` is a whole comment, so the declaration after it is real.
+            ("<!--><meta charset=windows-1252>", .windowsCP1252),
+            (#"<script>document.write('<meta charset="windows-1252">')</script><meta charset="utf-8">"#, .utf8),
+            ("<SCRIPT type=module>let s = '<meta charset=windows-1252>'</SCRIPT ><meta charset=utf-8>", .utf8),
+            ("<style>/* <meta charset=windows-1252> */</style><meta charset=utf-8>", .utf8),
+            ("<title>Use <meta charset=windows-1252></title><meta charset=utf-8>", .utf8),
+            ("<textarea><meta charset=windows-1252></textarea><meta charset=utf-8>", .utf8),
+            ("<noscript><meta charset=windows-1252></noscript><meta charset=utf-8>", .utf8),
+            // A `>` in a quoted value does not end a tag, and `<metadata>` is not `<meta>`.
+            (#"<div title="<meta charset=windows-1252>"><meta charset=utf-8>"#, .utf8),
+            ("<metadata charset=windows-1252><meta charset=utf-8>", .utf8),
+            // An end tag is read past the same way.
+            ("</div title='<meta charset=windows-1252>'><meta charset=utf-8>", .utf8),
+            // Unfinished comments and scripts hide the rest.
+            ("<!-- <meta charset=windows-1252>", nil),
+            ("<script><meta charset=windows-1252>", nil),
+            // A real declaration after text or other tags still counts.
+            ("<html lang=fr><head><title>T</title><meta charset=windows-1252>", .windowsCP1252),
+        ]
+        for (html, encoding) in pages {
+            #expect(declared(html) == encoding, "\(html)")
+        }
+        // The case from the review: valid UTF-8 is not read as Windows-1252 mojibake.
+        let page = "<!-- <meta charset=windows-1252> --><meta charset=utf-8><p>Café</p>"
+        #expect(HTMLReader.document(from: Data(page.utf8)).sections.flatMap(\.paragraphs) == ["Café"])
+    }
+
+    /// `<meta>` attributes in every form: names and values in any case, values double-quoted,
+    /// single-quoted, or unquoted, `charset` or `http-equiv="content-type"` with `content`.
+    @Test func charsetDeclarationAttributesInEveryForm() {
+        func declared(_ html: String) -> String.Encoding? { HTMLReader.declaredEncoding(Data(html.utf8)) }
+        let pages: [(String, String.Encoding?)] = [
+            (#"<meta charset="windows-1252">"#, .windowsCP1252),
+            ("<meta charset='windows-1252'>", .windowsCP1252),
+            ("<meta charset=windows-1252>", .windowsCP1252),
+            ("<meta charset=windows-1252 />", .windowsCP1252),
+            (#"<META CHARSET = "Windows-1252" >"#, .windowsCP1252),
+            ("<meta/charset=windows-1252>", .windowsCP1252),
+            ("<meta\ncharset\t=\t'ISO-8859-1'>", .windowsCP1252),
+            (#"<meta http-equiv="Content-Type" content="text/html; charset=windows-1252">"#, .windowsCP1252),
+            ("<meta HTTP-EQUIV=content-type CONTENT=text/html;charset=windows-1252>", .windowsCP1252),
+            (#"<meta content='text/html; charset="windows-1252"' http-equiv='CONTENT-TYPE'>"#, .windowsCP1252),
+            (#"<meta http-equiv="content-type" content="text/html; CHARSET = windows-1252; x=y">"#, .windowsCP1252),
+            // `content` counts only with `http-equiv="content-type"`.
+            (#"<meta content="text/html; charset=windows-1252">"#, nil),
+            (#"<meta http-equiv="refresh" content="0; charset=windows-1252">"#, nil),
+            // `charset` wins over `content`, and the first of a repeated attribute counts.
+            (#"<meta charset=utf-8 http-equiv=content-type content="text/html; charset=windows-1252">"#, .utf8),
+            ("<meta charset=utf-8 charset=windows-1252>", .utf8),
+            // An unknown charset is passed over for the next declaration.
+            (#"<meta charset="x-unknown"><meta charset=windows-1252>"#, .windowsCP1252),
+            ("<meta>", nil),
+        ]
+        for (html, encoding) in pages {
+            #expect(declared(html) == encoding, "\(html)")
+        }
+    }
+
+    /// A page's own `data-holos-*` attributes are content, never the names `prepared` records:
+    /// the attribute it uses is new for each page.
+    @Test func pageAttributesAreNeverTakenForInternalMarkers() {
+        #expect(paragraphs("""
+        <html><body>
+        <p data-holos-tag="script">Important text.</p>
+        <div DATA-HOLOS-TAG="nav"><p>Also read.</p></div>
+        <nav data-holos-tag="p">Menu</nav>
+        <section data-holos-tag="footer"><p>Section text.</p></section>
+        <span data-holos-src-tag="style">Inline text.</span>
+        </body></html>
+        """) == ["Important text.", "Also read.", "Section text.", "Inline text."])
+        let first = HTMLReader.originalNameAttribute()
+        #expect(first.hasPrefix("data-holos-") && first.hasSuffix("-tag") && first == first.lowercased())
+        #expect(first != HTMLReader.originalNameAttribute())
+    }
+
     /// Fragments the parser rejects without `<html>` are read after all.
     @Test func fragmentsAndPlainTextAreRead() {
         #expect(paragraphs("<p>Unclosed paragraph") == ["Unclosed paragraph"])
