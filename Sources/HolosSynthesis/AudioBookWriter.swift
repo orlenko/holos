@@ -102,6 +102,12 @@ public struct AudioBookSummary: Sendable, Equatable {
 /// ffmpeg read).
 public enum AudioBookWriter {
     private static let framesPerBuffer: AVAudioFrameCount = 8_192
+    /// The longest silence a part may ask for, in seconds.
+    static let maximumSilence: Double = 3_600
+    /// The highest part sample rate accepted (far below the Int32 CMTime timescale limit).
+    static let maximumSampleRate: Double = 768_000
+    /// The most channels a part may have.
+    static let maximumChannels: AVAudioChannelCount = 64
 
     public static func write(parts: [AudioBookPart], metadata: AudioBookMetadata,
                              to output: URL) async throws -> AudioBookSummary {
@@ -114,8 +120,8 @@ public enum AudioBookWriter {
         var lengths: [Int64] = []
         var sourceFormat: AVAudioFormat?
         for part in parts {
-            guard part.silenceBefore.isFinite, part.silenceBefore >= 0 else {
-                throw HolosError.invalidInput("Silence before a part must be finite and nonnegative.")
+            guard part.silenceBefore.isFinite, part.silenceBefore >= 0, part.silenceBefore <= maximumSilence else {
+                throw HolosError.invalidInput("Silence before a part must be between 0 and \(Int(maximumSilence)) seconds.")
             }
             let file = try openPart(part.url)
             guard sourceFormat == nil || file.processingFormat == sourceFormat else {
@@ -124,25 +130,38 @@ public enum AudioBookWriter {
             sourceFormat = file.processingFormat
             lengths.append(file.length)
         }
-        guard let format = sourceFormat, format.sampleRate > 0, format.channelCount > 0 else {
+        // The rate is a CMTime timescale (Int32) once rounded, and the channel count sizes buffers.
+        guard let format = sourceFormat, format.sampleRate.isFinite, format.sampleRate >= 1,
+              format.sampleRate <= maximumSampleRate, format.channelCount > 0,
+              format.channelCount <= maximumChannels else {
             throw HolosError.io("Reading parts have no usable audio format.")
         }
         let rate = format.sampleRate
 
-        // Timeline in source frames: where each part starts and where each chapter starts.
+        // Timeline in source frames: where each part starts and where each chapter starts. Every
+        // term is bounded (silence by `maximumSilence`, rate by `maximumSampleRate`), and the sum
+        // is checked, so no length or count read from the part files can trap.
         var starts: [Int64] = []
+        var silences: [Int64] = []
         var position: Int64 = 0
+        func advance(_ frames: Int64) throws {
+            let (sum, overflow) = position.addingReportingOverflow(frames)
+            guard !overflow, frames >= 0 else { throw HolosError.io("Reading parts are too long to join.") }
+            position = sum
+        }
         for (part, length) in zip(parts, lengths) {
-            position += Int64((part.silenceBefore * rate).rounded())
+            let silence = Int64((part.silenceBefore * rate).rounded())
+            silences.append(silence)
+            try advance(silence)
             starts.append(position)
-            position += length
+            try advance(length)
         }
         let total = position
         var chapterMarks: [(title: String, frame: Int64)] = []
         for (index, part) in parts.enumerated() {
             guard let title = fileText(part.chapter) else { continue }
             // A chapter begins at the silence before its part, so skipping to it is not abrupt.
-            let frame = index == 0 ? 0 : starts[index] - Int64((part.silenceBefore * rate).rounded())
+            let frame = index == 0 ? 0 : starts[index] - silences[index]
             if let last = chapterMarks.last, last.frame >= frame { continue }
             chapterMarks.append((title, frame))
         }
@@ -242,7 +261,7 @@ public enum AudioBookWriter {
         }
         silence.frameLength = framesPerBuffer
         if let channel = silence.int16ChannelData?[0] {
-            channel.update(repeating: 0, count: Int(framesPerBuffer * format.channelCount))
+            channel.update(repeating: 0, count: Int(framesPerBuffer) * Int(format.channelCount))
         }
         var frame: Int64 = 0
         for (index, part) in parts.enumerated() {

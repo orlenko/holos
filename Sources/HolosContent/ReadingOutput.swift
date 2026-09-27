@@ -23,9 +23,10 @@ public enum ReadingOutput {
     static var fileExtension: String { "." + ReadingAudioFormat.fileExtension }
 
     /// A file name from the document title: path separators and characters other systems
-    /// reject are replaced, whitespace is collapsed, leading dots are dropped, and the name is
-    /// shortened to 100 characters and, with its ".m4a", to `limit` filesystem units (see
-    /// `fits`), on a character boundary.
+    /// reject are replaced, whitespace is collapsed, leading and trailing dots are dropped, a
+    /// Windows device name ("CON", "com1.txt") gets a leading "_", and the name is shortened to
+    /// 100 characters and, with its ".m4a", to `limit` filesystem units (see `fits`), on a
+    /// character boundary.
     public static func fileName(title: String?, fallback: String? = nil, limit: Int = defaultNameLimit) -> String {
         for candidate in [title, fallback] {
             if let name = sanitize(candidate ?? ""), let fitted = fitted(name, limit: limit) {
@@ -36,12 +37,38 @@ public enum ReadingOutput {
     }
 
     /// Shortens `name` (without extension) so that it plus ".m4a" fits in `limit` units, or nil
-    /// when nothing readable is left.
+    /// when nothing readable is left. A name Windows reserves (see `isReserved`) gets a leading
+    /// "_", so the file can be copied to any system.
     static func fitted(_ name: String, limit: Int) -> String? {
         var result = name
-        while !result.isEmpty && !fits(result + fileExtension, limit: limit) { result.removeLast() }
-        result = result.trimmingCharacters(in: CharacterSet(charactersIn: " .-"))
-        return result.isEmpty ? nil : result
+        while true {
+            while !result.isEmpty && !fits(result + fileExtension, limit: limit) { result.removeLast() }
+            result = result.trimmingCharacters(in: CharacterSet(charactersIn: " .-"))
+            guard !result.isEmpty else { return nil }
+            // Shortening keeps the "_", so the name is not reserved the second time round.
+            guard isReserved(result) else { return result }
+            result = "_" + result
+        }
+    }
+
+    /// Windows device names: never usable as a file name, in any case, with any extension
+    /// ("con.txt"), or with spaces before the extension ("CON .txt"). Windows reads the
+    /// superscript digits ¹²³ as 1, 2, and 3 in COM and LPT names.
+    static let reservedNames: Set<String> = {
+        var names: Set<String> = ["CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$"]
+        for digit in ["0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "\u{00B9}", "\u{00B2}", "\u{00B3}"] {
+            names.insert("COM" + digit)
+            names.insert("LPT" + digit)
+        }
+        return names
+    }()
+
+    /// Whether Windows reserves `name` (a file name, extension and all): its part before the
+    /// first dot, without trailing spaces, is a device name in any case.
+    static func isReserved(_ name: String) -> Bool {
+        var base = Substring(name.prefix { $0 != "." })
+        while base.last == " " { base.removeLast() }
+        return reservedNames.contains(base.uppercased())
     }
 
     /// Whether a name fits every way a Mac volume counts it: UTF-8 bytes as given (APFS),
@@ -57,9 +84,9 @@ public enum ReadingOutput {
         return value > 0 ? min(Int(value), defaultNameLimit) : defaultNameLimit
     }
 
-    /// `name` shortened to fit `limit`, keeping its extension.
+    /// `name` shortened to fit `limit`, keeping its extension, and never a reserved name.
     static func fitting(_ name: String, limit: Int) -> String {
-        guard !fits(name, limit: limit) else { return name }
+        guard !fits(name, limit: limit) || isReserved(name) else { return name }
         let stem = name.hasSuffix(fileExtension) ? String(name.dropLast(fileExtension.count)) : name
         return (fitted(stem, limit: limit) ?? fallbackName) + fileExtension
     }

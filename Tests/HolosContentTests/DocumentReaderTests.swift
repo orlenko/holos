@@ -156,6 +156,49 @@ import Testing
         #expect(HTMLReader.Walker.marker(0, type: "A") == "0.")
     }
 
+    @Test func extremeListNumbersNeverTrap() {
+        let html = """
+        <html><body>
+        <ol start="9223372036854775807"><li>Max</li><li>After max</li></ol>
+        <ol reversed start="-9223372036854775808"><li>Min</li><li>After min</li></ol>
+        <ol start="99999999999999999999999"><li>Unparseable</li></ol>
+        <ol start="1000000000"><li>Limit</li><li>Past limit</li></ol>
+        <ol reversed start="-1000000000"><li>Low limit</li><li>Below</li></ol>
+        <ol><li value="9223372036854775807">Value max</li><li>Next</li></ol>
+        <ol reversed><li value="-9223372036854775808">Value min</li><li>Next</li></ol>
+        <ol type="a" start="1000000000"><li>Letters</li></ol>
+        <ol start="-5" type="i"><li>Negative roman</li></ol>
+        </body></html>
+        """
+        #expect(HTMLReader.document(from: Data(html.utf8)).sections.flatMap(\.paragraphs) == [
+            "1. Max", "2. After max", "2. Min", "1. After min", "1. Unparseable",
+            "1000000000. Limit", "1000000001. Past limit", "-1000000000. Low limit", "-1000000001. Below",
+            "1. Value max", "2. Next", "2. Value min", "1. Next", "cfdgsxl. Letters", "-5. Negative roman",
+        ])
+        #expect(HTMLReader.Walker.counter("1000000001") == nil)
+        #expect(HTMLReader.Walker.counter("-1000000001") == nil)
+        #expect(HTMLReader.Walker.counter(" 7") == nil)
+        #expect(HTMLReader.Walker.counter("+7") == 7)
+        #expect(HTMLReader.Walker.counter(nil) == nil)
+        // The markers themselves take any Int.
+        #expect(HTMLReader.Walker.marker(.max, type: "a").hasSuffix("."))
+        #expect(HTMLReader.Walker.marker(.min, type: "I") == "\(Int.min).")
+    }
+
+    @Test func textListsWithExtremeStartNumbersDoNotTrap() {
+        for start in [Int.max, Int.min, Int(Int32.max), 0] {
+            let list = NSTextList(markerFormat: .decimal, options: 0)
+            list.startingItemNumber = start
+            let style = NSMutableParagraphStyle()
+            style.textLists = [list]
+            let text = NSMutableAttributedString(string: "Intro paragraph here.\n")
+            text.append(NSAttributedString(string: "First\nSecond\n", attributes: [.paragraphStyle: style]))
+            let paragraphs = RichTextReader.document(from: text, title: nil, author: nil).sections.flatMap(\.paragraphs)
+            #expect(paragraphs.count == 3, "\(start)")
+            #expect(paragraphs.last?.hasSuffix("Second") == true, "\(start)")
+        }
+    }
+
     @Test func nonASCIITextSurvivesWithOrWithoutADeclaredCharset() {
         for head in ["", #"<meta charset="utf-8">"#, #"<meta http-equiv="Content-Type" content="text/html; charset=iso-8859-1">"#] {
             let document = HTMLReader.document(from: Data("\u{FEFF}<html lang=\"fr\"><head>\(head)<title>Café — Blog</title></head><body><p>Crème brûlée, 漢字, 👩🏽‍💻 &amp; “quotes”.</p></body></html>".utf8))
@@ -521,6 +564,36 @@ import Testing
         #expect(ReadingOutput.fileName(title: nil, fallback: "???") == "Reading.m4a")
         let long = ReadingOutput.fileName(title: String(repeating: "é", count: 300))
         #expect(long == String(repeating: "é", count: 100) + ".m4a")
+    }
+
+    @Test func generatedFileNamesArePortableToWindows() {
+        // Device names, in any case, with an extension or spaces before it, and with superscripts.
+        for (title, expected) in [
+            ("CON", "_CON"), ("con", "_con"), ("Aux", "_Aux"), ("NUL", "_NUL"), ("prn", "_prn"),
+            ("COM1", "_COM1"), ("com0", "_com0"), ("LPT9", "_LPT9"), ("COM\u{00B9}", "_COM\u{00B9}"),
+            ("lpt\u{00B3}", "_lpt\u{00B3}"), ("CON.txt", "_CON.txt"), ("nul.tar.gz", "_nul.tar.gz"),
+            ("CON .txt", "_CON .txt"), ("CONIN$", "_CONIN$"), ("conout$", "_conout$"),
+            ("CON.", "_CON"), ("..CON..", "_CON"), ("\u{0007}AUX\u{0000}", "_AUX"),
+        ] {
+            #expect(ReadingOutput.fileName(title: title) == expected + ".m4a", "\(title)")
+        }
+        // Names that only start like device names are fine.
+        for title in ["CONSOLE", "Conference", "COM10", "LPT", "COM", "NULL", "AUXILIARY", "CON-TXT", "Com 1"] {
+            #expect(ReadingOutput.fileName(title: title) == title + ".m4a", "\(title)")
+        }
+        // A fallback that is a device name, and a title that becomes one once shortened.
+        #expect(ReadingOutput.fileName(title: "?*", fallback: "prn") == "_prn.m4a")
+        #expect(ReadingOutput.fileName(title: "CON. The rest of the title", limit: 8) == "_CON.m4a")
+        // The "_" is kept when the name must be shortened again to fit.
+        #expect(ReadingOutput.fileName(title: "CON", limit: 7) == "_CO.m4a")
+        // Characters Windows and exFAT reject, controls, and leading and trailing dots and spaces.
+        #expect(ReadingOutput.fileName(title: " .a<b>c:d\"e/f\\g|h?i*j\u{0001}k\u{007F}l. ") == "abc-de-f-g-hij k l.m4a")
+        #expect(ReadingOutput.fileName(title: "...", fallback: " . ") == "Reading.m4a")
+        // A name placed in an existing output directory is checked as well.
+        #expect(ReadingOutput.fitting("aux.m4a", limit: 255) == "_aux.m4a")
+        #expect(ReadingOutput.fitting("Auxiliary.m4a", limit: 255) == "Auxiliary.m4a")
+        #expect(ReadingOutput.isReserved("LPT1.m4a"))
+        #expect(!ReadingOutput.isReserved("LPT10.m4a"))
     }
 
     @Test func fileNamesFitTheFilesystemLimitOnCharacterBoundaries() {

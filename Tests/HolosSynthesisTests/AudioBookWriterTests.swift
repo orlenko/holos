@@ -146,4 +146,20 @@ import Testing
             try await AudioBookWriter.write(parts: [AudioBookPart(url: first)], metadata: AudioBookMetadata(title: nil), to: single)
         }
     }
+
+    /// Silence that would overflow the frame count (or is not a number) is an error, never a trap.
+    @Test(.timeLimit(.minutes(1))) func absurdSilenceIsRejected() async throws {
+        let folder = try directory()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let part = folder.appendingPathComponent("a.caf")
+        try tone(seconds: 0.1, to: part)
+        for silence in [1e300, Double.greatestFiniteMagnitude, .infinity, .nan, -1, AudioBookWriter.maximumSilence + 1] {
+            let output = folder.appendingPathComponent("out.m4a")
+            await #expect(throws: HolosError.self, "\(silence)") {
+                try await AudioBookWriter.write(parts: [AudioBookPart(url: part), AudioBookPart(url: part, silenceBefore: silence)],
+                                                metadata: AudioBookMetadata(title: nil), to: output)
+            }
+            #expect(!FileManager.default.fileExists(atPath: output.path))
+        }
+    }
 }

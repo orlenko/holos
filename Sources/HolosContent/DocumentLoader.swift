@@ -294,9 +294,11 @@ public enum HTMLReader {
             if name == "li", let open = lists.last {
                 flush()
                 if var list = open {
-                    if let value = Self.attribute("value", of: node).flatMap(Int.init) { list.next = value }
+                    if let value = Self.counter(Self.attribute("value", of: node)) { list.next = value }
                     marker = Self.marker(list.next, type: list.type) + " "
-                    list.next += list.step
+                    // Never traps: a counter at the integer bounds stays there.
+                    let (advanced, overflow) = list.next.addingReportingOverflow(list.step)
+                    if !overflow { list.next = advanced }
                     lists[lists.count - 1] = list
                 }
                 for child in node.children ?? [] { walk(child) }
@@ -320,9 +322,19 @@ public enum HTMLReader {
         static func orderedList(_ node: XMLNode) -> OrderedList {
             let reversed = attribute("reversed", of: node) != nil
             let items = (node.children ?? []).filter { ($0.localName ?? $0.name)?.lowercased() == "li" }.count
-            let start = attribute("start", of: node).flatMap(Int.init) ?? (reversed ? items : 1)
+            let start = counter(attribute("start", of: node)) ?? (reversed ? items : 1)
             let type = attribute("type", of: node) ?? "1"
             return OrderedList(next: start, step: reversed ? -1 : 1, type: type)
+        }
+
+        /// The largest list number `start` or `value` may set, either sign.
+        static let counterLimit = 1_000_000_000
+
+        /// A `start` or `value` attribute as a list number; nil (so the default numbering
+        /// applies) when it is not an integer or is beyond `counterLimit`.
+        static func counter(_ text: String?) -> Int? {
+            guard let text, let value = Int(text), (-counterLimit...counterLimit).contains(value) else { return nil }
+            return value
         }
 
         /// "3.", "c.", "iii.", "C.", "III."; decimal for numbers a letter or numeral cannot show.
