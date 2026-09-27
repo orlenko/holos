@@ -84,8 +84,8 @@ struct Read: AsyncParsableCommand {
 
         let readings = HolosPaths.supportRoot.appendingPathComponent("Readings", isDirectory: true)
         try FileManager.default.createDirectory(at: readings, withIntermediateDirectories: true)
-        let identity = [selected.id, rate.map { "\($0)" } ?? "", metadata.title ?? "", metadata.author ?? "", script.text]
-            .joined(separator: "\u{1}")
+        let identity = ReadingPipeline.identity(script: script, voiceIdentifier: selected.id, rate: rate,
+                                                metadata: metadata)
         let location = try ReadingOutput.locate(
             output: output, name: ReadingOutput.fileName(title: metadata.title, fallback: fallbackName),
             identity: identity, readingsRoot: readings)

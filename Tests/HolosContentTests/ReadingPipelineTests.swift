@@ -217,6 +217,30 @@ import Testing
                                       location: place, resume: true)
         }
 
+        // Every value written into the file is checked, language included: an explicit voice
+        // keeps the voice the same when only the document's language changes.
+        var french = metadata
+        french.language = "fr"
+        await #expect(throws: HolosError.self) {
+            try await pipeline.render(script: script, voiceIdentifier: voice, metadata: french,
+                                      location: place, resume: true)
+        }
+        var retitled = metadata
+        retitled.author = "Someone Else"
+        await #expect(throws: HolosError.self) {
+            try await pipeline.render(script: script, voiceIdentifier: voice, metadata: retitled,
+                                      location: place, resume: true)
+        }
+        var commented = metadata
+        commented.comment = "Other"
+        await #expect(throws: HolosError.self) {
+            try await pipeline.render(script: script, voiceIdentifier: voice, metadata: commented,
+                                      location: place, resume: true)
+        }
+        // Unchanged settings still resume.
+        _ = try await pipeline.render(script: script, voiceIdentifier: voice, metadata: metadata,
+                                      location: place, resume: true)
+
         // A new reading never replaces a file that is already there.
         let other = ReadingLocation(workDirectory: parent.appendingPathComponent("other"), output: place.output)
         let before = try Data(contentsOf: place.output)
@@ -224,6 +248,98 @@ import Testing
             try await pipeline.render(script: script, voiceIdentifier: voice, metadata: metadata, location: other)
         }
         #expect(try Data(contentsOf: place.output) == before)
+    }
+
+    @Test func manifestRecordsEverySettingAndIdentityCoversThem() async throws {
+        let parent = try root()
+        defer { try? FileManager.default.removeItem(at: parent) }
+        let place = location(parent)
+        var withLanguage = metadata
+        withLanguage.language = "en"
+        let result = try await ReadingPipeline(renderer: FakeRenderer(), joiner: FakeJoiner())
+            .render(script: script(2), voiceIdentifier: voice, rate: 0.5, metadata: withLanguage, location: place)
+        #expect(result.manifest.kind == ReadingManifest.readingKind)
+        #expect(result.manifest.language == "en")
+        #expect(result.manifest.comment == withLanguage.comment)
+        #expect(result.manifest.format == .current)
+        #expect(ReadingManifest.isReading(place.workDirectory.appendingPathComponent(ReadingManifest.fileName)))
+
+        let base = ReadingPipeline.identity(script: script(2), voiceIdentifier: voice, rate: 0.5, metadata: withLanguage)
+        var french = withLanguage
+        french.language = "fr"
+        #expect(ReadingPipeline.identity(script: script(2), voiceIdentifier: voice, rate: 0.5, metadata: french) != base)
+        // Same text, different chapter structure.
+        let flat = ReadingScript(document: ReadableDocument(title: "Book", sections: [.init(paragraphs: [
+            "Chapter 1", "Paragraph 1 of chapter 1 has a few words.", "Paragraph 2 of chapter 1 has a few words.",
+        ])]))
+        #expect(flat.text == script(2).text)
+        #expect(ReadingPipeline.identity(script: flat, voiceIdentifier: voice, rate: 0.5, metadata: withLanguage) != base)
+    }
+
+    @Test func publishesWhereExclusiveRenameIsUnsupported() async throws {
+        let parent = try root()
+        defer { try? FileManager.default.removeItem(at: parent) }
+        let place = location(parent)
+        let renderer = FakeRenderer()
+        // Like exFAT or an SMB share: no exclusive rename (and no hard links).
+        let pipeline = ReadingPipeline(renderer: renderer, joiner: FakeJoiner(), exclusiveRename: { _, _ in
+            errno = ENOTSUP
+            return -1
+        })
+        let result = try await pipeline.render(script: script(3), voiceIdentifier: voice, metadata: metadata, location: place)
+        #expect(result.manifest.status == "complete")
+        #expect(try Data(contentsOf: place.output) == Data(renderer.calls.joined().utf8))
+        let leftovers = try FileManager.default.contentsOfDirectory(atPath: parent.path).filter { $0.hasPrefix(".holos-") && $0.hasSuffix(".m4a") }
+        #expect(leftovers.isEmpty)
+    }
+
+    @Test func publicationNeverReplacesAnExistingFile() throws {
+        let parent = try root()
+        defer { try? FileManager.default.removeItem(at: parent) }
+        let source = parent.appendingPathComponent(".holos-source.m4a")
+        let destination = parent.appendingPathComponent("Book.m4a")
+        let unsupported: ReadingPublisher.ExclusiveRename = { _, _ in
+            errno = ENOTSUP
+            return -1
+        }
+        for exclusiveRename in [ReadingPublisher.systemExclusiveRename, unsupported] {
+            try Data("new".utf8).write(to: source)
+            try Data("old".utf8).write(to: destination)
+            #expect(throws: HolosError.self) {
+                try ReadingPublisher.publish(source, to: destination, exclusiveRename: exclusiveRename)
+            }
+            #expect(try Data(contentsOf: destination) == Data("old".utf8))
+            #expect(try Data(contentsOf: source) == Data("new".utf8))
+
+            try FileManager.default.removeItem(at: destination)
+            try ReadingPublisher.publish(source, to: destination, exclusiveRename: exclusiveRename)
+            #expect(try Data(contentsOf: destination) == Data("new".utf8))
+            #expect(!FileManager.default.fileExists(atPath: source.path))
+            try FileManager.default.removeItem(at: destination)
+        }
+
+        // Another failure is reported and leaves nothing behind.
+        try Data("new".utf8).write(to: source)
+        #expect(throws: HolosError.self) {
+            try ReadingPublisher.publish(source, to: destination, exclusiveRename: { _, _ in
+                errno = EIO
+                return -1
+            })
+        }
+        #expect(!FileManager.default.fileExists(atPath: destination.path))
+    }
+
+    @Test func resumeRejectsAnUnrelatedManifest() async throws {
+        let parent = try root()
+        defer { try? FileManager.default.removeItem(at: parent) }
+        let place = location(parent)
+        try FileManager.default.createDirectory(at: place.workDirectory, withIntermediateDirectories: false)
+        try Data(#"{"name": "web-app"}"#.utf8).write(to: place.workDirectory.appendingPathComponent("manifest.json"))
+        await #expect(throws: HolosError.self) {
+            try await ReadingPipeline(renderer: FakeRenderer(), joiner: FakeJoiner())
+                .render(script: script(2), voiceIdentifier: voice, metadata: metadata, location: place, resume: true)
+        }
+        #expect(try Data(contentsOf: place.workDirectory.appendingPathComponent("manifest.json")) == Data(#"{"name": "web-app"}"#.utf8))
     }
 
     @Test func concurrentResumeCannotWriteIntoActiveReading() async throws {

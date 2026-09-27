@@ -19,15 +19,39 @@ public struct ReadingPart: Codable, Sendable, Equatable {
     public var duration: Double?
 }
 
-public struct ReadingManifest: Codable, Sendable, Equatable {
-    public static let currentSchemaVersion = 2
+/// The fixed encoding settings a reading's file is made with. Saved in the manifest so a reading
+/// started by another version with different settings is not resumed into a mixed file.
+public struct ReadingFormatSettings: Codable, Sendable, Equatable {
+    public let fileExtension: String
+    public let sampleRate: Double
+    public let bitRate: Int
+    public let channels: Int
+    public let partGap: Double
+    public let chapterGap: Double
 
+    public static let current = ReadingFormatSettings(
+        fileExtension: ReadingAudioFormat.fileExtension, sampleRate: ReadingAudioFormat.sampleRate,
+        bitRate: ReadingAudioFormat.bitRate, channels: ReadingAudioFormat.channels,
+        partGap: ReadingAudioFormat.partGap, chapterGap: ReadingAudioFormat.chapterGap)
+}
+
+public struct ReadingManifest: Codable, Sendable, Equatable {
+    public static let currentSchemaVersion = 3
+    /// Marks a manifest this app wrote, so an unrelated `manifest.json` is never taken for one.
+    public static let readingKind = "voiceislocal.reading"
+    public static let fileName = "manifest.json"
+
+    public let kind: String
     public let schemaVersion: Int
     public let sourceSHA256: String
+    /// Everything besides the text and the part plan that ends up in the finished file.
     public let voiceIdentifier: String
     public let rate: Float?
     public let title: String?
     public let author: String?
+    public let language: String?
+    public let comment: String
+    public let format: ReadingFormatSettings
     /// Absolute path of the finished `.m4a`.
     public let output: String
     /// Checksum of the finished file, saved before it is published so a reading interrupted
@@ -38,6 +62,23 @@ public struct ReadingManifest: Codable, Sendable, Equatable {
     public var status: String
     /// The render cache. Part files are deleted once the finished file is published.
     public var parts: [ReadingPart]
+
+    /// Whether `url` is a manifest this app wrote (any schema version): it names
+    /// `readingKind`. Anything else, including unreadable JSON, is not.
+    public static func isReading(_ url: URL) -> Bool {
+        struct Marker: Decodable { let kind: String?; let schemaVersion: Int? }
+        guard let data = try? Data(contentsOf: url),
+              let marker = try? JSONDecoder().decode(Marker.self, from: data) else { return false }
+        return marker.kind == readingKind && marker.schemaVersion != nil
+    }
+
+    /// Whether this saved reading was made from the same settings: every value that ends up
+    /// in the finished file, besides the text and the part plan (which includes chapter titles).
+    func sameSettings(voiceIdentifier: String, rate: Float?, metadata: AudioBookMetadata, output: URL) -> Bool {
+        self.voiceIdentifier == voiceIdentifier && self.rate == rate
+            && title == metadata.title && author == metadata.author && language == metadata.language
+            && comment == metadata.comment && format == .current && self.output == output.path
+    }
 }
 
 public struct ReadingResult: Sendable, Equatable {
@@ -71,11 +112,34 @@ public struct AudioBookJoiner: ReadingAudioJoiner {
 
     private let renderer: any ReadingAudioRenderer
     private let joiner: any ReadingAudioJoiner
+    private let exclusiveRename: ReadingPublisher.ExclusiveRename
 
     public init(renderer: any ReadingAudioRenderer = NativeSpeechRenderer(),
                 joiner: any ReadingAudioJoiner = AudioBookJoiner()) {
         self.renderer = renderer
         self.joiner = joiner
+        self.exclusiveRename = ReadingPublisher.systemExclusiveRename
+    }
+
+    init(renderer: any ReadingAudioRenderer, joiner: any ReadingAudioJoiner,
+         exclusiveRename: @escaping ReadingPublisher.ExclusiveRename) {
+        self.renderer = renderer
+        self.joiner = joiner
+        self.exclusiveRename = exclusiveRename
+    }
+
+    /// The cache key for a reading with an explicit output: the text and every setting that
+    /// ends up in the finished file, so a change to any of them starts a new reading.
+    public static func identity(script: ReadingScript, voiceIdentifier: String, rate: Float?,
+                                metadata: AudioBookMetadata) -> String {
+        let format = ReadingFormatSettings.current
+        return [
+            ReadingManifest.readingKind, String(ReadingManifest.currentSchemaVersion), voiceIdentifier,
+            rate.map { "\($0)" } ?? "", metadata.title ?? "", metadata.author ?? "", metadata.language ?? "",
+            metadata.comment, format.fileExtension, "\(format.sampleRate)", "\(format.bitRate)",
+            "\(format.channels)", "\(format.partGap)", "\(format.chapterGap)",
+            script.segments.map { ($0.chapter ?? "") + "\u{2}" + $0.text }.joined(separator: "\u{3}"),
+        ].joined(separator: "\u{1}")
     }
 
     public func render(script: ReadingScript, voiceIdentifier: String, rate: Float? = nil,
@@ -95,7 +159,7 @@ public struct AudioBookJoiner: ReadingAudioJoiner {
         let planned = script.parts(maxUTF16Units: maxPartUTF16Units)
         let sourceHash = sha256(Data(text.utf8))
         let sourceURL = directory.appendingPathComponent("source.txt")
-        let manifestURL = directory.appendingPathComponent("manifest.json")
+        let manifestURL = directory.appendingPathComponent(ReadingManifest.fileName)
         let expected = planned.map { part in
             ReadingPart(index: part.index, sourceUTF16Offset: part.offset, sourceUTF16Length: part.length,
                         textSHA256: sha256(Data(part.text.utf8)),
@@ -108,14 +172,18 @@ public struct AudioBookJoiner: ReadingAudioJoiner {
             guard FileManager.default.fileExists(atPath: directory.path) else {
                 throw HolosError.invalidInput("No reading exists to resume at \(directory.path).")
             }
-            manifest = try JSONDecoder().decode(ReadingManifest.self, from: Data(contentsOf: manifestURL))
-            guard manifest.schemaVersion == ReadingManifest.currentSchemaVersion,
-                  manifest.sourceSHA256 == sourceHash,
-                  manifest.voiceIdentifier == voiceIdentifier, manifest.rate == rate,
-                  manifest.title == metadata.title, manifest.author == metadata.author,
-                  manifest.output == output.path,
+            guard ReadingManifest.isReading(manifestURL) else {
+                throw HolosError.invalidInput("No Voice is Local reading to resume at \(directory.path).")
+            }
+            guard let saved = try? JSONDecoder().decode(ReadingManifest.self, from: Data(contentsOf: manifestURL)),
+                  saved.schemaVersion == ReadingManifest.currentSchemaVersion else {
+                throw HolosError.invalidInput("The reading at \(directory.path) was made by another version and cannot be resumed.")
+            }
+            manifest = saved
+            guard manifest.sourceSHA256 == sourceHash,
+                  manifest.sameSettings(voiceIdentifier: voiceIdentifier, rate: rate, metadata: metadata, output: output),
                   (try? Data(contentsOf: sourceURL)) == Data(text.utf8) else {
-                throw HolosError.invalidInput("Reading source, voice, rate, title, or output differs from the saved reading.")
+                throw HolosError.invalidInput("Reading source, voice, rate, title, author, language, or output differs from the saved reading.")
             }
             guard manifest.parts.count == expected.count,
                   zip(manifest.parts, expected).allSatisfy({ Self.samePlan($0, $1) }) else {
@@ -133,9 +201,11 @@ public struct AudioBookJoiner: ReadingAudioJoiner {
             try FileManager.default.createDirectory(at: directory.appendingPathComponent("parts"),
                                                     withIntermediateDirectories: false)
             try Data(text.utf8).write(to: sourceURL, options: [.withoutOverwriting])
-            manifest = ReadingManifest(schemaVersion: ReadingManifest.currentSchemaVersion,
+            manifest = ReadingManifest(kind: ReadingManifest.readingKind,
+                                       schemaVersion: ReadingManifest.currentSchemaVersion,
                                        sourceSHA256: sourceHash, voiceIdentifier: voiceIdentifier, rate: rate,
-                                       title: metadata.title, author: metadata.author, output: output.path,
+                                       title: metadata.title, author: metadata.author, language: metadata.language,
+                                       comment: metadata.comment, format: .current, output: output.path,
                                        outputSHA256: nil, duration: nil, chapters: [],
                                        status: "incomplete", parts: expected)
             try save(manifest, to: manifestURL)
@@ -221,11 +291,12 @@ public struct AudioBookJoiner: ReadingAudioJoiner {
         manifest.duration = summary.duration
         manifest.chapters = summary.chapters
         try save(manifest, to: manifestURL)
-        if link(temporary.path, output.path) != 0 {
-            let message = String(cString: strerror(errno))
+        do {
+            try ReadingPublisher.publish(temporary, to: output, exclusiveRename: exclusiveRename)
+        } catch {
             manifest.outputSHA256 = nil
             try? save(manifest, to: manifestURL)
-            throw HolosError.io("Could not save \(output.path): \(message)")
+            throw error
         }
         manifest.status = "complete"
         try save(manifest, to: manifestURL)
@@ -247,6 +318,43 @@ public struct AudioBookJoiner: ReadingAudioJoiner {
     /// The cache is several times larger than the finished file; it is not kept once that exists.
     private func removeParts(in directory: URL) {
         try? FileManager.default.removeItem(at: directory.appendingPathComponent("parts"))
+    }
+}
+
+/// Moves a finished reading into place without ever replacing a file that is already there,
+/// and without needing hard links (exFAT and many network volumes have none).
+enum ReadingPublisher {
+    /// Renames the first path to the second, failing with EEXIST when the second exists.
+    typealias ExclusiveRename = @Sendable (String, String) -> Int32
+
+    static let systemExclusiveRename: ExclusiveRename = { renamex_np($0, $1, UInt32(RENAME_EXCL)) }
+
+    /// `source` must be in the destination's directory (the finished file is written there), so
+    /// the move never crosses volumes. Volumes that cannot rename exclusively get the name
+    /// claimed with an exclusive create, then the file renamed over that empty placeholder.
+    static func publish(_ source: URL, to destination: URL,
+                        exclusiveRename: ExclusiveRename = systemExclusiveRename) throws {
+        if exclusiveRename(source.path, destination.path) == 0 { return }
+        let error = errno
+        guard error == ENOTSUP || error == EINVAL || error == ENOSYS else {
+            throw failure(destination, error)
+        }
+        let placeholder = open(destination.path, O_CREAT | O_EXCL | O_WRONLY | O_CLOEXEC | O_NOFOLLOW, 0o600)
+        guard placeholder >= 0 else { throw failure(destination, errno) }
+        close(placeholder)
+        if rename(source.path, destination.path) != 0 {
+            let error = errno
+            var metadata = stat()
+            if lstat(destination.path, &metadata) == 0, metadata.st_size == 0 { unlink(destination.path) }
+            throw failure(destination, error)
+        }
+    }
+
+    private static func failure(_ destination: URL, _ error: Int32) -> HolosError {
+        if error == EEXIST {
+            return .invalidInput("Reading output already exists and is not this reading: \(destination.path)")
+        }
+        return .io("Could not save \(destination.path): \(String(cString: strerror(error)))")
     }
 }
 
