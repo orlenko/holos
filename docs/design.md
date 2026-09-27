@@ -160,7 +160,14 @@ reopen-requiring permission was requested, its button reopens the app through th
 normal quit (a recording meeting still asks first; a cancelled quit does not reopen):
 a detached `/bin/sh` waits for the process to exit, then `open`s the bundle, and the
 next launch shows the check page once. Dictation turns on when Microphone,
-Accessibility and the speech model allow it, or when the download ends.
+Accessibility and the speech model allow it, or when the download ends; when the
+hotkey tap was refused, Input Monitoring is a prerequisite too: requested this run,
+enabling waits for the reopen (the check page reports the outcome), otherwise
+dictation stays off. Waiting for the download survives a quit and the reopen
+(`setupAssistantEnableAfterSpeechModel`): the next launch resumes the install and
+turns dictation on when it ends. A speaker-model install the assistant started and
+that had not ended (`setupAssistantSpeakerModelsPending`) is resumed at launch too,
+after the detached earlier run, which still holds the install lock, exits.
 
 `SetupAssistantFlow` (HolosCore) holds these decisions and is unit-tested. UserDefaults
 `setupAssistantDone` is absent before the assistant ever ran, false once it started,

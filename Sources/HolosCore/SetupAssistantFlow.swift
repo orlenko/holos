@@ -78,9 +78,14 @@ public enum SetupAssistantEffect: Equatable, Sendable {
 public enum SetupAssistantEnable: Equatable, Sendable {
     case alreadyOn
     case now
-    /// Microphone and Accessibility are granted; dictation turns on once the speech model is installed.
+    /// Microphone and Accessibility are granted; dictation turns on once the speech model is installed (after the
+    /// reopen too: the install resumes at launch, `SetupAssistantFlow.resumeAtLaunch`).
     case afterSpeechModelInstall
-    /// Microphone or Accessibility is missing, or the language has no speech model on this Mac.
+    /// The speech model is installed, and Input Monitoring, which the hotkey needs on this Mac, was requested this run:
+    /// it takes effect after the reopen, so the reopened app turns dictation on and its check reports the outcome.
+    case afterReopen
+    /// Microphone or Accessibility is missing, Input Monitoring is needed and was not requested, or the language has no
+    /// speech model on this Mac.
     case notPossible
 }
 
@@ -132,6 +137,13 @@ public struct SetupAssistantFlow: Equatable, Sendable {
     public static let doneKey = "setupAssistantDone"
     /// UserDefaults key: the assistant reopened Voice is Local; the next launch shows the check, then clears it.
     public static let awaitingReopenCheckKey = "setupAssistantAwaitingReopenCheck"
+    /// UserDefaults key: the assistant finished before the speech model was installed, so dictation turns on once it
+    /// is. Kept across a quit and the planned reopen (the launch resumes the install); cleared once dictation is on,
+    /// when the install fails, or when the assistant finishes again without deferring.
+    public static let enableAfterSpeechModelKey = "setupAssistantEnableAfterSpeechModel"
+    /// UserDefaults key: the assistant started the speaker-model install ("Also set up meetings") and this app has not
+    /// seen it end; the next launch resumes it. Cleared when the install ends.
+    public static let speakerModelsPendingKey = "setupAssistantSpeakerModelsPending"
 
     public private(set) var step: SetupAssistantStep = .welcome
     /// "Also set up meetings": installs the speaker models and offers system audio. On by default.
@@ -159,6 +171,17 @@ public struct SetupAssistantFlow: Equatable, Sendable {
         case false?: return .assistant  // started on an earlier launch and not finished
         case nil: return dictationEnabled || (microphoneGranted && accessibility) ? .markDone : .assistant
         }
+    }
+
+    /// The work a launch resumes that the assistant started or deferred and a quit (the planned reopen included) cut
+    /// short: the speech model install when dictation waits for it (`enableAfterSpeechModelKey`), and the speaker
+    /// models when their install had not ended (`speakerModelsPendingKey`).
+    public static func resumeAtLaunch(enableAfterSpeechModel: Bool, speakerModelsPending: Bool,
+                                      dictationEnabled: Bool) -> [SetupAssistantEffect] {
+        var effects: [SetupAssistantEffect] = []
+        if enableAfterSpeechModel && !dictationEnabled { effects.append(.installSpeechModel) }
+        if speakerModelsPending { effects.append(.installSpeakerModels) }
+        return effects
     }
 
     // MARK: - Pages
@@ -261,14 +284,20 @@ public struct SetupAssistantFlow: Equatable, Sendable {
     /// the reported state.
     public var reopenNeeded: Bool { requestedSystemAudio || requestedInputMonitoring }
 
-    /// Whether finishing turns dictation on now, once the speech model is installed, or not at all.
-    public static func enable(_ facts: SetupAssistantFacts) -> SetupAssistantEnable {
+    /// Whether finishing turns dictation on now, once the speech model is installed, after the reopen, or not at all.
+    /// Input Monitoring counts only when the hotkey tap was refused without it (`inputMonitoringNeeded`); requested
+    /// this run, it is expected to take effect after the reopen, so enabling waits for that.
+    public func enable(_ facts: SetupAssistantFacts) -> SetupAssistantEnable {
         if facts.dictationEnabled { return .alreadyOn }
         guard facts.microphoneGranted, facts.accessibility else { return .notPossible }
+        let inputMonitoringMissing = facts.inputMonitoringNeeded && !facts.inputMonitoring
+        if inputMonitoringMissing && !requestedInputMonitoring { return .notPossible }
         switch facts.speechModel {
-        case "installed": return .now
+        case "installed": return inputMonitoringMissing ? .afterReopen : .now
         case "unsupported": return .notPossible
-        default: return .afterSpeechModelInstall  // downloading, not installed yet, or still being checked
+        // Downloading, not installed yet, or still being checked. With Input Monitoring pending, the install resumes
+        // after the reopen, so enabling follows it there.
+        default: return .afterSpeechModelInstall
         }
     }
 
@@ -334,16 +363,21 @@ public struct SetupAssistantFlow: Equatable, Sendable {
     }
 
     private func dictationItem(_ facts: SetupAssistantFacts, verify: Bool, shortcut: String) -> SetupAssistantItem {
-        switch Self.enable(facts) {
+        switch enable(facts) {
         case .alreadyOn:
             return .init(.dictation, .done, "On — hold \(shortcut), wait for Listening, speak, release")
         case .now:
             return .init(.dictation, .waiting, verify ? "Turns on when you click Done" : "Turns on when you finish")
         case .afterSpeechModelInstall:
-            // After a reopen nothing is downloading any more: Done starts the download again.
-            return .init(.dictation, .waiting, verify ? "Turns on once the speech model is installed (click Done)"
-                                                      : "Turns on once the speech model is installed")
+            // After a reopen the launch has resumed the download, and dictation turns on when it ends.
+            return .init(.dictation, .waiting, "Turns on once the speech model is installed")
+        case .afterReopen:
+            return .init(.dictation, .waiting, "Turns on after Voice is Local reopens, once Input Monitoring applies")
         case .notPossible:
+            if facts.microphoneGranted && facts.accessibility && facts.inputMonitoringNeeded && !facts.inputMonitoring {
+                return .init(.dictation, .missing,
+                             "Stays off until Input Monitoring is allowed — Open full Setup to allow it")
+            }
             return .init(.dictation, .missing, "Stays off until Microphone, Accessibility and the speech model are ready")
         }
     }

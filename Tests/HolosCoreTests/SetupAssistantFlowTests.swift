@@ -213,21 +213,95 @@ private func state(_ items: [SetupAssistantItem], _ kind: SetupAssistantItem.Kin
 @Test func dictationTurnsOnWhenMicrophoneAccessibilityAndTheModelAllow() {
     var facts = granted
     facts.speechModel = "installed"
-    #expect(SetupAssistantFlow.enable(facts) == .now)
+    #expect(SetupAssistantFlow().enable(facts) == .now)
     facts.speechModel = "supported"
-    #expect(SetupAssistantFlow.enable(facts) == .afterSpeechModelInstall)
+    #expect(SetupAssistantFlow().enable(facts) == .afterSpeechModelInstall)
     facts.speechModel = "downloading"
-    #expect(SetupAssistantFlow.enable(facts) == .afterSpeechModelInstall)
+    #expect(SetupAssistantFlow().enable(facts) == .afterSpeechModelInstall)
     facts.speechModel = "unsupported"
-    #expect(SetupAssistantFlow.enable(facts) == .notPossible)
+    #expect(SetupAssistantFlow().enable(facts) == .notPossible)
     facts.speechModel = "installed"
     facts.accessibility = false
-    #expect(SetupAssistantFlow.enable(facts) == .notPossible)
+    #expect(SetupAssistantFlow().enable(facts) == .notPossible)
     facts.accessibility = true
     facts.microphone = "denied"
-    #expect(SetupAssistantFlow.enable(facts) == .notPossible)
+    #expect(SetupAssistantFlow().enable(facts) == .notPossible)
     facts.dictationEnabled = true
-    #expect(SetupAssistantFlow.enable(facts) == .alreadyOn)
+    #expect(SetupAssistantFlow().enable(facts) == .alreadyOn)
+}
+
+@Test func requiredInputMonitoringIsAnEnablePrerequisite() {
+    var facts = granted
+    facts.speechModel = "installed"
+    facts.inputMonitoringNeeded = true
+    // The tap was refused and Input Monitoring is not allowed; the Reopen page was skipped: enabling would be refused.
+    let skipped = SetupAssistantFlow()
+    #expect(skipped.enable(facts) == .notPossible)
+    let items = skipped.checklist(facts, verify: false, language: "English", shortcut: "Right Option")
+    #expect(state(items, .inputMonitoring) == .missing)
+    #expect(state(items, .dictation) == .missing)
+    #expect(items.first { $0.kind == .dictation }?.detail.contains("Input Monitoring") == true)
+    facts.speechModel = "supported"
+    #expect(skipped.enable(facts) == .notPossible)  // not deferred to an install that could not turn it on
+
+    // Allowed: required, and there.
+    facts.speechModel = "installed"
+    facts.inputMonitoring = true
+    #expect(skipped.enable(facts) == .now)
+    // Not needed on this Mac: ignored, granted or not.
+    facts.inputMonitoringNeeded = false
+    facts.inputMonitoring = false
+    #expect(skipped.enable(facts) == .now)
+}
+
+@Test func inputMonitoringRequestedThisRunDefersEnablingToTheReopen() {
+    var facts = granted
+    facts.speechModel = "installed"
+    facts.inputMonitoringNeeded = true
+    var flow = SetupAssistantFlow()
+    flow.requestedInputMonitoringSettings()
+    #expect(flow.reopenNeeded)
+    #expect(flow.enable(facts) == .afterReopen)
+    let items = flow.checklist(facts, verify: false, language: "English", shortcut: "Right Option")
+    #expect(state(items, .inputMonitoring) == .waiting)
+    #expect(state(items, .dictation) == .waiting)
+    // Still downloading: the install resumes after the reopen and enabling follows it.
+    facts.speechModel = "downloading"
+    #expect(flow.enable(facts) == .afterSpeechModelInstall)
+    // Applied before the reopen: nothing left to wait for.
+    facts.speechModel = "installed"
+    facts.inputMonitoring = true
+    #expect(flow.enable(facts) == .now)
+
+    // The check after the reopen (a new run) reports the real outcome: still not allowed is missing.
+    facts.inputMonitoring = false
+    let check = SetupAssistantFlow().checklist(facts, verify: true, language: "English", shortcut: "Right Option")
+    #expect(state(check, .inputMonitoring) == .missing)
+    #expect(state(check, .dictation) == .missing)
+}
+
+@Test func aLaunchResumesWhatTheAssistantStartedOrDeferred() {
+    // Finished while the speech model downloaded, then reopened: the install resumes and dictation follows it.
+    #expect(SetupAssistantFlow.resumeAtLaunch(enableAfterSpeechModel: true, speakerModelsPending: false,
+                                              dictationEnabled: false) == [.installSpeechModel])
+    // The speaker models the assistant asked for had not finished.
+    #expect(SetupAssistantFlow.resumeAtLaunch(enableAfterSpeechModel: false, speakerModelsPending: true,
+                                              dictationEnabled: false) == [.installSpeakerModels])
+    #expect(SetupAssistantFlow.resumeAtLaunch(enableAfterSpeechModel: true, speakerModelsPending: true,
+                                              dictationEnabled: false) == [.installSpeechModel, .installSpeakerModels])
+    // Dictation is on already: nothing waits for the speech model.
+    #expect(SetupAssistantFlow.resumeAtLaunch(enableAfterSpeechModel: true, speakerModelsPending: false,
+                                              dictationEnabled: true).isEmpty)
+    #expect(SetupAssistantFlow.resumeAtLaunch(enableAfterSpeechModel: false, speakerModelsPending: false,
+                                              dictationEnabled: false).isEmpty)
+}
+
+@Test func theCheckAfterReopeningSaysADeferredEnableFollowsTheResumedDownload() {
+    var facts = granted
+    facts.installingSpeechModel = true
+    let check = SetupAssistantFlow().checklist(facts, verify: true, language: "English", shortcut: "Right Option")
+    #expect(state(check, .dictation) == .waiting)
+    #expect(check.first { $0.kind == .dictation }?.detail == "Turns on once the speech model is installed")
 }
 
 @Test func theFinishPageListsWhatIsDoneAndWhatIsNot() {

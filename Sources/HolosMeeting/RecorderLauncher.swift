@@ -583,7 +583,7 @@ public enum ProcessSpawner {
     /// When process `pid` started, in microseconds since 1970; nil when no such process runs (or it cannot be
     /// inspected). With the pid it names one process: a pid the system reuses later belongs to a process that started
     /// later.
-    static func startTime(of pid: pid_t) -> UInt64? {
+    public static func startTime(of pid: pid_t) -> UInt64? {
         guard pid > 0 else { return nil }
         var info = proc_bsdinfo()
         let size = Int32(MemoryLayout<proc_bsdinfo>.size)

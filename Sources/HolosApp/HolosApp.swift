@@ -135,8 +135,15 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
     var assistantCompleted = false
     /// The hotkey tap was tried once Accessibility was granted during this showing of the assistant.
     var assistantProbedTap = false
-    /// Dictation turns on when the speech model install that is running (or started for it) succeeds.
-    var enableWhenSpeechModelInstalled = false
+    /// Dictation turns on when the speech model install that is running (or started for it) succeeds. Saved, so a
+    /// quit or the assistant's reopen keeps it: the next launch resumes the install (`resumeSetupAssistantWork`).
+    var enableWhenSpeechModelInstalled: Bool {
+        get { UserDefaults.standard.bool(forKey: SetupAssistantFlow.enableAfterSpeechModelKey) }
+        set {
+            if newValue { UserDefaults.standard.set(true, forKey: SetupAssistantFlow.enableAfterSpeechModelKey) }
+            else { UserDefaults.standard.removeObject(forKey: SetupAssistantFlow.enableAfterSpeechModelKey) }
+        }
+    }
     /// The assistant's Reopen Voice is Local: a helper reopens the app once this process has exited. Cleared when
     /// the quit is cancelled, so a later quit never reopens.
     var reopenAfterQuit = false
@@ -213,6 +220,8 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
         // keeps dictation paused.
         setUpMeetings()
         let dictationEnabled = UserDefaults.standard.bool(forKey: "dictationEnabled")
+        // Before the assistant's window opens, so it shows the downloads it started before a quit or its reopen.
+        resumeSetupAssistantWork(dictationEnabled: dictationEnabled)
         // First launch opens the Setup Assistant; later launches open the full Setup window while dictation is off.
         // The window opens first, so an enable that fails leaves it in front instead of opening Setup over it.
         switch setupAssistantLaunch(dictationEnabled: dictationEnabled) {
@@ -338,7 +347,14 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
         return item
     }
 
-    @objc private func toggleEnabled() { enabled ? disable() : enable() }
+    @objc private func toggleEnabled() {
+        if enabled {
+            enableWhenSpeechModelInstalled = false  // the user turned it off: a pending install must not turn it on
+            disable()
+        } else {
+            enable()
+        }
+    }
 
     /// False when the app bundle was replaced on disk while this process runs (a rebuild). macOS then
     /// treats Holos as unknown code: permissions re-prompt, and typing into a terminal froze it.
@@ -396,6 +412,7 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
                 self.enabling = false
                 self.meeting.suspendedBySleep = false
                 UserDefaults.standard.set(true, forKey: "dictationEnabled")
+                self.enableWhenSpeechModelInstalled = false  // done: the assistant's deferred enable is fulfilled
                 if let app = NSWorkspace.shared.frontmostApplication { TextInsertion.enableAccessibility(for: app) }
                 self.show("Ready — hold \(self.shortcutTitle); wait for Listening")
                 self.overlay.hide()
@@ -1254,14 +1271,16 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
                 self.installingAssets = false
                 self.assetState = "installed"
                 self.show("Speech model for \(name) ready; enable dictation when ready")
-                // The Setup Assistant finished while this downloaded.
+                // The Setup Assistant finished while this downloaded (in this run or before a quit or its reopen).
                 if self.enableWhenSpeechModelInstalled {
                     self.enableWhenSpeechModelInstalled = false
-                    self.enable()
+                    self.enableWhenMeetingAllows()
                 }
             } catch {
-                self.enableWhenSpeechModelInstalled = false
                 self.installingAssets = false
+                // Cancelled by the quit (the assistant's reopen included): the saved intent stays for the next launch.
+                if Task.isCancelled || error is CancellationError { return }
+                self.enableWhenSpeechModelInstalled = false
                 self.refreshAssetState()
                 self.show("Asset setup failed: \(error.localizedDescription)")
             }

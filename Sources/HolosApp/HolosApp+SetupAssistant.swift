@@ -13,6 +13,10 @@ extension HolosAppDelegate {
     /// UserDefaults key: macOS refused the hotkey tap with Accessibility granted, so Setup and the assistant offer
     /// Input Monitoring. Cleared once the tap starts.
     static let inputMonitoringNeededKey = "hotkeyNeedsInputMonitoring"
+    /// UserDefaults keys: the pid and start time (`ProcessSpawner.startTime`) of the speaker-model install the
+    /// assistant started, which outlives a quit; a resume waits for that process first.
+    static let speakerInstallPIDKey = "setupAssistantSpeakerInstallPID"
+    static let speakerInstallStartKey = "setupAssistantSpeakerInstallStart"
     private static let assistantLog = Logger(subsystem: "ca.orlenko.holos.app", category: "setup")
 
     var inputMonitoringNeeded: Bool {
@@ -133,7 +137,7 @@ extension HolosAppDelegate {
             for effect in assistantFlow.next(facts, without: action == .continueWithout) {
                 switch effect {
                 case .installSpeechModel: installAssets()
-                case .installSpeakerModels: installSpeakerModels()
+                case .installSpeakerModels: installSpeakerModels(resumable: true)
                 }
             }
         case .back:
@@ -164,21 +168,29 @@ extension HolosAppDelegate {
         updateSetupAssistant()
     }
 
-    /// Done, Reopen Voice is Local, or the check's buttons: dictation turns on once Microphone, Accessibility and the
-    /// speech model allow it (after the download when it is still running), and the assistant is marked done.
+    /// Done, Reopen Voice is Local, or the check's buttons: dictation turns on once Microphone, Accessibility (and
+    /// Input Monitoring when the hotkey needs it) and the speech model allow it: after the download when it is still
+    /// running, after the reopen when a permission requested this run applies only then. The assistant is marked done.
     private func finishSetupAssistant(_ facts: SetupAssistantFacts, reopen: Bool) {
         markSetupAssistantDone()
         assistantCompleted = true
-        switch SetupAssistantFlow.enable(facts) {
+        let decision = assistantFlow.enable(facts)
+        // Saved: a quit or the reopen resumes the install at the next launch, which then turns dictation on.
+        enableWhenSpeechModelInstalled = decision == .afterSpeechModelInstall
+        switch decision {
         case .now:
             if reopen {
                 // Enabling is asynchronous and the app is about to quit: the reopened app enables it at launch.
                 UserDefaults.standard.set(true, forKey: "dictationEnabled")
             } else {
-                enable()
+                enableWhenMeetingAllows()
             }
+        case .afterReopen:
+            // Input Monitoring applies only after a reopen, so enabling now would be refused: the reopened app (or
+            // the next launch, when Open full Setup finished without reopening) turns dictation on at launch, and the
+            // check page reports whether it did.
+            UserDefaults.standard.set(true, forKey: "dictationEnabled")
         case .afterSpeechModelInstall:
-            enableWhenSpeechModelInstalled = true
             if !installingAssets { installAssets() }
         case .alreadyOn, .notPossible:
             break
@@ -188,6 +200,62 @@ extension HolosAppDelegate {
             reopenAfterQuit = true
             // The normal quit: a recording meeting still asks first, and Cancel keeps the app (and does not reopen).
             NSApplication.shared.terminate(nil)
+        }
+    }
+
+    /// Turns dictation on, or, while a meeting records (which keeps dictation paused and makes `enable()` do
+    /// nothing), saves it as on so the end of the meeting turns it on (§4.12).
+    func enableWhenMeetingAllows() {
+        if meeting.dictationPaused {
+            UserDefaults.standard.set(true, forKey: "dictationEnabled")
+        } else {
+            enable()
+        }
+    }
+
+    /// At launch, before the assistant's window: resumes what the assistant started or deferred and a quit (its
+    /// planned reopen included) cut short. The speech model install restarts when dictation waits for it, and turns
+    /// dictation on when it ends; the speaker-model install restarts when it had not ended.
+    func resumeSetupAssistantWork(dictationEnabled: Bool) {
+        if dictationEnabled { enableWhenSpeechModelInstalled = false }  // already on: nothing is deferred
+        let effects = SetupAssistantFlow.resumeAtLaunch(
+            enableAfterSpeechModel: enableWhenSpeechModelInstalled,
+            speakerModelsPending: UserDefaults.standard.bool(forKey: SetupAssistantFlow.speakerModelsPendingKey),
+            dictationEnabled: dictationEnabled)
+        for effect in effects {
+            switch effect {
+            case .installSpeechModel: installAssets()
+            case .installSpeakerModels: resumeSpeakerModelInstall()
+            }
+        }
+    }
+
+    /// The install started before the quit runs detached, so it may still hold the install lock: it is waited for
+    /// (the saved pid with its start time names that process), then `voiceislocal setup --speakers` runs again, which
+    /// leaves models that verify in place.
+    private func resumeSpeakerModelInstall() {
+        let defaults = UserDefaults.standard
+        guard meeting.maintenance != nil else {
+            defaults.removeObject(forKey: SetupAssistantFlow.speakerModelsPendingKey)
+            return
+        }
+        let pid = Int32(truncatingIfNeeded: defaults.integer(forKey: Self.speakerInstallPIDKey))
+        let started = defaults.object(forKey: Self.speakerInstallStartKey) as? Int
+        guard pid > 0, let started, ProcessSpawner.startTime(of: pid) == UInt64(clamping: started),
+              meeting.speakerModelInstall == nil else {
+            return installSpeakerModels(resumable: true)
+        }
+        meeting.speakerModelInstall = "Finishing the download started before Voice is Local reopened…"
+        updateSetupWindow()
+        meeting.startPanel?.refresh()
+        Task { [weak self] in
+            while ProcessSpawner.startTime(of: pid) == UInt64(clamping: started) {
+                try? await Task.sleep(for: .seconds(1))
+                if self == nil { return }
+            }
+            guard let self else { return }
+            self.meeting.speakerModelInstall = nil
+            self.installSpeakerModels(resumable: true)
         }
     }
 
