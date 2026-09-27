@@ -40,6 +40,22 @@ F1 and F3 need representative input but can begin with small deliberately select
 samples. F4 benefits strongly from the upcoming Otter material. No production
 dependency on FluidAudio is implied until the local-model choice is settled.
 
+F5 outcome (2026-09-27, macOS 27): Mozilla Readability 0.6.0 in an offscreen `WKWebView`,
+hosted by the `voiceislocal` process itself (its async `main` runs the main run loop; no
+`NSApplication`, no app round trip). Details are in design.md "Text-to-speech". A manual
+run over eight public pages found the article on seven, each in 2–3 s:
+
+| Page shape | Title found | Words | Leaked boilerplate (first/last 200 characters) |
+| --- | --- | --- | --- |
+| Wikipedia article | yes | 7,148 | none; one audio caption at the start; references and "See also" removed |
+| BBC News article | yes | 408 | byline block ("6 hours ago", co-author and place) at the start |
+| Substack post | yes | 3,420 | none |
+| Medium post | yes | 3,356 | "14 min read", "3 hours ago" at the start |
+| GitHub repository README | yes, with "GitHub - " prefix | 837 | wrong byline (last committer) |
+| Blog with code blocks | yes | 931 | none; code blocks skipped, inline code kept |
+| Client-rendered docs page (raw HTML says "requires JavaScript") | yes | 657 | none |
+| NYT article (paywall) | no | 3–6 | fails with the save-to-file hint after 7–8 s |
+
 ## Bounded implementation tasks
 
 The task owner reads the design and contracts plus only the relevant task. A task

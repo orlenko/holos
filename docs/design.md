@@ -268,13 +268,27 @@ ordered `.m3u8` playlist and manifest. Resume at failed/missing chunks using has
 of text, voice, engine version when available, and synthesis settings. A partial
 playlist must be explicitly identified as incomplete and return a nonzero status.
 
-Local text/Markdown precedes HTML articles. Swift has no assumed built-in equivalent
-of AITTS's Trafilatura: use a separately tested article-extraction adapter, potentially
-vendoring Mozilla Readability plus a suitable HTML DOM dependency. JavaScriptCore
-alone supplies no browser DOM. Freeze the extraction dependency only after a small
-prototype. Preserve source text for inspection; dynamic/authenticated pages can use
-a pasted/local-text fallback. PDFKit and Vision are later adapters. Foundation Models
-is not the default article extractor or narrator: it could omit source content.
+Local text/Markdown precedes HTML articles. Swift has no built-in equivalent of
+AITTS's Trafilatura, and JavaScriptCore alone supplies no browser DOM, so web articles
+use Mozilla Readability (0.6.0, Apache-2.0, vendored unmodified and compiled into the
+`voiceislocal` tool) inside an offscreen `WKWebView` (`WebArticleExtractor` in
+HolosContent). The web view loads the `https` page with a non-persistent website data
+store and Safari's user-agent suffix, refuses HTTP error pages and non-HTML documents,
+waits for the load (up to 30 s; a parsed page is read anyway when subresources hang)
+plus a 1 s settle, then runs Readability on a copy of the live DOM, so pages built by
+JavaScript work. It retries for up to 6 s while the page shows no article. Back-matter
+sections (references, notes, see also, external links, further reading) are removed
+before Readability runs. The article HTML is reduced to ordered headings and paragraphs:
+list items, quotations, and definition terms become paragraphs; code blocks (`<pre>`),
+tables, figures, captions, media, forms, and bracketed marks such as `[1]` or `[edit]`
+are dropped; inline code is read as text. The spoken text is the title, the byline,
+then the blocks. Fewer than 50 words is "no article": the command fails and suggests
+saving the text to a file, which is also the path for sign-in and paywalled pages. The
+command-line tool hosts the web view itself: Swift's async `main` runs the main run
+loop (`CFRunLoopRun`), which is all WebKit needs; no `NSApplication` or app round trip.
+`source.txt` in the reading directory preserves the extracted text for inspection.
+PDFKit and Vision are later adapters. Foundation Models is not the default article
+extractor or narrator: it could omit source content.
 
 Audition and export a short set of native voices before investing in the reading
 pipeline. Workflow replacement is feasible; equivalence to the preferred OpenAI
