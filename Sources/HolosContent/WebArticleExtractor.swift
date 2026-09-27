@@ -1,5 +1,6 @@
 import Foundation
 import HolosCore
+import Synchronization
 import WebKit
 
 /// Turns a web page into a `WebArticle`: loads it in an offscreen `WKWebView` (so pages built by JavaScript have a
@@ -32,12 +33,22 @@ import WebKit
     }
 
     private let options: Options
+    private let configureWebView: @MainActor (WKWebViewConfiguration) -> Void
 
-    public init(options: Options = Options()) {
+    public convenience init(options: Options = Options()) {
+        self.init(options: options, configure: { _ in })
+    }
+
+    /// `configure` adjusts each web view's configuration before the view is made (tests register URL schemes).
+    init(options: Options, configure: @escaping @MainActor (WKWebViewConfiguration) -> Void) {
         self.options = options
+        self.configureWebView = configure
     }
 
     /// Loads an `https` page and extracts its article.
+    ///
+    /// Cancelling the calling task ends every wait (the page load, the pauses between reads, a script still
+    /// running in the page) with `CancellationError` and stops the web view.
     public func extract(from url: URL) async throws -> WebArticle {
         guard url.scheme?.lowercased() == "https", let host = url.host(), !host.isEmpty else {
             throw HolosError.invalidInput("Only https:// web addresses can be read: \(url.absoluteString)")
@@ -52,32 +63,41 @@ import WebKit
 
     /// Reduces article HTML (Readability's output) to headings and paragraphs, without running Readability.
     func blocks(fromContentHTML html: String) async throws -> [WebArticle.Block] {
-        let webView = Self.makeWebView()
-        let loader = PageLoader()
-        webView.navigationDelegate = loader
-        defer { webView.navigationDelegate = nil }
-        let baseURL = URL(string: "https://example.invalid/")!
-        guard try await loader.load(timeout: options.loadTimeout, start: {
-            webView.loadHTMLString(html, baseURL: baseURL)
-        }) == .finished else { throw HolosError.unavailable("Timed out loading the article HTML.") }
-        let json = try await Self.run(Self.conversionScript, in: webView)
-        let raw = try JSONDecoder().decode([Payload.RawBlock].self, from: Data(json.utf8))
-        return WebArticle.assemble(url: baseURL, title: nil, byline: nil, siteName: nil, language: nil,
-                                   raw: raw.map { ($0.level, $0.text) }).blocks
-    }
-
-    private func extract(requested: URL, start: (WKWebView) -> Void) async throws -> WebArticle {
-        let webView = Self.makeWebView()
+        let webView = makeWebView()
         let loader = PageLoader()
         webView.navigationDelegate = loader
         defer {
             webView.stopLoading()
             webView.navigationDelegate = nil
         }
+        let baseURL = URL(string: "https://example.invalid/")!
+        guard try await loader.load(timeout: options.loadTimeout, start: {
+            webView.loadHTMLString(html, baseURL: baseURL)
+        }) == .finished else { throw HolosError.unavailable("Timed out loading the article HTML.") }
+        let json = try await Self.run(Self.conversionScript, in: webView, timeout: options.loadTimeout)
+        let raw = try JSONDecoder().decode([Payload.RawBlock].self, from: Data(json.utf8))
+        return WebArticle.assemble(url: baseURL, title: nil, byline: nil, siteName: nil, language: nil,
+                                   raw: raw.map { ($0.level, $0.text) }).blocks
+    }
+
+    /// Starts the main-frame navigation with `start` (which returns it, or nil when WebKit gave none), waits for
+    /// it, and reads the article.
+    func extract(requested: URL, start: (WKWebView) -> WKNavigation?) async throws -> WebArticle {
+        let webView = makeWebView()
+        let loader = PageLoader()
+        webView.navigationDelegate = loader
+        // Runs on every exit, including cancellation: nothing keeps loading once the caller has stopped waiting.
+        defer {
+            webView.stopLoading()
+            webView.navigationDelegate = nil
+        }
         let outcome = try await loader.load(timeout: options.loadTimeout) { start(webView) }
         if outcome == .timedOut {
-            let state = try? await Self.run("return document.readyState;", in: webView)
-            guard let state, state != "loading" else {
+            // Until the requested page commits, the web view shows its empty initial document (already
+            // "complete"): the load stalled (DNS, TLS, a server that never answers), so report the timeout. After
+            // the commit, a page whose document is parsed is read even though subresources are still loading.
+            guard loader.committed,
+                  try await Self.documentState(of: webView, timeout: options.loadTimeout) != "loading" else {
                 throw HolosError.unavailable("Timed out loading \(requested.absoluteString).")
             }
             webView.stopLoading()
@@ -91,8 +111,12 @@ import WebKit
             // A page that navigates again (a script redirect) can make one read fail; the next read sees the new page.
             let payload: Payload
             do {
-                let json = try await Self.run(Self.extractionScript, in: webView)
+                let json = try await Self.run(Self.extractionScript, in: webView, timeout: options.loadTimeout)
                 payload = try JSONDecoder().decode(Payload.self, from: Data(json.utf8))
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch is ScriptTimeout {
+                throw HolosError.unavailable("\(requested.absoluteString) stopped responding while it was read.")
             } catch {
                 payload = Payload(found: false, error: error.localizedDescription)
             }
@@ -136,24 +160,47 @@ import WebKit
         return offsets
     }
 
-    private static func makeWebView() -> WKWebView {
+    private func makeWebView() -> WKWebView {
         let configuration = WKWebViewConfiguration()
         configuration.websiteDataStore = .nonPersistent()
         configuration.mediaTypesRequiringUserActionForPlayback = .all
         // WebKit's own user agent plus Safari's suffix, so sites serve the page they give desktop Safari.
         configuration.applicationNameForUserAgent = "Version/26.0 Safari/605.1.15"
         configuration.preferences.javaScriptCanOpenWindowsAutomatically = false
+        configureWebView(configuration)
         return WKWebView(frame: CGRect(x: 0, y: 0, width: 1280, height: 1600), configuration: configuration)
     }
 
-    /// Runs a function body in WebKit's client content world (the page's DOM, but not its scripts' globals) and
-    /// returns the string it resolves to.
-    private static func run(_ body: String, in webView: WKWebView) async throws -> String {
-        let value = try await webView.callAsyncJavaScript(body, arguments: [:], in: nil, contentWorld: .defaultClient)
-        guard let text = value as? String else {
-            throw HolosError.unavailable("Article extraction returned no result.")
+    /// A script that did not finish within its time limit (the page's own scripts may be keeping it busy).
+    struct ScriptTimeout: Error {}
+
+    /// The document's `readyState`; "loading" when the page cannot say (a script error, or no answer in time).
+    /// Cancellation is passed on.
+    private static func documentState(of webView: WKWebView, timeout: Duration) async throws -> String {
+        do {
+            return try await run("return document.readyState;", in: webView, timeout: timeout)
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            return "loading"
         }
-        return text
+    }
+
+    /// Runs a function body in WebKit's client content world (the page's DOM, but not its scripts' globals) and
+    /// returns the string it resolves to. Ends with `ScriptTimeout` after `timeout`, and with `CancellationError`
+    /// as soon as the calling task is cancelled; WebKit's own completion is then ignored.
+    static func run(_ body: String, in webView: WKWebView, timeout: Duration) async throws -> String {
+        try Task.checkCancellation()
+        let result = OneShot<String>()
+        webView.callAsyncJavaScript(body, arguments: [:], in: nil, in: .defaultClient) { outcome in
+            result.resume(with: outcome.flatMap { value in
+                guard let text = value as? String else {
+                    return .failure(HolosError.unavailable("Article extraction returned no result."))
+                }
+                return .success(text)
+            })
+        }
+        return try await result.wait(timeout: timeout, orElse: .failure(ScriptTimeout()))
     }
 
     private struct Payload: Decodable {
@@ -176,9 +223,12 @@ import WebKit
 
     /// Walks article HTML and returns `[{level, text}]`: level 1–6 for headings, 0 for paragraphs. Block elements
     /// (paragraphs, list items, quotations, divisions) and `<br>` end a paragraph; code blocks, tables, figures,
-    /// captions, media, and forms are skipped; so are bracketed reference marks such as `<sup>[1]</sup>`.
+    /// captions, media, and forms are skipped; so are superscripts that hold only bracketed reference marks, one or
+    /// several with optional separators: `<sup>[1]</sup>`, `<sup><a>[1]</a><a>[2]</a></sup>`, `<sup>[1], [2]</sup>`,
+    /// `<sup>[a][note 3]</sup>`, `<sup>[citation needed]</sup>`.
     private static let blockWalker = #"""
     function holosArticleBlocks(root) {
+      const citationMarks = /^\s*\[[^\[\]]*\](?:\s*[,;–—-]?\s*\[[^\[\]]*\])*\s*$/;
       const skipBlock = new Set(["FIGURE", "FIGCAPTION", "PRE", "TABLE", "FORM", "FIELDSET", "IFRAME", "VIDEO",
         "AUDIO", "CANVAS", "OBJECT", "EMBED", "SCRIPT", "STYLE", "NOSCRIPT", "TEMPLATE", "DIALOG"]);
       const skipInline = new Set(["IMG", "PICTURE", "SVG", "MATH", "BUTTON", "INPUT", "SELECT", "TEXTAREA",
@@ -200,7 +250,7 @@ import WebKit
           const tag = child.tagName.toUpperCase();
           if (skipInline.has(tag)) continue;
           if (skipBlock.has(tag)) { flush(); continue; }
-          if (tag === "SUP" && /^\s*\[[^\]]*\]\s*$/.test(child.textContent)) continue;
+          if (tag === "SUP" && citationMarks.test(child.textContent)) continue;
           if (tag === "BR" || tag === "HR") { flush(); continue; }
           if (/^H[1-6]$/.test(tag)) {
             flush();
@@ -290,30 +340,30 @@ import WebKit
 /// non-HTML documents, new windows, and any main-frame address that is not https: the first request, server
 /// redirects, script and meta-refresh navigations, the response, and the committed and finished page.
 @MainActor final class PageLoader: NSObject, WKNavigationDelegate {
-    enum Outcome { case finished, timedOut }
+    enum Outcome: Sendable { case finished, timedOut }
 
-    private var continuation: CheckedContinuation<Outcome, any Error>?
-    private var timer: Task<Void, Never>?
+    /// The wait in progress, if any.
+    private var pending: OneShot<Outcome>?
+    /// The navigation `start` returned; nil when WebKit returned none.
+    private var requested: WKNavigation?
+    /// Whether the requested main-frame navigation has committed (its document replaced the initial empty one).
+    private(set) var committed = false
     /// Why the page was refused, once it was.
     private(set) var rejection: HolosError?
 
-    func load(timeout: Duration, start: () -> Void) async throws -> Outcome {
-        try await withCheckedThrowingContinuation { continuation in
-            self.continuation = continuation
-            timer = Task { [weak self] in
-                try? await Task.sleep(for: timeout)
-                guard !Task.isCancelled else { return }
-                self?.finish(.success(.timedOut))
-            }
-            start()
-        }
+    /// Starts the navigation and waits until it finishes, fails, or `timeout` passes. Cancelling the calling task
+    /// ends the wait at once with `CancellationError` (the caller then stops the web view).
+    func load(timeout: Duration, start: () -> WKNavigation?) async throws -> Outcome {
+        try Task.checkCancellation()
+        let wait = OneShot<Outcome>()
+        pending = wait
+        defer { pending = nil }
+        requested = start()
+        return try await wait.wait(timeout: timeout, orElse: .success(.timedOut))
     }
 
     private func finish(_ result: Result<Outcome, any Error>) {
-        timer?.cancel()
-        timer = nil
-        continuation?.resume(with: result)
-        continuation = nil
+        pending?.resume(with: result)
     }
 
     /// Why a main-frame address may not be read, or nil when it is an https address.
@@ -354,6 +404,8 @@ import WebKit
     }
 
     func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
+        // Later main-frame navigations (script redirects) start from the committed page, so they come after it.
+        if requested == nil || navigation === requested { committed = true }
         refuseUnlessHTTPS(webView)
     }
 
@@ -401,5 +453,65 @@ import WebKit
         if (error as NSError).domain == NSURLErrorDomain, (error as NSError).code == NSURLErrorCancelled,
            rejection == nil { return }
         finish(.failure(rejection ?? HolosError.unavailable("Could not load the page: \(error.localizedDescription)")))
+    }
+}
+
+/// A result awaited once. The first `resume` wins, from any thread, before or after the wait begins; later ones
+/// are ignored. Cancelling the waiting task ends the wait with `CancellationError`, even when the task was
+/// cancelled before the wait began.
+final class OneShot<Value: Sendable>: Sendable {
+    private enum State {
+        case idle
+        case waiting(CheckedContinuation<Value, any Error>)
+        case delivered(Result<Value, any Error>)
+        case done
+    }
+
+    private let state = Mutex(State.idle)
+
+    /// Waits for the result. Call once.
+    func wait() async throws -> Value {
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                let early: Result<Value, any Error>? = state.withLock { state in
+                    guard case .delivered(let result) = state else {
+                        state = .waiting(continuation)
+                        return nil
+                    }
+                    state = .done
+                    return result
+                }
+                if let early { continuation.resume(with: early) }
+            }
+        } onCancel: {
+            resume(with: .failure(CancellationError()))
+        }
+    }
+
+    /// Waits for the result, which becomes `timedOut` when nothing else arrives within `timeout`.
+    func wait(timeout: Duration, orElse timedOut: Result<Value, any Error>) async throws -> Value {
+        let timer = Task { [weak self] in
+            try? await Task.sleep(for: timeout)
+            guard !Task.isCancelled else { return }
+            self?.resume(with: timedOut)
+        }
+        defer { timer.cancel() }
+        return try await wait()
+    }
+
+    func resume(with result: Result<Value, any Error>) {
+        let continuation: CheckedContinuation<Value, any Error>? = state.withLock { state in
+            switch state {
+            case .idle:
+                state = .delivered(result)
+                return nil
+            case .waiting(let continuation):
+                state = .done
+                return continuation
+            case .delivered, .done:
+                return nil
+            }
+        }
+        continuation?.resume(with: result)
     }
 }

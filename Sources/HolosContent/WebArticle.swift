@@ -86,9 +86,10 @@ public struct WebArticle: Sendable, Equatable {
         return String(result)
     }
 
-    /// A block that is only a short bracketed mark, such as Wikipedia's "[edit]" links or a stray "[1]".
+    /// A block that is only short bracketed marks, one or several with optional separators: Wikipedia's "[edit]"
+    /// links, a stray "[1]", or a group such as "[1][2]", "[1], [2]", or "[edit] [a][note 3]".
     private static func isBracketMark(_ text: String) -> Bool {
-        text.count <= 24 && text.hasPrefix("[") && text.hasSuffix("]") && !text.dropFirst().dropLast().contains("]")
+        text.wholeMatch(of: /\[[^\[\]]{0,22}\](?:\s*[,;–—-]?\s*\[[^\[\]]{0,22}\])*/) != nil
     }
 
     private static func nonEmpty(_ text: String?) -> String? {

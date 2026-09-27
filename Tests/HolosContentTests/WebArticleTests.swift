@@ -2,6 +2,7 @@ import CryptoKit
 import Foundation
 import HolosCore
 import Testing
+import WebKit
 @testable import HolosContent
 
 /// Handcrafted pages; nothing here touches the network (pages load with `loadHTMLString` and a base URL).
@@ -41,10 +42,10 @@ private enum Fixture {
         <p>\(paragraphs[0])<sup class="reference"><a href="#r1">[1]</a></sup></p>
         <figure><img src="lamp.jpg" alt="The lamp"><figcaption>The lamp room at dusk.</figcaption></figure>
         <h2>A daily climb</h2>
-        <p>\(paragraphs[1])</p>
+        <p>\(paragraphs[1])<sup class="reference"><a href="#r2">[2]</a><a href="#r3">[3]</a></sup></p>
         <pre><code>let steps = 117 // counted by hand</code></pre>
         <ul><li>She checks the lens.</li><li>She wipes the windows with <code>fresh water</code>.</li></ul>
-        <blockquote><p>\(paragraphs[2])</p></blockquote>
+        <blockquote><p>\(paragraphs[2])<sup>[4], [5]</sup></p></blockquote>
         \(backMatter)
         </article></main>
         <footer><p>Copyright Coastal News. All rights reserved. Privacy policy. Cookie settings.</p></footer>
@@ -80,9 +81,52 @@ private enum Fixture {
         <p>Subscribe to keep reading.</p></body></html>
         """
 
+    /// An image from the `stall` scheme, which never answers: a page that shows it never finishes loading. (An
+    /// https page may not run scripts from that scheme, but it may show its images.)
+    static let stalledImage = #"<img src="stall://slow.png" alt="">"#
+
+    static let neverFinishesLoading = """
+        <!doctype html><html><head><title>Stalled</title></head><body><p>Short page.</p>\(stalledImage)</body></html>
+        """
+
+    /// A page without an article that finishes loading and then asks the `stall` scheme for an image, which says
+    /// the extractor is past the load and into its pauses between reads.
+    static let stallsAfterLoading = """
+        <!doctype html><html><head><title>Loaded</title></head><body><p>Short page.</p>
+        <script>window.addEventListener("load", function () {
+          setTimeout(function () { new Image().src = "stall://after-load.png"; }, 0);
+        });</script></body></html>
+        """
+
     private static func jsString(_ text: String) -> String {
         let data = try! JSONSerialization.data(withJSONObject: [text])
         return String(String(decoding: data, as: UTF8.self).dropFirst().dropLast())
+    }
+}
+
+/// Serves the `stall` URL scheme by never answering, and reports each request it receives.
+@MainActor private final class StallingSchemeHandler: NSObject, WKURLSchemeHandler {
+    let requests: AsyncStream<URL>
+    private let received: AsyncStream<URL>.Continuation
+    private var held: [ObjectIdentifier: any WKURLSchemeTask] = [:]
+
+    override init() {
+        (requests, received) = AsyncStream.makeStream(of: URL.self)
+    }
+
+    func webView(_ webView: WKWebView, start urlSchemeTask: any WKURLSchemeTask) {
+        held[ObjectIdentifier(urlSchemeTask)] = urlSchemeTask
+        received.yield(urlSchemeTask.request.url!)
+    }
+
+    func webView(_ webView: WKWebView, stop urlSchemeTask: any WKURLSchemeTask) {
+        held[ObjectIdentifier(urlSchemeTask)] = nil
+    }
+
+    /// Waits for the first request.
+    func firstRequest() async -> URL? {
+        for await url in requests { return url }
+        return nil
     }
 }
 
@@ -95,14 +139,16 @@ private enum Fixture {
         let article = WebArticle.assemble(
             url: url, title: "  A  Title\n", byline: " Jane\u{00A0}Doe ", siteName: "", language: "en",
             raw: [(1, "a title"), (0, "  First\u{200B} \t\n paragraph. "), (0, "   "), (0, "[edit]"),
-                  (2, "Section"), (0, "[1]"), (0, "Second [note] paragraph.")])
+                  (2, "Section"), (0, "[1]"), (0, "[1][2]"), (0, " [1], [2]; [3]–[4] "), (0, "[edit] [a][note 3]"),
+                  (0, "Second [note] paragraph."), (0, "[1] and [2]")])
         #expect(article.title == "A Title")
         #expect(article.byline == "Jane Doe")
         #expect(article.siteName == nil)
         #expect(article.blocks == [.paragraph("First paragraph."), .heading(level: 2, text: "Section"),
-                                   .paragraph("Second [note] paragraph.")])
-        #expect(article.wordCount == 6)
-        #expect(article.spokenText == "A Title\n\nBy Jane Doe\n\nFirst paragraph.\n\nSection\n\nSecond [note] paragraph.")
+                                   .paragraph("Second [note] paragraph."), .paragraph("[1] and [2]")])
+        #expect(article.wordCount == 9)
+        #expect(article.spokenText
+            == "A Title\n\nBy Jane Doe\n\nFirst paragraph.\n\nSection\n\nSecond [note] paragraph.\n\n[1] and [2]")
     }
 
     @Test func assemblyKeepsABylineThatAlreadySaysBy() {
@@ -132,6 +178,17 @@ private enum Fixture {
         ])
     }
 
+    @Test func superscriptsOfCitationMarksAreDroppedWhateverTheirGrouping() async throws {
+        let html = """
+            <p>Grouped<sup class="reference"><a href="#1">[1]</a><a href="#2">[2]</a></sup> marks<sup>[1], [2]</sup>,
+            lettered<sup><a>[a]</a><a>[note 3]</a></sup> notes<sup>[1]–[3]; [7]</sup>,
+            tagged<sup class="noprint"><span>[</span><i><a>citation needed</a></i><span>]</span></sup> claims<sup><sup>[9]</sup></sup>,
+            and x<sup>2<sup>[4]</sup></sup> stays<sup>[1] see below</sup>.</p>
+            """
+        let blocks = try await WebArticleExtractor(options: fast).blocks(fromContentHTML: html)
+        #expect(blocks == [.paragraph("Grouped marks, lettered notes, tagged claims, and x2 stays[1] see below.")])
+    }
+
     @Test func extractsTheArticleAndLeavesBoilerplateOut() async throws {
         let article = try await WebArticleExtractor(options: fast).extract(html: Fixture.article, baseURL: Fixture.base)
         #expect(article.title == "The Last Keeper of the Northern Cape")
@@ -148,7 +205,7 @@ private enum Fixture {
         #expect(texts.contains("She wipes the windows with fresh water."))
         let spoken = article.spokenText
         for noise in ["Subscribe now", "Most read", "Copyright", "lamp room", "let steps", "Keeper's log",
-                      "References", "[1]"] {
+                      "References", "[1]", "[2]", "[3]", "[4]", "[5]"] {
             #expect(!spoken.contains(noise), "Leaked: \(noise)")
         }
     }
@@ -207,6 +264,85 @@ private enum Fixture {
             #expect(message.contains("http://127.0.0.1:9/next"), "\(message)")
             #expect(message.contains("not https://"), "\(message)")
         }
+    }
+
+    @Test func aLoadThatNeverCommitsReportsTheTimeout() async throws {
+        // No navigation ever commits (as when DNS, TLS, or the server stalls): the web view still shows its empty
+        // initial document, which must not be read as a page without an article.
+        let options = WebArticleExtractor.Options(loadTimeout: .milliseconds(200), settle: .milliseconds(50),
+                                                  retryWindow: .milliseconds(200), minimumWords: 50)
+        do {
+            _ = try await WebArticleExtractor(options: options).extract(requested: Fixture.base) { _ in nil }
+            Issue.record("Expected the load to time out.")
+        } catch let HolosError.unavailable(message) {
+            #expect(message.contains("Timed out loading \(Fixture.base.absoluteString)"), "\(message)")
+        }
+    }
+
+    @Test func aCommittedParsedPageIsReadWhenItsLoadTimesOut() async throws {
+        // The page commits and parses, but an image never arrives, so loading never finishes.
+        let handler = StallingSchemeHandler()
+        let options = WebArticleExtractor.Options(loadTimeout: .milliseconds(300), settle: .milliseconds(50),
+                                                  retryWindow: .seconds(10), minimumWords: 50)
+        let extractor = WebArticleExtractor(options: options) { $0.setURLSchemeHandler(handler, forURLScheme: "stall") }
+        let article = try await extractor.extract(
+            html: Fixture.article(backMatter: Fixture.stalledImage), baseURL: Fixture.base)
+        #expect(article.blocks.map(\.text).contains(Fixture.paragraphs[1]))
+        #expect(await handler.firstRequest() == URL(string: "stall://slow.png"))
+    }
+
+    @Test(.timeLimit(.minutes(1)), arguments: [Fixture.neverFinishesLoading, Fixture.stallsAfterLoading])
+    func cancellingTheCallerEndsTheExtraction(page: String) async throws {
+        // Every wait is far longer than the time limit, so only cancellation can end the extraction in time.
+        let handler = StallingSchemeHandler()
+        let options = WebArticleExtractor.Options(loadTimeout: .seconds(600), settle: .seconds(600),
+                                                  retryWindow: .seconds(600), minimumWords: 50)
+        let extractor = WebArticleExtractor(options: options) { $0.setURLSchemeHandler(handler, forURLScheme: "stall") }
+        let extraction = Task { try await extractor.extract(html: page, baseURL: Fixture.base) }
+        _ = await handler.firstRequest()
+        extraction.cancel()
+        await #expect(throws: CancellationError.self) { _ = try await extraction.value }
+    }
+
+    @Test(.timeLimit(.minutes(1))) func cancellingTheCallerEndsAScriptThatNeverReturns() async throws {
+        let handler = StallingSchemeHandler()
+        let configuration = WKWebViewConfiguration()
+        configuration.setURLSchemeHandler(handler, forURLScheme: "stall")
+        let webView = WKWebView(frame: .zero, configuration: configuration)
+        let script = #"new Image().src = "stall://in-script.png"; await new Promise(() => {}); return "never";"#
+        let evaluation = Task { try await WebArticleExtractor.run(script, in: webView, timeout: .seconds(600)) }
+        _ = await handler.firstRequest()
+        evaluation.cancel()
+        await #expect(throws: CancellationError.self) { _ = try await evaluation.value }
+    }
+
+    @Test func aScriptThatNeverReturnsTimesOut() async throws {
+        let webView = WKWebView(frame: .zero, configuration: WKWebViewConfiguration())
+        await #expect(throws: WebArticleExtractor.ScriptTimeout.self) {
+            _ = try await WebArticleExtractor.run("await new Promise(() => {}); return 'never';", in: webView,
+                                                  timeout: .milliseconds(100))
+        }
+    }
+
+    @Test func aOneShotResultIsDeliveredOnceWhenEverItArrives() async throws {
+        let early = OneShot<Int>()
+        early.resume(with: .success(1))
+        early.resume(with: .success(2))
+        #expect(try await early.wait() == 1)
+
+        let late = OneShot<Int>()
+        async let value = late.wait()
+        await Task.yield()
+        late.resume(with: .success(3))
+        late.resume(with: .failure(CancellationError()))
+        #expect(try await value == 3)
+
+        let cancelledFirst = OneShot<Int>()
+        let waiter = Task {
+            withUnsafeCurrentTask { $0?.cancel() }
+            return try await cancelledFirst.wait()
+        }
+        await #expect(throws: CancellationError.self) { _ = try await waiter.value }
     }
 
     @Test func onlyHTTPSMainFrameAddressesPass() {
