@@ -24,7 +24,9 @@ let package = Package(
         .target(name: "HolosCore"),
         .target(name: "HolosSpeech", dependencies: ["HolosCore"]),
         .target(name: "HolosSynthesis", dependencies: ["HolosCore"]),
-        .target(name: "HolosContent", dependencies: ["HolosCore", "HolosSynthesis"]),
+        // Readability.js is compiled into the binary (no resource bundle), so the voiceislocal tool stays one file.
+        .target(name: "HolosContent", dependencies: ["HolosCore", "HolosSynthesis"],
+                resources: [.embedInCode("Resources/Readability.js")]),
         .target(name: "HolosStorage", dependencies: ["HolosCore"]),
         .target(name: "HolosAudio", dependencies: ["HolosCore", "HolosStorage"]),
         .target(name: "HolosDesktop", dependencies: ["HolosCore"]),

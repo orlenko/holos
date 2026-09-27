@@ -473,8 +473,11 @@ Still requiring real-machine or user-data validation:
   other condition (room vs call) are less reliable. Speaker counts are approximate:
   quieter or briefer speakers can merge into others. Nothing deletes old meetings
   automatically.
-- URL/article extraction, PDF text extraction, and OCR. `read` supports local
-  UTF-8 text/Markdown and stdin only.
+- PDF text extraction and OCR. `read` supports local UTF-8 text/Markdown, stdin,
+  and `https://` web articles (Mozilla Readability in an offscreen web view). Pages
+  behind a sign-in or paywall fail with a hint to save their text to a file; `http://`
+  is refused; code blocks, tables, and figures are not read; some bylines and "min
+  read" lines leak into the spoken text.
 - Broader install/update/uninstall packaging and the T14 acceptance run.
 
 `reference-data/` is for private, user-provided evaluation material and is excluded

@@ -284,8 +284,18 @@ good), keeping the transcript, speaker labels, and exports. Both refuse while th
 session is recording or another Voice is Local command is working on it.
 
 `say` accepts text arguments or UTF-8 stdin and can play speech or save `.m4a`,
-`.wav`, or `.caf`. `read` accepts a local UTF-8 text/Markdown file or `-` for stdin;
-Markdown is read verbatim. URL extraction and PDF/OCR are not implemented.
+`.wav`, or `.caf`. `read` accepts a local UTF-8 text/Markdown file, `-` for stdin, or an
+`https://` web address; Markdown is read verbatim. A web page is loaded in an offscreen web
+view that keeps no cookies or history, and Mozilla Readability picks out the article: title,
+byline, headings, paragraphs, and list items (code blocks, tables, figures, and reference
+sections are skipped). `--print-text` prints what would be read without rendering. Pages
+behind a sign-in or paywall fail; save their text to a file instead. PDF/OCR are not
+implemented.
+
+```sh
+"$voiceislocal" read https://en.wikipedia.org/wiki/Speech_synthesis --print-text
+"$voiceislocal" read https://en.wikipedia.org/wiki/Speech_synthesis --play
+```
 
 Sessions are portable `.holos` directories. Inspect, recover, and retranscribe an
 inactive archive without replacing its saved audio or original transcript:
