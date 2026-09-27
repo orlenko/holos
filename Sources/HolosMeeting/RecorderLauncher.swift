@@ -560,6 +560,13 @@ public enum ProcessSpawner {
         return pid
     }
 
+    /// Starts `executable` in its own session with its output discarded and does not wait for it: for a helper that
+    /// outlives the app, such as the Setup Assistant's reopen command.
+    @discardableResult
+    public static func spawnDetached(executable: URL, arguments: [String]) throws -> pid_t {
+        try spawn(executable: executable, arguments: arguments, standardOutput: .null, standardError: .null)
+    }
+
     /// The exit code of `pid` if it has ended (reaping it), else nil. 128 + the signal for a killed child; -1 when it
     /// cannot be waited for (not a child, or already reaped).
     static func reapIfExited(_ pid: pid_t) -> Int32? {

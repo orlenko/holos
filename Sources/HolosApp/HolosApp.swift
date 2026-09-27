@@ -50,9 +50,9 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
     private var controller: DictationController!
     /// Meeting recording controls (HolosApp+Meeting.swift, docs/meeting-design.md §5.8).
     let meeting = MeetingAppState()
-    private var enabled = false
+    private(set) var enabled = false
     private var enabling = false
-    private var installingAssets = false
+    private(set) var installingAssets = false
     private var enableGeneration = 0
     private var enableTask: Task<Void, Never>?
     private var assetTask: Task<Void, Never>?
@@ -125,18 +125,33 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
     private var message = "Disabled — open Setup… to get started"
     private var setupWindow: SetupWindow?
     private var setupRefreshTask: Task<Void, Never>?
-    private var assetState: String?
+    /// The Setup Assistant (HolosApp+SetupAssistant.swift). Its progress stays in memory when the window is closed.
+    var assistantWindow: SetupAssistantWindow?
+    var assistantRefreshTask: Task<Void, Never>?
+    var assistantFlow = SetupAssistantFlow()
+    /// The assistant shows the one-page check after it reopened Voice is Local.
+    var assistantVerifying = false
+    /// The assistant finished or was skipped this run; the menu's Setup Assistant… starts it again from Welcome.
+    var assistantCompleted = false
+    /// The hotkey tap was tried once Accessibility was granted during this showing of the assistant.
+    var assistantProbedTap = false
+    /// Dictation turns on when the speech model install that is running (or started for it) succeeds.
+    var enableWhenSpeechModelInstalled = false
+    /// The assistant's Reopen Voice is Local: a helper reopens the app once this process has exited. Cleared when
+    /// the quit is cancelled, so a later quit never reopens.
+    var reopenAfterQuit = false
+    private(set) var assetState: String?
     private var shortcut: HotkeyChoice = .rightOption
     /// The dictation language, chosen in Setup or the menu; until then, the supported one closest to the user's
     /// languages (`DictationLanguage.preferred`). Meetings keep their own (`meetingLocales`). Shown as
     /// `DictationLanguage.standard` while that default is not known yet (`resolvedLocale` nil): an action that uses
     /// the language (enabling dictation, installing its speech model) awaits `loadLanguages` first.
-    private var locale: String {
+    private(set) var locale: String {
         get { resolvedLocale ?? DictationLanguage.standard }
         set { UserDefaults.standard.set(newValue, forKey: "dictationLocale") }
     }
     /// The dictation language, or nil while there is no saved choice and the supported languages have not loaded.
-    private var resolvedLocale: String? {
+    var resolvedLocale: String? {
         DictationLanguage.resolvedForSystem(saved: UserDefaults.standard.string(forKey: "dictationLocale"),
                                             supported: supportedLocales)
     }
@@ -156,7 +171,7 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
     /// The same, grouped for a picker (`DictationLanguage.groups`).
     private(set) var localeGroups: [[String]] = []
     private var languagesTask: Task<Void, Never>?
-    private var languageName: String { DictationLanguage.name(of: locale) }
+    var languageName: String { DictationLanguage.name(of: locale) }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         if let raw = UserDefaults.standard.string(forKey: "shortcut"), let saved = HotkeyChoice(rawValue: raw) {
@@ -197,20 +212,27 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
         // Before dictation starts: a meeting already recording (the app relaunched, or one started in a terminal)
         // keeps dictation paused.
         setUpMeetings()
-        if UserDefaults.standard.bool(forKey: "dictationEnabled") {
-            if !meeting.dictationPaused { enable() }
-        } else {
-            showSetup()
+        let dictationEnabled = UserDefaults.standard.bool(forKey: "dictationEnabled")
+        // First launch opens the Setup Assistant; later launches open the full Setup window while dictation is off.
+        // The window opens first, so an enable that fails leaves it in front instead of opening Setup over it.
+        switch setupAssistantLaunch(dictationEnabled: dictationEnabled) {
+        case .assistant: showSetupAssistant(verify: false)
+        case .verify: showSetupAssistant(verify: true)
+        case .markDone, .normal: if !dictationEnabled { showSetup() }
         }
+        if dictationEnabled, !meeting.dictationPaused { enable() }
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        meetingShouldTerminate()
+        let reply = meetingShouldTerminate()
+        if reply == .terminateCancel { reopenAfterQuit = false }
+        return reply
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        if reopenAfterQuit { reopenOnceExited() }
         enableTask?.cancel(); assetTask?.cancel(); overlayHideTask?.cancel(); resultExpiryTask?.cancel()
-        setupRefreshTask?.cancel()
+        setupRefreshTask?.cancel(); assistantRefreshTask?.cancel()
         monitor?.stop(); controller?.cancel()
         for observer in observers { NSWorkspace.shared.notificationCenter.removeObserver(observer) }
         overlay.hide()
@@ -222,7 +244,7 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
         return [.preparing, .listening, .finalizing].contains(controller.status.phase)
     }
 
-    private var shortcutTitle: String { shortcut == .rightOption ? "Right Option" : "Control–Option–Space" }
+    var shortcutTitle: String { shortcut == .rightOption ? "Right Option" : "Control–Option–Space" }
 
     /// Copy Result, Copy Original and Discard Result for the last dictation that produced a result.
     private func addResultItems(to menu: NSMenu) {
@@ -280,6 +302,7 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
         addMeetingsItem(to: menu)
         addPeopleItem(to: menu)
         menu.addItem(item("Setup…", #selector(showSetup)))
+        menu.addItem(item("Setup Assistant…", #selector(showSetupAssistantFromMenu)))
         addAboutItem(to: menu)
         menu.addItem(.separator())
         menu.addItem(item("Quit Voice is Local", #selector(quit)))
@@ -287,6 +310,7 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
         statusItem.button?.toolTip = meetingToolTip() ?? "Voice is Local — \(message)"
         updateStatusItemAppearance()
         updateSetupWindow()
+        updateSetupAssistant()
     }
 
     /// "Language: French (Canada)", with a submenu of the supported languages grouped as in Setup.
@@ -341,7 +365,7 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
         guard !refuseIfReplaced() else { return }
         guard AudioCapture.microphonePermission == "authorized", AXIsProcessTrusted() else {
             show("Grant Microphone and Accessibility access in Voice is Local Setup, then enable dictation.")
-            showSetup()
+            showSetupUnlessAssistant()
             return
         }
         enabling = true
@@ -361,11 +385,12 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
                 guard state == "installed" else {
                     self.enabling = false
                     self.show("Install the speech model for \(self.languageName) in Voice is Local Setup first.")
-                    self.showSetup()
+                    self.showSetupUnlessAssistant()
                     return
                 }
                 let monitor = GlobalHotkeyMonitor(shortcut: self.shortcut) { [weak self] action in self?.handle(action) }
                 try monitor.start()
+                self.inputMonitoringNeeded = false
                 self.monitor = monitor
                 self.enabled = true
                 self.enabling = false
@@ -378,6 +403,11 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
                 guard generation == self.enableGeneration else { return }
                 self.enabling = false
                 self.show(error.localizedDescription)
+                if error as? HotkeyStartError == .tapRefused {
+                    // Only now does Setup show its Input Monitoring row (GlobalHotkeyMonitor).
+                    self.inputMonitoringNeeded = true
+                    self.showSetupUnlessAssistant()
+                }
             }
         }
     }
@@ -406,14 +436,14 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
     }
 
     /// Not while a dictation, install, or enable is in progress: a change applies from the next dictation.
-    private var canChangeLanguage: Bool { !isBusy && !enabling && !installingAssets }
+    var canChangeLanguage: Bool { !isBusy && !enabling && !installingAssets }
 
     @objc private func changeLanguage(_ sender: NSMenuItem) {
         guard let identifier = sender.representedObject as? String else { return }
         changeLanguage(to: identifier)
     }
 
-    private func changeLanguage(to identifier: String) {
+    func changeLanguage(to identifier: String) {
         guard identifier != locale, canChangeLanguage else {
             updateSetupWindow()  // puts a refused choice back in Setup
             return
@@ -1077,7 +1107,7 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    @objc private func showSetup() {
+    @objc func showSetup() {
         if setupWindow == nil {
             setupWindow = SetupWindow(perform: { [weak self] action in self?.performSetup(action) },
                                       onClose: { [weak self] in
@@ -1129,7 +1159,8 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
         let speakerLabels = speakerLabelsSetupState()
         setupWindow.update(SetupState(
             microphone: AudioCapture.microphonePermission, accessibility: AXIsProcessTrusted(),
-            inputMonitoring: CGPreflightListenEventAccess(), systemAudio: CGPreflightScreenCaptureAccess(),
+            inputMonitoring: CGPreflightListenEventAccess(), inputMonitoringNeeded: inputMonitoringNeeded,
+            systemAudio: CGPreflightScreenCaptureAccess(),
             recordSystemAudio: MeetingAppState.recordSystemAudio,
             assets: assetState, installingAssets: installingAssets,
             dictationEnabled: enabled, enabling: enabling, busy: isBusy, shortcutTitle: shortcutTitle,
@@ -1144,7 +1175,7 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
             fillerExamples: FillerWords.examples(language: locale)))
     }
 
-    private func refreshAssetState() {
+    func refreshAssetState() {
         let locale = locale
         Task { [weak self] in
             let state = (try? await AppleSpeechEngine.assetStatus(locale: locale, backend: .speech)) ?? "unknown"
@@ -1155,7 +1186,7 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    private func performSetup(_ action: SetupAction) {
+    func performSetup(_ action: SetupAction) {
         switch action {
         case .microphone:
             if AudioCapture.microphonePermission == "notDetermined" { requestMicrophone() }
@@ -1202,7 +1233,7 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
         NSWorkspace.shared.open(url)
     }
 
-    private func installAssets() {
+    func installAssets() {
         guard !installingAssets, !isBusy, !enabled, !enabling else { return }
         installingAssets = true  // also keeps the language from changing until the install ends
         updateSetupWindow()
@@ -1223,7 +1254,13 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
                 self.installingAssets = false
                 self.assetState = "installed"
                 self.show("Speech model for \(name) ready; enable dictation when ready")
+                // The Setup Assistant finished while this downloaded.
+                if self.enableWhenSpeechModelInstalled {
+                    self.enableWhenSpeechModelInstalled = false
+                    self.enable()
+                }
             } catch {
+                self.enableWhenSpeechModelInstalled = false
                 self.installingAssets = false
                 self.refreshAssetState()
                 self.show("Asset setup failed: \(error.localizedDescription)")

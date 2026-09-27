@@ -5,6 +5,9 @@ struct SetupState {
     var microphone: String
     var accessibility: Bool
     var inputMonitoring: Bool
+    /// macOS refused the hotkey's event tap with Accessibility granted (`HotkeyStartError.tapRefused`); only then is
+    /// the Input Monitoring row shown.
+    var inputMonitoringNeeded = false
     /// Screen & System Audio Recording, which meetings need to record the computer's audio; without it they record
     /// the microphone alone.
     var systemAudio = false
@@ -81,6 +84,7 @@ final class SetupWindow: NSObject, NSWindowDelegate {
     private var advancedContent: NSView?
     private var onOpacityChange: ((Double) -> Void)?
     private var rows: [SetupAction: Row] = [:]
+    private let grid = NSGridView()
     private var positioned = false
 
     var isVisible: Bool { window.isVisible }
@@ -103,7 +107,6 @@ final class SetupWindow: NSObject, NSWindowDelegate {
         window.collectionBehavior = [.moveToActiveSpace]
         window.delegate = self
 
-        let grid = NSGridView()
         grid.rowSpacing = 16
         grid.columnSpacing = 12
         let titles: [(SetupAction, String)] = [
@@ -137,6 +140,7 @@ final class SetupWindow: NSObject, NSWindowDelegate {
         grid.column(at: 0).xPlacement = .center
         grid.column(at: 2).xPlacement = .trailing
         for index in 0..<grid.numberOfRows { grid.row(at: index).yPlacement = .center }
+        setRowHidden(.inputMonitoring, true)  // until macOS refuses the hotkey tap (`update`)
 
         messageLabel.font = .systemFont(ofSize: 13)
         messageLabel.preferredMaxLayoutWidth = 500
@@ -314,9 +318,12 @@ final class SetupWindow: NSObject, NSWindowDelegate {
             state.accessibility ? "Granted — used to insert text into the focused field"
                                 : "Not granted — turn on Voice is Local in System Settings",
             button: "Open Settings")
+        // Accessibility is what the hotkey tap needs; this row appears only after macOS refused the tap anyway.
+        setRowHidden(.inputMonitoring, !state.inputMonitoringNeeded)
         set(.inputMonitoring, state.inputMonitoring ? .done : .problem,
-            state.inputMonitoring ? "Granted — used to detect the hold-to-talk shortcut"
-                                  : "Not granted — turn on Voice is Local in System Settings",
+            state.inputMonitoring ? "Granted — quit and reopen Voice is Local if the shortcut still does not work"
+                                  : "macOS refused the hold-to-talk shortcut with Accessibility on. Turn on Voice is "
+                                    + "Local under Input Monitoring, then quit and reopen Voice is Local.",
             button: "Open Settings")
         recordSystemAudioToggle.state = state.recordSystemAudio ? .on : .off
         // Never marked as a problem: without it meetings record the microphone alone.
@@ -415,6 +422,11 @@ final class SetupWindow: NSObject, NSWindowDelegate {
             languagePopup.selectItem(at: languagePopup.indexOfItem(withRepresentedObject: state.locale))
         }
         languagePopup.isEnabled = state.localeChangeable
+    }
+
+    private func setRowHidden(_ action: SetupAction, _ hidden: Bool) {
+        guard let icon = rows[action]?.icon, let row = grid.cell(for: icon)?.row, row.isHidden != hidden else { return }
+        row.isHidden = hidden
     }
 
     private func set(_ action: SetupAction, _ mark: Mark, _ detail: String, button title: String?, enabled: Bool = true) {

@@ -175,6 +175,39 @@ struct HotkeyReducer {
     }
 }
 
+/// Why the hotkey's event tap could not start. The tap is active (`.defaultTap`: it consumes the shortcut), which
+/// macOS authorises with Accessibility; Input Monitoring is what listen-only taps need, so it is not asked for up
+/// front. It is only the fallback when macOS refuses the tap with Accessibility granted.
+public enum HotkeyStartError: Error, LocalizedError, Equatable, Sendable {
+    /// Accessibility is not granted.
+    case accessibilityNotGranted
+    /// Accessibility is granted, yet macOS refused the tap: Input Monitoring may be needed on this Mac.
+    case tapRefused
+    /// The tap could not be attached to the main run loop.
+    case runLoopUnavailable
+
+    public var errorDescription: String? {
+        switch self {
+        case .accessibilityNotGranted:
+            "The hold-to-talk shortcut needs Accessibility access for Voice is Local. Turn it on in System Settings, then retry."
+        case .tapRefused:
+            "macOS refused the hold-to-talk shortcut although Accessibility is on. Turn on Voice is Local under Input Monitoring in System Settings (Setup shows it), then quit and reopen Voice is Local."
+        case .runLoopUnavailable:
+            "Could not attach the global hotkey event tap to the main run loop."
+        }
+    }
+
+    /// The check before the tap is created: Accessibility only.
+    static func gate(accessibility: Bool) -> HotkeyStartError? {
+        accessibility ? nil : .accessibilityNotGranted
+    }
+
+    /// Why `CGEvent.tapCreate` returned nil: Accessibility was revoked meanwhile, or macOS wants more.
+    static func tapFailure(accessibility: Bool) -> HotkeyStartError {
+        accessibility ? .tapRefused : .accessibilityNotGranted
+    }
+}
+
 @MainActor public final class GlobalHotkeyMonitor {
     private let shortcut: HotkeyChoice
     private let onAction: @MainActor (HotkeyAction) -> Void
@@ -200,9 +233,7 @@ struct HotkeyReducer {
 
     public func start() throws {
         guard tap == nil else { return }
-        guard AXIsProcessTrusted(), CGPreflightListenEventAccess() else {
-            throw HolosError.permissionDenied("Global hotkey requires Accessibility and Input Monitoring access for Voice is Local. Enable both in System Settings, then retry.")
-        }
+        if let refused = HotkeyStartError.gate(accessibility: AXIsProcessTrusted()) { throw refused }
         let flags = CGEventSource.flagsState(.combinedSessionState)
         generation += 1
         pendingActions.removeAll()
@@ -225,12 +256,12 @@ struct HotkeyReducer {
             return consume ? nil : Unmanaged.passUnretained(event)
         }, userInfo: context) else {
             Unmanaged<GlobalHotkeyMonitor>.fromOpaque(context).release()
-            throw HolosError.unavailable("Could not install the global hotkey event tap. Check Accessibility and Input Monitoring permissions.")
+            throw HotkeyStartError.tapFailure(accessibility: AXIsProcessTrusted())
         }
         guard let runLoopSource = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, created, 0) else {
             CFMachPortInvalidate(created)
             Unmanaged<GlobalHotkeyMonitor>.fromOpaque(context).release()
-            throw HolosError.unavailable("Could not attach the global hotkey event tap to the main run loop.")
+            throw HotkeyStartError.runLoopUnavailable
         }
         CFRunLoopAddSource(CFRunLoopGetMain(), runLoopSource, .commonModes)
         CGEvent.tapEnable(tap: created, enable: true)
@@ -256,6 +287,24 @@ struct HotkeyReducer {
             self.retainedContext = nil
         }
         if let action { onAction(action) }
+    }
+
+    /// Whether macOS would let `start` install the tap now; nil when it would. The same tap is created, disabled and
+    /// removed at once without joining a run loop, so no key reaches it. The Setup Assistant runs this once
+    /// Accessibility is granted, to learn before its Reopen page whether Input Monitoring is needed too.
+    public static func probe() -> HotkeyStartError? {
+        if let refused = HotkeyStartError.gate(accessibility: AXIsProcessTrusted()) { return refused }
+        let events: CGEventMask = (1 << CGEventType.keyDown.rawValue) |
+            (1 << CGEventType.keyUp.rawValue) | (1 << CGEventType.flagsChanged.rawValue)
+        guard let created = CGEvent.tapCreate(tap: .cgSessionEventTap, place: .headInsertEventTap,
+                                               options: .defaultTap, eventsOfInterest: events,
+                                               callback: { _, _, event, _ in Unmanaged.passUnretained(event) },
+                                               userInfo: nil) else {
+            return HotkeyStartError.tapFailure(accessibility: AXIsProcessTrusted())
+        }
+        CGEvent.tapEnable(tap: created, enable: false)
+        CFMachPortInvalidate(created)
+        return nil
     }
 
     private func handle(type: CGEventType, code: Int, flags: CGEventFlags) -> Bool {
