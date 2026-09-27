@@ -439,7 +439,9 @@ final class SetupWindow: NSObject, NSWindowDelegate {
         row.icon.image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)
         row.icon.contentTintColor = color
         row.detail.stringValue = detail
-        row.button.isHidden = title == nil
+        // A view shown inside a hidden grid row is left unplaced and draws over another row.
+        let rowHidden = grid.cell(for: row.icon)?.row?.isHidden ?? false
+        row.button.isHidden = title == nil || rowHidden
         row.button.title = title ?? ""
         row.button.isEnabled = enabled
     }
