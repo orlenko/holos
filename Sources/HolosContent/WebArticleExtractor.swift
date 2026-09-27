@@ -446,6 +446,67 @@ import WebKit
     }
     """#
 
+    /// Keeps section headings from being dropped by Readability as page furniture, before it runs. Two cases:
+    ///
+    /// - A heading inside a `<div>` wrapper that holds nothing else of substance: Wikipedia's
+    ///   `<div class="mw-heading"><h2>History</h2><span>[<a>edit</a>]</span></div>`, a docs site's
+    ///   `<div class="heading"><h2>Setup</h2><a href="#setup">#</a></div>`. Readability's conditional cleanup of
+    ///   `div`s judges such a wrapper on its own: a short heading beside an edit or anchor link reads as a short,
+    ///   linky block ("Suspiciously short", "a little linky"), and the wrapper goes, heading and all, while the
+    ///   section's paragraphs stay. The heading is moved out, right before the wrapper (after it when the wrapper
+    ///   has text before the heading); the rest of the wrapper stays where it was. A wrapper qualifies when, apart
+    ///   from the heading, it holds no other heading, paragraph, list, table, quotation, figure, media, form, or
+    ///   navigation, and at most 20 letters and digits outside bracketed marks.
+    /// - A heading whose own class or id says "header" (Substack's `<h4 class="header-anchor-post">`): Readability
+    ///   drops anything so named as a page header. On a heading the word names the heading itself, so those class
+    ///   names (and such an id) are removed from the page copy.
+    ///
+    /// Wrappers whose class or id Readability counts against the content for any other reason (sidebars, comments,
+    /// widgets, share boxes, related links) keep their headings, so those still go with them; "header" in a
+    /// wrapper's name does not count against it, since the wrapper holds only the heading.
+    private static let headingKeeper = #"""
+    function holosKeepHeadings(doc) {
+      const patterns = Readability.prototype.REGEXPS;
+      const substance = "h1, h2, h3, h4, h5, h6, p, ul, ol, dl, table, blockquote, pre, figure, img, picture, "
+        + "video, audio, iframe, object, embed, form, nav, aside, header, footer";
+      const header = /header/i;
+      // Whether Readability removes or penalizes an element for its class or id, words with "header" aside.
+      const discounted = (element) => {
+        const match = ((element.getAttribute("class") || "") + " " + (element.id || "")).replace(/header/gi, " ");
+        return (patterns.unlikelyCandidates.test(match) && !patterns.okMaybeItsACandidate.test(match))
+          || (patterns.negative.test(match) && !patterns.positive.test(match));
+      };
+      const meaningful = (text) => text.replace(/\[[^\]]*\]/g, "").replace(/[^\p{L}\p{N}]+/gu, "");
+      // The wrapper's own text, outside the heading, split at the heading.
+      const textAround = (wrapper, heading) => {
+        let before = "", after = "";
+        const walker = doc.createTreeWalker(wrapper, NodeFilter.SHOW_TEXT);
+        for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+          if (heading.contains(node)) continue;
+          if (heading.compareDocumentPosition(node) & Node.DOCUMENT_POSITION_FOLLOWING) after += node.data;
+          else before += node.data;
+        }
+        return { before: meaningful(before), after: meaningful(after) };
+      };
+      for (const heading of Array.from(doc.querySelectorAll("h1, h2, h3, h4, h5, h6"))) {
+        const named = Array.from(heading.classList).filter((name) => header.test(name));
+        if (named.length) heading.classList.remove(...named);
+        if (header.test(heading.id)) heading.removeAttribute("id");
+        let wrapper = heading.parentElement;
+        while (wrapper && wrapper.localName === "div") {
+          if (discounted(wrapper)) break;
+          const others = Array.from(wrapper.querySelectorAll(substance))
+            .filter((element) => element !== heading && !heading.contains(element));
+          if (others.length) break;
+          const text = textAround(wrapper, heading);
+          if (text.before.length + text.after.length > 20) break;
+          if (text.before) wrapper.after(heading); else wrapper.before(heading);
+          wrapper = heading.parentElement;
+        }
+      }
+    }
+    """#
+
     static let readyStateScript = "return document.readyState;"
 
     private static let conversionScript = blockWalker + "\nreturn JSON.stringify(holosArticleBlocks(document.body));"
@@ -470,14 +531,15 @@ import WebKit
     /// the same document), then yields to the page's event loop once before answering: a navigation the page had
     /// already scheduled (a script redirect, a meta refresh whose timer is due) is then decided before the answer
     /// arrives, and the extractor sees it.
-    private static let extractionScript = readabilitySource + "\n" + backMatterRemover + "\n" + blockWalker + "\n"
-        + refreshReader + #"""
+    private static let extractionScript = readabilitySource + "\n" + backMatterRemover + "\n" + headingKeeper + "\n"
+        + blockWalker + "\n" + refreshReader + #"""
 
     const holosDocument = { url: location.href, refresh: holosRefreshDelay(document) };
     let holosResult;
     try {
       const page = document.cloneNode(true);
       holosDropBackMatter(page);
+      holosKeepHeadings(page);
       const article = new Readability(page).parse();
       if (!article) {
         holosResult = { found: false, title: document.title };

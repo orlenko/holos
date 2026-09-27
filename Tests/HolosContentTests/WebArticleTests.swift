@@ -850,6 +850,72 @@ private func isPrintable(_ text: String) -> Bool {
         #expect(!article.spokenText.contains("See also"))
     }
 
+    @Test(arguments: [
+        // Wikipedia's markup (2026): nested sections, each heading in a `div.mw-heading` beside its edit link.
+        ##"<div class="mw-heading mw-heading{LEVEL}"><h{LEVEL} id="{ID}">{TEXT}</h{LEVEL}><span class="mw-editsection"><span class="mw-editsection-bracket">[</span><a href="/w/index.php?title=Lighthouse&amp;action=edit&amp;section=1" title="Edit section: {TEXT}"><span>edit</span></a><span class="mw-editsection-bracket">]</span></span></div>"##,
+        // A docs site's heading beside its permalink anchor.
+        ##"<div class="heading-wrapper"><h{LEVEL} id="{ID}">{TEXT}</h{LEVEL}><a class="anchor" href="#{ID}" aria-label="Permalink">#</a></div>"##,
+        // The same in a wrapper named "section-header".
+        ##"<div class="section-header" id="header-{ID}"><h{LEVEL}>{TEXT}</h{LEVEL}><a href="#header-{ID}">¶</a></div>"##,
+        // Substack's markup (2026): the heading's own class says "header"; its link button sits inside it.
+        ##"<h{LEVEL} class="header-anchor-post">{TEXT}<div class="pencraft pc-display-flex pc-position-absolute pc-reset header-anchor-parent"><div class="pencraft pc-display-contents pc-reset"><div id="§{ID}" class="pencraft pc-reset header-anchor offset-top"></div><button tabindex="0" type="button" aria-label="Link" data-href="https://news.example.test/i/1/{ID}" class="pencraft pc-reset iconButton"><svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24"><path d="M10 13a5 5 0 0 0 7.54.54"></path></svg></button></div></div></h{LEVEL}>"##,
+    ])
+    func sectionHeadingsStayWhateverTheirMarkup(wrapper: String) async throws {
+        func heading(_ level: Int, _ text: String) -> String {
+            wrapper.replacingOccurrences(of: "{LEVEL}", with: "\(level)")
+                .replacingOccurrences(of: "{ID}", with: text.replacingOccurrences(of: " ", with: "_"))
+                .replacingOccurrences(of: "{TEXT}", with: text)
+        }
+        let p = Fixture.paragraphs
+        // Short headings (which Readability's div cleanup took for short, linky blocks), a heading that opens its
+        // parent's section, and headings followed by a figure, an empty span, a hatnote, or a nested section.
+        let page = """
+            <!doctype html><html lang="en"><head><meta charset="utf-8"><title>Lighthouse - Wikipedia</title></head>
+            <body><div id="content"><h1 id="firstHeading">Lighthouse</h1>
+            <div id="mw-content-text" class="mw-body-content"><div class="mw-content-ltr mw-parser-output">
+            <section data-mw-section-id="0"><p>\(p[0])</p><p>\(p[1])</p></section>
+            <section data-mw-section-id="1">\(heading(2, "History"))<p>\(p[2])</p>
+            <section data-mw-section-id="2">\(heading(3, "Mechanical devices"))<span class="mw-empty-elt"></span>
+            <p>\(p[0])</p></section>
+            <section data-mw-section-id="3">\(heading(3, "Electronic devices"))
+            <figure class="mw-default-size"><a href="/wiki/File:Lamp.jpg"><img src="lamp.jpg" alt=""></a>
+            <figcaption>The lamp room at dusk.</figcaption></figure><p>\(p[1])</p></section></section>
+            <section data-mw-section-id="4">\(heading(2, "Keepers"))
+            <section data-mw-section-id="5">\(heading(3, "Mattel"))
+            <div role="note" class="hatnote navigation-not-searchable">Main article: <a href="/wiki/Mattel">Mattel</a></div>
+            <p>\(p[2])</p></section>
+            <section data-mw-section-id="6">\(heading(4, "Diphone synthesis"))<p>\(p[0])</p></section>
+            <section data-mw-section-id="7">\(heading(3, "Artificial intelligence in lighthouses"))<p>\(p[1])</p>
+            </section></section>
+            <section data-mw-section-id="8">\(heading(2, "References"))<div class="reflist"><ol>
+            <li>\(Fixture.log)</li></ol></div></section>
+            </div></div></div></body></html>
+            """
+        let article = try await WebArticleExtractor(options: fast).extract(html: page, baseURL: Fixture.base)
+        let headings = article.blocks.compactMap { block -> String? in
+            guard case .heading(let level, let text) = block else { return nil }
+            return "h\(level) \(text)"
+        }
+        #expect(headings == ["h2 History", "h3 Mechanical devices", "h3 Electronic devices", "h2 Keepers",
+                             "h3 Mattel", "h4 Diphone synthesis", "h3 Artificial intelligence in lighthouses"])
+        // Each heading comes right before its section's first paragraph; the links beside it are not read. (Whether
+        // Readability keeps the hatnote is its own call, not checked here.)
+        let texts = article.blocks.map(\.text).filter { $0 != "Main article: Mattel" }
+        #expect(texts == [p[0], p[1], "History", p[2], "Mechanical devices", p[0], "Electronic devices", p[1],
+                          "Keepers", "Mattel", p[2], "Diphone synthesis", p[0],
+                          "Artificial intelligence in lighthouses", p[1]])
+    }
+
+    @Test func aHeadingInASidebarWrapperStillGoesWithIt() async throws {
+        // The lifting leaves wrappers that Readability counts against the content alone.
+        let backMatter = #"""
+            <div class="sidebar-widget"><h3>Follow us</h3><a href="/rss">RSS</a></div>
+            """#
+        let article = try await WebArticleExtractor(options: fast).extract(
+            html: Fixture.article(backMatter: backMatter), baseURL: Fixture.base)
+        #expect(!article.spokenText.contains("Follow us"))
+    }
+
     @Test func readabilityIsTheVendoredRelease() {
         // THIRD_PARTY_NOTICES.md records this SHA-256 for Readability.js at tag 0.6.0.
         let digest = SHA256.hash(data: Data(WebArticleExtractor.readabilitySource.utf8))
