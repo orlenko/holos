@@ -179,7 +179,7 @@ public enum HTMLReader {
     static let skipped: Set<String> = [
         "script", "style", "noscript", "template", "nav", "footer", "aside", "form", "button",
         "svg", "iframe", "select", "textarea", "pre", "img", "picture", "video", "audio", "canvas",
-        "head", "object", "embed", "menu",
+        "head", "object", "embed",
     ]
     static let blocks: Set<String> = [
         "p", "div", "section", "article", "main", "header", "li", "ul", "ol", "dl", "dt", "dd",
@@ -282,13 +282,17 @@ public enum HTMLReader {
             }
             // Ordered list items keep their numbers, as the page shows them: `start`, `reversed`,
             // `type` (1, a, A, i, I), and an item's `value` are honored. Bullets are not read.
+            // A list nested in an ordered item before the item's own text leaves the item's number
+            // for that text: "<li><ul><li>substep</li></ul>main step</li>" reads "1. main step".
             if name == "ol" || name == "ul" || name == "menu" {
                 flush()
+                let pending = marker
+                marker = nil
                 lists.append(name == "ol" ? Self.orderedList(node) : nil)
                 for child in node.children ?? [] { walk(child) }
                 flush()
                 lists.removeLast()
-                marker = nil
+                marker = pending
                 return
             }
             if name == "li", let open = lists.last {
@@ -403,23 +407,47 @@ public enum PDFReader {
         return document(paragraphs: paragraphs, declaredTitle: declared, author: author)
     }
 
+    /// The title is the metadata title, else a title-like first paragraph; a first paragraph that
+    /// says the title is its level-1 heading, read once. Headings `reflow` set apart become
+    /// level-2 sections, so chapters (see `isHeading`).
     static func document(paragraphs: [String], declaredTitle: String?, author: String?) -> ReadableDocument {
-        if let declaredTitle, !declaredTitle.isEmpty {
-            // The visible title under a matching metadata title is the title heading, read once.
-            if paragraphs.count > 1, PlainTextReader.looksLikeTitle(paragraphs[0]),
-               ReadableDocument.sameTitle(declaredTitle, paragraphs[0]) {
-                return ReadableDocument(title: declaredTitle, author: author, sections: [
-                    .init(heading: paragraphs[0], level: 1, paragraphs: Array(paragraphs.dropFirst())),
-                ])
+        var title = declaredTitle.flatMap { $0.isEmpty ? nil : $0 }
+        var builder = ReadableDocument.Builder()
+        var start = 0
+        if paragraphs.count > 1, PlainTextReader.looksLikeTitle(paragraphs[0]),
+           title.map({ ReadableDocument.sameTitle($0, paragraphs[0]) }) ?? true {
+            title = title ?? paragraphs[0]
+            builder.heading(paragraphs[0], level: 1)
+            start = 1
+        }
+        let candidates = paragraphs.map(isHeadingCandidate)
+        var index = start
+        while index < paragraphs.count {
+            // A run of one or two heading-like paragraphs ("Chapter 2", "Methods") after the start,
+            // the title, or a finished sentence, with body text after it, is headings.
+            var end = index
+            while end < paragraphs.count, candidates[end] { end += 1 }
+            let run = index..<end
+            let afterBreak = index == start || endsSentence(paragraphs[index - 1])
+            if !run.isEmpty, run.count <= 2, afterBreak, end < paragraphs.count {
+                for heading in run { builder.heading(paragraphs[heading], level: 2) }
+            } else {
+                for paragraph in run { builder.paragraph(paragraphs[paragraph]) }
             }
-            return ReadableDocument(title: declaredTitle, author: author, sections: [.init(paragraphs: paragraphs)])
+            if end < paragraphs.count { builder.paragraph(paragraphs[end]) }
+            index = end + 1
         }
-        if paragraphs.count > 1, PlainTextReader.looksLikeTitle(paragraphs[0]) {
-            return ReadableDocument(title: paragraphs[0], author: author, sections: [
-                .init(heading: paragraphs[0], level: 1, paragraphs: Array(paragraphs.dropFirst())),
-            ])
-        }
-        return ReadableDocument(author: author, sections: [.init(paragraphs: paragraphs)])
+        return ReadableDocument(title: title, author: author, sections: builder.sections)
+    }
+
+    /// Short (80 characters at most), one line, with a letter, not ending like a sentence or a
+    /// clause, and not a bulleted or lettered list item: what `reflow` sets apart as a heading.
+    /// A numbered heading ("2. Methods", "3.1 Results") qualifies; a long numbered list does not,
+    /// because a heading run is at most two paragraphs.
+    static func isHeadingCandidate(_ paragraph: String) -> Bool {
+        paragraph.count <= 80 && PlainTextReader.looksLikeTitle(paragraph) && paragraph.contains(where: \.isLetter)
+            && paragraph.range(of: #"^\s*([-–—•*·▪◦]|\(?[0-9]{1,3}\)|\(?[a-zA-Z][.)])\s"#,
+                               options: .regularExpression) == nil
     }
 
     /// "Microsoft Word - Report.docx" -> "Report".

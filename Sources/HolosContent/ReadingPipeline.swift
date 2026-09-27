@@ -163,7 +163,8 @@ public struct AudioBookJoiner: ReadingAudioJoiner {
         }
         try Self.checkLocation(directory: directory, output: output, resume: resume)
         let writerLock = try ReadingDirectoryLock.acquire(for: directory)
-        defer { withExtendedLifetime(writerLock) {} }
+        let outputLock = try ReadingDirectoryLock.acquire(output: output, beside: directory)
+        defer { withExtendedLifetime((writerLock, outputLock)) {} }
         let planned = script.parts(maxUTF16Units: maxPartUTF16Units)
         let sourceHash = sha256(Data(text.utf8))
         let sourceURL = directory.appendingPathComponent("source.txt")
@@ -493,8 +494,23 @@ final class ReadingDirectoryLock {
     }
 
     static func acquire(for directory: URL) throws -> ReadingDirectoryLock {
+        try acquire(name: ".holos-reading-\(key(for: directory)).lock", beside: directory,
+                    busy: "Reading directory is already being rendered: \(directory.path)")
+    }
+
+    /// A lock on the finished file's path, kept beside the cache's lock. Readings of different
+    /// text or settings for one explicit output have different caches (see
+    /// `ReadingOutput.locate`), so this is what stops a second one before it renders anything.
+    static func acquire(output: URL, beside directory: URL) throws -> ReadingDirectoryLock {
+        let canonical = output.deletingLastPathComponent().standardizedFileURL.resolvingSymlinksInPath()
+            .appendingPathComponent(output.lastPathComponent)
+        return try acquire(name: ".holos-output-\(sha256(Data(canonical.path.utf8))).lock", beside: directory,
+                           busy: "Another reading is already being made for \(output.path).")
+    }
+
+    private static func acquire(name: String, beside directory: URL, busy: String) throws -> ReadingDirectoryLock {
         let parent = directory.standardizedFileURL.resolvingSymlinksInPath().deletingLastPathComponent()
-        let path = parent.appendingPathComponent(".holos-reading-\(key(for: directory)).lock").path
+        let path = parent.appendingPathComponent(name).path
         let descriptor = open(path, O_CREAT | O_RDWR | O_CLOEXEC | O_NOFOLLOW, 0o600)
         guard descriptor >= 0 else {
             throw HolosError.io("Could not open reading lock: \(String(cString: strerror(errno)))")
@@ -509,7 +525,7 @@ final class ReadingDirectoryLock {
             let error = errno
             close(descriptor)
             if error == EWOULDBLOCK || error == EAGAIN {
-                throw HolosError.unavailable("Reading directory is already being rendered: \(directory.path)")
+                throw HolosError.unavailable(busy)
             }
             throw HolosError.io("Could not acquire reading lock: \(String(cString: strerror(error)))")
         }

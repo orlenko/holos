@@ -427,6 +427,37 @@ import Testing
         #expect(renderer.calls == 1)
     }
 
+    @Test func aSecondReadingForTheSameOutputFailsBeforeRendering() async throws {
+        let parent = try root()
+        defer { try? FileManager.default.removeItem(at: parent) }
+        let output = parent.appendingPathComponent("Book.m4a")
+        // Different text or settings: different caches (as `ReadingOutput.locate` keys them), one output.
+        let first = ReadingLocation(workDirectory: parent.appendingPathComponent("Output-a"), output: output)
+        let second = ReadingLocation(workDirectory: parent.appendingPathComponent("Output-b"), output: output)
+        let renderer = GateRenderer()
+        let pipeline = ReadingPipeline(renderer: renderer, joiner: FakeJoiner())
+        let script = ReadingScript(document: ReadableDocument(sections: [.init(paragraphs: ["One short paragraph."])]))
+        let other = ReadingScript(document: ReadableDocument(sections: [.init(paragraphs: ["Another paragraph."])]))
+        let voice = self.voice
+        let metadata = self.metadata
+        let active = Task { try await pipeline.render(script: script, voiceIdentifier: voice, metadata: metadata, location: first) }
+        await renderer.waitUntilRendering()
+        do {
+            _ = try await pipeline.render(script: other, voiceIdentifier: voice, metadata: metadata, location: second)
+            Issue.record("A second reading for the same output should fail while the first renders.")
+        } catch let error as HolosError {
+            if case .unavailable(let message) = error {
+                #expect(message.contains("Another reading is already being made"))
+            } else {
+                Issue.record("Unexpected error: \(error)")
+            }
+        }
+        #expect(renderer.calls == 1)
+        renderer.release()
+        #expect(try await active.value.manifest.status == "complete")
+        #expect(try Data(contentsOf: output) == Data("One short paragraph.".utf8))
+    }
+
     private func manifest(_ place: ReadingLocation) throws -> ReadingManifest {
         try JSONDecoder().decode(ReadingManifest.self,
                                  from: Data(contentsOf: place.workDirectory.appendingPathComponent(ReadingManifest.fileName)))

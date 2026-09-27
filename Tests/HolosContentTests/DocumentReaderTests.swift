@@ -156,6 +156,21 @@ import Testing
         #expect(HTMLReader.Walker.marker(0, type: "A") == "0.")
     }
 
+    @Test func anItemsNumberWaitsForItsOwnTextPastANestedList() {
+        let html = """
+        <html><body>
+        <ol><li><ul><li>substep</li></ul>main step</li><li>second</li></ol>
+        <ol start="5"><li><ol type="a"><li>inner</li></ol><p>outer</p></li></ol>
+        <ol><li>Before<ul><li>nested</li></ul>after</li></ol>
+        <menu><li>Copy</li><li>Paste</li></menu>
+        </body></html>
+        """
+        #expect(HTMLReader.document(from: Data(html.utf8)).sections.flatMap(\.paragraphs) == [
+            "substep", "1. main step", "2. second", "a. inner", "5. outer", "1. Before", "nested", "after",
+            "Copy", "Paste",
+        ])
+    }
+
     @Test func extremeListNumbersNeverTrap() {
         let html = """
         <html><body>
@@ -397,6 +412,36 @@ import Testing
         let guessed = PDFReader.document(paragraphs: ["Heading", "Body."], declaredTitle: nil, author: "A")
         #expect(guessed.title == "Heading")
         #expect(guessed.sections == [.init(heading: "Heading", level: 1, paragraphs: ["Body."])])
+    }
+
+    @Test func headingsReflowSetsApartBecomeChapters() {
+        let paragraphs = ["Quarterly Report", "Introduction", "The year went well.", "2. Methods",
+                          "We counted everything twice.", "Chapter 3", "Results", "Sales rose.",
+                          "Shopping list:", "- milk", "- bread", "Then we went home.",
+                          "Steps:", "1) Mix", "2) Bake", "Done.", "2024", "A closing line after a number.",
+                          "An unpunctuated line after one", "Final words"]
+        for declared in ["Quarterly Report", nil] {
+            let document = PDFReader.document(paragraphs: paragraphs, declaredTitle: declared, author: nil)
+            #expect(document.title == "Quarterly Report")
+            #expect(document.sections.map(\.heading)
+                == ["Quarterly Report", "Introduction", "2. Methods", "Chapter 3", "Results"], "\(declared ?? "-")")
+            #expect(document.sections.map(\.level) == [1, 2, 2, 2, 2])
+            #expect(document.sections.last?.paragraphs == ["Sales rose.", "Shopping list:", "- milk", "- bread",
+                                                           "Then we went home.", "Steps:", "1) Mix", "2) Bake",
+                                                           "Done.", "2024", "A closing line after a number.",
+                                                           "An unpunctuated line after one", "Final words"])
+            let script = ReadingScript(document: document)
+            #expect(script.segments.compactMap(\.chapter) == ["Quarterly Report", "Introduction", "2. Methods",
+                                                               "Chapter 3", "Results"])
+            #expect(script.text.components(separatedBy: "Quarterly Report").count == 2)
+        }
+        // Under a metadata title the page does not show, the first heading is a chapter, too.
+        let other = PDFReader.document(paragraphs: ["Visible Heading", "Body."], declaredTitle: "Hidden", author: nil)
+        #expect(other.sections == [.init(heading: "Visible Heading", level: 2, paragraphs: ["Body."])])
+        // Three short lines in a row are not headings.
+        let lines = PDFReader.document(paragraphs: ["A sentence.", "Alpha", "Beta", "Gamma", "More text."],
+                                       declaredTitle: "T", author: nil)
+        #expect(lines.sections == [.init(paragraphs: ["A sentence.", "Alpha", "Beta", "Gamma", "More text."])])
     }
 }
 

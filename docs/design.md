@@ -285,15 +285,17 @@ cache is deleted after, so the finished file is the only large thing kept. A fai
 reading publishes nothing and returns a nonzero status. Publishing never replaces a file:
 an exclusive rename, or, on volumes without one, an exclusive create whose identity is
 saved in the manifest before the finished bytes are copied into it (so `--resume`
-recognizes a copy a crash cut off). Ctrl-C cancels the page load or the render, removes the partly joined
+recognizes a copy a crash cut off). A lock on the cache and one on the output path stop a
+second reading for the same file before it renders anything. Ctrl-C cancels the page load or the render, removes the partly joined
 file, and exits 130 (SIGTERM: 143); every run also removes temporaries earlier runs of the
 same reading left behind, recognized by a per-reading marker in their names.
 
 Local files use built-in readers: text and Markdown (Foundation's Markdown parser; markup
 is dropped, link text kept, code blocks and images skipped, YAML front matter read for
 title and author), HTML (the tidying XML parser; scripts, navigation, forms, footers, and
-asides skipped), PDF (PDFKit text reflowed into paragraphs; scanned PDFs need OCR, which
-is not supported), and RTF, RTFD, Word, and OpenDocument (AppKit's document readers,
+asides skipped), PDF (PDFKit text reflowed into paragraphs; one or two short unpunctuated
+lines between a finished sentence and body text become headings, so chapters; scanned
+PDFs need OCR, which is not supported), and RTF, RTFD, Word, and OpenDocument (AppKit's document readers,
 headings from heading styles or larger/bold short lines). The voice is the best installed
 voice for the text's language (NaturalLanguage detects it): Premium over Enhanced over
 default, then the user's preferred regions, then the voice macOS uses for that language.
