@@ -61,15 +61,51 @@ public enum SpokenWords {
         return String(folded.filter { $0.isLetter || $0.isNumber })
     }
 
+    /// Words that change what a sentence says when added or dropped, by language: negations, counted as one kind
+    /// ("do not" and "don't" say the same; the French "ne" is left out, speech drops it), and words of quantity
+    /// or frequency, each its own kind. A fix must keep them all ("I do agree" is not "I do not agree").
+    static let englishNegations: Set<String> = [
+        "not", "no", "never", "nothing", "none", "nobody", "nowhere", "neither", "nor", "cannot", "without",
+        // Contractions dictated without their apostrophe ("dont"); those with one end in "n't".
+        "dont", "cant", "wont", "isnt", "arent", "wasnt", "werent", "doesnt", "didnt", "hasnt", "havent", "hadnt",
+        "couldnt", "wouldnt", "shouldnt", "mustnt", "neednt", "aint",
+    ]
+    static let frenchNegations: Set<String> = ["pas", "jamais", "rien", "personne", "aucun", "aucune", "ni", "sans",
+                                               "non", "nul", "nulle", "guère"]
+    static let englishQuantities: Set<String> = ["only", "all", "always", "every", "any", "some", "both", "more",
+                                                 "less", "most", "least"]
+    static let frenchQuantities: Set<String> = ["tout", "tous", "toute", "toutes", "seulement", "toujours", "chaque",
+                                                "quelques", "plusieurs", "plus", "moins"]
+
+    /// How many times each meaning word (see `englishNegations`) is in `words` (from `AIFixGuard.words`), for
+    /// `language` (both English and French when nil or another one); negations all count as "not".
+    static func meaningWords(in words: [String], language: String?) -> [String: Int] {
+        let code = language.map(DictationLanguage.languageCode)
+        let english = code != "fr", french = code != "en"
+        var counts: [String: Int] = [:]
+        for word in words {
+            if (english && (englishNegations.contains(word) || word.hasSuffix("n't")))
+                || (french && frenchNegations.contains(word)) {
+                counts["not", default: 0] += 1
+            } else if (english && englishQuantities.contains(word)) || (french && frenchQuantities.contains(word)) {
+                counts[word, default: 0] += 1
+            }
+        }
+        return counts
+    }
+
+    /// Hesitations a fix may drop.
+    static let fillers: Set<String> = ["um", "umm", "uh", "uhh", "er", "erm", "hmm", "mm", "euh", "heu"]
+
     /// Whether `heard` could be a mishearing of `meant` (or the reverse), for the guard on a model's reply. Compared
-    /// as `letters`: the same letters; homophones the rules miss (`homophones`: "one" and "won", "you" and "ewe");
-    /// at most one letter apart or 70 % of the letters the same (by edit distance); the same `sound` ("write" and
-    /// "right", "ate" and "eight", "knight" and "night", "their" and "there"); or the same `roughSound` with at least
-    /// half the letters the same ("cold" and "called", "a bundo" and "ubuntu"). "windows" and "Ubuntu" are none of
-    /// these, nor "opened" and "Ubuntu", nor "point" and "Bundo".
-    public static func isClose(_ heard: String, _ meant: String) -> Bool {
+    /// as `letters`: the same letters; homophones of `language` the rules miss (`homophones`: "one" and "won", "you"
+    /// and "ewe"); at most one letter apart or 70 % of the letters the same (by edit distance); the same `sound`
+    /// ("write" and "right", "ate" and "eight", "knight" and "night", "their" and "there"); or the same `roughSound`
+    /// with at least half the letters the same ("cold" and "called", "a bundo" and "ubuntu"). "windows" and "Ubuntu"
+    /// are none of these, nor "opened" and "Ubuntu", nor "point" and "Bundo".
+    public static func isClose(_ heard: String, _ meant: String, language: String? = nil) -> Bool {
         let a = letters(heard), b = letters(meant)
-        if a == b || areHomophones(spelling(heard), spelling(meant)) { return true }
+        if a == b || areHomophones(spelling(heard), spelling(meant), language: language) { return true }
         guard !a.isEmpty, !b.isEmpty else { return false }
         let distance = editDistance(Array(a), Array(b))
         let longer = max(a.count, b.count)
@@ -100,13 +136,15 @@ public enum SpokenWords {
     /// lets the taught spelling replace the word. The same letters, homophones, or the plural of a word of four
     /// letters or more ("sessions" and "session"); otherwise the same `sound`, so only the spelling of its vowels or
     /// of one sound differs, and at least half the letters the same. "point" is not "Bundo", "band" not "Bundo",
-    /// "tax" not "Max", "bulk" not "bull", "buy" not "bus".
-    public static func isVariant(_ word: String, of heard: String) -> Bool {
-        isVariant(Features(word), of: Features(heard))
+    /// "tax" not "Max", "bulk" not "bull", "buy" not "bus". Homophones are those of `language`.
+    public static func isVariant(_ word: String, of heard: String, language: String? = nil) -> Bool {
+        isVariant(Features(word), of: Features(heard), language: language)
     }
 
-    static func isVariant(_ word: Features, of heard: Features) -> Bool {
-        if word.letters == heard.letters || areHomophones(word.spelling, heard.spelling) { return true }
+    static func isVariant(_ word: Features, of heard: Features, language: String?) -> Bool {
+        if word.letters == heard.letters || areHomophones(word.spelling, heard.spelling, language: language) {
+            return true
+        }
         guard !word.letters.isEmpty, !heard.letters.isEmpty else { return false }
         if isPlural(word.letters, of: heard.letters) || isPlural(heard.letters, of: word.letters) { return true }
         guard word.sound == heard.sound else { return false }
@@ -146,12 +184,16 @@ public enum SpokenWords {
             .replacingOccurrences(of: "’", with: "'")
     }
 
-    /// Homophones whose spellings `sound` does not bring together, as `spelling`: a vowel said with a glide the
-    /// spelling does not show ("one" and "won", "you" and "ewe"), a silent "h" before a vowel ("our" and "hour"), and
-    /// French words whose silent endings differ ("vert" and "verre", "sans" and "cent").
-    static let homophones: [Set<String>] = [
+    /// Homophones whose spellings `sound` does not bring together, as `spelling`, by language: in English a vowel
+    /// said with a glide the spelling does not show ("one" and "won", "you" and "ewe") or a silent "h" before a vowel
+    /// ("our" and "hour"); in French, words whose silent endings differ ("vert" and "verre", "sans" and "cent"),
+    /// which English says apart ("sang" and "sent").
+    static let englishHomophones: [Set<String>] = [
         ["one", "won"], ["two", "to", "too"], ["you", "ewe", "yew", "u"], ["eight", "ate"], ["our", "hour"],
         ["air", "heir"], ["wood", "would"], ["i'll", "isle", "aisle"],
+    ]
+
+    static let frenchHomophones: [Set<String>] = [
         ["sans", "cent", "sang", "sent", "s'en"], ["vers", "vert", "verre", "ver"], ["foi", "fois", "foie"],
         ["cour", "cours", "court"], ["temps", "tant", "tend", "tends"], ["vin", "vingt", "vain"],
         ["eau", "haut", "au", "aux", "o"], ["sept", "set", "cet", "cette"], ["pain", "pin", "peint"],
@@ -159,8 +201,15 @@ public enum SpokenWords {
         ["pere", "paire", "pair", "perd"],
     ]
 
-    static func areHomophones(_ a: String, _ b: String) -> Bool {
-        homophones.contains { $0.contains(a) && $0.contains(b) }
+    /// Whether `a` and `b` (as `spelling`) are listed homophones of `language`: English, French, or either when the
+    /// language is not given or is another one.
+    static func areHomophones(_ a: String, _ b: String, language: String?) -> Bool {
+        let sets: [Set<String>] = switch language.map(DictationLanguage.languageCode) {
+        case "en": englishHomophones
+        case "fr": frenchHomophones
+        default: englishHomophones + frenchHomophones
+        }
+        return sets.contains { $0.contains(a) && $0.contains(b) }
     }
 
     /// Words that start with a silent "ough": "gh" after "ou" is an "f" elsewhere ("tough", "rough", "cough").
@@ -181,9 +230,10 @@ public enum SpokenWords {
     /// ("who", "whole") and its "h" elsewhere ("which", "whoop"), "gh" after the first letter ("night", "eight") but
     /// for the "f" of "tough" and "laugh", a last "e" after a consonant, a "w" or "h" not before a vowel.
     /// Spellings of one sound become one: "ph" f, "ck" and "q" k, "c" before e, i or y s, "dg" before e, i or y j
-    /// (any other "g" is hard: "git", "get"), "th" θ, "sh", "ch" and "tch" X, "x" ks, "z" s, a last "mb" m. Each run
-    /// of vowels (with a "y", "w" or "h" after them) is one "a", and a sound repeated is kept once. Consonants keep
-    /// their identity: "point" is "pant" and "Bundo" "banda".
+    /// (any other "g" is hard: "git", "get"), "th" θ, "sh" X, "ch" and "tch" C ("chr", "chl" and "sch" k), "x" ks,
+    /// "z" s, a last "mb" m. Each run of vowels (with a "y", "w" or "h" after them) is one "a", and a sound repeated
+    /// is kept once. Consonants keep their identity: "point" is "pant", "Bundo" "banda", "child" "Cald" and "should"
+    /// "Xald".
     static func sound(_ letters: String) -> String {
         var s = Array(letters)
         if s.count > 2 {
@@ -220,7 +270,13 @@ public enum SpokenWords {
             case "w": if !afterVowel && vowel(at: i + 1) { emit("w") }
             case "h": if vowel(at: i + 1) { emit("h") }
             case "c":
-                if next == "h" { emit("X"); step = 2 }
+                if next == "h" {
+                    // A "k" in "chr", "chl" and "sch" ("chrome", "school"); elsewhere the "ch" of "child", apart
+                    // from the "sh" of "should".
+                    let hard = afterNext.map { "rl".contains($0) } == true || (i > 0 && s[i - 1] == "s")
+                    emit(hard ? "k" : "C")
+                    step = 2
+                }
                 else if let next, "eiy".contains(next) { emit("s") }
                 else { emit("k"); if next == "k" { step = 2 } }
             case "s": if next == "h" { emit("X"); step = 2 } else { emit("s") }
@@ -250,7 +306,7 @@ public enum SpokenWords {
         return String(out)
     }
 
-    /// `sound` with voiced and voiceless consonants made one (b p, d t, g k, v f, j X) and the vowels dropped, but
+    /// `sound` with voiced and voiceless consonants made one (b p, d t, g k, v f, j C) and the vowels dropped, but
     /// for a leading one: "cold" and "called" are both "klt", "a bundo" and "ubuntu" both "apnt".
     static func roughSound(_ sound: String) -> String {
         var out: [Character] = []
@@ -264,7 +320,7 @@ public enum SpokenWords {
             case "d": "t"
             case "g": "k"
             case "v": "f"
-            case "j": "X"
+            case "j": "C"
             default: sound
             }
             if out.last != merged { out.append(merged) }

@@ -219,7 +219,11 @@ the letters the same, such as "cold" and "called"; words replaced together are j
 one by one, and a word split or joined by its shorter side), or when the reply is the chunk
 with listed pairs applied where their heard phrases were said, plus such close
 changes: "their food requests" may become "there pool requests". So no taught or
-invented spelling lands on unrelated words, or next to the heard phrase. The model
+invented spelling lands on unrelated words, or next to the heard phrase. The guard
+also refuses a reply that adds, drops or swaps a negation or a word of quantity ("I
+do agree" is not "I do not agree"), or drops a word other than a function word, a
+hesitation or a repeat; function words and homophones are those of the language
+dictated (English or French). The model
 runs with the `permissiveContentTransformations` guardrails: with the defaults about
 half the fixes in a day's log failed in about 200 ms, ordinary sentences refused as
 "May contain unsafe content". A refusal that still happens leaves the chunk as

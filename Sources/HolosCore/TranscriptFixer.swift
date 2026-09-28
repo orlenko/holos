@@ -174,8 +174,11 @@ public enum AIFixGuard {
         /// `changedStructure`: a mark other than a comma or apostrophe was added, removed or moved (a period, colon,
         /// quote, bracket or line break), apart from closing marks at the very end. `changedCorrection`: a word a
         /// learned correction produced was changed. `implausibleSubstitution`: a word was replaced by one it could
-        /// not have been misheard for ("windows" by "Ubuntu"), or a word other than a function word was added.
-        case empty, tooManyEdits, wordCountChanged, changedStructure, changedCorrection, implausibleSubstitution
+        /// not have been misheard for ("windows" by "Ubuntu"), a word other than a function word was added, or one
+        /// other than a function word, hesitation or repeat was dropped. `changedMeaning`: a negation or a word of
+        /// quantity was added, dropped or replaced ("I do agree" became "I do not agree", "can" "can't").
+        case empty, tooManyEdits, wordCountChanged, changedStructure, changedCorrection, implausibleSubstitution,
+             changedMeaning
     }
 
     public enum Verdict: Sendable, Equatable {
@@ -193,7 +196,8 @@ public enum AIFixGuard {
     /// correction's meant phrase, compared as lowercased words) must all still be there: the speaker taught them.
     /// Every replaced word must be a plausible mishearing of what replaces it (`plausible`), or part of a pair of
     /// `taught`, the learned corrections listed for the model, applied where its heard phrase was said
-    /// (`plausibleReply`). `language` (a locale identifier) says which function words count (`SpokenWords.isContent`).
+    /// (`plausibleReply`). Negations and words of quantity must stay as they were (`SpokenWords.meaningWords`).
+    /// `language` (a locale identifier) says which function words, homophones and meaning words count.
     public static func check(original: String, fixed: String, protecting corrections: [Correction] = [],
                              taught: [Correction] = [], language: String? = nil) -> Verdict {
         let original = original.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -218,6 +222,10 @@ public enum AIFixGuard {
         let segmented = zip(was.segments, now.segments).reduce(0) { $0 + editDistance($1.0, $1.1) }
         if segmented > edits { return .reject(.changedStructure) }
         if edits > max(2, before.count / 5) { return .reject(.tooManyEdits) }
+        if SpokenWords.meaningWords(in: before, language: language)
+            != SpokenWords.meaningWords(in: after, language: language) {
+            return .reject(.changedMeaning)
+        }
         guard plausibleReply(original: original, before: before, after: after, taught: taught, language: language)
         else {
             return .reject(.implausibleSubstitution)
@@ -241,8 +249,10 @@ public enum AIFixGuard {
             let head = zip(start, after).prefix { $0 == $1 }.count
             let tail = zip(start.dropFirst(head).reversed(), after.dropFirst(head).reversed()).prefix { $0 == $1 }.count
             let old = Array(start[head..<(start.count - tail)]), new = Array(after[head..<(after.count - tail)])
-            return hunks(old, new).allSatisfy {
-                plausible(Array(old[$0.old]), Array(new[$0.new]), language: language)
+            return hunks(old, new).allSatisfy { hunk in
+                let left = head + hunk.old.lowerBound - 1, right = head + hunk.old.upperBound
+                return plausible(Array(old[hunk.old]), Array(new[hunk.new]), left: left >= 0 ? start[left] : nil,
+                                 right: right < start.count ? start[right] : nil, language: language)
             }
         }
         if allPlausible(from: before) { return true }
@@ -281,24 +291,31 @@ public enum AIFixGuard {
         return search(0, [])
     }
 
-    /// Whether `new` could replace `old` as a fix of a mishearing: `old` dropped; function words added
-    /// (`SpokenWords.isContent` false); as many words, each close to what replaces it (`SpokenWords.isClose`); one
-    /// word split or joined (`SpokenWords.isCloseSplit`); or function words come and gone around content words, each
-    /// close to what replaces it. Anything else is a word the model swapped in: a spelling from the taught list
-    /// ("windows" became "Ubuntu") or one of its own, which only `plausibleReply` may allow.
-    static func plausible(_ old: [String], _ new: [String], language: String? = nil) -> Bool {
+    /// Whether `new` could replace `old`, between the words `left` and `right` of the original, as a fix of a
+    /// mishearing: `old` dropped when it is function words (`SpokenWords.isContent` false), hesitations
+    /// (`SpokenWords.fillers`) or a repeat of `left` or `right` ("the the"); function words added; as many words, each
+    /// close to what replaces it (`SpokenWords.isClose`); one word split or joined (`SpokenWords.isCloseSplit`); or
+    /// function words come and gone around content words, each close to what replaces it. Anything else is a word
+    /// the model swapped in, a spelling from the taught list ("windows" became "Ubuntu") or one of its own, which
+    /// only `plausibleReply` may allow, or a word it dropped. Negations and words of quantity are checked apart
+    /// (`SpokenWords.meaningWords`).
+    static func plausible(_ old: [String], _ new: [String], left: String? = nil, right: String? = nil,
+                          language: String? = nil) -> Bool {
         let isContent = { SpokenWords.isContent($0, language: language) }
-        if new.isEmpty { return true }
+        let isClose = { SpokenWords.isClose($0, $1, language: language) }
+        if new.isEmpty {
+            return old.allSatisfy { !isContent($0) || SpokenWords.fillers.contains($0) || $0 == left || $0 == right }
+        }
         if old.isEmpty { return !new.contains(where: isContent) }
         // As many words: each replaced by one it could have been misheard for, never judged run together, where a
         // long word close to its fix would carry an unrelated one ("internationalisation windows").
-        if old.count == new.count { return zip(old, new).allSatisfy(SpokenWords.isClose) }
+        if old.count == new.count { return zip(old, new).allSatisfy(isClose) }
         // A word split in two or more, or joined from them.
         if min(old.count, new.count) == 1, SpokenWords.isCloseSplit(old.joined(), new.joined()) { return true }
         let oldContent = old.filter(isContent)
         let newContent = new.filter(isContent)
         return !newContent.isEmpty && oldContent.count == newContent.count
-            && zip(oldContent, newContent).allSatisfy(SpokenWords.isClose)
+            && zip(oldContent, newContent).allSatisfy(isClose)
     }
 
     /// The stretches where `a` and `b` differ, as ranges of each, from a word-level alignment with the edits of
@@ -582,7 +599,7 @@ public enum AIFixReference {
             if SpokenWords.isContent(word, language: language) {
                 let heard = SpokenWords.Features(word)
                 for (other, at) in positions where other != word
-                    && SpokenWords.isVariant(features[other]!, of: heard) {
+                    && SpokenWords.isVariant(features[other]!, of: heard, language: language) {
                     found.formUnion(at)
                 }
             }

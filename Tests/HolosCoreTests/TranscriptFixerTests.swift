@@ -417,6 +417,49 @@ let unrelatedWords = [
         == .reject(.implausibleSubstitution))
 }
 
+@Test func aFixKeepsNegationsAndWordsOfQuantity() {
+    for (original, fixed) in [("I do agree", "I do not agree"), ("I do not agree", "I do agree"),
+                              ("I can come", "I can't come"), ("I can't come", "I can come"),
+                              ("We need tea", "We only need tea"), ("Take all the cake", "Take the cake"),
+                              ("Je veux venir", "Je veux pas venir"), ("Il est toujours là", "Il est là")] {
+        #expect(AIFixGuard.check(original: original, fixed: fixed) == .reject(.changedMeaning),
+                "\(original) -> \(fixed)")
+    }
+    // The same negation said another way, and a French "ne" speech dropped, are not changes of meaning.
+    #expect(AIFixGuard.check(original: "Wait here. Dont leave", fixed: "Wait here. Don't leave") == .accept)
+    #expect(AIFixGuard.check(original: "I do not know", fixed: "I don't know") == .accept)
+    #expect(AIFixGuard.check(original: "je sais pas", fixed: "je ne sais pas", language: "fr-FR") == .accept)
+    // Only function words, hesitations and repeats may be dropped.
+    #expect(AIFixGuard.check(original: "I love the red car", fixed: "I love the car")
+        == .reject(.implausibleSubstitution))
+    #expect(AIFixGuard.check(original: "go to the the store", fixed: "go to the store") == .accept)
+    #expect(AIFixGuard.check(original: "go to um the store", fixed: "go to the store") == .accept)
+    #expect(AIFixGuard.check(original: "go build build it now", fixed: "go build it now") == .accept)
+}
+
+@Test func homophonesAreThoseOfTheLanguageDictated() {
+    // "sang" and "sent" are French homophones, not English ones.
+    #expect(AIFixGuard.check(original: "I sang it", fixed: "I sent it", language: "en-US")
+        == .reject(.implausibleSubstitution))
+    #expect(!SpokenWords.isClose("sang", "sent", language: "en-US"))
+    #expect(SpokenWords.isClose("sang", "sent", language: "fr-FR") && SpokenWords.isClose("won", "one", language: "en"))
+    #expect(!SpokenWords.isClose("won", "one", language: "fr-FR"))
+    #expect(SpokenWords.isVariant("vert", of: "verre", language: "fr-FR")
+        && !SpokenWords.isVariant("vert", of: "verre", language: "en-US"))
+}
+
+@Test func chIsNotSh() {
+    #expect(SpokenWords.sound("child") == "Cald" && SpokenWords.sound("should") == "Xald")
+    #expect(!SpokenWords.isVariant("should", of: "child"))
+    let childcare = Correction(heard: "child care", meant: "childcare")
+    #expect(AIFixReference.select(from: [childcare], for: "You should care", budget: 1_000).isEmpty)
+    #expect(AIFixGuard.check(original: "You should care", fixed: "You childcare", taught: [childcare])
+        == .reject(.implausibleSubstitution))
+    // "ch" is a "k" in "chr", "chl" and "sch"; "tch" is "ch".
+    #expect(SpokenWords.sound("chrome") == SpokenWords.sound("krome") && SpokenWords.sound("school") == "skal")
+    #expect(SpokenWords.sound("witch") == SpokenWords.sound("which"))
+}
+
 @Test func functionWordsAreThoseOfTheLanguageDictated() {
     // The French "son" is an English content word.
     #expect(SpokenWords.isContent("son", language: "en-US") && !SpokenWords.isContent("son", language: "fr_CA"))
