@@ -42,12 +42,33 @@ public enum DocumentLoader {
 }
 
 /// Bytes of a text file (or stdin) as a string: UTF-8, or UTF-16 or UTF-32 when a byte order
-/// mark says so (Windows Notepad saves "Unicode" as UTF-16 with one). One leading byte order mark
-/// is dropped, so it never hides YAML front matter or ends up in a title. Nil for anything else.
+/// mark says so (Windows Notepad saves "Unicode" as UTF-16 with one). Nil for anything else.
+/// One leading byte order mark is dropped, so it never hides YAML front matter or ends up in a
+/// title, and every line ends in LF (see `withLFLineEndings`).
 public enum DocumentText {
     public static func decode(_ data: Data) -> String? {
-        if let (length, encoding) = byteOrderMark(data) { return decode(data.dropFirst(length), as: encoding) }
-        return decode(data, as: .utf8)
+        let text: String?
+        if let (length, encoding) = byteOrderMark(data) {
+            text = decode(data.dropFirst(length), as: encoding)
+        } else {
+            text = decode(data, as: .utf8)
+        }
+        return text.map(withLFLineEndings)
+    }
+
+    /// `text` with Windows (CRLF) and classic Mac (CR) line endings made LF, so front matter,
+    /// Markdown, and paragraph breaks are found whichever system saved the file. The one place
+    /// line endings are normalized: the decoders (this one and `HTMLReader.decode`) apply it
+    /// before any parsing, and so do the readers that take a string (see `normalized`).
+    public static func withLFLineEndings(_ text: String) -> String {
+        guard text.utf8.contains(0x0D) else { return text }
+        return text.replacingOccurrences(of: "\r\n", with: "\n").replacingOccurrences(of: "\r", with: "\n")
+    }
+
+    /// A string as the text readers take it (it may not come from `decode`): without one leading
+    /// U+FEFF, and with LF line endings.
+    public static func normalized(_ text: String) -> String {
+        withLFLineEndings(withoutByteOrderMark(text))
     }
 
     /// The Unicode encoding a leading byte order mark names, and the mark's length in bytes.
@@ -78,8 +99,7 @@ public enum DocumentText {
 /// becomes the title.
 public enum PlainTextReader {
     public static func document(from text: String) -> ReadableDocument {
-        let paragraphs = DocumentText.withoutByteOrderMark(text).replacingOccurrences(of: "\r\n", with: "\n")
-            .replacingOccurrences(of: "\r", with: "\n")
+        let paragraphs = DocumentText.normalized(text)
             .components(separatedBy: "\n")
             .split(whereSeparator: { $0.trimmingCharacters(in: .whitespaces).isEmpty })
             .map { $0.joined(separator: "\n") }
@@ -108,8 +128,7 @@ public enum PlainTextReader {
 /// thematic breaks are skipped. YAML front matter supplies the title and author.
 public enum MarkdownReader {
     public static func document(from markdown: String) -> ReadableDocument {
-        let (frontMatter, body) = splitFrontMatter(
-            DocumentText.withoutByteOrderMark(markdown).replacingOccurrences(of: "\r\n", with: "\n"))
+        let (frontMatter, body) = splitFrontMatter(DocumentText.normalized(markdown))
         let options = AttributedString.MarkdownParsingOptions(
             allowsExtendedAttributes: false, interpretedSyntax: .full,
             failurePolicy: .returnPartiallyParsedIfPossible)
@@ -259,9 +278,10 @@ public enum HTMLReader {
     /// 3. else UTF-8 when the bytes are valid UTF-8;
     /// 4. else Windows-1252, HTML's default.
     /// A declared UTF-8 page with invalid bytes is read as UTF-8 with replacement characters; bytes
-    /// invalid in another declared encoding fall through to 3 and 4. One leading U+FEFF is dropped.
+    /// invalid in another declared encoding fall through to 3 and 4. One leading U+FEFF is dropped,
+    /// and line endings are made LF (see `DocumentText.normalized`).
     static func decode(_ data: Data) -> String {
-        DocumentText.withoutByteOrderMark(decodeKeepingMark(data))
+        DocumentText.normalized(decodeKeepingMark(data))
     }
 
     private static func decodeKeepingMark(_ data: Data) -> String {
@@ -303,11 +323,115 @@ public enum HTMLReader {
         return prescan.encoding()
     }
 
+    /// HTML's tokenizer for one tag, over a page's bytes: the one reading of tag names and
+    /// attributes that both the charset prescan (`CharsetPrescan`) and `prepared` use, so the two
+    /// never disagree on where a name or a tag ends.
+    /// - A tag name starts with the letter after `<` or `</` and ends at a space, `/`, or `>`, so
+    ///   `<script/>` is a script (HTML ignores the slash on it).
+    /// - Attributes follow HTML's "get an attribute": spaces and slashes before one are skipped;
+    ///   its name ends at `=`, a space, `/`, or `>`; its value, after `=` and optional spaces, is
+    ///   double-quoted, single-quoted (a `>` inside does not end the tag), or unquoted up to a
+    ///   space or `>` (`href=a/>` keeps its slash).
+    struct TagScanner {
+        /// One attribute, as byte ranges of the page.
+        struct Attribute {
+            var name: Range<Int>
+            /// Without its quotes; empty when the attribute has no value.
+            var value: Range<Int>
+            var unquoted: Bool
+        }
+
+        static let lessThan = UInt8(ascii: "<")
+        static let greaterThan = UInt8(ascii: ">")
+        static let slash = UInt8(ascii: "/")
+        static let equals = UInt8(ascii: "=")
+
+        let bytes: [UInt8]
+        var position: Int
+
+        /// Whether `byte` ends a tag name: a space, `/`, or `>`.
+        static func isNameEnd(_ byte: UInt8) -> Bool {
+            HTMLReader.isSpace(byte) || byte == slash || byte == greaterThan
+        }
+
+        /// At `<` or `</` and a letter: the tag's name, lowercased, and whether it ends an element,
+        /// with `position` moved past the name. Nil (and `position` kept) at anything else.
+        mutating func tagName() -> (name: String, closing: Bool)? {
+            let closing = position + 1 < bytes.count && bytes[position + 1] == Self.slash
+            let start = position + (closing ? 2 : 1)
+            guard start < bytes.count, HTMLReader.isLetter(bytes[start]) else { return nil }
+            var end = start
+            while end < bytes.count, !Self.isNameEnd(bytes[end]) { end += 1 }
+            position = end
+            return (String(decoding: bytes[start..<end].map(HTMLReader.lowercased), as: UTF8.self), closing)
+        }
+
+        /// The next attribute, or nil at the tag's `>` (left at `position`) or when the bytes end
+        /// first (`position` is then the end).
+        mutating func attribute() -> Attribute? {
+            let count = bytes.count
+            while position < count, HTMLReader.isSpace(bytes[position]) || bytes[position] == Self.slash { position += 1 }
+            guard position < count, bytes[position] != Self.greaterThan else { return nil }
+            let nameStart = position
+            // The first byte is the name's whatever it is, `=` included.
+            position += 1
+            let name: Range<Int>
+            while true {
+                guard position < count else { return nil }
+                let byte = bytes[position]
+                if byte == Self.equals {
+                    name = nameStart..<position
+                    position += 1
+                    break
+                }
+                if HTMLReader.isSpace(byte) {
+                    name = nameStart..<position
+                    while position < count, HTMLReader.isSpace(bytes[position]) { position += 1 }
+                    guard position < count else { return nil }
+                    guard bytes[position] == Self.equals else {
+                        return Attribute(name: name, value: position..<position, unquoted: false)
+                    }
+                    position += 1
+                    break
+                }
+                if byte == Self.slash || byte == Self.greaterThan {
+                    return Attribute(name: nameStart..<position, value: position..<position, unquoted: false)
+                }
+                position += 1
+            }
+            while position < count, HTMLReader.isSpace(bytes[position]) { position += 1 }
+            guard position < count else { return nil }
+            let first = bytes[position]
+            if first == UInt8(ascii: "\"") || first == UInt8(ascii: "'") {
+                let start = position + 1
+                guard let close = bytes[start...].firstIndex(of: first) else {
+                    position = count
+                    return nil
+                }
+                position = close + 1
+                return Attribute(name: name, value: start..<close, unquoted: false)
+            }
+            if first == Self.greaterThan { return Attribute(name: name, value: position..<position, unquoted: false) }
+            let start = position
+            while position < count, !HTMLReader.isSpace(bytes[position]), bytes[position] != Self.greaterThan { position += 1 }
+            return position < count ? Attribute(name: name, value: start..<position, unquoted: true) : nil
+        }
+
+        /// Whether the element `name` ends at `index`: `</name` followed by a name end or the end
+        /// of the bytes, in any ASCII case.
+        func endTag(_ name: String, at index: Int) -> Bool {
+            let pattern = Array(("</" + name).utf8)
+            guard bytes[index] == Self.lessThan, index + pattern.count <= bytes.count,
+                  zip(bytes[index...], pattern).allSatisfy({ HTMLReader.lowercased($0) == $1 }) else { return false }
+            let after = index + pattern.count
+            return after == bytes.count || Self.isNameEnd(bytes[after])
+        }
+    }
+
     /// HTML's "prescan a byte stream to determine its encoding", over bytes, so no encoding is
     /// assumed: comments (`<!-- … -->`) and the contents of raw text elements (scripts, styles,
     /// `<title>`, `<textarea>`, `<noscript>`, …) are skipped, other tags are read attribute by
-    /// attribute (names and values in any ASCII case; values double-quoted, single-quoted, or
-    /// unquoted), and only a real `<meta>` tag declares: by `charset`, or by
+    /// attribute (see `TagScanner`), and only a real `<meta>` tag declares: by `charset`, or by
     /// `http-equiv="content-type"` with a `content` that names a charset. A `<meta>` whose charset
     /// is unknown is passed over for the next one.
     struct CharsetPrescan {
@@ -316,17 +440,19 @@ public enum HTMLReader {
             "script", "style", "textarea", "title", "noscript", "xmp", "iframe", "noembed", "noframes",
         ]
 
-        let bytes: [UInt8]
-        var position = 0
-
-        init(bytes: [UInt8]) {
-            self.bytes = bytes
+        private var scanner: TagScanner
+        private var bytes: [UInt8] { scanner.bytes }
+        private var position: Int {
+            get { scanner.position }
+            set { scanner.position = newValue }
         }
 
-        private static let lessThan = UInt8(ascii: "<")
-        private static let greaterThan = UInt8(ascii: ">")
-        private static let slash = UInt8(ascii: "/")
-        private static let equals = UInt8(ascii: "=")
+        init(bytes: [UInt8]) {
+            scanner = TagScanner(bytes: bytes, position: 0)
+        }
+
+        private static let greaterThan = TagScanner.greaterThan
+        private static let equals = TagScanner.equals
 
         mutating func encoding() -> String.Encoding? {
             let count = bytes.count
@@ -335,15 +461,15 @@ public enum HTMLReader {
                     // The dashes of `<!--` may close it too: `<!-->` is a whole comment.
                     guard let end = find("-->", from: position + 2) else { return nil }
                     position = end + 3
-                } else if starts("<meta", at: position), position + 5 < count,
-                          HTMLReader.isSpace(bytes[position + 5]) || bytes[position + 5] == Self.slash {
-                    position += 5
-                    if let encoding = meta() { return encoding }
-                    position += 1
-                } else if bytes[position] == Self.lessThan, case let (name, closing)? = tagName() {
+                } else if bytes[position] == TagScanner.lessThan, case let (name, closing)? = scanner.tagName() {
+                    if !closing, name == "meta" {
+                        if let encoding = meta() { return encoding }
+                        position += 1
+                        continue
+                    }
                     // A start or end tag: its attributes are read past, so a `>` in a quoted value
                     // does not end it.
-                    while attribute() != nil {}
+                    while scanner.attribute() != nil {}
                     position += 1
                     if !closing, Self.rawText.contains(name), !skipRawText(name) { return nil }
                 } else if starts("<!", at: position) || starts("</", at: position) || starts("<?", at: position) {
@@ -354,18 +480,6 @@ public enum HTMLReader {
                 }
             }
             return nil
-        }
-
-        /// At `<` or `</` and a letter: the tag's name, lowercased, and whether it ends an element,
-        /// with `position` moved past the name.
-        private mutating func tagName() -> (String, Bool)? {
-            let closing = position + 1 < bytes.count && bytes[position + 1] == Self.slash
-            let start = position + (closing ? 2 : 1)
-            guard start < bytes.count, HTMLReader.isLetter(bytes[start]) else { return nil }
-            var end = start
-            while end < bytes.count, !HTMLReader.isSpace(bytes[end]), bytes[end] != Self.greaterThan { end += 1 }
-            position = end
-            return (String(decoding: bytes[start..<end].map(HTMLReader.lowercased), as: UTF8.self), closing)
         }
 
         /// The attributes of a `<meta>` tag (`position` is past `<meta`) and the encoding they
@@ -396,54 +510,11 @@ public enum HTMLReader {
             return HTMLReader.encoding(named: charset)
         }
 
-        /// HTML's "get an attribute": the next attribute's name and value, both lowercased, or nil
-        /// at the tag's `>` (left at `position`) or the end of the bytes.
+        /// The next attribute's name and value (see `TagScanner.attribute`), both lowercased.
         private mutating func attribute() -> (String, [UInt8])? {
-            let count = bytes.count
-            while position < count, HTMLReader.isSpace(bytes[position]) || bytes[position] == Self.slash { position += 1 }
-            guard position < count, bytes[position] != Self.greaterThan else { return nil }
-            var name: [UInt8] = []
-            var value: [UInt8] = []
-            func named() -> String { String(decoding: name, as: UTF8.self) }
-            nameLoop: while true {
-                guard position < count else { return nil }
-                let byte = bytes[position]
-                if byte == Self.equals, !name.isEmpty {
-                    position += 1
-                    break nameLoop
-                }
-                if HTMLReader.isSpace(byte) {
-                    while position < count, HTMLReader.isSpace(bytes[position]) { position += 1 }
-                    guard position < count else { return nil }
-                    guard bytes[position] == Self.equals else { return (named(), []) }
-                    position += 1
-                    break nameLoop
-                }
-                if byte == Self.slash || byte == Self.greaterThan { return (named(), []) }
-                name.append(HTMLReader.lowercased(byte))
-                position += 1
-            }
-            while position < count, HTMLReader.isSpace(bytes[position]) { position += 1 }
-            guard position < count else { return nil }
-            let first = bytes[position]
-            if first == UInt8(ascii: "\"") || first == UInt8(ascii: "'") {
-                position += 1
-                while position < count {
-                    if bytes[position] == first {
-                        position += 1
-                        return (named(), value)
-                    }
-                    value.append(HTMLReader.lowercased(bytes[position]))
-                    position += 1
-                }
-                return nil
-            }
-            if first == Self.greaterThan { return (named(), []) }
-            while position < count, !HTMLReader.isSpace(bytes[position]), bytes[position] != Self.greaterThan {
-                value.append(HTMLReader.lowercased(bytes[position]))
-                position += 1
-            }
-            return position < count ? (named(), value) : nil
+            guard let attribute = scanner.attribute() else { return nil }
+            return (String(decoding: bytes[attribute.name].map(HTMLReader.lowercased), as: UTF8.self),
+                    bytes[attribute.value].map(HTMLReader.lowercased))
         }
 
         /// HTML's "extract a character encoding from a meta element": the name after `charset=`
@@ -471,14 +542,8 @@ public enum HTMLReader {
 
         /// Moves `position` to the `</name` that ends a raw text element; false when the bytes end first.
         private mutating func skipRawText(_ name: String) -> Bool {
-            let end = "</" + name
-            let length = end.utf8.count
             while position < bytes.count {
-                if bytes[position] == Self.lessThan, starts(end, at: position),
-                   position + length == bytes.count || HTMLReader.isSpace(bytes[position + length])
-                    || bytes[position + length] == Self.slash || bytes[position + length] == Self.greaterThan {
-                    return true
-                }
+                if scanner.endTag(name, at: position) { return true }
                 position += 1
             }
             return false
@@ -580,9 +645,6 @@ public enum HTMLReader {
             guard position + pattern.count <= count else { return false }
             return zip(bytes[position...], pattern).allSatisfy { lowercased($0) == $1 }
         }
-        func isNameEnd(_ byte: UInt8) -> Bool {
-            isSpace(byte) || byte == UInt8(ascii: "/") || byte == UInt8(ascii: ">")
-        }
         func replacement(_ name: String) -> String { blockReplaced.contains(name) ? "div" : "span" }
 
         while index < count {
@@ -599,47 +661,26 @@ public enum HTMLReader {
                 index = end
                 continue
             }
-            var cursor = index + 1
-            let closing = cursor < count && bytes[cursor] == UInt8(ascii: "/")
-            if closing { cursor += 1 }
-            guard cursor < count, isLetter(bytes[cursor]) else {
+            var scanner = TagScanner(bytes: bytes, position: index)
+            guard let (name, closing) = scanner.tagName() else {
                 output.append(bytes[index])
                 index += 1
                 continue
             }
             let tagStart = index
-            let nameStart = cursor
-            while cursor < count, !isNameEnd(bytes[cursor]) { cursor += 1 }
-            let name = String(decoding: bytes[nameStart..<cursor].map(lowercased), as: UTF8.self)
-            // The tag ends at the first `>` outside a quoted attribute value. A quote opens a value
-            // only right after `=` (`title=It's` is unquoted).
-            var end = cursor
-            var quote: UInt8?
-            var afterEquals = false
-            var unquotedValue = false
-            while end < count {
-                let byte = bytes[end]
-                if let open = quote {
-                    if byte == open { quote = nil }
-                } else if afterEquals, byte == UInt8(ascii: "\"") || byte == UInt8(ascii: "'") {
-                    quote = byte
-                } else if byte == UInt8(ascii: ">") {
-                    break
-                } else if isSpace(byte) {
-                    unquotedValue = false
-                } else if afterEquals {
-                    unquotedValue = true
-                }
-                if quote == nil, !isSpace(byte) { afterEquals = byte == UInt8(ascii: "=") }
-                end += 1
-            }
+            let cursor = scanner.position
+            // The tag ends at the first `>` outside a quoted attribute value (see `TagScanner`).
+            var last: TagScanner.Attribute?
+            while let attribute = scanner.attribute() { last = attribute }
+            let end = scanner.position
             guard end < count else {
                 // An unfinished tag: the rest is copied for the parser to make of it what it can.
                 output += bytes[tagStart...]
                 break
             }
             // `/>` outside an unquoted value (in `href=a/>` the slash is the value's).
-            let slash = !closing && !unquotedValue && bytes[end - 1] == UInt8(ascii: "/")
+            let slashInValue = last.map { $0.unquoted && $0.value.upperBound == end } ?? false
+            let slash = !closing && !slashInValue && bytes[end - 1] == UInt8(ascii: "/")
             // As HTML reads it, the slash makes an empty element only of a void element or in
             // foreign content (SVG, MathML, `<svg/>` itself); `<template/>` and `<nav/>` stay open
             // up to their end tags. The parser would take every `/>` as empty, so an ignored slash
@@ -695,16 +736,8 @@ public enum HTMLReader {
             }
             if isRawText {
                 // Copied as it is up to its end tag, which the loop then reads.
-                let length = name.utf8.count
-                let endTag = "</" + name
                 var close = index
-                while close < count {
-                    if bytes[close] == UInt8(ascii: "<"), starts(endTag, at: close),
-                       close + 2 + length == count || isNameEnd(bytes[close + 2 + length]) {
-                        break
-                    }
-                    close += 1
-                }
+                while close < count, !scanner.endTag(name, at: close) { close += 1 }
                 if name == "script" || name == "style" {
                     output += bytes[index..<close]
                 } else {
@@ -1116,8 +1149,7 @@ public enum PDFReader {
 
     /// A page's lines, trimmed, without the blank lines before its first or after its last text.
     static func lines(of page: String) -> [String] {
-        let lines = page.replacingOccurrences(of: "\r\n", with: "\n").replacingOccurrences(of: "\r", with: "\n")
-            .components(separatedBy: "\n").map { $0.trimmingCharacters(in: .whitespaces) }
+        let lines = DocumentText.withLFLineEndings(page).components(separatedBy: "\n").map { $0.trimmingCharacters(in: .whitespaces) }
         guard let first = lines.firstIndex(where: { !$0.isEmpty }),
               let last = lines.lastIndex(where: { !$0.isEmpty }) else { return [] }
         return Array(lines[first...last])

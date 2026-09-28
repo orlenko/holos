@@ -39,7 +39,7 @@ struct Say: AsyncParsableCommand {
     @Option(name: .shortAndLong, help: ArgumentHelp(
         "Voice name as `voiceislocal voices list` prints it, such as \"Ava (Premium)\", or its identifier.",
         valueName: "name")) var voice: String?
-    @Option(help: "Native AVSpeechUtterance rate, from 0 to 1 (default: system rate).") var rate: Float?
+    @Option(parsing: .unconditional, help: speechRateHelp, transform: parseSpeechRate) var rate: Float?
     @Option(help: "Maximum seconds to wait for another Voice is Local playback.") var maxWait: Double = 10
 
     @MainActor mutating func run() async throws {

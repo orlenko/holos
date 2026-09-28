@@ -146,6 +146,37 @@ import Testing
         // Without a mark, only UTF-8 is text.
         #expect(DocumentText.decode(Data([0xFF, 0x41])) == nil)
     }
+
+    /// Classic Mac (CR) and Windows (CRLF) line endings are made LF when the text is decoded, so
+    /// front matter, headings, and paragraphs are found in every file.
+    @MainActor @Test func everyLineEndingIsReadAsOne() throws {
+        let markdown = "---\ntitle: Front Title\nauthor: Jane\nlang: fr\n---\n\n# Heading\n\nBody text.\n\nMore text."
+        let plain = "My Article\n\nFirst paragraph.\nStill first.\n\nSecond."
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("holos-eol-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: false)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let expected = MarkdownReader.document(from: markdown)
+        #expect(expected.title == "Front Title")
+        for (index, ending) in ["\r", "\r\n"].enumerated() {
+            let data = Data(markdown.replacingOccurrences(of: "\n", with: ending).utf8)
+            #expect(DocumentText.decode(data) == markdown, "\(index)")
+            let url = folder.appendingPathComponent("mac\(index).md")
+            try data.write(to: url)
+            let document = try DocumentLoader.load(url)
+            #expect(document == expected, "\(index)")
+            #expect(document.author == "Jane", "\(index)")
+            #expect(document.language == "fr", "\(index)")
+            #expect(!ReadingScript(document: document).text.contains("title:"), "\(index)")
+            // A string (not decoded from bytes) is read the same way.
+            #expect(MarkdownReader.document(from: markdown.replacingOccurrences(of: "\n", with: ending)) == expected)
+
+            let text = folder.appendingPathComponent("mac\(index).txt")
+            try Data(plain.replacingOccurrences(of: "\n", with: ending).utf8).write(to: text)
+            #expect(try DocumentLoader.load(text) == PlainTextReader.document(from: plain), "\(index)")
+        }
+        // HTML text is decoded the same way.
+        #expect(HTMLReader.decode(Data("<p>a\r\nb\rc</p>".utf8)) == "<p>a\nb\nc</p>")
+    }
 }
 
 @Suite struct HTMLReaderTests {
@@ -509,13 +540,39 @@ import Testing
             ("<script><meta charset=windows-1252>", nil),
             // A real declaration after text or other tags still counts.
             ("<html lang=fr><head><title>T</title><meta charset=windows-1252>", .windowsCP1252),
+            // A tag name ends at "/": `<script/>` is a script (HTML ignores the slash), so what
+            // follows up to `</script>` is text.
+            ("<script/><meta charset=windows-1252></script><meta charset=utf-8>", .utf8),
+            ("<STYLE/><meta charset=windows-1252></style><meta charset=utf-8>", .utf8),
+            ("<title/ ><meta charset=windows-1252></title><meta charset=utf-8>", .utf8),
+            ("<meta/charset=windows-1252>", .windowsCP1252),
         ]
         for (html, encoding) in pages {
             #expect(declared(html) == encoding, "\(html)")
         }
-        // The case from the review: valid UTF-8 is not read as Windows-1252 mojibake.
-        let page = "<!-- <meta charset=windows-1252> --><meta charset=utf-8><p>Café</p>"
-        #expect(HTMLReader.document(from: Data(page.utf8)).sections.flatMap(\.paragraphs) == ["Café"])
+        // The cases from the reviews: valid UTF-8 is not read as Windows-1252 mojibake, and the
+        // step that prepares the page for parsing reads `<script/>` the same way.
+        for page in ["<!-- <meta charset=windows-1252> --><meta charset=utf-8><p>Café</p>",
+                     "<script/><meta charset=windows-1252></script><meta charset=utf-8><p>Café</p>"] {
+            #expect(HTMLReader.document(from: Data(page.utf8)).sections.flatMap(\.paragraphs) == ["Café"], "\(page)")
+        }
+    }
+
+    /// The prescan and `prepared` share one tokenizer: they agree on where every tag name and tag
+    /// ends, quoted `>` and self-closing slashes included.
+    @Test func prescanAndPreparationReadTagsAlike() {
+        let tags = [
+            "<script/>", "<p title='a>b'>", "<a href=a/>", "<br/>", "<div data-x = \"1\" hidden>",
+            "</div title='>'>", "<img src=x.png/>",
+        ]
+        for tag in tags {
+            var scanner = HTMLReader.TagScanner(bytes: Array(tag.utf8), position: 0)
+            let name = scanner.tagName()?.name
+            while scanner.attribute() != nil {}
+            #expect(scanner.position == tag.utf8.count - 1, "\(tag)")
+            #expect(name.map { !$0.contains("/") } == true, "\(tag)")
+        }
+        #expect(paragraphs("<p>One</p><script/>var x = '<p>Hidden</p>';</script><p>Two</p>") == ["One", "Two"])
     }
 
     /// `<meta>` attributes in every form: names and values in any case, values double-quoted,

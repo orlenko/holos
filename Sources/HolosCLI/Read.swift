@@ -39,7 +39,7 @@ struct Read: AsyncParsableCommand {
         "Voice name as `say -v '?'` or `voiceislocal voices list` prints it, such as \"Ava (Premium)\", or its identifier.",
         valueName: "name"))
     var voice: String?
-    @Option(help: "Native AVSpeechUtterance rate, from 0 to 1 (default: system rate).")
+    @Option(parsing: .unconditional, help: speechRateHelp, transform: parseSpeechRate)
     var rate: Float?
     @Option(help: "Title for the file name and the audio's metadata, instead of the document's own.")
     var title: String?
@@ -49,6 +49,13 @@ struct Read: AsyncParsableCommand {
     var play = false
     @Flag(help: "Print the title, voice, output file, chapters, and text that would be read, without rendering.")
     var printText = false
+
+    /// Settings are checked before anything is loaded or created (`--rate` as it is parsed).
+    func validate() throws {
+        if let title, AudioBookMetadata.usableTitle(title) == nil {
+            throw ValidationError("--title has no readable text.")
+        }
+    }
 
     @MainActor mutating func run() async throws {
         let address = try webAddress(source)
@@ -133,9 +140,10 @@ struct Read: AsyncParsableCommand {
         // A declared language that is not a usable tag ("english") is ignored, not trusted.
         let language = AudioBookMetadata.languageTag(document.language) ?? ReadingLanguage.detect(script.text)
         let selected = try resolveVoice(request.voice, language: language, explainDefault: true)
+        // The first title with readable text: `--title` (checked in `validate`), the document's,
+        // then the file's name.
         let metadata = AudioBookMetadata(
-            title: request.title.flatMap { $0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : $0 }
-                ?? document.title ?? fallbackName,
+            title: [request.title, document.title, fallbackName].lazy.compactMap(AudioBookMetadata.usableTitle).first,
             author: document.author, language: language)
         let name = ReadingOutput.fileName(title: metadata.title, fallback: fallbackName)
         let readings = HolosPaths.supportRoot.appendingPathComponent("Readings", isDirectory: true)
@@ -206,6 +214,20 @@ private func webAddress(_ source: String) throws -> URL? {
         throw HolosError.invalidInput("Not a valid web address: \(source)")
     }
     return url
+}
+
+let speechRateHelp = ArgumentHelp(
+    "Native AVSpeechUtterance rate, from \(SpeechRate.range.lowerBound) to \(SpeechRate.range.upperBound) (default: system rate).",
+    valueName: "rate")
+
+/// `--rate` as typed: a finite number in `SpeechRate.range` ("nan", "inf", and "-1" are refused
+/// with the range), checked while the command line is parsed, before anything is created.
+@Sendable func parseSpeechRate(_ text: String) throws -> Float {
+    do {
+        return try SpeechRate.parse(text)
+    } catch HolosError.invalidInput(let message) {
+        throw ValidationError(message)
+    }
 }
 
 /// `--voice` by name or identifier; without it, the best installed voice for `language`.

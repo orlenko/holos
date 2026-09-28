@@ -44,6 +44,17 @@ public struct AudioBookMetadata: Sendable, Equatable {
         self.comment = comment
     }
 
+    /// `title` as the file stores it (trimmed and shortened, see `AudioBookWriter.fileText`), or
+    /// nil when no readable text is left: nothing but spaces, control, or format characters.
+    public static func usableTitle(_ title: String?) -> String? {
+        guard let text = AudioBookWriter.fileText(title),
+              text.unicodeScalars.contains(where: { scalar in
+                  !scalar.properties.isWhitespace
+                      && ![.control, .format].contains(scalar.properties.generalCategory)
+              }) else { return nil }
+        return text
+    }
+
     /// `language` as a tag the file can carry: a known ISO 639 language with an optional script
     /// and region ("en", "zh-Hant-TW", "es-419"), or nil. AVFoundation raises an uncatchable
     /// exception for a tag it rejects (such as "english" from `<html lang>`), so nothing else is

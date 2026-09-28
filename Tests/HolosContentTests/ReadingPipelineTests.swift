@@ -9,6 +9,12 @@ import Testing
 @MainActor private final class FakeRenderer: ReadingAudioRenderer {
     var calls: [String] = []
     var failOnCall: Int?
+    /// The voices this renderer has; nil for any.
+    var voices: Set<String>?
+
+    func checkVoice(_ identifier: String) throws {
+        if let voices, !voices.contains(identifier) { throw HolosError.unavailable("No voice \(identifier).") }
+    }
 
     func render(text: String, voiceIdentifier: String?, rate: Float?,
                 to output: URL) async throws -> RenderedAudio {
@@ -334,6 +340,54 @@ import Testing
         let result = try await pipeline.render(script: script(2), voiceIdentifier: voice, metadata: metadata, location: inside)
         #expect(result.manifest.status == "complete")
         #expect(FileManager.default.fileExists(atPath: inside.output.path))
+    }
+
+    /// A rate `AVSpeechUtterance` cannot take (JSON cannot even save a non-finite one), a voice the
+    /// renderer lacks, a title with nothing readable, or an output that is not a .m4a fails before
+    /// anything is created: no cache, source, manifest, or lock, so nothing is left that the same
+    /// command could not start over.
+    @Test func invalidSettingsFailBeforeAnythingIsCreated() async throws {
+        let parent = try root()
+        defer { try? FileManager.default.removeItem(at: parent) }
+        let place = location(parent)
+        let renderer = FakeRenderer()
+        renderer.voices = [voice]
+        let pipeline = ReadingPipeline(renderer: renderer, joiner: FakeJoiner())
+        func expectNothingCreated(_ label: String) throws {
+            #expect(try FileManager.default.contentsOfDirectory(atPath: parent.path).isEmpty, "\(label)")
+        }
+        for rate: Float in [.nan, .infinity, -.infinity, -1, 99] {
+            for resume in [false, true] {
+                await #expect(throws: HolosError.self, "\(rate)") {
+                    try await pipeline.render(script: script(2), voiceIdentifier: voice, rate: rate, metadata: metadata,
+                                              location: place, resume: resume)
+                }
+                try expectNothingCreated("\(rate)")
+            }
+        }
+        await #expect(throws: HolosError.self) {
+            try await pipeline.render(script: script(2), voiceIdentifier: "missing.voice", metadata: metadata, location: place)
+        }
+        try expectNothingCreated("voice")
+        for title in ["", " \n\t", "\u{7}\u{200B}"] {
+            let untitled = AudioBookMetadata(title: title, author: "Author")
+            await #expect(throws: HolosError.self, "\(title.unicodeScalars.map(\.value))") {
+                try await pipeline.render(script: script(2), voiceIdentifier: voice, metadata: untitled, location: place)
+            }
+            try expectNothingCreated("title")
+        }
+        let wav = ReadingLocation(workDirectory: place.workDirectory, output: parent.appendingPathComponent("Book.wav"))
+        await #expect(throws: HolosError.self) {
+            try await pipeline.render(script: script(2), voiceIdentifier: voice, metadata: metadata, location: wav)
+        }
+        try expectNothingCreated("output")
+        #expect(renderer.calls.isEmpty)
+
+        // The limits themselves, and no title, are accepted.
+        let result = try await pipeline.render(script: script(2), voiceIdentifier: voice, rate: SpeechRate.range.upperBound,
+                                               metadata: AudioBookMetadata(title: nil), location: place)
+        #expect(result.manifest.rate == SpeechRate.range.upperBound)
+        #expect(result.manifest.status == "complete")
     }
 
     @Test func publishesWhereExclusiveRenameIsUnsupported() async throws {

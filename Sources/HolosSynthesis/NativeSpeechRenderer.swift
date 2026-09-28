@@ -40,8 +40,46 @@ public struct RenderedAudio: Codable, Sendable, Equatable {
     }
 }
 
+/// The speech rates `AVSpeechUtterance` takes, checked the same way wherever a rate comes in:
+/// the command line, the reading pipeline (before it creates anything), and the renderer.
+public enum SpeechRate {
+    public static var range: ClosedRange<Float> {
+        AVSpeechUtteranceMinimumSpeechRate...AVSpeechUtteranceMaximumSpeechRate
+    }
+
+    static var requirement: String {
+        "Speech rate must be a number from \(range.lowerBound) to \(range.upperBound)"
+    }
+
+    /// Fails unless `rate` is nil (the system rate) or a finite number in `range`.
+    public static func validate(_ rate: Float?) throws {
+        guard let rate else { return }
+        guard rate.isFinite, range.contains(rate) else {
+            throw HolosError.invalidInput("\(requirement); \(rate) is not.")
+        }
+    }
+
+    /// A rate as typed (`--rate 0.5`): a finite decimal number in `range`. "nan", "inf", and
+    /// numbers too large for a `Float` are refused.
+    public static func parse(_ text: String) throws -> Float {
+        let trimmed = text.trimmingCharacters(in: .whitespaces)
+        guard let rate = Float(trimmed), rate.isFinite else {
+            throw HolosError.invalidInput("\(requirement); \"\(text)\" is not.")
+        }
+        try validate(rate)
+        return rate
+    }
+}
+
 @MainActor public final class NativeSpeechRenderer {
     public init() {}
+
+    /// Fails unless a voice with `identifier` is installed.
+    public func checkVoice(_ identifier: String) throws {
+        guard AVSpeechSynthesisVoice(identifier: identifier) != nil else {
+            throw HolosError.unavailable("Speech voice is unavailable: \(identifier)")
+        }
+    }
 
     public static func voices() -> [VoiceDescriptor] {
         AVSpeechSynthesisVoice.speechVoices().map { voice in
@@ -96,12 +134,7 @@ public struct RenderedAudio: Codable, Sendable, Equatable {
         guard ["wav", "caf", "m4a"].contains(ext) else {
             throw HolosError.invalidInput("Unsupported speech output format .\(ext); use wav, caf, or m4a.")
         }
-        if let rate {
-            guard rate.isFinite, rate >= AVSpeechUtteranceMinimumSpeechRate,
-                  rate <= AVSpeechUtteranceMaximumSpeechRate else {
-                throw HolosError.invalidInput("Speech rate must be between \(AVSpeechUtteranceMinimumSpeechRate) and \(AVSpeechUtteranceMaximumSpeechRate).")
-            }
-        }
+        try SpeechRate.validate(rate)
         let voice: AVSpeechSynthesisVoice
         if let voiceIdentifier {
             guard let selected = AVSpeechSynthesisVoice(identifier: voiceIdentifier) else {

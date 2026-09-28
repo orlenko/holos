@@ -102,6 +102,15 @@ public struct ReadingResult: Sendable, Equatable {
 @MainActor public protocol ReadingAudioRenderer {
     func render(text: String, voiceIdentifier: String?, rate: Float?, to output: URL)
         async throws -> RenderedAudio
+    /// Fails unless the renderer can speak with the voice `identifier`. Checked before a reading
+    /// creates anything.
+    func checkVoice(_ identifier: String) throws
+}
+
+extension ReadingAudioRenderer {
+    /// A renderer that cannot tell which voices it has accepts every one here; `render` fails
+    /// for one it lacks.
+    public func checkVoice(_ identifier: String) throws {}
 }
 
 extension NativeSpeechRenderer: ReadingAudioRenderer {}
@@ -163,14 +172,11 @@ public struct AudioBookJoiner: ReadingAudioJoiner {
                        maxPartUTF16Units: Int = defaultMaxPartUTF16Units) async throws -> ReadingResult {
         let directory = location.workDirectory
         let output = location.output
-        guard directory.isFileURL, output.isFileURL else {
-            throw HolosError.invalidInput("Reading locations must be file URLs.")
-        }
+        // Every setting is checked before anything (lock, cache, source, manifest) is created, so
+        // a bad one never leaves a cache behind that cannot be resumed.
+        try validate(script: script, voiceIdentifier: voiceIdentifier, rate: rate, metadata: metadata,
+                     location: location, resume: resume)
         let text = script.text
-        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            throw HolosError.invalidInput("Reading source is empty.")
-        }
-        try Self.checkLocation(directory: directory, output: output, resume: resume)
         let writerLock = try ReadingDirectoryLock.acquire(for: directory)
         let outputLock = try ReadingDirectoryLock.acquire(output: output, beside: directory)
         defer { withExtendedLifetime((writerLock, outputLock)) {} }
@@ -347,6 +353,32 @@ public struct AudioBookJoiner: ReadingAudioJoiner {
         try save(manifest, to: manifestURL)
         removeParts(in: directory)
         return ReadingResult(output: output, manifest: manifest)
+    }
+
+    /// Fails unless every setting of a reading is usable, creating nothing: the text is not
+    /// empty; the rate is nil or a finite rate `AVSpeechUtterance` takes (see `SpeechRate`); the
+    /// renderer has the voice; a title has readable text (see `AudioBookMetadata.usableTitle`);
+    /// the locations are file URLs, the output a `.m4a`; and both folders can take their files
+    /// (see `checkLocation`).
+    func validate(script: ReadingScript, voiceIdentifier: String, rate: Float?, metadata: AudioBookMetadata,
+                  location: ReadingLocation, resume: Bool) throws {
+        let directory = location.workDirectory
+        let output = location.output
+        guard directory.isFileURL, output.isFileURL else {
+            throw HolosError.invalidInput("Reading locations must be file URLs.")
+        }
+        guard output.pathExtension.lowercased() == ReadingAudioFormat.fileExtension else {
+            throw HolosError.invalidInput("Reading output must be a .\(ReadingAudioFormat.fileExtension) file: \(output.path)")
+        }
+        guard !script.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw HolosError.invalidInput("Reading source is empty.")
+        }
+        try SpeechRate.validate(rate)
+        try renderer.checkVoice(voiceIdentifier)
+        if let title = metadata.title, AudioBookMetadata.usableTitle(title) == nil {
+            throw HolosError.invalidInput("Reading title has no readable text.")
+        }
+        try Self.checkLocation(directory: directory, output: output, resume: resume)
     }
 
     /// Checks both folders before anything is rendered, so a destination that cannot take the
