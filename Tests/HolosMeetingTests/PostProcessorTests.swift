@@ -194,7 +194,7 @@ func missingDiarizerSkipsSpeakersButExports() async throws {
     let diarize = try #require(postProcessorStage(record, .diarize))
     #expect(diarize.result == .skipped)
     #expect(diarize.message == SpeakerAnalysis.modelsMissing)
-    #expect(record.message == "No speaker labels: speaker models are not installed. Install them from Setup, or run voiceislocal setup --speakers.")
+    #expect(record.message == "No speaker labels: speaker models are not installed. Install them from Settings, or run voiceislocal setup --speakers.")
     #expect(postProcessorStage(record, .export)?.result == .succeeded)
     #expect(try SessionSpeakerStore.readHead(session: session) == nil)
     #expect(try SessionSpeakerStore.runIDs(session: session).isEmpty)

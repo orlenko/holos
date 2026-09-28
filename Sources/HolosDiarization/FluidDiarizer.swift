@@ -231,7 +231,7 @@ public actor FluidDiarizer: SpeakerDiarizer {
             log.error("Speaker models failed to load: \(String(describing: type(of: error)), privacy: .public)")
             throw HolosError.unavailable(
                 "The speaker models could not be loaded (\(error.localizedDescription)). "
-                    + "Reinstall them from Setup, or run voiceislocal setup --speakers.")
+                    + "Reinstall them from Settings, or run voiceislocal setup --speakers.")
         }
     }
 

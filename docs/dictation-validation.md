@@ -22,17 +22,17 @@ noninteractive packaging/read-only permission-status check. It does not prompt,
 record, install a keyboard event tap, inspect a focused field, or use the
 clipboard. Launch with `open` only when ready for an interactive test.
 
-On first launch, the Setup Assistant opens (run it again with **Setup Assistant…** in
-the menu); its checks are under [Setup Assistant](#setup-assistant) below. Later
-launches, and **Skip — Show All Settings**, open the full Voice is Local Setup window
-(**Setup…** in the menu). Use it to grant Microphone and Accessibility access
-explicitly (Input Monitoring is not needed; its row appears only if macOS refuses
-the hold-to-talk key with Accessibility on), pick the **Dictation language** (English (Canada) by default; the menu's
-**Language** submenu has the same list), and install Apple's speech model for it; each
-row updates live, and its button opens the matching System Settings pane. A new
-language applies from the next dictation; when its model is missing, dictation turns
-off until it is installed. The asset action may
-download Apple's model. Then enable dictation from the window or the menu. The default user-selectable shortcut is **Right Option**;
+On first launch, the Setup Assistant opens (run it again with **Run Setup Assistant…**
+in Settings); its checks are under [Setup Assistant](#setup-assistant) below. Later
+launches, and **Skip — Show All Settings**, open the main window on **Settings**
+(**Settings…** ⌘, in the menu). Use its Permissions card to grant Microphone and
+Accessibility access explicitly (Input Monitoring is not needed; its row appears only if
+macOS refuses the hold-to-talk key with Accessibility on); in the Dictation card pick the
+**Dictation language** (English (Canada) by default) and the hold-to-talk shortcut, and
+install Apple's speech model for the language; each row updates live, and its button
+opens the matching System Settings pane. A new language applies from the next dictation;
+when its model is missing, dictation turns off until it is installed. The asset action
+may download Apple's model. Then turn dictation on in Settings or the menu. The default user-selectable shortcut is **Right Option**;
 **Control–Option–Space** is the alternate. Once enabled, hold the chosen shortcut,
 wait for “Listening” in the non-activating preview, speak, then release. Releasing
 during startup produces a retry message instead of a partial insertion. Esc or
@@ -49,10 +49,10 @@ after waking. There is no automatic login launch or background installation.
 None of these checks has been run yet. To see the assistant as a new user would, run
 `defaults delete ca.orlenko.holos.app setupAssistantDone` with Voice is Local quit, and
 remove Voice is Local from Microphone and Accessibility in System Settings; or use
-**Setup Assistant…** in the menu, which starts at Welcome without either.
+**Run Setup Assistant…** in Settings, which starts at Welcome without either.
 
-1. **Welcome**: Start goes to the next page; **Skip — Show All Settings** opens the
-   full Setup window, and the next launch does not show the assistant.
+1. **Welcome**: Start goes to the next page; **Skip — Show All Settings** opens
+   Settings in the main window, and the next launch does not show the assistant.
 2. **Language and microphone**: Next stays off until the microphone is allowed
    (**Allow Microphone** shows macOS's prompt once; when access was turned off before,
    the button reads Open Settings). Clicking Next starts the speech model download, and
@@ -78,9 +78,102 @@ remove Voice is Local from Microphone and Accessibility in System Settings; or u
 **Input Monitoring is not needed** (unverified on the target Mac until this is run):
 in System Settings → Privacy & Security → Input Monitoring, switch Voice is Local off
 (or remove it), quit and reopen Voice is Local, then dictate: the hold-to-talk key
-should still work, and Setup should show no Input Monitoring row. If instead the menu
-says macOS refused the hold-to-talk shortcut although Accessibility is on, Setup shows
+should still work, and Settings should show no Input Monitoring row. If instead the menu
+says macOS refused the hold-to-talk shortcut although Accessibility is on, Settings shows
 an Input Monitoring row; switch it on there, quit and reopen, and note it here.
+
+## Main window and history
+
+None of these checks has been run yet; nothing of the main window has been seen on
+screen. Rebuild and relaunch with `./scripts/restart-app.sh` (only when no meeting is
+recording), then:
+
+1. **Open with ⌘0**: open the menu bar menu and choose **Open Voice is Local** (⌘0): one
+   window, about 1280 × 800 the first time, with the sidebar (Dictation: History,
+   Corrections; Meetings: Meetings, People; Listen: Reading; Settings) and the status card
+   at its bottom ("Dictation ready" and the current message; "Dictation paused during
+   meeting recording" while a meeting records). Resize it, close it, reopen it: same size
+   and place. The app shows in the Dock and ⌘-Tab while it is open. Check light and dark
+   mode.
+2. **⌘1–⌘5 and ⌘,**: with the window key, each switches section (History, Corrections,
+   Meetings, People, Reading, Settings), and the menu bar shows Voice is Local, Edit, Go,
+   and Window menus with those items (Settings… under Voice is Local, Find… under Edit). With the window closed and another Voice is Local window key (the
+   Setup Assistant, Review), ⌘1 opens it on History.
+3. **⌘F** in History focuses the search field; typing filters by text and app; Escape
+   in the field clears it. Tab and ⇧Tab reach the sidebar, the list, and the detail's
+   buttons; ↑↓ move in the list; Return moves to the text; ⌫ asks before deleting.
+   With Full Keyboard Access on, every button and pop-up is reachable. VoiceOver reads
+   each row (app, time, badge, text) and the status card.
+4. **A dictation is recorded**: dictate a sentence with a filler ("um") into TextEdit,
+   one into Terminal, and one into a field that cannot be written (a web page's
+   read-only area, or switch apps while speaking). History shows each under Today with
+   the time, the app (TextEdit, Terminal, …), a two-line preview, and **Fixed** (filler
+   removed or a correction applied) or **Not inserted**. The detail shows the full text,
+   **As heard, before fixes** with the changed words marked, Result ("Inserted into
+   TextEdit", "Typed into Terminal", "Not inserted — … Use Copy."), Language, Fixes, and
+   Length. With Apple Intelligence's fix on, Fixes counts the words it changed.
+5. **Copy only on request**: after each dictation, the clipboard still holds what it
+   held before. **Copy** (or ⌘C with the list focused) and **Copy As Heard** (⇧⌘C) put
+   that text there; nothing else does. **Correct…** (⌘E) opens Corrections with that
+   dictation's text.
+6. **Password fields are not recorded**: try to dictate into a password field (and with
+   Terminal's Secure Keyboard Entry on); History gets no entry.
+7. **Retention Off stops recording**: Settings › History and privacy › Keep dictations
+   → Off; when dictations are kept it asks whether to clear them (try Keep Them). Dictate:
+   no new entry, and History says it is off. Set it back to 30 days.
+8. **Clear History**: **Clear History…** (History's footer or Settings) asks first, then
+   empties the list; `voiceislocal history list` prints "No dictations in the history."
+   `ls -l ~/Library/Application\ Support/Holos/History` shows `dictations.jsonl` as
+   `-rw-------`.
+9. **Menu**: the menu bar menu shows the status line, the dictation toggle, Copy Result /
+   Copy Original / Discard Result only while a result is kept, Correct Last Dictation…
+   (opens Corrections with the last dictation), the meeting lines, Open Voice is Local
+   ⌘0, History, Meetings, Settings… ⌘,, About, and Quit. The language and shortcut are
+   changed in Settings, not the menu.
+10. **Hosted sections**: Meetings (Review…, Recover…, Quick Look of a transcript, Save
+    Transcript As… as a sheet, Delete Meeting… with ⌫) and People (Rename…, Merge,
+    Forget…) behave as their windows did. While a meeting records or is processed (by
+    the app or `voiceislocal` in Terminal), Delete Meeting… is disabled and ⌫ on it only
+    beeps, with no confirmation.
+
+## Dictation audio and Run Again
+
+Not run yet. With History on (30 days) and Settings › History and privacy › **Keep the
+audio of dictations (for Run Again)** on (the default):
+
+1. **Audio is kept**: dictate a sentence with a word the recognizer gets wrong (for
+   example "Ubuntu") into TextEdit. In History, the dictation's detail shows **Play**
+   with "0:00 / 0:04" (its length) and **Run Again**. `ls -l ~/Library/Application\
+   Support/Holos/History/audio` shows `<id>.m4a` as `-rw-------` (the ID is the one
+   `voiceislocal history list --json` prints) and no `.partial.m4a` left. Settings shows
+   "Dictation audio uses … on this Mac".
+2. **Play it**: **Play** plays what you said, from the start (the position counts up;
+   the button becomes **Pause**). With the list focused, Space pauses and plays again.
+   Selecting another dictation, or another section, stops it.
+3. **Run Again after a correction**: in Corrections, teach the misheard phrase → the
+   right word. Back in History, select the dictation and press ⌘R (or **Run Again**).
+   After a few seconds the Run Again box shows Heard then / Heard now, Written then /
+   Written now with the differing words marked, the steps ("Corrections: “a boon to” →
+   “Ubuntu”"; Apple Intelligence off or its change), and "Different: Corrections".
+   Nothing was typed into the frontmost app and the clipboard still holds what it held.
+   **Copy New Result** copies the new text; **Update History…** asks, then the
+   dictation's text in History becomes the new text (its audio stays).
+4. **Terminal**: `voiceislocal history rerun latest` prints the same comparison;
+   `voiceislocal history rerun latest --json --no-ai-fix` prints it as JSON without the
+   fix; `voiceislocal history rerun --all --since 1d --json` lists each dictation of the
+   last day with `changed` and `changedBy`, and dictations without audio as skipped.
+   (The CLI needs the language's speech model installed for itself: if it says the
+   speech assets are missing, run `voiceislocal setup --locale <language>` first.)
+5. **Off stops keeping audio**: untick **Keep the audio of dictations**; it asks whether
+   to also delete the audio already kept; choose **Keep It**. Dictate: the new dictation
+   has "No audio was kept for this dictation." and no new file appears in `audio/`. Tick
+   it again, untick it and choose **Delete Audio**: `audio/` is empty, the older
+   dictations say no audio was kept, and their text stays. Tick it again.
+6. **Cancelled and refused dictations leave no audio**: press Escape while dictating,
+   and try a password field: no file appears in `audio/`.
+7. **Delete and Clear remove audio**: Delete one dictation (⌫): its `.m4a` is gone.
+   **Clear History…**: `audio/` is empty. `voiceislocal history clear --yes` also
+   removes the audio.
 
 ## Result and privacy behavior
 
@@ -114,7 +207,7 @@ field or Secure Keyboard Entry is refused.
 
 Hesitation sounds ("um", "uh", "ah", "erm", "hmm") and the commas around them are
 removed before corrections are applied, unless **Remove filler words** is turned
-off in the Setup window. "mm", "hm", and "er" are kept because they collide with
+off in Settings. "mm", "hm", and "er" are kept because they collide with
 units and abbreviations. French dictation removes "euh", "heu", "hum", "hmm", and
 "bah" instead, and keeps words such as "ah", "ben", "bon", "hein", "genre", and
 "tsé", which carry meaning. Other languages keep every word.
@@ -139,12 +232,15 @@ replaced, discarded, or the app quits). Only a later dictation that produces a
 result replaces it: recognized text, or text left unwritten. A press that is
 cancelled, released before Listening, or recognizes nothing leaves the earlier
 result, its menu items and its ten-minute expiry as they were. The system clipboard is overwritten only when
-**Copy Result** or **Copy Original** is chosen. No raw dictation audio
-is saved.
+**Copy Result** or **Copy Original** is chosen, or **Copy** / **Copy As Heard** / **Copy New Result** in History. Dictation audio
+is kept only with its History record (unless Settings turns it off; [Dictation audio and Run Again](#dictation-audio-and-run-again)); the text of finished dictations is kept in History on this Mac for 30 days
+unless Settings says otherwise ([Main window and history](#main-window-and-history)).
 
 ## Corrections
 
-**Correct Last Dictation…** in the menu opens the last transcript as Voice is Local wrote it.
+**Correct Last Dictation…** in the menu opens the main window's Corrections section with
+the last transcript as Voice is Local wrote it (History's **Correct…** opens it with the
+chosen dictation instead).
 With **Fix misheard words with Apple Intelligence** on, that is the fixed text, so
 learning picks up only your own edits; **Copy Original (As Heard)** still has the
 text as recognized.
@@ -153,7 +249,7 @@ versions and keeps short word swaps (up to a few words; insertions, deletions, a
 longer rewrites are ignored). A misheard single word that is itself a dictionary
 word is kept with a neighbouring word, so "bull" → "pull" becomes "bull request" →
 "pull request" instead of rewriting every "bull". Pairs can also be added or removed
-by hand in the same window. They are stored in
+by hand in the same section. They are stored in
 `~/Library/Application Support/Holos/corrections.json`, one list shared by every
 dictation language.
 

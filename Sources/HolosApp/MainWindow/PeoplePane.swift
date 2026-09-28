@@ -4,26 +4,21 @@ import HolosMeeting
 import HolosSpeakers
 import HolosStorage
 
-/// The People window (docs/meeting-design.md §5.9): the people Holos knows by name and their opt-in voice samples,
+/// People (docs/meeting-design.md §5.9): the people Holos knows by name and their opt-in voice samples,
 /// with "Remember voices", per-person suggestions, rename, merge, and the forget actions. People without samples are
 /// listed whatever the setting. Every store read and write runs off the main actor through `VoiceProfileService`;
-/// the window shows names and counts, never a voiceprint.
+/// the section shows names and counts, never a voiceprint. The main window's People section; it rereads the store
+/// whenever it comes on screen or the window becomes key.
 @MainActor
-final class PeopleWindowController: NSObject, NSWindowDelegate, NSTableViewDataSource, NSTableViewDelegate {
-    static let shared = PeopleWindowController()
-
-    /// Called with true when the window opens and false when it closes (the app's Dock presence).
-    var onVisibilityChange: ((Bool) -> Void)?
-
+final class PeoplePane: NSViewController, NSTableViewDataSource, NSTableViewDelegate, MainSectionContent {
     private enum Column: String {
         case person, summary, meeting, date, condition, speech, forget
     }
 
     private let store: SpeakerProfileStore
     private let sessionsRoot: URL
-    private let window: NSWindow
     private let rememberBox = NSButton(checkboxWithTitle: "Remember voices of people I name", target: nil, action: nil)
-    private let peopleTable = NSTableView()
+    private let peopleTable = KeyTableView()
     private let samplesTable = NSTableView()
     private let nameLabel = NSTextField(labelWithString: "")
     private let renameButton = NSButton(title: "Rename…", target: nil, action: nil)
@@ -35,7 +30,6 @@ final class PeopleWindowController: NSObject, NSWindowDelegate, NSTableViewDataS
     private var database = SpeakerProfileDatabase()
     private var people: [SpeakerProfile] = []
     private var busy = false
-    private var positioned = false
     private let dateFormatter: DateFormatter = {
         let formatter = DateFormatter()
         formatter.dateStyle = .medium
@@ -46,33 +40,21 @@ final class PeopleWindowController: NSObject, NSWindowDelegate, NSTableViewDataS
     init(store: SpeakerProfileStore = SpeakerProfileStore(), sessionsRoot: URL = HolosPaths.sessions) {
         self.store = store
         self.sessionsRoot = sessionsRoot
-        window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 680, height: 480),
-                          styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: true)
-        super.init()
-        window.title = "People"
-        window.isReleasedWhenClosed = false
-        window.contentMinSize = NSSize(width: 600, height: 400)
-        window.delegate = self
-        window.contentView = makeContent()
+        super.init(nibName: nil, bundle: nil)
+        view = makeContent()
+        peopleTable.onDelete = { [weak self] in self?.forgetPerson() }
+        peopleTable.setAccessibilityLabel("People")
         updateControls()
     }
 
-    var isVisible: Bool { window.isVisible }
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
 
-    func show() {
-        if !positioned {
-            window.center()
-            positioned = true
-        }
-        NSApplication.shared.activate()
-        window.makeKeyAndOrderFront(nil)
-        onVisibilityChange?(true)
-        refresh()
-    }
+    func sectionDidShow() { refresh() }
 
-    func windowDidBecomeKey(_ notification: Notification) { refresh() }
+    func sectionWindowDidBecomeKey() { refresh() }
 
-    func windowWillClose(_ notification: Notification) { onVisibilityChange?(false) }
+    var preferredFirstResponder: NSView? { peopleTable }
 
     // MARK: - Layout
 
@@ -227,6 +209,17 @@ final class PeopleWindowController: NSObject, NSWindowDelegate, NSTableViewDataS
         return row >= 0 && row < people.count ? people[row] : nil
     }
 
+    /// The selected person, for an action on them: nil (with a beep) while a change is saving, when their buttons
+    /// are off, so ⌫ and the other ways in follow the buttons.
+    private var actionablePerson: SpeakerProfile? {
+        guard let person = selectedPerson else { return nil }
+        guard !busy else {
+            NSSound.beep()
+            return nil
+        }
+        return person
+    }
+
     private func updateControls() {
         rememberBox.state = database.rememberVoices ? .on : .off
         rememberBox.isEnabled = !busy
@@ -312,7 +305,7 @@ final class PeopleWindowController: NSObject, NSWindowDelegate, NSTableViewDataS
         let turningOn = rememberBox.state == .on
         rememberBox.state = database.rememberVoices ? .on : .off
         if turningOn {
-            perform("Remember voices is on.") { store, root in
+            performChange("Remember voices is on.") { store, root in
                 try VoiceProfileService.setRemember(true, forgetExisting: false, store: store, sessionsRoot: root)
             }
             return
@@ -334,7 +327,7 @@ final class PeopleWindowController: NSObject, NSWindowDelegate, NSTableViewDataS
         alert.addButton(withTitle: "Forget")
         alert.addButton(withTitle: "Keep")
         let forget = alert.runModal() == .alertFirstButtonReturn
-        perform(forget ? "Remember voices is off; every voice was forgotten." : "Remember voices is off.") { store, root in
+        performChange(forget ? "Remember voices is off; every voice was forgotten." : "Remember voices is off.") { store, root in
             try VoiceProfileService.setRemember(false, forgetExisting: forget, store: store, sessionsRoot: root)
         }
     }
@@ -342,11 +335,11 @@ final class PeopleWindowController: NSObject, NSWindowDelegate, NSTableViewDataS
     @objc private func toggleSuggestions() {
         guard let person = selectedPerson else { return }
         let on = suggestBox.state == .on
-        perform(nil) { store, _ in try VoiceProfileService.setSuggestions(on, profileID: person.id, store: store) }
+        performChange(nil) { store, _ in try VoiceProfileService.setSuggestions(on, profileID: person.id, store: store) }
     }
 
     @objc private func renamePerson() {
-        guard let person = selectedPerson else { return }
+        guard let person = actionablePerson else { return }
         let alert = NSAlert()
         alert.messageText = "Rename \(person.displayName)"
         alert.informativeText = "Meetings keep the name the person had when they were named there."
@@ -359,11 +352,11 @@ final class PeopleWindowController: NSObject, NSWindowDelegate, NSTableViewDataS
         guard alert.runModal() == .alertFirstButtonReturn else { return }
         let name = field.stringValue
         guard SpeakerEditor.cleanName(name) != nil else { return }
-        perform(nil) { store, _ in try VoiceProfileService.rename(profileID: person.id, to: name, store: store) }
+        performChange(nil) { store, _ in try VoiceProfileService.rename(profileID: person.id, to: name, store: store) }
     }
 
     @objc private func mergePerson(_ sender: NSPopUpButton) {
-        guard let person = selectedPerson, let target = sender.selectedItem?.representedObject as? String,
+        guard let person = actionablePerson, let target = sender.selectedItem?.representedObject as? String,
               let other = people.first(where: { $0.id == target }) else { return }
         let alert = NSAlert()
         alert.messageText = "Merge \(person.displayName) into \(other.displayName)?"
@@ -372,13 +365,14 @@ final class PeopleWindowController: NSObject, NSWindowDelegate, NSTableViewDataS
         alert.addButton(withTitle: "Merge")
         alert.addButton(withTitle: "Cancel")
         guard alert.runModal() == .alertFirstButtonReturn else { return }
-        perform("Merged \(person.displayName) into \(other.displayName).") { store, _ in
+        performChange("Merged \(person.displayName) into \(other.displayName).") { store, _ in
             try VoiceProfileService.merge(profileID: person.id, into: other.id, store: store)
         }
     }
 
+    /// The Forget… button, and ⌫ in the list (refused while the button is off).
     @objc private func forgetPerson() {
-        guard let person = selectedPerson else { return }
+        guard let person = actionablePerson else { return }
         let alert = NSAlert()
         alert.messageText = "Forget \(person.displayName)?"
         alert.informativeText = "Voice is Local forgets this person and their \(person.samples.count) voice "
@@ -388,13 +382,13 @@ final class PeopleWindowController: NSObject, NSWindowDelegate, NSTableViewDataS
         alert.addButton(withTitle: "Cancel")
         alert.alertStyle = .warning
         guard alert.runModal() == .alertFirstButtonReturn else { return }
-        perform("Forgot \(person.displayName).") { store, root in
+        performChange("Forgot \(person.displayName).") { store, root in
             try VoiceProfileService.forget(profileID: person.id, store: store, sessionsRoot: root)
         }
     }
 
     @objc private func forgetSample(_ sender: NSButton) {
-        guard let person = selectedPerson, sender.tag >= 0, sender.tag < person.samples.count else { return }
+        guard let person = actionablePerson, sender.tag >= 0, sender.tag < person.samples.count else { return }
         let sample = person.samples[sender.tag]
         let alert = NSAlert()
         alert.messageText = "Forget the voice sample from “\(sample.sessionName)”?"
@@ -402,12 +396,13 @@ final class PeopleWindowController: NSObject, NSWindowDelegate, NSTableViewDataS
         alert.addButton(withTitle: "Forget")
         alert.addButton(withTitle: "Cancel")
         guard alert.runModal() == .alertFirstButtonReturn else { return }
-        perform("Forgot one voice sample of \(person.displayName).") { store, root in
+        performChange("Forgot one voice sample of \(person.displayName).") { store, root in
             try VoiceProfileService.forget(sampleID: sample.id, store: store, sessionsRoot: root)
         }
     }
 
     @objc private func forgetAllVoices() {
+        guard !busy else { return }
         let samples = database.sampleCount
         let alert = NSAlert()
         alert.messageText = "Forget all voices?"
@@ -418,7 +413,7 @@ final class PeopleWindowController: NSObject, NSWindowDelegate, NSTableViewDataS
         alert.addButton(withTitle: "Cancel")
         alert.alertStyle = .warning
         guard alert.runModal() == .alertFirstButtonReturn else { return }
-        perform("Forgot every voice.") { store, root in
+        performChange("Forgot every voice.") { store, root in
             try VoiceProfileService.forgetAll(store: store, sessionsRoot: root)
         }
     }
@@ -428,7 +423,7 @@ final class PeopleWindowController: NSObject, NSWindowDelegate, NSTableViewDataS
     /// rather than reported by an action of this window. Only the derived kind is recomputed by a refresh.
     private var derivedStatus = false
 
-    private func perform(_ done: String?, _ change: @escaping @Sendable (SpeakerProfileStore, URL) throws -> Void) {
+    private func performChange(_ done: String?, _ change: @escaping @Sendable (SpeakerProfileStore, URL) throws -> Void) {
         guard !busy else { return }
         busy = true
         updateControls()

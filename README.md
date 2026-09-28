@@ -61,8 +61,8 @@ keeps the same bundle ID, settings, sessions, corrections, and people, so they c
 over. Because the app's path changed, macOS may ask for its permissions again. Once
 `build/VoiceIsLocal.app` works, delete `build/Holos.app`.
 On first launch, dictation is disabled and the Setup Assistant opens (run it again
-with **Setup Assistant…** in the menu, or click **Skip — Show All Settings** to go
-straight to the full Setup window). It goes one page at a time: pick the dictation
+with **Run Setup Assistant…** in Settings, or click **Skip — Show All Settings** to go
+straight to Settings in the main window). It goes one page at a time: pick the dictation
 language (by default the supported language closest to your macOS preferred languages
 and region, English (Canada) when none of them is supported; any language Apple's speech
 transcriber supports, such as French (Canada)) and allow the Microphone; Apple's speech
@@ -74,10 +74,10 @@ Reopen, and the assistant's **Reopen Voice is Local** reopens the app once at th
 and shows what is set up. Dictation turns on as soon as the microphone, Accessibility
 and the speech model allow it. Input Monitoring is not asked for: the hold-to-talk
 key's event tap runs on Accessibility (still to be confirmed on a real Mac; see the
-validation guide). Only if macOS refuses the tap anyway does Setup (and the
+validation guide). Only if macOS refuses the tap anyway do Settings (and the
 assistant) show an Input Monitoring row. An install that was already set up never sees
-the assistant; later launches open the full Setup window (**Setup…** in the menu) while
-dictation is off. The default hold-to-talk choice
+the assistant; later launches open the main window on Settings (**Settings…** ⌘, in the
+menu) while dictation is off. The default hold-to-talk choice
 is Right Option; Control–Option–Space is available as an alternate. The menu bar
 app shows a live preview, and releasing the shortcut finalizes one utterance.
 See the [dictation validation guide](docs/dictation-validation.md) before relying
@@ -86,11 +86,11 @@ on insertion into other apps.
 The app also records meetings from the menu bar: **Start Meeting Recording…**, then
 Pause, Add Marker, Show Live Transcript, and **Stop and Save…**. Every meeting records
 the system default microphone and everything the Mac plays (the other side of a call, a
-video), and labels speakers on both. There is no meeting type to choose. Setup's System
-audio row grants the permission for the computer's audio; without it a meeting records
-the microphone only and the menu says so. Setup's collapsed **Advanced** section has
-"Record the computer's audio (system sound) in meetings" (on by default); turned off,
-meetings record the microphone only. The recorder is the
+video), and labels speakers on both. There is no meeting type to choose. The System
+audio row in Settings › Permissions grants the permission for the computer's audio;
+without it a meeting records the microphone only and the menu says so. Settings ›
+Meetings has "Record the computer's audio (system sound) in meetings" (on by default);
+turned off, meetings record the microphone only. The recorder is the
 bundled `voiceislocal` tool (`VoiceIsLocal.app/Contents/MacOS/voiceislocal`, which `build-app.sh` now
 builds and signs) running as a child of the app: it keeps recording if the app quits
 or crashes, and the app finds it again on relaunch, as it does a meeting started from
@@ -110,12 +110,12 @@ message says so. Dictation keeps its one language. The recorder's log is
 `defaults write ca.orlenko.holos.app meetingRecorderMode inProcess` records inside
 the app instead. Dictation is paused while a meeting records. If a permission prompt
 is open when you choose Stop Recording, the recorder stops once the prompt is
-answered. **Meetings…** lists recordings and can recover them, label their speakers,
-open or save the transcript, delete the audio or the whole meeting, and clean up
-leftover renders. Setup has a "Speaker labels" row that installs the speaker models
-(about 21 MB). Voice is Local relabels a meeting automatically when its labelling was
-interrupted (at most twice per meeting, within 7 days). **People…** lists the people
-you have named and their remembered voices (below). When the Mac's speakers play a call,
+answered. **Meetings** (⌘3 in the main window) lists recordings and can recover them,
+label their speakers, open or save the transcript, delete the audio or the whole meeting,
+and clean up leftover renders. Settings › Meetings has a "Speaker labels" row that
+installs the speaker models (about 21 MB). Voice is Local relabels a meeting automatically
+when its labelling was interrupted (at most twice per meeting, within 7 days). **People**
+(⌘4) lists the people you have named and their remembered voices (below). When the Mac's speakers play a call,
 labelling drops the microphone's echo of it (below); nothing warns about it.
 
 **Review…** in Meetings (or double-clicking a labelled meeting, or the
@@ -133,6 +133,55 @@ is refused and the window shows the current labels. The footer box "Learn voices
 I name in this meeting" decides whether naming a person also learns their voice. Delete
 Meeting can also forget the voice samples learned from that meeting. See the
 [meeting validation guide](docs/meeting-validation.md) for the manual checks.
+
+## The main window
+
+**Open Voice is Local** (⌘0) in the menu bar menu opens one window with a sidebar:
+
+| Section | Key | What it does |
+| --- | --- | --- |
+| History | ⌘1 | Dictations kept on this Mac, grouped by day, with search (⌘F). The selected one shows its text, the text as heard before fixes (changed words marked), where it went, its language, what was fixed, and its length. Copy (⌘C; for a partly written dictation, only the part that was not written, as Copy Result had it), Copy As Heard (⇧⌘C), Correct… (⌘E), Delete (⌫, asks first); its audio plays (▶, Space in the list) and Run Again (⌘R) recognizes it again with today's settings and compares; Clear History… in the footer. |
+| Corrections | ⌘2 | Fix a dictation and learn the word swaps, and edit the learned list (was the Corrections window). **Correct Last Dictation…** in the menu opens it with the last dictation, History's Correct… with the chosen one. |
+| Meetings | ⌘3 | The saved meetings (was the Meetings window). Return opens Review, ⌫ is Delete Meeting…. |
+| People | ⌘4 | People you have named and their voice samples (was the People window). |
+| Reading | ⌘5 | Coming soon; use `voiceislocal read` meanwhile. |
+| Settings | ⌘, | Permissions, Dictation (on/off, shortcut, language, speech model, fillers, Apple Intelligence fix, preview), Meetings (system audio, speaker labels), History and privacy (how long, Clear History…, keep the audio and its disk use), and **Run Setup Assistant…** (was the Setup window). |
+
+A card at the bottom of the sidebar shows the dictation status ("Dictation ready", or
+"Dictation paused during meeting recording"). The window remembers its size and place;
+↑↓ move in lists, Return opens, Tab reaches the sidebar, list and detail, and every
+control is a standard one, so Full Keyboard Access and VoiceOver work. The Setup
+Assistant, the meeting start panel, the live transcript, Review (Name Speakers), and the
+dictation preview stay separate windows.
+
+The menu bar menu is short: the status line, the dictation toggle, Copy Result / Copy
+Original / Discard Result while a result is kept, Correct Last Dictation…, the meeting
+lines, then Open Voice is Local, History, Meetings, Settings…, About, and Quit. The
+dictation language and shortcut are chosen in Settings.
+
+**History** keeps each finished dictation that produced text: the text as written (or as
+offered for Copy), the text as heard, the app it was for, the language, what happened to
+it, what was fixed, and its length. It lives only in
+`~/Library/Application Support/Holos/History/dictations.jsonl` (readable only by you), for
+30 days unless Settings › History and privacy says 7 days, Forever, or Off (Off stops
+recording and offers to clear what is kept). Nothing is sent anywhere or logged, a
+dictation refused in a password field is never recorded, and nothing reaches the clipboard
+unless you choose Copy. `voiceislocal history list [--json] [--limit N]` and
+`voiceislocal history clear --yes` do the same from Terminal.
+
+History also keeps each dictation's **audio** (AAC, about 4 KB a second, in
+`History/audio/<id>.m4a`, readable only by you) unless Settings › History and privacy ›
+**Keep the audio of dictations (for Run Again)** is off; Settings shows the space it takes,
+and it is deleted with its dictation (Delete, Clear History, and the 7- or 30-day sweep).
+In History, ▶ (or Space in the list) plays it, and **Run Again** (⌘R) recognizes it again
+with today's language, corrections, filler removal, and Apple Intelligence fix, then shows
+the text as heard and as written, then and now, with the changed words marked and which
+step changed what. Nothing is typed or copied; **Copy New Result** copies it on request and
+**Update History…** keeps it as the dictation's text. From Terminal,
+`voiceislocal history rerun <id|latest> [--json] [--no-ai-fix] [--language en-US]` prints
+the same comparison, and `voiceislocal history rerun --all [--since 7d] --json` reports,
+for every dictation with audio, whether its text changes and which step changed it, to try a
+new correction or the fix on your real dictations.
 
 ## Quick start
 
@@ -168,7 +217,9 @@ voiceislocal="$BIN_DIR/voiceislocal"
 "$voiceislocal" say "The build is ready."      # native speech playback
 printf '%s\n' "Piped text" | "$voiceislocal" say
 "$voiceislocal" say --output greeting.m4a "Hello."
-"$voiceislocal" read ./article.md              # local UTF-8 text/Markdown to AAC playlist
+"$voiceislocal" read ./article.md              # one .m4a named after the title, to send to a phone
+"$voiceislocal" read ./paper.pdf -o ~/Desktop --voice "Ava (Premium)"
+"$voiceislocal" voices list --language en      # installed voices and their quality
 ```
 
 Recording sources are `mic`, `system`, and `mic+system`. macOS may request
@@ -284,17 +335,31 @@ good), keeping the transcript, speaker labels, and exports. Both refuse while th
 session is recording or another Voice is Local command is working on it.
 
 `say` accepts text arguments or UTF-8 stdin and can play speech or save `.m4a`,
-`.wav`, or `.caf`. `read` accepts a local UTF-8 text/Markdown file, `-` for stdin, or an
-`https://` web address; Markdown is read verbatim. A web page is loaded in an offscreen web
-view that keeps no cookies or history, and Mozilla Readability picks out the article: title,
-byline, headings, paragraphs, and list items (code blocks, tables, figures, and reference
-sections are skipped). `--print-text` prints what would be read without rendering. Pages
-behind a sign-in or paywall fail; save their text to a file instead. PDF/OCR are not
-implemented.
+`.wav`, or `.caf`. `read` turns a local .txt, .md, .html, .pdf, .rtf, .rtfd, .docx,
+.doc, or .odt file, `-` for stdin, or an `https://` web address into one AAC `.m4a`
+(mono, about 14 MB per hour) named after the document's title, with a chapter at each
+heading. A web page is loaded in an offscreen web view that keeps no cookies or history,
+and Mozilla Readability picks out the article: title, byline (the file's author), headings,
+paragraphs, and list items (code blocks, tables, figures, and reference sections are
+skipped). Pages behind a sign-in or paywall fail; save their text to a file instead. The
+file plays on iPhone, Android, Windows, and in browsers; send it with AirDrop, Messages, or
+Mail. MP3 is not offered: macOS has no MP3 encoder. Without `--output` the file goes in
+Application Support/Holos/Readings/<UUID>/; `--output` takes a `.m4a` path or a directory.
+The voice is the best installed one for the text's language (Premium, then Enhanced);
+`--voice` takes a name as `say -v '?'` or `voices list` prints it, such as "Ava (Premium)".
+If no Premium voice is installed, download one in System Settings › Accessibility › Spoken
+Content › System Voice › Manage Voices. `--print-text` prints the title, voice, output file,
+chapters, and text that would be read, without rendering or creating anything. Ctrl-C stops a reading (or the page load)
+and keeps its rendered parts; it continues with the same command plus `--resume` (a web
+page is loaded again, and a page that changed since is refused). While a reading runs, a
+hidden `.holos-output-<hash>.lock` beside `--output` reserves the file, so a second reading of
+it is refused; a reservation a killed reading left is taken over once that process is gone, and
+one made on another computer (or one this user cannot remove) is refused with its path, to be
+deleted by hand when no reading of that file is running. OCR is not supported yet.
 
 ```sh
 "$voiceislocal" read https://en.wikipedia.org/wiki/Speech_synthesis --print-text
-"$voiceislocal" read https://en.wikipedia.org/wiki/Speech_synthesis --play
+"$voiceislocal" read https://en.wikipedia.org/wiki/Speech_synthesis -o ~/Desktop --play
 ```
 
 Sessions are portable `.holos` directories. Inspect, recover, and retranscribe an

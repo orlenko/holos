@@ -12,7 +12,7 @@ import HolosCore
 extension MeetingStartSettings {
     /// The menu line of a meeting that records the microphone alone because the System audio permission is missing.
     public static let systemAudioNotAllowedNotice =
-        "Recording the microphone only — allow System audio in Setup to include the computer's sound."
+        "Recording the microphone only — allow System audio in Settings to include the computer's sound."
 
     /// The settings of a meeting started from the app. `recordSystemAudio` is the Advanced setting;
     /// `systemAudioAllowed` is `CGPreflightScreenCaptureAccess()` when the meeting starts (never a prompt).
@@ -26,7 +26,7 @@ extension MeetingStartSettings {
 
     /// The start panel's "Records" line: what a meeting started now records.
     public static func sourcesDescription(recordSystemAudio: Bool, systemAudioAllowed: Bool) -> String {
-        if !recordSystemAudio { return "Microphone only — the computer's audio is off in Setup › Advanced." }
+        if !recordSystemAudio { return "Microphone only — the computer's audio is off in Settings › Meetings." }
         return systemAudioAllowed ? "Microphone and the computer's audio" : systemAudioNotAllowedNotice
     }
 

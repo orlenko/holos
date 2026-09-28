@@ -228,7 +228,7 @@ private func isFailed(_ state: MeetingState) -> String? {
 /// (MeetingControllerTests `finishedMeetingWithoutLabelsOffersNothing`, `finishedMeetingWithLabelsOffersNaming`).
 @Test func partialExitSaysWhyAndLeavesTheLabelCheckToTheController() {
     var reducer = activeReducer()
-    let message = "No speaker labels: speaker models are not installed. Install them from Setup, or run voiceislocal setup --speakers."
+    let message = "No speaker labels: speaker models are not installed. Install them from Settings, or run voiceislocal setup --speakers."
     let exit = RecorderExit(archiveStatus: ArchiveStatus.complete, reason: .requested, postprocessing: .partial,
                             postprocessingMessage: message)
     let effects = reducer.reduce(read(.exited, after: 30, exit: exit, liveness: .exited))

@@ -119,7 +119,7 @@ public enum FluidModels {
 
     /// What `diarize` and `engineInfo` throw when the models are not verified.
     public static let missingModelsMessage =
-        "Speaker models are missing or damaged. Install them from Setup, or run voiceislocal setup --speakers."
+        "Speaker models are missing or damaged. Install them from Settings, or run voiceislocal setup --speakers."
     /// Printed by `voiceislocal setup --speakers` after a verified install.
     public static let readyMessage = "Ready: speaker models (FluidAudio \(FluidDiarizer.engineVersion), "
         + "speaker-diarization-coreml@\(revision.prefix(12)))."

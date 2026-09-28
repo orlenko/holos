@@ -14,7 +14,7 @@ and compare `en-US` if the user's recordings justify it.
    learning and constrained language-model assistance.
 4. **Meeting reliability:** dual-source recording, recoverable text, playback and
    edits; automatic speaker labels follow the diarization decision and evaluation.
-5. **Reading workflow:** short speech can ship early; article playlists build on the
+5. **Reading workflow:** short speech can ship early; article audio files build on the
    proven renderer and extraction adapter independently of dictation/meetings.
 
 Start with vertical demonstrations rather than implementing every library in full.
@@ -190,15 +190,16 @@ several unrelated external APIs. The coordinator owns shared contract changes.
   callers do not overlap playback; canceled output is marked incomplete; unavailable
   voices give a clear error. Compare listening quality with the selected baseline.
 
-### T13 — Documents and playlists
+### T13 — Documents and reading files
 
 - **Depends on:** T12; F5 before URL extraction.
 - **Owns:** HolosContent, reading workflow, read command.
-- **Output:** Text/stdin/Markdown adapter first, then URL adapter; semantic chunks,
-  source capture, ordered M3U8, manifest, resume, explicit partial-result status.
+- **Output:** Local-file adapters (text, Markdown, HTML, PDF text, RTF/Word/OpenDocument)
+  producing a `ReadableDocument`, then a URL adapter; semantic chunks, source capture,
+  manifest, resume, explicit partial-result status; one `.m4a` with metadata and chapters.
 - **Accept:** Reconstruct source coverage from chunk references; no dropped/repeated
-  paragraphs; missing chunks remain visible and resume successfully; playback order
-  is deterministic; changed voice/settings invalidate prior rendered parts. PDF/OCR
+  paragraphs; missing chunks remain visible and resume successfully; part order
+  is deterministic; changed voice/settings invalidate prior rendered parts. OCR
   is a separate later task, not hidden in this one.
 
 ### T14 — Installation and acceptance run

@@ -161,6 +161,19 @@ import Testing
     #expect(queue.items == [.init(correction: .init(heard: "Bull", meant: "Pull"), edit: editB)])
 }
 
+@Test func pendingEditKeepsOnlyForTheDictationItCameFrom() {
+    // An older dictation with the same text as the last one is a different dictation.
+    let last = UUID(), older = UUID()
+    let edit = DeclinedCorrectionQueue.PendingEdit(recognized: "Bull request", edited: "Pull request",
+                                                   dictation: older)
+    #expect(edit.transcript(for: last, whenLastRecognized: "Bull request") == nil)
+    #expect(edit.transcript(for: older, whenLastRecognized: "Bull request") == "Pull request")
+    #expect(edit.transcript(for: older, whenLastRecognized: "Something newer") == nil)
+    #expect(edit.transcript(for: nil, whenLastRecognized: "Bull request") == nil)
+    let unidentified = DeclinedCorrectionQueue.PendingEdit(recognized: "Bull request", edited: "Pull request")
+    #expect(unidentified.transcript(for: last, whenLastRecognized: "Bull request") == nil)
+}
+
 @Test func replacingEditsInPlaceAndDropsTheSameHeardPhrase() {
     var list = CorrectionList(entries: [.init(heard: "Gwen", meant: "Gwyn"),
                                         .init(heard: "bull request", meant: "pull request"),

@@ -259,10 +259,21 @@ Hardware-facing and cross-app acceptance remain pending.
   Playback uses the saved chunks at their session times (off after Delete Audio). The
   footer box "Learn voices of people I name in this meeting" decides whether naming learns
   a voice. Delete Meeting can also forget the voice samples learned from that meeting.
-- `voices list` and `say` provide native voice discovery, playback, and `.m4a`,
-  `.wav`, or `.caf` export. Text comes from arguments or UTF-8 stdin.
-- `read` renders a local UTF-8 text/Markdown file or stdin as an ordered AAC
-  playlist, with resume and optional playback. Markdown is read verbatim.
+- `voices list` and `say` provide native voice discovery (with each voice's quality, and a
+  hint to download Premium voices when none is installed), playback, and `.m4a`, `.wav`,
+  or `.caf` export. Text comes from arguments or UTF-8 stdin. `--voice` takes a name as
+  `say -v '?'` prints it ("Ava (Premium)") or an identifier.
+- `read` turns a local .txt, .md, .html, .pdf, .rtf, .rtfd, .docx, .doc, or .odt file,
+  stdin, or an `https://` web article (Mozilla Readability in an offscreen web view; the
+  byline becomes the author) into one AAC `.m4a` (mono, 22.05 kHz, about 32 kbit/s, about 14 MB per hour) named
+  after the document's title, with title/author metadata and a chapter at each heading.
+  Markdown markup is dropped; code blocks and images are skipped. The default voice is the
+  best installed voice for the text's language. `--output` takes a `.m4a` path or a
+  directory; `--resume` continues an interrupted reading (a web page is loaded again, and a page
+  whose text changed is refused); `--play` plays the file;
+  `--print-text` shows what would be read. The sample output was checked with `afinfo` and
+  `ffprobe`; playback on an iPhone of this command's output has not been tried yet (a
+  `say`-made file with the same settings played there).
 - `scripts/build-app.sh` builds and ad-hoc signs `build/VoiceIsLocal.app`, an accessory
   menu bar app. Dictation is disabled on first launch; the user explicitly grants
   Microphone and Accessibility, picks the dictation language (by default the supported one closest to
@@ -277,10 +288,10 @@ Hardware-facing and cross-app acceptance remain pending.
   microphone, then Accessibility, then the permissions that need a reopen, then a
   re-check) that downloads the speech and speaker models in the background, reopens the
   app once at the end when Screen & System Audio Recording was requested, and shows a
-  one-page check after the reopen. **Setup Assistant…** in the menu runs it again;
+  one-page check after the reopen. **Run Setup Assistant…** in Settings runs it again;
   installs that were already set up never see it (docs/design.md "First-launch setup").
   Input Monitoring is no longer required: the hotkey's active event tap is gated on
-  Accessibility only, and Setup shows an Input Monitoring row only when macOS refuses
+  Accessibility only, and Settings shows an Input Monitoring row only when macOS refuses
   the tap with Accessibility granted. The decisions are unit-tested; the windows and
   the reopen have not been run on screen yet.
 - Finalized phrases are written into the focused field while the user speaks: through
@@ -305,15 +316,60 @@ Hardware-facing and cross-app acceptance remain pending.
   [dictation validation](dictation-validation.md).
   Dictation audio is not saved.
 - Dictation text is cleaned before it is written: filler words are removed (English and
-  French lists; off in Setup), then learned corrections are applied. **Correct Last
-  Dictation…** learns word swaps from the user's edits, and the Corrections window adds,
-  edits and removes them. An opt-in Setup option, off by default, fixes misheard words
+  French lists; off in Settings), then learned corrections are applied. **Correct Last
+  Dictation…** learns word swaps from the user's edits, and the Corrections section adds,
+  edits and removes them. An opt-in Settings option, off by default, fixes misheard words
   in each chunk with Apple's on-device Foundation Models before it is written; a guard
   keeps the original text when the reply changes more than a few words, undoes a
   learned correction, replaces a word with one that does not sound like it (unless a
   learned pair whose heard phrase was said there taught it), or changes punctuation other than commas and apostrophes (the
   last piece of a dictation may also change its closing `.`, `!`, `?` or `…`). **Copy Original** keeps
   the text as heard.
+- Main window (docs/design.md "Main window"): **Open Voice is Local** (⌘0) opens one
+  window with a sidebar: History (⌘1), Corrections (⌘2), Meetings (⌘3), People (⌘4),
+  Reading (⌘5, a placeholder pointing to `voiceislocal read`), and Settings (⌘,), with a
+  dictation status card at the sidebar's bottom. Corrections, Meetings, and People are the
+  former windows' contents hosted as sections; Settings replaces the Setup window
+  (Permissions, Dictation, Meetings, History and privacy, Run Setup Assistant…), and every
+  "Setup…" path opens it. The menu bar menu is slimmed to the dictation status and toggle,
+  the kept result's Copy items, Correct Last Dictation…, the meeting block, and the window's
+  items; the language and shortcut submenus moved to Settings. The Setup Assistant, the
+  meeting start panel, the live transcript, Review, and the dictation preview stay separate
+  windows. Built and compiled only: nothing of the main window has been seen on screen yet.
+- Dictation history (docs/design.md "Dictation history"): each finished dictation that
+  produced text is kept in `Application Support/Holos/History/dictations.jsonl` (0600, one
+  JSON line each) with its app, language, text as written and as heard, fixes, outcome,
+  length, and word count, for 30 days by default (Settings: Off, 7 days, 30 days, Forever;
+  swept at launch and daily). History lists them by day with search, shows the words the
+  fixes changed, and offers Copy, Copy As Heard, Correct…, Delete, and Clear History….
+  Refused (secure-field) and cancelled dictations are not recorded, the text is never
+  logged, and only an explicit Copy writes to the clipboard. `voiceislocal history list
+  [--json] [--limit N]` and `history clear --yes` script it. Reads stream the file line by
+  line (Forever never becomes unreadable); a partly written dictation keeps the rest Copy
+  Result offered, which History's Copy copies; quitting waits (bounded) for queued history
+  writes. The store, the in-app history service (flush, reloads merged with changes made
+  meanwhile), and the record rules are unit-tested; recording from live dictations has not
+  been checked on screen.
+- Dictation audio and Run Again (docs/design.md "Dictation audio and Run Again"): each
+  recorded dictation's microphone audio, the frames the recognizer took, is kept as
+  `History/audio/<id>.m4a` (AAC mono 16 kHz, ~32 kbit/s, 0600) and linked from its record,
+  unless Settings › History and privacy › Keep the audio of dictations is off (it shows the
+  disk use; turning it off offers to delete the audio kept). Cancelled, refused, and
+  unrecorded dictations leave none; Delete, Clear History, and the retention sweep remove it
+  with the text, and sweeps also remove audio without a record and stale partial files.
+  History plays it (▶/⏸, Space) and Run Again (⌘R) recognizes it again with today's
+  language, corrections, filler removal, and Apple Intelligence fix, then compares then and
+  now word by word and names the steps that behaved differently; Copy New Result and Update
+  History… act only on request. `voiceislocal history rerun <id|latest>` and `rerun --all
+  [--since 7d] --json` do the same from Terminal. The writer (a synthesized tone through
+  format changes), the store's audio lifecycle (append, Delete, Clear, sweep, orphans,
+  partials, removing all audio), the service's handling of the setting and History Off, the
+  frame tap, the text steps with a stand-in fix, the comparison, and the JSON shapes are
+  unit-tested. The end-to-end test that renders a sentence with AVSpeechSynthesizer and
+  recognizes it again skips when the test process has no en-US speech model (it skipped on
+  the development Mac, where the test runner and the CLI report that model as supported, not
+  installed).
+  Nothing of it has been seen on screen or tried with real dictation yet.
 
 The CLI bundle embeds microphone and speech-recognition permission usage strings.
 `scripts/build.sh` ad-hoc signs the built executable to give macOS a stable CLI
@@ -430,6 +486,13 @@ Still requiring real-machine or user-data validation:
 - Run the [Setup Assistant checks](dictation-validation.md#setup-assistant), including
   dictating with Input Monitoring switched off for Voice is Local (expected to work with
   Accessibility alone; not yet confirmed on the target Mac).
+- Run the [main window and history checks](dictation-validation.md#main-window-and-history):
+  the window's layout in light and dark mode, ⌘0, ⌘1–⌘5, ⌘, and ⌘F, Full Keyboard Access
+  and VoiceOver, a dictation recorded in History with its app, language, and text as
+  heard, Copy only on request, retention Off, and Clear History. None has been run yet.
+- Run the [dictation audio and Run Again checks](dictation-validation.md#dictation-audio-and-run-again):
+  audio kept and played, Run Again after changing a correction, Off stops keeping audio,
+  Clear History removes it. Not run yet.
 - Exercise capture failure/relaunch/recovery on hardware (`kill -9` a recorder, then
   `session recover`: the loss should be at most one 30 s chunk) and run multi-hour
   soak tests for memory growth, drift, interruptions, and audio continuity. The
@@ -441,8 +504,8 @@ Still requiring real-machine or user-data validation:
 - Run the menu bar meeting checks in the [meeting validation guide](meeting-validation.md)
   (permission prompts and ownership, an app or recorder killed mid-meeting, dictation
   paused during a meeting, quitting while recording, installing speaker models from
-  Setup, automatic relabel after a shutdown, a meeting on the laptop speakers with people
-  in the room and on a call, the Advanced setting and a missing System audio permission,
+  Settings, automatic relabel after a shutdown, a meeting on the laptop speakers with people
+  in the room and on a call, the system audio setting and a missing System audio permission,
   naming the speakers of the 89-minute Otter meeting and of a real 3 h meeting in the
   review window in under 10 minutes; the review window's layout, keys, and playback have
   not been seen on screen yet) and the
@@ -474,11 +537,11 @@ Still requiring real-machine or user-data validation:
   other condition (room vs call) are less reliable. Speaker counts are approximate:
   quieter or briefer speakers can merge into others. Nothing deletes old meetings
   automatically.
-- PDF text extraction and OCR. `read` supports local UTF-8 text/Markdown, stdin,
-  and `https://` web articles (Mozilla Readability in an offscreen web view). Pages
-  behind a sign-in or paywall fail with a hint to save their text to a file; `http://`
-  is refused; code blocks, tables, and figures are not read; some bylines and "min
-  read" lines leak into the spoken text.
+- OCR. `read` supports local files, stdin, and `https://` web articles; a scanned PDF
+  without a text layer is refused. PDF paragraphs and Word/RTF headings are guessed from
+  line lengths and fonts. Web pages behind a sign-in or paywall fail with a hint to save
+  their text to a file; `http://` is refused; code blocks, tables, and figures are not
+  read; some bylines and "min read" lines leak into the spoken text.
 - Broader install/update/uninstall packaging and the T14 acceptance run.
 
 `reference-data/` is for private, user-provided evaluation material and is excluded

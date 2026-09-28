@@ -370,7 +370,8 @@ import WebKit
 
     /// Walks article HTML and returns `[{level, text}]`: level 1–6 for headings, 0 for paragraphs. Block elements
     /// (paragraphs, list items, quotations, divisions) and `<br>` end a paragraph; code blocks, tables, figures,
-    /// captions, media, and forms are skipped; so are superscripts that hold only bracketed reference marks, one or
+    /// captions, media, and forms are skipped, and so is all of a closed `<details>` but its first `<summary>`; so
+    /// are superscripts that hold only bracketed reference marks, one or
     /// several with optional separators: `<sup>[1]</sup>`, `<sup><a>[1]</a><a>[2]</a></sup>`, `<sup>[1], [2]</sup>`,
     /// `<sup>[a][note 3]</sup>`, `<sup>[citation needed]</sup>`.
     ///
@@ -416,9 +417,18 @@ import WebKit
       };
       let halted = false;
       const walk = (node) => {
+        // A closed disclosure (`details` without `open`) shows only its first `summary` child.
+        const closed = node.nodeType === Node.ELEMENT_NODE && node.tagName.toUpperCase() === "DETAILS"
+          && !node.hasAttribute("open");
+        const summary = closed
+          ? Array.from(node.children).find((element) => element.tagName.toUpperCase() === "SUMMARY") : null;
         for (const child of node.childNodes) {
           if (halted) return;
           if (record && child === record.until) { halted = true; return; }
+          if (closed && child !== summary) {
+            if (record && record.until && child.contains(record.until)) { halted = true; return; }
+            continue;
+          }
           if (child.nodeType === Node.TEXT_NODE || child.nodeType === Node.CDATA_SECTION_NODE) {
             buffer += child.data;
             if (record) nodes.push(child);

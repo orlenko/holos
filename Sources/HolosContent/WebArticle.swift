@@ -56,14 +56,31 @@ public struct WebArticle: Sendable, Equatable {
     /// Words in the headings and paragraphs, not counting the title and byline.
     public var wordCount: Int { blocks.reduce(0) { $0 + Self.words(in: $1.text) } }
 
-    /// The text to speak: the title, the byline, then every heading and paragraph, each separated by a blank line.
-    public var spokenText: String {
-        var parts = [title]
-        if let byline {
-            parts.append(byline.lowercased().hasPrefix("by ") ? byline : "By \(byline)")
+    /// The article as a document to read, exactly like a local file: the title, the byline as the author ("By "
+    /// dropped; the author goes in the audio file's metadata and is not spoken, as for local files), the declared
+    /// language, and a section, so a chapter, at each heading; paragraphs before the first heading form an untitled
+    /// first section. The site name is not carried: the audio file has no tag for it that players show.
+    public var document: ReadableDocument {
+        var builder = ReadableDocument.Builder()
+        for block in blocks {
+            switch block {
+            case .heading(let level, let text): builder.heading(text, level: level)
+            case .paragraph(let text): builder.paragraph(text)
+            }
         }
-        parts += blocks.map(\.text)
-        return parts.filter { !$0.isEmpty }.joined(separator: "\n\n")
+        return ReadableDocument(title: title, author: byline.flatMap(Self.author(fromByline:)), language: language,
+                                sections: builder.sections)
+    }
+
+    /// The text as `voiceislocal read` speaks it: the title (unless the article opens with it), then every heading
+    /// and paragraph, each separated by a blank line (see `ReadingScript`).
+    public var spokenText: String { ReadingScript(document: document).text }
+
+    /// The author's name in a byline: "By Jane Doe" and "by Jane Doe" give "Jane Doe"; nil when nothing is left.
+    static func author(fromByline byline: String) -> String? {
+        let name = byline.lowercased().hasPrefix("by ") ? String(byline.dropFirst(3)) : byline
+        let clean = sanitized(name)
+        return clean.isEmpty ? nil : clean
     }
 
     /// Builds an article from raw extracted pieces: sanitizes every text, keeps only the blocks that are spoken (see

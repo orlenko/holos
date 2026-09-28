@@ -9,11 +9,12 @@ import UniformTypeIdentifiers
 /// The saved meetings (docs/meeting-design.md §5.8, §4.13): a table of the session catalog and the actions on the
 /// selected meeting. Recover, Label Speakers, and the deletions run `voiceislocal` commands through the app delegate, which
 /// also opens Review (PR9, §5.10); the rest (Show in Finder, the Quick Look preview, Save Transcript As…, Clean Up)
-/// happen here. Double-click opens Review for a labelled meeting and the preview otherwise. Refreshes every 2 s
-/// while visible; the listing is read off the main actor.
+/// happen here. Double-click (or Return) opens Review for a labelled meeting and the preview otherwise; ⌫ is Delete
+/// Meeting…. The main window's Meetings section; it refreshes every 2 s while on screen, reading the listing off the
+/// main actor.
 @MainActor
-final class MeetingsWindow: NSObject, NSWindowDelegate, NSTableViewDataSource, NSTableViewDelegate,
-    @preconcurrency QLPreviewPanelDataSource, QLPreviewPanelDelegate {
+final class MeetingsPane: NSViewController, NSTableViewDataSource, NSTableViewDelegate,
+    @preconcurrency QLPreviewPanelDataSource, QLPreviewPanelDelegate, MainSectionContent {
     enum Action { case recover, labelSpeakers, deleteAudio, deleteMeeting }
 
     private enum Column: String, CaseIterable {
@@ -37,9 +38,7 @@ final class MeetingsWindow: NSObject, NSWindowDelegate, NSTableViewDataSource, N
     /// `MeetingController.beginUsing` and `endUsing`: Clean Up and Save Transcript As… hold the meeting while they run.
     private let beginUsing: (String, String) -> Bool
     private let endUsing: (String) -> Void
-    private let onClose: () -> Void
-    private let window: PreviewingWindow
-    private let table = NSTableView()
+    private let table = KeyTableView()
     private let footer = NSTextField(labelWithString: "")
     private let statusLabel = NSTextField(labelWithString: "")
     private var buttons: [String: NSButton] = [:]
@@ -49,7 +48,6 @@ final class MeetingsWindow: NSObject, NSWindowDelegate, NSTableViewDataSource, N
     private var pendingSelection: String?
     private var refreshTask: Task<Void, Never>?
     private var loading = false
-    private var positioned = false
     private var previewURL: URL?
     private let dateFormatter: DateFormatter = {
         let formatter = DateFormatter()
@@ -58,27 +56,18 @@ final class MeetingsWindow: NSObject, NSWindowDelegate, NSTableViewDataSource, N
         return formatter
     }()
 
-    var isVisible: Bool { window.isVisible }
+    /// On screen: the window is visible and shows this section.
+    private var onScreen = false
 
     init(root: URL, perform: @escaping (Action, SessionSummary) -> Void,
          openReview: @escaping (SessionSummary) -> Void,
-         beginUsing: @escaping (String, String) -> Bool, endUsing: @escaping (String) -> Void,
-         onClose: @escaping () -> Void) {
+         beginUsing: @escaping (String, String) -> Bool, endUsing: @escaping (String) -> Void) {
         self.root = root
         self.perform = perform
         self.openReview = openReview
         self.beginUsing = beginUsing
         self.endUsing = endUsing
-        self.onClose = onClose
-        window = PreviewingWindow(contentRect: NSRect(x: 0, y: 0, width: 760, height: 460),
-                                  styleMask: [.titled, .closable, .miniaturizable, .resizable],
-                                  backing: .buffered, defer: true)
-        super.init()
-        window.title = "Voice is Local Meetings"
-        window.isReleasedWhenClosed = false
-        window.contentMinSize = NSSize(width: 640, height: 320)
-        window.delegate = self
-        window.previewController = self
+        super.init(nibName: nil, bundle: nil)
 
         for column in Column.allCases {
             let tableColumn = NSTableColumn(identifier: NSUserInterfaceItemIdentifier(column.rawValue))
@@ -92,6 +81,9 @@ final class MeetingsWindow: NSObject, NSWindowDelegate, NSTableViewDataSource, N
         table.allowsMultipleSelection = false
         table.target = self
         table.doubleAction = #selector(openSelected)
+        table.onReturn = { [weak self] in self?.openSelection() }
+        table.onDelete = { [weak self] in self?.deleteMeeting() }
+        table.setAccessibilityLabel("Meetings")
         let scroll = NSScrollView()
         scroll.documentView = table
         scroll.hasVerticalScroller = true
@@ -123,16 +115,21 @@ final class MeetingsWindow: NSObject, NSWindowDelegate, NSTableViewDataSource, N
         let content = NSView()
         content.addSubview(stack)
         NSLayoutConstraint.activate([
-            stack.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 16),
-            stack.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -16),
+            stack.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 20),
+            stack.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -20),
             stack.topAnchor.constraint(equalTo: content.topAnchor, constant: 16),
             stack.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -16),
             scroll.widthAnchor.constraint(equalTo: stack.widthAnchor),
             scroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 200),
         ])
-        window.contentView = content
+        view = content
         updateButtons()
     }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
+
+    var preferredFirstResponder: NSView? { table }
 
     private func button(_ title: String, _ action: Selector) -> NSButton {
         let button = NSButton(title: title, target: self, action: action)
@@ -141,23 +138,29 @@ final class MeetingsWindow: NSObject, NSWindowDelegate, NSTableViewDataSource, N
         return button
     }
 
-    func show(selecting sessionID: String?) {
+    /// Selects the meeting once the list is read (nil keeps the selection).
+    func select(sessionID: String?) {
         pendingSelection = sessionID
-        if !positioned {
-            window.center()
-            positioned = true
-        }
-        NSApplication.shared.activate()
-        window.makeKeyAndOrderFront(nil)
+        refresh()
+    }
+
+    func sectionDidShow() {
+        onScreen = true
         refresh()
         refreshTask?.cancel()
         refreshTask = Task { [weak self] in
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(2))
-                guard let self, self.window.isVisible else { return }
+                guard let self, self.onScreen, !Task.isCancelled else { return }
                 self.refresh()
             }
         }
+    }
+
+    func sectionDidHide() {
+        onScreen = false
+        refreshTask?.cancel()
+        refreshTask = nil
     }
 
     /// The meetings the app is working on (`MeetingController.sessionsInUse`).
@@ -282,13 +285,30 @@ final class MeetingsWindow: NSObject, NSWindowDelegate, NSTableViewDataSource, N
 
     // MARK: - Buttons
 
+    /// What `MeetingActionPolicy` enables for `summary` now, the rules of the commands behind the actions. The
+    /// buttons show it, and every way to an action (button, ⌫, Return, double-click) checks it again when used.
+    private func enabledActions(_ summary: SessionSummary?) -> Set<MeetingActionPolicy.Action> {
+        let hasExport = summary.map { Self.isRegularFile(SessionPaths.export("md", in: $0.directory)) } ?? false
+        return MeetingActionPolicy.enabled(summary, inUse: summary.map { running[$0.id] != nil } ?? false,
+                                           hasExport: hasExport)
+    }
+
+    /// The selected meeting, when `action` is enabled for it; else nil, and a keyboard use beeps.
+    private func selection(for action: MeetingActionPolicy.Action) -> SessionSummary? {
+        guard let summary = selectedSession else { return nil }
+        guard enabledActions(summary).contains(action) else {
+            NSSound.beep()
+            updateButtons()
+            return nil
+        }
+        return summary
+    }
+
     /// The buttons follow `MeetingActionPolicy`, the rules of the commands behind them.
     private func updateButtons() {
         let summary = selectedSession
         buttons["Review…"]?.isEnabled = summary.map(canReview) ?? false
-        let hasExport = summary.map { Self.isRegularFile(SessionPaths.export("md", in: $0.directory)) } ?? false
-        let enabled = MeetingActionPolicy.enabled(summary, inUse: summary.map { running[$0.id] != nil } ?? false,
-                                                  hasExport: hasExport)
+        let enabled = enabledActions(summary)
         let titles: [(String, MeetingActionPolicy.Action)] = [
             ("Recover…", .recover), ("Label Speakers", .labelSpeakers), ("Show in Finder", .showInFinder),
             ("Open Transcript", .openTranscript), ("Save Transcript As…", .saveTranscript),
@@ -324,13 +344,24 @@ final class MeetingsWindow: NSObject, NSWindowDelegate, NSTableViewDataSource, N
     }
 
     @objc private func review() {
-        guard let summary = selectedSession, canReview(summary) else { return }
+        guard let summary = selectedSession else { return }
+        guard canReview(summary) else {
+            NSSound.beep()
+            return
+        }
         openReview(summary)
     }
 
     /// Double-click: Review for a labelled meeting, else the transcript preview.
     @objc private func openSelected() {
-        guard let summary = selectedSession, table.clickedRow >= 0 else { return }
+        guard table.clickedRow >= 0 else { return }
+        openSelection()
+    }
+
+    /// Return, or a double-click: Review for a labelled meeting, else the transcript preview (when Open Transcript is
+    /// enabled; otherwise a beep, as for any action that is off).
+    private func openSelection() {
+        guard let summary = selectedSession else { return }
         if canReview(summary) {
             openReview(summary)
         } else {
@@ -338,28 +369,30 @@ final class MeetingsWindow: NSObject, NSWindowDelegate, NSTableViewDataSource, N
         }
     }
 
-    @objc private func recover() { act(.recover) }
+    @objc private func recover() { act(.recover, .recover) }
 
-    @objc private func labelSpeakers() { act(.labelSpeakers) }
+    @objc private func labelSpeakers() { act(.labelSpeakers, .labelSpeakers) }
 
-    @objc private func deleteAudio() { act(.deleteAudio) }
+    @objc private func deleteAudio() { act(.deleteAudio, .deleteAudio) }
 
-    @objc private func deleteMeeting() { act(.deleteMeeting) }
+    /// The button, and ⌫ in the list: refused (with a beep) whenever the button is off, for example while another
+    /// process holds the meeting.
+    @objc private func deleteMeeting() { act(.deleteMeeting, .deleteMeeting) }
 
-    private func act(_ action: Action) {
-        guard let summary = selectedSession else { return }
+    private func act(_ action: Action, _ policy: MeetingActionPolicy.Action) {
+        guard let summary = selection(for: policy) else { return }
         perform(action, summary)
         updateButtons()
     }
 
     @objc private func showInFinder() {
-        guard let summary = selectedSession else { return }
+        guard let summary = selection(for: .showInFinder) else { return }
         NSWorkspace.shared.activateFileViewerSelecting([summary.directory])
     }
 
     /// A Quick Look preview of exports/transcript.md (read-only; Save Transcript As… gives an editable copy).
     @objc private func openTranscript() {
-        guard let summary = selectedSession else { return }
+        guard let summary = selection(for: .openTranscript) else { return }
         let url = SessionPaths.export("md", in: summary.directory)
         guard Self.isRegularFile(url) else { return }
         previewURL = url
@@ -367,14 +400,14 @@ final class MeetingsWindow: NSObject, NSWindowDelegate, NSTableViewDataSource, N
         if panel.isVisible {
             panel.reloadData()
         } else {
-            window.makeKeyAndOrderFront(nil)
+            view.window?.makeKeyAndOrderFront(nil)
             panel.makeKeyAndOrderFront(nil)
         }
     }
 
     /// Renders the chosen format from the session (off the main actor) and writes it where the user says.
     @objc private func saveTranscript() {
-        guard let summary = selectedSession else { return }
+        guard let summary = selection(for: .saveTranscript) else { return }
         let panel = NSSavePanel()
         let formats = NSPopUpButton()
         formats.addItems(withTitles: ["Markdown (.md)", "Plain text (.txt)"])
@@ -387,11 +420,16 @@ final class MeetingsWindow: NSObject, NSWindowDelegate, NSTableViewDataSource, N
         let chooser = FormatChooser(panel: panel, popup: formats)
         formats.target = chooser
         formats.action = #selector(FormatChooser.changed)
-        panel.beginSheetModal(for: window) { [weak self] response in
+        let finish: (NSApplication.ModalResponse) -> Void = { [weak self] response in
             withExtendedLifetime(chooser) {}
             guard response == .OK, let destination = panel.url else { return }
             let format: ExportFormat = formats.indexOfSelectedItem == 1 ? .txt : .md
             self?.write(format, of: summary, to: destination)
+        }
+        if let window = view.window {
+            panel.beginSheetModal(for: window, completionHandler: finish)
+        } else {
+            finish(panel.runModal())
         }
     }
 
@@ -430,7 +468,7 @@ final class MeetingsWindow: NSObject, NSWindowDelegate, NSTableViewDataSource, N
     /// Deletes leftover speaker-labelling renders under the processing lease, while the meeting is registered as in
     /// use: the automatic relabel skips it, instead of losing the lease race and using up an attempt.
     @objc private func cleanUp() {
-        guard let summary = selectedSession else { return }
+        guard let summary = selection(for: .cleanUp) else { return }
         let session = summary.directory
         let id = summary.id
         guard beginUsing(id, "Cleaning up…") else {
@@ -458,7 +496,11 @@ final class MeetingsWindow: NSObject, NSWindowDelegate, NSTableViewDataSource, N
         let alert = NSAlert()
         alert.messageText = title
         alert.informativeText = text
-        alert.beginSheetModal(for: window, completionHandler: nil)
+        if let window = view.window {
+            alert.beginSheetModal(for: window, completionHandler: nil)
+        } else {
+            alert.runModal()
+        }
     }
 
     private static func inUseText(_ doing: String?) -> String {
@@ -471,19 +513,6 @@ final class MeetingsWindow: NSObject, NSWindowDelegate, NSTableViewDataSource, N
 
     func previewPanel(_ panel: QLPreviewPanel!, previewItemAt index: Int) -> (any QLPreviewItem)! {
         previewURL as NSURL?
-    }
-
-    // MARK: - Window
-
-    func windowWillClose(_ notification: Notification) {
-        // The Quick Look panel has this object as its delegate too; only the Meetings window's closing counts.
-        guard (notification.object as? NSWindow) === window else { return }
-        refreshTask?.cancel()
-        refreshTask = nil
-        if let panel = QLPreviewPanel.sharedPreviewPanelExists() ? QLPreviewPanel.shared() : nil, panel.isVisible {
-            panel.orderOut(nil)
-        }
-        onClose()
     }
 
     // MARK: - Helpers
@@ -521,7 +550,8 @@ private final class FormatChooser: NSObject {
     }
 }
 
-/// The Meetings window, which takes control of the Quick Look panel for the transcript preview. AppKit calls the
+/// The main window, which lets the Meetings section (`previewController`, set while it shows) take control of the
+/// Quick Look panel for the transcript preview. AppKit calls the
 /// panel-control methods on the main thread.
 @MainActor
 final class PreviewingWindow: NSWindow {

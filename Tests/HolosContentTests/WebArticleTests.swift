@@ -1,6 +1,7 @@
 import CryptoKit
 import Foundation
 import HolosCore
+import HolosSynthesis
 import Testing
 import WebKit
 @testable import HolosContent
@@ -268,7 +269,8 @@ private func isPrintable(_ text: String) -> Bool {
                                    .paragraph("Second [note] paragraph."), .paragraph("[1] and [2]")])
         #expect(article.wordCount == 9)
         #expect(article.spokenText
-            == "A Title\n\nBy Jane Doe\n\nFirst paragraph.\n\nSection\n\nSecond [note] paragraph.\n\n[1] and [2]")
+            == "A Title\n\nFirst paragraph.\n\nSection\n\nSecond [note] paragraph.\n\n[1] and [2]")
+        #expect(article.document.author == "Jane Doe")
     }
 
     @Test func assemblyDropsPermalinkAndBreakMarksButKeepsOtherSymbols() {
@@ -280,14 +282,21 @@ private func isPrintable(_ text: String) -> Bool {
             url: url, title: "Title", byline: nil, siteName: nil, language: nil,
             raw: noise.map { (0, $0) } + [(2, "🔥"), (2, "#")] + kept.map { (0, $0) })
         #expect(article.blocks == [.heading(level: 2, text: "🔥")] + kept.map { .paragraph($0) })
+        // Symbol-only blocks survive into the document read aloud: the heading is a chapter, the rest its text.
+        #expect(article.document.sections == [ReadableDocument.Section(heading: "🔥", level: 2, paragraphs: kept)])
     }
 
-    @Test func assemblyKeepsABylineThatAlreadySaysBy() {
+    @Test func aBylineBecomesTheAuthorWithoutBy() {
         let url = URL(string: "https://blog.example.test/post")!
         let article = WebArticle.assemble(url: url, title: nil, byline: "by Jane Doe", siteName: nil,
                                           language: nil, raw: [(0, "Body.")])
         #expect(article.title == "blog.example.test")
-        #expect(article.spokenText == "blog.example.test\n\nby Jane Doe\n\nBody.")
+        #expect(article.document.author == "Jane Doe")
+        #expect(article.spokenText == "blog.example.test\n\nBody.")
+        #expect(WebArticle.author(fromByline: "By Jane Doe") == "Jane Doe")
+        #expect(WebArticle.author(fromByline: "Jane Doe, Science Editor") == "Jane Doe, Science Editor")
+        #expect(WebArticle.author(fromByline: "Bybee Smith") == "Bybee Smith")
+        #expect(WebArticle.author(fromByline: "By ") == nil)
     }
 
     @Test func sanitizingRemovesEveryControlAndFormatCharacter() {
@@ -327,6 +336,124 @@ private func isPrintable(_ text: String) -> Bool {
         #expect(article.blocks.map(\.text).contains(Fixture.paragraphs[1] + " Ends here."))
     }
 
+    @Test func anArticleBecomesADocumentWithAChapterAtEachHeading() {
+        let url = URL(string: "https://news.example.test/keeper")!
+        let article = WebArticle(
+            url: url, title: "The Keeper", byline: "By Ada Harbour", siteName: "Coastal News", language: "en-GB",
+            blocks: [.paragraph("Intro one."), .paragraph("Intro two."), .heading(level: 2, text: "A daily climb"),
+                     .paragraph("Stairs."), .heading(level: 3, text: "The lens"), .heading(level: 2, text: "Ghosts"),
+                     .paragraph("Gulls."), .paragraph("More gulls.")])
+        let document = article.document
+        #expect(document.title == "The Keeper")
+        #expect(document.author == "Ada Harbour")
+        #expect(document.language == "en-GB")
+        #expect(document.sections == [
+            .init(paragraphs: ["Intro one.", "Intro two."]),
+            .init(heading: "A daily climb", level: 2, paragraphs: ["Stairs."]),
+            .init(heading: "The lens", level: 3),
+            .init(heading: "Ghosts", level: 2, paragraphs: ["Gulls.", "More gulls."]),
+        ])
+        let script = ReadingScript(document: document)
+        #expect(script.segments.compactMap(\.chapter) == ["A daily climb", "The lens", "Ghosts"])
+        // The site name and the byline are not spoken; the title is, once, first.
+        #expect(script.text == "The Keeper\n\nIntro one.\n\nIntro two.\n\nA daily climb\n\nStairs.\n\nThe lens"
+            + "\n\nGhosts\n\nGulls.\n\nMore gulls.")
+        #expect(article.spokenText == script.text)
+        #expect(WebArticle(url: url, title: "Empty", byline: nil, siteName: nil, language: nil, blocks: []).document
+            == ReadableDocument(title: "Empty", sections: []))
+    }
+
+    @Test func theTitleIsNotSpokenTwice() {
+        let url = URL(string: "https://news.example.test/keeper")!
+        // The extractor drops a leading heading that repeats the title.
+        let assembled = WebArticle.assemble(url: url, title: "The Keeper", byline: nil, siteName: nil, language: nil,
+                                            raw: [(1, "The Keeper"), (0, "Body."), (2, "Part"), (0, "More.")])
+        #expect(assembled.spokenText == "The Keeper\n\nBody.\n\nPart\n\nMore.")
+        // A first heading that says the title with the site name around it, or the other way round, is the title.
+        for (title, heading) in [("The Keeper", "The Keeper"), ("The Keeper | Coastal News", "The Keeper"),
+                                 ("The Keeper", "The Keeper – Coastal News")] {
+            let article = WebArticle(url: url, title: title, byline: "By Ada", siteName: nil, language: nil,
+                                     blocks: [.heading(level: 1, text: heading), .paragraph("Body.")])
+            #expect(article.spokenText == "\(heading)\n\nBody.", "\(title) / \(heading)")
+            #expect(ReadingScript(document: article.document).segments.first?.chapter == heading)
+        }
+    }
+
+    @Test func aHostileArticleMakesASanitizedDocumentAndPreview() {
+        let url = URL(string: "https://news.example.test/keeper")!
+        let article = WebArticle(url: url, title: "\u{1B}]0;owned\u{07}Title\u{202E}", byline: "By \u{9B}2JJane",
+                                 siteName: "Site\u{7}", language: "en\u{200F}",
+                                 blocks: [.heading(level: 2, text: "Part\u{1B}[2J"),
+                                          .paragraph("Body\u{85}text\u{2069} \u{2066}here")])
+        let document = article.document
+        #expect(document.title == "]0;ownedTitle")
+        #expect(document.author == "2JJane")
+        #expect(document.language == "en")
+        #expect(document.sections == [.init(heading: "Part[2J", level: 2, paragraphs: ["Body text here"])])
+        let script = ReadingScript(document: document)
+        let preview = ReadingPreview.text(script: script,
+                                          metadata: AudioBookMetadata(title: document.title, author: document.author,
+                                                                      language: document.language),
+                                          voice: "Ava\u{1B}[0m (Premium)", fileName: "Name\u{202E}.m4a")
+        #expect(isPrintable(preview), "\(preview.unicodeScalars.map { String($0.value, radix: 16) })")
+        #expect(preview.contains("Voice: Ava[0m (Premium)\nFile: Name.m4a\n"))
+    }
+
+    @Test func aLocalFilesPreviewHasItsControlCharactersRemovedButKeepsItsLines() {
+        let document = ReadableDocument(title: "Notes\u{1B}[2J", author: "Me\u{202E}", sections: [
+            .init(heading: "One\u{7}", level: 1, paragraphs: ["First line\nsecond\u{1B}]8;; line"]),
+        ])
+        let preview = ReadingPreview.text(script: ReadingScript(document: document),
+                                          metadata: AudioBookMetadata(title: document.title, author: document.author),
+                                          voice: "Ava", fileName: "Notes.m4a")
+        #expect(preview == """
+            Title: Notes[2J
+            Author: Me
+            Language: unknown
+            Voice: Ava
+            File: Notes.m4a
+            Chapters: Notes[2J | One
+
+            Notes[2J
+
+            One
+
+            First line
+            second]8;; line
+            """)
+    }
+
+    /// `voiceislocal read <https address> --print-text` without the network: a fixture page goes through the extractor,
+    /// the document mapping, and the preview the command prints.
+    @Test func printTextForAWebPageShowsTheDocumentAsItIsRead() async throws {
+        let article = try await WebArticleExtractor(options: fast).extract(html: Fixture.article, baseURL: Fixture.base)
+        let document = article.document
+        let script = ReadingScript(document: document)
+        let metadata = AudioBookMetadata(title: document.title, author: document.author,
+                                         language: AudioBookMetadata.languageTag(document.language))
+        let preview = ReadingPreview.text(
+            script: script, metadata: metadata, voice: "Ava (Premium) (com.apple.voice.premium.en-US.Ava)",
+            fileName: ReadingOutput.fileName(title: metadata.title, fallback: article.url.host()))
+        let lines = preview.components(separatedBy: "\n")
+        #expect(Array(lines.prefix(7)) == [
+            "Title: The Last Keeper of the Northern Cape",
+            "Author: Ada Harbour",
+            "Language: en",
+            "Voice: Ava (Premium) (com.apple.voice.premium.en-US.Ava)",
+            "File: The Last Keeper of the Northern Cape.m4a",
+            "Chapters: The Last Keeper of the Northern Cape | A daily climb",
+            "",
+        ])
+        let text = lines.dropFirst(7).joined(separator: "\n")
+        #expect(text == script.text)
+        #expect(text.hasPrefix("The Last Keeper of the Northern Cape\n\n\(Fixture.paragraphs[0])\n\nA daily climb\n\n"))
+        #expect(text.components(separatedBy: "The Last Keeper of the Northern Cape").count == 2)
+        for noise in ["Ada Harbour", "Coastal News", "Subscribe now", "References", "[1]"] {
+            #expect(!text.contains(noise), "Leaked: \(noise)")
+        }
+        #expect(isPrintable(preview))
+    }
+
     @Test func contentHTMLBecomesOrderedHeadingsAndParagraphs() async throws {
         let html = """
             <div><h2>Intro</h2><p>One <em>two</em>&nbsp;three<sup>[4]</sup>.</p>
@@ -343,6 +470,22 @@ private func isPrintable(_ text: String) -> Bool {
             .paragraph("After a break."), .paragraph("Item one"), .paragraph("Nested item"),
             .paragraph("Item two"), .paragraph("Quoted words."), .heading(level: 3, text: "Deeper"),
             .paragraph("x2 grows."),
+        ])
+    }
+
+    /// A closed `<details>` shows only its first summary; an open one shows everything.
+    @Test func aClosedDisclosureReadsOnlyItsSummary() async throws {
+        let html = """
+            <p>Intro.</p>
+            <details><p>Before the summary.</p><summary>Closed question.</summary><p>Closed answer.</p>
+            <summary>Second summary.</summary></details>
+            <details open><summary>Open question.</summary><p>Open answer.</p></details>
+            <p>After.</p>
+            """
+        let blocks = try await WebArticleExtractor(options: fast).blocks(fromContentHTML: html)
+        #expect(blocks == [
+            .paragraph("Intro."), .paragraph("Closed question."), .paragraph("Open question."),
+            .paragraph("Open answer."), .paragraph("After."),
         ])
     }
 
@@ -1286,7 +1429,9 @@ private func isPrintable(_ text: String) -> Bool {
             .replacingOccurrences(of: #"<p class="byline">By Ada Harbour</p>"#, with: byline)
         let article = try await WebArticleExtractor(options: fast).extract(html: page, baseURL: Fixture.base)
         #expect(article.byline?.hasPrefix("Ada Harbour") == true)
-        #expect(article.spokenText.components(separatedBy: "Ada Harbour").count == 2)
+        // The byline is the document's author, not spoken; the heading is not restored as text either.
+        #expect(article.document.author?.hasPrefix("Ada Harbour") == true)
+        #expect(!article.spokenText.contains("Ada Harbour"))
         #expect(headings(article) == ["h2 A daily climb"])
         #expect(article.blocks.first == .paragraph(Fixture.paragraphs[0]))
     }
@@ -1300,7 +1445,8 @@ private func isPrintable(_ text: String) -> Bool {
                                   with: "<meta charset=\"utf-8\"><meta name=\"author\" content=\"Ada Harbour\">")
         let article = try await WebArticleExtractor(options: fast).extract(html: page, baseURL: Fixture.base)
         #expect(article.byline == "Ada Harbour")
-        #expect(article.spokenText.components(separatedBy: "Ada Harbour").count == 2)
+        #expect(article.document.author == "Ada Harbour")
+        #expect(!article.spokenText.contains("Ada Harbour"))
         #expect(headings(article) == ["h2 A daily climb"])
     }
 

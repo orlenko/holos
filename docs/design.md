@@ -138,14 +138,195 @@ Accessibility. Its hold-to-talk key uses an active CGEvent tap (it consumes the
 shortcut), which macOS authorises with Accessibility; Input Monitoring is what
 listen-only taps need, so it is not requested. Only if `CGEvent.tapCreate` still
 fails with Accessibility granted does the app name Input Monitoring as the fallback
-and show it in Setup. Validate under the actual installed app identity, not just
+and show it in Settings. Validate under the actual installed app identity, not just
 `swift run`.
+
+### Main window
+
+The app's windows other than the transient ones are one main window, "Voice is Local"
+(`MainWindowController`, Sources/HolosApp/MainWindow): an `NSSplitViewController` with a
+native source-list sidebar and the selected section's content. Sections: Dictation ›
+History (⌘1), Corrections (⌘2); Meetings › Meetings (⌘3), People (⌘4); Listen › Reading
+(⌘5, a placeholder that points to `voiceislocal read`); Settings (⌘,). A status card at
+the sidebar's bottom shows the dictation state and message ("Dictation paused during
+meeting recording" while a meeting records). The window is 1280 × 800 by default
+(900 × 560 at least), remembers its frame and sidebar width, and opens from the menu's
+**Open Voice is Local** (⌘0), from History / Meetings / Settings… there, from the main
+menu's Go and Window menus (shown while the window is key), and from every "Setup…"
+path (the launch with dictation off, a refused enable, the assistant's "Open Settings").
+Each section is a view controller created on first use and kept: Corrections, Meetings,
+and People are the former windows' view hierarchies unchanged in behaviour (Meetings
+still drives Quick Look through the main window, `PreviewingWindow`; its 2 s refresh and
+People's reread run while the section is on screen). Settings is the former Setup window
+in cards: Permissions (Microphone, Accessibility, System audio, Input Monitoring only
+after macOS refused the hotkey tap), Dictation (on/off, hold-to-talk shortcut, language,
+speech model, fillers, Apple Intelligence fix, preview and its opacity), Meetings (record
+system audio, speaker labels, a link to People for remembered voices), History and
+privacy (Keep dictations, the count, Clear History…, Keep the audio of dictations and its
+disk use), and Run Setup Assistant…; it polls
+the permissions every second while on screen. The Setup Assistant, the meeting start
+panel, the live transcript, Review (Name Speakers), and the dictation preview stay
+separate windows.
+
+Keyboard: ⌘1–⌘5 and ⌘, switch sections; ⌘F focuses the section's search field; ↑↓ move
+in lists, Return opens (History: the text; Meetings: Review or the transcript), ⌫ deletes
+after a confirmation (History: the dictation; Meetings: Delete Meeting…; People:
+Forget…); in History, Space plays or pauses the selected dictation's audio and ⌘R runs it
+again; Tab reaches the sidebar, list, and detail. A key does exactly what its button
+does and only while that button is enabled (Meetings: `MeetingActionPolicy`, so ⌫ on a
+meeting another process holds only beeps; People: not while a change saves; History:
+⇧⌘C only for a dictation the fixes changed, ⌘R only for one with audio and no Run Again
+running); Edit › Copy is off with no dictation
+selected. Escape keeps `AppKeyboard`'s rule
+(it closes the key window unless a field is being edited or a dictation runs). Controls
+are standard AppKit controls with semantic colours, so light and dark mode, Full
+Keyboard Access, and VoiceOver work without custom handling.
+
+The menu bar menu keeps what is needed without the window: the status line, the
+dictation toggle (and Cancel Dictation while one runs), Copy Result / Copy Original /
+Discard Result while a result is kept, Correct Last Dictation…, the meeting block, then
+Open Voice is Local, History, Meetings, Settings…, About, and Quit. The language and
+shortcut submenus moved to Settings.
+
+### Dictation history
+
+Each finished dictation that produced text is recorded (`DictationRecord`, HolosCore):
+its utterance ID, time, the target app's display name (the typed-into app for keystroke
+targets, else the owner of the Accessibility target or the frontmost app at key-down,
+through `NSRunningApplication`), the locale, the text as written (or as offered for Copy
+when it could not be written), the recognizer's text before filler removal, corrections,
+and Apple Intelligence, the fixes (fillers removed, corrections applied, words the
+on-device fix changed, counted with `WordDiff`), the outcome (inserted, typed, needsCopy,
+unverified, targetChanged, partly written or not, with the reason), for a partly written
+one the rest exactly as Copy Result offered it (`unwritten`, with its leading space;
+History's Copy copies it, and the detail shows it under the whole text), the seconds from
+Listening to release, and the word count. Every way a dictation ends builds its record by
+one rule (`DictationRecord.endText`, `Outcome.afterFailure`): a failed dictation that had
+recognized words keeps the text as written or offered, with Apple Intelligence's fix and
+its changed-word count, and the outcome the stream left (unverified after an unconfirmed
+write, targetChanged after the app or field changed, else not inserted; partly written
+when a prefix went in); a cancelled one, one that recognized nothing, and one
+refused at key-down (a secure or password field, secure input on) are not: the draft a
+record is made from exists only after the key-down checks passed, and nothing is
+recorded while secure input is on at the end either.
+
+Storage (`DictationHistoryStore`, HolosStorage): `<supportRoot>/History/dictations.jsonl`
+(Application Support/Holos unless `HOLOS_SUPPORT_DIR` is set), one compact JSON line per
+dictation appended with `AtomicFile.append` (0600, folder 0700). Reads stream the file a
+line at a time, so a Forever history of any size stays readable; a line longer than 8 MiB
+(or damaged, or torn by an append in progress) is skipped, never the whole file. Deleting
+one, Clear History, and the retention sweep rewrite the file atomically; every sweep,
+Forever and Off included, also drops lines that cannot be read. A line of a later schema
+version (a newer Voice is Local) is not shown but is kept byte for byte by every rewrite
+(the retention sweep removes it only when it can read its date and it is past the cutoff;
+Clear History removes it), so opening the history with an older build loses nothing; such
+lines count as kept (History and Settings say so, and Clear History and History Off's
+offer stay available). A history file that cannot be read is reported (footer, status,
+Settings), never shown as an empty history, and Clear History stays available (a Clear
+that succeeds makes it readable and empty again). History and Settings read the file again
+whenever they come on screen or the window becomes key, so a `voiceislocal history clear`
+run meanwhile shows at once. Writes hold
+`dictations.lock` (flock), so the app and `voiceislocal history clear --yes` never
+interleave. The app (`DictationHistoryService`, HolosStorage) runs every file operation on
+one serial queue off the main actor, keeps the records in memory for the History section,
+applies changes made while a reload reads the file to what it read (a dictation finished
+during the launch load is merged, not lost), and waits for the queue (at most 5 seconds)
+when it quits, so a dictation just recorded, deleted, or cleared reaches the file. A change
+shows at once; when its write then fails (a full disk, a folder that cannot be written),
+the History footer and the status message say so ("The dictation could not be deleted;
+it is still kept on this Mac.") and the records are read again from the file, so a failed
+delete or clear shows its dictations again and a failed append is not shown as kept. Once
+a later write succeeds, the footer and the status message stop reporting the failure. A
+final transcript that comes back empty after text was written while the user spoke is
+still recorded, as unverified, with the text written (or its fixed form).
+Turning History Off offers to clear what is kept once the history has been read, so an Off
+chosen before the launch load finished still counts the dictations on disk.
+Retention is UserDefaults `historyRetention`: `off`, `7`, `30` (the default), or
+`forever`, swept at launch, once a day, and when it changes. Off stops recording and
+offers to clear what is kept. The text never goes to `os.Logger`, and the clipboard is
+touched only by the user's Copy or Copy As Heard (History) and Copy Result / Copy
+Original (menu). History's Correct… opens Corrections with that dictation: the last one
+is compared with its text as recognized, as before; an older one with its text as
+written, the only form History keeps. Corrections knows which dictation it holds by ID,
+so learning from an older one never replaces what Correct Last Dictation opens, even
+when the two have the same text.
+
+### Dictation audio and Run Again
+
+History can keep each recorded dictation's microphone audio, so a change to the corrections,
+the language, filler removal, or Apple Intelligence's fix can be tried on what was really
+said. Settings › History and privacy › **Keep the audio of dictations (for Run Again)**
+(UserDefaults `historyKeepAudio`, on unless turned off) shows what the audio takes on disk;
+turning it off stops keeping new audio and offers to delete the audio already kept (the text
+stays). History Off keeps no audio either.
+
+Capture: `DictationController.frameTap` hands the app every microphone frame the recognizer
+took, with its utterance ID, in order and before the result; the app gives them to a
+`DictationAudioWriter` (HolosAudio) made at key-down, only once the secure-field checks passed
+and only when History records and keeps audio. The writer converts and encodes on its own
+queue (AAC, mono, 16 kHz, about 32 kbit/s; roughly 4 KB a second plus a 25 KB container)
+into `<supportRoot>/History/audio/<id>.partial.m4a` (0600, folder 0700), made on the first
+frame. When the dictation's History record is added, the history queue finishes the file
+and, holding `dictations.lock`, renames it to `audio/<id>.m4a` and appends the record, which
+links it (`audio: {file, seconds}`; an optional field, so the schema stays 1 and older builds
+read the line). A dictation History does not record (cancelled, refused at key-down, nothing
+recognized, History or the audio setting off, secure input on at the end) deletes its
+partial file. Audio that cannot be finished or moved is deleted and the record kept without
+it.
+
+Retention follows the text: Delete removes the dictation's audio, Clear History and
+`voiceislocal history clear` remove all of it (but a partial file younger than an hour, a
+dictation still in progress), and every retention sweep removes the audio of the records it
+removes, audio no kept record links (its record is gone, or an older build rewrote the line
+without the link, so nothing could play it), and partial files older than an hour (at
+launch, all of them). Audio of a newer build's lines is kept with them. Each of these, and
+Delete Audio, first moves the audio aside (`<id>.m4a.removing`), rewrites the file, then
+deletes it; a rewrite that fails puts it back, so a failure never leaves a record without
+the audio it links. Audio a crash left aside is put back by the next sweep when its record
+still links it, else deleted. Update History keeps the audio link the file has. In memory,
+the audio link lands once the append finished (`linkAudio`), under the changes made since
+(a Delete Audio or an Update History made meanwhile stays), and an Update History whose
+record another writer removed meanwhile leaves it removed.
+
+Run Again (History detail, ⌘R; `voiceislocal history rerun`) reads the file back as 0.1 s
+frames and feeds them to the recognizer live dictation uses (`AppleSpeechSession`, the
+speech backend's progressive preset, the current dictation language, the learned
+corrections' phrases as contextual strings), then runs the text steps of live dictation
+(`DictationTextPipeline`, HolosCore): filler removal and corrections as on the final text,
+and, when Apple Intelligence's fix is on and available, the fix as dictation streams it:
+each recognizer result is taken as committed in turn (the last one too: the recognizer
+commits it when it finishes, before the result) and each new part, cleaned as streaming
+cleans it, is fixed as a chunk; what streaming held back (a trailing comma, the start of a
+correction) is fixed on release as final; with the same model, sessions, and timeout
+(`OnDeviceFix`, HolosDictation, which the app's `DictationFixPipeline` uses too). This is
+dictation writing into a field; the live grouping of chunks (those queued while the model
+is busy are fixed together) depends on timing, so a fix may differ slightly from the live
+one. The comparison (`DictationRerunReport`) shows the
+text as heard and as written, then and now, with the words that differ marked; what each
+step did now (word changes); and `changedBy`, the steps that behaved differently from then:
+the recognizer heard other words; filler removal removed fillers where it did not (in the
+words heard now, or replayed on the words heard then); the corrections replaced a different
+number of phrases (the same two ways) or, with no other explanation, other words; Apple
+Intelligence changed a different number of words. Nothing is typed anywhere and nothing is
+copied: **Copy New Result** copies only when chosen, and **Update History…** (after a
+confirmation) replaces the record's text, text as heard, fixes, and language, keeping its
+date, app, outcome, and audio. The player row plays the file (▶/⏸, position; Space with the
+list focused) and stops when another dictation is selected or History leaves the screen.
+
+`voiceislocal history rerun <id|latest> [--json] [--no-ai-fix] [--language xx-YY]` prints
+the same comparison; `--all [--since 7d] [--json]` runs every dictation with audio and
+reports, per dictation, whether the text changed and `changedBy`, with a summary per step,
+to judge a change on the user's real dictations. The command reads the history, the
+corrections file (Application Support/Holos/corrections.json), and the app's saved settings
+(its defaults domain `ca.orlenko.holos.app`: `dictationLocale`, `removeFillers`,
+`aiFixMisheard`); it writes nothing. The recognizer needs the language's speech model
+installed for the process running it.
 
 ### First-launch setup
 
 A first launch opens the Setup Assistant, one page at a time, ordered so the app
-reopens at most once: (1) Welcome, with Start or "Skip — Show All Settings" (the full
-Setup window); (2) the dictation language and the microphone, both in-app (macOS's own
+reopens at most once: (1) Welcome, with Start or "Skip — Show All Settings" (Settings in
+the main window); (2) the dictation language and the microphone, both in-app (macOS's own
 prompt), plus "Also set up meetings", checked by default; leaving this page starts the
 speech model download and, for meetings, the speaker models, which continue in the
 background; (3) Accessibility, granted in System Settings and effective at once: the
@@ -284,23 +465,64 @@ should claim to have solved.
 ### Text-to-speech
 
 Preserve AITTS's useful interaction patterns: immediate speech from arguments/stdin,
-queued playback, long text/URL input, saved source, ordered parts, and a playlist.
-Use a per-user playback lock and stale-message timeout so concurrent terminal
-callers do not talk over one another. Rendering and playback are separate stages.
+queued playback, long text/URL input, saved source, and resumable rendering. Use a
+per-user playback lock and stale-message timeout so concurrent terminal callers do not
+talk over one another. Rendering and playback are separate stages.
 
 Use AVSpeechSynthesizer buffer output with AVAudioFile/AVFoundation encoding.
-Start with AAC in `.m4a` plus WAV/CAF for lossless/debug use. Native MP3 encoding and
-OpenAI-style free-form voice instructions are not promised. Expose voice, rate,
-pitch, and pauses supported by the engine. Treat rate as a documented application
-setting rather than claiming parity with AITTS's speed multiplier.
+`say` writes AAC in `.m4a` plus WAV/CAF for lossless/debug use. OpenAI-style free-form
+voice instructions are not promised. Expose voice, rate, pitch, and pauses supported by
+the engine. Treat rate as a documented application setting rather than claiming parity
+with AITTS's speed multiplier.
 
-For long content, extract a clean document with title, attribution, headings, and
-paragraphs; split at semantic boundaries; synthesize sequentially first; save an
-ordered `.m3u8` playlist and manifest. Resume at failed/missing chunks using hashes
-of text, voice, engine version when available, and synthesis settings. A partial
-playlist must be explicitly identified as incomplete and return a nonzero status.
+A long reading is one file that is easy to send to a phone (AirDrop, Messages, Mail) and
+that any phone plays: AAC in `.m4a`, mono, 22.05 kHz, about 32 kbit/s (about 14 MB per
+hour; the constants live in `ReadingAudioFormat`). It plays on iPhone, Android, Windows,
+and in browsers. MP3 is not offered because macOS has no MP3 encoder. The file is named
+after the document's title and carries title, author, and "Voice is Local" as encoder
+metadata, plus a chapter at each heading (an MPEG-4 timed-text chapter track, which Apple
+Books, Podcasts, QuickTime, VLC, and ffmpeg read). The AITTS prototype's multi-part
+playlist existed only because of the OpenAI request limit; it is gone.
 
-Local text/Markdown precedes HTML articles. Swift has no built-in equivalent of
+Every extractor, for local files and for web pages alike, produces a `ReadableDocument`
+(title, author, language, and sections of paragraphs under headings); the reading
+pipeline reads only that. The text is split at
+semantic boundaries that never cross a section, and the parts are synthesized in order
+into a cache of lossless PCM parts with a manifest. Resume re-renders only failed,
+missing, or changed parts, keyed by hashes of the text and by voice and rate; a changed
+source, voice, rate, title, or output is refused. A web page is loaded and extracted
+again on `--resume`, so a page whose text changed since is refused the same way. The parts are then joined and encoded
+once into the `.m4a`, with a short pause between parts and a longer one before a
+section. The checksum of the finished file is saved before it is published, and the
+cache is deleted after, so the finished file is the only large thing kept. A failed
+reading publishes nothing and returns a nonzero status. Publishing never replaces a file:
+an exclusive rename, or, on volumes without one, an exclusive create whose identity is
+saved in the manifest before the finished bytes are copied into it (so `--resume`
+recognizes a copy a crash cut off). A lock on the cache (`flock` in the support folder) and a
+reservation of the output stop a second reading for the same file before it renders anything.
+The reservation is a hidden `.holos-output-<hash>.lock` beside an explicit `--output`, created
+exclusively (mode 0644) and holding the host, process ID and start time, and user ID of the
+reading that made it, so it needs no `flock` on the destination's volume and works across
+users and support folders. It is removed when the reading ends; one left by a reading that was
+killed is taken over when its process (same ID and start time) is no longer running on this
+Mac. One made on another computer, one that cannot be read, or one that cannot be removed (another
+user's file in a sticky shared folder) is refused with its path, to be deleted by hand once no
+reading of that file is running. Ctrl-C cancels the page load or the render, removes the partly joined
+file, and exits 130 (SIGTERM: 143); every run also removes temporaries earlier runs of the
+same reading left behind, recognized by a per-reading marker in their names.
+
+Local files use built-in readers: text and Markdown (Foundation's Markdown parser; markup
+is dropped, link text kept, code blocks and images skipped, YAML front matter read for
+title and author), HTML (the tidying XML parser; scripts, navigation, forms, footers, and
+asides skipped), PDF (PDFKit text reflowed into paragraphs; one or two short unpunctuated
+lines between a finished sentence and body text become headings, so chapters; scanned
+PDFs need OCR, which is not supported), and RTF, RTFD, Word, and OpenDocument (AppKit's document readers,
+headings from heading styles or larger/bold short lines). The voice is the best installed
+voice for the text's language (NaturalLanguage detects it): Premium over Enhanced over
+default, then the user's preferred regions, then the voice macOS uses for that language.
+`--voice` takes a name as `say -v '?'` prints it or an identifier.
+
+Swift has no built-in equivalent of
 AITTS's Trafilatura, and JavaScriptCore alone supplies no browser DOM, so web articles
 use Mozilla Readability (0.6.0, Apache-2.0, vendored unmodified and compiled into the
 `voiceislocal` tool) inside an offscreen `WKWebView` (`WebArticleExtractor` in
@@ -319,13 +541,19 @@ before Readability runs; headings match without case, surrounding punctuation
 else starts its section at the outermost wrapper. The article HTML is reduced to ordered headings and paragraphs:
 list items, quotations, and definition terms become paragraphs; code blocks (`<pre>`),
 tables, figures, captions, media, forms, and bracketed marks such as `[1]` or `[edit]`
-are dropped; inline code is read as text. The spoken text is the title, the byline,
-then the blocks. Fewer than 50 words is "no article": the command fails and suggests
+are dropped; inline code is read as text. The article becomes a `ReadableDocument`
+(`WebArticle.document`) and is read exactly like a local file: its title (spoken first
+unless the page opens with it; a leading heading that repeats the title is already
+dropped), its byline as the author ("By " dropped; written to the file's author tag and
+not spoken, as for local files), its declared language, and a section, so a chapter, at
+each heading. The site name is dropped: the `.m4a` has no tag for it that players show,
+and Readability's title rarely needs it. The file is named after the sanitized title
+(the host when a page has none). Fewer than 50 words is "no article": the command fails and suggests
 saving the text to a file, which is also the path for sign-in and paywalled pages. The
 command-line tool hosts the web view itself: Swift's async `main` runs the main run
 loop (`CFRunLoopRun`), which is all WebKit needs; no `NSApplication` or app round trip.
-`source.txt` in the reading directory preserves the extracted text for inspection.
-PDFKit and Vision are later adapters. Foundation Models is not the default article
+`source.txt` in the reading's cache folder preserves the text that was read, for
+inspection. Vision OCR is a later adapter. Foundation Models is not the default article
 extractor or narrator: it could omit source content.
 
 Audition and export a short set of native voices before investing in the reading
@@ -365,7 +593,9 @@ local control interface for app status/enable/disable. If recording needs a bund
 worker for reliable permission attribution, settle that in the permissions spike;
 do not make a recording depend on the hotkey app remaining enabled.
 
-Store app configuration and SQLite correction memory under Application Support.
+Store app configuration and SQLite correction memory under Application Support; the
+dictation history is `History/dictations.jsonl` there, its audio `History/audio/<id>.m4a`
+("Dictation history" and "Dictation audio and Run Again" above).
 Allow a configurable session/output root. A session is a portable directory:
 
 ```text
@@ -389,8 +619,9 @@ PCM is about 1.38 GB per hour for one track, before the microphone track. Monito
 free space and surface a clear stop condition; compression is a later measured
 storage tradeoff, not an excuse to discard the full recording.
 
-Meeting audio is retained by default until the user removes it. Dictation audio is
-ephemeral by default; confirmed corrections are retained, while recent raw results
+Meeting audio is retained by default until the user removes it. Dictation audio is kept
+only with its History record, for as long as the text ("Dictation audio and Run Again";
+Settings can turn it off); confirmed corrections are retained, while recent raw results
 have a configurable short retention period. Debug logs contain timing/status rather
 than full documents. No recording or transcript is committed as a test fixture
 without deliberate selection.

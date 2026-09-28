@@ -187,7 +187,7 @@ extension HolosAppDelegate {
             }
         case .afterReopen:
             // Input Monitoring applies only after a reopen, so enabling now would be refused: the reopened app (or
-            // the next launch, when Open full Setup finished without reopening) turns dictation on at launch, and the
+            // the next launch, when Open Settings finished without reopening) turns dictation on at launch, and the
             // check page reports whether it did.
             UserDefaults.standard.set(true, forKey: "dictationEnabled")
         case .afterSpeechModelInstall:
@@ -246,7 +246,7 @@ extension HolosAppDelegate {
             return installSpeakerModels(resumable: true)
         }
         meeting.speakerModelInstall = "Finishing the download started before Voice is Local reopened…"
-        updateSetupWindow()
+        updateSettings()
         meeting.startPanel?.refresh()
         Task { [weak self] in
             while ProcessSpawner.startTime(of: pid) == UInt64(clamping: started) {

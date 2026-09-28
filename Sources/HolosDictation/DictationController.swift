@@ -26,11 +26,9 @@ public struct DictationStatus: Sendable, Equatable {
     }
 
     /// One normalization for preview, committed, and final text, so committed text stays a prefix of the result.
+    /// Run Again joins a saved dictation's results the same way (`DictationTextPipeline.transcript`).
     static func transcript(_ segments: [TranscriptSegment]) -> String {
-        segments.sorted { $0.start < $1.start }
-            .map { $0.text.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { !$0.isEmpty }
-            .joined(separator: " ")
+        DictationTextPipeline.transcript(segments.sorted { $0.start < $1.start }.map(\.text))
     }
 }
 
@@ -81,6 +79,9 @@ public final class DictationController {
     public var contextualStrings: [String] = []
     /// The recognizer's locale; read when each utterance starts, so a change never affects one in progress.
     public var locale: String
+    /// Given each microphone frame the recognizer took, with its utterance ID, in order: History keeps the audio of a
+    /// dictation from exactly what was recognized.
+    public var frameTap: (@MainActor (UUID, PCMFrame) -> Void)?
 
     private let backend: SpeechBackend
     private let maximumDuration: TimeInterval
@@ -253,6 +254,8 @@ public final class DictationController {
                         guard self.generation == id else { return }
                         guard audio.track == "mic" else { continue }
                         try await session.append(audio.frame)
+                        guard self.generation == id else { return }
+                        self.frameTap?(id, audio.frame)
                     }
                 } catch {
                     self.fail(id, error: error)

@@ -3,18 +3,27 @@ import AudioToolbox
 import Darwin
 import Foundation
 import HolosCore
+import Synchronization
 
 public struct VoiceDescriptor: Codable, Sendable, Equatable {
     public let id: String
     public let name: String
     public let language: String
+    /// "premium", "enhanced", "default", or "unknown".
     public let quality: String
+    /// Sound-effect voices such as Bubbles or Zarvox; never chosen as a default.
+    public let novelty: Bool
+    /// The user's own Personal Voice; never chosen as a default.
+    public let personal: Bool
 
-    public init(id: String, name: String, language: String, quality: String) {
+    public init(id: String, name: String, language: String, quality: String,
+                novelty: Bool = false, personal: Bool = false) {
         self.id = id
         self.name = name
         self.language = language
         self.quality = quality
+        self.novelty = novelty
+        self.personal = personal
     }
 }
 
@@ -32,8 +41,55 @@ public struct RenderedAudio: Codable, Sendable, Equatable {
     }
 }
 
+/// The speech rates `AVSpeechUtterance` takes, checked the same way wherever a rate comes in:
+/// the command line, the reading pipeline (before it creates anything), and the renderer.
+public enum SpeechRate {
+    public static var range: ClosedRange<Float> {
+        AVSpeechUtteranceMinimumSpeechRate...AVSpeechUtteranceMaximumSpeechRate
+    }
+
+    static var requirement: String {
+        "Speech rate must be a number from \(range.lowerBound) to \(range.upperBound)"
+    }
+
+    /// Fails unless `rate` is nil (the system rate) or a finite number in `range`.
+    public static func validate(_ rate: Float?) throws {
+        guard let rate else { return }
+        guard rate.isFinite, range.contains(rate) else {
+            throw HolosError.invalidInput("\(requirement); \(rate) is not.")
+        }
+    }
+
+    /// A rate as typed (`--rate 0.5`): a finite decimal number in `range`. "nan", "inf", and
+    /// numbers too large for a `Float` are refused.
+    public static func parse(_ text: String) throws -> Float {
+        let trimmed = text.trimmingCharacters(in: .whitespaces)
+        guard let rate = Float(trimmed), rate.isFinite else {
+            throw HolosError.invalidInput("\(requirement); \"\(text)\" is not.")
+        }
+        try validate(rate)
+        return rate
+    }
+}
+
 @MainActor public final class NativeSpeechRenderer {
-    public init() {}
+    /// How the finished file is moved into place (see `ExclusivePublisher`); tests make it fail.
+    private let exclusiveRename: ExclusivePublisher.ExclusiveRename
+
+    public init() {
+        exclusiveRename = ExclusivePublisher.systemExclusiveRename
+    }
+
+    init(exclusiveRename: @escaping ExclusivePublisher.ExclusiveRename) {
+        self.exclusiveRename = exclusiveRename
+    }
+
+    /// Fails unless a voice with `identifier` is installed.
+    public func checkVoice(_ identifier: String) throws {
+        guard AVSpeechSynthesisVoice(identifier: identifier) != nil else {
+            throw HolosError.unavailable("Speech voice is unavailable: \(identifier)")
+        }
+    }
 
     public static func voices() -> [VoiceDescriptor] {
         AVSpeechSynthesisVoice.speechVoices().map { voice in
@@ -45,8 +101,24 @@ public struct RenderedAudio: Codable, Sendable, Equatable {
             @unknown default: quality = "unknown"
             }
             return VoiceDescriptor(id: voice.identifier, name: voice.name,
-                                   language: voice.language, quality: quality)
+                                   language: voice.language, quality: quality,
+                                   novelty: voice.voiceTraits.contains(.isNoveltyVoice),
+                                   personal: voice.voiceTraits.contains(.isPersonalVoice))
         }
+    }
+
+    /// The voice macOS itself uses for `language` (a BCP 47 tag such as "en-US" or "fr").
+    public static func systemVoiceIdentifier(language: String) -> String? {
+        AVSpeechSynthesisVoice(language: language)?.identifier
+    }
+
+    /// The best installed voice for `language`: premium over enhanced over default, then the
+    /// user's preferred regions, then the voice macOS uses for that language.
+    public static func bestVoice(language: String) -> VoiceDescriptor? {
+        VoiceSelection.best(language: language, in: voices(),
+                            preferredLanguages: Locale.preferredLanguages,
+                            currentRegion: Locale.current.region?.identifier,
+                            systemDefault: systemVoiceIdentifier(language: language))
     }
 
     public static func defaultVoiceIdentifier() throws -> String {
@@ -72,12 +144,7 @@ public struct RenderedAudio: Codable, Sendable, Equatable {
         guard ["wav", "caf", "m4a"].contains(ext) else {
             throw HolosError.invalidInput("Unsupported speech output format .\(ext); use wav, caf, or m4a.")
         }
-        if let rate {
-            guard rate.isFinite, rate >= AVSpeechUtteranceMinimumSpeechRate,
-                  rate <= AVSpeechUtteranceMaximumSpeechRate else {
-                throw HolosError.invalidInput("Speech rate must be between \(AVSpeechUtteranceMinimumSpeechRate) and \(AVSpeechUtteranceMaximumSpeechRate).")
-            }
-        }
+        try SpeechRate.validate(rate)
         let voice: AVSpeechSynthesisVoice
         if let voiceIdentifier {
             guard let selected = AVSpeechSynthesisVoice(identifier: voiceIdentifier) else {
@@ -97,7 +164,7 @@ public struct RenderedAudio: Codable, Sendable, Equatable {
         let temporary = output.deletingLastPathComponent()
             .appendingPathComponent(".holos-\(UUID().uuidString).\(ext == "m4a" ? "caf" : ext)")
         let operation = RenderOperation(synthesizer: synthesizer, utterance: utterance, temporary: temporary,
-                                        output: output, fileExtension: ext)
+                                        output: output, fileExtension: ext, exclusiveRename: exclusiveRename)
         return try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { continuation in
                 guard operation.start(continuation: continuation) else {
@@ -143,7 +210,12 @@ private final class RenderDelegate: NSObject, AVSpeechSynthesizerDelegate {
 }
 
 /// AVFoundation callbacks may arrive outside the main actor. This lock owns all writer and
-/// continuation state; AVSpeechSynthesizer itself is only touched on the main actor.
+/// continuation state; AVSpeechSynthesizer itself is only touched on the main actor. It is never
+/// held for long work: completing claims the render under the lock, then encodes and publishes
+/// (a whole-file copy on volumes without exclusive rename) outside it, so `cancel()` never waits
+/// for that work. `cancel()` raises `cancelRequested` first, which the encoding and the copy
+/// check between chunks: a cancelled render stops there and leaves no output, whichever thread
+/// (the synthesizer's delegate callback, not the awaiting task) is finishing it.
 ///
 /// Completing the render (success, failure, or cancellation) resumes the caller but does not
 /// release the synthesizer, its utterance, or its delegate. `AVSpeechSynthesizer.delegate` does
@@ -170,15 +242,23 @@ final class RenderOperation: @unchecked Sendable {
     private let temporary: URL
     private let output: URL
     private let fileExtension: String
+    private let exclusiveRename: ExclusivePublisher.ExclusiveRename
+    private let copyPacing: ExclusivePublisher.CopyPacing
+    /// Set by `cancel()` before it takes `lock`; read without it by the finishing work.
+    private let cancelRequested = Atomic<Bool>(false)
 
     init(synthesizer: AVSpeechSynthesizer, utterance: AVSpeechUtterance,
          temporary: URL, output: URL,
-         fileExtension: String) {
+         fileExtension: String,
+         exclusiveRename: @escaping ExclusivePublisher.ExclusiveRename = ExclusivePublisher.systemExclusiveRename,
+         copyPacing: ExclusivePublisher.CopyPacing = .init()) {
         self.synthesizer = synthesizer
         self.utterance = utterance
         self.temporary = temporary
         self.output = output
         self.fileExtension = fileExtension
+        self.exclusiveRename = exclusiveRename
+        self.copyPacing = copyPacing
         let delegate = RenderDelegate(operation: self)
         self.delegate = delegate
         synthesizer.delegate = delegate
@@ -249,9 +329,14 @@ final class RenderOperation: @unchecked Sendable {
         complete(error: nil)
     }
 
+    /// Returns at once, even while a finished render is being encoded or copied into place: that
+    /// work sees the request between chunks, stops, and resumes the caller with `CancellationError`.
     func cancel() {
+        cancelRequested.store(true, ordering: .sequentiallyConsistent)
         complete(error: CancellationError())
     }
+
+    private var isCancelRequested: Bool { cancelRequested.load(ordering: .sequentiallyConsistent) }
 
     func fail(_ error: Error) {
         complete(error: error)
@@ -268,6 +353,9 @@ final class RenderOperation: @unchecked Sendable {
         writer = nil
         let frames = frameCount
         let rate = sampleRate
+        // The render is claimed (`completed`), so no other call touches the files below; the
+        // lock is released before the long work, so `cancel()` never waits for it.
+        lock.unlock()
         var resultError = error
         let encoded = temporary.deletingPathExtension().appendingPathExtension("m4a")
         var published = temporary
@@ -282,13 +370,21 @@ final class RenderOperation: @unchecked Sendable {
                     resultError = error
                 }
             }
-            if resultError == nil && link(published.path, output.path) != 0 {
-                resultError = HolosError.io("Could not publish speech output: \(String(cString: strerror(errno)))")
+            // Never over a file already there, and without hard links (see `ExclusivePublisher`):
+            // parts of a reading are published this way into its cache, wherever that is.
+            if resultError == nil {
+                do {
+                    if isCancelRequested { throw CancellationError() }
+                    try ExclusivePublisher.publish(published, to: output, exclusiveRename: exclusiveRename,
+                                                   existing: "Speech output already exists",
+                                                   isCancelled: { self.isCancelRequested }, pacing: copyPacing)
+                } catch {
+                    resultError = error
+                }
             }
         }
         _ = unlink(temporary.path)
         if fileExtension == "m4a" { _ = unlink(encoded.path) }
-        lock.unlock()
         if let resultError { continuation?.resume(throwing: resultError) }
         else { continuation?.resume(returning: RenderedAudio(url: output, duration: Double(frames) / rate,
                                                              frameCount: frames, sampleRate: rate)) }
@@ -336,6 +432,7 @@ final class RenderOperation: @unchecked Sendable {
             throw HolosError.io("Could not allocate speech encoding buffer.")
         }
         while source.framePosition < source.length {
+            if isCancelRequested { throw CancellationError() }
             let remaining = source.length - source.framePosition
             try source.read(into: buffer, frameCount: AVAudioFrameCount(min(Int64(buffer.frameCapacity), remaining)))
             guard buffer.frameLength > 0 else {
