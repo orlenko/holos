@@ -68,19 +68,39 @@ public enum SpokenWords {
 
     /// Whether `word`, in a text, could be `heard`, a word of a taught heard phrase, misheard again a little
     /// differently ("bundu" for "Bundo", "Timox" for "Timok's", "mix" for "Max"). Stricter than `isClose`: a match
-    /// lets the taught spelling replace the word. The same letters or homophones; otherwise the same first letter or
-    /// first sound, and at most one letter apart, 70 % of the letters the same, or the same `sound` with at least
-    /// half the letters the same. "point" is not "Bundo" (both "pnt" roughly), nor "tax" "Max".
+    /// lets the taught spelling replace the word. The same letters or homophones; otherwise the same `sound` (a
+    /// plural "s" aside), so only the spelling of its vowels or of one sound differs, and at least half the letters
+    /// the same. "point" is not "Bundo", "band" not "Bundo", "tax" not "Max", "bulk" not "bull".
     public static func isVariant(_ word: String, of heard: String) -> Bool {
-        let a = letters(word), b = letters(heard)
-        if a == b || areHomophones(a, b) { return true }
-        guard !a.isEmpty, !b.isEmpty else { return false }
-        let soundA = sound(a), soundB = sound(b)
-        guard a.first == b.first || soundA.first == soundB.first else { return false }
-        let distance = editDistance(Array(a), Array(b))
-        let longer = max(a.count, b.count)
-        if distance <= 1 || Double(distance) <= 0.3 * Double(longer) { return true }
-        return 2 * distance <= longer && soundA == soundB
+        isVariant(Features(word), of: Features(heard))
+    }
+
+    static func isVariant(_ word: Features, of heard: Features) -> Bool {
+        if word.letters == heard.letters || areHomophones(word.letters, heard.letters) { return true }
+        guard !word.letters.isEmpty, !heard.letters.isEmpty else { return false }
+        guard word.sound == heard.sound || word.singular == heard.singular else { return false }
+        let longer = max(word.characters.count, heard.characters.count)
+        return editDistance(word.characters, heard.characters) <= max(1, longer / 2)
+    }
+
+    /// What `isVariant` compares of a word, worked out once for a word met many times.
+    struct Features: Sendable {
+        /// `SpokenWords.letters` of the word.
+        let letters: String
+        let characters: [Character]
+        /// Its `sound`: "bundu" and "Bundo" are "banda", "Timox" and "Timok's" "tamaks", "bulk" "balk" but "bull"
+        /// "bal".
+        let sound: String
+        /// `sound` without the final "s" of a word spelled with one: "sessions" and "session" are one word.
+        let singular: Substring
+
+        init(_ word: String) {
+            letters = SpokenWords.letters(word)
+            characters = Array(letters)
+            sound = SpokenWords.sound(letters)
+            singular = letters.hasSuffix("s") && sound.count > 1 && sound.hasSuffix("s")
+                ? sound.dropLast() : Substring(sound)
+        }
     }
 
     /// Homophones whose spellings `sound` does not bring together, as `letters`: a vowel said with a glide the

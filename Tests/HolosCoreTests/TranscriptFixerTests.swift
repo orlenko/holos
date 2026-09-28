@@ -266,10 +266,10 @@ let taughtList = [
     #expect(selected("a quarter of the budget").isEmpty)
     #expect(selected("I mix colors").isEmpty)
     // A match is the words that said the whole phrase, and only those.
-    #expect(AIFixReference.matches(of: "a Bundo", in: AIFixGuard.words(in: "it runs on a bundu")) == [3..<5])
-    #expect(AIFixReference.matches(of: "This is", in: AIFixGuard.words(in: "so this is it")) == [1..<3])
-    #expect(AIFixReference.matches(of: "a Bundo", in: AIFixGuard.words(in: "bundu")).isEmpty)
-    #expect(AIFixReference.matches(of: "a Bundo", in: AIFixGuard.words(in: "use bundu")).isEmpty)
+    #expect(AIFixReference.matches(of: "a Bundo", in: "it runs on a bundu") == [3..<5])
+    #expect(AIFixReference.matches(of: "This is", in: "so this is it") == [1..<3])
+    #expect(AIFixReference.matches(of: "a Bundo", in: "bundu").isEmpty)
+    #expect(AIFixReference.matches(of: "a Bundo", in: "use bundu").isEmpty)
 }
 
 /// Common words that sound nothing like any heard phrase the speaker taught, nor like its taught spellings.
@@ -292,7 +292,8 @@ let unrelatedWords = [
                 #expect(!SpokenWords.isVariant(word, of: phrase[index]), "\(word) ~ \(phrase[index])")
                 var said = phrase
                 said[index] = word
-                #expect(AIFixReference.matches(of: heard, in: ["so"] + said + ["now"]).isEmpty, "\(said) ~ \(heard)")
+                let text = (["so"] + said + ["now"]).joined(separator: " ")
+                #expect(AIFixReference.matches(of: heard, in: text).isEmpty, "\(text) ~ \(heard)")
             }
         }
     }
@@ -337,10 +338,10 @@ let unrelatedWords = [
     #expect(AIFixGuard.check(original: "open food requests", fixed: "open pool requests", taught: [pool]) == .accept)
     #expect(AIFixGuard.check(original: "open food requests", fixed: "open food pool", taught: [pool])
         == .reject(.implausibleSubstitution))
-    // A meant phrase without content words must come out as it is.
+    // The pair's place becomes its meant phrase; nothing else may change there.
     let qc = Correction(heard: "slash QC", meant: "QC")
     #expect(AIFixGuard.check(original: "then run slash QC now", fixed: "then run QC now", taught: [qc]) == .accept)
-    #expect(AIFixGuard.check(original: "then run slash QC now", fixed: "then run QA now", taught: [qc])
+    #expect(AIFixGuard.check(original: "then run slash QC now", fixed: "then run Ubuntu now", taught: [qc])
         == .reject(.implausibleSubstitution))
     // "the basement" is not "this basement": the pair does not teach "spaceman" there.
     let spaceman = Correction(heard: "this basement", meant: "the spaceman")
@@ -348,6 +349,69 @@ let unrelatedWords = [
         == .reject(.implausibleSubstitution))
     #expect(AIFixGuard.check(original: "ask this basement", fixed: "ask the spaceman", taught: [spaceman])
         == .accept)
+}
+
+@Test func aVariantDiffersOnlyInItsVowels() {
+    let bull = Correction(heard: "bull request", meant: "pull request")
+    // "bulk" shares a first letter with "bull" and is one letter apart, but has a "k" sound "bull" has not.
+    #expect(!SpokenWords.isVariant("bulk", of: "bull") && !SpokenWords.isVariant("bullet", of: "bull"))
+    #expect(AIFixReference.select(from: [bull], for: "I sent a bulk request", budget: 1_000).isEmpty)
+    #expect(AIFixGuard.check(original: "I sent a bulk request", fixed: "I sent a pull request", taught: [bull])
+        == .reject(.implausibleSubstitution))
+    // Vowels and a plural "s" may differ.
+    #expect(SpokenWords.isVariant("bill", of: "bull") && SpokenWords.isVariant("bulls", of: "bull"))
+    #expect(SpokenWords.isVariant("session", of: "sessions") && !SpokenWords.isVariant("java", of: "jav"))
+    #expect(AIFixReference.select(from: [bull], for: "I opened a bull requests", budget: 1_000) == [bull])
+}
+
+@Test func aTaughtPairAndANeighbouringFixAreJudgedApart() {
+    let pool = Correction(heard: "food requests", meant: "pool requests")
+    // One stretch of changes, "their food" -> "there pool": "there" is close to "their", and the pair fixes the rest.
+    #expect(AIFixGuard.check(original: "their food requests", fixed: "there pool requests", taught: [pool]) == .accept)
+    #expect(AIFixGuard.check(original: "open their food requests", fixed: "open there pool requests",
+                             taught: [pool]) == .accept)
+    // The neighbour must still be a mishearing of its own.
+    #expect(AIFixGuard.check(original: "windows food requests", fixed: "ubuntu pool requests", taught: [pool])
+        == .reject(.implausibleSubstitution))
+    // A place the reply left alone is not applied: the other place's fix stands by itself.
+    #expect(AIFixGuard.check(original: "food requests and their food requests",
+                             fixed: "food requests and there pool requests", taught: [pool]) == .accept)
+}
+
+@Test func aHeardPhraseIsNotSaidAcrossTheEndOfASentence() {
+    let bull = Correction(heard: "bull request", meant: "pull request")
+    #expect(AIFixReference.matches(of: "bull request", in: "Watch the bull. Request access.").isEmpty)
+    #expect(AIFixReference.matches(of: "bull request", in: "Open the bull request (now)") == [2..<4])
+    #expect(AIFixReference.select(from: [bull], for: "Watch the bull. Request access.", budget: 1_000).isEmpty)
+    // Nor does the guard let the pair's spelling in there.
+    let pool = Correction(heard: "food requests", meant: "pool requests")
+    #expect(AIFixGuard.check(original: "Get some food. Requests later.", fixed: "Get some pool. Requests later.",
+                             taught: [pool]) == .reject(.implausibleSubstitution))
+    #expect(AIFixGuard.check(original: "Get some food; requests later.", fixed: "Get some pool; requests later.",
+                             taught: [pool]) == .reject(.implausibleSubstitution))
+    #expect(AIFixGuard.check(original: "Get some food requests later.", fixed: "Get some pool requests later.",
+                             taught: [pool]) == .accept)
+    // A comma, hyphen or slash does not end a phrase: "T-Mux" is one.
+    #expect(AIFixReference.matches(of: "T-Mux", in: "open T-Mux now") == [1..<3])
+    #expect(AIFixReference.matches(of: "bull request", in: "a bull, request") == [1..<3])
+    // A heard phrase with a mark of its own is said with that mark.
+    #expect(AIFixReference.matches(of: "node. js", in: "use node. js here") == [1..<3])
+    #expect(AIFixReference.matches(of: "node. js", in: "use node js here").isEmpty)
+}
+
+@Test func referenceSelectionScalesWithDistinctWordsAndStopsWhenCancelled() async {
+    // Thousands of pairs that share few words: each text word is compared with each distinct heard word once.
+    let many = (0..<3_000).map { Correction(heard: "zork\($0) blip\($0 % 7)", meant: "Zork \($0)") }
+    let bull = Correction(heard: "bull request", meant: "pull request")
+    let text = Array(repeating: "I opened a bull request for the zork12 blip5 build.", count: 50).joined(separator: " ")
+    #expect(AIFixReference.select(from: many + [bull], for: text, budget: 1_000) == [bull, many[12]])
+    // The fixer's time limit cancels its task; a cancelled selection stops.
+    let cancelled = Task { () -> [Correction] in
+        while !Task.isCancelled { await Task.yield() }
+        return AIFixReference.select(from: many + [bull], for: text, budget: 1_000)
+    }
+    cancelled.cancel()
+    #expect(await cancelled.value.isEmpty)
 }
 
 @Test func homophonesSpelledApartAreMishearings() {
