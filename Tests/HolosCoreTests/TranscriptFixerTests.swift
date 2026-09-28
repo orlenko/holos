@@ -384,6 +384,10 @@ let unrelatedWords = [
     // A "gh" after "ou" or "au" is an "f" where it is said.
     #expect(SpokenWords.sound("tough") == SpokenWords.sound("tuff") && SpokenWords.sound("laugh") == "laf")
     #expect(SpokenWords.sound("though") == SpokenWords.sound("tho") && SpokenWords.sound("caught") == "kat")
+    #expect(SpokenWords.sound("laughter") == "laftar" && SpokenWords.sound("slaughter") == "slatar")
+    #expect(SpokenWords.sound("draughts") == SpokenWords.sound("drafts"))
+    #expect(AIFixGuard.check(original: "We heard laughter", fixed: "We heard later")
+        == .reject(.implausibleSubstitution))
     #expect(!SpokenWords.isClose("tough", "toe"))
     #expect(AIFixGuard.check(original: "It was a tough injury", fixed: "It was a toe injury")
         == .reject(.implausibleSubstitution))
@@ -430,6 +434,13 @@ let unrelatedWords = [
     // A heard phrase with a mark of its own is said with that mark.
     #expect(AIFixReference.matches(of: "node. js", in: "use node. js here") == [1..<3])
     #expect(AIFixReference.matches(of: "node. js", in: "use node js here").isEmpty)
+    // The same mark: a semicolon is not the heard phrase's period; a typographic quote is a plain one.
+    #expect(AIFixReference.matches(of: "bull. request", in: "the bull; request").isEmpty)
+    #expect(AIFixReference.matches(of: "bull. request", in: "the bull. request") == [1..<3])
+    #expect(AIFixReference.matches(of: "say \"hi", in: "we say “hi") == [1..<3])
+    let period = Correction(heard: "food. requests", meant: "pool. requests")
+    #expect(AIFixGuard.check(original: "Get some food; requests later.", fixed: "Get some pool; requests later.",
+                             taught: [period]) == .reject(.implausibleSubstitution))
 }
 
 @Test func referenceSelectionScalesWithDistinctWordsAndStopsWhenCancelled() async {

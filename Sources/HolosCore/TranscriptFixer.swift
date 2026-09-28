@@ -502,33 +502,38 @@ public enum AIFixReference {
 
     /// Where `heard` was said in `text`, as ranges of its words (`AIFixGuard.words`): every word of the phrase, in
     /// order and next to each other, its content words (`SpokenWords.isContent`) as they are or misheard again a
-    /// little differently (`SpokenWords.isVariant`: "a bundu" for "a Bundo") and its other words exactly, with no
-    /// mark that ends a phrase between them unless the heard phrase has one there too (`Spoken`). Part of a phrase
+    /// little differently (`SpokenWords.isVariant`: "a bundu" for "a Bundo") and its other words exactly, with the
+    /// same marks that end a phrase between them as the heard phrase has, usually none (`Spoken`). Part of a phrase
     /// is not the phrase: "the basement" is not "this basement", "slash help" not "slash QC", "use bundu" not "a
     /// Bundo", and "the bull. Request access" does not say "bull request".
     public static func matches(of heard: String, in text: String) -> [Range<Int>] {
         Finder(text).matches(of: heard)
     }
 
-    /// A text's words (`AIFixGuard.words`) and, for each, whether a mark that ends a phrase comes before it: a
-    /// sentence or clause mark (. ! ? … : ;), a line break, a bracket or a double quote. Commas, hyphens, slashes
-    /// and apostrophes do not: recognizers put commas anywhere, and "T-Mux" is one phrase.
+    /// A text's words (`AIFixGuard.words`) and, for each, the marks that end a phrase just before it ("" for none):
+    /// sentence and clause marks (. ! ? … : ;), line breaks, brackets and double quotes. Commas, hyphens, slashes
+    /// and apostrophes do not end a phrase: recognizers put commas anywhere, and "T-Mux" is one phrase.
     struct Spoken {
         var words: [String] = []
-        var breaks: [Bool] = []
+        var breaks: [String] = []
 
         init(_ text: String) {
             var cursor = text.startIndex
             for match in text.matches(of: AIFixGuard.wordPattern) {
-                let gap = text[cursor..<match.range.lowerBound]
-                breaks.append(!words.isEmpty && gap.contains { $0.isNewline || Self.breakMarks.contains($0) })
+                let gap = words.isEmpty ? "" : text[cursor..<match.range.lowerBound]
+                breaks.append(String(gap.compactMap(Self.breakMark)))
                 words.append(AIFixGuard.normalized(match.output))
                 cursor = match.range.upperBound
             }
         }
 
-        static let breakMarks: Set<Character> = [".", "!", "?", "…", ":", ";", "(", ")", "[", "]", "{", "}", "\"",
-                                                 "“", "”", "«", "»"]
+        /// The mark `character` is when it ends a phrase: a line break as "\n", a typographic double quote as a
+        /// plain one.
+        static func breakMark(_ character: Character) -> Character? {
+            if character.isNewline { return "\n" }
+            if "“”«»".contains(character) { return "\"" }
+            return ".!?…:;()[]{}\"".contains(character) ? character : nil
+        }
     }
 
     /// Finds heard phrases in one text. Where each heard word was said is worked out once, comparing it with each

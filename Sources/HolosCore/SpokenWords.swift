@@ -154,6 +154,9 @@ public enum SpokenWords {
     static let silentGh = ["though", "although", "through", "thorough", "borough", "dough", "bough", "plough",
                            "furlough"]
 
+    /// Words that start with a "gh" said "f" even before a "t": "laughter", "draught".
+    static let fBeforeT = ["laugh", "draught"]
+
     /// A rough pronunciation of `letters` (from `letters(_:)`). Silent letters are dropped: a first "k", "g", "p"
     /// or "m" before "n", "w" before "r", "p" before "s" or "t", the "w" or "h" of a first "wh" ("which", "whole"),
     /// "gh" after the first letter ("night", "eight") but for the "f" of "tough" and "laugh", a last "e" after a
@@ -177,11 +180,13 @@ public enum SpokenWords {
             return isVowel(s[index]) || (s[index] == "y" && !(index + 1 < s.count && isVowel(s[index + 1])))
         }
         func at(_ index: Int) -> Character? { index < s.count ? s[index] : nil }
-        // "gh" after "ou" or "au" is an "f" ("tough", "laugh", "coughs"), but for "ought" ("caught", "thought") and
-        // the words where it is silent ("though", "through", "dough").
+        // "gh" after "ou" or "au" is an "f" ("tough", "laugh", "coughs"), but for "ought" and "aught" ("caught",
+        // "thought", "slaughter") and the words where it is silent ("though", "through", "dough"). "laugh" and
+        // "draught" keep their "f" before a "t" ("laughter").
         func saidF(ghAt index: Int) -> Bool {
-            index >= 2 && s[index - 1] == "u" && "oa".contains(s[index - 2]) && at(index + 2) != "t"
-                && !silentGh.contains { letters.hasPrefix($0) }
+            guard index >= 2, s[index - 1] == "u", "oa".contains(s[index - 2]) else { return false }
+            if fBeforeT.contains(where: { letters.hasPrefix($0) }) { return true }
+            return at(index + 2) != "t" && !silentGh.contains { letters.hasPrefix($0) }
         }
         var out: [Character] = []
         func emit(_ sound: Character) { if out.last != sound { out.append(sound) } }
