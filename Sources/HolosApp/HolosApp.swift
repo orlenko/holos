@@ -98,7 +98,7 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
     /// A forced stop (for example the maximum duration) reported while finalizing; kept for the result message.
     private var forcedStopMessage: String?
 
-    private var removeFillers: Bool {
+    var removeFillers: Bool {
         get { UserDefaults.standard.object(forKey: "removeFillers") as? Bool ?? true }
         set { UserDefaults.standard.set(newValue, forKey: "removeFillers") }
     }
@@ -121,6 +121,9 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
     private var historyDraft: HistoryDraft?
     /// What happened to this dictation's text, for its History record.
     private var historyOutcome: DictationRecord.Outcome?
+    /// The dictation in progress's audio, written from the frames the recognizer takes, when History keeps audio; its
+    /// History record gets it, and a dictation History does not record deletes it.
+    private var historyAudio: (id: UUID, writer: DictationAudioWriter)?
     /// The last complete transcript as Holos wrote it, for Corrections.
     private var lastTranscript = ""
     /// The same transcript before corrections, so edits are learned against what the recognizer heard.
@@ -204,6 +207,10 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
             message = "Could not read corrections.json; corrections are off until it is fixed or removed."
         }
         controller.contextualStrings = corrections.vocabulary
+        controller.frameTap = { [weak self] id, frame in
+            guard let audio = self?.historyAudio, audio.id == id else { return }
+            audio.writer.append(frame)
+        }
         history.onChange = { [weak self] in self?.historyChanged() }
         history.onFailure = { [weak self] problem in self?.showHistoryProblem(problem) }
         history.start()
@@ -583,6 +590,12 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
                 fixPipeline = DictationFixPipeline.make(corrections: corrections, language: locale) { [weak self] chunk, text in
                     self?.writeFixed(chunk, as: text) ?? false
                 }
+                // Its audio, for Run Again, when History keeps it; not for a dictation that already ended (`begin`
+                // can fail at once), which has no draft any more.
+                discardHistoryAudio()
+                if let id = historyDraft?.id, history.recordsAudio {
+                    historyAudio = (id, DictationAudioWriter(store: history.store, id: id))
+                }
             } else {
                 target = nil
                 historyDraft = nil
@@ -600,7 +613,8 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
         switch update.phase {
         case .idle:
             target = nil
-            historyDraft = nil  // cancelled or disabled: nothing is recorded
+            historyDraft = nil  // cancelled or disabled: nothing is recorded, not its audio either
+            discardHistoryAudio()
             overlay.hide()
             message = enabled ? "Ready — hold \(shortcutTitle)" : "Disabled"
             // Cancelled or disabled: usually nothing to keep, but Copy Original may hold what was heard when Apple
@@ -1009,7 +1023,13 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
     /// Result offers (`resultText`) for History's Copy, so this runs once both are set. Once per dictation, never for
     /// one refused at key-down (no draft), never with History off, and never while secure input is on.
     private func recordHistory(recognized: String, heard: String, fixedWritten: String = "", rest: String? = nil) {
-        guard let draft = historyDraft else { return }
+        // The audio goes with the record, or is deleted when there is none.
+        let audio = historyAudio
+        historyAudio = nil
+        guard let draft = historyDraft else {
+            audio?.writer.discard()
+            return
+        }
         historyDraft = nil
         let outcome = historyOutcome
         historyOutcome = nil
@@ -1019,6 +1039,7 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
         let aiChangedWords = written.aiChangedWords
         let text = written.text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let outcome, !text.isEmpty, history.retention.records, !TextInsertion.isSecureInputActive() else {
+            audio?.writer.discard()
             return
         }
         var heard = heard.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1030,7 +1051,15 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
             id: draft.id ?? UUID(), date: draft.date, app: draft.app, language: draft.language, text: text,
             heard: heard.isEmpty ? text : heard, unwritten: resultText,
             fixes: .init(fillersRemoved: fillersRemoved, corrections: swaps, aiChangedWords: aiChangedWords),
-            outcome: outcome, seconds: draft.seconds(now: Date())))
+            outcome: outcome, seconds: draft.seconds(now: Date())),
+            audio: audio.flatMap { $0.id == draft.id ? $0.writer : nil })
+        if let audio, audio.id != draft.id { audio.writer.discard() }
+    }
+
+    /// Deletes the audio of a dictation History will not record (cancelled, disabled, or replaced).
+    private func discardHistoryAudio() {
+        historyAudio?.writer.discard()
+        historyAudio = nil
     }
 
     /// "Correct Last Dictation…": the main window's Corrections section with the last dictation.
@@ -1308,7 +1337,8 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
             locale: locale, localeGroups: localeGroups, localeChangeable: canChangeLanguage,
             fillerExamples: FillerWords.examples(language: locale),
             historyRetention: history.retention, historyCount: history.keptCount,
-            historyUnreadable: history.unreadable))
+            historyUnreadable: history.unreadable, historyKeepsAudio: history.keepsAudio,
+            historyAudioBytes: history.audioBytes))
     }
 
     /// The sidebar's status card: "Dictation ready" and the current message; during a meeting, the pause.
@@ -1377,6 +1407,8 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
             showMainWindow(.people)
         case .clearHistory:
             confirmClearHistory()
+        case .toggleHistoryAudio:
+            changeKeepsHistoryAudio(!history.keepsAudio)
         case .setupAssistant:
             showSetupAssistant(verify: false)
         }
