@@ -175,8 +175,10 @@ import Testing
         let queue = ReadingWorkQueue { try await gates.work($0) }
         var ended: [(UUID, String)] = []
         var startedIDs: [UUID] = []
+        var abandonedEnds: [UUID] = []
         queue.onEnd = { ended.append(($0, outcomeName($1))) }
         queue.onStart = { startedIDs.append($0) }
+        queue.onAbandonedEnd = { abandonedEnds.append($0) }
         let a = UUID()
         queue.enqueue(a)
         await gates.waitUntilStarted(a)
@@ -191,5 +193,7 @@ import Testing
         #expect(startedIDs == [a, a])
         #expect(ended.map(\.0) == [a])
         #expect(ended.first?.1 == "finished")
+        // The first run's end went to `onAbandonedEnd` (the controller finishes a deletion that waited for it).
+        #expect(abandonedEnds == [a])
     }
 }

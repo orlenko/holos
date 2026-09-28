@@ -20,6 +20,8 @@ import Foundation
     public var onStart: ((UUID) -> Void)?
     /// Called once for every reading that was queued, however it ended (never after `shutDown`).
     public var onEnd: ((UUID, Outcome) -> Void)?
+    /// Called when the reading that was running at `shutDown` has ended (its end is not reported to `onEnd`).
+    public var onAbandonedEnd: ((UUID) -> Void)?
 
     private let work: Work
     private var task: Task<Void, Never>?
@@ -108,9 +110,13 @@ import Foundation
         running = nil
         task = nil
         stopRequested = false
-        let silent = shutting || abandoned == id
-        if abandoned == id { abandoned = nil }
-        if !silent { onEnd?(id, outcome) }
+        let wasAbandoned = abandoned == id
+        if wasAbandoned { abandoned = nil }
+        if wasAbandoned {
+            onAbandonedEnd?(id)
+        } else if !shutting {
+            onEnd?(id, outcome)
+        }
         startNext()
     }
 

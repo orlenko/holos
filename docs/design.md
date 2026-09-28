@@ -245,9 +245,13 @@ stopped when the window closes), **Share…** (`NSSharingServicePicker`, ⇧⌘S
 Finder**, **Delete…**; failed (the error, **Try Again**); stopped (where, **Resume**). A
 made reading whose file is no longer there says so and offers only Delete. Delete (⌫, with a
 confirmation) first saves the entry marked for deletion (`deletePending`, hidden from the
-list), stops it if it is being made, then moves a made file to the Trash, removes the render
-cache only when it is an `Output-<16 hex>` folder directly in the Readings cache folder, and
-removes the saved text; only then does the entry leave the index. A file that cannot be
+list), stops it if it is being made, then moves the reading's finished file to the Trash
+(only when its SHA-256 matches the one saved at completion or in the cache's manifest: a
+file put at that path since is left alone), removes a copy a crash cut off (the manifest's
+`publishing` identity; `ReadingLibrary.ownership`), removes the render cache only when it is
+an `Output-<16 hex>` folder directly in the Readings cache folder, and removes the saved
+text; only then does the entry leave the index. A made reading is saved as made before its
+saved text is removed. A file that cannot be
 removed brings the row back with the reason, to delete again; a quit or crash in between is
 finished at the next launch.
 
@@ -261,7 +265,10 @@ Nothing is uploaded; the only network access is loading the page the user pasted
 
 Quitting while a reading is made or waits asks: **Keep Rendering** (quit now; the index
 marks those readings, and the next launch queues them again, the one being made first),
-**Stop** (they are saved as stopped, with Resume), or Cancel. The render in progress is
+**Stop** (they are saved as stopped, with Resume), or Cancel; while the index cannot be
+saved (unreadable, or a newer build's) only Stop and Cancel are offered. A deletion waiting
+for a render the quit stopped finishes once that render ends if the quit is cancelled
+(`ReadingWorkQueue.onAbandonedEnd`). The render in progress is
 cancelled either way; the pipeline's next run removes what that leaves. A reading found
 waiting or being made at launch without that mark (the app crashed or was killed) shows as
 stopped, with Resume. When the quit is cancelled after that question, at once (a meeting's

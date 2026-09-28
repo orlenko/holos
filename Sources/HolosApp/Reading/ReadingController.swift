@@ -101,8 +101,13 @@ final class ReadingController {
         let queue = ReadingWorkQueue { [weak self] id in try await self?.make(id) }
         queue.onStart = { [weak self] id in self?.started(id) }
         queue.onEnd = { [weak self] id, outcome in self?.ended(id, outcome) }
+        queue.onAbandonedEnd = { [weak self] id in self?.abandonedEnded(id) }
         return queue
     }()
+
+    /// Whether the list is saved (it is not when its index could not be read or a newer build wrote it): only then
+    /// can a reading continue at the next launch.
+    var canPersist: Bool { writable }
 
     static let readOnlyMessage = "This reading belongs to a list a newer Voice is Local saved; it is shown here but not changed."
 
@@ -209,8 +214,23 @@ final class ReadingController {
         let (recovered, resume) = ReadingLibrary.afterLaunch(all)
         queue.reopen()
         all = recovered
+        // Deletions waiting for a render the quit stopped: those whose render has ended finish now, the others when
+        // it ends (`abandonedEnded`).
+        for id in deleteWhenStopped where queue.running != id {
+            deleteWhenStopped.remove(id)
+            if let problem = finishDelete(id) { notice = problem }
+        }
         save()
         resume.forEach(queue.enqueue)
+        onChange?()
+    }
+
+    /// The render the quit stopped has ended. While the quit goes on nothing more is done (the index is saved); after
+    /// a cancelled quit, a deletion that waited for it finishes.
+    private func abandonedEnded(_ id: UUID) {
+        activity[id] = nil
+        guard !preparedForQuit, deleteWhenStopped.remove(id) != nil else { return }
+        if let problem = finishDelete(id) { notice = problem }
         onChange?()
     }
 
@@ -311,11 +331,14 @@ final class ReadingController {
             $0.output = result.output.path
             $0.duration = result.manifest.duration
             $0.chapters = result.manifest.chapters.count
+            $0.outputSHA256 = result.manifest.outputSHA256
             $0.part = nil
             $0.parts = result.manifest.parts.count
             // Bookkeeping that failed after the file was saved (see `ReadingResult.warnings`).
             $0.message = result.warnings.isEmpty ? nil : result.warnings.joined(separator: " ")
         }
+        // Saved as made before its text goes, so an exit in between never leaves a reading to resume without it.
+        save()
         // The saved text is no longer needed; one that stays is removed with the reading.
         try? store.removeDocument(for: id)
     }
@@ -419,11 +442,22 @@ final class ReadingController {
     /// only when it is one the pipeline made in the support folder; the saved text is removed. Nil when all are gone.
     private func cleanUp(_ entry: ReadingEntry) -> String? {
         var problems: [String] = []
-        if entry.state == .done, let output = entry.outputURL, FileManager.default.fileExists(atPath: output.path) {
-            do {
-                try FileManager.default.trashItem(at: output, resultingItemURL: nil)
-            } catch {
-                problems.append("\(output.lastPathComponent) could not be moved to the Trash: \(error.localizedDescription)")
+        // Only this reading's own file: the finished one goes to the Trash, a copy a crash cut off is removed, and
+        // anything else at that path (a file put there since) is left alone. Checked before the cache, whose
+        // manifest identifies them, is removed.
+        if let output = entry.outputURL {
+            switch ReadingLibrary.ownership(of: output, sha256: entry.outputSHA256,
+                                            cache: entry.cache.map { URL(fileURLWithPath: $0, isDirectory: true) }) {
+            case .finished?:
+                do {
+                    try FileManager.default.trashItem(at: output, resultingItemURL: nil)
+                } catch {
+                    problems.append("\(output.lastPathComponent) could not be moved to the Trash: \(error.localizedDescription)")
+                }
+            case .partial(let identity)?:
+                ExclusivePublisher.removeIfIdentical(output, to: identity)
+            case nil:
+                break
             }
         }
         if let cache = entry.cache, FileManager.default.fileExists(atPath: cache),

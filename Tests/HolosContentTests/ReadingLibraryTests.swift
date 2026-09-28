@@ -1,4 +1,5 @@
 import Foundation
+import HolosSynthesis
 import Testing
 @testable import HolosContent
 
@@ -167,6 +168,48 @@ import Testing
         #expect(!ReadingLibrary.isRenderCache("/Support/Readings/../Output-0123456789abcdef", in: readings))
         #expect(!ReadingLibrary.isRenderCache("/", in: readings))
         #expect(!ReadingLibrary.isRenderCache("/Support/Readings", in: readings))
+    }
+
+    /// Delete touches only the reading's own file: the finished one (by checksum, the entry's or the cache
+    /// manifest's) or a copy a crash cut off (by the manifest's publishing identity), never a file put there since.
+    @Test func onlyTheReadingsOwnFileIsItsOutput() throws {
+        let root = try folder()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let output = root.appendingPathComponent("Story.m4a")
+        let cache = root.appendingPathComponent("Output-0123456789abcdef", isDirectory: true)
+        try FileManager.default.createDirectory(at: cache, withIntermediateDirectories: false)
+        #expect(ReadingLibrary.ownership(of: output, sha256: "0", cache: cache) == nil)
+
+        try Data("finished audio".utf8).write(to: output)
+        let checksum = try fileSHA256(output)
+        #expect(ReadingLibrary.ownership(of: output, sha256: checksum, cache: nil) == .finished)
+        #expect(ReadingLibrary.ownership(of: output, sha256: nil, cache: nil) == nil)
+
+        func writeManifest(outputSHA256: String?, publishing: ReadingFileIdentity?, output path: String) throws {
+            var manifest = ReadingManifest(
+                kind: ReadingManifest.readingKind, schemaVersion: ReadingManifest.currentSchemaVersion,
+                sourceSHA256: "s", voiceIdentifier: "v", rate: nil, title: "Story", author: nil, language: nil,
+                comment: "c", format: .current, output: path, outputSHA256: outputSHA256, duration: nil, chapters: [],
+                status: "incomplete", parts: [])
+            manifest.publishing = publishing
+            try JSONEncoder().encode(manifest).write(to: cache.appendingPathComponent(ReadingManifest.fileName))
+        }
+        // A reading published but not yet recorded as made: the manifest's checksum names it.
+        try writeManifest(outputSHA256: checksum, publishing: nil, output: output.path)
+        #expect(ReadingLibrary.ownership(of: output, sha256: nil, cache: cache) == .finished)
+
+        // Replaced by another file: not the reading's, whatever the entry and the manifest say.
+        try FileManager.default.removeItem(at: output)
+        try Data("the user's own file".utf8).write(to: output)
+        #expect(ReadingLibrary.ownership(of: output, sha256: checksum, cache: cache) == nil)
+
+        // A copy cut off by a crash: the manifest's publishing identity is this very file.
+        let identity = try #require(ExclusivePublisher.FileIdentity.of(output))
+        try writeManifest(outputSHA256: nil, publishing: identity, output: output.path)
+        #expect(ReadingLibrary.ownership(of: output, sha256: nil, cache: cache) == .partial(identity))
+        // A manifest for another output is not trusted.
+        try writeManifest(outputSHA256: nil, publishing: identity, output: root.appendingPathComponent("Other.m4a").path)
+        #expect(ReadingLibrary.ownership(of: output, sha256: nil, cache: cache) == nil)
     }
 
     @Test func durationsAndPositionsRead() {

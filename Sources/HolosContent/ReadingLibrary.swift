@@ -50,6 +50,8 @@ public struct ReadingEntry: Codable, Sendable, Equatable, Identifiable {
     /// Delete was chosen: the entry is saved marked before its files are removed, so a quit or a crash in between
     /// finishes the deletion at the next launch instead of bringing the reading back. Nil when not.
     public var deletePending: Bool?
+    /// The finished file's SHA-256, so Delete moves to the Trash only that file, never one put at its path since.
+    public var outputSHA256: String?
 
     public init(id: UUID = UUID(), created: Date = Date(), source: ReadingSource, requestedVoice: String?,
                 speed: Double) {
@@ -301,6 +303,38 @@ public enum ReadingLibrary {
         guard name.hasPrefix(prefix) else { return false }
         let digest = name.dropFirst(prefix.count)
         return digest.count == 16 && digest.allSatisfy { $0.isASCII && $0.isHexDigit && !$0.isUppercase }
+    }
+
+    /// What the file at a reading's output path is to that reading.
+    public enum OutputOwnership: Sendable, Equatable {
+        /// The finished file it published (its checksum matches the entry's or the cache manifest's).
+        case finished
+        /// A copy into the destination that a crash cut off, named by the cache manifest's `publishing` identity.
+        case partial(ReadingFileIdentity)
+    }
+
+    /// Whether the file at `output` is this reading's: the finished file (`sha256`, else the checksum the render
+    /// cache's manifest saved for that output), or its own partly copied file (the manifest's `publishing`
+    /// identity). Nil for anything else (a file put there since, or nothing there): Delete leaves it alone.
+    public static func ownership(of output: URL, sha256: String?, cache: URL?) -> OutputOwnership? {
+        guard (try? ReadingOutput.exists(output)) == true else { return nil }
+        var manifest: ReadingManifest?
+        if let cache {
+            let url = cache.appendingPathComponent(ReadingManifest.fileName)
+            let size = (try? url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? .max
+            if size <= ReadingManifest.maximumBytes, let data = try? Data(contentsOf: url),
+               let saved = try? JSONDecoder().decode(ReadingManifest.self, from: data),
+               saved.kind == ReadingManifest.readingKind,
+               URL(fileURLWithPath: saved.output).standardizedFileURL.path == output.standardizedFileURL.path {
+                manifest = saved
+            }
+        }
+        let checksums = [sha256, manifest?.outputSHA256].compactMap { $0 }
+        if !checksums.isEmpty, let actual = try? fileSHA256(output), checksums.contains(actual) { return .finished }
+        if let claimed = manifest?.publishing, ExclusivePublisher.FileIdentity.of(output) == claimed {
+            return .partial(claimed)
+        }
+        return nil
     }
 
     /// "25 min", "1 h 5 min", "40 s".
