@@ -56,7 +56,7 @@ public enum SpokenWords {
     /// these, nor "opened" and "Ubuntu", nor "point" and "Bundo".
     public static func isClose(_ heard: String, _ meant: String) -> Bool {
         let a = letters(heard), b = letters(meant)
-        if a == b || areHomophones(a, b) { return true }
+        if a == b || areHomophones(spelling(heard), spelling(meant)) { return true }
         guard !a.isEmpty, !b.isEmpty else { return false }
         let distance = editDistance(Array(a), Array(b))
         let longer = max(a.count, b.count)
@@ -66,21 +66,45 @@ public enum SpokenWords {
         return 2 * distance <= longer && roughSound(soundA) == roughSound(soundB)
     }
 
+    /// `isClose` for a word split in two or two joined into one ("Onobunto" and "on Ubuntu", "semi colon" and
+    /// "semicolon"), each side given as its words run together. The letters may differ only as much as the shorter
+    /// side allows, so a long word close to its fix does not carry an extra word: "internationalisation" is not
+    /// "internationalization Ubuntu".
+    static func isCloseSplit(_ heard: String, _ meant: String) -> Bool {
+        let a = letters(heard), b = letters(meant)
+        if a == b { return true }
+        guard !a.isEmpty, !b.isEmpty else { return false }
+        let distance = editDistance(Array(a), Array(b))
+        let shorter = min(a.count, b.count)
+        if distance <= 1 || Double(distance) <= 0.3 * Double(shorter) { return true }
+        let soundA = sound(a), soundB = sound(b)
+        if soundA == soundB { return true }
+        return 2 * distance <= shorter && roughSound(soundA) == roughSound(soundB)
+    }
+
     /// Whether `word`, in a text, could be `heard`, a word of a taught heard phrase, misheard again a little
     /// differently ("bundu" for "Bundo", "Timox" for "Timok's", "mix" for "Max"). Stricter than `isClose`: a match
-    /// lets the taught spelling replace the word. The same letters or homophones; otherwise the same `sound` (a
-    /// plural "s" aside), so only the spelling of its vowels or of one sound differs, and at least half the letters
-    /// the same. "point" is not "Bundo", "band" not "Bundo", "tax" not "Max", "bulk" not "bull".
+    /// lets the taught spelling replace the word. The same letters, homophones, or the plural of a word of four
+    /// letters or more ("sessions" and "session"); otherwise the same `sound`, so only the spelling of its vowels or
+    /// of one sound differs, and at least half the letters the same. "point" is not "Bundo", "band" not "Bundo",
+    /// "tax" not "Max", "bulk" not "bull", "buy" not "bus".
     public static func isVariant(_ word: String, of heard: String) -> Bool {
         isVariant(Features(word), of: Features(heard))
     }
 
     static func isVariant(_ word: Features, of heard: Features) -> Bool {
-        if word.letters == heard.letters || areHomophones(word.letters, heard.letters) { return true }
+        if word.letters == heard.letters || areHomophones(word.spelling, heard.spelling) { return true }
         guard !word.letters.isEmpty, !heard.letters.isEmpty else { return false }
-        guard word.sound == heard.sound || word.singular == heard.singular else { return false }
+        if isPlural(word.letters, of: heard.letters) || isPlural(heard.letters, of: word.letters) { return true }
+        guard word.sound == heard.sound else { return false }
         let longer = max(word.characters.count, heard.characters.count)
         return editDistance(word.characters, heard.characters) <= max(1, longer / 2)
+    }
+
+    /// Whether `plural` is `stem` with an "s", `stem` having four letters or more: "bulls" of "bull", not "news" of
+    /// "new" nor "bus" of "bu".
+    static func isPlural(_ plural: String, of stem: String) -> Bool {
+        stem.count >= 4 && plural.count == stem.count + 1 && plural.hasPrefix(stem) && plural.hasSuffix("s")
     }
 
     /// What `isVariant` compares of a word, worked out once for a word met many times.
@@ -88,28 +112,34 @@ public enum SpokenWords {
         /// `SpokenWords.letters` of the word.
         let letters: String
         let characters: [Character]
+        /// `SpokenWords.spelling` of the word, for its homophones.
+        let spelling: String
         /// Its `sound`: "bundu" and "Bundo" are "banda", "Timox" and "Timok's" "tamaks", "bulk" "balk" but "bull"
         /// "bal".
         let sound: String
-        /// `sound` without the final "s" of a word spelled with one: "sessions" and "session" are one word.
-        let singular: Substring
 
         init(_ word: String) {
             letters = SpokenWords.letters(word)
             characters = Array(letters)
+            spelling = SpokenWords.spelling(word)
             sound = SpokenWords.sound(letters)
-            singular = letters.hasSuffix("s") && sound.count > 1 && sound.hasSuffix("s")
-                ? sound.dropLast() : Substring(sound)
         }
     }
 
-    /// Homophones whose spellings `sound` does not bring together, as `letters`: a vowel said with a glide the
+    /// `letters`, keeping apostrophes (made plain): "I'll" is "i'll", not the "ill" of "I feel ill".
+    static func spelling(_ text: String) -> String {
+        let folded = text.folding(options: [.diacriticInsensitive, .caseInsensitive], locale: nil).lowercased()
+        return String(folded.filter { $0.isLetter || $0.isNumber || $0 == "'" || $0 == "’" })
+            .replacingOccurrences(of: "’", with: "'")
+    }
+
+    /// Homophones whose spellings `sound` does not bring together, as `spelling`: a vowel said with a glide the
     /// spelling does not show ("one" and "won", "you" and "ewe"), a silent "h" before a vowel ("our" and "hour"), and
     /// French words whose silent endings differ ("vert" and "verre", "sans" and "cent").
     static let homophones: [Set<String>] = [
         ["one", "won"], ["two", "to", "too"], ["you", "ewe", "yew", "u"], ["eight", "ate"], ["our", "hour"],
-        ["air", "heir"], ["wood", "would"], ["ill", "isle", "aisle"],
-        ["sans", "cent", "sang", "sent", "sen"], ["vers", "vert", "verre", "ver"], ["foi", "fois", "foie"],
+        ["air", "heir"], ["wood", "would"], ["i'll", "isle", "aisle"],
+        ["sans", "cent", "sang", "sent", "s'en"], ["vers", "vert", "verre", "ver"], ["foi", "fois", "foie"],
         ["cour", "cours", "court"], ["temps", "tant", "tend", "tends"], ["vin", "vingt", "vain"],
         ["eau", "haut", "au", "aux", "o"], ["sept", "set", "cet", "cette"], ["pain", "pin", "peint"],
         ["point", "poing"], ["cou", "coup", "cout"], ["sot", "seau", "saut", "sceau"], ["mot", "maux"],
@@ -120,9 +150,14 @@ public enum SpokenWords {
         homophones.contains { $0.contains(a) && $0.contains(b) }
     }
 
+    /// Words that start with a silent "ough": "gh" after "ou" is an "f" elsewhere ("tough", "rough", "cough").
+    static let silentGh = ["though", "although", "through", "thorough", "borough", "dough", "bough", "plough",
+                           "furlough"]
+
     /// A rough pronunciation of `letters` (from `letters(_:)`). Silent letters are dropped: a first "k", "g", "p"
     /// or "m" before "n", "w" before "r", "p" before "s" or "t", the "w" or "h" of a first "wh" ("which", "whole"),
-    /// "gh" after the first letter ("night", "eight"), a last "e" after a consonant, a "w" or "h" not before a vowel.
+    /// "gh" after the first letter ("night", "eight") but for the "f" of "tough" and "laugh", a last "e" after a
+    /// consonant, a "w" or "h" not before a vowel.
     /// Spellings of one sound become one: "ph" f, "ck" and "q" k, "c" before e, i or y s, "dg" and "g" before e, i or
     /// y j, "th" θ, "sh", "ch" and "tch" X, "x" ks, "z" s, a last "mb" m. Each run of vowels (with a "y", "w" or "h"
     /// after them) is one "a", and a sound repeated is kept once. Consonants keep their identity: "point" is "pant"
@@ -142,6 +177,12 @@ public enum SpokenWords {
             return isVowel(s[index]) || (s[index] == "y" && !(index + 1 < s.count && isVowel(s[index + 1])))
         }
         func at(_ index: Int) -> Character? { index < s.count ? s[index] : nil }
+        // "gh" after "ou" or "au" is an "f" ("tough", "laugh", "coughs"), but for "ought" ("caught", "thought") and
+        // the words where it is silent ("though", "through", "dough").
+        func saidF(ghAt index: Int) -> Bool {
+            index >= 2 && s[index - 1] == "u" && "oa".contains(s[index - 2]) && at(index + 2) != "t"
+                && !silentGh.contains { letters.hasPrefix($0) }
+        }
         var out: [Character] = []
         func emit(_ sound: Character) { if out.last != sound { out.append(sound) } }
         var i = 0
@@ -164,7 +205,11 @@ public enum SpokenWords {
                 else if !(next == "c" && afterNext == "h") { emit("t") }
             case "p": if next == "h" { emit("f"); step = 2 } else { emit("p") }
             case "g":
-                if next == "h" { if i == 0 { emit("g") }; step = 2 }
+                if next == "h" {
+                    if i == 0 { emit("g") }
+                    else if saidF(ghAt: i) { emit("f") }
+                    step = 2
+                }
                 else if let next, "eiy".contains(next) { emit("j") }
                 else if !(next == "n" && afterNext == nil) { emit("g") }
             case "d": if !(next == "g" && afterNext.map { "eiy".contains($0) } == true) { emit("d") }

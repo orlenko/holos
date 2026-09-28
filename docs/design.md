@@ -204,9 +204,8 @@ the learned pairs whose whole heard phrase is in the chunk, word for word and in
 order, with no sentence or clause mark, line break, bracket or quote between its
 words: its function words exactly, and each content word (not an English or French
 function word, at least three letters) as is or misheard again a little differently
-(the same pronunciation key, a plural "s" aside, and half the letters the same: "a
-bundu" says "a Bundo"; "a point", "a band" and "bulk request" for "bull request" do
-not). Sharing a word like "a" or "on", part of the phrase, or a word of the meant side
+(its plural, or the same pronunciation key and half the letters the same: "a bundu"
+says "a Bundo"; "a point", "a band" and "bulk request" for "bull request" do not). Sharing a word like "a" or "on", part of the phrase, or a word of the meant side
 does not count: listed that way, "a Bundo -> ubuntu" and "Onobunto -> on Ubuntu" made
 the model turn "on a Windows machine" into "on a Ubuntu machine". Each text word is
 compared once with each distinct heard word, and the choice runs inside the fix's time
@@ -215,7 +214,8 @@ have been misheard for, or adds a word other than a function word. A replacement
 passes when the words are close (the same letters, at most one letter apart or 70 %
 the same; homophones such as "one" and "won"; the same pronunciation key, with silent
 letters dropped, such as "write" and "right"; or the same rough consonants with half
-the letters the same, such as "cold" and "called"), or when the reply is the chunk
+the letters the same, such as "cold" and "called"; words replaced together are judged
+one by one, and a word split or joined by its shorter side), or when the reply is the chunk
 with listed pairs applied where their heard phrases were said, plus such close
 changes: "their food requests" may become "there pool requests". So no taught or
 invented spelling lands on unrelated words, or next to the heard phrase. The model

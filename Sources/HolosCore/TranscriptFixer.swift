@@ -263,14 +263,18 @@ public enum AIFixGuard {
     }
 
     /// Whether `new` could replace `old` as a fix of a mishearing: `old` dropped; function words added
-    /// (`SpokenWords.isContent` false); or `old` close to `new` (`SpokenWords.isClose`) as a whole, word by word, or
-    /// content word by content word. Anything else is a word the model swapped in: a spelling from the taught list
+    /// (`SpokenWords.isContent` false); as many words, each close to what replaces it (`SpokenWords.isClose`); one
+    /// word split or joined (`SpokenWords.isCloseSplit`); or function words come and gone around content words, each
+    /// close to what replaces it. Anything else is a word the model swapped in: a spelling from the taught list
     /// ("windows" became "Ubuntu") or one of its own, which only `plausibleReply` may allow.
     static func plausible(_ old: [String], _ new: [String]) -> Bool {
         if new.isEmpty { return true }
         if old.isEmpty { return !new.contains(where: SpokenWords.isContent) }
-        if SpokenWords.isClose(old.joined(), new.joined()) { return true }
-        if old.count == new.count, zip(old, new).allSatisfy(SpokenWords.isClose) { return true }
+        // As many words: each replaced by one it could have been misheard for, never judged run together, where a
+        // long word close to its fix would carry an unrelated one ("internationalisation windows").
+        if old.count == new.count { return zip(old, new).allSatisfy(SpokenWords.isClose) }
+        // A word split in two or more, or joined from them.
+        if min(old.count, new.count) == 1, SpokenWords.isCloseSplit(old.joined(), new.joined()) { return true }
         let oldContent = old.filter(SpokenWords.isContent)
         let newContent = new.filter(SpokenWords.isContent)
         return !newContent.isEmpty && oldContent.count == newContent.count

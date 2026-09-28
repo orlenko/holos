@@ -364,6 +364,39 @@ let unrelatedWords = [
     #expect(AIFixReference.select(from: [bull], for: "I opened a bull requests", budget: 1_000) == [bull])
 }
 
+@Test func wordsReplacedTogetherAreEachJudged() {
+    // A long word close to its fix does not carry an unrelated one, side by side or run together.
+    #expect(AIFixGuard.check(original: "internationalisation windows", fixed: "internationalization Ubuntu")
+        == .reject(.implausibleSubstitution))
+    #expect(AIFixGuard.check(original: "the internationalisation", fixed: "the internationalization Ubuntu")
+        == .reject(.implausibleSubstitution))
+    #expect(AIFixGuard.check(original: "internationalisation windows", fixed: "internationalization windows")
+        == .accept)
+    // A word split or joined is still one fix.
+    #expect(AIFixGuard.check(original: "The build runs Onobunto.", fixed: "The build runs on Ubuntu.") == .accept)
+    #expect(AIFixGuard.check(original: "add a semi colon here", fixed: "add a semicolon here") == .accept)
+}
+
+@Test func soundAndSpellingEdgesDoNotJoinUnrelatedWords() {
+    // "I'll" sounds like "aisle"; the adjective "ill" does not.
+    #expect(SpokenWords.isClose("I'll", "aisle") && !SpokenWords.isClose("ill", "aisle"))
+    #expect(AIFixGuard.check(original: "I feel ill", fixed: "I feel aisle") == .reject(.implausibleSubstitution))
+    // A "gh" after "ou" or "au" is an "f" where it is said.
+    #expect(SpokenWords.sound("tough") == SpokenWords.sound("tuff") && SpokenWords.sound("laugh") == "laf")
+    #expect(SpokenWords.sound("though") == SpokenWords.sound("tho") && SpokenWords.sound("caught") == "kat")
+    #expect(!SpokenWords.isClose("tough", "toe"))
+    #expect(AIFixGuard.check(original: "It was a tough injury", fixed: "It was a toe injury")
+        == .reject(.implausibleSubstitution))
+    // Only a plural loses its "s": "bus" is not "buy", "news" not "new".
+    #expect(!SpokenWords.isVariant("buy", of: "bus") && !SpokenWords.isVariant("new", of: "news"))
+    #expect(!SpokenWords.isVariant("gap", of: "gas") && !SpokenWords.isVariant("clay", of: "class"))
+    #expect(SpokenWords.isVariant("bulls", of: "bull") && SpokenWords.isVariant("session", of: "sessions"))
+    let bus = Correction(heard: "bus", meant: "Buzz")
+    #expect(AIFixReference.select(from: [bus], for: "I will buy it", budget: 1_000).isEmpty)
+    #expect(AIFixGuard.check(original: "I will buy it", fixed: "I will Buzz it", taught: [bus])
+        == .reject(.implausibleSubstitution))
+}
+
 @Test func aTaughtPairAndANeighbouringFixAreJudgedApart() {
     let pool = Correction(heard: "food requests", meant: "pool requests")
     // One stretch of changes, "their food" -> "there pool": "there" is close to "their", and the pair fixes the rest.
