@@ -98,6 +98,9 @@ public struct ReadingManifest: Codable, Sendable, Equatable {
 public struct ReadingResult: Sendable, Equatable {
     public let output: URL
     public let manifest: ReadingManifest
+    /// Bookkeeping that failed after the finished file was published (saving the final manifest,
+    /// removing the part files): one sentence each, for stderr. The reading itself succeeded.
+    public var warnings: [String] = []
 }
 
 @MainActor public protocol ReadingAudioRenderer {
@@ -141,22 +144,28 @@ public struct AudioBookJoiner: ReadingAudioJoiner {
     /// Called after each step of creating a new reading's cache; tests fail one to check that
     /// nothing is left behind.
     private let initializationFault: (ReadingCache.Step) throws -> Void
+    /// Called before each manifest save of a render; tests fail one (a full or unwritable cache
+    /// volume) to check how the reading copes.
+    private let saveFault: (ReadingManifest) throws -> Void
+    /// Removes a cache's part files; tests fail it.
+    private let removeParts: (URL) throws -> Void
 
-    public init(renderer: any ReadingAudioRenderer = NativeSpeechRenderer(),
+    public convenience init(renderer: any ReadingAudioRenderer = NativeSpeechRenderer(),
                 joiner: any ReadingAudioJoiner = AudioBookJoiner()) {
-        self.renderer = renderer
-        self.joiner = joiner
-        self.exclusiveRename = ReadingPublisher.systemExclusiveRename
-        self.initializationFault = { _ in }
+        self.init(renderer: renderer, joiner: joiner, exclusiveRename: ReadingPublisher.systemExclusiveRename)
     }
 
     init(renderer: any ReadingAudioRenderer, joiner: any ReadingAudioJoiner,
          exclusiveRename: @escaping ReadingPublisher.ExclusiveRename = ReadingPublisher.systemExclusiveRename,
-         initializationFault: @escaping (ReadingCache.Step) throws -> Void = { _ in }) {
+         initializationFault: @escaping (ReadingCache.Step) throws -> Void = { _ in },
+         saveFault: @escaping (ReadingManifest) throws -> Void = { _ in },
+         removeParts: @escaping (URL) throws -> Void = ReadingPipeline.removeParts(in:)) {
         self.renderer = renderer
         self.joiner = joiner
         self.exclusiveRename = exclusiveRename
         self.initializationFault = initializationFault
+        self.saveFault = saveFault
+        self.removeParts = removeParts
     }
 
     /// The cache key for a reading with an explicit output: the text and every setting that
@@ -259,20 +268,14 @@ public struct AudioBookJoiner: ReadingAudioJoiner {
         // Finished before (possibly interrupted right after publishing): nothing to do.
         if let published = manifest.outputSHA256,
            (try? fileSHA256(output)) == published {
-            if manifest.status != "complete" || manifest.publishing != nil {
-                manifest.status = "complete"
-                manifest.publishing = nil
-                try save(manifest, to: manifestURL)
-            }
-            removeParts(in: directory)
-            return ReadingResult(output: output, manifest: manifest)
+            return finish(&manifest, manifestURL: manifestURL, directory: directory, output: output)
         }
         // A copy into the destination that a crash cut off is this reading's own file: it goes,
         // and the reading is joined and published again. Anything else there is kept.
         if let claimed = manifest.publishing {
             ReadingPublisher.removeIfIdentical(output, to: claimed)
             manifest.publishing = nil
-            try save(manifest, to: manifestURL)
+            try saveManifest(manifest, to: manifestURL)
         }
         var existing = stat()
         guard lstat(output.path, &existing) != 0 else {
@@ -297,7 +300,7 @@ public struct AudioBookJoiner: ReadingAudioJoiner {
                 manifest.parts[index].duration = nil
             }
         }
-        try save(manifest, to: manifestURL)
+        try saveManifest(manifest, to: manifestURL)
 
         for part in planned {
             try Task.checkCancellation()
@@ -317,10 +320,10 @@ public struct AudioBookJoiner: ReadingAudioJoiner {
                 manifest.parts[part.index].status = "complete"
                 manifest.parts[part.index].audioSHA256 = try fileSHA256(result.url)
                 manifest.parts[part.index].duration = result.duration
-                try save(manifest, to: manifestURL)
+                try saveManifest(manifest, to: manifestURL)
             } catch {
                 manifest.status = "incomplete"
-                try? save(manifest, to: manifestURL)
+                try? saveManifest(manifest, to: manifestURL)
                 throw HolosError.incomplete("Reading stopped at part \(part.index + 1) of \(planned.count): \(error.localizedDescription)")
             }
         }
@@ -340,31 +343,56 @@ public struct AudioBookJoiner: ReadingAudioJoiner {
         do {
             summary = try await joiner.join(parts: audioParts, metadata: metadata, to: temporary)
         } catch {
-            try? save(manifest, to: manifestURL)
+            try? saveManifest(manifest, to: manifestURL)
             throw HolosError.incomplete("Reading parts are rendered, but joining them failed: \(error.localizedDescription)")
         }
         try Task.checkCancellation()
         manifest.outputSHA256 = try fileSHA256(temporary)
         manifest.duration = summary.duration
         manifest.chapters = summary.chapters
-        try save(manifest, to: manifestURL)
+        try saveManifest(manifest, to: manifestURL)
         try Task.checkCancellation()
         do {
             try ReadingPublisher.publish(temporary, to: output, exclusiveRename: exclusiveRename) { claimed in
                 manifest.publishing = claimed
-                try save(manifest, to: manifestURL)
+                try saveManifest(manifest, to: manifestURL)
             }
         } catch {
             manifest.outputSHA256 = nil
             manifest.publishing = nil
-            try? save(manifest, to: manifestURL)
+            try? saveManifest(manifest, to: manifestURL)
             throw error
         }
-        manifest.publishing = nil
-        manifest.status = "complete"
-        try save(manifest, to: manifestURL)
-        removeParts(in: directory)
-        return ReadingResult(output: output, manifest: manifest)
+        return finish(&manifest, manifestURL: manifestURL, directory: directory, output: output)
+    }
+
+    /// The bookkeeping once the finished file is at `output`: the manifest marked complete and
+    /// the part files removed. The reading has succeeded by then, so neither can fail it; a step
+    /// that fails is reported as a warning. The manifest saved before publishing already holds
+    /// the file's checksum, so a `--resume` recognizes the reading as done either way.
+    private func finish(_ manifest: inout ReadingManifest, manifestURL: URL, directory: URL,
+                        output: URL) -> ReadingResult {
+        var warnings: [String] = []
+        if manifest.status != "complete" || manifest.publishing != nil {
+            manifest.status = "complete"
+            manifest.publishing = nil
+            do {
+                try saveManifest(manifest, to: manifestURL)
+            } catch {
+                warnings.append("The reading was saved to \(output.path), but its cache at \(directory.path) could not be marked complete: \(error.localizedDescription)")
+            }
+        }
+        do {
+            try removeParts(directory)
+        } catch {
+            warnings.append("The reading was saved to \(output.path), but its part files in \(directory.path) could not be removed: \(error.localizedDescription)")
+        }
+        return ReadingResult(output: output, manifest: manifest, warnings: warnings)
+    }
+
+    private func saveManifest(_ manifest: ReadingManifest, to url: URL) throws {
+        try saveFault(manifest)
+        try save(manifest, to: url)
     }
 
     /// Fails unless every setting of a reading is usable, creating nothing: the text is not
@@ -430,8 +458,15 @@ public struct AudioBookJoiner: ReadingAudioJoiner {
     }
 
     /// The cache is several times larger than the finished file; it is not kept once that exists.
-    private func removeParts(in directory: URL) {
-        try? FileManager.default.removeItem(at: directory.appendingPathComponent("parts"))
+    /// Already gone is not a failure.
+    nonisolated static func removeParts(in directory: URL) throws {
+        let parts = directory.appendingPathComponent("parts")
+        do {
+            try FileManager.default.removeItem(at: parts)
+        } catch {
+            var metadata = stat()
+            guard lstat(parts.path, &metadata) != 0, errno == ENOENT else { throw error }
+        }
     }
 }
 

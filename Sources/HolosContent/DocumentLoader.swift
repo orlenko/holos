@@ -964,18 +964,11 @@ public enum HTMLReader {
             return Self.attribute("style", of: node).map(Self.hidesElement) ?? false
         }
 
-        /// Whether an inline style sets `display: none` (in any case, `!important` or not).
+        /// Whether an inline style's effective `display` is `none`: the declaration that wins the
+        /// cascade within the attribute, so `display:none; display:block` shows the element and
+        /// `display:none !important; display:block` hides it.
         static func hidesElement(_ style: String) -> Bool {
-            style.split(separator: ";").contains { declaration in
-                let parts = declaration.split(separator: ":", maxSplits: 1)
-                guard parts.count == 2,
-                      parts[0].trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "display" else { return false }
-                var value = parts[1].trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-                if value.hasSuffix("!important") {
-                    value = value.dropLast("!important".count).trimmingCharacters(in: .whitespacesAndNewlines)
-                }
-                return value == "none"
-            }
+            InlineStyle(style).value(of: "display", isValid: InlineStyle.isDisplayValue) == "none"
         }
 
         /// The attribute whose local name is `name` in any ASCII case (HTML attribute names are
@@ -1038,6 +1031,113 @@ public enum HTMLReader {
             guard node.kind == .element, !isSkipped(node) else { return "" }
             let separator = HTMLReader.blocks.contains(name(of: node)) ? " " : ""
             return separator + (node.children ?? []).map(text(of:)).joined() + separator
+        }
+    }
+
+    /// The declarations of an HTML `style` attribute, read the way a browser cascades them within
+    /// the one attribute: per property (names in any case), an `!important` declaration beats a
+    /// normal one, and among equals the last wins. Declarations with an empty or invalid value are
+    /// dropped, as a browser drops them, so they never override an earlier valid one.
+    struct InlineStyle {
+        struct Declaration: Equatable {
+            var property: String
+            var value: String
+            var important: Bool
+        }
+
+        let declarations: [Declaration]
+
+        init(_ style: String) {
+            declarations = Self.split(Self.strippingComments(style)).compactMap(Self.declaration)
+        }
+
+        /// The effective value of `property`, lowercased, among declarations whose value
+        /// `isValid` accepts; nil when none sets it.
+        func value(of property: String, isValid: (String) -> Bool = { _ in true }) -> String? {
+            let property = property.lowercased()
+            var winner: Declaration?
+            for declaration in declarations where declaration.property == property && isValid(declaration.value) {
+                if let current = winner, current.important, !declaration.important { continue }
+                winner = declaration
+            }
+            return winner?.value
+        }
+
+        /// A `display` value a browser accepts: one to three known keywords, or a CSS-wide
+        /// keyword alone.
+        static func isDisplayValue(_ value: String) -> Bool {
+            let words = value.split(whereSeparator: \.isWhitespace).map(String.init)
+            if words.count == 1, cssWide.contains(words[0]) { return true }
+            return (1...3).contains(words.count) && words.allSatisfy(displayKeywords.contains)
+        }
+
+        static let cssWide: Set<String> = ["inherit", "initial", "unset", "revert", "revert-layer"]
+
+        static let displayKeywords: Set<String> = [
+            "none", "contents", "block", "inline", "run-in", "flow", "flow-root", "table", "flex", "grid",
+            "ruby", "math", "list-item", "inline-block", "inline-table", "inline-flex", "inline-grid",
+            "table-row-group", "table-header-group", "table-footer-group", "table-row", "table-cell",
+            "table-column-group", "table-column", "table-caption", "ruby-base", "ruby-text",
+            "ruby-base-container", "ruby-text-container",
+        ]
+
+        /// One `name: value [!important]` declaration, lowercased, or nil when it has no name or
+        /// no value.
+        static func declaration(_ text: String) -> Declaration? {
+            guard let colon = text.firstIndex(of: ":") else { return nil }
+            let property = text[..<colon].trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            var value = text[text.index(after: colon)...].trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            var important = false
+            if let bang = value.lastIndex(of: "!"),
+               value[value.index(after: bang)...].trimmingCharacters(in: .whitespacesAndNewlines) == "important" {
+                important = true
+                value = value[..<bang].trimmingCharacters(in: .whitespacesAndNewlines)
+            }
+            guard !property.isEmpty, !property.contains(where: \.isWhitespace), !value.isEmpty else { return nil }
+            return Declaration(property: property, value: value, important: important)
+        }
+
+        /// The text split at semicolons outside quotes and brackets, so a `;` inside
+        /// `url("a;b")` does not end a declaration.
+        static func split(_ text: String) -> [String] {
+            var parts: [String] = []
+            var current = ""
+            var quote: Character?
+            var depth = 0
+            var escaped = false
+            for character in text {
+                if escaped { escaped = false; current.append(character); continue }
+                if character == "\\" { escaped = true; current.append(character); continue }
+                if let open = quote {
+                    if character == open { quote = nil }
+                } else if character == "\"" || character == "'" {
+                    quote = character
+                } else if character == "(" || character == "[" {
+                    depth += 1
+                } else if character == ")" || character == "]" {
+                    depth = max(0, depth - 1)
+                } else if character == ";", depth == 0 {
+                    parts.append(current)
+                    current = ""
+                    continue
+                }
+                current.append(character)
+            }
+            parts.append(current)
+            return parts
+        }
+
+        /// The text without `/* … */` comments (an unclosed one runs to the end).
+        static func strippingComments(_ text: String) -> String {
+            var result = ""
+            var rest = text[...]
+            while let open = rest.range(of: "/*") {
+                result += rest[..<open.lowerBound]
+                guard let close = rest[open.upperBound...].range(of: "*/") else { return result }
+                result += " "
+                rest = rest[close.upperBound...]
+            }
+            return result + rest
         }
     }
 

@@ -170,6 +170,8 @@ struct Read: AsyncParsableCommand {
         let result = try await ReadingPipeline().render(
             script: script, voiceIdentifier: selected.id, rate: request.rate, metadata: metadata,
             location: location, resume: request.resume)
+        // The file is published: bookkeeping that failed after that is a warning, not a failure.
+        for warning in result.warnings { Console.error("Warning: \(warning)") }
         return result.output
     }
 }

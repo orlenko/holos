@@ -195,6 +195,51 @@ import Testing
         #expect(FileManager.default.fileExists(atPath: place.output.path))
     }
 
+    /// Once the finished file is published the reading has succeeded: a manifest save or a
+    /// cleanup that fails after that is a warning, whether the file was renamed or copied into
+    /// place, and a `--resume` finds the reading done.
+    @Test func bookkeepingAfterPublishingOnlyWarns() async throws {
+        let unsupported: ReadingPublisher.ExclusiveRename = { _, _ in errno = ENOTSUP; return -1 }
+        for rename in [ReadingPublisher.systemExclusiveRename, unsupported] {
+            let parent = try root()
+            defer { try? FileManager.default.removeItem(at: parent) }
+            let place = location(parent)
+            let renderer = FakeRenderer()
+            let pipeline = ReadingPipeline(renderer: renderer, joiner: FakeJoiner(), exclusiveRename: rename,
+                                           saveFault: { manifest in
+                if manifest.status == "complete" { throw HolosError.io("Simulated full cache volume.") }
+            })
+            let result = try await pipeline.render(script: script(3), voiceIdentifier: voice, metadata: metadata,
+                                                   location: place)
+            #expect(result.output == place.output)
+            #expect(try Data(contentsOf: place.output) == Data(renderer.calls.joined().utf8))
+            #expect(result.warnings.count == 1)
+            #expect(result.warnings.first?.contains("could not be marked complete") == true)
+            #expect(result.warnings.first?.contains("Simulated full cache volume.") == true)
+
+            let calls = renderer.calls.count
+            let resumed = try await ReadingPipeline(renderer: renderer, joiner: FakeJoiner())
+                .render(script: script(3), voiceIdentifier: voice, metadata: metadata, location: place, resume: true)
+            #expect(renderer.calls.count == calls)
+            #expect(resumed.manifest.status == "complete")
+            #expect(resumed.manifest.publishing == nil)
+            #expect(resumed.warnings.isEmpty)
+        }
+
+        let parent = try root()
+        defer { try? FileManager.default.removeItem(at: parent) }
+        let place = location(parent)
+        let pipeline = ReadingPipeline(renderer: FakeRenderer(), joiner: FakeJoiner(), removeParts: { _ in
+            throw HolosError.io("Simulated removal failure.")
+        })
+        let result = try await pipeline.render(script: script(2), voiceIdentifier: voice, metadata: metadata,
+                                               location: place)
+        #expect(result.manifest.status == "complete")
+        #expect(FileManager.default.fileExists(atPath: place.output.path))
+        #expect(result.warnings.count == 1)
+        #expect(result.warnings.first?.contains("could not be removed") == true)
+    }
+
     @Test func failedPartResumesAndRerendersOnlyMissingOrTamperedParts() async throws {
         let parent = try root()
         defer { try? FileManager.default.removeItem(at: parent) }

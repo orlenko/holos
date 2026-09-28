@@ -515,6 +515,31 @@ import Testing
         """) == ["Aria visible.", "Display block.", "Inline text.", "Open dialog."])
     }
 
+    /// Several `display` declarations in one `style` attribute: the one that wins the cascade
+    /// decides, as in a browser.
+    @Test func inlineDisplayFollowsTheCascade() {
+        #expect(paragraphs("""
+        <html><body>
+        <p style="display:none; display:block">Later block wins.</p>
+        <p style="display:block !important; display:none">Important block wins.</p>
+        <p style="display:none !important; display:block">Important none wins.</p>
+        <p style="DISPLAY: NONE">Upper case none.</p>
+        <p style="display:none ! important; display:block !important">Last important wins.</p>
+        <p style="display:none; display:">Empty value ignored.</p>
+        <p style="display:none; display:bogus">Invalid value ignored.</p>
+        <p style="background:url('a;display:none'); display:block">Quoted semicolon.</p>
+        <p style="display:/* none */block">Comment.</p>
+        </body></html>
+        """) == ["Later block wins.", "Important block wins.", "Last important wins.", "Quoted semicolon.",
+                 "Comment."])
+        #expect(!HTMLReader.Walker.hidesElement("display:none; display:block"))
+        #expect(!HTMLReader.Walker.hidesElement("display:block !important; display:none"))
+        #expect(HTMLReader.Walker.hidesElement("display:none !important; display:block"))
+        #expect(HTMLReader.Walker.hidesElement("DISPLAY: NONE"))
+        #expect(HTMLReader.Walker.hidesElement("display:none;display:"))
+        #expect(!HTMLReader.Walker.hidesElement("color: red"))
+    }
+
     /// Legacy-encoded pages are decoded before parsing and read like UTF-8 ones, navigation and
     /// footers skipped.
     @Test func legacyEncodedPagesSkipNavigationToo() throws {
