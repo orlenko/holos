@@ -50,15 +50,19 @@ struct TemporaryDirectory: Sendable {
 /// wait grows with the load instead of expiring under it; `hardDeadline` still ends a wait for something that is
 /// never coming.
 struct PollBudget {
-    static let interval = Duration.milliseconds(5)
+    static let defaultInterval = Duration.milliseconds(5)
 
     private let clock = ContinuousClock()
     private let hardDeadline: ContinuousClock.Instant
     private let timeout: Duration
+    private let interval: Duration
     private var spent = Duration.zero
 
-    init(timeout: Duration) {
+    /// `interval` is how long each poll waits. A loop that samples something short-lived passes a finer one; it
+    /// changes how often the condition is looked at, not how much load the budget tolerates.
+    init(timeout: Duration, interval: Duration = PollBudget.defaultInterval) {
         self.timeout = timeout
+        self.interval = interval
         hardDeadline = ContinuousClock().now.advanced(by: max(timeout * 4, .seconds(60)))
     }
 
@@ -68,8 +72,8 @@ struct PollBudget {
     mutating func poll() async {
         let before = clock.now
         do {
-            try await Task.sleep(for: Self.interval)
-            spent += min(before.duration(to: clock.now), Self.interval * 4)
+            try await Task.sleep(for: interval)
+            spent += min(before.duration(to: clock.now), interval * 4)
         } catch {
             // Cancelled: swift-testing has given up on this test, and `Task.sleep` returns at once from here on.
             // Charging what that call actually cost would be charging nothing, leaving the loop spinning on its

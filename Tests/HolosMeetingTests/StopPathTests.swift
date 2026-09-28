@@ -27,11 +27,12 @@ func hungCaptureStopTimesOut() async throws {
             dependencies: recorderDependencies(captures: captures, stop: stop, timeouts: timeouts))
     }
     #expect(await eventually { (captures.captures.first?.consumedFrames ?? 0) >= 3 })
-    let clock = ContinuousClock()
-    let stopped = clock.now
     stop.requestStop()
     let outcome = try await run.value
-    #expect(stopped.duration(to: clock.now) < .seconds(10), "The stop path does not wait for the hung stop.")
+    // That the stop path did not wait out the capture's 30 s stop is proved by the recorder's own record of it
+    // below -- a `captureFailed` event saying the capture did not stop within its timeout, which a run that waited
+    // for the capture to stop cleanly would not have written. An elapsed-time bound here measured the machine
+    // instead, and failed on a loaded run where the 200 ms timeout had fired correctly.
     #expect(outcome.archiveStatus == ArchiveStatus.audioOnly, "The archive is finished with the audio saved.")
     #expect(try SessionArchive.readManifest(at: outcome.directory).chunks.first?.frameCount == 14_400)
     let failure = try #require(try recorderEvents(outcome.directory, MeetingEventKind.captureFailed).first)
@@ -95,11 +96,10 @@ func hungReplayFinishTimesOut() async throws {
                                                timeouts: timeouts))
     }
     #expect(await eventually { (captures.captures.first?.consumedFrames ?? 0) >= 6 })
-    let clock = ContinuousClock()
-    let stopped = clock.now
     stop.requestStop()
     let outcome = try await run.value
-    #expect(stopped.duration(to: clock.now) < .seconds(10), "The stop path does not wait for the hung replay.")
+    // The hung replay was abandoned rather than waited for: the session below is cancelled, which is what the run
+    // does instead of waiting. An elapsed-time bound proved the same thing only on an unloaded machine.
     #expect(speech.sessions.count == 2)
     // Cancelled without waiting for it, since it may be stuck.
     var cancelled = false
@@ -156,9 +156,8 @@ func leaseTakenBeforeFinish() async throws {
     let probeSawHook = SharedValue(false)
     let hook: PostProcessHook = { session, _, _ in
         hookStarted.set(true)
-        let clock = ContinuousClock()
-        let deadline = clock.now.advanced(by: .seconds(5))
-        while !probeSawHook.value, clock.now < deadline { try? await Task.sleep(for: .milliseconds(1)) }
+        var budget = PollBudget(timeout: .seconds(5), interval: .milliseconds(1))
+        while !probeSawHook.value, !budget.isSpent { await budget.poll() }
         return stopRecord(session, state: .succeeded)
     }
     let captures = FakeCaptureFactory([FakeCaptureScript(frames: FakeFrame.run(count: 3))])
@@ -173,9 +172,10 @@ func leaseTakenBeforeFinish() async throws {
     let probe = Task.detached { () -> (samples: Int, afterHook: Int, dead: Int, unlocked: Int, seen: Set<RecorderLiveness>) in
         var samples = 0, afterHook = 0, dead = 0, unlocked = 0
         var seen: Set<RecorderLiveness> = []
-        let clock = ContinuousClock()
-        let deadline = clock.now.advanced(by: .seconds(20))
-        while clock.now < deadline {
+        // A budget of polling time, not of wall time: the loop ends on the exited status below, and when the
+        // machine starves this task the backstop used to fire first and return before the hook had even started.
+        var budget = PollBudget(timeout: .seconds(20), interval: .milliseconds(1))
+        while !budget.isSpent {
             let hookRunning = hookStarted.value
             // Locks first, then the status: the recorder writes exited before it releases its last lock.
             let writer = (try? SessionArchive.isActive(at: session)) ?? true
@@ -189,7 +189,7 @@ func leaseTakenBeforeFinish() async throws {
             if !writer && !lease && !exited { unlocked += 1 }
             if hookRunning { probeSawHook.set(true) }
             if exited { break }
-            try? await Task.sleep(for: .milliseconds(1))
+            await budget.poll()
         }
         return (samples, afterHook, dead, unlocked, seen)
     }

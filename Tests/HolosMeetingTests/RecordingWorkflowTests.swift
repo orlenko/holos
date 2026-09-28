@@ -268,12 +268,10 @@ func durationStopsRecording() async throws {
         (try? RecorderChannel.readStatus(session: directory))?.elapsedSeconds == 0.29
     })
     #expect(try RecorderChannel.readStatus(session: directory)?.phase == .recording, "Not stopped before 0.3 s.")
-    let clock = ContinuousClock()
-    let elapsed = clock.now
     session.set(0.3)
     let outcome = try await run.value
-    // Generous: the loop checks the duration every 10 ms here; the bound only catches a stop that never comes.
-    #expect(elapsed.duration(to: clock.now) < .seconds(20))
+    // A stop that never comes is caught by `.timeLimit` above, and `stopReason` below says which stop arrived, so
+    // the elapsed-time bound that used to be here only added a dependency on how fast the machine was.
     #expect(outcome.stopReason == .duration)
     #expect(outcome.archiveStatus == ArchiveStatus.complete)
     let manifest = try SessionArchive.readManifest(at: outcome.directory)
