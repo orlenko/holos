@@ -269,7 +269,7 @@ public enum ReadingOutput {
     }
 
     /// Fails unless `folder` exists, is a folder, its volume takes names of `names` bytes (see
-    /// `checkNameLimit`), and a new file can be created in it.
+    /// `checkNameLimit`), and a new file can be created, renamed, and removed in it.
     static func checkFolder(_ folder: URL, role: String, names: Int) throws {
         // `stat` on the path as spelled (`FileManager` would decompose it; see `RawFilePath`).
         var metadata = stat()
@@ -288,7 +288,18 @@ public enum ReadingOutput {
             throw HolosError.invalidInput("\(role) is not writable: \(folder.path) (\(String(cString: strerror(errno))))")
         }
         close(descriptor)
-        unlink(probe)
+        // A reading renames its temporary files into place and removes them there, so the folder
+        // must let both be done: an ACL can allow creating files but deny removing them.
+        let renamed = RawFilePath.system(RawFilePath.appending(probeName(), to: folder))
+        if rename(probe, renamed) != 0 {
+            let reason = String(cString: strerror(errno))
+            let left = unlink(probe) == 0 ? "" : " A test file was left there: \(probe)."
+            throw HolosError.invalidInput("\(role) does not let files be renamed: \(folder.path) (\(reason)).\(left)")
+        }
+        guard unlink(renamed) == 0 else {
+            let reason = String(cString: strerror(errno))
+            throw HolosError.invalidInput("\(role) does not let files be removed: \(folder.path) (\(reason)). A test file was left there: \(renamed).")
+        }
     }
 
     private static func hashed(output: URL, identity: String, readingsRoot: URL,

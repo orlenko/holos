@@ -623,13 +623,15 @@ final class ReadingDirectoryLock {
 /// (`HOLOS_SUPPORT_DIR`) or users, so this is what stops a second one before it renders anything.
 /// The destination's folder is the one place every producer of that file finds. The reservation
 /// needs neither `flock` on the destination's volume nor that the next producer be the same user:
-/// - it is created with `O_CREAT | O_EXCL`, mode 0644, and holds a `Record` (host, process ID and
-///   start time, user ID, creation time), so any user can read who holds it;
-/// - an existing one is held while its process runs: on this host, a process with its ID and
-///   the same start time (a reused ID has another). One whose process has ended (a run killed
-///   before its release) is removed and taken, whoever owns it, under a takeover guard (see
-///   `takeOver`), so of two runs taking it over at once exactly one goes on. One from another
-///   host (a shared network folder) cannot be checked, one that cannot be read or decoded (a run
+/// - it is created with `O_CREAT | O_EXCL`, mode 0644, and holds a `Record` (host name, the Mac's
+///   hardware UUID, process ID and start time, user ID, creation time), so any user can read who
+///   holds it;
+/// - an existing one is held while its process runs: on this Mac (the same hardware UUID; two
+///   Macs can share a host name), a process with its ID and the same start time (a reused ID has
+///   another). One whose process has ended (a run killed before its release) is removed and
+///   taken, whoever owns it, under a takeover guard (see `takeOver`), so of two runs taking it
+///   over at once exactly one goes on. One from another Mac (a shared network folder), or with no
+///   hardware UUID, cannot be checked, one that cannot be read or decoded (a run
 ///   killed between creating and writing it) is not trusted, and one that cannot be removed
 ///   (another user's file in a sticky shared folder) stays: each is refused with a message
 ///   naming the file and who can delete it;
@@ -642,7 +644,7 @@ final class ReadingDirectoryLock {
 /// in its cache, beside its `.m4a`.
 final class ReadingOutputReservation {
     struct Record: Codable, Equatable {
-        /// `gethostname`.
+        /// `gethostname`, for messages: two Macs can share a host name.
         var host: String
         var pid: Int32
         /// The process's start time, microseconds since 1970 (see `processStart`).
@@ -650,6 +652,9 @@ final class ReadingOutputReservation {
         var uid: UInt32
         /// Seconds since 1970.
         var created: Double
+        /// The Mac's hardware UUID (see `machineID`), which decides whether the process can be
+        /// checked here; empty when it could not be read.
+        var machine: String = ReadingOutputReservation.machineID
 
         /// This process's record, created now.
         static func current() -> Record {
@@ -716,7 +721,7 @@ final class ReadingOutputReservation {
             case .running(let record):
                 throw HolosError.unavailable("Another reading is already being made for \(output.path): process \(record.pid) of \(userName(record.uid)), since \(date(record.created)). Its reservation is \(path).")
             case .otherHost(let record):
-                throw HolosError.unavailable("Another reading is already being made for \(output.path) on \(record.host.isEmpty ? "another computer" : record.host) (process \(record.pid) of user ID \(record.uid), since \(date(record.created))), which cannot be checked from here. If no reading of that file is running there, delete \(path).")
+                throw HolosError.unavailable("Another reading is already being made for \(output.path) on \(computer(record)) (process \(record.pid) of user ID \(record.uid), since \(date(record.created))), which cannot be checked from here. If no reading of that file is running there, delete \(path).")
             case .ended(let record, let owner, let file):
                 takeoverStep?(.found)
                 if let made = try takeOver(path: path, stale: record, owner: owner, file: file, mine: mine,
@@ -771,7 +776,7 @@ final class ReadingOutputReservation {
 
     /// Creates the takeover guard at `guardPath` holding `mine`, or refuses, naming the
     /// reservation and its guard, while another run holds it. A guard whose run has ended on this
-    /// host (killed during its takeover) is removed and taken, as a stale reservation is, but
+    /// Mac (killed during its takeover) is removed and taken, as a stale reservation is, but
     /// without a guard of its own: two runs that find one such guard at the same instant can both
     /// go on (one may remove the guard the other just made). That takes a run killed within the
     /// guard's lifetime (a few system calls) and two more starting within that instant; the
@@ -796,7 +801,7 @@ final class ReadingOutputReservation {
             case .running(let record):
                 throw HolosError.unavailable("Another reading is already being made for \(output.path): process \(record.pid) of \(userName(record.uid)) is taking over its reservation \(path) (with \(guardPath)).")
             case .otherHost(let record):
-                throw HolosError.unavailable("Another reading is already being made for \(output.path): process \(record.pid) of user ID \(record.uid) on \(record.host.isEmpty ? "another computer" : record.host) is taking over its reservation \(path) (with \(guardPath)), which cannot be checked from here. If no reading of that file is running there, delete \(guardPath).")
+                throw HolosError.unavailable("Another reading is already being made for \(output.path): process \(record.pid) of user ID \(record.uid) on \(computer(record)) is taking over its reservation \(path) (with \(guardPath)), which cannot be checked from here. If no reading of that file is running there, delete \(guardPath).")
             case .unreadable(let reason):
                 throw HolosError.unavailable("Another reading may be taking over the reservation \(path) of \(output.path): its takeover file \(guardPath) \(reason). If no reading of that file is running, delete \(guardPath).")
             case .ended(let record, let guardOwner, let file):
@@ -846,11 +851,11 @@ final class ReadingOutputReservation {
         case gone
         /// Why it cannot be trusted, as "cannot be read (reason)".
         case unreadable(String)
-        /// Its process runs on this host.
+        /// Its process runs on this Mac.
         case running(Record)
-        /// Made on another host.
+        /// Made on another Mac (or its Mac cannot be told).
         case otherHost(Record)
-        /// Made on this host by a process that has ended; `owner` is the file's owner, `file` which
+        /// Made on this Mac by a process that has ended; `owner` is the file's owner, `file` which
         /// file was read.
         case ended(Record, owner: uid_t, file: (device: dev_t, inode: ino_t))
     }
@@ -870,7 +875,8 @@ final class ReadingOutputReservation {
         guard let data = readAll(descriptor), let record = try? JSONDecoder().decode(Record.self, from: data) else {
             return .unreadable("does not say which process holds it")
         }
-        guard record.host == hostName() else { return .otherHost(record) }
+        // Only a record from this Mac (by hardware UUID; host names can repeat) can be checked here.
+        guard !record.machine.isEmpty, record.machine == machineID else { return .otherHost(record) }
         if let start = processStart(record.pid), start == record.start { return .running(record) }
         return .ended(record, owner: metadata.st_uid, file: (metadata.st_dev, metadata.st_ino))
     }
@@ -901,6 +907,22 @@ final class ReadingOutputReservation {
               info.kp_proc.p_pid == pid, Int32(info.kp_proc.p_stat) != SZOMB else { return nil }
         let start = info.kp_proc.p_un.__p_starttime
         return Int64(start.tv_sec) * 1_000_000 + Int64(start.tv_usec)
+    }
+
+    /// This Mac's hardware UUID (`gethostuuid`), the same for every process and user on it and
+    /// different on every other Mac, whatever their host names; empty when it cannot be read.
+    static let machineID: String = {
+        var bytes = [UInt8](repeating: 0, count: 16)
+        var wait = timespec(tv_sec: 1, tv_nsec: 0)
+        guard gethostuuid(&bytes, &wait) == 0 else { return "" }
+        return UUID(uuid: (bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
+                           bytes[8], bytes[9], bytes[10], bytes[11], bytes[12], bytes[13], bytes[14], bytes[15])).uuidString
+    }()
+
+    /// The computer a record from another Mac names, for messages.
+    private static func computer(_ record: Record) -> String {
+        guard !record.host.isEmpty else { return "another computer" }
+        return record.host == hostName() ? "another computer also named \(record.host)" : record.host
     }
 
     static func hostName() -> String {

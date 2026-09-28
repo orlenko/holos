@@ -561,8 +561,12 @@ import Testing
         <p>Inline <span style="display: none">hidden span </span>text.</p>
         <dialog><p>Closed dialog.</p></dialog>
         <dialog open><p>Open dialog.</p></dialog>
+        <details><p>Before the summary.</p><summary>Closed question.</summary><p>Closed answer.</p><summary>Second summary.</summary></details>
+        <details open><summary>Open question.</summary><p>Open answer.</p></details>
+        <details><p>No summary at all.</p></details>
         </body></html>
-        """) == ["Aria visible.", "Display block.", "Inline text.", "Open dialog."])
+        """) == ["Aria visible.", "Display block.", "Inline text.", "Open dialog.", "Closed question.",
+                 "Open question.", "Open answer."])
     }
 
     /// Several `display` declarations in one `style` attribute: the one that wins the cascade
@@ -617,6 +621,15 @@ import Testing
         #expect(HTMLReader.Walker.hidesElement("--a:none !important; --a:block; display:var(--a)"))
         #expect(!HTMLReader.Walker.hidesElement("--a:none; display:var(--a) block"))
         #expect(!HTMLReader.Walker.hidesElement("--a:var(--a); display:none; display:var(--a)"))
+        // A variable in a cycle is invalid: a reference to it takes its fallback, and every
+        // variable in the cycle is invalid whatever its own references' fallbacks.
+        #expect(HTMLReader.Walker.hidesElement("--mode:var(--mode); display:var(--mode, none)"))
+        #expect(HTMLReader.Walker.hidesElement("--a:var(--b); --b:var(--a); display:var(--a, none)"))
+        #expect(!HTMLReader.Walker.hidesElement("--a:var(--b, none); --b:var(--a); display:none; display:var(--a)"))
+        #expect(HTMLReader.Walker.hidesElement("--a:var(--b); --b:initial; display:var(--a, none)"))
+        #expect(!HTMLReader.Walker.hidesElement("--a:var(--missing); display:var(--a, none)"))
+        #expect(HTMLReader.InlineStyle("--a:var(--b, x); --b:var(--a)").substitutingVariables(in: "var(--a)") == .invalid)
+        #expect(HTMLReader.InlineStyle("--a:var(--q)").substitutingVariables(in: "var(--a)") == .unknown)
         #expect(!HTMLReader.Walker.hidesElement("display:none; display:var(--missing, none)"))
         #expect(HTMLReader.Walker.hidesElement("--a:none; display:var(--a"))
         // An important declaration still beats a later variable one.

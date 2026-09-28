@@ -473,6 +473,22 @@ private func isPrintable(_ text: String) -> Bool {
         ])
     }
 
+    /// A closed `<details>` shows only its first summary; an open one shows everything.
+    @Test func aClosedDisclosureReadsOnlyItsSummary() async throws {
+        let html = """
+            <p>Intro.</p>
+            <details><p>Before the summary.</p><summary>Closed question.</summary><p>Closed answer.</p>
+            <summary>Second summary.</summary></details>
+            <details open><summary>Open question.</summary><p>Open answer.</p></details>
+            <p>After.</p>
+            """
+        let blocks = try await WebArticleExtractor(options: fast).blocks(fromContentHTML: html)
+        #expect(blocks == [
+            .paragraph("Intro."), .paragraph("Closed question."), .paragraph("Open question."),
+            .paragraph("Open answer."), .paragraph("After."),
+        ])
+    }
+
     @Test func superscriptsOfCitationMarksAreDroppedWhateverTheirGrouping() async throws {
         let html = """
             <p>Grouped<sup class="reference"><a href="#1">[1]</a><a href="#2">[2]</a></sup> marks<sup>[1], [2]</sup>,

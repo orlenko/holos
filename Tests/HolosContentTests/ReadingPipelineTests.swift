@@ -679,6 +679,38 @@ import Testing
         }
     }
 
+    /// A folder whose ACL lets files be created but not removed (or renamed) is refused before
+    /// anything is rendered, naming the test file it could not remove.
+    @Test func aFolderThatKeepsItsFilesIsRefused() throws {
+        let parent = try root()
+        let folder = parent.appendingPathComponent("Keeps")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: false)
+        func chmod(_ arguments: [String]) throws {
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/bin/chmod")
+            process.arguments = arguments + [folder.path]
+            try process.run()
+            process.waitUntilExit()
+            #expect(process.terminationStatus == 0)
+        }
+        defer {
+            try? chmod(["-N"])
+            try? FileManager.default.removeItem(at: parent)
+        }
+        try chmod(["+a", "everyone deny delete_child"])
+        do {
+            try ReadingOutput.checkDestination(RawFilePath.appending("Book.m4a", to: RawFilePath.url(folder.path)))
+            Issue.record("A folder that keeps its files should be refused.")
+        } catch HolosError.invalidInput(let message) {
+            #expect(message.contains("Output folder does not let files be"))
+            #expect(message.contains("A test file was left there"))
+        }
+        try chmod(["-N"])
+        #expect(throws: Never.self) {
+            try ReadingOutput.checkDestination(RawFilePath.appending("Book.m4a", to: RawFilePath.url(folder.path)))
+        }
+    }
+
     /// Every name written beside the output (the join temporaries, the reservation and its guard,
     /// the probe) and beside a cache (its lock and staging folder) is checked against the
     /// volume's `NAME_MAX` before anything is rendered.
@@ -755,6 +787,7 @@ import Testing
         let record = try JSONDecoder().decode(ReadingOutputReservation.Record.self,
                                               from: Data(contentsOf: URL(fileURLWithPath: reservation)))
         #expect(record.pid == getpid() && record.uid == getuid() && record.host == ReadingOutputReservation.hostName())
+        #expect(!record.machine.isEmpty && record.machine == ReadingOutputReservation.machineID)
         #expect(record.start == ReadingOutputReservation.processStart(getpid()))
         do {
             _ = try await pipeline.render(script: other, voiceIdentifier: voice, metadata: metadata, location: second)
@@ -779,6 +812,9 @@ import Testing
     private func writeReservation(_ record: ReadingOutputReservation.Record, at path: String) throws {
         try JSONEncoder().encode(record).write(to: URL(fileURLWithPath: path))
     }
+
+    /// A hardware UUID no Mac has.
+    private let otherMachine = "00000000-0000-0000-0000-000000000001"
 
     /// The process ID of a process that has exited.
     private func endedProcessID() throws -> Int32 {
@@ -847,9 +883,18 @@ import Testing
         let running = ReadingOutputReservation.Record(host: live.host, pid: live.pid, start: live.start,
                                                       uid: live.uid &+ 1, created: 4)
         let elsewhere = ReadingOutputReservation.Record(host: "elsewhere.invalid", pid: try endedProcessID(),
-                                                        start: 1, uid: live.uid, created: 5)
+                                                        start: 1, uid: live.uid, created: 5, machine: otherMachine)
+        // Another Mac with this one's host name: its process cannot be checked here either.
+        let namesake = ReadingOutputReservation.Record(host: live.host, pid: try endedProcessID(),
+                                                       start: 1, uid: live.uid, created: 6, machine: otherMachine)
+        // A record without a hardware UUID cannot be placed on this Mac.
+        let unplaced = ReadingOutputReservation.Record(host: live.host, pid: try endedProcessID(),
+                                                       start: 1, uid: live.uid, created: 7, machine: "")
+        #expect(!live.machine.isEmpty && live.machine != otherMachine)
         let kept: [(Data, String)] = [
             (try JSONEncoder().encode(running), "Another reading is already being made"),
+            (try JSONEncoder().encode(namesake), "another computer also named \(live.host)"),
+            (try JSONEncoder().encode(unplaced), "which cannot be checked from here"),
             (try JSONEncoder().encode(elsewhere), "elsewhere.invalid"),
             (Data(), "does not say which process holds it"),
         ]
@@ -982,7 +1027,7 @@ import Testing
         let running = ReadingOutputReservation.Record(host: live.host, pid: live.pid, start: live.start,
                                                       uid: live.uid, created: 2)
         let elsewhere = ReadingOutputReservation.Record(host: "elsewhere.invalid", pid: 1, start: 1,
-                                                        uid: live.uid, created: 3)
+                                                        uid: live.uid, created: 3, machine: otherMachine)
         let kept: [(Data, String)] = [
             (try JSONEncoder().encode(running), "is taking over its reservation"),
             (try JSONEncoder().encode(elsewhere), "elsewhere.invalid"),
