@@ -1,6 +1,7 @@
 import AppKit
 import Foundation
 import HolosCore
+import HolosSynthesis
 import Testing
 @testable import HolosContent
 
@@ -348,12 +349,15 @@ import Testing
         <body><p>Why Bread Rises</p><p>Yeast makes gas.</p></body></html>
         """.utf8))
         #expect(ReadingScript(document: plain).text == "Why Bread Rises\n\nYeast makes gas.")
-        // A byline before the h1: the h1 is the title and is read where it stands.
+        // A byline before the h1 (the title): the page does not open with the title, so it is
+        // read first, and the h1 is an ordinary heading read where it stands.
         let byline = HTMLReader.document(from: Data("""
         <html><head><title>Why Bread Rises | Blog</title></head>
         <body><p>By Sam</p><h1>Why Bread Rises</h1><p>Yeast makes gas.</p></body></html>
         """.utf8))
-        #expect(ReadingScript(document: byline).text == "By Sam\n\nWhy Bread Rises\n\nYeast makes gas.")
+        #expect(byline.title == "Why Bread Rises")
+        #expect(ReadingScript(document: byline).text
+            == "Why Bread Rises\n\nBy Sam\n\nWhy Bread Rises\n\nYeast makes gas.")
     }
 
     /// Element, attribute, and metadata names in any ASCII case, in or out of the XHTML namespace.
@@ -1028,6 +1032,33 @@ import Testing
             .init(heading: "Dune", level: 1, paragraphs: ["Text."]),
         ]))
         #expect(script.text == "Dune: Part Two\n\nDune\n\nText.")
+    }
+
+    /// Only an opening that says the title keeps it from being read first; the same h1 after an
+    /// introduction is an ordinary heading, and the chapters name the book once.
+    @Test func aTitleHeadingAfterAnIntroductionIsAnOrdinaryHeading() {
+        let opening = ReadingScript(document: ReadableDocument(title: "Book", sections: [
+            .init(heading: "Book", level: 1, paragraphs: ["Text."]),
+            .init(heading: "Two", level: 1, paragraphs: ["More."]),
+        ]))
+        #expect(opening.text == "Book\n\nText.\n\nTwo\n\nMore.")
+        #expect(ReadingPreview.chapters(script: opening, metadata: AudioBookMetadata(title: "Book")) == ["Book", "Two"])
+
+        let later = ReadingScript(document: ReadableDocument(title: "Book", sections: [
+            .init(paragraphs: ["An introduction."]),
+            .init(heading: "Book", level: 1, paragraphs: ["Text."]),
+        ]))
+        #expect(later.text == "Book\n\nAn introduction.\n\nBook\n\nText.")
+        #expect(later.segments.first?.chapter == nil)
+        // The opening (the title and the introduction) is reachable, and the later h1 keeps its
+        // own chapter: the book's name is not given to both.
+        #expect(ReadingPreview.chapters(script: later, metadata: AudioBookMetadata(title: "Book")) == ["Beginning", "Book"])
+        // A later h1 with another name leaves the opening named after the book.
+        let other = ReadingScript(document: ReadableDocument(title: "Book", sections: [
+            .init(paragraphs: ["An introduction."]),
+            .init(heading: "Part One", level: 1, paragraphs: ["Text."]),
+        ]))
+        #expect(ReadingPreview.chapters(script: other, metadata: AudioBookMetadata(title: "Book")) == ["Book", "Part One"])
     }
 }
 

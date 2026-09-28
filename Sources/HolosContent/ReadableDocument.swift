@@ -137,17 +137,20 @@ public struct ReadingScript: Sendable, Equatable {
     public let segments: [Segment]
     public let title: String?
 
-    /// The title is read first unless the text says it anyway: the document opens with it (as
-    /// a heading or a paragraph, such as a PDF's first line under a metadata title), or it is the
-    /// first level-1 heading (a web page's h1 after a byline). "Title | Site" and "Title" count as
-    /// the same (see `ReadableDocument.sameTitle`). Each section is its heading followed by its
-    /// paragraphs.
+    /// The title is read first unless the document opens with it: its first spoken block (the
+    /// first section's heading, or its first paragraph when it has none, such as a PDF's first
+    /// line under a metadata title) says the title. "Title | Site" and "Title" count as the same
+    /// (see `ReadableDocument.sameTitle`). A heading that says the title after other text (an h1
+    /// after a byline or an introduction) is an ordinary heading, read where it stands, and the
+    /// title is still read first. Each section is its heading followed by its paragraphs.
+    ///
+    /// The title spoken first has no chapter of its own: it belongs to the opening, which the
+    /// chapter plan names after the book unless a later chapter already has that name (see
+    /// `AudioBookChapterPlan`), so no two chapters are named alike.
     public init(document: ReadableDocument) {
         var segments: [Segment] = []
         let opening = document.sections.first.flatMap { $0.heading ?? $0.paragraphs.first }
-        let firstTitleHeading = document.sections.first { $0.level == 1 }?.heading
-        if let title = document.title,
-           ![opening, firstTitleHeading].contains(where: { $0.map { ReadableDocument.sameTitle(title, $0) } == true }) {
+        if let title = document.title, !(opening.map { ReadableDocument.sameTitle(title, $0) } ?? false) {
             segments.append(Segment(chapter: nil, text: title))
         }
         for section in document.sections {

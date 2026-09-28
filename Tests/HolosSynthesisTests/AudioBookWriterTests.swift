@@ -162,6 +162,11 @@ import Testing
         // Blank titles, and a chapter at or before the previous one's start, are dropped.
         #expect(titles([("One", 0), (" \n", 3), ("Same", 0), ("Two", 5)]) == ["One", "Two"])
         #expect(Plan.titles([nil, "A", "B"], bookTitle: "Book") == ["Book", "A", "B"])
+        // A later chapter with the book's name keeps it; the opening is "Beginning", so no two
+        // chapters are named after the book.
+        #expect(titles([(nil, 0), ("Book", 5)]) == ["Beginning", "Book"])
+        #expect(titles([(nil, 0), ("One", 3), ("BOOK", 5)]) == ["Beginning", "One", "BOOK"])
+        #expect(titles([(nil, 0), ("One", 3), ("Bóók", 5)], "Book") == ["Beginning", "One", "Bóók"])
     }
 
     private struct InjectedFailure: Error, Equatable {

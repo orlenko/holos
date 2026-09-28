@@ -351,6 +351,29 @@ import Testing
         #expect(ReadingPipeline.identity(script: flat, voiceIdentifier: voice, rate: 0.5, metadata: withLanguage) != base)
     }
 
+    /// Fields are encoded structurally, so a control character in one never makes it read as two.
+    @Test func identityEncodesEveryFieldUnambiguously() {
+        func key(_ title: String?, _ author: String?, rate: Float? = nil,
+                 _ script: ReadingScript = ReadingScript(document: ReadableDocument(sections: [.init(paragraphs: ["Text."])]))) -> String {
+            ReadingPipeline.identity(script: script, voiceIdentifier: voice, rate: rate,
+                                     metadata: AudioBookMetadata(title: title, author: author))
+        }
+        #expect(key("A\u{1}B", nil) != key("A", "B"))
+        #expect(key("A", nil) != key("A", ""))
+        #expect(key(nil, nil) != key("", nil))
+        #expect(key("A", nil, rate: nil) != key("A", nil, rate: 0.5))
+        #expect(key("A", nil) == key("A", nil))
+        // A chapter title and its text, and segment boundaries, are fields too.
+        let one = ReadingScript(document: ReadableDocument(sections: [.init(paragraphs: ["x\u{2}y\u{3}z"])]))
+        let two = ReadingScript(document: ReadableDocument(sections: [
+            .init(paragraphs: ["x"]), .init(heading: "y", level: 1, paragraphs: ["z"]),
+        ]))
+        #expect(key("A", nil, one) != key("A", nil, two))
+        // A hex SHA-256, which `ReadingOutput` hashes with the output's path.
+        let hash = key("A", nil)
+        #expect(hash.count == 64 && hash.allSatisfy { $0.isHexDigit && !$0.isUppercase })
+    }
+
     @Test func badDestinationFailsBeforeAnythingIsRendered() async throws {
         let parent = try root()
         let locked = parent.appendingPathComponent("Locked")

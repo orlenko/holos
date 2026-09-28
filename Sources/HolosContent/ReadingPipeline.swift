@@ -36,7 +36,10 @@ public struct ReadingFormatSettings: Codable, Sendable, Equatable {
 }
 
 public struct ReadingManifest: Codable, Sendable, Equatable {
-    public static let currentSchemaVersion = 3
+    /// 4: explicit-output caches are keyed by `ReadingPipeline.identity`'s JSON hash. A cache of
+    /// an earlier version is never resumed (its key is never computed again, and its manifest is
+    /// refused as another version's).
+    public static let currentSchemaVersion = 4
     /// Marks a manifest this app wrote, so an unrelated `manifest.json` is never taken for one.
     public static let readingKind = "voiceislocal.reading"
     public static let fileName = "manifest.json"
@@ -168,18 +171,60 @@ public struct AudioBookJoiner: ReadingAudioJoiner {
         self.removeParts = removeParts
     }
 
+    /// Everything a reading's cache key covers, encoded as JSON (keys sorted, every string
+    /// escaped), so no two sets of values share an encoding whatever characters they hold: a
+    /// title "A\u{1}B" without an author and a title "A" by "B" are two readings.
+    struct Identity: Encodable {
+        struct Segment: Encodable { let chapter: String?; let text: String }
+        let kind: String
+        let schemaVersion: Int
+        let voiceIdentifier: String
+        /// As Swift prints it, so a non-finite rate (refused later by `validate`) encodes too.
+        let rate: String?
+        let title: String?
+        let author: String?
+        let language: String?
+        let comment: String
+        let format: ReadingFormatSettings
+        let segments: [Segment]
+
+        // Nil values are written as null rather than left out, so each field is always present.
+        enum CodingKeys: String, CodingKey {
+            case kind, schemaVersion, voiceIdentifier, rate, title, author, language, comment, format, segments
+        }
+
+        func encode(to encoder: any Encoder) throws {
+            var container = encoder.container(keyedBy: CodingKeys.self)
+            try container.encode(kind, forKey: .kind)
+            try container.encode(schemaVersion, forKey: .schemaVersion)
+            try container.encode(voiceIdentifier, forKey: .voiceIdentifier)
+            try container.encode(rate, forKey: .rate)
+            try container.encode(title, forKey: .title)
+            try container.encode(author, forKey: .author)
+            try container.encode(language, forKey: .language)
+            try container.encode(comment, forKey: .comment)
+            try container.encode(format, forKey: .format)
+            try container.encode(segments, forKey: .segments)
+        }
+    }
+
     /// The cache key for a reading with an explicit output: the text and every setting that
-    /// ends up in the finished file, so a change to any of them starts a new reading.
+    /// ends up in the finished file, so a change to any of them starts a new reading. A SHA-256
+    /// of `Identity`'s JSON, in lowercase hex. The key format is part of the manifest's schema
+    /// version (so a cache keyed another way is never looked for: it is stale, like one whose
+    /// settings changed).
     public static func identity(script: ReadingScript, voiceIdentifier: String, rate: Float?,
                                 metadata: AudioBookMetadata) -> String {
-        let format = ReadingFormatSettings.current
-        return [
-            ReadingManifest.readingKind, String(ReadingManifest.currentSchemaVersion), voiceIdentifier,
-            rate.map { "\($0)" } ?? "", metadata.title ?? "", metadata.author ?? "", metadata.language ?? "",
-            metadata.comment, format.fileExtension, "\(format.sampleRate)", "\(format.bitRate)",
-            "\(format.channels)", "\(format.partGap)", "\(format.chapterGap)",
-            script.segments.map { ($0.chapter ?? "") + "\u{2}" + $0.text }.joined(separator: "\u{3}"),
-        ].joined(separator: "\u{1}")
+        let identity = Identity(
+            kind: ReadingManifest.readingKind, schemaVersion: ReadingManifest.currentSchemaVersion,
+            voiceIdentifier: voiceIdentifier, rate: rate.map { "\($0)" }, title: metadata.title, author: metadata.author,
+            language: metadata.language, comment: metadata.comment, format: .current,
+            segments: script.segments.map { Identity.Segment(chapter: $0.chapter, text: $0.text) })
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
+        // Only strings, integers, and the format's finite constants are encoded: this cannot fail.
+        guard let data = try? encoder.encode(identity) else { preconditionFailure("Reading identity did not encode.") }
+        return sha256(data)
     }
 
     public func render(script: ReadingScript, voiceIdentifier: String, rate: Float? = nil,
@@ -470,102 +515,26 @@ public struct AudioBookJoiner: ReadingAudioJoiner {
     }
 }
 
-/// Moves a finished reading into place without ever replacing a file that is already there,
-/// and without needing hard links (exFAT and many network volumes have none).
+/// Publishes a finished reading through `ExclusivePublisher`, the one helper every file of a
+/// reading (each rendered part, the finished `.m4a`) is published with: never over a file that
+/// is already there, and without needing hard links.
 enum ReadingPublisher {
-    /// Renames the first path to the second, failing with EEXIST when the second exists.
-    typealias ExclusiveRename = @Sendable (String, String) -> Int32
+    typealias ExclusiveRename = ExclusivePublisher.ExclusiveRename
 
-    static let systemExclusiveRename: ExclusiveRename = { renamex_np($0, $1, UInt32(RENAME_EXCL)) }
+    static let systemExclusiveRename: ExclusiveRename = ExclusivePublisher.systemExclusiveRename
 
-    /// `source` must be in the destination's directory (the finished file is written there), so
-    /// the move never crosses volumes. Volumes that cannot rename exclusively get the destination
-    /// created exclusively and the finished bytes copied into that open file (never a rename over
-    /// the pathname, which would replace whatever is there by then); `claimed` gets the new
-    /// file's identity before any byte is written, so a copy a crash cuts off can be recognized
-    /// later. On failure only that file is removed, and only while it is still the one at
-    /// `destination`. `source` is removed once published.
+    /// See `ExclusivePublisher.publish`.
     static func publish(_ source: URL, to destination: URL,
                         exclusiveRename: ExclusiveRename = systemExclusiveRename,
                         claimed: (ReadingFileIdentity) throws -> Void = { _ in }) throws {
-        if exclusiveRename(source.path, destination.path) == 0 { return }
-        let error = errno
-        guard error == ENOTSUP || error == EINVAL || error == ENOSYS else {
-            throw failure(destination, error)
-        }
-        try copyExclusively(source, to: destination, claimed: claimed)
-        _ = unlink(source.path)
-    }
-
-    private static func copyExclusively(_ source: URL, to destination: URL,
-                                        claimed: (ReadingFileIdentity) throws -> Void) throws {
-        let input = open(source.path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW)
-        guard input >= 0 else { throw failure(source, errno) }
-        defer { close(input) }
-        let output = open(destination.path, O_CREAT | O_EXCL | O_WRONLY | O_CLOEXEC | O_NOFOLLOW, 0o666)
-        guard output >= 0 else { throw failure(destination, errno) }
-        var metadata = stat()
-        guard fstat(output, &metadata) == 0 else {
-            // Without its identity, this empty file cannot be told apart from one put in its
-            // place, so it is left alone.
-            let error = errno
-            close(output)
-            throw failure(destination, error)
-        }
-        let identity = ReadingFileIdentity(metadata)
-        var isOpen = true
-        do {
-            try claimed(identity)
-            try copy(from: input, to: output, destination: destination)
-            if fsync(output) != 0, errno != ENOTSUP, errno != EINVAL { throw failure(destination, errno) }
-            isOpen = false
-            if close(output) != 0 { throw failure(destination, errno) }
-            guard ReadingFileIdentity.of(destination) == identity else {
-                throw HolosError.io("\(destination.path) was replaced while the reading was saved to it; the other file is kept.")
-            }
-        } catch {
-            if isOpen { close(output) }
-            removeIfIdentical(destination, to: identity)
-            throw error
-        }
-    }
-
-    private static func copy(from input: Int32, to output: Int32, destination: URL) throws {
-        let size = 1 << 20
-        let buffer = UnsafeMutableRawPointer.allocate(byteCount: size, alignment: 16)
-        defer { buffer.deallocate() }
-        while true {
-            // A cancelled render (Ctrl-C) stops here, and the partial copy is removed.
-            try Task.checkCancellation()
-            let count = read(input, buffer, size)
-            if count == 0 { return }
-            if count < 0 {
-                if errno == EINTR { continue }
-                throw failure(destination, errno)
-            }
-            var offset = 0
-            while offset < count {
-                let written = write(output, buffer + offset, count - offset)
-                if written < 0 {
-                    if errno == EINTR { continue }
-                    throw failure(destination, errno)
-                }
-                offset += written
-            }
-        }
+        try ExclusivePublisher.publish(source, to: destination, exclusiveRename: exclusiveRename,
+                                       existing: "Reading output already exists and is not this reading",
+                                       claimed: claimed)
     }
 
     /// Removes `url` when it is still the file `identity` describes; anything else is kept.
     static func removeIfIdentical(_ url: URL, to identity: ReadingFileIdentity) {
-        guard ReadingFileIdentity.of(url) == identity else { return }
-        _ = unlink(url.path)
-    }
-
-    private static func failure(_ destination: URL, _ error: Int32) -> HolosError {
-        if error == EEXIST {
-            return .invalidInput("Reading output already exists and is not this reading: \(destination.path)")
-        }
-        return .io("Could not save \(destination.path): \(String(cString: strerror(error)))")
+        ExclusivePublisher.removeIfIdentical(url, to: identity)
     }
 }
 
@@ -748,28 +717,8 @@ enum ReadingPathIdentity {
     }
 }
 
-/// Which file a path named at one moment: its volume, inode, and creation time. A file removed
-/// and another created at the same path (even reusing the inode number) compare unequal.
-public struct ReadingFileIdentity: Codable, Sendable, Equatable {
-    public let device: Int64
-    public let inode: UInt64
-    public let birthSeconds: Int64
-    public let birthNanoseconds: Int64
-
-    init(_ metadata: stat) {
-        device = Int64(metadata.st_dev)
-        inode = UInt64(metadata.st_ino)
-        birthSeconds = Int64(metadata.st_birthtimespec.tv_sec)
-        birthNanoseconds = Int64(metadata.st_birthtimespec.tv_nsec)
-    }
-
-    /// The regular file at `url` (a link is not followed), or nil.
-    static func of(_ url: URL) -> ReadingFileIdentity? {
-        var metadata = stat()
-        guard lstat(url.path, &metadata) == 0, (metadata.st_mode & S_IFMT) == S_IFREG else { return nil }
-        return ReadingFileIdentity(metadata)
-    }
-}
+/// Which file a path named at one moment (see `ExclusivePublisher.FileIdentity`).
+public typealias ReadingFileIdentity = ExclusivePublisher.FileIdentity
 
 /// The names of the temporary files a reading creates, and the removal of ones an interrupted run
 /// left behind. Each name carries a marker only this reading's runs use, so a sweep never touches

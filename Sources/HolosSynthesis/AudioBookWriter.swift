@@ -112,8 +112,11 @@ public struct AudioBookSummary: Sendable, Equatable {
 /// - a part's title (trimmed, and shortened as the file stores it) starts a chapter; an empty one
 ///   does not;
 /// - a chapter that would start where the previous one does, or earlier, is dropped;
-/// - when the first chapter starts after the beginning, a chapter named after the book (or
-///   "Beginning") is added at the start, so the opening is reachable too;
+/// - when the first chapter starts after the beginning, a chapter is added at the start, so the
+///   opening is reachable too. It is named after the book, unless the book has no title or a
+///   later chapter already has the book's name (ignoring case and diacritics; a heading that
+///   says the title after an introduction keeps its own chapter): then it is "Beginning". No
+///   two chapters are named after the book;
 /// - fewer than two chapters make no chapter track.
 public enum AudioBookChapterPlan {
     public static func marks<Position: Comparable & AdditiveArithmetic>(
@@ -126,9 +129,17 @@ public enum AudioBookChapterPlan {
             marks.append((title, part.position))
         }
         if let first = marks.first, first.position > .zero {
-            marks.insert((AudioBookWriter.fileText(bookTitle) ?? "Beginning", .zero), at: 0)
+            let book = AudioBookWriter.fileText(bookTitle)
+            let taken = book.map { book in marks.contains { sameName($0.title, book) } } ?? true
+            marks.insert((taken ? "Beginning" : book ?? "Beginning", .zero), at: 0)
         }
         return marks.count < 2 ? [] : marks
+    }
+
+    /// Whether two chapter names read alike: equal ignoring case, diacritics, and width.
+    static func sameName(_ first: String, _ second: String) -> Bool {
+        let options: String.CompareOptions = [.caseInsensitive, .diacriticInsensitive, .widthInsensitive]
+        return first.folding(options: options, locale: nil) == second.folding(options: options, locale: nil)
     }
 
     /// The chapter titles for parts in reading order, the first starting at the beginning and

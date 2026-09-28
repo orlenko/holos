@@ -72,7 +72,16 @@ public enum SpeechRate {
 }
 
 @MainActor public final class NativeSpeechRenderer {
-    public init() {}
+    /// How the finished file is moved into place (see `ExclusivePublisher`); tests make it fail.
+    private let exclusiveRename: ExclusivePublisher.ExclusiveRename
+
+    public init() {
+        exclusiveRename = ExclusivePublisher.systemExclusiveRename
+    }
+
+    init(exclusiveRename: @escaping ExclusivePublisher.ExclusiveRename) {
+        self.exclusiveRename = exclusiveRename
+    }
 
     /// Fails unless a voice with `identifier` is installed.
     public func checkVoice(_ identifier: String) throws {
@@ -154,7 +163,7 @@ public enum SpeechRate {
         let temporary = output.deletingLastPathComponent()
             .appendingPathComponent(".holos-\(UUID().uuidString).\(ext == "m4a" ? "caf" : ext)")
         let operation = RenderOperation(synthesizer: synthesizer, utterance: utterance, temporary: temporary,
-                                        output: output, fileExtension: ext)
+                                        output: output, fileExtension: ext, exclusiveRename: exclusiveRename)
         return try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { continuation in
                 guard operation.start(continuation: continuation) else {
@@ -227,15 +236,18 @@ final class RenderOperation: @unchecked Sendable {
     private let temporary: URL
     private let output: URL
     private let fileExtension: String
+    private let exclusiveRename: ExclusivePublisher.ExclusiveRename
 
     init(synthesizer: AVSpeechSynthesizer, utterance: AVSpeechUtterance,
          temporary: URL, output: URL,
-         fileExtension: String) {
+         fileExtension: String,
+         exclusiveRename: @escaping ExclusivePublisher.ExclusiveRename = ExclusivePublisher.systemExclusiveRename) {
         self.synthesizer = synthesizer
         self.utterance = utterance
         self.temporary = temporary
         self.output = output
         self.fileExtension = fileExtension
+        self.exclusiveRename = exclusiveRename
         let delegate = RenderDelegate(operation: self)
         self.delegate = delegate
         synthesizer.delegate = delegate
@@ -339,8 +351,15 @@ final class RenderOperation: @unchecked Sendable {
                     resultError = error
                 }
             }
-            if resultError == nil && link(published.path, output.path) != 0 {
-                resultError = HolosError.io("Could not publish speech output: \(String(cString: strerror(errno)))")
+            // Never over a file already there, and without hard links (see `ExclusivePublisher`):
+            // parts of a reading are published this way into its cache, wherever that is.
+            if resultError == nil {
+                do {
+                    try ExclusivePublisher.publish(published, to: output, exclusiveRename: exclusiveRename,
+                                                   existing: "Speech output already exists")
+                } catch {
+                    resultError = error
+                }
             }
         }
         _ = unlink(temporary.path)
