@@ -274,13 +274,19 @@ recognized, History or the audio setting off, secure input on at the end) delete
 partial file. Audio that cannot be finished or moved is deleted and the record kept without
 it.
 
-Retention follows the text: Delete removes the dictation's audio first (a failure keeps
-both), Clear History and `voiceislocal history clear` remove all of it (but a partial file
-younger than an hour, a dictation still in progress), and every retention sweep removes the
-audio of the records it removes, audio whose record is gone (an older build that rewrote
-the file dropped the link; the file name is the record's ID, so it is still found), and
-partial files older than an hour (at launch, all of them). Audio of a newer build's lines
-is kept with them.
+Retention follows the text: Delete removes the dictation's audio, Clear History and
+`voiceislocal history clear` remove all of it (but a partial file younger than an hour, a
+dictation still in progress), and every retention sweep removes the audio of the records it
+removes, audio no kept record links (its record is gone, or an older build rewrote the line
+without the link, so nothing could play it), and partial files older than an hour (at
+launch, all of them). Audio of a newer build's lines is kept with them. Each of these, and
+Delete Audio, first moves the audio aside (`<id>.m4a.removing`), rewrites the file, then
+deletes it; a rewrite that fails puts it back, so a failure never leaves a record without
+the audio it links. Audio a crash left aside is put back by the next sweep when its record
+still links it, else deleted. Update History keeps the audio link the file has. In memory,
+the audio link lands once the append finished (`linkAudio`), under the changes made since
+(a Delete Audio or an Update History made meanwhile stays), and an Update History whose
+record another writer removed meanwhile leaves it removed.
 
 Run Again (History detail, ⌘R; `voiceislocal history rerun`) reads the file back as 0.1 s
 frames and feeds them to the recognizer live dictation uses (`AppleSpeechSession`, the
@@ -288,11 +294,14 @@ speech backend's progressive preset, the current dictation language, the learned
 corrections' phrases as contextual strings), then runs the text steps of live dictation
 (`DictationTextPipeline`, HolosCore): filler removal and corrections as on the final text,
 and, when Apple Intelligence's fix is on and available, the fix as dictation streams it:
-every recognizer result but the last is taken as committed while speaking and fixed as a
-chunk (cleaned as streaming cleans it), the rest on release as final, with the same model,
-sessions, and timeout (`OnDeviceFix`, HolosDictation, which the app's
-`DictationFixPipeline` uses too). The live grouping of chunks depends on timing, so a fix
-may differ slightly from the live one. The comparison (`DictationRerunReport`) shows the
+each recognizer result is taken as committed in turn (the last one too: the recognizer
+commits it when it finishes, before the result) and each new part, cleaned as streaming
+cleans it, is fixed as a chunk; what streaming held back (a trailing comma, the start of a
+correction) is fixed on release as final; with the same model, sessions, and timeout
+(`OnDeviceFix`, HolosDictation, which the app's `DictationFixPipeline` uses too). This is
+dictation writing into a field; the live grouping of chunks (those queued while the model
+is busy are fixed together) depends on timing, so a fix may differ slightly from the live
+one. The comparison (`DictationRerunReport`) shows the
 text as heard and as written, then and now, with the words that differ marked; what each
 step did now (word changes); and `changedBy`, the steps that behaved differently from then:
 the recognizer heard other words; filler removal removed fillers where it did not (in the

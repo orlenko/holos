@@ -85,9 +85,11 @@ public struct DictationTextPipeline: Sendable {
             to: removeFillers ? FillerWords.removeWithholdingTrailingComma(from: text, language: language) : text)
     }
 
-    /// Runs the steps on the recognizer's results (`segments`, in order). With the fix, every result but the last is
-    /// taken as committed while the user spoke (each new part fixed as a chunk, as dictation streams it), and the rest
-    /// is fixed on release, as `isFinal`.
+    /// Runs the steps on the recognizer's results (`segments`, in order). With the fix, each result is taken as
+    /// committed in turn, as dictation writing into a field streams it (the last one too: the recognizer commits it
+    /// when it finishes, before the result), and each new part, cleaned as streaming cleans it, is fixed as a chunk;
+    /// what streaming held back (a trailing comma, the start of a correction) is fixed on release, as `isFinal`.
+    /// Live dictation joins chunks queued while the model is busy, which depends on timing, so its fix may differ.
     public func run(segments: [String]) async -> Output {
         let heard = Self.transcript(segments)
         let withoutFillers = withoutFillers(heard).trimmingCharacters(in: .whitespacesAndNewlines)
@@ -100,7 +102,7 @@ public struct DictationTextPipeline: Sendable {
         var submitted = ""
         var written = ""
         var streaming = true
-        for count in stride(from: 1, to: segments.count, by: 1) {
+        for count in stride(from: 1, through: segments.count, by: 1) {
             let streamed = cleanedForStreaming(Self.transcript(Array(segments.prefix(count))))
             guard streamed.hasPrefix(submitted) else {
                 // The recognizer revised committed text: dictation stops streaming there.

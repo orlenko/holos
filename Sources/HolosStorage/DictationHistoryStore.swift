@@ -23,9 +23,9 @@ extension HolosPaths {
 /// Each dictation's audio, when kept (docs/design.md "Dictation audio and Run Again"), is `audio/<id>.m4a` (0600) in a
 /// private folder next to the file. It is written as `audio/<id>.partial.m4a` while the user speaks and renamed to its
 /// name, holding the lock, just before its record is appended, so under the lock every finished audio file has its
-/// record. It goes with its record: Delete, Clear History, and the retention sweep remove it, and every sweep also
-/// removes audio whose record is gone (an older build that rewrote the file drops the link but keeps the ID) and
-/// partial files left by a dictation that never finished.
+/// record. It goes with its record: Delete, Clear History, and the retention sweep remove it (set aside first and put
+/// back when the rewrite fails), and every sweep also removes audio no record links (its record is gone, or an older
+/// build rewrote the line without the link) and partial files left by a dictation that never finished.
 public struct DictationHistoryStore: Sendable {
     static let fileName = "dictations.jsonl"
     static let lockName = "dictations.lock"
@@ -230,51 +230,63 @@ public struct DictationHistoryStore: Sendable {
         }
     }
 
-    /// Replaces the record with `record`'s ID (Update History); returns false when it is no longer there.
+    /// Replaces the record with `record`'s ID (Update History), keeping the audio link the file has (Update History
+    /// never changes the audio); returns false when it is no longer there.
     @discardableResult
     public func update(_ record: DictationRecord) throws -> Bool {
         try withLock {
             let contents = try load()
             guard contents.records.contains(where: { $0.id == record.id }) else { return false }
             try rewrite(contents.entries.map { entry in
-                if case .record(let old) = entry, old.id == record.id { .record(record) } else { entry }
+                guard case .record(let old) = entry, old.id == record.id else { return entry }
+                var updated = record
+                updated.audio = old.audio
+                return .record(updated)
             })
             return true
         }
     }
 
-    /// Removes the record `id` and its audio; returns whether the record was there. The audio goes first, so a
-    /// failure leaves both.
+    /// Removes the record `id` and its audio; returns whether the record was there. The audio is moved aside first
+    /// and deleted once the file no longer has the record, so a failure leaves both.
     @discardableResult
     public func delete(id: UUID) throws -> Bool {
         try withLock {
             let contents = try load()
-            try Self.removeAudioFile(audioURL(for: id))
             let kept = contents.entries.filter { if case .record(let record) = $0 { record.id != id } else { true } }
-            guard kept.count != contents.entries.count else { return false }
-            try rewrite(kept)
-            return true
+            let staged = try stageRemoval(of: [audioURL(for: id)])
+            if kept.count != contents.entries.count {
+                do {
+                    try rewrite(kept)
+                } catch {
+                    rollBack(staged)
+                    throw error
+                }
+            }
+            commit(staged)
+            return kept.count != contents.entries.count
         }
     }
 
     /// Removes every line, a newer build's too (Clear History deletes all the text kept), and all the audio but that
-    /// of a dictation still in progress; returns how many dictations there were. The audio goes first, so a failure
-    /// leaves the text.
+    /// of a dictation still in progress; returns how many dictations there were. A failure leaves text and audio.
     @discardableResult
     public func clear(now: Date = Date()) throws -> Int {
         guard FileManager.default.fileExists(atPath: directory.path) else { return 0 }
         return try withLock {
             let count = (try? load()).map { $0.records.count + $0.newerLines } ?? 0
-            try removeAudio(keeping: [], partialsBefore: now.addingTimeInterval(-Self.partialAudioLifetime))
-            try rewrite([])
+            try replaceRemovingAudio(keeping: [], partialsBefore: now.addingTimeInterval(-Self.partialAudioLifetime)) {
+                try rewrite([])
+            }
             return count
         }
     }
 
     /// Removes records dated before `cutoff` (a newer build's lines too, when their date can be read) with their
     /// audio, and any unreadable lines; returns how many were removed. Lines of a newer build are otherwise kept as
-    /// they are. Audio without a record, and partial audio written before `partialsBefore` (a dictation that never
-    /// finished), are removed too.
+    /// they are, with their audio. Audio no kept record links (its record is gone, or an older build rewrote the line
+    /// without the link), and partial audio written before `partialsBefore` (a dictation that never finished), are
+    /// removed too. A failure leaves text and audio.
     @discardableResult
     public func sweep(before cutoff: Date, partialsBefore: Date? = nil) throws -> Int {
         let partialsBefore = partialsBefore ?? Date().addingTimeInterval(-Self.partialAudioLifetime)
@@ -288,9 +300,10 @@ public struct DictationHistoryStore: Sendable {
                 case .newer(_, let date, _): date.map { $0 >= cutoff } ?? true
                 }
             }
-            try removeAudio(keeping: Set(kept.compactMap(\.id)), partialsBefore: partialsBefore)
             let removed = contents.entries.count - kept.count
-            if removed > 0 || contents.skippedLines > 0 { try rewrite(kept) }
+            try replaceRemovingAudio(keeping: Self.audioKept(by: kept), partialsBefore: partialsBefore) {
+                if removed > 0 || contents.skippedLines > 0 { try rewrite(kept) }
+            }
             return removed
         }
     }
@@ -304,15 +317,15 @@ public struct DictationHistoryStore: Sendable {
 
     /// Deletes every dictation's audio (Settings, when keeping it is turned off) and the records' links to it, but
     /// not a dictation still in progress; its audio is dropped when it ends (the setting is off). Returns how many
-    /// records had audio.
+    /// records had audio. A failure leaves links and audio.
     @discardableResult
     public func removeAllAudio(now: Date = Date()) throws -> Int {
         guard FileManager.default.fileExists(atPath: directory.path) else { return 0 }
         return try withLock {
             let contents = try load()
-            try removeAudio(keeping: [], partialsBefore: now.addingTimeInterval(-Self.partialAudioLifetime))
             let linked = contents.records.count { $0.audio != nil }
-            if linked > 0 {
+            try replaceRemovingAudio(keeping: [], partialsBefore: now.addingTimeInterval(-Self.partialAudioLifetime)) {
+                guard linked > 0 else { return }
                 try rewrite(contents.entries.map { entry in
                     guard case .record(var record) = entry, record.audio != nil else { return entry }
                     record.audio = nil
@@ -323,18 +336,27 @@ public struct DictationHistoryStore: Sendable {
         }
     }
 
-    /// Bytes the audio folder takes (finished and partial files).
+    /// Bytes the audio folder takes (finished, partial, and set-aside files).
     public func audioBytes() -> Int64 {
         audioFiles().reduce(0) { $0 + $1.bytes }
     }
 
     // MARK: - Audio helpers
 
-    /// A regular file in the audio folder: the dictation it is for, whether it is partial, its size and date.
+    /// A regular file in the audio folder named for a dictation, its size and date.
     struct AudioFile {
+        enum Kind: Equatable {
+            /// `<id>.m4a`.
+            case finished
+            /// `<id>.partial.m4a`: being written while the user speaks.
+            case partial
+            /// `<id>.m4a.removing`: set aside for a removal a failure could still roll back.
+            case removing
+        }
+
         var url: URL
         var id: UUID
-        var partial: Bool
+        var kind: Kind
         var bytes: Int64
         var modified: Date
     }
@@ -343,25 +365,88 @@ public struct DictationHistoryStore: Sendable {
     func audioFiles() -> [AudioFile] {
         guard let names = try? FileManager.default.contentsOfDirectory(atPath: audioDirectory.path) else { return [] }
         return names.compactMap { name in
-            let partial = name.hasSuffix(Self.partialAudioSuffix)
-            let stem = partial ? String(name.dropLast(Self.partialAudioSuffix.count))
-                : name.hasSuffix(".m4a") ? String(name.dropLast(4)) : nil
-            guard let stem, let id = UUID(uuidString: stem), stem == id.uuidString else { return nil }
+            let kinds: [(String, AudioFile.Kind)] = [(Self.partialAudioSuffix, .partial),
+                                                     (Self.removingAudioSuffix, .removing), (".m4a", .finished)]
+            guard let (suffix, kind) = kinds.first(where: { name.hasSuffix($0.0) }) else { return nil }
+            let stem = String(name.dropLast(suffix.count))
+            guard let id = UUID(uuidString: stem), stem == id.uuidString else { return nil }
             let url = audioDirectory.appendingPathComponent(name, isDirectory: false)
             var info = stat()
             guard lstat(url.path, &info) == 0, (info.st_mode & S_IFMT) == S_IFREG else { return nil }
             let modified = Date(timeIntervalSince1970: Double(info.st_mtimespec.tv_sec)
                                 + Double(info.st_mtimespec.tv_nsec) / 1e9)
-            return AudioFile(url: url, id: id, partial: partial, bytes: Int64(info.st_size), modified: modified)
+            return AudioFile(url: url, id: id, kind: kind, bytes: Int64(info.st_size), modified: modified)
         }
     }
 
-    /// Removes the finished audio of dictations not in `keeping`, and partial audio written before `partialsBefore`.
-    private func removeAudio(keeping: Set<UUID>, partialsBefore: Date) throws {
-        for file in audioFiles() {
-            let remove = file.partial ? file.modified < partialsBefore : !keeping.contains(file.id)
-            if remove { try Self.removeAudioFile(file.url) }
+    static let removingAudioSuffix = ".m4a.removing"
+
+    /// The dictations whose audio `entries` keep: records that link it, and a newer build's lines (their audio is
+    /// theirs to judge).
+    static func audioKept(by entries: [Entry]) -> Set<UUID> {
+        Set(entries.compactMap { entry in
+            switch entry {
+            case .record(let record): record.audio == nil ? nil : record.id
+            case .newer(_, _, let id): id
+            }
+        })
+    }
+
+    /// Runs `write` (a rewrite of the file) with the finished audio of dictations not in `keeping` set aside, then
+    /// deletes it; when `write` fails, puts it back and rethrows, so a failed rewrite never loses audio its record
+    /// still links. Audio a crash left set aside is put back when `keeping` links it (and nothing replaced it),
+    /// else deleted; partial audio written before `partialsBefore` is deleted.
+    private func replaceRemovingAudio(keeping: Set<UUID>, partialsBefore: Date, _ write: () throws -> Void) throws {
+        let files = audioFiles()
+        let finished = Set(files.filter { $0.kind == .finished }.map(\.id))
+        for file in files where file.kind == .removing {
+            if keeping.contains(file.id), !finished.contains(file.id),
+               rename(file.url.path, audioURL(for: file.id).path) == 0 {
+                continue
+            }
+            try? Self.removeAudioFile(file.url)
         }
+        let staged = try stageRemoval(of: files.filter { $0.kind == .finished && !keeping.contains($0.id) }.map(\.url))
+        do {
+            try write()
+        } catch {
+            rollBack(staged)
+            throw error
+        }
+        commit(staged)
+        for file in files where file.kind == .partial && file.modified < partialsBefore {
+            try? Self.removeAudioFile(file.url)
+        }
+    }
+
+    /// Moves each file (`<id>.m4a`) aside to `<id>.m4a.removing`; a missing one is skipped. When one cannot be moved,
+    /// those already moved are put back and the error is thrown. Returns the files moved, as they are now named.
+    private func stageRemoval(of urls: [URL]) throws -> [URL] {
+        var staged: [URL] = []
+        for url in urls {
+            let aside = URL(fileURLWithPath: url.path + ".removing", isDirectory: false)
+            if rename(url.path, aside.path) == 0 {
+                staged.append(aside)
+            } else if errno != ENOENT {
+                let reason = String(cString: strerror(errno))
+                rollBack(staged)
+                throw HolosError.io("Cannot delete a dictation's audio: \(reason).")
+            }
+        }
+        return staged
+    }
+
+    /// Puts files set aside back under their names.
+    private func rollBack(_ staged: [URL]) {
+        for aside in staged {
+            _ = rename(aside.path, String(aside.path.dropLast(".removing".count)))
+        }
+    }
+
+    /// Deletes files set aside; one that cannot be deleted stays set aside, and the next sweep deletes it (its record
+    /// no longer links it).
+    private func commit(_ staged: [URL]) {
+        for aside in staged { try? Self.removeAudioFile(aside) }
     }
 
     /// Unlinks an audio file in the private audio folder; one that is already gone is fine.

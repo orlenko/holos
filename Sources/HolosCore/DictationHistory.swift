@@ -267,9 +267,11 @@ extension DictationRecord {
 /// again to what the reload read (the file may not have had it yet).
 public enum DictationHistoryChange: Sendable, Equatable {
     case add(DictationRecord)
-    /// Replaces the record with the same ID, if it is still there (Update History, or the audio link an append
-    /// settled on).
+    /// Replaces the record with the same ID, if it is still there (Update History), keeping its audio link: Update
+    /// History never changes the audio.
     case update(DictationRecord)
+    /// Links a record's audio once the file is in place (after its append), if the record is still there.
+    case linkAudio(UUID, DictationRecord.Audio)
     case delete(UUID)
     /// Drops every record's audio link (the audio files were deleted).
     case removeAudio
@@ -282,7 +284,13 @@ public enum DictationHistoryChange: Sendable, Equatable {
         case .add(let record):
             if !records.contains(where: { $0.id == record.id }) { records.append(record) }
         case .update(let record):
-            if let index = records.firstIndex(where: { $0.id == record.id }) { records[index] = record }
+            if let index = records.firstIndex(where: { $0.id == record.id }) {
+                let audio = records[index].audio
+                records[index] = record
+                records[index].audio = audio
+            }
+        case .linkAudio(let id, let audio):
+            if let index = records.firstIndex(where: { $0.id == id }) { records[index].audio = audio }
         case .delete(let id):
             records.removeAll { $0.id == id }
         case .removeAudio:

@@ -65,7 +65,8 @@ private func fixer(_ model: FakeModel, corrections: CorrectionList = CorrectionL
     var pipeline = DictationTextPipeline(language: "en-US", removeFillers: true, corrections: CorrectionList())
     pipeline.fixer = fixer(model)
     let output = await pipeline.run(segments: ["I checked whether it rained", "and whether it will."])
-    // The first result was committed while speaking: fixed as a chunk; the rest on release.
+    // Each result is committed in turn and fixed as a chunk, the last one too (not as final: its closing
+    // punctuation stays).
     #expect(model.prompts.withLock { $0 } == ["Text: I checked whether it rained",
                                               "Text: and whether it will."])
     #expect(output.corrected == "I checked whether it rained and whether it will.")
@@ -73,6 +74,17 @@ private func fixer(_ model: FakeModel, corrections: CorrectionList = CorrectionL
     #expect(output.aiFixed)
     #expect(output.aiChangedWords == 2)
     #expect(output.aiOutcomes == [.fixed, .fixed])
+}
+
+@Test func pipelineFixesWhatStreamingHeldBackAsFinal() async {
+    let model = FakeModel()
+    var pipeline = DictationTextPipeline(language: "en-US", removeFillers: true, corrections: CorrectionList())
+    pipeline.fixer = fixer(model)
+    // Streaming holds back a trailing comma (a filler may follow); on release it is the rest, and has no words.
+    let output = await pipeline.run(segments: ["I wonder whether,"])
+    #expect(model.prompts.withLock { $0 } == ["Text: I wonder whether"])
+    #expect(output.written == "I wonder weather,")
+    #expect(output.aiOutcomes == [.fixed, .skipped])
 }
 
 @Test func pipelineWithAFixThatChangesNothingKeepsTheText() async {
@@ -211,6 +223,16 @@ private func fixer(_ model: FakeModel, corrections: CorrectionList = CorrectionL
     #expect(records.count == 2, "An update of a record no longer there adds nothing.")
     DictationHistoryChange.removeAudio.apply(to: &records)
     #expect(records.allSatisfy { $0.audio == nil })
+    // An update keeps the link the record has; linking sets it.
+    let link = DictationRecord.Audio(file: "\(a.id.uuidString).m4a", seconds: 1)
+    DictationHistoryChange.linkAudio(a.id, link).apply(to: &records)
+    #expect(records[0].audio == link)
+    var edited = a
+    edited.audio = nil
+    edited.text = "Aye."
+    DictationHistoryChange.update(edited).apply(to: &records)
+    #expect(records[0].text == "Aye.")
+    #expect(records[0].audio == link)
 }
 
 @Test func lookupFindsLatestAndIDPrefixes() throws {

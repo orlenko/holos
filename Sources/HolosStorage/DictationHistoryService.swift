@@ -49,6 +49,9 @@ public final class DictationHistoryService {
     /// was asked for to what it read, since the file may not have had them yet. Emptied when no reload is reading;
     /// a change whose write failed is taken out.
     private var journal: [(generation: Int, change: DictationHistoryChange)] = []
+    /// The changes whose writes have not finished, by generation: a follow-up that lands after later changes were
+    /// made (an audio link) is applied under them again, so it never undoes them.
+    private var pending: [(generation: Int, change: DictationHistoryChange)] = []
     private var loadsInFlight = 0
     /// Run once no reload is reading (`whenLoaded`).
     private var loadWaiters: [() -> Void] = []
@@ -163,7 +166,10 @@ public final class DictationHistoryService {
 
     private func loaded(_ result: LoadResult, asked: Int) {
         loadsInFlight -= 1
-        let newer = journal.filter { $0.generation > asked }.map(\.change)
+        // In the order the changes were made; a follow-up comes right after the change it follows (its generation).
+        let newer = journal.enumerated().filter { $0.element.generation > asked }
+            .sorted { ($0.element.generation, $0.offset) < ($1.element.generation, $1.offset) }
+            .map(\.element.change)
         switch result {
         case .read(let contents, let bytes):
             audioBytes = bytes
@@ -211,8 +217,7 @@ public final class DictationHistoryService {
         change(.add(record), failure: "This dictation could not be saved in History.") { [audio, record] store in
             let finished = audio?.finish()
             do {
-                let appended = try store.append(record, audio: finished)
-                return appended == record ? nil : .update(appended)
+                return try store.append(record, audio: finished).audio.map { .linkAudio(record.id, $0) }
             } catch {
                 if let finished { try? DictationHistoryStore.removeAudioFile(finished.partial) }
                 throw error
@@ -220,11 +225,11 @@ public final class DictationHistoryService {
         }
     }
 
-    /// Replaces a dictation's text with a new result (Update History); a dictation deleted meanwhile stays deleted.
+    /// Replaces a dictation's text with a new result (Update History); a dictation deleted meanwhile (here, or by
+    /// `voiceislocal history clear` before the write) stays deleted.
     public func update(_ record: DictationRecord) {
         change(.update(record), failure: "The dictation could not be updated in History.") { store in
-            try store.update(record)
-            return nil
+            try store.update(record) ? nil : .delete(record.id)
         }
     }
 
@@ -269,6 +274,7 @@ public final class DictationHistoryService {
         generation += 1
         let generation = self.generation
         if loadsInFlight > 0 { journal.append((generation, change)) }
+        pending.append((generation, change))
         let before = (records, newerLines)
         change.apply(to: &records)
         if change == .clear { newerLines = 0 }
@@ -295,6 +301,7 @@ public final class DictationHistoryService {
     /// failed delete or clear shows its dictations again and a failed append is not shown as kept.
     private func writeFailed(generation: Int, _ text: String) {
         journal.removeAll { $0.generation == generation }
+        pending.removeAll { $0.generation == generation }
         writeProblem = text
         problemGeneration = generation
         onChange?()
@@ -307,6 +314,7 @@ public final class DictationHistoryService {
     /// again.
     private func writeSucceeded(generation: Int, _ change: DictationHistoryChange, followUp: DictationHistoryChange?,
                                 audioBytes bytes: Int64) {
+        pending.removeAll { $0.generation == generation }
         var changed = bytes != audioBytes
         audioBytes = bytes
         if let followUp {
@@ -314,6 +322,8 @@ public final class DictationHistoryService {
             if loadsInFlight > 0 { journal.append((generation, followUp)) }
             let before = records
             followUp.apply(to: &records)
+            // The changes made since, whose writes come after this one, apply on top again, as they will on disk.
+            for later in pending where later.generation > generation { later.change.apply(to: &records) }
             if records != before { changed = true }
         }
         if let failed = problemGeneration, generation > failed {

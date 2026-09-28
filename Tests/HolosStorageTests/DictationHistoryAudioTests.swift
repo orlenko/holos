@@ -134,6 +134,74 @@ private func age(_ url: URL, by seconds: TimeInterval) throws {
     #expect(exists(store.audioURL(for: recent.id)))
 }
 
+/// A store with a recent and an old dictation, each with audio, in a folder of its own.
+private func storeWithAudio(_ root: URL, _ name: String) throws -> (DictationHistoryStore, [DictationRecord]) {
+    let store = DictationHistoryStore(directory: root.appendingPathComponent(name).appendingPathComponent("History"))
+    var records: [DictationRecord] = []
+    for record in [dictation("Old.", date: audioNow.addingTimeInterval(-40 * 86_400)), dictation("Recent.")] {
+        records.append(try store.append(record, audio: try partialAudio(for: record.id, in: store)))
+    }
+    return (store, records)
+}
+
+@Test func aRewriteThatFailsKeepsTheAudioItsRecordsLink() throws {
+    let root = try audioRoot()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let operations: [(String, (DictationHistoryStore, [DictationRecord]) throws -> Void)] = [
+        ("delete", { store, records in try store.delete(id: records[0].id) }),
+        ("clear", { store, _ in try store.clear() }),
+        ("sweep", { store, _ in try store.sweep(.days30, now: audioNow) }),
+        ("removeAllAudio", { store, _ in try store.removeAllAudio() }),
+    ]
+    for (name, operation) in operations {
+        // A twin run finds the step that replaces the file; the real run fails there.
+        let (twin, twinRecords) = try storeWithAudio(root, "twin-\(name)")
+        let steps = FaultPlan()
+        try AtomicFile.$faultPlan.withValue(steps) { try operation(twin, twinRecords) }
+        let index = try #require(steps.steps.firstIndex(of: "rename dictations.jsonl"), "\(name): \(steps.steps)")
+
+        let (store, records) = try storeWithAudio(root, name)
+        #expect(throws: (any Error).self, "\(name)") {
+            try AtomicFile.$faultPlan.withValue(FaultPlan(failAt: index)) { try operation(store, records) }
+        }
+        #expect(try store.load().records == records, "\(name): the file is as it was")
+        for record in records {
+            #expect(exists(store.audioURL(for: record.id)), "\(name): the audio is back")
+        }
+        #expect(store.audioFiles().allSatisfy { $0.kind == .finished }, "\(name): nothing left set aside")
+    }
+}
+
+@Test func sweepPutsBackAudioACrashLeftAsideOnlyWhenItsRecordLinksIt() throws {
+    let root = try audioRoot()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let (store, records) = try storeWithAudio(root, "crash")
+    // A crash after the audio was set aside: one record still links it, the other's line was already gone.
+    let linked = records[1]
+    #expect(rename(store.audioURL(for: linked.id).path, store.audioURL(for: linked.id).path + ".removing") == 0)
+    let gone = UUID()
+    _ = try partialAudio(for: gone, in: store)
+    #expect(rename(store.partialAudioURL(for: gone).path, store.audioURL(for: gone).path + ".removing") == 0)
+    try store.sweep(before: .distantPast)
+    #expect(exists(store.audioURL(for: linked.id)))
+    #expect(!exists(URL(fileURLWithPath: store.audioURL(for: gone).path + ".removing")))
+    #expect(store.audioFiles().allSatisfy { $0.kind == .finished })
+}
+
+@Test func sweepDropsAudioALineNoLongerLinks() throws {
+    let root = try audioRoot()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let (store, records) = try storeWithAudio(root, "unlinked")
+    // An older build rewrote the file and dropped the (to it unknown) audio link of the recent record.
+    var unlinked = records[1]
+    unlinked.audio = nil
+    try AtomicFile.write(try HolosJSON.line(records[0]) + HolosJSON.line(unlinked), to: store.fileURL)
+    try store.sweep(before: .distantPast)
+    #expect(!exists(store.audioURL(for: unlinked.id)), "Nothing can play it any more.")
+    #expect(exists(store.audioURL(for: records[0].id)))
+    #expect(try store.load().records.map(\.text) == ["Old.", "Recent."])
+}
+
 @Test func removingAllAudioDropsFilesAndLinksButKeepsTheText() throws {
     let root = try audioRoot()
     defer { try? FileManager.default.removeItem(at: root) }
@@ -249,6 +317,64 @@ private final class FakeRecording: DictationAudioRecording, Sendable {
     service.delete(spoken.id)
     await service.flushed()
     #expect(!exists(store.audioURL(for: spoken.id)))
+}
+
+@MainActor
+@Test func anAudioLinkLandingLateNeverUndoesLaterChanges() async throws {
+    let root = try audioRoot()
+    let suite = "holos-history-audio-order-\(UUID().uuidString)"
+    let defaults = try #require(UserDefaults(suiteName: suite))
+    defer {
+        defaults.removePersistentDomain(forName: suite)
+        try? FileManager.default.removeItem(at: root)
+    }
+    let store = DictationHistoryStore(directory: root.appendingPathComponent("History"))
+    let service = DictationHistoryService(store: store, defaults: defaults)
+
+    // Deleting all audio right after a dictation was added: its link, landing after, must not come back.
+    let first = dictation("First.")
+    service.add(first, audio: FakeRecording(try partialAudio(for: first.id, in: store)))
+    service.removeAllAudio()
+    await service.flushed()
+    try await pollUntil { service.audioBytes == 0 }
+    #expect(service.records.allSatisfy { $0.audio == nil })
+    #expect(try store.load().records.allSatisfy { $0.audio == nil })
+
+    // Update History made before the link landed keeps its text, and the link still lands.
+    let second = dictation("I use a boon to.")
+    service.add(second, audio: FakeRecording(try partialAudio(for: second.id, in: store)))
+    var updated = second
+    updated.text = "I use Ubuntu."
+    service.update(updated)
+    await service.flushed()
+    try await pollUntil { service.records.last?.audio != nil }
+    #expect(service.records.last?.text == "I use Ubuntu.")
+    #expect(try store.load().records.last?.text == "I use Ubuntu.")
+    #expect(try store.load().records.last?.audio != nil, "Update History never drops the audio link on disk.")
+}
+
+@MainActor
+@Test func anUpdateOfADictationClearedElsewhereLeavesItCleared() async throws {
+    let root = try audioRoot()
+    let suite = "holos-history-audio-update-\(UUID().uuidString)"
+    let defaults = try #require(UserDefaults(suiteName: suite))
+    defer {
+        defaults.removePersistentDomain(forName: suite)
+        try? FileManager.default.removeItem(at: root)
+    }
+    let store = DictationHistoryStore(directory: root.appendingPathComponent("History"))
+    let service = DictationHistoryService(store: store, defaults: defaults)
+    let record = dictation("Kept.")
+    service.add(record)
+    await service.flushed()
+    // `voiceislocal history clear --yes` in Terminal, before the app's update reaches the file.
+    try store.clear()
+    var updated = record
+    updated.text = "Changed."
+    service.update(updated)
+    await service.flushed()
+    try await pollUntil { service.records.isEmpty }
+    #expect(try store.load().records.isEmpty)
 }
 
 /// Waits for main-actor work the service posted after its queue finished, by polling a bounded number of times.
