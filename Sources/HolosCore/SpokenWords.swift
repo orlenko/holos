@@ -195,6 +195,8 @@ public enum SpokenWords {
         "seize": "16", "vingt": "20", "vingts": "20", "trente": "30", "quarante": "40", "cinquante": "50",
         "soixante": "60", "cent": "100", "cents": "100", "mille": "1000", "million": "1000000",
         "milliard": "1000000000",
+        // Belgian and Swiss French.
+        "septante": "70", "huitante": "80", "octante": "80", "nonante": "90",
     ]
 
     /// What a word says that a fix must keep where it is (`AIFixGuard.plausible`). `strict`: its negation, modal

@@ -420,7 +420,8 @@ have"); hesitations (the fillers filler removal takes out, so not the "mm" of
 "10 mm") and stutters may go, one copy kept ("You should go" is not "You go"); a number
 said in words
 may be written in digits with the same value ("twenty one" and "21", "quatre-vingt-dix-huit"
-and "98", but not the range "one-two"). A
+and "98", the Belgian and Swiss "nonante-huit" too, but not the range "one-two"), and digits
+in groups of three with or without their separators ("1,000" and "1000"). A
 negation, modal, auxiliary, abbreviated unit or word of quantity, frequency or degree may
 only be spelled another way as the same one
 ("don't" and "dont"; "I do agree" is not "I do not agree", "should" not "could",
@@ -430,11 +431,12 @@ person or value, or becomes a listed homophone ("their" and "there", "won" and "
 never a close spelling alone: "He" is not "She", "Your" not "Our", "Set width 10 height
 20" not "Set width 20 height 10", "Ship 10 units" not "Ship 100 units". A name (a word
 with a capital inside, such as "GitHub", or any capitalized word, sentence starts
-included, but "I", function words, words under three letters and the guarded words
-above) changes only in case or apostrophes: "Mary called" is not "Marie called", and a
+included, but "I", function words, hesitations such as "Hmm", words under three letters
+and the guarded words above) changes only in case or apostrophes: "Mary called" is not "Marie called", and a
 misheard word that starts a sentence stays as recognized. A listed pair said there is the
 one way past these rules, and the limits on edits and on words added count from the
-chunk with its pairs applied. Function words, glue words
+chunk with its pairs applied. Marks a pair brings ("comment-free") come with its words:
+"common free" does not become "common-free". Function words, glue words
 and homophones are those of the language dictated (English or French). The model
 runs with the `permissiveContentTransformations` guardrails: with the defaults about
 half the fixes in a day's log failed in about 200 ms, ordinary sentences refused as

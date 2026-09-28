@@ -462,6 +462,11 @@ let unrelatedWords = [
         == .reject(.implausibleSubstitution))
     #expect(AIFixGuard.check(original: "go to the the store", fixed: "go to the store") == .accept)
     #expect(AIFixGuard.check(original: "go to um the store", fixed: "go to the store") == .accept)
+    // A hesitation that starts a sentence is not a name.
+    #expect(AIFixGuard.check(original: "Hmm, I agree", fixed: "I agree") == .accept)
+    #expect(AIFixGuard.check(original: "Erm, continue", fixed: "Continue", language: "en-US") == .accept)
+    #expect(AIFixGuard.check(original: "Euh, oui", fixed: "Oui", language: "fr-FR") == .accept)
+    #expect(AIFixGuard.check(original: "Mary, I agree", fixed: "I agree") != .accept)
     #expect(AIFixGuard.check(original: "go build build it now", fixed: "go build it now") == .accept)
     // A stutter keeps one copy, even where the limits would let a reply drop two words.
     let long = "we met today and talked about the budget budget discussion for the next quarter with the whole team today now"
@@ -735,6 +740,18 @@ func aFrenchHomophoneOrNumberIsFixed(original: String, fixed: String) {
         == .accept)
     #expect(AIFixGuard.check(original: "chambre quatre-vingt-dix-huit", fixed: "chambre 99", language: "fr-FR")
         != .accept)
+    // Belgian and Swiss French say seventy, eighty and ninety in one word.
+    #expect(AIFixGuard.check(original: "chambre nonante-huit", fixed: "chambre 98", language: "fr-CH") == .accept)
+    #expect(AIFixGuard.check(original: "chambre septante et un", fixed: "chambre 71", language: "fr-BE") == .accept)
+    // Digits in groups of three are one number, with or without their separators.
+    #expect(AIFixGuard.check(original: "We need 1,000 units", fixed: "We need 1000 units") == .accept)
+    #expect(AIFixGuard.check(original: "We need 1000 units", fixed: "We need 1,000 units") == .accept)
+    #expect(AIFixGuard.check(original: "We need 12,345,678 units", fixed: "We need 12345678 units") == .accept)
+    #expect(AIFixGuard.check(original: "Il faut 1\u{202F}000 unités", fixed: "Il faut 1000 unités", language: "fr-FR")
+        == .accept)
+    #expect(AIFixGuard.check(original: "We need 1,000 units", fixed: "We need 10,000 units") != .accept)
+    #expect(AIFixGuard.check(original: "Dial 5 100 now", fixed: "Dial 5100 now") != .accept)
+    #expect(AIFixGuard.digitGroupsJoined("1,50 and 0,500 and 1,5000 and 2,000") == "1,50 and 0,500 and 1,5000 and 2000")
     // Only "dix" takes a unit after it: "onze sept" and "ten seven" are two numbers.
     #expect(SpokenWords.numberValue(["onze", "sept"], language: "fr-FR") == nil)
     #expect(SpokenWords.numberValue(["ten", "seven"], language: "en-US") == nil)
@@ -767,6 +784,11 @@ func aFrenchHomophoneOrNumberIsFixed(original: String, fixed: String) {
         == .reject(.changedStructure))
     #expect(AIFixGuard.check(original: "type comin free now", fixed: "type-comment free now", taught: [commentFree])
         == .reject(.changedStructure))
+    // The pair's marks come with its words: its hyphen alone, on the words as heard, is not the pair.
+    #expect(AIFixGuard.check(original: "type common free now", fixed: "type common-free now", taught: [commentFree])
+        != .accept)
+    #expect(AIFixGuard.check(original: "type common free now", fixed: "type comment-free now", taught: [commentFree])
+        == .accept)
     // A dash between clauses ends a phrase.
     let pool = Correction(heard: "food requests", meant: "pool requests")
     #expect(AIFixReference.matches(of: "food requests", in: "I ordered food — requests are pending").isEmpty)

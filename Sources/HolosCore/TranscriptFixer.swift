@@ -211,10 +211,12 @@ public enum AIFixGuard {
     public static func check(original: String, fixed: String, protecting corrections: [Correction] = [],
                              taught: [Correction] = [], language: String? = nil, lexicon: Lexicon? = nil) -> Verdict {
         let lexicon = lexicon ?? Lexicon(language: language, taught: (corrections + taught).map(\.meant))
-        let original = original.trimmingCharacters(in: .whitespacesAndNewlines)
-        let fixed = fixed.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !fixed.isEmpty else { return .reject(.empty) }
-        guard fixed != original else { return .unchanged }
+        let chunk = original.trimmingCharacters(in: .whitespacesAndNewlines)
+        let reply = fixed.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !reply.isEmpty else { return .reject(.empty) }
+        guard reply != chunk else { return .unchanged }
+        // "1,000" and "1000" are one number, whose comma is not a word boundary.
+        let original = digitGroupsJoined(chunk), fixed = digitGroupsJoined(reply)
         let before = words(in: original)
         let after = words(in: fixed)
         guard !after.isEmpty else { return .reject(.empty) }
@@ -233,17 +235,27 @@ public enum AIFixGuard {
             let segmented = zip(was.segments, now.segments).reduce(0) { $0 + editDistance($1.0, $1.1) }
             return segmented <= editDistance(was.segments.flatMap(\.self), after)
         }
-        // A taught pair may bring its own marks where its heard phrase was said ("comment-free", "/qc").
-        guard sameStructure(original)
-            || withTaughtPairs(original, taught: taught, language: language, lexicon: lexicon)
-                .contains(where: sameStructure)
-        else { return .reject(.changedStructure) }
+        // A taught pair may bring its own marks where its heard phrase was said ("comment-free", "/qc"): the chunk
+        // with those pairs applied, marks and words together.
+        var applied: [String] = []
+        if !sameStructure(original) {
+            applied = withTaughtPairs(original, taught: taught, language: language, lexicon: lexicon)
+                .filter(sameStructure)
+            guard !applied.isEmpty else { return .reject(.changedStructure) }
+        }
         let edits = editDistance(before, after)
         // The limits on words added or dropped and on edits count from the chunk with the taught pairs applied
-        // (`plausibleReply`): a pair may expand its heard phrase by more than they allow.
-        guard plausibleReply(original: original, fixed: fixed, before: before, after: after, taught: taught,
+        // (`plausibleReply`): a pair may expand its heard phrase by more than they allow. Marks only a pair brings
+        // come with its words: the reply must then follow from the chunk with that pair applied, so "common free ->
+        // comment-free" does not let "common free" become "common-free".
+        let plausibleWords = applied.isEmpty
+            ? plausibleReply(original: original, fixed: fixed, before: before, after: after, taught: taught,
                              language: language, lexicon: lexicon)
-        else {
+            : applied.contains {
+                plausibleReply(original: $0, fixed: fixed, before: words(in: $0), after: after, taught: [],
+                               language: language, lexicon: lexicon)
+            }
+        guard plausibleWords else {
             if abs(after.count - before.count) > wordCountLimit(before.count) { return .reject(.wordCountChanged) }
             if edits > editLimit(before.count) { return .reject(.tooManyEdits) }
             if SpokenWords.meaningWords(in: before, language: language)
@@ -256,6 +268,15 @@ public enum AIFixGuard {
             return .reject(spelling ? .changedMeaning : .implausibleSubstitution)
         }
         return .accept
+    }
+
+    /// `text` with the separators of each number written in groups of three digits taken out: "1,000" and "1 000"
+    /// (with a no-break space) are "1000". A number with a leading zero or a group of other than three digits stays
+    /// as it is: "0,5", "1,50".
+    static func digitGroupsJoined(_ text: String) -> String {
+        text.replacing(/(^|[^\p{N},])([1-9]\p{N}{0,2}(?:[,\u{00A0}\u{202F}]\p{N}{3})+)(?!\p{N}|,\p{N})/) { match in
+            match.output.1 + String(match.output.2.filter { $0.isNumber })
+        }
     }
 
     /// `text` with the hyphens inside one number spelled in words made spaces, for the structure check: the words
@@ -300,7 +321,8 @@ public enum AIFixGuard {
     /// ("GitHub", "QC", "macOS"), or a capitalized word other than "I" ("Windows" in "use Windows"). At the start of
     /// a sentence or of the chunk a capital does not tell a name from another word, so there every capitalized
     /// word counts ("Mary called"), but for the words a name cannot be: function and glue words of `language`
-    /// ("The", "When", "Je"), words of fewer than three letters ("So", "If"), and words whose meaning is guarded
+    /// ("The", "When", "Je"), hesitations ("Hmm", "Euh"), words of fewer than three letters ("So", "If"), and words
+    /// whose meaning is guarded
     /// on its own (`SpokenWords.meaning`: "Dont", "Your", "Ten"). A misheard word that starts a sentence then stays
     /// as recognized unless a taught pair covers it. `midSentence`: the first word does not start a sentence (a
     /// taught meant phrase).
@@ -320,6 +342,7 @@ public enum AIFixGuard {
                 else {
                     SpokenWords.letters(lower).count >= 3 && !SpokenWords.stopWords(for: language).contains(lower)
                         && !SpokenWords.isGlue(lower, language: language)
+                        && !FillerWords.isFiller(lower, language: language)
                         && SpokenWords.meaning(of: lower, language: language).isEmpty
                 }
             result.append(isName)
