@@ -257,9 +257,11 @@ dictation language.
 dictation; other languages show it as unavailable until they have been tried.
 The model sees a learned pair only when its whole heard phrase (or, for words the
 spell checker does not know, the same words misheard a little differently) is in the
-chunk. A fix that replaces a real word by anything but a listed homophone, or a word
-the spell checker does not know by one that does not sound like it, is refused,
-unless it turns that heard phrase into the meant one. Check with pairs such as "Onobunto" → "on Ubuntu" and "a Bundo" →
+chunk. The fix may only replace words one for one: a word the spell checker does not
+know by one real word said alike, or a real word by a listed homophone; it may add or
+remove commas and change the closing mark at the end, and apply a learned pair where
+its heard phrase was said. Anything else (another real word, an article, a
+contraction, a number in digits, a case change inside a sentence) is refused. Check with pairs such as "Onobunto" → "on Ubuntu" and "a Bundo" →
 "ubuntu": "The build runs Onobunto" becomes "The build runs on Ubuntu", while "Let's
 develop it on a Windows machine first" and "That's the point" stay as said.
 

@@ -49,7 +49,7 @@ import Testing
     #expect(AIFixGuard.check(original: "Est-ce que tu peux me traduire ça en anglais",
                              fixed: "Can you translate this for me into English?") == .reject(.changedStructure))
     #expect(AIFixGuard.check(original: "Tu peux me traduire ça en anglais",
-                             fixed: "Can you translate this for me into English?") == .reject(.tooManyEdits))
+                             fixed: "Can you translate this for me into English?") == .reject(.wordCountChanged))
     #expect(AIFixGuard.check(original: "Écris un courriel à Marie pour lui dire que je serai en retard",
                              fixed: "Objet : Retard prévu\n\nBonjour Marie,\n\nJe vous informe que je serai en retard.")
         == .reject(.changedStructure))
@@ -59,7 +59,7 @@ import Testing
     // Relocated marks: the same words and the same count of each mark, in other places.
     #expect(AIFixGuard.check(original: "Wait here. Don't leave", fixed: "Wait here Don't. Leave")
         == .reject(.changedStructure))
-    #expect(AIFixGuard.check(original: "time: five", fixed: "Corrected: time five") == .reject(.changedStructure))
+    #expect(AIFixGuard.check(original: "time: five", fixed: "Corrected: time five") != .accept)
     #expect(AIFixGuard.check(original: "a b. c d", fixed: "a. b c d") == .reject(.changedStructure))
     // Removed, added or swapped marks inside the chunk.
     #expect(AIFixGuard.check(original: "Wait here. Don't leave", fixed: "Wait here, don't leave")
@@ -70,11 +70,19 @@ import Testing
     #expect(AIFixGuard.check(original: "see (below) now", fixed: "see below now") == .reject(.changedStructure))
     #expect(AIFixGuard.check(original: "Wait here. Don't leave", fixed: "Wait here! Don't leave")
         == .reject(.changedStructure))
+    #expect(AIFixGuard.check(original: "Pick ten-twenty", fixed: "Pick ten twenty") == .reject(.changedStructure))
     // Commas and apostrophes come and go; words change within the budget with the marks where they were.
     #expect(AIFixGuard.check(original: "Wait here. Dont leave", fixed: "Wait, here. Don't leave,") == .accept)
     #expect(AIFixGuard.check(original: "I went their. Then we left", fixed: "I went there. Then, we left.")
         == .accept)
     #expect(AIFixGuard.check(original: "right. write", fixed: "write. right") == .accept)  // two substitutions, marks put
+    // But not a comma between two numbers: "1,5" is not "1 5", nor "twenty, one" "twenty one".
+    #expect(AIFixGuard.check(original: "La dose est de 1,5 mg", fixed: "La dose est de 1 5 mg", language: "fr-FR")
+        == .reject(.changedStructure))
+    #expect(AIFixGuard.check(original: "Pick twenty, one or ten", fixed: "Pick twenty one or ten")
+        == .reject(.changedStructure))
+    #expect(AIFixGuard.check(original: "Pick twenty one or ten", fixed: "Pick twenty, one or ten")
+        == .reject(.changedStructure))
     // Closing marks may change at the very end, including before closing quotes.
     #expect(AIFixGuard.check(original: "he called it “great”", fixed: "he called it “great.”") == .accept)
     #expect(AIFixGuard.check(original: "Is it done?", fixed: "Is it done?!") == .accept)
@@ -90,15 +98,12 @@ import Testing
 }
 
 @Test func editLimitGrowsWithLength() {
-    // Letters only: a number keeps its value, so "word4" could not become "wort4".
-    let alphabet = Array("abcdefghijklmnopqrstuvwxyz")
-    let suffixes: [String] = (0..<30).map { index in String([alphabet[index / 26], alphabet[index % 26]]) }
-    let words = suffixes.map { "word\($0)" }
+    // 30 words, ten of them "right": each "write" in its place is a homophone, so it could be a mishearing.
+    let words = Array(repeating: ["we", "right", "it"], count: 10).flatMap(\.self)
     var changed = words
-    // Each replacement is one letter off, so it could be a mishearing.
-    for index in [3, 9, 15, 21, 27] { changed[index] = "wort\(suffixes[index])" }  // 5 edits; 20 % of 30 is 6
+    for index in [1, 4, 7, 10, 13] { changed[index] = "write" }  // 5 edits; 20 % of 30 is 6
     #expect(AIFixGuard.check(original: words.joined(separator: " "), fixed: changed.joined(separator: " ")) == .accept)
-    for index in [1, 5] { changed[index] = "wort\(suffixes[index])" }  // 7 edits
+    for index in [16, 19] { changed[index] = "write" }  // 7 edits
     #expect(AIFixGuard.check(original: words.joined(separator: " "), fixed: changed.joined(separator: " "))
         == .reject(.tooManyEdits))
     #expect(AIFixGuard.editDistance(["a", "b", "c"], ["a", "x", "c", "d"]) == 2)
@@ -323,8 +328,7 @@ let unrelatedWords = [
     #expect(AIFixReference.select(from: [bundo], for: "That's a point", budget: 1_000).isEmpty)
     #expect(AIFixGuard.check(original: "That's the point", fixed: "That's the ubuntu", taught: [bundo])
         == .reject(.implausibleSubstitution))
-    #expect(AIFixGuard.check(original: "That's a point", fixed: "That's ubuntu", taught: [bundo])
-        == .reject(.implausibleSubstitution))
+    #expect(AIFixGuard.check(original: "That's a point", fixed: "That's ubuntu", taught: [bundo]) != .accept)
 }
 
 @Test func aTaughtPairCoversOnlyTheWordsThatSaidItsHeardPhrase() {
@@ -334,18 +338,19 @@ let unrelatedWords = [
         == .reject(.implausibleSubstitution))
     #expect(AIFixGuard.check(original: "use a Bundo", fixed: "Ubuntu a Bundo", taught: [bundo])
         == .reject(.implausibleSubstitution))
-    // The words that said the heard phrase must become the meant phrase, give or take function words.
     #expect(AIFixGuard.check(original: "use a Bundo", fixed: "use Ubuntu Bundo", taught: [bundo])
         == .reject(.implausibleSubstitution))
-    #expect(AIFixGuard.check(original: "use a bundu", fixed: "use Ubuntu", taught: [bundo]) == .accept)
-    #expect(AIFixGuard.check(original: "use a bundu", fixed: "use a Ubuntu", taught: [bundo]) == .accept)
-    #expect(AIFixGuard.check(original: "on a bundu machine", fixed: "on an Ubuntu machine", taught: [bundo])
-        == .accept)
+    // The words that said the heard phrase become the meant phrase exactly, and nothing else changes there.
+    #expect(AIFixGuard.check(original: "use a bundu", fixed: "use ubuntu", taught: [bundo]) == .accept)
+    for fixed in ["use Ubuntu", "use a Ubuntu", "use an ubuntu"] {
+        #expect(AIFixGuard.check(original: "use a bundu", fixed: fixed, taught: [bundo]) != .accept, "\(fixed)")
+    }
+    #expect(AIFixGuard.check(original: "on a bundu machine", fixed: "on an ubuntu machine", taught: [bundo])
+        != .accept)
     let pool = Correction(heard: "food requests", meant: "pool requests")
     #expect(AIFixGuard.check(original: "open food requests", fixed: "open pool requests", taught: [pool]) == .accept)
     #expect(AIFixGuard.check(original: "open food requests", fixed: "open food pool", taught: [pool])
         == .reject(.implausibleSubstitution))
-    // The pair's place becomes its meant phrase; nothing else may change there.
     let qc = Correction(heard: "slash QC", meant: "QC")
     #expect(AIFixGuard.check(original: "then run slash QC now", fixed: "then run QC now", taught: [qc]) == .accept)
     #expect(AIFixGuard.check(original: "then run slash QC now", fixed: "then run Ubuntu now", taught: [qc])
@@ -356,6 +361,44 @@ let unrelatedWords = [
         == .reject(.implausibleSubstitution))
     #expect(AIFixGuard.check(original: "ask this basement", fixed: "ask the spaceman", taught: [spaceman])
         == .accept)
+}
+
+@Test func aTaughtSpellingIsFrozen() {
+    // A pair's meant words are not changed again, even to a homophone: "side -> site" does not let "syde" become
+    // "sight" through "site".
+    let site = Correction(heard: "side", meant: "site")
+    #expect(AIFixGuard.check(original: "open the side now", fixed: "open the site now", taught: [site],
+                             language: "en-US") == .accept)
+    #expect(AIFixGuard.check(original: "open the syde now", fixed: "open the sight now", taught: [site],
+                             language: "en-US") != .accept)
+    // A word a learned correction produced stays where it was: homophones swapped around it do not move it.
+    let sight = Correction(heard: "scite", meant: "sight")
+    #expect(AIFixGuard.check(original: "keep the sight near the site", fixed: "keep the site near the sight",
+                             protecting: [sight], language: "en-US") == .reject(.changedCorrection))
+    #expect(AIFixGuard.check(original: "keep the sight near the cite", fixed: "keep the sight near the site",
+                             protecting: [sight], language: "en-US") == .accept)
+    // The pair's words and marks come together, from one application: "food requests -> pool. Requests" does not
+    // let the reply take the period and fix "fuud" to "food" by itself.
+    let period = Correction(heard: "food requests", meant: "pool. Requests")
+    #expect(AIFixGuard.check(original: "Get fuud requests now", fixed: "Get food. Requests now", taught: [period],
+                             language: "en-US") != .accept)
+    #expect(AIFixGuard.check(original: "Get fuud requests now", fixed: "Get pool. Requests now", taught: [period],
+                             language: "en-US") == .accept)
+    // A mark the heard phrase has at its edge goes with it.
+    let bang = Correction(heard: "food.", meant: "pool!")
+    #expect(AIFixGuard.check(original: "get fuud. Then go", fixed: "get pool! Then go", taught: [bang],
+                             language: "en-US") == .accept)
+    // A pair's leading mark lost at the start of the chunk is not the pair.
+    let qc = Correction(heard: "slash QC", meant: "/qc")
+    let reply = AIFixGuard.keepingEdges(of: "slaash QC now", in: "/qc now", isFinal: false)
+    #expect(AIFixGuard.check(original: "slaash QC now", fixed: reply, taught: [qc], language: "en-US") != .accept)
+    #expect(AIFixGuard.check(original: "run slaash QC now", fixed: "run /qc now", taught: [qc], language: "en-US")
+        == .accept)
+    // Places the reply left alone do not count toward the most places tried.
+    let commentFree = Correction(heard: "common free", meant: "comment-free")
+    let said = Array(repeating: "type comin free now", count: 7).joined(separator: " and ")
+    let fixed = "type comment-free now" + said.dropFirst("type comin free now".count)
+    #expect(AIFixGuard.check(original: said, fixed: fixed, taught: [commentFree], language: "en-US") == .accept)
 }
 
 @Test func aVariantDiffersOnlyInItsVowels() {
@@ -372,37 +415,6 @@ let unrelatedWords = [
     let file = Correction(heard: "delete file", meant: "remove the file")
     #expect(AIFixGuard.check(original: "please delete files now", fixed: "please remove the file now", taught: [file])
         != .accept)
-}
-
-@Test func wordsReplacedTogetherAreEachJudged() {
-    // A long word close to its fix does not carry an unrelated one, side by side or run together.
-    #expect(AIFixGuard.check(original: "internationalisation windows", fixed: "internationalization Ubuntu")
-        == .reject(.implausibleSubstitution))
-    #expect(AIFixGuard.check(original: "the internationalisation", fixed: "the internationalization Ubuntu")
-        == .reject(.implausibleSubstitution))
-    #expect(AIFixGuard.check(original: "internationalizaton windows", fixed: "internationalization windows")
-        == .accept)
-    // A word the language does not know, split or joined, is still one fix.
-    #expect(AIFixGuard.check(original: "go tothe store", fixed: "go to the store") == .accept)
-    #expect(AIFixGuard.check(original: "it runs onobunto", fixed: "it runs on ubuntu") == .accept)
-    #expect(AIFixGuard.check(original: "You can not go", fixed: "You cannot go") == .accept)
-    // Real words split or joined are other words, even with the same letters.
-    for (original, fixed) in [("Call the therapist now", "Call the rapist now"),
-                              ("Call the rapist now", "Call the therapist now"),
-                              ("add a semi colon here", "add a semicolon here"), ("It is not able", "It is notable"),
-                              ("then open the get hub page", "then open the GitHub page")] {
-        #expect(AIFixGuard.check(original: original, fixed: fixed, language: "en-US") != .accept,
-                "\(original) -> \(fixed)")
-    }
-    // "Onobunto", capitalized mid-sentence, is a name: only its pair may spell it otherwise.
-    #expect(AIFixGuard.check(original: "The build runs Onobunto.", fixed: "The build runs on Ubuntu.",
-                             taught: [taughtList[4]]) == .accept)
-    #expect(AIFixGuard.check(original: "The build runs Onobunto.", fixed: "The build runs on Ubuntu.")
-        == .reject(.changedMeaning))
-    // Nor may the model bring a name of its own.
-    #expect(AIFixGuard.check(original: "The build runs onobunto.", fixed: "The build runs on Ubuntu.")
-        == .reject(.changedMeaning))
-    #expect(AIFixGuard.check(original: "The build runs onobunto.", fixed: "The build runs on ubuntu.") == .accept)
 }
 
 @Test func soundAndSpellingEdgesDoNotJoinUnrelatedWords() {
@@ -441,94 +453,46 @@ let unrelatedWords = [
     #expect(SpokenWords.sound("nudger") == SpokenWords.sound("najer"))
     let gitLab = Correction(heard: "git lab", meant: "GitLab")
     #expect(AIFixReference.select(from: [gitLab], for: "the jet lab opened", budget: 1_000).isEmpty)
-    #expect(AIFixGuard.check(original: "the jet lab opened", fixed: "the GitLab opened", taught: [gitLab])
-        == .reject(.implausibleSubstitution))
+    #expect(AIFixGuard.check(original: "the jet lab opened", fixed: "the GitLab opened", taught: [gitLab]) != .accept)
 }
 
-@Test func aFixKeepsNegationsAndWordsOfQuantity() {
-    for (original, fixed) in [("I do agree", "I do not agree"), ("I do not agree", "I do agree"),
-                              ("I can come", "I can't come"), ("I can't come", "I can come"),
-                              ("We need tea", "We only need tea"), ("Take all the cake", "Take the cake"),
-                              ("Je veux venir", "Je veux pas venir"), ("Il est toujours là", "Il est là")] {
+@Test func aFixKeepsNegationsModalsAndWordsOfQuantity() {
+    for (original, fixed) in [("I can come", "I can't come"), ("I can't come", "I can come"),
+                              ("You should go", "You could go"), ("I'll go", "I'd go"), ("It is done", "It was done"),
+                              ("You couldn't go", "You wouldn't go"), ("You cant go", "You won't go"),
+                              ("The answer is no", "The answer is none"), ("Il est toujours là", "Il est jamais là")] {
         #expect(AIFixGuard.check(original: original, fixed: fixed) == .reject(.changedMeaning),
                 "\(original) -> \(fixed)")
     }
-    // The same negation said another way, and a French "ne" speech dropped, are not changes of meaning.
-    #expect(AIFixGuard.check(original: "Wait here. Dont leave", fixed: "Wait here. Don't leave") == .accept)
-    #expect(AIFixGuard.check(original: "I do not know", fixed: "I don't know") == .accept)
-    #expect(AIFixGuard.check(original: "je sais pas", fixed: "je ne sais pas", language: "fr-FR") == .accept)
-    // Only function words, hesitations and repeats may be dropped.
-    #expect(AIFixGuard.check(original: "I love the red car", fixed: "I love the car")
-        == .reject(.implausibleSubstitution))
-    #expect(AIFixGuard.check(original: "go to the the store", fixed: "go to the store") == .accept)
-    #expect(AIFixGuard.check(original: "go to um the store", fixed: "go to the store") == .accept)
-    // A hesitation that starts a sentence is not a name.
-    #expect(AIFixGuard.check(original: "Hmm, I agree", fixed: "I agree") == .accept)
-    #expect(AIFixGuard.check(original: "Erm, continue", fixed: "Continue", language: "en-US") == .accept)
-    #expect(AIFixGuard.check(original: "Euh, oui", fixed: "Oui", language: "fr-FR") == .accept)
-    #expect(AIFixGuard.check(original: "Mary, I agree", fixed: "I agree") != .accept)
-    #expect(AIFixGuard.check(original: "go build build it now", fixed: "go build it now") == .accept)
-    // A stutter keeps one copy, even where the limits would let a reply drop two words.
-    let long = "we met today and talked about the budget budget discussion for the next quarter with the whole team today now"
-    #expect(AIFixGuard.words(in: long).count == 20)
-    #expect(AIFixGuard.check(original: long, fixed: long.replacingOccurrences(of: "budget budget", with: "budget"))
-        == .accept)
-    #expect(AIFixGuard.check(original: long, fixed: long.replacingOccurrences(of: "budget budget ", with: ""))
-        != .accept)
-}
-
-@Test func onlyGlueWordsComeAndGoAndModalsStay() {
-    // A negation moved to another verb: the count is the same, but "not" may not be dropped or added.
-    #expect(AIFixGuard.check(original: "I do not leave but stay", fixed: "I do leave but not stay")
-        == .reject(.implausibleSubstitution))
-    // Modals, pronouns and auxiliaries say something: they are not added or dropped.
-    for (original, fixed) in [("You should go", "You go"), ("You go", "You should go"), ("It must work", "It work"),
-                              ("We may leave", "We leave"), ("They might win", "They win")] {
-        #expect(AIFixGuard.check(original: original, fixed: fixed) == .reject(.changedMeaning),
-                "\(original) -> \(fixed)")
-        // Judged without the count of modals, the change is still not a fix.
-        #expect(!AIFixGuard.plausibleReply(original: original, before: AIFixGuard.words(in: original),
-                                           after: AIFixGuard.words(in: fixed), taught: []))
-    }
-    for (original, fixed, why) in [("I told him twice", "I told twice", AIFixGuard.Rejection.implausibleSubstitution),
-                                   ("It done", "It was done", .changedMeaning)] {
-        #expect(AIFixGuard.check(original: original, fixed: fixed) == .reject(why),
-                "\(original) -> \(fixed)")
-    }
-    // Nor swapped for a close word.
-    #expect(AIFixGuard.check(original: "You should go", fixed: "You could go") == .reject(.changedMeaning))
-    #expect(AIFixGuard.check(original: "I'll go", fixed: "I'd go") == .reject(.changedMeaning))
-    // A French modal keeps its verb when a homophone fixes its ending.
+    // A French modal keeps its verb when a homophone fixes its ending; a plural is not a silent ending.
     #expect(AIFixGuard.check(original: "je peut venir", fixed: "je peux venir", language: "fr-FR") == .accept)
-    // A plural "s" is not a silent ending: one file is not several.
     #expect(AIFixGuard.check(original: "ouvre le fichier", fixed: "ouvre le fichiers", language: "fr-FR") != .accept)
-    // Articles, prepositions and conjunctions may come and go.
-    #expect(AIFixGuard.check(original: "we went to store", fixed: "we went to the store") == .accept)
-    #expect(AIFixGuard.check(original: "je parle à ami", fixed: "je parle à un ami", language: "fr-FR") == .accept)
-}
-
-@Test func negativeModalsKeepTheirModalNumbersTheirValue() {
-    // "couldn't" is "not" and "could": it is not "wouldn't".
-    #expect(AIFixGuard.check(original: "You couldn't go", fixed: "You wouldn't go", language: "en-US")
-        == .reject(.changedMeaning))
-    #expect(AIFixGuard.check(original: "You cant go", fixed: "You won't go") == .reject(.changedMeaning))
-    #expect(AIFixGuard.check(original: "You can't go", fixed: "You cannot go") == .accept)
-    #expect(AIFixGuard.check(original: "You can not go", fixed: "You cannot go") == .accept)
+    // The same negation spelled with its apostrophe.
+    #expect(AIFixGuard.check(original: "Wait here. Dont leave", fixed: "Wait here. Don't leave") == .accept)
+    #expect(AIFixGuard.check(original: "You cant go", fixed: "You can't go") == .accept)
     // A number keeps its value, whatever its digits look like.
     for (original, fixed) in [("Ship 10 units", "Ship 100 units"), ("Meet at 3 pm", "Meet at 8 pm"),
                               ("Version 1 is out", "Version 2 is out")] {
         #expect(AIFixGuard.check(original: original, fixed: fixed) == .reject(.changedMeaning),
                 "\(original) -> \(fixed)")
     }
-    // Unless a pair said there brings it.
+    // Unless a pair said there brings it, exactly.
     let version = Correction(heard: "version to", meant: "version 2")
     #expect(AIFixGuard.check(original: "use version to now", fixed: "use version 2 now", taught: [version]) == .accept)
     #expect(AIFixGuard.check(original: "use version to now", fixed: "use version 3 now", taught: [version])
-        == .reject(.changedMeaning))
+        != .accept)
 }
 
-/// Edits that change what a dictation says: who, how many, whether, which modal or quantity, which name. Each is
-/// refused at its place, however close its spelling.
+/// The French dictation of `aFixThatChangesMeaningIsRefused`.
+let frenchOriginals: Set<String> = [
+    "Il est là.", "Je viens demain.", "Je ne peux venir", "Je veux venir", "je peux venir", "Il vient souvent",
+    "Il est toujours là", "Il va pécher demain", "J'ai manger", "Ce projet est connu", "je parle à ami",
+    "J'en veux une", "Je le prends", "Je la vois", "Je les appelle", "Vous vous trompez", "regarde dessous",
+    "Utilisez 1,000 litre", "chambre quatre-vingt-dix-huit", "chambre numéro un", "J'ai deux millions",
+]
+
+/// Edits that change what a dictation says. Each is refused, however close its spelling or sound: a fix replaces
+/// misheard words one for one and does nothing else.
 @Test(arguments: [
     // Pronouns and possessives.
     ("He approved it.", "She approved it."), ("Your build passed.", "Our build passed."),
@@ -545,118 +509,109 @@ let unrelatedWords = [
     ("I do agree", "I do not agree"), ("I do not agree", "I do agree"),
     ("I do not leave but stay", "I do leave but not stay"), ("I can come", "I can't come"),
     ("We go there", "We never go there"), ("Not now, maybe later", "Now, maybe not later"),
-    ("Call me, no rush", "Call me, now rush"),
-    // Modals.
+    ("Call me, no rush", "Call me, now rush"), ("The answer is no", "The answer is none"),
+    ("Je ne peux venir", "Je peux venir"), ("Je veux venir", "Je veux pas venir"),
+    // Modals and auxiliaries, added, dropped or swapped.
     ("You should go", "You could go"), ("I'll go", "I'd go"), ("You may go", "You must go"),
-    ("je peux venir", "je dois venir"),
+    ("je peux venir", "je dois venir"), ("You should go", "You go"), ("You go", "You should go"),
+    ("It must work", "It work"), ("It done", "It was done"), ("I told him twice", "I told twice"),
     // Quantifiers.
     ("Delete all files", "Delete some files"), ("We only need tea", "We all need tea"),
     ("Some tests passed", "Most tests passed"), ("Run each test", "Run every test"),
     ("We saw few errors", "We saw new errors"), ("It rarely works", "It barely works"),
     ("It often fails", "It soften fails"), ("Il vient souvent", "Il vient suivant"),
-    // Words spelled close but said apart, and a glue word replaced by another by dropping one and adding the other.
-    ("We should increase the limit", "We should decrease the limit"), ("Please include the tests", "Please exclude the tests"),
-    ("Send it to Alice", "Send it from Alice"), ("Put it in the box", "Put it at the box"),
-    // One or many; the tense and person of an auxiliary, in a contraction or not.
+    ("We need tea", "We only need tea"), ("Take all the cake", "Take the cake"),
+    ("Il est toujours là", "Il est là"),
+    // Real words said or spelled close that are not listed homophones: another tense, number, vowel or word.
+    ("Clean the tooth now", "Clean the teeth now"), ("The goose is loose", "The geese is loose"),
+    ("We want it", "We wanted it"), ("We need it", "We needed it"), ("We start it", "We started it"),
+    ("We should increase the limit", "We should decrease the limit"),
+    ("Please include the tests", "Please exclude the tests"), ("Turn left here", "Turn lift here"),
+    ("Use the bat now", "Use the bit now"), ("Fill in the form now", "Fill in the from now"),
+    ("It came from Paris", "It came form Paris"), ("He cold it", "He called it"), ("I hate it", "I hit it"),
+    ("Take a note", "Take a not"), ("They came late", "They come late"), ("I sent a bulk request", "I sent a pull request"),
     ("Delete the file now", "Delete the files now"), ("Delete the files now", "Delete the file now"),
+    ("Send it to Alice", "Send it from Alice"), ("Put it in the box", "Put it at the box"),
     ("I don't agree", "I didn't agree"), ("It isn't ready", "It wasn't ready"), ("I do agree", "I did agree"),
-    ("It is done", "It was done"), ("They were going home", "They we're going home"),
-    ("He hasn't left", "He hadn't left"),
-    // A pronoun spelled like an article is not dropped; a contraction is spelled out with its own auxiliary.
-    ("Je le prends", "Je prends"), ("Je la vois", "Je vois"), ("Je les appelle", "Je appelle"),
-    ("I know that", "I know"), ("I've finished", "I had finished"), ("We're ready", "We were ready"),
-    // Another vowel is another word; so is another unit.
-    ("Turn left here", "Turn lift here"), ("I hate it", "I hit it"), ("Take a note", "Take a not"),
-    ("They came late", "They come late"), ("Run 5 km today", "Run 5 cm today"), ("Wait 10 ms", "Wait 10 mm"),
-    ("Please enable it", "Please unable it"), ("Draw a line now", "Draw alone now"), ("We work alone", "We work a line"),
-    // A prefix that says the opposite.
+    ("They were going home", "They we're going home"), ("He hasn't left", "He hadn't left"),
+    ("Well go now", "We'll go now"), ("Il va pécher demain", "Il va pêcher demain"),
+    ("I saw the patient's records", "I saw the patients' records"), ("J'ai manger", "J'ai mangé"),
+    // A prefix that says the opposite, on a real word or on a misspelled one.
     ("This is intended today", "This is unintended today"), ("Please install it", "Please uninstall it"),
-    ("We agree", "We disagree"), ("The car is insured", "The car is uninsured"),
-    ("Ce projet est connu", "Ce projet est inconnu"),
-    // A leading zero counts: a code is not a number said.
-    ("Use code 021 now", "Use code twenty one now"),
-    // Names, but for their case.
+    ("We agree", "We disagree"), ("The car is insured", "The car is uninsured"), ("Please enable it", "Please unable it"),
+    ("Ce projet est connu", "Ce projet est inconnu"), ("The data is unencripted", "The data is encrypted"),
+    ("The car is uninsurred", "The car is insured"),
+    // Words added, dropped, split, joined, repeated or spelled out: a fix does none of these.
+    ("we went to store", "we went to the store"), ("I paid the client", "I paid for the client"),
+    ("je parle à ami", "je parle à un ami"), ("J'en veux une", "J'en veux"), ("Je le prends", "Je prends"),
+    ("Je la vois", "Je vois"), ("Je les appelle", "Je appelle"), ("I know that", "I know"),
+    ("I love the red car", "I love the car"), ("Vous vous trompez", "Vous trompez"),
+    ("We need to record record profits", "We need to record profits"), ("go build build it now", "go build it now"),
+    ("I I think so", "I think so"), ("go to um the store", "go to the store"), ("Hmm, I agree", "I agree"),
+    ("We saw therapists", "We saw the rapists"), ("regarde dessous", "regarde des sous"),
+    ("Call the therapist now", "Call the rapist now"), ("add a semi colon here", "add a semicolon here"),
+    ("It is not able", "It is notable"), ("Draw a line now", "Draw alone now"), ("We work alone", "We work a line"),
+    ("then open the get hub page", "then open the GitHub page"), ("it runs onobunto", "it runs on ubuntu"),
+    ("We need internationalizaton", "We need internationalization awe"),
+    ("I do not know", "I don't know"), ("You can not go", "You cannot go"), ("You can't go", "You cannot go"),
+    ("I've finished", "I have finished"), ("I've finished", "I had finished"), ("We're ready", "We are ready"),
+    ("We're ready", "We were ready"), ("The meeting is at John's", "The meeting is at John is"),
+    // Articles, even when the other one is the right one: "a" and "an" are words the model may not swap.
+    ("I saw a elephant", "I saw an elephant"), ("We need an user", "We need a user"),
+    // Numbers written another way, joined or split.
+    ("Set width ten height 20.", "Set width 10 height 20."), ("Set it to twenty one", "Set it to 21"),
+    ("Set it to twenty-one", "Set it to 21"), ("Set it to four twenty", "Set it to 80"),
+    ("Use values four twenty", "Use values 80"), ("I have one thousand million dollars", "I have 1001000 dollars"),
+    ("Pay one thousand and five dollars", "Pay 1005 dollars"), ("Room 21 please", "Room twenty one please"),
+    ("The options are twenty, one, or ten", "The options are 21 or ten"), ("Use code 021 now", "Use code twenty one now"),
+    ("We need 1,000 units", "We need 1000 units"), ("Utilisez 1,000 litre", "Utilisez 1000 litre"),
+    ("chambre quatre-vingt-dix-huit", "chambre 98"), ("chambre numéro un", "chambre numéro 1"),
+    ("J'ai deux millions", "J'ai 2000000"), ("Dial one two", "Dial 12"), ("Pick one hundred five", "Pick 150"),
+    // Units, addresses, paths and identifiers, even in case alone.
+    ("Set power to 5 mW", "Set power to 5 MW"), ("Download 10 Mb", "Download 10 MB"), ("Run 5 km today", "Run 5 cm today"),
+    ("Wait 10 ms", "Wait 10 mm"), ("Set the width to 10 mm", "Set the width to 10"), ("Cut it to 5 in", "Cut it to 5"),
+    ("Take her to the ER now", "Take her to the now"), ("Send to team@right.com", "Send to team@write.com"),
+    ("run /tmp/site.py", "run /tmp/sight.py"), ("send it to us", "send it to US"), ("use windows now", "use Windows now"),
+    // Names, but for their apostrophes.
     ("Ask Mary about it", "Ask Marie about it"), ("Send it to Bob and Alice", "Send it to Alice and Bob"),
     ("Deploy to Windows now", "Deploy to Ubuntu now"), ("Ping John today", "Ping Joan today"),
-    ("GitHub is down.", "GitLab is down."), ("then open the get hub page", "then open the GitHub page"),
-    // Names that start a sentence or the chunk.
-    ("Mary called.", "Marie called."), ("John left early", "Joan left early"), ("Wait. Mary called", "Wait. Marie called"),
-    // Units and abbreviations are not hesitations.
-    ("Set the width to 10 mm", "Set the width to 10"), ("Take her to the ER now", "Take her to the now"),
-    // Compound numbers keep their value; numbers said one after another are not one.
-    ("Set it to twenty one", "Set it to 22"), ("Dial one two", "Dial 12"), ("Pick one hundred five", "Pick 150"),
-    // An apostrophe put back does not bring a modal.
-    ("Well go now", "We'll go now"),
+    ("GitHub is down.", "GitLab is down."), ("Mary called.", "Marie called."), ("John left early", "Joan left early"),
+    ("Wait. Mary called", "Wait. Marie called"), ("The build runs Onobunto.", "The build runs on Ubuntu."),
+    ("The server runs Uguntu.", "The server runs Ubuntu."),
 ])
 func aFixThatChangesMeaningIsRefused(original: String, fixed: String) {
-    let verdict = AIFixGuard.check(original: original, fixed: fixed, protecting: taughtList, taught: taughtList)
-    #expect(verdict != .accept && verdict != .unchanged, "\(original) -> \(fixed)")
-    // Without the taught list, it is still refused.
-    #expect(AIFixGuard.check(original: original, fixed: fixed) != .accept, "\(original) -> \(fixed)")
+    // No taught pair: none of these is a heard phrase the speaker taught. Each is judged in its own language, and
+    // in English and French together.
+    for language in [nil, frenchOriginals.contains(original) ? "fr-FR" : "en-US"] {
+        #expect(AIFixGuard.check(original: original, fixed: fixed, language: language) != .accept,
+                "\(original) -> \(fixed) in \(language ?? "both")")
+    }
 }
 
-/// Mishearings fixed: close words, listed homophones (pronouns and numbers too), taught pairs where they were said,
-/// glue words, stutters, case and punctuation.
+/// What a fix may do: a word the language does not know replaced by one real word said alike, a real word by a
+/// listed homophone, a taught pair spelled where its heard phrase was said, commas, closing marks and the capital
+/// that starts a sentence.
 @Test(arguments: [
     ("When a press escape they don't disappear.", "When I press escape, they don't disappear."),
     ("I would like to by a new pear of shoes for the whether this weekend.",
      "I would like to buy a new pair of shoes for the weather this weekend."),
     ("Number won is done.", "Number one is done."), ("Please right it down.", "Please write it down."),
-    ("I went their. Then we left", "I went there. Then we left"), ("Your right about that", "You're right about that"),
+    ("I went their. Then we left", "I went there. Then, we left."), ("Your right about that", "You're right about that"),
     ("Its broken again", "It's broken again"), ("See you in an our.", "See you in an hour."),
     ("I think ewe are right.", "I think you are right."), ("I eight lunch early.", "I ate lunch early."),
-    ("The build runs Onobunto.", "The build runs on Ubuntu."),
-    ("It runs on a bundu machine.", "It runs on an Ubuntu machine."),
-    ("Open the food requests on GitHub.", "Open the pool requests on GitHub."),
-    ("I do not know", "I don't know"), ("You can not go", "You cannot go"),
-    ("Wait here. Dont leave", "Wait here. Don't leave"),
-    ("Set width ten height 20.", "Set width 10 height 20."), ("we went to store", "we went to the store"),
-    ("I I think so", "I think so"), ("use windows now", "use Windows now"), ("meet me there", "Meet me there."),
-    ("Merci pour ton aide je te revaudrai sa", "Merci pour ton aide, je te revaudrai ça."),
-    ("Je pense que ces une bonne idée", "Je pense que c'est une bonne idée"),
-    ("go to um the store", "go to the store"), ("Set it to twenty one", "Set it to 21"),
-    ("Pick one hundred and five", "Pick 105"), ("Room 21 please", "Room twenty one please"),
-    ("Jai fini", "J'ai fini"), ("Quil arrive demain", "Qu'il arrive demain"),
-    ("Set it to twenty-one", "Set it to 21"), ("I've finished", "I have finished"), ("We're ready", "We are ready"),
-    ("I'm ready", "I am ready"), ("It's done", "It is done"), ("I won't go", "I will not go"),
-])
-func aMishearingIsFixed(original: String, fixed: String) {
-    #expect(AIFixGuard.check(original: original, fixed: fixed, protecting: taughtList, taught: taughtList) == .accept,
-            "\(original) -> \(fixed)")
-}
-
-/// A real word replaced by another real word that is not a listed homophone says something else, however close
-/// they sound: one tense, number, vowel or preposition for another. No taught pair was said there.
-@Test(arguments: [
-    ("Clean the tooth now", "Clean the teeth now"), ("The goose is loose", "The geese is loose"),
-    ("We want it", "We wanted it"), ("We need it", "We needed it"), ("We start it", "We started it"),
-    ("We should increase the limit", "We should decrease the limit"), ("Turn left here", "Turn lift here"),
-    ("Use the bat now", "Use the bit now"), ("Fill in the form now", "Fill in the from now"),
-    ("It came from Paris", "It came form Paris"), ("He cold it", "He called it"),
-    ("Open the food requests", "Open the pool requests"), ("Let's develop it on Windows", "Let's develop it on Ubuntu"),
-    ("I sent a bulk request", "I sent a pull request"), ("Please install it", "Please uninstall it"),
-])
-func aRealWordIsNotSwappedForAnother(original: String, fixed: String) {
-    #expect(AIFixGuard.check(original: original, fixed: fixed, language: "en-US") != .accept, "\(original) -> \(fixed)")
-    #expect(AIFixGuard.check(original: original, fixed: fixed) != .accept, "\(original) -> \(fixed)")
-}
-
-/// What the dictionary-word rule lets through: a word the language does not know replaced by a close one, a taught
-/// pair where its heard phrase was said, a listed homophone, and spelling, spacing or numbers written another way.
-@Test(arguments: [
+    ("The night rode in.", "The knight rode in."), ("We bought two pears of shoes", "We bought two pairs of shoes"),
+    ("Wait here. Dont leave", "Wait here. Don't leave"), ("You cant go", "You can't go"),
+    ("meet me there", "Meet me there."), ("i think so", "I think so"), ("so i think", "so I think"),
     // Words the language does not know.
-    ("open a timux session", "open a tmux session"), ("it runs onobunto", "it runs on ubuntu"),
-    ("it runs on a bundu", "it runs on ubuntu"), ("fix the wordz", "fix the words"),
-    // Taught pairs (the speaker's list): "Onobunto" and "Uguntu" start with a capital, so only their pair fixes them.
+    ("open a timux session", "open a tmux session"), ("fix the wordz", "fix the words"),
+    ("add a semicolen here", "add a semicolon here"), ("I opened a bul request", "I opened a pull request"),
+    // Taught pairs, where their heard phrase was said.
     ("The build runs Onobunto.", "The build runs on Ubuntu."), ("The server runs Uguntu.", "The server runs Ubuntu."),
     ("Open the food requests on GitHub.", "Open the pool requests on GitHub."),
-    // Homophones.
-    ("Number won is done.", "Number one is done."), ("Please right it down.", "Please write it down."),
-    ("I went their yesterday", "I went there yesterday"), ("I would like to by it", "I would like to buy it"),
-    // Case, apostrophes, spacing and numbers.
-    ("Its done", "It's done"), ("go tothe store", "go to the store"), ("Set width ten height 20.", "Set width 10 height 20."),
+    ("It runs on a bundu machine.", "It runs on ubuntu machine."), ("type comin free now", "type comment-free now"),
+    ("then run slash QC now", "then run /qc now"),
 ])
-func aMishearingOfANonWordOrAHomophoneIsFixed(original: String, fixed: String) {
+func aMishearingIsFixed(original: String, fixed: String) {
     #expect(AIFixGuard.check(original: original, fixed: fixed, protecting: taughtList, taught: taughtList,
                              language: "en-US") == .accept, "\(original) -> \(fixed)")
 }
@@ -664,9 +619,13 @@ func aMishearingOfANonWordOrAHomophoneIsFixed(original: String, fixed: String) {
 @Test(arguments: [
     ("Il prend ces affaires", "Il prend ses affaires"), ("Il est a Paris", "Il est à Paris"),
     ("Je pense que ces une bonne idée", "Je pense que c'est une bonne idée"), ("je peut venir", "je peux venir"),
-    ("chambre quatre-vingt-dix-huit", "chambre 98"), ("il a dix-sept ans", "il a 17 ans"),
+    ("Merci pour ton aide je te revaudrai sa", "Merci pour ton aide, je te revaudrai ça."),
+    ("Jai fini", "J'ai fini"), ("Quil arrive demain", "Qu'il arrive demain"),
+    ("Elle lit des comptes de fées", "Elle lit des contes de fées"), ("On va ou ?", "On va où ?"),
+    ("Il faut que je prévienne mon patron que le projet et en retard",
+     "Il faut que je prévienne mon patron que le projet est en retard"),
 ])
-func aFrenchHomophoneOrNumberIsFixed(original: String, fixed: String) {
+func aFrenchMishearingIsFixed(original: String, fixed: String) {
     #expect(AIFixGuard.check(original: original, fixed: fixed, language: "fr-FR") == .accept, "\(original) -> \(fixed)")
 }
 
@@ -687,82 +646,6 @@ func aFrenchHomophoneOrNumberIsFixed(original: String, fixed: String) {
     #expect(AIFixReference.matches(of: "food requests", in: "open the fuud requests", language: "en-US") == [2..<4])
     #expect(AIFixGuard.check(original: "open the good requests", fixed: "open the pool requests", taught: [pool],
                              language: "en-US") != .accept)
-}
-
-@Test func theLexiconKnowsTheLanguagesWordsNamesAndTaughtSpellings() {
-    let english = Lexicon(language: "en-US", taught: ["the nudger", "Jev model"])
-    for word in ["bat", "teeth", "wanted", "windows", "ubuntu", "mary", "don't", "10", "jev"] {
-        #expect(english.isWord(word), "\(word)")
-    }
-    for word in ["bundu", "onobunto", "uguntu", "timux", "wordz"] { #expect(!english.isWord(word), "\(word)") }
-    let french = Lexicon(language: "fr-FR")
-    #expect(french.isWord("c'est") && french.isWord("peux") && !french.isWord("bundu"))
-    // Without a dictionary for the language, every word is real: only homophones and taught pairs change words.
-    #expect(SystemSpelling.dictionaries(for: "zz-ZZ") == nil && SystemSpelling.dictionaries(for: "en-US") != nil)
-    #expect(Lexicon(language: "zz-ZZ").isWord("bundu"))
-    let fake = Lexicon(lookup: { _ in false })
-    #expect(!fake.isWord("bat") && fake.isWord("3pm"))
-    #expect(AIFixGuard.check(original: "it runs onobunto", fixed: "it runs on ubuntu", language: "en-US",
-                             lexicon: Lexicon(lookup: { _ in true })) != .accept)
-    #expect(AIFixGuard.check(original: "it runs onobunto", fixed: "it runs on ubuntu", language: "en-US",
-                             lexicon: fake) == .accept)
-}
-
-@Test func taughtPairsApplyBeforeTheLimitsAndMeaningCounts() {
-    // A pair whose heard phrase holds a word of quantity: the reply is judged with the pair applied.
-    let allstate = Correction(heard: "all state", meant: "Allstate")
-    #expect(AIFixGuard.check(original: "I called all stayt today", fixed: "I called Allstate today",
-                             taught: [allstate]) == .accept)
-    #expect(AIFixGuard.check(original: "I called all stayt today", fixed: "I called Allstate today")
-        == .reject(.changedMeaning))
-    // A pair may add more words than the limit lets a reply add by itself.
-    let server = Correction(heard: "server", meant: "production web server")
-    #expect(AIFixGuard.check(original: "open server now", fixed: "open production web server now", taught: [server])
-        == .accept)
-    #expect(AIFixGuard.check(original: "open server now", fixed: "open production web server now")
-        == .reject(.wordCountChanged))
-    #expect(AIFixGuard.check(original: "open server now", fixed: "open staging web server now", taught: [server])
-        == .reject(.wordCountChanged))
-    // French numbers said in several words.
-    #expect(SpokenWords.numberValue(["quatre", "vingt", "dix"], language: "fr-FR") == 90)
-    #expect(SpokenWords.numberValue(["vingt", "et", "un"], language: "fr-FR") == 21)
-    #expect(SpokenWords.numberValue(["two", "thousand", "twenty", "six"], language: "en-US") == 2026)
-    #expect(SpokenWords.numberValue(["ten", "twenty"], language: "en-US") == nil)
-    #expect(AIFixGuard.check(original: "chambre vingt et un", fixed: "chambre 21", language: "fr-FR") == .accept)
-    #expect(AIFixGuard.check(original: "chambre quatre-vingt-dix", fixed: "chambre 90", language: "fr-FR") == .accept)
-    // Seventeen to nineteen are said as ten and a unit, alone or after sixty and eighty.
-    for (said, value) in [("quatre-vingt-dix-huit", 98), ("dix-sept", 17), ("soixante-dix-neuf", 79),
-                          ("quatre-vingt-dix-sept", 97), ("cent dix-huit", 118), ("soixante et onze", 71)] {
-        #expect(SpokenWords.numberValue(AIFixGuard.words(in: said.replacingOccurrences(of: "-", with: " ")),
-                                        language: "fr-FR") == value, "\(said)")
-    }
-    #expect(AIFixGuard.check(original: "chambre quatre-vingt-dix-huit", fixed: "chambre 98", language: "fr-FR")
-        == .accept)
-    #expect(AIFixGuard.check(original: "chambre quatre-vingt-dix-huit", fixed: "chambre 99", language: "fr-FR")
-        != .accept)
-    // Belgian and Swiss French say seventy, eighty and ninety in one word.
-    #expect(AIFixGuard.check(original: "chambre nonante-huit", fixed: "chambre 98", language: "fr-CH") == .accept)
-    #expect(AIFixGuard.check(original: "chambre septante et un", fixed: "chambre 71", language: "fr-BE") == .accept)
-    // Digits in groups of three are one number, with or without their separators.
-    #expect(AIFixGuard.check(original: "We need 1,000 units", fixed: "We need 1000 units") == .accept)
-    #expect(AIFixGuard.check(original: "We need 1000 units", fixed: "We need 1,000 units") == .accept)
-    #expect(AIFixGuard.check(original: "We need 12,345,678 units", fixed: "We need 12345678 units") == .accept)
-    #expect(AIFixGuard.check(original: "Il faut 1\u{202F}000 unités", fixed: "Il faut 1000 unités", language: "fr-FR")
-        == .accept)
-    #expect(AIFixGuard.check(original: "We need 1,000 units", fixed: "We need 10,000 units") != .accept)
-    #expect(AIFixGuard.check(original: "Dial 5 100 now", fixed: "Dial 5100 now") != .accept)
-    #expect(AIFixGuard.digitGroupsJoined("1,50 and 0,500 and 1,5000 and 2,000") == "1,50 and 0,500 and 1,5000 and 2000")
-    // Only "dix" takes a unit after it: "onze sept" and "ten seven" are two numbers.
-    #expect(SpokenWords.numberValue(["onze", "sept"], language: "fr-FR") == nil)
-    #expect(SpokenWords.numberValue(["ten", "seven"], language: "en-US") == nil)
-    #expect(SpokenWords.numberValue(["dix", "deux"], language: "fr-FR") == nil)
-    #expect(AIFixGuard.check(original: "pages 1-2", fixed: "pages 1 2") == .reject(.changedStructure))
-    // Only words that say one number together lose their hyphens: "one-two" is a range.
-    #expect(AIFixGuard.check(original: "Set range one-two", fixed: "Set range one two") == .reject(.changedStructure))
-    #expect(AIFixGuard.numberHyphensAsSpaces("range one-two, then twenty-one", language: "en-US")
-        == "range one-two, then twenty one")
-    #expect(AIFixGuard.numberHyphensAsSpaces("dix-sept-huit and quatre-vingt-dix-huit", language: "fr-FR")
-        == "dix-sept-huit and quatre vingt dix huit")
     // A heard word is not said by its opposite: "unable" is a real word, so a pair taught for "enable" does not
     // replace it.
     #expect(AIFixReference.matches(of: "enable", in: "unable").isEmpty)
@@ -771,6 +654,79 @@ func aFrenchHomophoneOrNumberIsFixed(original: String, fixed: String) {
     #expect(AIFixReference.select(from: [enable], for: "Users are unable to access files", budget: 1_000).isEmpty)
     #expect(AIFixGuard.check(original: "Users are unable to access files", fixed: "Users are able to access files",
                              taught: [enable]) != .accept)
+}
+
+@Test func theLexiconKnowsTheLanguagesWordsNamesAndTaughtSpellings() async {
+    let english = Lexicon(language: "en-US", taught: ["the nudger", "Jev model"])
+    for word in ["bat", "teeth", "wanted", "windows", "ubuntu", "mary", "don't", "10", "jev"] {
+        #expect(english.isWord(word), "\(word)")
+    }
+    for word in ["bundu", "onobunto", "uguntu", "timux", "wordz"] { #expect(!english.isWord(word), "\(word)") }
+    let french = Lexicon(language: "fr-FR")
+    #expect(french.isWord("c'est") && french.isWord("peux") && !french.isWord("bundu"))
+    // Without a dictionary for the language, every word is real: only homophones and taught pairs change words.
+    #expect(SystemSpelling.queue.sync { SystemSpelling.dictionaries(for: "zz-ZZ") } == nil)
+    #expect(SystemSpelling.queue.sync { SystemSpelling.dictionaries(for: "en-US") } != nil)
+    #expect(Lexicon(language: "zz-ZZ").isWord("bundu"))
+    let fake = Lexicon(lookup: { $0.lowercased() == "ubuntu" })
+    #expect(!fake.isWord("bundu") && fake.isWord("ubuntu") && fake.isWord("3pm"))
+    #expect(AIFixGuard.check(original: "it runs ubundu", fixed: "it runs ubuntu", lexicon: fake) == .accept)
+    #expect(AIFixGuard.check(original: "it runs ubundu", fixed: "it runs ubuntu", lexicon: Lexicon(lookup: { _ in true }))
+        != .accept)
+    // Looked up ahead, off the waiting task: a word the lookups did not reach counts as real.
+    let prepared = Lexicon(blocking: false, lookup: { $0.lowercased() == "ubuntu" })
+    #expect(prepared.isWord("bundu"))
+    await prepared.prepare(["bundu", "ubuntu"], within: .seconds(30))
+    #expect(!prepared.isWord("bundu") && prepared.isWord("ubuntu"))
+    // A stalled spell checker: the budget ends the wait, and the words count as real. (Its own queue, so the stall
+    // holds up no other test.)
+    let release = DispatchSemaphore(value: 0)
+    let stalled = Lexicon(blocking: false, queue: DispatchQueue(label: "stalled"), lookup: { _ in
+        release.wait()
+        return false
+    })
+    await stalled.prepare(["bundu"], within: .milliseconds(10))
+    #expect(stalled.isWord("bundu"))
+    release.signal()
+}
+
+@Test func namesAndMeaningsAreFoundWordByWord() {
+    #expect(AIFixGuard.names(in: "ask Mary. Then use GitHub, I think")
+        == [false, true, false, false, true, false, false])
+    #expect(AIFixGuard.names(in: "Ubuntu machine", midSentence: true) == [true, false])
+    // At a sentence start, any capitalized word may be a name but function words, hesitations, short words and
+    // guarded ones.
+    #expect(AIFixGuard.names(in: "Mary called. The end. So. Dont go. Ten. Hmm") == [true, false, false, false, false,
+                                                                                    false, false, false, false])
+    #expect(SpokenWords.meaning(of: "his", language: "en-US").person == "he"
+        && SpokenWords.meaning(of: "he's", language: nil).person == "he")
+    #expect(SpokenWords.meaning(of: "ten", language: "en-US").number == "10")
+    #expect(SpokenWords.meaning(of: "couldn't", language: "en-US").strict == ["not", "could"])
+    // French pronouns are found past an apostrophe; an English contraction's "t" is not "tu".
+    #expect(SpokenWords.meaning(of: "j'ai", language: "fr-FR").person == "je")
+    #expect(SpokenWords.meaning(of: "qu'il", language: "fr-FR").person == "il")
+    #expect(SpokenWords.meaning(of: "don't", language: nil).person == nil)
+}
+
+@Test func aPairMayAddWordsWhereItsHeardPhraseWasSaid() {
+    let prefix = Correction(heard: "server", meant: "production server")
+    #expect(AIFixGuard.check(original: "open server now", fixed: "open production server now", taught: [prefix])
+        == .accept)
+    let suffix = Correction(heard: "server", meant: "server production")
+    #expect(AIFixGuard.check(original: "open server now", fixed: "open server production now", taught: [suffix])
+        == .accept)
+    let web = Correction(heard: "server", meant: "production web server")
+    #expect(AIFixGuard.check(original: "open server now", fixed: "open production web server now", taught: [web])
+        == .accept)
+    let allstate = Correction(heard: "all state", meant: "Allstate")
+    #expect(AIFixGuard.check(original: "I called all stayt today", fixed: "I called Allstate today",
+                             taught: [allstate]) == .accept)
+    // Without the pair, or with another word, it is not a fix.
+    #expect(AIFixGuard.check(original: "open server now", fixed: "open production server now")
+        == .reject(.wordCountChanged))
+    #expect(AIFixGuard.check(original: "open server now", fixed: "open staging server now", taught: [prefix])
+        == .reject(.implausibleSubstitution))
+    #expect(AIFixGuard.check(original: "I called all stayt today", fixed: "I called Allstate today") != .accept)
 }
 
 @Test func aTaughtPairBringsItsMarksWhereItWasSaid() {
@@ -798,37 +754,6 @@ func aFrenchHomophoneOrNumberIsFixed(original: String, fixed: String) {
         == .reject(.implausibleSubstitution))
 }
 
-@Test func namesAndMeaningsAreFoundWordByWord() {
-    #expect(AIFixGuard.names(in: "ask Mary. Then use GitHub, I think")
-        == [false, true, false, false, true, false, false])
-    #expect(AIFixGuard.names(in: "Ubuntu machine", midSentence: true) == [true, false])
-    // At a sentence start, any capitalized word may be a name but function words, short words and guarded ones.
-    #expect(AIFixGuard.names(in: "Mary called. The end. So. Dont go. Ten") == [true, false, false, false, false, false,
-                                                                              false, false])
-    #expect(SpokenWords.meaning(of: "his", language: "en-US").person == "he"
-        && SpokenWords.meaning(of: "he's", language: nil).person == "he")
-    #expect(SpokenWords.meaning(of: "ten", language: "en-US").number == "10")
-    #expect(SpokenWords.meaning(of: "couldn't", language: "en-US").strict == ["not", "could"])
-    // French pronouns are found past an apostrophe; an English contraction's "t" is not "tu".
-    #expect(SpokenWords.meaning(of: "j'ai", language: "fr-FR").person == "je")
-    #expect(SpokenWords.meaning(of: "qu'il", language: "fr-FR").person == "il")
-    #expect(SpokenWords.meaning(of: "don't", language: nil).person == nil)
-}
-
-@Test func aPairMayAddWordsAtTheEdgesOfItsHeardPhrase() {
-    let prefix = Correction(heard: "server", meant: "production server")
-    #expect(AIFixGuard.check(original: "open server now", fixed: "open production server now", taught: [prefix])
-        == .accept)
-    let suffix = Correction(heard: "server", meant: "server production")
-    #expect(AIFixGuard.check(original: "open server now", fixed: "open server production now", taught: [suffix])
-        == .accept)
-    // Without the pair, or with another word added, it is not a fix.
-    #expect(AIFixGuard.check(original: "open server now", fixed: "open production server now")
-        == .reject(.implausibleSubstitution))
-    #expect(AIFixGuard.check(original: "open server now", fixed: "open staging server now", taught: [prefix])
-        == .reject(.implausibleSubstitution))
-}
-
 @Test func homophonesAreThoseOfTheLanguageDictated() {
     // "sang" and "sent" are French homophones, not English ones.
     #expect(AIFixGuard.check(original: "I sang it", fixed: "I sent it", language: "en-US")
@@ -838,6 +763,9 @@ func aFrenchHomophoneOrNumberIsFixed(original: String, fixed: String) {
     #expect(!SpokenWords.isClose("won", "one", language: "fr-FR"))
     #expect(SpokenWords.isVariant("vert", of: "verre", language: "fr-FR")
         && !SpokenWords.isVariant("vert", of: "verre", language: "en-US"))
+    // Accents count: "à" and "a" are listed, "pêcher" and "pécher" are not.
+    #expect(SpokenWords.areHomophones("a", "à", language: "fr-FR"))
+    #expect(!SpokenWords.areHomophones("pécher", "pêcher", language: "fr-FR"))
 }
 
 @Test func chIsNotSh() {
@@ -845,8 +773,7 @@ func aFrenchHomophoneOrNumberIsFixed(original: String, fixed: String) {
     #expect(!SpokenWords.isVariant("should", of: "child"))
     let childcare = Correction(heard: "child care", meant: "childcare")
     #expect(AIFixReference.select(from: [childcare], for: "You should care", budget: 1_000).isEmpty)
-    #expect(AIFixGuard.check(original: "You should care", fixed: "You childcare", taught: [childcare])
-        == .reject(.changedMeaning))
+    #expect(AIFixGuard.check(original: "You should care", fixed: "You childcare", taught: [childcare]) != .accept)
     #expect(!SpokenWords.isVariant("shield", of: "child"))
     #expect(AIFixReference.select(from: [childcare], for: "the shield care", budget: 1_000).isEmpty)
     // "ch" is a "k" in "chr", "chl" and "sch"; "tch" is "ch".
@@ -879,7 +806,7 @@ func aFrenchHomophoneOrNumberIsFixed(original: String, fixed: String) {
 
 @Test func aTaughtPairAndANeighbouringFixAreJudgedApart() {
     let pool = Correction(heard: "food requests", meant: "pool requests")
-    // One stretch of changes, "their food" -> "there pool": "there" is close to "their", and the pair fixes the rest.
+    // "their" -> "there" is a homophone, and the pair fixes the rest.
     #expect(AIFixGuard.check(original: "their food requests", fixed: "there pool requests", taught: [pool]) == .accept)
     #expect(AIFixGuard.check(original: "open their food requests", fixed: "open there pool requests",
                              taught: [pool]) == .accept)
@@ -955,15 +882,6 @@ func aFrenchHomophoneOrNumberIsFixed(original: String, fixed: String) {
         #expect(SpokenWords.isClose(heard, meant), "\(heard) -> \(meant)")
         #expect(SpokenWords.isClose(meant, heard), "\(meant) -> \(heard)")
     }
-    // The model's repair of one passes the guard.
-    for (original, fixed) in [("Number won is done.", "Number one is done."),
-                              ("I eight lunch early.", "I ate lunch early."),
-                              ("The night rode in.", "The knight rode in."),
-                              ("Please right it down.", "Please write it down."),
-                              ("See you in an our.", "See you in an hour."),
-                              ("I think ewe are right.", "I think you are right.")] {
-        #expect(AIFixGuard.check(original: original, fixed: fixed) == .accept, "\(original) -> \(fixed)")
-    }
     // While words that only share a rough sound stay apart.
     for (heard, meant) in [("point", "Bundo"), ("point", "Ubuntu"), ("opened", "Ubuntu"), ("use", "Ubuntu"),
                            ("windows", "Ubuntu"), ("develop", "Ubuntu"), ("count", "Uguntu"), ("behind", "band")] {
@@ -999,10 +917,9 @@ func aFrenchHomophoneOrNumberIsFixed(original: String, fixed: String) {
     #expect(AIFixGuard.check(original: "Let's develop it on a Windows machine first.",
                              fixed: "Let's Ubuntu it on a Windows machine first.", protecting: taughtList,
                              taught: listed) == .reject(.implausibleSubstitution))
-    // An added word other than a function word is not a fix either.
     #expect(AIFixGuard.check(original: "it runs on a Windows machine", fixed: "it runs on a Ubuntu Windows machine")
-        == .reject(.implausibleSubstitution))
-    // Close words pass without being taught; a taught pair passes where its heard phrase was said.
+        == .reject(.wordCountChanged))
+    // Homophones pass without being taught; a taught pair passes where its heard phrase was said.
     #expect(AIFixGuard.check(original: "I went their. Then we left", fixed: "I went there. Then we left") == .accept)
     #expect(AIFixGuard.check(original: "The build runs Onobunto.", fixed: "The build runs on Ubuntu.",
                              protecting: taughtList, taught: [taughtList[4]]) == .accept)
@@ -1013,8 +930,6 @@ func aFrenchHomophoneOrNumberIsFixed(original: String, fixed: String) {
     // The taught pair covers only where its heard phrase was said.
     #expect(AIFixGuard.check(original: "go ask the Najer about windows", fixed: "go ask the Najer about nudger",
                              taught: [taughtList[13]]) == .reject(.implausibleSubstitution))
-    // Function words may come and go around a fix.
-    #expect(AIFixGuard.check(original: "we went to store", fixed: "we went to the store") == .accept)
 }
 
 @Test func fixerRefusesAnUnrelatedTaughtSpelling() async {
@@ -1048,9 +963,13 @@ func aFrenchHomophoneOrNumberIsFixed(original: String, fixed: String) {
     #expect(TranscriptFixer.baseInstructions.contains("never translate"))
 }
 
+/// A fixer with a spell-checker budget no load reaches, so a busy machine does not turn words the language does not
+/// know into real ones.
 private func fixer(corrections: CorrectionList = CorrectionList(), timeout: Duration = .seconds(5),
                    _ model: @escaping TranscriptFixer.Model) -> TranscriptFixer {
-    TranscriptFixer(corrections: corrections, referenceBudget: 500, timeout: timeout, model: model)
+    var fixer = TranscriptFixer(corrections: corrections, referenceBudget: 500, timeout: timeout, model: model)
+    fixer.spellingBudget = .seconds(60)
+    return fixer
 }
 
 @Test func fixerKeepsTheChunkSpacingAndAcceptsASmallFix() async {
@@ -1111,11 +1030,10 @@ private func fixer(corrections: CorrectionList = CorrectionList(), timeout: Dura
     let punctuated = await fixer(corrections: chain) { _, _ in "I said bar, then left." }
         .fix("I said bar then left", isFinal: true)
     #expect(punctuated == .init(text: "I said bar, then left.", outcome: .fixed))
-    // The model's own words are not run through the rules again: a word it shifted keeps its spelling, and one it
-    // introduced stays as the model wrote it.
+    // Words moved around are not a fix, even when every word is still there.
     let shifted = await fixer(corrections: chain) { _, _ in "bar is open now to" }
         .fix("the bar is open now", isFinal: false)
-    #expect(shifted == .init(text: "bar is open now to", outcome: .fixed))
+    #expect(shifted.outcome == .rejected && shifted.text == "the bar is open now")
     let twin = await fixer(corrections: chain) { _, _ in "bar bar" }.fix("bahr bar", isFinal: true)
     #expect(twin == .init(text: "bar bar", outcome: .fixed))
 }

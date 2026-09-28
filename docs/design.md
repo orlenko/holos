@@ -387,62 +387,61 @@ words: its function words exactly, and each content word (not a function word of
 language dictated, English or French, and at least three letters) as is or, where the
 chunk's word is not a real word, misheard again a little differently (the same
 pronunciation key and half the letters the same: "a bundu" says "a Bundo"; "a point",
-"a band" and "bulk request" for "bull request" do not, nor "bat" for "bit"). Sharing a word like "a" or "on", part of the phrase, or a word of the meant side
-does not count: listed that way, "a Bundo -> ubuntu" and "Onobunto -> on Ubuntu" made
-the model turn "on a Windows machine" into "on a Ubuntu machine". Each text word is
-compared once with each distinct heard word, and the choice and the guard run inside
-the fix's time limit. The guard then refuses any reply that replaces a word with one it could not
-have been misheard for, or adds a word other than a function word. Whether a word may
-be replaced depends first on whether it is a real word: one the system spell checker
-knows in the dictation language (lowercased or capitalized, so names such as "Mary"
-count), a word with a digit, or a word of a meant phrase the speaker taught. A real word
-says something, so it is replaced only by a listed homophone of the language ("their",
-"there" and "they're", "right" and "write", "one" and "won", "by" and "buy"; "ces" and
-"ses", "peut" and "peux") or by a listed pair said there: "bat" never becomes "bit",
-"want" "wanted", "tooth" "teeth", "left" "lift", "form" "from" nor "increase"
-"decrease", however alike they sound. A word the language does not know ("Onobunto",
-"bundu", "timux") is a mishearing, and may become a close word (the same letters,
-homophones, the same pronunciation key with silent letters dropped, or the same rough
-consonants with half the letters the same), split or joined with glue words ("a bundu"
-and "ubuntu"). Words replaced together are judged one by one, and a word split or
-joined by its shorter side. A reply also passes when it is the chunk with listed pairs
-applied where their heard phrases were said, plus such changes: "their food requests"
-may become "there pool requests". Without a spell checker dictionary for the language,
-every word counts as real. The spell checker is asked once per distinct word of a chunk. So no taught or
-invented spelling lands on unrelated words, or next to the heard phrase. The guard
-denies by default and judges each word at its place, lining the chunk's words up with
-the reply's in order: a word may keep its spelling but for case, be replaced as above,
-be split or joined when it is not a real word ("therapist" is not "the rapist"), or come
-and go only as a glue word (articles, prepositions,
-conjunctions, but not "that" nor the French "le", "la", "les", "en", which are also
-pronouns); a contraction may be spelled out with its own auxiliary ("I've" and "I
-have"); hesitations (the fillers filler removal takes out, so not the "mm" of
-"10 mm") and stutters may go, one copy kept ("You should go" is not "You go"); a number
-said in words
-may be written in digits with the same value ("twenty one" and "21", "quatre-vingt-dix-huit"
-and "98", the Belgian and Swiss "nonante-huit" too, but not the range "one-two"), and digits
-in groups of three with or without their separators ("1,000" and "1000"). A
-negation, modal, auxiliary, abbreviated unit or word of quantity, frequency or degree may
-only be spelled another way as the same one
-("don't" and "dont"; "I do agree" is not "I do not agree", "should" not "could",
-"couldn't" not "wouldn't", "don't" not "didn't", "few" not "new", "km" not "cm", and a "not"
-may not move). A pronoun or number keeps its
-person or value, or becomes a listed homophone ("their" and "there", "won" and "one"),
-never a close spelling alone: "He" is not "She", "Your" not "Our", "Set width 10 height
-20" not "Set width 20 height 10", "Ship 10 units" not "Ship 100 units". A name (a word
-with a capital inside, such as "GitHub", or any capitalized word, sentence starts
-included, but "I", function words, hesitations such as "Hmm", words under three letters
-and the guarded words above) changes only in case or apostrophes: "Mary called" is not "Marie called", and a
-misheard word that starts a sentence stays as recognized. A listed pair said there is the
-one way past these rules, and the limits on edits and on words added count from the
-chunk with its pairs applied. Marks a pair brings ("comment-free") come with its words:
-"common free" does not become "common-free". Function words, glue words
-and homophones are those of the language dictated (English or French). The model
-runs with the `permissiveContentTransformations` guardrails: with the defaults about
-half the fixes in a day's log failed in about 200 ms, ordinary sentences refused as
-"May contain unsafe content". A refusal that still happens leaves the chunk as
-recognized. The recognizer's contextual strings are the content words of the meant
-phrases, once each ignoring case ("on Ubuntu" and "ubuntu" give one "Ubuntu").
+"a band" and "bulk request" for "bull request" do not, nor "bat" for "bit"). Sharing a
+word like "a" or "on", part of the phrase, or a word of the meant side does not count:
+listed that way, "a Bundo -> ubuntu" and "Onobunto -> on Ubuntu" made the model turn
+"on a Windows machine" into "on a Ubuntu machine". Each text word is compared once with
+each distinct heard word, and the choice and the guard run inside the fix's time limit.
+
+The guard's contract is narrow on purpose: the fix must never change what was said,
+and refusing a good fix costs less than letting one change the meaning. It accepts
+only the chunk with some misheard words replaced one for one, the words lined up in
+order with the same count, and nothing else:
+
+1. A learned pair spelled exactly where its heard phrase was said, words and marks
+   ("Onobunto" becomes "on Ubuntu", "common free" "comment-free", "slash QC" "/qc");
+   the pair's words are then frozen, so no further change reaches them, not even a
+   homophone of them.
+2. A word the dictation language does not know ("bundu", "timux", "semicolen")
+   replaced by one real word said alike (the same letters, the same pronunciation key
+   with silent letters dropped, or the same rough consonants with half the letters the
+   same), never by its opposite through a prefix ("unencripted" is not "encrypted").
+3. A real word replaced by a listed homophone of the language ("their", "there" and
+   "they're", "right" and "write", "one" and "won", "by" and "buy", "pears" and
+   "pairs"; "ces" and "ses", "a" and "à", "peut" and "peux", "contes" and "comptes").
+   Accents count: "pécher" is not "pêcher".
+4. Commas and apostrophes between words, closing marks at the very end, and the
+   capital that starts a sentence (and the pronoun "I").
+
+A word is real when the system spell checker knows it in the dictation language
+(lowercased or capitalized, so names such as "Mary" count), when it has a digit, or
+when it is a word of a meant phrase the speaker taught. Everything else is refused:
+another real word however alike it sounds ("bat" and "bit", "want" and "wanted",
+"tooth" and "teeth", "no" and "none"); a word added, dropped, split, joined or moved,
+so articles ("a elephant" stays, as "to store" does), contractions ("do not" and
+"don't"), repetitions ("vous vous") and hesitations stay as said; numbers written
+another way ("ten" and "10", "1,000" and "1000", "quatre-vingt-dix-huit" and "98"); a
+case change inside a sentence ("us" and "US", "windows" and "Windows"); any change to a
+word in a unit, number, address, path or identifier ("5 mW", "team@right.com",
+"/tmp/site.py", "GitHub"); a name (a capitalized word, sentence starts included, but
+"I", function words, hesitations such as "Hmm", words under three letters and guarded
+words), which may change only in its apostrophes ("Jai" and "J'ai"); a comma between two
+numbers coming or going ("1,5" and "1 5"); any other mark added, removed or moved; more
+than 2 replaced words, or 20 %. Every change also keeps the word's negation, modal,
+auxiliary, unit, quantity, person and number ("can" is not "can't", "He" not "She",
+"Ship 10 units" not "Ship 100 units"). Words a learned correction produced stay, each
+where it was. Function words and homophones are those of the language dictated
+(English or French). Without a spell checker dictionary for the language, every word
+counts as real.
+
+The spell checker runs in another process and a call may stall, so the fixer asks it
+about the chunk's words, and then the reply's, on its own serial queue, waiting at most
+250 ms each time; a word it did not reach counts as real. The model runs with the
+`permissiveContentTransformations` guardrails: with the defaults about half the fixes in
+a day's log failed in about 200 ms, ordinary sentences refused as "May contain unsafe
+content". A refusal that still happens leaves the chunk as recognized. The recognizer's
+contextual strings are the content words of the meant phrases, once each ignoring case
+("on Ubuntu" and "ubuntu" give one "Ubuntu").
 
 LLM decisions have a bounded latency budget. On timeout, refusal, unsupported
 language, model unavailability, or invalid output, use deterministic rules plus

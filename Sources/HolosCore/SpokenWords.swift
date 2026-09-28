@@ -101,16 +101,6 @@ public enum SpokenWords {
         "devraient": "devoir", "faut": "falloir", "faudrait": "falloir",
     ]
 
-    /// How many times each meaning word (see `englishNegations`) is in `words` (from `AIFixGuard.words`), for
-    /// `language` (both English and French when nil or another one), by `meaningKinds`.
-    static func meaningWords(in words: [String], language: String?) -> [String: Int] {
-        var counts: [String: Int] = [:]
-        for word in words {
-            for kind in meaningKinds(of: word, language: language) { counts[kind, default: 0] += 1 }
-        }
-        return counts
-    }
-
     /// English auxiliaries, each its own kind: their tense and person are what they say ("I do agree" is not "I did
     /// agree", "were" not "are").
     static let englishAuxiliaries: Set<String> = ["do", "does", "did", "is", "am", "are", "was", "were", "be", "been",
@@ -199,19 +189,15 @@ public enum SpokenWords {
         "septante": "70", "huitante": "80", "octante": "80", "nonante": "90",
     ]
 
-    /// What a word says that a fix must keep where it is (`AIFixGuard.plausible`). `strict`: its negation, modal
-    /// and word of quantity (`meaningKinds`). `person`: the person a pronoun names (`englishPersons`). `number`: the
-    /// value of a number, the word itself when it has a digit ("10", "3pm"), in digits for a number word ("ten").
+    /// What a word says that a fix must keep where it is (`mayReplace`). `strict`: its negation, modal and word of
+    /// quantity (`meaningKinds`). `person`: the person a pronoun names (`englishPersons`). `number`: the value of a
+    /// number, the word itself when it has a digit ("10", "3pm"), in digits for a number word ("ten").
     struct Meaning: Equatable {
         var strict: [String] = []
         var person: String?
         var number: String?
 
         var isEmpty: Bool { strict.isEmpty && person == nil && number == nil }
-        /// Everything it says, sorted: what the words a split or join replaces must say together.
-        var all: [String] {
-            (strict + [person.map { "person " + $0 }, number.map { "number " + $0 }].compactMap(\.self)).sorted()
-        }
     }
 
     static func meaning(of word: String, language: String?) -> Meaning {
@@ -229,121 +215,40 @@ public enum SpokenWords {
         return meaning
     }
 
-    /// Whether a fix may put `new` where `word` was, one word for one (`AIFixGuard.plausible`). `isWord`: `word` is
-    /// a real word of the dictation language (`Lexicon`). The same letters with an apostrophe put back or taken out,
-    /// or another case, pass when they keep any negation, modal and quantity: "Jai" and "J'ai", "were" and "we're";
-    /// not "well" and "we'll". A negation, modal or word of quantity may only be spelled another way (`isClose`) as
-    /// the same one ("can't" and "cannot", "peut" and "peux"), never another ("not" and "never", "could" and
-    /// "would"). A number may be written with the same value ("ten" and "10"). Otherwise a real word may only become
-    /// a listed homophone (`areHomophones`: "their" and "there", "won" and "one", "right" and "write"): "bat" is not
-    /// "bit", "want" not "wanted", "tooth" not "teeth", "left" not "lift", "form" not "from", however alike they
-    /// sound. A word the language does not know ("bundu") may become a close one (`isClose`) that keeps what it
-    /// says: a pronoun or number keeps its person or value ("he" is not "she", "10" not "100").
-    static func mayReplace(_ word: String, with new: String, language: String?, isWord: Bool) -> Bool {
+    /// Whether a fix may put `new` where `word` was, one word for one (`AIFixGuard`), both as `AIFixGuard.words`
+    /// gives them. `isWord` and `newIsWord`: each is a real word of the dictation language (`Lexicon`). Every change
+    /// keeps the word's negation, modal, auxiliary, unit or word of quantity (`Meaning.strict`: "I do agree" is not
+    /// "I do not agree", "should" not "could"). A real word may only become a listed homophone (`areHomophones`:
+    /// "their" and "there", "won" and "one", "right" and "write"): "bat" is not "bit", "want" not "wanted", "tooth"
+    /// not "teeth", "no" not "none", "ten" not "10", "a" not "an", "pécher" not "pêcher", however alike they sound
+    /// or are spelled. A word the language does not know ("bundu") may become one real word said alike (`isClose`),
+    /// with the same person and number ("he" is not "she", "10" not "100") unless only apostrophes are put in
+    /// ("theyre" and "they're", "Jai" and "J'ai"), and never its opposite by a prefix (`changesPolarity`:
+    /// "unencripted" is not "encrypted").
+    static func mayReplace(_ word: String, with new: String, language: String?, isWord: Bool,
+                           newIsWord: Bool) -> Bool {
         let was = meaning(of: word, language: language), now = meaning(of: new, language: language)
-        if was.strict == now.strict && letters(word) == letters(new) { return true }
-        if !was.strict.isEmpty || !now.strict.isEmpty { return was == now && isClose(word, new, language: language) }
-        if was.number != nil && was == now { return true }
-        if areHomophones(spelling(word), spelling(new), language: language) { return true }
-        return !isWord && was == now && isClose(word, new, language: language)
+        guard was.strict == now.strict else { return false }
+        if isWord { return areHomophones(word, new, language: language) }
+        guard newIsWord, isClose(word, new, language: language), !changesPolarity(word, new, language: language)
+        else { return false }
+        return was == now || word.filter { $0 != "'" } == new.filter { $0 != "'" }
     }
 
-    /// Whether `word` may be part of a number said in several words (`numberValue`): digits, a number word, or the
-    /// "and", "et", "un" and "une" said inside one ("one hundred and five", "vingt et un").
-    static func mayBeInNumber(_ word: String, language: String?) -> Bool {
-        if word.allSatisfy(\.isNumber) { return true }
-        return numberWord(word, language: language) != nil || ["and", "et", "un", "une"].contains(word)
-    }
+    /// Prefixes that turn a word into its opposite, English and French: "unencrypted", "insecure", "disabled",
+    /// "nonblocking", "misread", "inconnu", "désactivé", "mécontent".
+    static let negativePrefixes = ["un", "in", "im", "il", "ir", "dis", "non", "mis", "anti", "dé", "dés", "mé"]
 
-    /// The value of a number word of `language` ("twenty", "vingt"), nil for any other word.
-    static func numberWord(_ word: String, language: String?) -> Int? {
-        let code = language.map(DictationLanguage.languageCode)
-        let letters = letters(word)
-        let value = (code != "fr" ? englishNumbers[letters] : nil) ?? (code != "en" ? frenchNumbers[letters] : nil)
-        return value.flatMap { Int($0) }
-    }
-
-    /// The value of a number said in `words`: one word of digits ("21"), or number words said as one number
-    /// ("twenty one", "one hundred and five", "two thousand twenty six", "quatre vingt dix", "vingt et un"). Nil for
-    /// anything else, including numbers said one after another ("one two", "ten twenty"), which are not one, and
-    /// digits with a leading zero ("021", a code whose zero counts).
-    static func numberValue(_ words: [String], language: String?) -> Int? {
-        if words.count == 1, words[0].allSatisfy(\.isNumber) {
-            return words[0].count > 1 && words[0].hasPrefix("0") ? nil : Int(words[0])
-        }
-        enum Last { case none, unit, teen, tens, hundred }
-        var total = 0, group = 0, last = Last.none, counted = 0
-        for (index, word) in words.enumerated() {
-            let isLast = index == words.count - 1
-            // "one hundred and five", "vingt et un": a joining word only inside the number.
-            if word == "and", last == .hundred, !isLast { continue }
-            if word == "et", last == .tens, !isLast { continue }
-            var found = numberWord(word, language: language)
-            if found == nil, word == "un" || word == "une", index > 0 { found = 1 }
-            guard let value = found else { return nil }
-            counted += 1
-            switch value {
-            case 0:
-                guard words.count == 1 else { return nil }
-            case 1...9:
-                // French "dix-sept" to "dix-neuf", "soixante-dix-huit", "quatre-vingt-dix-huit": 17 to 19 said as
-                // ten and a unit.
-                let frenchTeen = last == .teen && group % 100 % 20 == 10 && value >= 7 && words[index - 1] == "dix"
-                guard last == .none || last == .tens || last == .hundred || frenchTeen else { return nil }
-                group += value
-                last = .unit
-            case 10...19:
-                // French "soixante dix", "quatre vingt dix": 70 and 90.
-                let frenchTens = last == .tens && [60, 80].contains(group % 100)
-                guard last == .none || last == .hundred || frenchTens else { return nil }
-                group += value
-                last = .teen
-            case 20...90:
-                if value == 20, last == .unit, group % 100 == 4 {
-                    group += 76  // "quatre vingt": 80
-                } else {
-                    guard last == .none || last == .hundred else { return nil }
-                    group += value
-                }
-                last = .tens
-            case 100:
-                guard group < 10 else { return nil }
-                group = max(group, 1) * 100
-                last = .hundred
-            default:
-                total += max(group, 1) * value
-                group = 0
-                last = .none
+    /// Whether one of `a` and `b` is the other, or said like it (`isClose`), behind a prefix of `negativePrefixes`
+    /// the other does not have: "unencripted" and "encrypted", "uninsurred" and "insured".
+    static func changesPolarity(_ a: String, _ b: String, language: String?) -> Bool {
+        for (one, other) in [(a, b), (b, a)] {
+            for prefix in negativePrefixes where one.hasPrefix(prefix) && !other.hasPrefix(prefix) {
+                let rest = String(one.dropFirst(prefix.count))
+                if rest.count >= 3 && isClose(rest, other, language: language) { return true }
             }
         }
-        return counted > 0 ? total + group : nil
-    }
-
-    /// `words` with each number said in several words (`numberValue`, the longest from each place) written as one
-    /// word in digits: "one hundred and five" is "105".
-    static func numbersAsDigits(_ words: [String], language: String?) -> [String] {
-        var result: [String] = []
-        var index = 0
-        while index < words.count {
-            let run = words[index...].prefix(8).prefix { mayBeInNumber($0, language: language) }.count
-            if let length = stride(from: run, to: 1, by: -1).first(where: {
-                numberValue(Array(words[index..<(index + $0)]), language: language) != nil
-            }) {
-                result.append(String(numberValue(Array(words[index..<(index + length)]), language: language)!))
-                index += length
-            } else {
-                result.append(words[index])
-                index += 1
-            }
-        }
-        return result
-    }
-
-    /// Whether `word` repeated may not be dropped as a stutter: a negation, modal, word of quantity or number said
-    /// twice may be meant ("no no", "10 10").
-    static func keepsRepeats(_ word: String, language: String?) -> Bool {
-        let meaning = meaning(of: word, language: language)
-        return !meaning.strict.isEmpty || meaning.number != nil
+        return false
     }
 
     /// The modal or auxiliary of a negative contraction, with or without its apostrophe: "can" for "can't", "cant"
@@ -359,36 +264,6 @@ public enum SpokenWords {
         return ["ca": "can", "wo": "will", "sha": "shall"][String(stem)] ?? String(stem)
     }
 
-    /// Whether `words`, two words, spell out the English `contraction` with the auxiliary it stands for: "I've" and
-    /// "I have", "we're" and "we are", "I'm" and "I am", "it's" and "it is" or "it has", "I'd" and "I would" or "I
-    /// had", "don't" and "do not", "won't" and "will not"; never another auxiliary ("I've" is not "I had").
-    static func expands(_ contraction: String, to words: [String], language: String?) -> Bool {
-        guard words.count == 2, language.map(DictationLanguage.languageCode) != "fr",
-              contraction.contains("'") else { return false }
-        if let auxiliary = negativeAuxiliary(contraction) { return words == [auxiliary, "not"] }
-        let parts = contraction.split(separator: "'", omittingEmptySubsequences: false)
-        guard parts.count == 2, String(parts[0]) == words[0] else { return false }
-        let spelledOut: [String: Set<String>] = ["ve": ["have"], "re": ["are"], "m": ["am"], "s": ["is", "has"],
-                                                 "d": ["would", "had"], "ll": ["will", "shall"]]
-        return spelledOut[String(parts[1])]?.contains(words[1]) == true
-    }
-
-    /// Words a fix may add or drop, by language: articles and the prepositions and conjunctions that tie words
-    /// together ("to the store", "je ne sais pas"). Any other word, a pronoun, an auxiliary, a modal or a negation,
-    /// says something: "You should go" is not "You go". Words that are also pronouns are left out: "that" ("I know
-    /// that"), and the French "le", "la", "les" and "en" ("Je le prends", "J'en veux").
-    static let englishGlue: Set<String> = ["a", "an", "the", "to", "of", "in", "on", "at", "for", "with", "from",
-                                          "by", "as", "and"]
-    static let frenchGlue: Set<String> = ["un", "une", "des", "du", "de", "à", "au", "aux", "et", "que", "ne"]
-
-    static func isGlue(_ word: String, language: String?) -> Bool {
-        switch language.map(DictationLanguage.languageCode) {
-        case "en": englishGlue.contains(word)
-        case "fr": frenchGlue.contains(word)
-        default: englishGlue.contains(word) || frenchGlue.contains(word)
-        }
-    }
-
     /// Whether `heard` could be a mishearing of `meant` (or the reverse), judged by sound alone. Compared as
     /// `letters`: the same letters; homophones of `language` (`homophones`: "one" and "won", "you" and "ewe"); the
     /// same `sound` ("Najer" and "nudger"); or the same `roughSound` with at least half the letters the same ("a
@@ -397,7 +272,7 @@ public enum SpokenWords {
     /// words that sound alike ("bat" and "bit") are two words, not one misheard.
     public static func isClose(_ heard: String, _ meant: String, language: String? = nil) -> Bool {
         let a = letters(heard), b = letters(meant)
-        if a == b || areHomophones(spelling(heard), spelling(meant), language: language) { return true }
+        if a == b || areHomophones(normalized(heard), normalized(meant), language: language) { return true }
         guard !a.isEmpty, !b.isEmpty else { return false }
         let soundA = sound(a), soundB = sound(b)
         if soundA == soundB { return true }
@@ -405,20 +280,6 @@ public enum SpokenWords {
         // but sound apart.
         let distance = editDistance(Array(a), Array(b))
         return 2 * distance <= max(a.count, b.count) && roughSound(soundA) == roughSound(soundB)
-    }
-
-    /// `isClose` for a word split in two or two joined into one ("Onobunto" and "on Ubuntu", "semi colon" and
-    /// "semicolon"), each side given as its words run together. The letters may differ only as much as the shorter
-    /// side allows, so a long word close to its fix does not carry an extra word: "internationalizaton" is not
-    /// "internationalization Ubuntu".
-    static func isCloseSplit(_ heard: String, _ meant: String) -> Bool {
-        let a = letters(heard), b = letters(meant)
-        if a == b { return true }
-        guard !a.isEmpty, !b.isEmpty else { return false }
-        let soundA = sound(a), soundB = sound(b)
-        if soundA == soundB { return true }
-        let distance = editDistance(Array(a), Array(b))
-        return 2 * distance <= min(a.count, b.count) && roughSound(soundA) == roughSound(soundB)
     }
 
     /// Whether `word`, in a text, could be `heard`, a word of a taught heard phrase, misheard again a little
@@ -446,7 +307,7 @@ public enum SpokenWords {
         /// `SpokenWords.letters` of the word.
         let letters: String
         let characters: [Character]
-        /// `SpokenWords.spelling` of the word, for its homophones.
+        /// `SpokenWords.normalized` of the word, for its homophones.
         let spelling: String
         /// Its `sound`: "bundu" and "Bundo" are "banda", "Timox" and "Timok's" "tamaks", "bulk" "balk" but "bull"
         /// "bal".
@@ -455,23 +316,23 @@ public enum SpokenWords {
         init(_ word: String) {
             letters = SpokenWords.letters(word)
             characters = Array(letters)
-            spelling = SpokenWords.spelling(word)
+            spelling = SpokenWords.normalized(word)
             sound = SpokenWords.sound(letters)
         }
     }
 
-    /// `letters`, keeping apostrophes (made plain): "I'll" is "i'll", not the "ill" of "I feel ill".
-    static func spelling(_ text: String) -> String {
-        let folded = text.folding(options: [.diacriticInsensitive, .caseInsensitive], locale: nil).lowercased()
-        return String(folded.filter { $0.isLetter || $0.isNumber || $0 == "'" || $0 == "’" })
-            .replacingOccurrences(of: "’", with: "'")
+    /// `text` lowercased, with typographic apostrophes made plain, accents kept (`AIFixGuard.words`): "I'll" is
+    /// "i'll", not the "ill" of "I feel ill", and "à" is not "a".
+    static func normalized(_ text: String) -> String {
+        text.lowercased().replacingOccurrences(of: "’", with: "'")
     }
 
-    /// Words said alike, as `spelling`, by language: the only real words a fix may swap for one another
-    /// (`mayReplace`), since a real word replaced by another that merely sounds close to it ("bat" and "bit", "want"
-    /// and "wanted") says something else. English: "their", "there" and "they're", "right" and "write", "one" and
-    /// "won", "by" and "buy"; an unstressed "I" is heard as "a". French words whose silent endings differ ("vert" and
-    /// "verre", "peut" and "peux"), which English says apart ("sang" and "sent").
+    /// Words said alike, by language, spelled as `normalized` (accents kept): the only real words a fix may swap for
+    /// one another (`mayReplace`), since a real word replaced by another that merely sounds close to it ("bat" and
+    /// "bit", "want" and "wanted") says something else. English: "their", "there" and "they're", "right" and "write",
+    /// "one" and "won", "by" and "buy", the plural or third person of those that have one ("pairs" and "pears"); an
+    /// unstressed "I" is heard as "a". French words whose silent endings differ ("vert" and "verre", "peut" and
+    /// "peux", "contes" and "comptes"), or whose accent is not heard ("a" and "à", "ou" and "où").
     static let englishHomophones: [Set<String>] = [
         // Pronouns, numbers and function words.
         ["one", "won"], ["two", "to", "too"], ["you", "ewe", "yew", "u"], ["eight", "ate"], ["our", "hour"],
@@ -481,62 +342,67 @@ public enum SpokenWords {
         ["hear", "here"], ["which", "witch"], ["whether", "weather", "wether"], ["where", "wear", "ware"],
         ["so", "sew", "sow"], ["be", "bee"], ["see", "sea"], ["in", "inn"], ["or", "oar", "ore"], ["oh", "owe"],
         ["hi", "high"], ["way", "weigh", "whey"], ["we've", "weave"], ["theirs", "there's"], ["you'll", "yule"],
-        ["what", "watt"], ["threw", "through"], ["whole", "hole"], ["one's", "ones"],
-        // Other words.
-        ["right", "write", "rite", "wright"], ["knight", "night"], ["meet", "meat", "mete"], ["pair", "pear", "pare"],
-        ["air", "heir", "ere"], ["wait", "weight"], ["flour", "flower"], ["aloud", "allowed"], ["scene", "seen"],
-        ["rain", "reign", "rein"], ["pseudo", "sudo"], ["sun", "son"], ["break", "brake"], ["peace", "piece"],
-        ["plain", "plane"], ["mail", "male"], ["tail", "tale"], ["sail", "sale"], ["road", "rode", "rowed"],
+        ["threw", "through"], ["whole", "hole"], ["cant", "can't"], ["wont", "won't"], ["dont", "don't"],
+        // Other words, with their plural or third person.
+        ["right", "write", "rite", "wright"], ["rights", "writes", "rites"], ["knight", "night"],
+        ["knights", "nights"], ["meet", "meat", "mete"], ["meets", "meats"], ["pair", "pear", "pare"],
+        ["pairs", "pears", "pares"], ["air", "heir", "ere"], ["wait", "weight"], ["waits", "weights"],
+        ["flour", "flower"], ["flours", "flowers"], ["aloud", "allowed"], ["scene", "seen"], ["rain", "reign", "rein"],
+        ["rains", "reigns", "reins"], ["pseudo", "sudo"], ["sun", "son"], ["suns", "sons"], ["break", "brake"],
+        ["breaks", "brakes"], ["peace", "piece"], ["plain", "plane"], ["plains", "planes"], ["mail", "male"],
+        ["tail", "tale"], ["tails", "tales"], ["sail", "sale"], ["sails", "sales"], ["road", "rode", "rowed"],
         ["blue", "blew"], ["red", "read"], ["read", "reed"], ["made", "maid"], ["dear", "deer"], ["week", "weak"],
-        ["cell", "sell"], ["cent", "scent", "sent"], ["site", "sight", "cite"], ["principal", "principle"],
-        ["stationary", "stationery"], ["complement", "compliment"], ["higher", "hire"], ["idle", "idol"],
-        ["mind", "mined"], ["missed", "mist"], ["passed", "past"], ["guessed", "guest"], ["rows", "rose"],
-        ["steal", "steel"], ["stair", "stare"], ["tide", "tied"], ["toe", "tow"], ["waist", "waste"],
-        ["hair", "hare"], ["bare", "bear"], ["fair", "fare"], ["flew", "flu", "flue"], ["grate", "great"],
-        ["groan", "grown"], ["heal", "heel"], ["key", "quay"], ["knead", "need"], ["lead", "led"], ["loan", "lone"],
-        ["morning", "mourning"], ["pail", "pale"], ["pain", "pane"], ["pause", "paws"], ["pole", "poll"],
-        ["pray", "prey"], ["profit", "prophet"], ["role", "roll"], ["root", "route"], ["sole", "soul"],
-        ["stake", "steak"], ["suite", "sweet"], ["tea", "tee"], ["throne", "thrown"], ["vain", "vane", "vein"],
-        ["wail", "whale"], ["warn", "worn"], ["wine", "whine"], ["yoke", "yolk"], ["base", "bass"], ["beat", "beet"],
-        ["berry", "bury"], ["berth", "birth"], ["board", "bored"], ["bread", "bred"], ["ceiling", "sealing"],
-        ["cereal", "serial"], ["chews", "choose"], ["coarse", "course"], ["council", "counsel"], ["die", "dye"],
-        ["doe", "dough"], ["feat", "feet"], ["find", "fined"], ["fir", "fur"], ["flea", "flee"], ["forth", "fourth"],
-        ["foul", "fowl"], ["gait", "gate"], ["hall", "haul"], ["heard", "herd"], ["hoarse", "horse"],
-        ["knows", "nose"], ["lessen", "lesson"], ["links", "lynx"], ["maize", "maze"], ["manner", "manor"],
-        ["medal", "meddle"], ["naval", "navel"], ["overdo", "overdue"], ["patience", "patients"],
-        ["peak", "peek", "pique"], ["pedal", "peddle"], ["presence", "presents"], ["rap", "wrap"], ["real", "reel"],
-        ["residence", "residents"], ["ring", "wring"], ["rote", "wrote"], ["seam", "seem"], ["seas", "sees", "seize"],
-        ["side", "sighed"], ["soar", "sore"], ["staid", "stayed"], ["tacks", "tax"], ["team", "teem"],
-        ["tear", "tier"], ["time", "thyme"], ["vary", "very"], ["waive", "wave"], ["aid", "aide"],
-        ["altar", "alter"], ["arc", "ark"], ["bail", "bale"], ["band", "banned"], ["billed", "build"],
-        ["bite", "byte", "bight"], ["cache", "cash"], ["sink", "sync"], ["cue", "queue"], ["chord", "cord"],
+        ["cell", "sell"], ["cells", "sells"], ["cent", "scent", "sent"], ["site", "sight", "cite"],
+        ["sites", "sights", "cites"], ["principal", "principle"], ["stationary", "stationery"],
+        ["complement", "compliment"], ["higher", "hire"], ["idle", "idol"], ["mind", "mined"], ["missed", "mist"],
+        ["passed", "past"], ["guessed", "guest"], ["rows", "rose"], ["steal", "steel"], ["stair", "stare"],
+        ["stairs", "stares"], ["tide", "tied"], ["toe", "tow"], ["waist", "waste"], ["hair", "hare"], ["bare", "bear"],
+        ["fair", "fare"], ["flew", "flu", "flue"], ["grate", "great"], ["groan", "grown"], ["heal", "heel"],
+        ["key", "quay"], ["knead", "need"], ["lead", "led"], ["loan", "lone"], ["morning", "mourning"],
+        ["pail", "pale"], ["pain", "pane"], ["pause", "paws"], ["pole", "poll"], ["poles", "polls"],
+        ["pray", "prey"], ["profit", "prophet"], ["role", "roll"], ["roles", "rolls"], ["root", "route"],
+        ["roots", "routes"], ["sole", "soul"], ["stake", "steak"], ["suite", "sweet"], ["tea", "tee"],
+        ["throne", "thrown"], ["vain", "vane", "vein"], ["wail", "whale"], ["warn", "worn"], ["wine", "whine"],
+        ["yoke", "yolk"], ["base", "bass"], ["beat", "beet"], ["berry", "bury"], ["berth", "birth"],
+        ["board", "bored"], ["bread", "bred"], ["ceiling", "sealing"], ["cereal", "serial"], ["chews", "choose"],
+        ["coarse", "course"], ["council", "counsel"], ["die", "dye"], ["doe", "dough"], ["feat", "feet"],
+        ["find", "fined"], ["fir", "fur"], ["flea", "flee"], ["forth", "fourth"], ["foul", "fowl"], ["gait", "gate"],
+        ["hall", "haul"], ["heard", "herd"], ["hoarse", "horse"], ["knows", "nose"], ["lessen", "lesson"],
+        ["links", "lynx"], ["maize", "maze"], ["manner", "manor"], ["medal", "meddle"], ["naval", "navel"],
+        ["overdo", "overdue"], ["patience", "patients"], ["peak", "peek", "pique"], ["pedal", "peddle"],
+        ["presence", "presents"], ["rap", "wrap"], ["real", "reel"], ["residence", "residents"], ["ring", "wring"],
+        ["rote", "wrote"], ["seam", "seem"], ["seas", "sees", "seize"], ["side", "sighed"], ["soar", "sore"],
+        ["staid", "stayed"], ["tacks", "tax"], ["team", "teem"], ["tear", "tier"], ["time", "thyme"],
+        ["vary", "very"], ["waive", "wave"], ["aid", "aide"], ["altar", "alter"], ["arc", "ark"], ["bail", "bale"],
+        ["band", "banned"], ["billed", "build"], ["bite", "byte", "bight"], ["bites", "bytes"], ["cache", "cash"],
+        ["sink", "sync"], ["sinks", "syncs"], ["cue", "queue"], ["cues", "queues"], ["chord", "cord"],
         ["capital", "capitol"], ["creak", "creek"], ["crews", "cruise"], ["days", "daze"],
         ["discreet", "discrete"], ["dual", "duel"], ["faze", "phase"], ["flair", "flare"], ["hay", "hey"],
-        ["hoard", "horde"], ["incite", "insight"], ["main", "mane"], ["mode", "mowed"],
-        ["muscle", "mussel"], ["peal", "peel"], ["please", "pleas"], ["pour", "pore"], ["raise", "rays", "raze"],
-        ["roe", "row"], ["rung", "wrung"], ["sign", "sine"], ["slow", "sloe"], ["stile", "style"],
-        ["storey", "story"], ["straight", "strait"], ["symbol", "cymbal"], ["tire", "tyre"], ["troop", "troupe"],
-        ["wet", "whet"], ["while", "wile"], ["wade", "weighed"],
+        ["hoard", "horde"], ["incite", "insight"], ["main", "mane"], ["mode", "mowed"], ["muscle", "mussel"],
+        ["peal", "peel"], ["please", "pleas"], ["pour", "pore"], ["raise", "rays", "raze"], ["roe", "row"],
+        ["rung", "wrung"], ["sign", "sine"], ["slow", "sloe"], ["stile", "style"], ["storey", "story"],
+        ["straight", "strait"], ["symbol", "cymbal"], ["tire", "tyre"], ["troop", "troupe"], ["wet", "whet"],
+        ["while", "wile"], ["wade", "weighed"],
     ]
 
     static let frenchHomophones: [Set<String>] = [
         ["sans", "cent", "sang", "sent", "s'en"], ["vers", "vert", "verre", "ver"], ["foi", "fois", "foie"],
         ["cour", "cours", "court"], ["temps", "tant", "tend", "tends"], ["vin", "vingt", "vain"],
-        ["eau", "haut", "au", "aux", "o"], ["sept", "set", "cet", "cette"], ["pain", "pin", "peint"],
-        ["point", "poing"], ["cou", "coup", "cout"], ["sot", "seau", "saut", "sceau"], ["mot", "maux"],
-        ["pere", "paire", "pair", "perd"], ["sa", "ca"], ["ces", "ses", "c'est", "s'est", "sais", "sait"],
+        ["eau", "haut", "au", "aux", "ô"], ["sept", "set", "cet", "cette"], ["pain", "pin", "peint"],
+        ["point", "poing"], ["cou", "coup", "coût"], ["sot", "seau", "saut", "sceau"], ["mot", "maux"],
+        ["père", "paire", "pair", "perd"], ["sa", "ça"], ["ces", "ses", "c'est", "s'est", "sais", "sait"],
         ["son", "sont"], ["ma", "m'a"], ["ta", "t'a"], ["mes", "mais", "met", "mets"], ["tes", "t'es"],
         ["leur", "leurs"], ["il", "ils"], ["elle", "elles"], ["mon", "m'ont"], ["ton", "t'ont", "thon"],
-        ["dix", "dis", "dit"], ["et", "est"], ["a", "as"], ["on", "ont"], ["ce", "se"], ["ni", "n'y"],
-        ["si", "s'y", "ci", "scie"], ["quand", "quant", "qu'en", "camp"], ["la", "l'a"], ["faim", "fin"],
-        ["mer", "mere", "maire"], ["voie", "voix", "vois", "voit"], ["peux", "peut"], ["dois", "doit"],
-        ["veux", "veut"], ["fais", "fait"], ["crois", "croit"], ["prends", "prend"],
-        ["sors", "sort"], ["dors", "dort"], ["pars", "part"], ["vis", "vit"], ["lis", "lit"],
-        ["ecris", "ecrit"], ["finis", "finit"], ["conte", "compte", "comte"],
+        ["dix", "dis", "dit"], ["et", "est"], ["a", "à", "as"], ["ou", "où"], ["la", "là", "l'a"], ["on", "ont"],
+        ["ce", "se"], ["ni", "n'y"], ["si", "s'y", "ci", "scie"], ["quand", "quant", "qu'en", "camp"],
+        ["faim", "fin"], ["mer", "mère", "maire"], ["voie", "voix", "vois", "voit"], ["peux", "peut"],
+        ["dois", "doit"], ["veux", "veut"], ["fais", "fait"], ["crois", "croit"], ["prends", "prend"],
+        ["sors", "sort"], ["dors", "dort"], ["pars", "part"], ["vis", "vit"], ["lis", "lit"], ["écris", "écrit"],
+        ["finis", "finit"], ["conte", "compte", "comte"], ["contes", "comptes", "comtes"],
     ]
 
-    /// Whether `a` and `b` (as `spelling`) are listed homophones of `language`: English, French, or either when the
-    /// language is not given or is another one.
+    /// Whether `a` and `b` (as `normalized`) are listed homophones of `language`: English, French, or either when
+    /// the language is not given or is another one.
     static func areHomophones(_ a: String, _ b: String, language: String?) -> Bool {
         let sets: [Set<String>] = switch language.map(DictationLanguage.languageCode) {
         case "en": englishHomophones
