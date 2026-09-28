@@ -273,6 +273,31 @@ import Testing
         #expect(try Data(contentsOf: place.output) == Data(expected.utf8))
     }
 
+    /// Progress names each part as it starts rendering, then the join; a resume starts at the first part it lacks.
+    @Test func progressReportsEachPartThenTheJoin() async throws {
+        let parent = try root()
+        defer { try? FileManager.default.removeItem(at: parent) }
+        let place = location(parent)
+        let renderer = FakeRenderer()
+        renderer.failOnCall = 3
+        let pipeline = ReadingPipeline(renderer: renderer, joiner: FakeJoiner())
+        let script = script(12)
+        let total = script.parts(maxUTF16Units: 120).count
+        #expect(total > 4)
+        var reports: [ReadingRenderProgress] = []
+        await #expect(throws: HolosError.self) {
+            try await pipeline.render(script: script, voiceIdentifier: voice, metadata: metadata, location: place,
+                                      maxPartUTF16Units: 120) { reports.append($0) }
+        }
+        #expect(reports == (1...3).map { .rendering(part: $0, of: total) })
+
+        renderer.failOnCall = nil
+        reports = []
+        _ = try await pipeline.render(script: script, voiceIdentifier: voice, metadata: metadata, location: place,
+                                      resume: true, maxPartUTF16Units: 120) { reports.append($0) }
+        #expect(reports == (3...total).map { .rendering(part: $0, of: total) } + [.joining(parts: total)])
+    }
+
     @Test func resumeRejectsChangedSettingsAndExistingOutputIsKept() async throws {
         let parent = try root()
         defer { try? FileManager.default.removeItem(at: parent) }

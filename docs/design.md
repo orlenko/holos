@@ -147,7 +147,7 @@ The app's windows other than the transient ones are one main window, "Voice is L
 (`MainWindowController`, Sources/HolosApp/MainWindow): an `NSSplitViewController` with a
 native source-list sidebar and the selected section's content. Sections: Dictation ›
 History (⌘1), Corrections (⌘2); Meetings › Meetings (⌘3), People (⌘4); Listen › Reading
-(⌘5, a placeholder that points to `voiceislocal read`); Settings (⌘,). A status card at
+(⌘5, see "Reading section"); Settings (⌘,). A status card at
 the sidebar's bottom shows the dictation state and message ("Dictation paused during
 meeting recording" while a meeting records). The window is 1280 × 800 by default
 (900 × 560 at least), remembers its frame and sidebar width, and opens from the menu's
@@ -161,8 +161,9 @@ People's reread run while the section is on screen). Settings is the former Setu
 in cards: Permissions (Microphone, Accessibility, System audio, Input Monitoring only
 after macOS refused the hotkey tap), Dictation (on/off, hold-to-talk shortcut, language,
 speech model, fillers, Apple Intelligence fix, preview and its opacity), Meetings (record
-system audio, speaker labels, a link to People for remembered voices), History and
-privacy (Keep dictations, the count, Clear History…), and Run Setup Assistant…; it polls
+system audio, speaker labels, a link to People for remembered voices), Reading (default
+voice, speed, output folder), History and privacy (Keep dictations, the count, Clear
+History…), and Run Setup Assistant…; it polls
 the permissions every second while on screen. The Setup Assistant, the meeting start
 panel, the live transcript, Review (Name Speakers), and the dictation preview stay
 separate windows.
@@ -184,6 +185,78 @@ dictation toggle (and Cancel Dictation while one runs), Copy Result / Copy Origi
 Discard Result while a result is kept, Correct Last Dictation…, the meeting block, then
 Open Voice is Local, History, Meetings, Settings…, About, and Quit. The language and
 shortcut submenus moved to Settings.
+
+### Reading section
+
+Reading (⌘5, `ReadingPane`) makes the same file as `voiceislocal read` from inside the
+app. A **New reading** card holds one field ("Paste a link, or drop a PDF, Word, HTML,
+Markdown or text file here"), **Choose File…**, a Voice pop-up, **▶ Preview**, a Speed
+slider, and **Make Audio** (Return). The field takes an `https://` link (a bare
+"example.com/page" gets `https://`; `http://` is refused with a hint, as in the CLI), a
+`file://` URL, or a path; files are the extensions `DocumentLoader` reads
+(`ReadingSourceParser`, HolosContent). Files and links dropped anywhere on the section, or
+pasted with ⌘V outside a field, go through the same parser: file URLs first, then web URLs,
+then each line of text; one source fills the field, several are all added at once, and the
+ones that cannot be read are named under the card.
+
+The Voice pop-up lists "Automatic — best voice for the text's language" and then the
+installed voices without the novelty ones (`ReadingVoiceMenu`, HolosSynthesis): those that
+speak one of the user's languages first, each group Premium, Enhanced, then default, then
+by the user's language order, language, and name; Premium and Enhanced are marked in the
+title. Automatic resolves once the text is loaded, as `voiceislocal read` does (the
+declared or detected language, `NativeSpeechRenderer.bestVoice`). Preview speaks a
+sentence in the voice's language (English for languages without one) with
+`AVSpeechSynthesizer.speak`; a second press stops it. Speed is 0.8×–1.4× in steps of 0.1
+(`ReadingSpeed`): 1× passes no rate (the renderer's default, as the CLI without
+`--rate`), 0.8× is rate 0.42 and 1.4× is 0.6, linear in between. `AVSpeechUtterance`'s
+rate scale is not documented as a multiplier, so these anchors are an estimate, not
+measured.
+
+Each reading is a `ReadingEntry` (source, title, requested and actual voice, speed, output
+path, render cache, state, progress, duration, chapters) in an index,
+`Application Support/Holos/ReadingLibrary/library.json` (0600, written atomically;
+`ReadingLibraryStore`). An index that cannot be decoded is renamed aside
+(`library.json.unreadable-<date>`) and a new list starts; one a newer build wrote (a higher
+schema version) is shown but never rewritten. The loaded document is kept beside it
+(`Documents/<id>.json`) until the reading is made, so Resume and Try Again read the same
+text without fetching the page again.
+
+`ReadingController` (HolosApp) runs the readings one at a time through
+`ReadingWorkQueue` (HolosContent): first come, first made; Stop takes a waiting one out at
+once and cancels a running one, which ends as stopped unless it finished anyway. The work
+loads the source (`DocumentLoader`, or `WebArticleExtractor`'s offscreen web view on the
+main thread), fixes the voice, picks the output (`<folder>/<Title>.m4a`, "Title 2.m4a"…
+when the name is on disk or taken by another reading in the list; `ReadingLibrary.outputURL`),
+and renders with `ReadingPipeline` in this process into the pipeline's cache in
+`Application Support/Holos/Readings/Output-<hash>` (the explicit-output cache of
+`voiceislocal read -o`), resuming it when it exists. The pipeline reports progress
+(`ReadingRenderProgress`: each part as it starts, then the join) to the row. The pipeline is
+main-actor isolated, so it runs as a task on the main actor: speech synthesis and AAC
+encoding happen on AVFoundation's threads, while loading a document and hashing the parts
+run on the main thread between them.
+
+Rows show the title and the source (the site without "www.", or the file's name), then:
+waiting (Stop); loading or "Rendering part N of M" with a bar (Stop); joining; made
+(length · chapters · size · voice, and the speed when not 1×) with **▶ Play** (an
+`AVAudioPlayer` in the app, Space or double-click, one reading at a time, position shown;
+stopped when the window closes), **Share…** (`NSSharingServicePicker`, ⇧⌘S), **Show in
+Finder**, **Delete…**; failed (the error, **Try Again**); stopped (where, **Resume**). A
+made reading whose file is no longer there says so and offers only Delete. Delete (⌫, with a
+confirmation) moves a made file to the Trash, removes the render cache only when it is an
+`Output-<16 hex>` folder directly in the Readings cache folder, and removes the row.
+
+Files go to `~/Music/Voice is Local/Readings` unless Settings › Reading names another
+folder: a folder the user sees in Finder, outside Documents and Desktop, which iCloud
+Drive's "Desktop & Documents Folders" would upload. Nothing is uploaded; the only network
+access is loading the page the user pasted.
+
+Quitting while a reading is made or waits asks: **Keep Rendering** (quit now; the index
+marks those readings, and the next launch queues them again, the one being made first),
+**Stop** (they are saved as stopped, with Resume), or Cancel. The render in progress is
+cancelled either way; the pipeline's next run removes what that leaves. A reading found
+waiting or being made at launch without that mark (the app crashed or was killed) shows as
+stopped, with Resume. When a later question (a meeting recording) cancels the quit, the
+kept readings continue at once.
 
 ### Dictation history
 

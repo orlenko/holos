@@ -98,6 +98,15 @@ public struct ReadingManifest: Codable, Sendable, Equatable {
     }
 }
 
+/// How far a render has got, reported on the main actor as it goes (see `ReadingPipeline.render`).
+public enum ReadingRenderProgress: Sendable, Equatable {
+    /// Part `part` (counted from 1) of `of` is being rendered. Parts a resumed reading already
+    /// has are skipped, so the first report of a resume can be any part.
+    case rendering(part: Int, of: Int)
+    /// Every part is rendered; they are being joined into the finished file.
+    case joining(parts: Int)
+}
+
 public struct ReadingResult: Sendable, Equatable {
     public let output: URL
     public let manifest: ReadingManifest
@@ -230,7 +239,8 @@ public struct AudioBookJoiner: ReadingAudioJoiner {
     public func render(script: ReadingScript, voiceIdentifier: String, rate: Float? = nil,
                        metadata: AudioBookMetadata, location: ReadingLocation,
                        resume: Bool = false,
-                       maxPartUTF16Units: Int = defaultMaxPartUTF16Units) async throws -> ReadingResult {
+                       maxPartUTF16Units: Int = defaultMaxPartUTF16Units,
+                       progress: ((ReadingRenderProgress) -> Void)? = nil) async throws -> ReadingResult {
         let directory = location.workDirectory
         let output = location.output
         // Every setting is checked before anything (lock, cache, source, manifest) is created, so
@@ -354,6 +364,7 @@ public struct AudioBookJoiner: ReadingAudioJoiner {
         for part in planned {
             try Task.checkCancellation()
             if manifest.parts[part.index].status == "complete" { continue }
+            progress?(.rendering(part: part.index + 1, of: planned.count))
             let audio = directory.appendingPathComponent(manifest.parts[part.index].relativeAudioPath)
             if FileManager.default.fileExists(atPath: audio.path) {
                 let quarantined = audio.deletingLastPathComponent()
@@ -389,6 +400,7 @@ public struct AudioBookJoiner: ReadingAudioJoiner {
                           chapter: part.chapter)
         }
         let summary: AudioBookSummary
+        progress?(.joining(parts: planned.count))
         do {
             summary = try await joiner.join(parts: audioParts, metadata: metadata, to: temporary)
         } catch {

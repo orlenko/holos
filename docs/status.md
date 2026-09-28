@@ -326,15 +326,33 @@ Hardware-facing and cross-app acceptance remain pending.
   the text as heard.
 - Main window (docs/design.md "Main window"): **Open Voice is Local** (⌘0) opens one
   window with a sidebar: History (⌘1), Corrections (⌘2), Meetings (⌘3), People (⌘4),
-  Reading (⌘5, a placeholder pointing to `voiceislocal read`), and Settings (⌘,), with a
+  Reading (⌘5), and Settings (⌘,), with a
   dictation status card at the sidebar's bottom. Corrections, Meetings, and People are the
   former windows' contents hosted as sections; Settings replaces the Setup window
-  (Permissions, Dictation, Meetings, History and privacy, Run Setup Assistant…), and every
+  (Permissions, Dictation, Meetings, Reading, History and privacy, Run Setup Assistant…), and every
   "Setup…" path opens it. The menu bar menu is slimmed to the dictation status and toggle,
   the kept result's Copy items, Correct Last Dictation…, the meeting block, and the window's
   items; the language and shortcut submenus moved to Settings. The Setup Assistant, the
   meeting start panel, the live transcript, Review, and the dictation preview stay separate
   windows. Built and compiled only: nothing of the main window has been seen on screen yet.
+- Reading section (docs/design.md "Reading section"): the main window's Reading (⌘5) makes
+  the `voiceislocal read` file in the app. A New reading card takes an `https://` link or a
+  document (typed, pasted with ⌘V, dropped anywhere on the section, or chosen; several files
+  at once are all added), a voice (Automatic, or the installed voices with the user's
+  languages first, Premium first and marked) with Preview, and a speed (0.8×–1.4×, an
+  estimated mapping onto the speech rate that has not been checked by ear). Readings are made
+  one at a time in this process, each into `~/Music/Voice is Local/Readings/<Title>.m4a`
+  (Settings › Reading changes the folder, default voice, and speed), and listed with their
+  progress ("Rendering part N of M", Stop) or, once made, length, chapters, size, and voice,
+  with Play (in the app, Space), Share… (⇧⌘S), Show in Finder, and Delete… (⌫; the file goes
+  to the Trash, the render cache is removed). Failed and stopped readings offer Try Again or
+  Resume, which reuse the rendered parts and the saved text. The list is an index in
+  `Application Support/Holos/ReadingLibrary`, so it survives relaunching; a file moved away
+  shows as missing. Quitting while a reading is made asks Keep Rendering (continues at the
+  next launch) or Stop. The source parsing, the index store, the queue and its stop and quit
+  logic, the voice order, the speed mapping, and the pipeline's new progress reports are
+  unit-tested; the section itself is built and compiled only and has not been seen on screen
+  yet (docs/dictation-validation.md "Reading section").
 - Dictation history (docs/design.md "Dictation history"): each finished dictation that
   produced text is kept in `Application Support/Holos/History/dictations.jsonl` (0600, one
   JSON line each) with its app, language, text as written and as heard, fixes, outcome,

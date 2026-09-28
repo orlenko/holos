@@ -1,6 +1,7 @@
 import AppKit
 import HolosCore
 import HolosDesktop
+import HolosSynthesis
 
 struct SetupState {
     var microphone: String
@@ -106,6 +107,11 @@ final class SettingsPane: NSViewController, MainSectionContent {
     private let opacityValue = NSTextField(labelWithString: "")
     private let recordSystemAudioToggle = NSButton(
         checkboxWithTitle: "Record the computer's audio (system sound) in meetings", target: nil, action: nil)
+    private let readingVoicePopup = NSPopUpButton(frame: .zero, pullsDown: false)
+    private let readingSpeedSlider = NSSlider(value: ReadingSpeed.standard, minValue: ReadingSpeed.range.lowerBound,
+                                              maxValue: ReadingSpeed.range.upperBound, target: nil, action: nil)
+    private let readingSpeedLabel = NSTextField(labelWithString: "")
+    private var readingFolderDetail: NSTextField?
     private var rows: [SetupAction: Row] = [:]
     private static let textWidth: CGFloat = 360
 
@@ -122,7 +128,7 @@ final class SettingsPane: NSViewController, MainSectionContent {
 
     private func makeContent() -> NSView {
         let stack = NSStackView(views: [
-            permissionsCard(), dictationCard(), meetingsCard(), historyCard(), assistantFooter(),
+            permissionsCard(), dictationCard(), meetingsCard(), readingCard(), historyCard(), assistantFooter(),
         ])
         stack.orientation = .vertical
         stack.alignment = .leading
@@ -233,6 +239,85 @@ final class SettingsPane: NSViewController, MainSectionContent {
         rows[.people]?.icon.image = NSImage(systemSymbolName: "person.2", accessibilityDescription: nil)
         rows[.people]?.icon.contentTintColor = .secondaryLabelColor
         return card("Meetings", [recordSystemAudioToggle, detail, grid], widths: [detail, grid])
+    }
+
+    /// Settings › Reading: what new readings in the Reading section start with, and where their files go.
+    private func readingCard() -> NSView {
+        let grid = makeGrid()
+        readingVoicePopup.target = self
+        readingVoicePopup.action = #selector(readingVoiceChosen(_:))
+        readingVoicePopup.setAccessibilityLabel("Default reading voice")
+        addControlRow("person.wave.2", "Voice", "Premium voices sound best; add them in System Settings › "
+                      + "Accessibility › Spoken Content", control: readingVoicePopup, to: grid)
+
+        readingSpeedSlider.numberOfTickMarks = 7
+        readingSpeedSlider.allowsTickMarkValuesOnly = true
+        readingSpeedSlider.target = self
+        readingSpeedSlider.action = #selector(readingSpeedChanged(_:))
+        readingSpeedSlider.setAccessibilityLabel("Default reading speed")
+        readingSpeedLabel.font = .monospacedDigitSystemFont(ofSize: 12, weight: .regular)
+        readingSpeedLabel.textColor = .secondaryLabelColor
+        let speed = NSStackView(views: [readingSpeedSlider, readingSpeedLabel])
+        speed.spacing = 8
+        addControlRow("gauge.with.needle", "Speed", "0.8× to 1.4× of the voice's normal pace", control: speed, to: grid)
+
+        let (text, _, detail) = Self.labels("Save audio files in")
+        readingFolderDetail = detail
+        let icon = NSImageView(image: NSImage(systemSymbolName: "folder", accessibilityDescription: nil) ?? NSImage())
+        icon.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 17, weight: .regular)
+        icon.contentTintColor = .secondaryLabelColor
+        let choose = NSButton(title: "Choose…", target: self, action: #selector(chooseReadingFolder))
+        choose.bezelStyle = .push
+        choose.setAccessibilityLabel("Choose the folder audio files are saved in")
+        grid.addRow(with: [icon, text, choose])
+        finishRow(in: grid)
+
+        let note = Self.note("""
+            Readings are made on this Mac: nothing is uploaded, and the only thing fetched is the page you paste. \
+            While a reading is made, its parts are kept in Application Support so it can continue after a stop.
+            """)
+        refreshReadingCard()
+        return card("Reading", [grid, note], widths: [grid, note])
+    }
+
+    /// Shows Settings › Reading as saved (and the voices installed now).
+    private func refreshReadingCard() {
+        ReadingVoicePopup.fill(readingVoicePopup, selecting: ReadingPreferences.voice)
+        readingSpeedSlider.doubleValue = ReadingPreferences.speed
+        readingSpeedLabel.stringValue = ReadingSpeed.label(readingSpeedSlider.doubleValue)
+        readingFolderDetail?.stringValue = ReadingPreferences.folderText
+    }
+
+    func sectionDidShow() {
+        refreshReadingCard()
+    }
+
+    @objc private func readingVoiceChosen(_ sender: NSPopUpButton) {
+        ReadingPreferences.voice = sender.selectedItem?.representedObject as? String
+    }
+
+    @objc private func readingSpeedChanged(_ sender: NSSlider) {
+        readingSpeedLabel.stringValue = ReadingSpeed.label(sender.doubleValue)
+        ReadingPreferences.speed = sender.doubleValue
+    }
+
+    @objc private func chooseReadingFolder() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.canCreateDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.directoryURL = ReadingPreferences.folder
+        panel.message = "Choose the folder new readings' audio files are saved in."
+        panel.prompt = "Choose"
+        guard let window = view.window else { return }
+        panel.beginSheetModal(for: window) { [weak self] response in
+            guard response == .OK, let folder = panel.url else { return }
+            MainActor.assumeIsolated {
+                ReadingPreferences.folder = folder
+                self?.refreshReadingCard()
+            }
+        }
     }
 
     private func historyCard() -> NSView {
