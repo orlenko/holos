@@ -1236,6 +1236,35 @@ private func isPrintable(_ text: String) -> Bool {
                                                     .paragraph(Fixture.closing)])
     }
 
+    @Test(arguments: ["section", "div"])
+    func looseTextBeforeAHeadingDoesNotKeepItsSectionAlive(container: String) async throws {
+        // The element's text after the heading is a share widget, which Readability removes; its text before the
+        // heading stays. That text is not the heading's section.
+        let p = Fixture.paragraphs
+        let backMatter = "<\(container) class=\"body\">\(p[0])\(wrappedHeading("Details"))"
+            + "<span class=\"share\">Share this story with a friend</span></\(container)>"
+        let article = try await WebArticleExtractor(options: fast).extract(
+            html: Fixture.article(backMatter: backMatter), baseURL: Fixture.base)
+        #expect(!article.spokenText.contains("Details"))
+        #expect(!article.spokenText.contains("Share this story"))
+        #expect(headings(article) == ["h2 A daily climb"])
+        #expect(article.blocks.last == .paragraph(p[0]))
+    }
+
+    @Test(arguments: ["section", "div"])
+    func looseTextAfterAHeadingThatSurvivesBringsItBack(container: String) async throws {
+        // As above, but the element's text after the heading goes on past the share widget; that part stays.
+        let p = Fixture.paragraphs
+        let backMatter = "<\(container) class=\"body\">\(p[0])\(wrappedHeading("Details"))"
+            + "<span class=\"share\">Share this story with a friend</span>\(Fixture.closing)</\(container)>"
+        let article = try await WebArticleExtractor(options: fast).extract(
+            html: Fixture.article(backMatter: backMatter), baseURL: Fixture.base)
+        #expect(!article.spokenText.contains("Share this story"))
+        #expect(headings(article) == ["h2 A daily climb", "h2 Details"])
+        #expect(Array(article.blocks.suffix(3)) == [.paragraph(p[0]), .heading(level: 2, text: "Details"),
+                                                    .paragraph(Fixture.closing)])
+    }
+
     @Test(arguments: [
         // Readability takes the heading itself for the byline.
         #"<h3 class="byline">Ada Harbour</h3>"#,
