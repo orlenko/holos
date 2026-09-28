@@ -257,7 +257,9 @@ let taughtList = [
     #expect(selected("it runs on a bundo") == ["a Bundo"])
     #expect(selected("it runs on a bundu") == ["a Bundo"])
     #expect(selected("an Ubundo machine") == ["Ubundu machine"])
-    #expect(selected("attach to my timox session") == ["Timok's sessions", "Timox sessions"])
+    #expect(selected("attach to my timox sessions") == ["Timok's sessions", "Timox sessions"])
+    // One session is not several: a pair taught for the plural is not said by the singular.
+    #expect(selected("attach to my timox session").isEmpty)
     #expect(selected("open a T-Mix session") == ["T-Mox", "T-Max", "T-Mux"])
     // A phrase of function words only must be said as it is.
     #expect(selected("This is fine") == ["This is"])
@@ -361,10 +363,13 @@ let unrelatedWords = [
     #expect(AIFixReference.select(from: [bull], for: "I sent a bulk request", budget: 1_000).isEmpty)
     #expect(AIFixGuard.check(original: "I sent a bulk request", fixed: "I sent a pull request", taught: [bull])
         == .reject(.implausibleSubstitution))
-    // Vowels and a plural "s" may differ.
-    #expect(SpokenWords.isVariant("bill", of: "bull") && SpokenWords.isVariant("bulls", of: "bull"))
-    #expect(SpokenWords.isVariant("session", of: "sessions") && !SpokenWords.isVariant("java", of: "jav"))
-    #expect(AIFixReference.select(from: [bull], for: "I opened a bull requests", budget: 1_000) == [bull])
+    // Vowels may differ; a plural "s" may not.
+    #expect(SpokenWords.isVariant("bill", of: "bull") && !SpokenWords.isVariant("bulls", of: "bull"))
+    #expect(!SpokenWords.isVariant("session", of: "sessions") && !SpokenWords.isVariant("java", of: "jav"))
+    #expect(AIFixReference.select(from: [bull], for: "I opened a bull requests", budget: 1_000).isEmpty)
+    let file = Correction(heard: "delete file", meant: "remove the file")
+    #expect(AIFixGuard.check(original: "please delete files now", fixed: "please remove the file now", taught: [file])
+        != .accept)
 }
 
 @Test func wordsReplacedTogetherAreEachJudged() {
@@ -402,10 +407,10 @@ let unrelatedWords = [
     #expect(!SpokenWords.isClose("tough", "toe"))
     #expect(AIFixGuard.check(original: "It was a tough injury", fixed: "It was a toe injury")
         == .reject(.implausibleSubstitution))
-    // Only a plural loses its "s": "bus" is not "buy", "news" not "new".
+    // No word loses its "s": "bus" is not "buy", "news" not "new", "bulls" not "bull".
     #expect(!SpokenWords.isVariant("buy", of: "bus") && !SpokenWords.isVariant("new", of: "news"))
     #expect(!SpokenWords.isVariant("gap", of: "gas") && !SpokenWords.isVariant("clay", of: "class"))
-    #expect(SpokenWords.isVariant("bulls", of: "bull") && SpokenWords.isVariant("session", of: "sessions"))
+    #expect(!SpokenWords.isVariant("bulls", of: "bull") && !SpokenWords.isVariant("session", of: "sessions"))
     let bus = Correction(heard: "bus", meant: "Buzz")
     #expect(AIFixReference.select(from: [bus], for: "I will buy it", budget: 1_000).isEmpty)
     #expect(AIFixGuard.check(original: "I will buy it", fixed: "I will Buzz it", taught: [bus])
@@ -536,7 +541,7 @@ let unrelatedWords = [
     // Another vowel is another word; so is another unit.
     ("Turn left here", "Turn lift here"), ("I hate it", "I hit it"), ("Take a note", "Take a not"),
     ("They came late", "They come late"), ("Run 5 km today", "Run 5 cm today"), ("Wait 10 ms", "Wait 10 mm"),
-    ("Please enable it", "Please unable it"),
+    ("Please enable it", "Please unable it"), ("Draw a line now", "Draw alone now"), ("We work alone", "We work a line"),
     // A prefix that says the opposite.
     ("This is intended today", "This is unintended today"), ("Please install it", "Please uninstall it"),
     ("We agree", "We disagree"), ("The car is insured", "The car is uninsured"),

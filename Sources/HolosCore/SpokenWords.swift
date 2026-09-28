@@ -395,11 +395,11 @@ public enum SpokenWords {
     /// `isClose` for a word split in two or two joined into one ("Onobunto" and "on Ubuntu", "semi colon" and
     /// "semicolon"), each side given as its words run together. The letters may differ only as much as the shorter
     /// side allows, so a long word close to its fix does not carry an extra word: "internationalisation" is not
-    /// "internationalization Ubuntu".
+    /// "internationalization Ubuntu". Vowels and prefixes count as in `isClose`: "a line" is not "alone".
     static func isCloseSplit(_ heard: String, _ meant: String) -> Bool {
         let a = letters(heard), b = letters(meant)
         if a == b { return true }
-        guard !a.isEmpty, !b.isEmpty, !differInPolarity(a, b) else { return false }
+        guard !a.isEmpty, !b.isEmpty, !differInPolarity(a, b), !differInVowels(a, b) else { return false }
         let soundA = sound(a), soundB = sound(b)
         if soundA == soundB { return true }
         let distance = editDistance(Array(a), Array(b))
@@ -473,10 +473,10 @@ public enum SpokenWords {
 
     /// Whether `word`, in a text, could be `heard`, a word of a taught heard phrase, misheard again a little
     /// differently ("bundu" for "Bundo", "Timox" for "Timok's", "mix" for "Max"). Stricter than `isClose`: a match
-    /// lets the taught spelling replace the word. The same letters, homophones, or the plural of a word of four
-    /// letters or more ("sessions" and "session"); otherwise the same `sound`, so only the spelling of its vowels or
-    /// of one sound differs, and at least half the letters the same. "point" is not "Bundo", "band" not "Bundo",
-    /// "tax" not "Max", "bulk" not "bull", "buy" not "bus". Homophones are those of `language`.
+    /// lets the taught spelling replace the word. The same letters or homophones; otherwise the same `sound`, so only
+    /// the spelling of its vowels or of one sound differs, and at least half the letters the same. A plural is not
+    /// its singular: a pair taught for "delete file" does not replace "delete files". "point" is not "Bundo", "band"
+    /// not "Bundo", "tax" not "Max", "bulk" not "bull", "buy" not "bus". Homophones are those of `language`.
     public static func isVariant(_ word: String, of heard: String, language: String? = nil) -> Bool {
         isVariant(Features(word), of: Features(heard), language: language)
     }
@@ -485,17 +485,9 @@ public enum SpokenWords {
         if word.letters == heard.letters || areHomophones(word.spelling, heard.spelling, language: language) {
             return true
         }
-        guard !word.letters.isEmpty, !heard.letters.isEmpty else { return false }
-        if isPlural(word.letters, of: heard.letters) || isPlural(heard.letters, of: word.letters) { return true }
-        guard word.sound == heard.sound else { return false }
+        guard !word.letters.isEmpty, !heard.letters.isEmpty, word.sound == heard.sound else { return false }
         let longer = max(word.characters.count, heard.characters.count)
         return editDistance(word.characters, heard.characters) <= max(1, longer / 2)
-    }
-
-    /// Whether `plural` is `stem` with an "s", `stem` having four letters or more: "bulls" of "bull", not "news" of
-    /// "new" nor "bus" of "bu".
-    static func isPlural(_ plural: String, of stem: String) -> Bool {
-        stem.count >= 4 && plural.count == stem.count + 1 && plural.hasPrefix(stem) && plural.hasSuffix("s")
     }
 
     /// What `isVariant` compares of a word, worked out once for a word met many times.
