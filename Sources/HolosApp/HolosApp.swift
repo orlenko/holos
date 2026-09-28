@@ -191,7 +191,7 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
             correctionsWritable = false
             message = "Could not read corrections.json; corrections are off until it is fixed or removed."
         }
-        controller.contextualStrings = corrections.vocabulary
+        controller.contextualStrings = corrections.vocabulary(language: locale)
         Task { await loadLanguages() }
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         statusItem.button?.image = NSImage(systemSymbolName: "waveform", accessibilityDescription: "Voice is Local")
@@ -395,6 +395,7 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
                 await self.loadLanguages()
                 guard !Task.isCancelled, generation == self.enableGeneration else { return }
                 self.controller.locale = self.locale
+                self.controller.contextualStrings = self.corrections.vocabulary(language: self.locale)
                 let state = try await AppleSpeechEngine.assetStatus(locale: self.locale, backend: .speech)
                 guard !Task.isCancelled, generation == self.enableGeneration else { return }
                 self.assetState = state
@@ -467,6 +468,7 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
         }
         locale = identifier
         controller.locale = identifier
+        controller.contextualStrings = corrections.vocabulary(language: identifier)
         assetState = nil
         if enabled {
             // Enabling again checks the new language's speech model; without it, dictation stays off and Setup
@@ -1031,7 +1033,7 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
             return false
         }
         change(&corrections)
-        controller.contextualStrings = corrections.vocabulary
+        controller.contextualStrings = corrections.vocabulary(language: locale)
         correctionsWindow?.update(corrections: corrections.entries)
         do {
             try corrections.save(to: CorrectionList.defaultURL)

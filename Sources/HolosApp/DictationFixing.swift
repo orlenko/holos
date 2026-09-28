@@ -81,7 +81,7 @@ final class DictationFixPipeline {
         LanguageModelSession(model: model, instructions: TranscriptFixer.instructions(reference: [])).prewarm()
         // A quarter of the context for learned corrections leaves ample room for the chunk and the reply.
         let fixer = TranscriptFixer(corrections: corrections, referenceBudget: model.contextSize / 4,
-                                    timeout: chunkTimeout) { instructions, prompt in
+                                    timeout: chunkTimeout, language: language) { instructions, prompt in
             // A fresh session per chunk: earlier chunks must not steer this one, and the context stays small.
             let session = LanguageModelSession(model: model, instructions: instructions)
             return try await session.respond(to: prompt, options: GenerationOptions(samplingMode: .greedy)).content

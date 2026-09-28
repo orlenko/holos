@@ -26,14 +26,19 @@ public struct CorrectionList: Codable, Sendable, Equatable {
     /// Words the recognizer should expect: the content words (`SpokenWords.isContent`) of the meant phrases, once
     /// each ignoring case, spelled with a capital when any meant phrase has one. "on Ubuntu", "ubuntu" and "Ubuntu
     /// machine" give "Ubuntu" and "machine": listing "on Ubuntu" or "a bunch of windows" as phrases biased the
-    /// recognizer toward words the speaker says everywhere.
-    public var vocabulary: [String] {
+    /// recognizer toward words the speaker says everywhere. Function words of both English and French are left out;
+    /// `vocabulary(language:)` leaves out only those of the language dictated.
+    public var vocabulary: [String] { vocabulary(language: nil) }
+
+    /// `vocabulary` for dictation in `language` (a locale identifier): English dictation keeps "son", a French
+    /// function word.
+    public func vocabulary(language: String?) -> [String] {
         var order: [String] = []
         var spelling: [String: String] = [:]
         for entry in entries {
             for match in entry.meant.matches(of: /[\p{L}\p{N}]+(?:['’][\p{L}\p{N}]+)*/) {
                 let word = String(match.output)
-                guard SpokenWords.isContent(word) else { continue }
+                guard SpokenWords.isContent(word, language: language) else { continue }
                 let key = word.lowercased()
                 if let known = spelling[key] {
                     if !known.contains(where: \.isUppercase), word.contains(where: \.isUppercase) { spelling[key] = word }

@@ -37,12 +37,17 @@ public struct TranscriptFixer: Sendable {
     /// Token budget for the learned corrections listed in the instructions.
     public var referenceBudget: Int
     public var timeout: Duration
+    /// The dictation language (a locale identifier), for its function words (`SpokenWords.isContent`); nil counts
+    /// both English and French ones.
+    public var language: String?
     private let model: Model
 
-    public init(corrections: CorrectionList, referenceBudget: Int, timeout: Duration, model: @escaping Model) {
+    public init(corrections: CorrectionList, referenceBudget: Int, timeout: Duration, language: String? = nil,
+                model: @escaping Model) {
         self.corrections = corrections
         self.referenceBudget = referenceBudget
         self.timeout = timeout
+        self.language = language
         self.model = model
     }
 
@@ -57,20 +62,25 @@ public struct TranscriptFixer: Sendable {
         let words = AIFixGuard.words(in: core).count
         guard words > 0, words <= Self.maximumWords else { return Result(text: chunk, outcome: .skipped) }
 
-        // The choice of learned pairs runs inside the time limit too: with a long list and a long chunk it is work
-        // the chunk would otherwise wait for with no bound.
-        let reference: [Correction], reply: String
-        switch await Self.firstOf(timeout, { [model, corrections, referenceBudget] in
-            let reference = AIFixReference.select(from: corrections.entries, for: core, budget: referenceBudget)
+        // The choice of learned pairs and the guard run inside the time limit too: with a long list and a long chunk
+        // they are work the chunk would otherwise wait for with no bound.
+        let fixed: String, verdict: AIFixGuard.Verdict
+        switch await Self.firstOf(timeout, { [model, corrections, referenceBudget, language] in
+            let reference = AIFixReference.select(from: corrections.entries, for: core, budget: referenceBudget,
+                                                  language: language)
             try Task.checkCancellation()
-            return (reference, try await model(Self.instructions(reference: reference), Self.prompt(for: core)))
+            let reply = try await model(Self.instructions(reference: reference), Self.prompt(for: core))
+            let fixed = AIFixGuard.keepingEdges(of: core, in: AIFixGuard.sanitized(reply, for: core), isFinal: isFinal)
+            let verdict = AIFixGuard.check(original: core, fixed: fixed, protecting: corrections.entries,
+                                           taught: reference, language: language)
+            try Task.checkCancellation()
+            return (fixed, verdict)
         }) {
-        case .value(let value): (reference, reply) = value
+        case .value(let value): (fixed, verdict) = value
         case .timedOut: return Result(text: chunk, outcome: .timedOut)
         case .failed: return Result(text: chunk, outcome: .failed)
         }
-        let fixed = AIFixGuard.keepingEdges(of: core, in: AIFixGuard.sanitized(reply, for: core), isFinal: isFinal)
-        switch AIFixGuard.check(original: core, fixed: fixed, protecting: corrections.entries, taught: reference) {
+        switch verdict {
         case .accept: return Result(text: leading + fixed + trailing, outcome: .fixed)
         case .unchanged: return Result(text: chunk, outcome: .unchanged)
         case .reject(let why): return Result(text: chunk, outcome: .rejected, rejection: why)
@@ -183,9 +193,9 @@ public enum AIFixGuard {
     /// correction's meant phrase, compared as lowercased words) must all still be there: the speaker taught them.
     /// Every replaced word must be a plausible mishearing of what replaces it (`plausible`), or part of a pair of
     /// `taught`, the learned corrections listed for the model, applied where its heard phrase was said
-    /// (`plausibleReply`).
+    /// (`plausibleReply`). `language` (a locale identifier) says which function words count (`SpokenWords.isContent`).
     public static func check(original: String, fixed: String, protecting corrections: [Correction] = [],
-                             taught: [Correction] = []) -> Verdict {
+                             taught: [Correction] = [], language: String? = nil) -> Verdict {
         let original = original.trimmingCharacters(in: .whitespacesAndNewlines)
         let fixed = fixed.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !fixed.isEmpty else { return .reject(.empty) }
@@ -208,7 +218,8 @@ public enum AIFixGuard {
         let segmented = zip(was.segments, now.segments).reduce(0) { $0 + editDistance($1.0, $1.1) }
         if segmented > edits { return .reject(.changedStructure) }
         if edits > max(2, before.count / 5) { return .reject(.tooManyEdits) }
-        guard plausibleReply(original: original, before: before, after: after, taught: taught) else {
+        guard plausibleReply(original: original, before: before, after: after, taught: taught, language: language)
+        else {
             return .reject(.implausibleSubstitution)
         }
         return .accept
@@ -222,10 +233,17 @@ public enum AIFixGuard {
     /// other change `plausible`. Only places a change touches are tried, each applied or not. So a pair vouches for
     /// its spelling exactly where its heard phrase was said, whatever changed next to it: with "food requests ->
     /// pool requests", "their food requests" may become "there pool requests", while "a Bundo" may not become
-    /// "Ubuntu Bundo" nor "use Bundo" "Ubuntu Bundo".
-    static func plausibleReply(original: String, before: [String], after: [String], taught: [Correction]) -> Bool {
+    /// "Ubuntu Bundo" nor "use Bundo" "Ubuntu Bundo". Each try compares only what lies between the first and the
+    /// last word that differ, and a cancelled task (the fixer's time limit) stops trying.
+    static func plausibleReply(original: String, before: [String], after: [String], taught: [Correction],
+                               language: String? = nil) -> Bool {
         func allPlausible(from start: [String]) -> Bool {
-            hunks(start, after).allSatisfy { plausible(Array(start[$0.old]), Array(after[$0.new])) }
+            let head = zip(start, after).prefix { $0 == $1 }.count
+            let tail = zip(start.dropFirst(head).reversed(), after.dropFirst(head).reversed()).prefix { $0 == $1 }.count
+            let old = Array(start[head..<(start.count - tail)]), new = Array(after[head..<(after.count - tail)])
+            return hunks(old, new).allSatisfy {
+                plausible(Array(old[$0.old]), Array(new[$0.new]), language: language)
+            }
         }
         if allPlausible(from: before) { return true }
         let changed = hunks(before, after).map(\.old)
@@ -236,7 +254,7 @@ public enum AIFixGuard {
         var places: [(span: Range<Int>, meant: [String])] = []
         for correction in taught {
             let meant = words(in: correction.meant)
-            for span in AIFixReference.matches(of: correction.heard, in: original)
+            for span in AIFixReference.matches(of: correction.heard, in: original, language: language)
             where touched(span) && !places.contains(where: { $0.span == span && $0.meant == meant }) {
                 places.append((span, meant))
             }
@@ -245,6 +263,7 @@ public enum AIFixGuard {
         places.sort { $0.span.lowerBound < $1.span.lowerBound }
         // Each set of places that do not overlap, applied from the first to the last.
         func search(_ index: Int, _ applied: [(span: Range<Int>, meant: [String])]) -> Bool {
+            if Task.isCancelled { return false }
             guard index < places.count else {
                 guard !applied.isEmpty else { return false }
                 var start: [String] = []
@@ -267,16 +286,17 @@ public enum AIFixGuard {
     /// word split or joined (`SpokenWords.isCloseSplit`); or function words come and gone around content words, each
     /// close to what replaces it. Anything else is a word the model swapped in: a spelling from the taught list
     /// ("windows" became "Ubuntu") or one of its own, which only `plausibleReply` may allow.
-    static func plausible(_ old: [String], _ new: [String]) -> Bool {
+    static func plausible(_ old: [String], _ new: [String], language: String? = nil) -> Bool {
+        let isContent = { SpokenWords.isContent($0, language: language) }
         if new.isEmpty { return true }
-        if old.isEmpty { return !new.contains(where: SpokenWords.isContent) }
+        if old.isEmpty { return !new.contains(where: isContent) }
         // As many words: each replaced by one it could have been misheard for, never judged run together, where a
         // long word close to its fix would carry an unrelated one ("internationalisation windows").
         if old.count == new.count { return zip(old, new).allSatisfy(SpokenWords.isClose) }
         // A word split in two or more, or joined from them.
         if min(old.count, new.count) == 1, SpokenWords.isCloseSplit(old.joined(), new.joined()) { return true }
-        let oldContent = old.filter(SpokenWords.isContent)
-        let newContent = new.filter(SpokenWords.isContent)
+        let oldContent = old.filter(isContent)
+        let newContent = new.filter(isContent)
         return !newContent.isEmpty && oldContent.count == newContent.count
             && zip(oldContent, newContent).allSatisfy(SpokenWords.isClose)
     }
@@ -485,9 +505,11 @@ public enum AIFixReference {
     /// listed because of the "a", "on a Windows machine" became "on a Ubuntu machine").
     /// Each word of the text is compared once with each distinct heard word (`Finder`), so a long list costs about
     /// its distinct words, not its entries times the text's words. It stops early when its task is cancelled (the
-    /// fixer's time limit).
-    public static func select(from entries: [Correction], for text: String, budget: Int) -> [Correction] {
-        let finder = Finder(text)
+    /// fixer's time limit). `language` (a locale identifier) says which function words count
+    /// (`SpokenWords.isContent`).
+    public static func select(from entries: [Correction], for text: String, budget: Int,
+                              language: String? = nil) -> [Correction] {
+        let finder = Finder(text, language: language)
         var remaining = budget
         var chosen: [Correction] = []
         for entry in entries.reversed() {
@@ -506,8 +528,8 @@ public enum AIFixReference {
     /// same marks that end a phrase between them as the heard phrase has, usually none (`Spoken`). Part of a phrase
     /// is not the phrase: "the basement" is not "this basement", "slash help" not "slash QC", "use bundu" not "a
     /// Bundo", and "the bull. Request access" does not say "bull request".
-    public static func matches(of heard: String, in text: String) -> [Range<Int>] {
-        Finder(text).matches(of: heard)
+    public static func matches(of heard: String, in text: String, language: String? = nil) -> [Range<Int>] {
+        Finder(text, language: language).matches(of: heard)
     }
 
     /// A text's words (`AIFixGuard.words`) and, for each, the marks that end a phrase just before it ("" for none):
@@ -540,13 +562,15 @@ public enum AIFixReference {
     /// distinct word of the text.
     final class Finder {
         let text: Spoken
+        let language: String?
         private let positions: [String: [Int]]
         private let features: [String: SpokenWords.Features]
         private var said: [String: Set<Int>] = [:]
 
-        init(_ text: String) {
+        init(_ text: String, language: String?) {
             let spoken = Spoken(text)
             self.text = spoken
+            self.language = language
             positions = Dictionary(grouping: spoken.words.indices, by: { spoken.words[$0] })
             features = Dictionary(uniqueKeysWithValues: positions.keys.map { ($0, SpokenWords.Features($0)) })
         }
@@ -555,7 +579,7 @@ public enum AIFixReference {
         func positions(of word: String) -> Set<Int> {
             if let known = said[word] { return known }
             var found = Set(positions[word] ?? [])
-            if SpokenWords.isContent(word) {
+            if SpokenWords.isContent(word, language: language) {
                 let heard = SpokenWords.Features(word)
                 for (other, at) in positions where other != word
                     && SpokenWords.isVariant(features[other]!, of: heard) {

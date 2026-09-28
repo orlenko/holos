@@ -6,9 +6,8 @@ import Foundation
 public enum SpokenWords {
     /// Function words of the dictation languages tried so far (English and French). They appear in almost every
     /// sentence, so sharing one says nothing about whether a correction applies: "a Bundo -> ubuntu" shares "a"
-    /// with most English text.
-    static let stopWords: Set<String> = [
-        // English
+    /// with most English text. Each language has its own: the French "son" is the English "son".
+    static let englishStopWords: Set<String> = [
         "about", "above", "after", "again", "against", "all", "also", "and", "any", "are", "aren't", "because",
         "been", "before", "being", "below", "between", "both", "but", "can", "can't", "cannot", "could",
         "couldn't", "did", "didn't", "does", "doesn't", "doing", "don't", "down", "during", "each", "even", "ever",
@@ -24,7 +23,9 @@ public enum SpokenWords {
         "would", "wouldn't", "yes", "yet", "you", "you'd", "you'll", "you're", "you've", "your", "yours",
         "yourself", "yourselves", "okay", "really", "like", "well", "still", "thing",
         "things", "going", "gonna", "want", "wanna",
-        // French
+    ]
+
+    static let frenchStopWords: Set<String> = [
         "au", "aux", "avec", "ce", "ceci", "cela", "celle", "celles", "celui", "ces", "cet", "cette", "ceux",
         "c'est", "chez", "comme", "dans", "des", "donc", "dont", "elle", "elles", "est", "et", "été",
         "être", "eux", "fait", "faut", "ici", "il", "ils", "j'ai", "je", "la", "le", "les", "leur", "leurs", "lui",
@@ -35,10 +36,22 @@ public enum SpokenWords {
         "alors", "encore", "bien", "oui", "non", "voilà", "y'a", "d'un", "d'une", "l'on", "s'il",
     ]
 
-    /// A word that carries meaning: not a function word and at least three letters.
-    public static func isContent(_ word: String) -> Bool {
+    static let allStopWords = englishStopWords.union(frenchStopWords)
+
+    /// The function words of `language` (a locale identifier such as "en-US" or "fr_CA"): English, French, or both
+    /// when the language is not given or is another one.
+    static func stopWords(for language: String?) -> Set<String> {
+        switch language.map(DictationLanguage.languageCode) {
+        case "en": englishStopWords
+        case "fr": frenchStopWords
+        default: allStopWords
+        }
+    }
+
+    /// A word that carries meaning in `language` (see `stopWords`): not a function word and at least three letters.
+    public static func isContent(_ word: String, language: String? = nil) -> Bool {
         let word = word.lowercased().replacingOccurrences(of: "’", with: "'")
-        return letters(word).count >= 3 && !stopWords.contains(word)
+        return letters(word).count >= 3 && !stopWords(for: language).contains(word)
     }
 
     /// Lowercased letters and digits of `text`, without diacritics, apostrophes, hyphens or spaces: "C'est" is
@@ -157,20 +170,26 @@ public enum SpokenWords {
     /// Words that start with a "gh" said "f" even before a "t": "laughter", "draught".
     static let fBeforeT = ["laugh", "draught"]
 
+    /// Whether the first "w" of `letters` is silent: "who", "whose", "whom", "whoever", "whole", "whore"; not
+    /// "whoop", "whoosh" or "whopping", nor "which".
+    static func hasSilentW(_ letters: String) -> Bool {
+        letters == "who" || ["whos", "whom", "whoev", "whol", "whor"].contains { letters.hasPrefix($0) }
+    }
+
     /// A rough pronunciation of `letters` (from `letters(_:)`). Silent letters are dropped: a first "k", "g", "p"
-    /// or "m" before "n", "w" before "r", "p" before "s" or "t", the "w" or "h" of a first "wh" ("which", "whole"),
-    /// "gh" after the first letter ("night", "eight") but for the "f" of "tough" and "laugh", a last "e" after a
-    /// consonant, a "w" or "h" not before a vowel.
-    /// Spellings of one sound become one: "ph" f, "ck" and "q" k, "c" before e, i or y s, "dg" and "g" before e, i or
-    /// y j, "th" θ, "sh", "ch" and "tch" X, "x" ks, "z" s, a last "mb" m. Each run of vowels (with a "y", "w" or "h"
-    /// after them) is one "a", and a sound repeated is kept once. Consonants keep their identity: "point" is "pant"
-    /// and "Bundo" "banda".
+    /// or "m" before "n", "w" before "r", "p" before "s" or "t", the "w" of a first "wh" in `hasSilentW` words
+    /// ("who", "whole") and its "h" elsewhere ("which", "whoop"), "gh" after the first letter ("night", "eight") but
+    /// for the "f" of "tough" and "laugh", a last "e" after a consonant, a "w" or "h" not before a vowel.
+    /// Spellings of one sound become one: "ph" f, "ck" and "q" k, "c" before e, i or y s, "dg" before e, i or y j
+    /// (any other "g" is hard: "git", "get"), "th" θ, "sh", "ch" and "tch" X, "x" ks, "z" s, a last "mb" m. Each run
+    /// of vowels (with a "y", "w" or "h" after them) is one "a", and a sound repeated is kept once. Consonants keep
+    /// their identity: "point" is "pant" and "Bundo" "banda".
     static func sound(_ letters: String) -> String {
         var s = Array(letters)
         if s.count > 2 {
             switch String(s[0...1]) {
             case "kn", "gn", "pn", "mn", "wr", "ps", "pt": s.removeFirst()
-            case "wh": s.remove(at: s[2] == "o" ? 0 : 1)
+            case "wh": s.remove(at: hasSilentW(letters) ? 0 : 1)
             default: break
             }
         }
@@ -215,7 +234,9 @@ public enum SpokenWords {
                     else if saidF(ghAt: i) { emit("f") }
                     step = 2
                 }
-                else if let next, "eiy".contains(next) { emit("j") }
+                // Soft only after "d" ("nudger", "budget"): a soft "g" elsewhere cannot be told from a hard one
+                // by spelling ("gin" and "git", "danger" and "anger"), and a hard "g" as "j" made "git" "jet".
+                else if i > 0, s[i - 1] == "d", let next, "eiy".contains(next) { emit("j") }
                 else if !(next == "n" && afterNext == nil) { emit("g") }
             case "d": if !(next == "g" && afterNext.map { "eiy".contains($0) } == true) { emit("d") }
             case "q": emit("k")

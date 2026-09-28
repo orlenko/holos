@@ -202,14 +202,15 @@ mistakes. Do not learn from ordinary typing elsewhere.
 The opt-in misheard-word fix (`TranscriptFixer`) shows Apple's on-device model only
 the learned pairs whose whole heard phrase is in the chunk, word for word and in
 order, with no sentence or clause mark, line break, bracket or quote between its
-words: its function words exactly, and each content word (not an English or French
-function word, at least three letters) as is or misheard again a little differently
+words: its function words exactly, and each content word (not a function word of the
+language dictated, English or French, and at least three letters) as is or misheard
+again a little differently
 (its plural, or the same pronunciation key and half the letters the same: "a bundu"
 says "a Bundo"; "a point", "a band" and "bulk request" for "bull request" do not). Sharing a word like "a" or "on", part of the phrase, or a word of the meant side
 does not count: listed that way, "a Bundo -> ubuntu" and "Onobunto -> on Ubuntu" made
 the model turn "on a Windows machine" into "on a Ubuntu machine". Each text word is
-compared once with each distinct heard word, and the choice runs inside the fix's time
-limit. The guard then refuses any reply that replaces a word with one it could not
+compared once with each distinct heard word, and the choice and the guard run inside
+the fix's time limit. The guard then refuses any reply that replaces a word with one it could not
 have been misheard for, or adds a word other than a function word. A replacement
 passes when the words are close (the same letters, at most one letter apart or 70 %
 the same; homophones such as "one" and "won"; the same pronunciation key, with silent

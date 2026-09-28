@@ -401,6 +401,45 @@ let unrelatedWords = [
         == .reject(.implausibleSubstitution))
 }
 
+@Test func silentAndSoftLettersOnlyWhereTheyAreSo() {
+    // The "w" of "whole" and "who" is silent; that of "whopping", "whoop" and "whoosh" is not.
+    #expect(SpokenWords.sound("whole") == SpokenWords.sound("hole") && SpokenWords.sound("whose") == "has")
+    #expect(SpokenWords.sound("whopping") == "wapang" && SpokenWords.sound("whoop").hasPrefix("w"))
+    #expect(!SpokenWords.isVariant("whopping", of: "happen"))
+    let happen = Correction(heard: "happen", meant: "Happen")
+    #expect(AIFixReference.select(from: [happen], for: "a whopping success", budget: 1_000).isEmpty)
+    // A "g" is soft only after "d": "git" is not "jet", while "nudger" still sounds like "Najer".
+    #expect(SpokenWords.sound("git") != SpokenWords.sound("jet") && SpokenWords.sound("get") == "gat")
+    #expect(SpokenWords.sound("nudger") == SpokenWords.sound("najer"))
+    let gitLab = Correction(heard: "git lab", meant: "GitLab")
+    #expect(AIFixReference.select(from: [gitLab], for: "the jet lab opened", budget: 1_000).isEmpty)
+    #expect(AIFixGuard.check(original: "the jet lab opened", fixed: "the GitLab opened", taught: [gitLab])
+        == .reject(.implausibleSubstitution))
+}
+
+@Test func functionWordsAreThoseOfTheLanguageDictated() {
+    // The French "son" is an English content word.
+    #expect(SpokenWords.isContent("son", language: "en-US") && !SpokenWords.isContent("son", language: "fr_CA"))
+    #expect(!SpokenWords.isContent("son") && !SpokenWords.isContent("the", language: "en-US"))
+    let son = Correction(heard: "son called", meant: "Sean called")
+    #expect(AIFixReference.select(from: [son], for: "my sun called", budget: 1_000, language: "en-US") == [son])
+    #expect(AIFixReference.select(from: [son], for: "my sun called", budget: 1_000, language: "fr-FR").isEmpty)
+    let taught = CorrectionList(entries: [Correction(heard: "sun", meant: "son")])
+    #expect(taught.vocabulary(language: "en-GB") == ["son"])
+    #expect(taught.vocabulary(language: "fr-FR").isEmpty && taught.vocabulary.isEmpty)
+}
+
+@Test func theGuardStopsTryingTaughtPlacesWhenCancelled() async {
+    let pool = Correction(heard: "food requests", meant: "pool requests")
+    #expect(AIFixGuard.check(original: "their food requests", fixed: "there pool requests", taught: [pool]) == .accept)
+    let cancelled = Task { () -> AIFixGuard.Verdict in
+        while !Task.isCancelled { await Task.yield() }
+        return AIFixGuard.check(original: "their food requests", fixed: "there pool requests", taught: [pool])
+    }
+    cancelled.cancel()
+    #expect(await cancelled.value == .reject(.implausibleSubstitution))
+}
+
 @Test func aTaughtPairAndANeighbouringFixAreJudgedApart() {
     let pool = Correction(heard: "food requests", meant: "pool requests")
     // One stretch of changes, "their food" -> "there pool": "there" is close to "their", and the pair fixes the rest.
