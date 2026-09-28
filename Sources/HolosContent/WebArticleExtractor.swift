@@ -342,13 +342,46 @@ import WebKit
     /// Mozilla Readability 0.6.0, verbatim (see THIRD_PARTY_NOTICES.md).
     static let readabilitySource = String(decoding: PackageResources.Readability_js, as: UTF8.self)
 
+    /// `holosSpoken(text)`: whether `WebArticle.assemble` keeps a block with this text (`WebArticle.isSpoken`). The
+    /// noise marks and the bracket pattern are Swift's own constants, written into the script; `holosSanitized`
+    /// does what `WebArticle.sanitized` does (every run of whitespace becomes one space; control, format, and
+    /// noncharacter code points go; the ends are trimmed). A test checks that both answer alike on a table of
+    /// samples.
+    static let spokenPredicate: String = {
+        func json(_ value: some Encodable) -> String {
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
+            return String(decoding: try! encoder.encode(value), as: UTF8.self)
+        }
+        return """
+            const holosNoiseMarks = new Set(\(json(WebArticle.noiseMarks.sorted())));
+            const holosBracketMark = new RegExp("^(?:" + \(json(WebArticle.bracketMarkPattern)) + ")$", "u");
+            function holosSanitized(text) {
+              return text.replace(/(?!\\p{White_Space})[\\p{Cc}\\p{Cf}\\p{Noncharacter_Code_Point}]/gu, "")
+                .replace(/\\p{White_Space}+/gu, " ")
+                .replace(/^ | $/g, "");
+            }
+            function holosSpoken(text) {
+              const clean = holosSanitized(text);
+              return clean !== "" && !holosBracketMark.test(clean) && !holosNoiseMarks.has(clean.toLowerCase());
+            }
+            """
+    }()
+
     /// Walks article HTML and returns `[{level, text}]`: level 1–6 for headings, 0 for paragraphs. Block elements
     /// (paragraphs, list items, quotations, divisions) and `<br>` end a paragraph; code blocks, tables, figures,
     /// captions, media, and forms are skipped; so are superscripts that hold only bracketed reference marks, one or
     /// several with optional separators: `<sup>[1]</sup>`, `<sup><a>[1]</a><a>[2]</a></sup>`, `<sup>[1], [2]</sup>`,
     /// `<sup>[a][note 3]</sup>`, `<sup>[citation needed]</sup>`.
+    ///
+    /// With `record` (`{ skip(element), until }`, used on the page before Readability runs and on its output when
+    /// headings are restored) the walk also leaves out every element `skip` accepts, stops where it reaches the node
+    /// `until` (at any depth; the text before it is still a block), and each block carries its `owner` (the
+    /// innermost heading or block element whose own text it is; the root for loose text) and its `nodes` (the text
+    /// nodes it was read from, in document order). This one definition says what blocks there are, both on the page
+    /// and on Readability's output; `holosSpoken` says which of them are spoken.
     private static let blockWalker = #"""
-    function holosArticleBlocks(root) {
+    function holosArticleBlocks(root, record) {
       const citationMarks = /^\s*\[[^\[\]]*\](?:\s*[,;–—-]?\s*\[[^\[\]]*\])*\s*$/;
       const skipBlock = new Set(["FIGURE", "FIGCAPTION", "PRE", "TABLE", "FORM", "FIELDSET", "IFRAME", "VIDEO",
         "AUDIO", "CANVAS", "OBJECT", "EMBED", "SCRIPT", "STYLE", "NOSCRIPT", "TEMPLATE", "DIALOG"]);
@@ -358,34 +391,48 @@ import WebKit
         "FOOTER", "HEADER", "HGROUP", "LI", "MAIN", "NAV", "OL", "P", "SECTION", "SUMMARY", "UL"]);
       const blocks = [];
       let buffer = "";
+      let nodes = [];
       let headingLevel = 0;
+      let owner = root;
       const flush = () => {
         const text = buffer.replace(/\s+/g, " ").trim();
-        if (text) blocks.push({ level: headingLevel, text: text });
+        if (text) {
+          blocks.push(record ? { level: headingLevel, text: text, owner: owner, nodes: nodes }
+            : { level: headingLevel, text: text });
+        }
         buffer = "";
+        nodes = [];
       };
+      // Walks `element` as a block of its own: text before it and after it are other blocks.
+      const walkBlock = (element, level) => {
+        flush();
+        const outer = { level: headingLevel, owner: owner };
+        headingLevel = level;
+        owner = element;
+        walk(element);
+        flush();
+        headingLevel = outer.level;
+        owner = outer.owner;
+      };
+      let halted = false;
       const walk = (node) => {
         for (const child of node.childNodes) {
+          if (halted) return;
+          if (record && child === record.until) { halted = true; return; }
           if (child.nodeType === Node.TEXT_NODE || child.nodeType === Node.CDATA_SECTION_NODE) {
             buffer += child.data;
+            if (record) nodes.push(child);
             continue;
           }
           if (child.nodeType !== Node.ELEMENT_NODE) continue;
+          if (record && record.skip(child)) continue;
           const tag = child.tagName.toUpperCase();
           if (skipInline.has(tag)) continue;
           if (skipBlock.has(tag)) { flush(); continue; }
           if (tag === "SUP" && citationMarks.test(child.textContent)) continue;
           if (tag === "BR" || tag === "HR") { flush(); continue; }
-          if (/^H[1-6]$/.test(tag)) {
-            flush();
-            const outer = headingLevel;
-            headingLevel = Number(tag[1]);
-            walk(child);
-            flush();
-            headingLevel = outer;
-            continue;
-          }
-          if (block.has(tag)) { flush(); walk(child); flush(); continue; }
+          if (/^H[1-6]$/.test(tag)) { walkBlock(child, Number(tag[1])); continue; }
+          if (block.has(tag)) { walkBlock(child, headingLevel); continue; }
           walk(child);
         }
       };
@@ -402,8 +449,8 @@ import WebKit
     /// `article`, `main`, `aside`, or `nav` element holding the heading (the body when there is none). Elements
     /// the section only partly covers stay, with the part before the section (the article text before the
     /// heading, the part holding the next heading). The heading goes too, and so does each element that held it
-    /// and is left with nothing meaningful (Wikipedia's `<div class="mw-heading">` once its edit link is gone, a
-    /// `<div class="section-heading">`). Heading text is compared without bracketed marks (`[edit]`), leading
+    /// and is left with nothing spoken (`holosSpoken`; Wikipedia's `<div class="mw-heading">` with its `[edit]`
+    /// link, a `<div class="section-heading">` with its `¶`). Heading text is compared without bracketed marks (`[edit]`), leading
     /// section numbers, surrounding punctuation or symbols ("References:", "Notes.", "See also —",
     /// "References ¶"), and case.
     private static let backMatterRemover = #"""
@@ -417,8 +464,7 @@ import WebKit
         .replace(/^[\s\p{P}\p{S}]+|[\s\p{P}\p{S}]+$/gu, "")
         .replace(/^\d+(?:\.\d+)*[.)]?\s+/u, "")
         .toLowerCase();
-      // Letters and digits only, without bracketed marks: what a listener would hear.
-      const meaningful = (text) => text.replace(/\[[^\]]*\]/g, "").replace(/[^\p{L}\p{N}]+/gu, "").toLowerCase();
+      const spokenIn = (element) => holosArticleBlocks(element).some((block) => holosSpoken(block.text));
       const levelOf = (heading) => Number(heading.localName[1]);
       const after = (node, other) =>
         (node.compareDocumentPosition(other) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0 && !node.contains(other);
@@ -437,11 +483,251 @@ import WebKit
         section.deleteContents();
         let wrapper = heading.parentElement;
         heading.remove();
-        while (wrapper && wrapper !== root && !meaningful(wrapper.textContent) && !wrapper.querySelector(headings)) {
+        while (wrapper && wrapper !== root && !spokenIn(wrapper) && !wrapper.querySelector(headings)) {
           const outer = wrapper.parentElement;
           wrapper.remove();
           wrapper = outer;
         }
+      }
+    }
+    """#
+
+    /// Puts back section headings that Readability dropped while it kept their sections. Readability judges a
+    /// heading on its own markup, not on the text it labels: Wikipedia's `<div class="mw-heading">` beside an edit
+    /// link reads as a short, linky block, and Substack's `<h4 class="header-anchor-post">` is named like a page
+    /// header. Readability still decides what is article. Headings and blocks are matched by identity, never by
+    /// text, in three steps:
+    ///
+    /// 1. `holosRecordHeadings`, on the page copy before Readability runs, walks it with `holosArticleBlocks` (so
+    ///    a block is exactly what the final walk would speak; figures, tables, code, and the rest it skips are not
+    ///    blocks), leaving out what Readability removes as invisible (its own `_isProbablyVisible`, and modal
+    ///    dialogs). Each heading gets `data-holos-h="<n>"`. Each block (one per paragraph the walk emits, not per
+    ///    element: an element's loose text before and after a heading or another block are two blocks) gets its
+    ///    own id: every text node it was read from is wrapped in `<data data-holos-b="<n>">`, so the block is in
+    ///    Readability's output exactly when some of its own text is. `data` is phrasing content to Readability (it
+    ///    moves with the text into the paragraphs it builds, and goes with any element it removes, such as a
+    ///    `<span class="share">`), and unlike `span` it is not one of the tags whose text Readability's
+    ///    `_cleanConditionally` counts as text density, so the wrappers do not change what it keeps. Text in
+    ///    raw-text elements (`xmp`, `noembed`, `noframes`, `plaintext`) is not wrapped (re-parsed, a wrapper there
+    ///    would become text): the element itself carries the block's mark. Readability 0.6.0 keeps `data-*` attributes on the nodes it keeps (it strips only
+    ///    `class`, `style`, and presentational attributes) and copies them when it retags a node, and its retries
+    ///    re-parse the page from serialized HTML, so the marks survive where node identity would not.
+    ///
+    ///    Furniture containers are `nav`, `aside`, `footer`, `form`, `dialog`, `menu`, a page-level `header` (one
+    ///    outside `article`, `aside`, `main`, `nav`, and `section`), and elements whose role is in Readability's
+    ///    `UNLIKELY_ROLES` (invisible elements are not walked at all). A heading inside one (a widget's "Share" or
+    ///    "Related") is never restored and is not a section boundary: it neither starts nor ends a section. A
+    ///    block inside one does not count as section content.
+    ///
+    ///    What is spoken is decided everywhere by `holosSpoken`, the same test `WebArticle.assemble` applies (see
+    ///    `spokenPredicate`): a block or heading that is empty, only bracketed marks (`[1]`, `[edit]`), or a noise
+    ///    mark (a lone `#`, `¶`, `§`, `🔗`, "Permalink", an ornamental break) is not spoken; any other is, symbols
+    ///    only or not (`🔥`, "∞ ≠ ∅"). A heading that is not spoken is neither restored nor a section boundary.
+    ///
+    ///    A heading's section is decided by document order alone: the spoken blocks and headings after it up to
+    ///    the next boundary heading (one of the same or a higher level, outside furniture), leaving out only the
+    ///    blocks in the heading's own wrapper: its outermost ancestor that holds nothing else spoken than the
+    ///    heading, such as Wikipedia's `<div class="mw-heading">` with its `[edit]` link. Loose text of an element
+    ///    that also holds the heading's wrapper (`<section>Intro…<div class="mw-heading">…</div>Section
+    ///    text…</section>`) is section content like any other block, and only the loose text after the heading
+    ///    is: "Intro…" is another block.
+    /// 2. `holosWatchReadability` records the headings Readability consumed as the byline (its `_isValidByline`
+    ///    accepted the heading or an element holding it).
+    /// 3. `holosRestoreHeadings`, on Readability's output, finds blocks and headings by their marks. A heading
+    ///    Readability dropped comes back when at least one of its section's spoken blocks outside furniture is in
+    ///    the output, right before the first spoken block or heading of its section that the output has (a
+    ///    subsection heading Readability kept, or one restored; for a block, its first text that survived),
+    ///    outside every element that begins there with nothing spoken before it: in an element's loose text, right
+    ///    after the text that came before the heading. Headings Readability kept are not added twice, nor is a
+    ///    heading taken as the byline or whose text is the byline
+    ///    (with or without "By"). The page's title heading is not added. As in Readability's `_grabArticle`, that
+    ///    is only the first `h1` or `h2` (in document order, furniture included) that Readability's own test finds
+    ///    similar to the article title, and only when no spoken content block of the output comes before it; any
+    ///    later such heading is an ordinary one. A restored `h1` becomes an `h2`, as Readability does with the
+    ///    `h1`s it keeps.
+    ///
+    /// `holosClearMarks` then removes every mark before the article is read (a `data` wrapper left without one is
+    /// inline and changes no block).
+    private static let headingRestorer = #"""
+    const holosHeadingNames = "h1, h2, h3, h4, h5, h6";
+
+    function holosClearMarks(root) {
+      for (const element of root.querySelectorAll("[data-holos-b], [data-holos-h]")) {
+        element.removeAttribute("data-holos-b");
+        element.removeAttribute("data-holos-h");
+      }
+    }
+
+    // Returns `{ headings, content }`: a record per heading, and the ids of the blocks outside furniture.
+    function holosRecordHeadings(doc, visible, unlikelyRoles) {
+      const root = doc.body || doc.documentElement;
+      // The page's own marks, if it has any, mean nothing.
+      holosClearMarks(root);
+      const skip = (element) => !visible(element)
+        || (element.getAttribute("aria-modal") === "true" && element.getAttribute("role") === "dialog");
+      const furnitureTags = new Set(["nav", "aside", "footer", "form", "dialog", "menu"]);
+      const isFurniture = (element) => furnitureTags.has(element.localName)
+        || (element.localName === "header"
+          && !(element.parentElement && element.parentElement.closest("article, aside, main, nav, section")))
+        || unlikelyRoles.includes(element.getAttribute("role"));
+      // Whether a furniture container (the element itself or one around it, below the root) holds the element.
+      const furnitureCache = new Map();
+      const inFurniture = (element) => {
+        if (!element || element === root) return false;
+        let known = furnitureCache.get(element);
+        if (known === undefined) {
+          known = isFurniture(element) || inFurniture(element.parentElement);
+          furnitureCache.set(element, known);
+        }
+        return known;
+      };
+      // The spoken text each element holds (headings and blocks alike), by length.
+      const weight = new Map();
+      const weigh = (element, text) => {
+        if (!holosSpoken(text)) return;
+        const amount = holosSanitized(text).length;
+        for (let at = element; at && at !== root; at = at.parentElement) {
+          weight.set(at, (weight.get(at) || 0) + amount);
+        }
+      };
+      // Re-parsed, markup inside these would become text.
+      const rawText = new Set(["xmp", "noembed", "noframes", "plaintext"]);
+      let blockCount = 0;
+      const byElement = new Map();
+      const headings = [];
+      const content = new Set();
+      // Headings and blocks in document order.
+      const entries = [];
+      for (const item of holosArticleBlocks(root, { skip: skip })) {
+        if (item.level) {
+          const element = item.owner.closest(holosHeadingNames);
+          if (!element) continue;
+          weigh(element, item.text);
+          const known = byElement.get(element);
+          if (known) {
+            known.text += " " + item.text;
+            continue;
+          }
+          const heading = { id: String(headings.length), element: element, level: Number(element.localName[1]),
+            text: item.text, furniture: inFurniture(element), blocksBefore: blockCount };
+          element.setAttribute("data-holos-h", heading.id);
+          byElement.set(element, heading);
+          headings.push(heading);
+          entries.push({ heading: heading });
+          continue;
+        }
+        weigh(item.owner, item.text);
+        // Each block its own mark, on its own text.
+        const id = String(blockCount++);
+        for (const node of item.nodes) {
+          const parent = node.parentNode;
+          if (!parent || !/\S/.test(node.data)) continue;
+          // Raw text is one text node: its element carries the mark instead.
+          if (rawText.has(parent.localName)) {
+            if (!parent.hasAttribute("data-holos-b")) parent.setAttribute("data-holos-b", id);
+            continue;
+          }
+          const mark = doc.createElement("data");
+          mark.setAttribute("data-holos-b", id);
+          parent.insertBefore(mark, node);
+          mark.appendChild(node);
+        }
+        const spoken = holosSpoken(item.text);
+        if (spoken && !inFurniture(item.owner)) content.add(id);
+        entries.push({ block: id, owner: item.owner, spoken: spoken });
+      }
+      for (const heading of headings) heading.spoken = holosSpoken(heading.text);
+      const records = [];
+      entries.forEach((entry, index) => {
+        const heading = entry.heading;
+        if (!heading) return;
+        const record = { id: heading.id, level: heading.level, text: heading.text, furniture: heading.furniture,
+          spoken: heading.spoken, blocksBefore: heading.blocksBefore, section: [] };
+        records.push(record);
+        if (heading.furniture || !heading.spoken) return;
+        // The heading's own wrapper: its outermost ancestor holding nothing else spoken.
+        const own = weight.get(heading.element) || 0;
+        let wrapper = heading.element;
+        while (wrapper.parentElement && wrapper.parentElement !== root
+          && (weight.get(wrapper.parentElement) || 0) === own) {
+          wrapper = wrapper.parentElement;
+        }
+        for (let later = index + 1; later < entries.length; later++) {
+          const next = entries[later];
+          if (next.heading) {
+            if (next.heading.furniture || !next.heading.spoken) continue;
+            if (next.heading.level <= heading.level) break;
+            record.section.push({ heading: next.heading.id });
+          } else if (next.spoken && !wrapper.contains(next.owner)) {
+            record.section.push({ block: next.block, counts: !inFurniture(next.owner) });
+          }
+        }
+      });
+      return { headings: records, content: Array.from(content) };
+    }
+
+    // Returns `{ bylines }`: the ids of the headings Readability consumes as the byline.
+    function holosWatchReadability(reader) {
+      const bylines = new Set();
+      // `_grabArticle` asks only while it has no byline, and removes the node it accepts.
+      const byline = reader._isValidByline;
+      reader._isValidByline = function (node, matchString) {
+        const result = byline.call(this, node, matchString);
+        if (result) {
+          for (const element of [node, ...node.querySelectorAll("[data-holos-h]")]) {
+            if (element.hasAttribute("data-holos-h")) bylines.add(element.getAttribute("data-holos-h"));
+          }
+        }
+        return result;
+      };
+      return { bylines: bylines };
+    }
+
+    function holosRestoreHeadings(root, recorded, similarToTitle, byline, bylines) {
+      const doc = root.ownerDocument;
+      const headings = recorded.headings;
+      const content = new Set(recorded.content);
+      const bylineName = (text) => holosSanitized(text).toLowerCase().replace(/^by /, "");
+      const bylineText = byline ? bylineName(byline) : null;
+      // Whether anything spoken comes before `node` in `parent`, by the same walk that reads the article.
+      const spokenBefore = (node, parent) =>
+        holosArticleBlocks(parent, { skip: () => false, until: node }).some((block) => holosSpoken(block.text));
+      // The first element in the output with each mark.
+      const marked = (name) => {
+        const found = new Map();
+        for (const element of root.querySelectorAll("[" + name + "]")) {
+          const id = element.getAttribute(name);
+          if (!found.has(id)) found.set(id, element);
+        }
+        return found;
+      };
+      const blocks = marked("data-holos-b");
+      const kept = marked("data-holos-h");
+      // The first content block of the output, by document order on the page (block ids follow it).
+      let firstContent = Infinity;
+      for (const id of blocks.keys()) {
+        if (content.has(id)) firstContent = Math.min(firstContent, Number(id));
+      }
+      // As in Readability, only the first title-like h1 or h2 is the title (furniture included: the title often
+      // sits in a page-level header).
+      const title = headings.find((heading) => heading.level <= 2 && similarToTitle(heading.text));
+      const titleId = title && !(firstContent < title.blocksBefore) ? title.id : null;
+      // Later headings first, so a heading restored for a subsection is there when its parent heading looks.
+      for (let index = headings.length - 1; index >= 0; index--) {
+        const heading = headings[index];
+        if (heading.furniture || !heading.spoken || kept.has(heading.id) || heading.id === titleId) continue;
+        if (bylines.has(heading.id) || (bylineText && bylineName(heading.text) === bylineText)) continue;
+        if (!heading.section.some((entry) => entry.counts && blocks.has(entry.block))) continue;
+        let target = null;
+        for (const entry of heading.section) {
+          target = entry.heading !== undefined ? kept.get(entry.heading) : blocks.get(entry.block);
+          if (target) break;
+        }
+        const element = doc.createElement("h" + Math.max(heading.level, 2));
+        element.textContent = heading.text;
+        while (target.parentNode !== root && !spokenBefore(target, target.parentNode)) target = target.parentNode;
+        target.parentNode.insertBefore(element, target);
+        kept.set(heading.id, element);
       }
     }
     """#
@@ -470,19 +756,41 @@ import WebKit
     /// the same document), then yields to the page's event loop once before answering: a navigation the page had
     /// already scheduled (a script redirect, a meta refresh whose timer is due) is then decided before the answer
     /// arrives, and the extractor sees it.
-    private static let extractionScript = readabilitySource + "\n" + backMatterRemover + "\n" + blockWalker + "\n"
-        + refreshReader + #"""
+    private static let extractionScript = readabilitySource + "\n" + spokenPredicate + "\n" + backMatterRemover
+        + "\n" + headingRestorer
+        + "\n" + blockWalker + "\n" + refreshReader + #"""
 
     const holosDocument = { url: location.href, refresh: holosRefreshDelay(document) };
     let holosResult;
     try {
       const page = document.cloneNode(true);
       holosDropBackMatter(page);
-      const article = new Readability(page).parse();
+      const reader = new Readability(page);
+      const none = { headings: [], content: [] };
+      let headings = none;
+      let watched = { bylines: new Set() };
+      try {
+        headings = holosRecordHeadings(page, (element) => reader._isProbablyVisible(element),
+          Readability.prototype.UNLIKELY_ROLES);
+        watched = holosWatchReadability(reader);
+      } catch (error) {
+        // Readability's article as it is, without restored headings.
+        headings = none;
+      }
+      const article = reader.parse();
       if (!article) {
         holosResult = { found: false, title: document.title };
       } else {
-        const content = new DOMParser().parseFromString(article.content || "", "text/html");
+        const parse = () => new DOMParser().parseFromString(article.content || "", "text/html");
+        let content = parse();
+        try {
+          holosRestoreHeadings(content.body, headings,
+            (text) => reader._textSimilarity(article.title || "", text) > 0.75, article.byline, watched.bylines);
+        } catch (error) {
+          // Readability's article as it is, without restored headings.
+          content = parse();
+        }
+        holosClearMarks(content.body);
         holosResult = {
           found: true, title: article.title, byline: article.byline, siteName: article.siteName,
           lang: article.lang, blocks: holosArticleBlocks(content.body)
