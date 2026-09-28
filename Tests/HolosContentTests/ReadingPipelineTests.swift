@@ -679,6 +679,54 @@ import Testing
         }
     }
 
+    /// The readings folder is under `HOLOS_SUPPORT_DIR` as configured. Where the configured
+    /// spelling and Foundation's decomposed one name one folder (APFS), it is used; where they
+    /// name two (simulated: a volume that keeps NFC and NFD apart), it is refused.
+    @Test func theReadingsFolderIsTheConfiguredSupportFolder() throws {
+        let parent = try root()
+        defer { try? FileManager.default.removeItem(at: parent) }
+        // ASCII: the spellings agree, nothing to check.
+        let ascii = parent.path + "/Support"
+        #expect(try ReadingOutput.readingsRoot(support: URL(fileURLWithPath: ascii), configured: ascii, create: true).path
+            == ascii + "/Readings")
+        #expect(try ReadingOutput.readingsRoot(support: URL(fileURLWithPath: ascii), configured: nil, create: false).path
+            == ascii + "/Readings")
+        // APFS: the NFC folder, made as configured, is the one the decomposed spelling names.
+        let composed = parent.path + "/Caf\u{E9}"
+        let support = URL(fileURLWithPath: composed, isDirectory: true)
+        #expect(Data(support.path.utf8) != Data(composed.utf8))
+        #expect(throws: Never.self) {
+            _ = try ReadingOutput.readingsRoot(support: support, configured: composed, create: true)
+        }
+        #expect(RawFilePath.names(in: parent)?.map { Data($0.utf8) }.contains(Data("Caf\u{E9}".utf8)) == true)
+
+        // A volume that keeps them apart: the NFC spelling goes to a folder of its own.
+        let store = parent.appendingPathComponent("store")
+        try FileManager.default.createDirectory(at: store, withIntermediateDirectories: false)
+        let other = parent.path + "/Cr\u{E8}me"
+        let storePath = store.path
+        let volume: @Sendable (String) -> String = { path in
+            let bytes = Array(path.utf8), prefix = Array(other.utf8)
+            guard bytes.starts(with: prefix),
+                  bytes.count == prefix.count || bytes[prefix.count] == UInt8(ascii: "/") else { return path }
+            return storePath + String(decoding: bytes[prefix.count...], as: UTF8.self)
+        }
+        try RawFilePath.$volume.withValue(volume) {
+            let decomposed = URL(fileURLWithPath: other, isDirectory: true)
+            try FileManager.default.createDirectory(at: decomposed, withIntermediateDirectories: false)
+            do {
+                _ = try ReadingOutput.readingsRoot(support: decomposed, configured: other, create: true)
+                Issue.record("Two folders for one configured name should be refused.")
+            } catch HolosError.invalidInput(let message) {
+                #expect(message.contains("HOLOS_SUPPORT_DIR names"))
+            }
+            try FileManager.default.removeItem(at: decomposed)
+            #expect(throws: HolosError.self) {
+                _ = try ReadingOutput.readingsRoot(support: decomposed, configured: other, create: false)
+            }
+        }
+    }
+
     /// A folder whose ACL lets files be created but not removed (or renamed) is refused before
     /// anything is rendered, naming the test file it could not remove.
     @Test func aFolderThatKeepsItsFilesIsRefused() throws {
@@ -1012,8 +1060,8 @@ import Testing
     }
 
     /// A takeover guard held by a running process, or from another host, or that cannot be read,
-    /// refuses the takeover, naming the reservation and the guard, and both are kept. One left by
-    /// a process that has ended is removed, and the stale reservation taken over.
+    /// refuses the takeover, naming the reservation and the guard, and both are kept; so does one
+    /// left by a process that has ended, until it is deleted.
     @Test func aTakeoverGuardIsHonoredUnlessItsProcessHasEnded() throws {
         let parent = try root()
         defer { try? FileManager.default.removeItem(at: parent) }
@@ -1044,9 +1092,18 @@ import Testing
             try FileManager.default.removeItem(atPath: guardPath)
         }
 
-        try JSONEncoder().encode(
-            ReadingOutputReservation.Record(host: live.host, pid: try endedProcessID(), start: 1, uid: live.uid, created: 4)
-        ).write(to: URL(fileURLWithPath: guardPath))
+        // A guard whose run has ended is never removed by another run (two could interleave
+        // checking and removing it): it is refused, naming the file to delete.
+        let ended = try JSONEncoder().encode(
+            ReadingOutputReservation.Record(host: live.host, pid: try endedProcessID(), start: 1, uid: live.uid, created: 4))
+        try ended.write(to: URL(fileURLWithPath: guardPath))
+        let message = refusal { _ = try ReadingOutputReservation.acquire(path: path, output: output) }
+        #expect(message?.contains("stopped while taking over its reservation") == true)
+        #expect(message?.contains("delete \(guardPath)") == true)
+        #expect(try reservationFile(path).0 == stale)
+        #expect(try Data(contentsOf: URL(fileURLWithPath: guardPath)) == ended)
+        // Once it is deleted, the stale reservation is taken over.
+        try FileManager.default.removeItem(atPath: guardPath)
         do {
             let held = try ReadingOutputReservation.acquire(path: path, output: output)
             #expect(try reservationFile(path).0 == held.record)

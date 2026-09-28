@@ -517,7 +517,7 @@ import Testing
     /// `<!-->` and `<!--->` are whole comments, to the page's parser as to the charset prescan:
     /// what follows one, the body included, is read.
     @Test func abruptlyClosedCommentsEndAtOnce() {
-        for comment in ["<!-->", "<!--->"] {
+        for comment in ["<!-->", "<!--->", "<!-- note --!>", "<!----!>"] {
             #expect(paragraphs("<!doctype html>\(comment)<html><head><title>T</title></head><body>"
                 + "<p>Kept one.</p>\(comment)<p>Kept two.</p><!-- <p>not read</p> --><p>Kept three.</p></body></html>")
                 == ["Kept one.", "Kept two.", "Kept three."])
@@ -531,9 +531,15 @@ import Testing
         let marker = "data-holos-x-tag"
         #expect(HTMLReader.prepared("<!--><p>a</p><!---><!----><!-- b --><!-- c", nameAttribute: marker)
             == "<!----><p>a</p><!----><!----><!-- b --><!-- c")
-        for (text, end) in [("<!-->", 5), ("<!--->", 6), ("<!---->", 7), ("<!-- a -- b -->", 15), ("<!-- a", nil)] {
+        for (text, end) in [("<!-->", 5), ("<!--->", 6), ("<!---->", 7), ("<!-- a -- b -->", 15), ("<!-- a", nil),
+                            ("<!-- a --!>", 11), ("<!----!>", 8), ("<!-- a --!-->", 13), ("<!--!>", nil), ("<!---!>", nil)] {
             #expect(HTMLReader.commentEnd(in: Array(text.utf8), from: 0) == end, "\(text)")
         }
+        // Closed with `--!>`, a comment is written out with `-->`.
+        #expect(HTMLReader.prepared("<!-- a --!><p>b</p><!----!>", nameAttribute: marker) == "<!-- a --><p>b</p><!---->")
+        #expect(HTMLReader.declaredEncoding(Data("<!-- note --!><meta charset=shift_jis>".utf8))
+            == HTMLReader.encoding(named: "shift_jis"))
+        #expect(HTMLReader.encoding(named: "shift_jis") != nil)
     }
 
     /// The legacy forms of `<pre>` are preformatted code too, and are not read.
@@ -600,6 +606,24 @@ import Testing
         #expect(HTMLReader.Walker.hidesElement("DISPLAY: NONE"))
         #expect(HTMLReader.Walker.hidesElement("display:none;display:"))
         #expect(!HTMLReader.Walker.hidesElement("color: red"))
+    }
+
+    /// CSS escapes in names and values are decoded before a declaration is matched and
+    /// validated, as the browser's tokenizer decodes them.
+    @Test func inlineDisplayDecodesEscapes() {
+        #expect(HTMLReader.Walker.hidesElement(#"display:block; display:\6e one"#))
+        #expect(HTMLReader.Walker.hidesElement(#"display:block; display:n\6f ne"#))
+        #expect(HTMLReader.Walker.hidesElement(#"display:block; display:\00006Eone"#))
+        #expect(HTMLReader.Walker.hidesElement(#"display:block; \64isplay:none"#))
+        #expect(HTMLReader.Walker.hidesElement(#"display:block; di\splay:\none"#))
+        #expect(HTMLReader.Walker.hidesElement(#"display:none !\69mportant; display:block"#))
+        #expect(HTMLReader.Walker.hidesElement(#"--m\6f de:none; display:var(--mode)"#))
+        #expect(!HTMLReader.Walker.hidesElement(#"display:none; display:\62lock"#))
+        #expect(HTMLReader.InlineStyle.unescaped(#"\6e one"#) == "none")
+        #expect(HTMLReader.InlineStyle.unescaped("\\6e\r\none") == "none")
+        #expect(HTMLReader.InlineStyle.unescaped(#"\0 a\110000 \d800 b"#) == "\u{FFFD}a\u{FFFD}\u{FFFD}b")
+        #expect(HTMLReader.InlineStyle.unescaped("a\\") == "a\\")
+        #expect(paragraphs(#"<p style="display:block; display:\6e one">Hidden.</p><p>Shown.</p>"#) == ["Shown."])
     }
 
     /// A `display` with `var()` is valid as written and counts once its variables are

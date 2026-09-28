@@ -302,6 +302,32 @@ public enum ReadingOutput {
         }
     }
 
+    /// `<support>/Readings`, the folder reading caches go in. `support` is the support folder as
+    /// Foundation spells it (`HolosPaths.supportRoot`: names decomposed), the spelling every
+    /// cache operation (`FileManager`, the speech renderer) uses; `configured` is
+    /// `HOLOS_SUPPORT_DIR` as the environment spells it. On APFS and HFS+ both spellings name one
+    /// folder. On a volume that keeps NFC and NFD names apart they can be two, and the caches
+    /// would go to one the user did not name: that is refused, naming both. With `create`, a
+    /// missing configured folder is made first, spelled as configured; without it (a preview),
+    /// a configured folder that does not exist yet is not checked.
+    public static func readingsRoot(support: URL, configured: String?, create: Bool) throws -> URL {
+        let readings = support.appendingPathComponent("Readings", isDirectory: true)
+        guard let configured, !configured.isEmpty else { return readings }
+        let spelled = RawFilePath.url(configured, isDirectory: true)
+        guard Data(spelled.path.utf8) != Data(support.path.utf8) else { return readings }
+        if create { RawFilePath.makeFolders(spelled) }
+        var configuredInfo = stat(), supportInfo = stat()
+        guard stat(RawFilePath.system(spelled), &configuredInfo) == 0 else {
+            if create { throw HolosError.invalidInput("Support folder could not be created: \(spelled.path)") }
+            return readings
+        }
+        guard stat(support.path, &supportInfo) == 0, supportInfo.st_dev == configuredInfo.st_dev,
+              supportInfo.st_ino == configuredInfo.st_ino else {
+            throw HolosError.invalidInput("HOLOS_SUPPORT_DIR names \(spelled.path), but its volume keeps that name apart from its decomposed spelling \(support.path), which the reading cache would use. Name a folder without composed accents, or spell it decomposed.")
+        }
+        return readings
+    }
+
     private static func hashed(output: URL, identity: String, readingsRoot: URL,
                                volume: ReadingPathIdentity.VolumeQuery) -> ReadingLocation {
         let canonical = RawFilePath.resolvingFolder(of: output)
@@ -352,6 +378,16 @@ enum RawFilePath {
         let name = String(path[path.utf8.index(after: cut)...])
         guard let resolved = shownRealPath(folder.isEmpty ? "/" : folder) else { return Self.url(path) }
         return appending(name, to: Self.url(resolved, isDirectory: true))
+    }
+
+    /// Makes `folder` and every missing folder above it, each spelled as given (`mkdir -p`).
+    /// Failures are left for the caller's next check to report.
+    static func makeFolders(_ folder: URL) {
+        var prefix = ""
+        for part in folder.path.split(separator: "/", omittingEmptySubsequences: true) {
+            prefix += "/" + part
+            _ = mkdir(system(prefix), 0o755)
+        }
     }
 
     /// Whether `url` names a folder (links followed), asked with its spelling as given.

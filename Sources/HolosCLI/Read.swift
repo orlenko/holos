@@ -152,7 +152,10 @@ struct Read: AsyncParsableCommand {
             title: [request.title, document.title, fallbackName].lazy.compactMap(AudioBookMetadata.usableTitle).first,
             author: document.author, language: language)
         let name = ReadingOutput.fileName(title: metadata.title, fallback: fallbackName)
-        let readings = HolosPaths.supportRoot.appendingPathComponent("Readings", isDirectory: true)
+        // The support folder as configured, checked against the spelling the caches use.
+        let readings = try ReadingOutput.readingsRoot(support: HolosPaths.supportRoot,
+                                                      configured: ProcessInfo.processInfo.environment["HOLOS_SUPPORT_DIR"],
+                                                      create: !request.printText)
         let identity = ReadingPipeline.identity(script: script, voiceIdentifier: selected.id, rate: request.rate,
                                                 metadata: metadata)
         if request.printText {

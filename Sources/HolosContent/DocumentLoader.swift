@@ -705,8 +705,9 @@ public enum HTMLReader {
                     break
                 }
                 // Written out in full, so the parser reads the comment where the prescan does: an
-                // abruptly closed `<!-->` or `<!--->` becomes `<!---->`.
-                let text = index + 4 <= end - 3 ? bytes[(index + 4)..<(end - 3)] : []
+                // abruptly closed `<!-->` or `<!--->` becomes `<!---->`, and one closed with
+                // `--!>` ends with `-->`.
+                let text = commentText(in: bytes, from: index, to: end)
                 output += Array("<!--".utf8) + text + Array("-->".utf8)
                 index = end
                 continue
@@ -815,18 +816,30 @@ public enum HTMLReader {
         return String(decoding: output, as: UTF8.self)
     }
 
-    /// Where the comment whose `<!--` is at `start` ends: just past its `-->`, or nil when it
-    /// never ends. As HTML reads it, the dashes of `<!--` may close it too: `<!-->` and `<!--->`
-    /// are whole, empty comments. The charset prescan (`CharsetPrescan`) and `prepared` both
-    /// read comments by this rule, so neither takes text the other reads as a comment.
+    /// Where the comment whose `<!--` is at `start` ends: just past its `-->` or `--!>`, or nil
+    /// when it never ends. As HTML reads it, the dashes of `<!--` may close it too: `<!-->` and
+    /// `<!--->` are whole, empty comments; `--!>` ends one only after `<!--` (`<!--!>` does not).
+    /// The charset prescan (`CharsetPrescan`) and `prepared` both read comments by this rule, so
+    /// neither takes text the other reads as a comment.
     static func commentEnd(in bytes: [UInt8], from start: Int) -> Int? {
-        let dash = UInt8(ascii: "-"), greaterThan = UInt8(ascii: ">")
+        let dash = UInt8(ascii: "-"), bang = UInt8(ascii: "!"), greaterThan = UInt8(ascii: ">")
         var index = start + 2
         while index + 2 < bytes.count {
-            if bytes[index] == dash, bytes[index + 1] == dash, bytes[index + 2] == greaterThan { return index + 3 }
+            if bytes[index] == dash, bytes[index + 1] == dash {
+                if bytes[index + 2] == greaterThan { return index + 3 }
+                if index >= start + 4, index + 3 < bytes.count, bytes[index + 2] == bang,
+                   bytes[index + 3] == greaterThan { return index + 4 }
+            }
             index += 1
         }
         return nil
+    }
+
+    /// The text of the comment from `start` (its `<!--`) to `end` (see `commentEnd`), without
+    /// its `-->` or `--!>`; empty for `<!-->` and `<!--->`.
+    static func commentText(in bytes: [UInt8], from start: Int, to end: Int) -> ArraySlice<UInt8> {
+        let closing = end - start >= 8 && bytes[end - 2] == UInt8(ascii: "!") ? 4 : 3
+        return start + 4 <= end - closing ? bytes[(start + 4)..<(end - closing)] : []
     }
 
     private static func lowercased(_ byte: UInt8) -> UInt8 {
@@ -1303,16 +1316,59 @@ public enum HTMLReader {
         /// case; values are kept as written (a `var()` in one names a custom property).
         static func declaration(_ text: String) -> Declaration? {
             guard let colon = text.firstIndex(of: ":") else { return nil }
-            let property = propertyName(text[..<colon].trimmingCharacters(in: .whitespacesAndNewlines))
+            let property = propertyName(unescaped(text[..<colon].trimmingCharacters(in: .whitespacesAndNewlines)))
             var value = text[text.index(after: colon)...].trimmingCharacters(in: .whitespacesAndNewlines)
             var important = false
-            if let bang = value.lastIndex(of: "!"),
-               value[value.index(after: bang)...].trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "important" {
+            // `!important` as written: an escaped `!` is part of a name, not the flag.
+            if let bang = value.lastIndex(of: "!"), bang == value.startIndex || value[value.index(before: bang)] != "\\",
+               unescaped(value[value.index(after: bang)...].trimmingCharacters(in: .whitespacesAndNewlines))
+                   .lowercased() == "important" {
                 important = true
                 value = value[..<bang].trimmingCharacters(in: .whitespacesAndNewlines)
             }
+            value = unescaped(value).trimmingCharacters(in: .whitespacesAndNewlines)
             guard !property.isEmpty, !property.contains(where: \.isWhitespace), !value.isEmpty else { return nil }
             return Declaration(property: property, value: value, important: important)
+        }
+
+        /// `text` with its CSS escapes decoded, as the tokenizer reads them: a backslash and one
+        /// to six hex digits is that code point (zero, a surrogate, or one past U+10FFFF is
+        /// U+FFFD), one whitespace after the digits belongs to the escape, and a backslash before
+        /// any other character is that character. A backslash before a line break, or at the end,
+        /// is kept. So `\6e one` and `n\6f ne` are `none`.
+        static func unescaped(_ text: String) -> String {
+            guard text.contains("\\") else { return text }
+            let scalars = Array(text.unicodeScalars)
+            var result = String.UnicodeScalarView()
+            var index = 0
+            func isHex(_ scalar: Unicode.Scalar) -> Bool { scalar.isASCII && scalar.properties.isASCIIHexDigit }
+            while index < scalars.count {
+                let scalar = scalars[index]
+                guard scalar == "\\", index + 1 < scalars.count, !["\n", "\r", "\u{0C}"].contains(scalars[index + 1]) else {
+                    result.append(scalar)
+                    index += 1
+                    continue
+                }
+                index += 1
+                guard isHex(scalars[index]) else {
+                    result.append(scalars[index])
+                    index += 1
+                    continue
+                }
+                var value: UInt32 = 0
+                var digits = 0
+                while index < scalars.count, digits < 6, isHex(scalars[index]) {
+                    value = value * 16 + (UInt32(String(scalars[index]), radix: 16) ?? 0)
+                    digits += 1
+                    index += 1
+                }
+                result.append(value == 0 ? "\u{FFFD}" : Unicode.Scalar(value) ?? "\u{FFFD}")
+                // One whitespace after the digits ends the escape; "\r\n" counts as one.
+                if index < scalars.count, [" ", "\t", "\n", "\r", "\u{0C}"].contains(scalars[index]) {
+                    index += scalars[index] == "\r" && index + 1 < scalars.count && scalars[index + 1] == "\n" ? 2 : 1
+                }
+            }
+            return String(result)
         }
 
         /// The text split at semicolons outside quotes and brackets, so a `;` inside

@@ -775,13 +775,11 @@ final class ReadingOutputReservation {
     }
 
     /// Creates the takeover guard at `guardPath` holding `mine`, or refuses, naming the
-    /// reservation and its guard, while another run holds it. A guard whose run has ended on this
-    /// Mac (killed during its takeover) is removed and taken, as a stale reservation is, but
-    /// without a guard of its own: two runs that find one such guard at the same instant can both
-    /// go on (one may remove the guard the other just made). That takes a run killed within the
-    /// guard's lifetime (a few system calls) and two more starting within that instant; the
-    /// exclusive publication (`ReadingPublisher`) still keeps either from replacing the other's
-    /// finished file.
+    /// reservation and its guard, while another run holds it. A guard is never removed by a run
+    /// that did not make it, so there is no check-then-remove step for two runs to interleave in.
+    /// One whose run has ended (killed during its takeover, a few system calls long) is refused
+    /// like one that cannot be read: the message names the file to delete once no reading of the
+    /// output runs.
     private static func takeGuard(_ guardPath: String, reservation path: String, stale: Record, owner: uid_t,
                                   mine: Record, output: URL) throws {
         for _ in 0..<2 {
@@ -804,14 +802,8 @@ final class ReadingOutputReservation {
                 throw HolosError.unavailable("Another reading is already being made for \(output.path): process \(record.pid) of user ID \(record.uid) on \(computer(record)) is taking over its reservation \(path) (with \(guardPath)), which cannot be checked from here. If no reading of that file is running there, delete \(guardPath).")
             case .unreadable(let reason):
                 throw HolosError.unavailable("Another reading may be taking over the reservation \(path) of \(output.path): its takeover file \(guardPath) \(reason). If no reading of that file is running, delete \(guardPath).")
-            case .ended(let record, let guardOwner, let file):
-                var current = stat()
-                guard lstat(RawFilePath.system(guardPath), &current) == 0, current.st_dev == file.device,
-                      current.st_ino == file.inode else { continue }
-                guard unlink(RawFilePath.system(guardPath)) == 0 || errno == ENOENT else {
-                    let reason = String(cString: strerror(errno))
-                    throw HolosError.unavailable("A reading for \(output.path) that is no longer running (process \(record.pid) of \(userName(record.uid))) left the takeover file \(guardPath) beside its reservation \(path), and it cannot be removed here: \(reason). \(userName(guardOwner).capitalizedFirst), who owns it, or an administrator can delete it.")
-                }
+            case .ended(let record, let guardOwner, _):
+                throw HolosError.unavailable("A reading of \(output.path) (process \(record.pid) of \(userName(record.uid))) stopped while taking over its reservation \(path) and left the takeover file \(guardPath). If no reading of that file is running, delete \(guardPath) (\(userName(guardOwner)) owns it).")
             }
         }
         throw HolosError.unavailable("Another reading is already being made for \(output.path): its reservation \(path) is being taken over (with \(guardPath)).")
