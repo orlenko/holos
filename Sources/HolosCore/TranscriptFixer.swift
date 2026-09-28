@@ -66,13 +66,15 @@ public struct TranscriptFixer: Sendable {
         // they are work the chunk would otherwise wait for with no bound.
         let fixed: String, verdict: AIFixGuard.Verdict
         switch await Self.firstOf(timeout, { [model, corrections, referenceBudget, language] in
+            // One lexicon for the chunk: each distinct word asks the spell checker once.
+            let lexicon = Lexicon(language: language, taught: corrections.entries.map(\.meant))
             let reference = AIFixReference.select(from: corrections.entries, for: core, budget: referenceBudget,
-                                                  language: language)
+                                                  language: language, lexicon: lexicon)
             try Task.checkCancellation()
             let reply = try await model(Self.instructions(reference: reference), Self.prompt(for: core))
             let fixed = AIFixGuard.keepingEdges(of: core, in: AIFixGuard.sanitized(reply, for: core), isFinal: isFinal)
             let verdict = AIFixGuard.check(original: core, fixed: fixed, protecting: corrections.entries,
-                                           taught: reference, language: language)
+                                           taught: reference, language: language, lexicon: lexicon)
             try Task.checkCancellation()
             return (fixed, verdict)
         }) {
@@ -199,12 +201,16 @@ public enum AIFixGuard {
     /// correction's meant phrase, compared as lowercased words) must all still be there: the speaker taught them.
     /// Every replaced word must be a plausible mishearing of what replaces it (`plausible`), or part of a pair of
     /// `taught`, the learned corrections listed for the model, applied where its heard phrase was said
-    /// (`plausibleReply`), each word judged at its place: a pronoun, number, negation, modal, word of quantity or
-    /// name keeps what it says there (`plausible`). Negations, modals and words of quantity are also counted
+    /// (`plausibleReply`), each word judged at its place. A real word of the language (`lexicon`) is replaced only
+    /// by a listed homophone or such a pair ("bat" never becomes "bit", nor "want" "wanted"); a word the language
+    /// does not know ("bundu") may become a close one. A pronoun, number, negation, modal, word of quantity or name
+    /// keeps what it says there (`plausible`). Negations, modals and words of quantity are also counted
     /// (`SpokenWords.meaningWords`).
-    /// `language` (a locale identifier) says which function words, homophones and meaning words count.
+    /// `language` (a locale identifier) says which function words, homophones and meaning words count. `lexicon`
+    /// defaults to the system spell checker's for `language`, with the meant words of `corrections` and `taught`.
     public static func check(original: String, fixed: String, protecting corrections: [Correction] = [],
-                             taught: [Correction] = [], language: String? = nil) -> Verdict {
+                             taught: [Correction] = [], language: String? = nil, lexicon: Lexicon? = nil) -> Verdict {
+        let lexicon = lexicon ?? Lexicon(language: language, taught: (corrections + taught).map(\.meant))
         let original = original.trimmingCharacters(in: .whitespacesAndNewlines)
         let fixed = fixed.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !fixed.isEmpty else { return .reject(.empty) }
@@ -229,13 +235,14 @@ public enum AIFixGuard {
         }
         // A taught pair may bring its own marks where its heard phrase was said ("comment-free", "/qc").
         guard sameStructure(original)
-            || withTaughtPairs(original, taught: taught, language: language).contains(where: sameStructure)
+            || withTaughtPairs(original, taught: taught, language: language, lexicon: lexicon)
+                .contains(where: sameStructure)
         else { return .reject(.changedStructure) }
         let edits = editDistance(before, after)
         // The limits on words added or dropped and on edits count from the chunk with the taught pairs applied
         // (`plausibleReply`): a pair may expand its heard phrase by more than they allow.
         guard plausibleReply(original: original, fixed: fixed, before: before, after: after, taught: taught,
-                             language: language)
+                             language: language, lexicon: lexicon)
         else {
             if abs(after.count - before.count) > wordCountLimit(before.count) { return .reject(.wordCountChanged) }
             if edits > editLimit(before.count) { return .reject(.tooManyEdits) }
@@ -245,7 +252,7 @@ public enum AIFixGuard {
             }
             // Only a word that says who, how many, whether or which name was changed: the meaning.
             let spelling = plausibleReply(original: original, fixed: fixed, before: before, after: after,
-                                          taught: taught, language: language, protecting: false)
+                                          taught: taught, language: language, lexicon: lexicon, protecting: false)
             return .reject(spelling ? .changedMeaning : .implausibleSubstitution)
         }
         return .accept
@@ -317,12 +324,13 @@ public enum AIFixGuard {
     /// `maximumTaughtPlaces`, none overlapping) spelled as the pair's meant phrase, marks included: with "common free
     /// -> comment-free", "type comin free now" is "type comment-free now". Empty when no pair was said, and when its
     /// task is cancelled (the fixer's time limit).
-    static func withTaughtPairs(_ text: String, taught: [Correction], language: String?) -> [String] {
+    static func withTaughtPairs(_ text: String, taught: [Correction], language: String?, lexicon: Lexicon) -> [String] {
         let ranges = text.matches(of: wordPattern).map(\.range)
         var places: [(span: Range<Int>, meant: String)] = []
+        let finder = AIFixReference.Finder(text, language: language, lexicon: lexicon)
         for correction in taught {
             let meant = correction.meant.trimmingCharacters(in: .whitespacesAndNewlines)
-            for span in AIFixReference.matches(of: correction.heard, in: text, language: language)
+            for span in finder.matches(of: correction.heard)
             where !places.contains(where: { $0.span == span && $0.meant == meant }) {
                 places.append((span, meant))
             }
@@ -363,7 +371,9 @@ public enum AIFixGuard {
     /// cancelled task (the fixer's time limit) stops trying. `fixed` is the reply, for its names; `protecting`
     /// false judges spelling alone (`plausible`), to tell a change of meaning from an unrelated word.
     static func plausibleReply(original: String, fixed: String? = nil, before: [String], after: [String],
-                               taught: [Correction], language: String? = nil, protecting: Bool = true) -> Bool {
+                               taught: [Correction], language: String? = nil, lexicon: Lexicon? = nil,
+                               protecting: Bool = true) -> Bool {
+        let lexicon = lexicon ?? Lexicon(language: language, taught: taught.map(\.meant))
         func flags(_ found: [Bool]?, _ count: Int) -> [Bool] {
             found.flatMap { $0.count == count ? $0 : nil } ?? Array(repeating: false, count: count)
         }
@@ -387,7 +397,7 @@ public enum AIFixGuard {
                 return plausible(Array(old[hunk.old]), Array(new[hunk.new]),
                                  names: protecting ? (Array(oldNames[hunk.old]), Array(newNames[hunk.new])) : nil,
                                  left: left >= 0 ? start[left] : nil, right: right < start.count ? start[right] : nil,
-                                 language: language, protecting: protecting)
+                                 language: language, lexicon: lexicon, protecting: protecting)
             }
         }
         if allPlausible(from: before, names: beforeNames) { return true }
@@ -397,10 +407,11 @@ public enum AIFixGuard {
                                                      && $0.lowerBound <= span.upperBound) }
         }
         var places: [(span: Range<Int>, meant: [String], names: [Bool])] = []
+        let finder = AIFixReference.Finder(original, language: language, lexicon: lexicon)
         for correction in taught {
             let meant = words(in: correction.meant)
             let meantNames = flags(names(in: correction.meant, language: language, midSentence: true), meant.count)
-            for span in AIFixReference.matches(of: correction.heard, in: original, language: language)
+            for span in finder.matches(of: correction.heard)
             where touched(span) && !places.contains(where: { $0.span == span && $0.meant == meant }) {
                 places.append((span, meant, meantNames))
             }
@@ -430,11 +441,13 @@ public enum AIFixGuard {
 
     /// Whether `new` could replace `old`, between the words `left` and `right` of the original, as a fix of a
     /// mishearing. Nothing is allowed but what is listed, each at its place: `old` and `new` must line up, in
-    /// order, as words kept but for their case; one word replaced by one (`SpokenWords.mayReplace`: close words, and
-    /// a negation, modal, quantity, pronoun or number only by the same one or a listed homophone); one word split in
-    /// two or three or joined from them (`SpokenWords.isCloseSplit`), saying together what they said
-    /// (`SpokenWords.Meaning.all`); a number said in words written in digits or the reverse, with the same value
-    /// (`SpokenWords.numberValue`: "twenty one" and "21"); glue words added (`SpokenWords.isGlue`: "the", "to",
+    /// order, as words kept but for their case; one word replaced by one (`SpokenWords.mayReplace`: a real word of
+    /// `lexicon` only by a listed homophone, a word it does not know by a close word, and a negation, modal,
+    /// quantity, pronoun or number only by the same one or a listed homophone); one word split in two or three or
+    /// joined from them (`SpokenWords.isCloseSplit`), saying together what they said (`SpokenWords.Meaning.all`),
+    /// with other letters only where a word `lexicon` does not know is split or joined with glue words ("a bundu"
+    /// and "ubuntu", not "a line" and "alone"); a number said in words written in digits or the reverse, with the
+    /// same value (`SpokenWords.numberValue`: "twenty one" and "21"); glue words added (`SpokenWords.isGlue`: "the", "to",
     /// "de"); and glue words, hesitations (`FillerWords.isFiller`: "um", not the "mm" of "10 mm") or a stutter ("I
     /// I", "build build", not "no no" nor "10 10", `SpokenWords.keepsRepeats`) dropped. `names` flags the words of
     /// each side that may be names (`names(in:)`): a name changes only in case or with the same letters ("Jai" and
@@ -444,8 +457,9 @@ public enum AIFixGuard {
     /// `protecting` false judges spelling alone: close words (any number for another), splits and joins, glue and
     /// repeats, without meanings or names.
     static func plausible(_ old: [String], _ new: [String], names: (old: [Bool], new: [Bool])? = nil,
-                          left: String? = nil, right: String? = nil, language: String? = nil,
+                          left: String? = nil, right: String? = nil, language: String? = nil, lexicon: Lexicon? = nil,
                           protecting: Bool = true) -> Bool {
+        let lexicon = lexicon ?? Lexicon(language: language)
         let none = (old: Array(repeating: false, count: old.count), new: Array(repeating: false, count: new.count))
         let names = protecting ? names ?? none : none
         let isGlue = { SpokenWords.isGlue($0, language: language) }
@@ -460,13 +474,19 @@ public enum AIFixGuard {
                     return numbers || SpokenWords.isClose(a[0], b[0], language: language)
                 }
                 if named && SpokenWords.letters(a[0]) != SpokenWords.letters(b[0]) { return false }
-                return SpokenWords.mayReplace(a[0], with: b[0], language: language)
+                return SpokenWords.mayReplace(a[0], with: b[0], language: language, isWord: lexicon.isWord(a[0]))
             }
             if a.count == 1 && SpokenWords.expands(a[0], to: b, language: language)
                 || b.count == 1 && SpokenWords.expands(b[0], to: a, language: language) { return true }
             guard SpokenWords.isCloseSplit(a.joined(), b.joined()) else { return false }
             guard protecting else { return true }
-            if named && SpokenWords.letters(a.joined()) != SpokenWords.letters(b.joined()) { return false }
+            if SpokenWords.letters(a.joined()) != SpokenWords.letters(b.joined()) {
+                // Only spacing may change for a name or a real word; a word the language does not know may be
+                // split, or joined with glue words ("a bundu" and "ubuntu"), but "a line" is not "alone".
+                if named { return false }
+                guard a.contains(where: { !lexicon.isWord($0) }),
+                      a.allSatisfy({ !lexicon.isWord($0) || isGlue($0) }) else { return false }
+            }
             return a.flatMap { SpokenWords.meaning(of: $0, language: language).all }.sorted()
                 == b.flatMap { SpokenWords.meaning(of: $0, language: language).all }.sorted()
         }
@@ -734,8 +754,9 @@ public enum AIFixReference {
     /// fixer's time limit). `language` (a locale identifier) says which function words count
     /// (`SpokenWords.isContent`).
     public static func select(from entries: [Correction], for text: String, budget: Int,
-                              language: String? = nil) -> [Correction] {
-        let finder = Finder(text, language: language)
+                              language: String? = nil, lexicon: Lexicon? = nil) -> [Correction] {
+        let finder = Finder(text, language: language,
+                            lexicon: lexicon ?? Lexicon(language: language, taught: entries.map(\.meant)))
         var remaining = budget
         var chosen: [Correction] = []
         for entry in entries.reversed() {
@@ -749,14 +770,16 @@ public enum AIFixReference {
     }
 
     /// Where `heard` was said in `text`, as ranges of its words (`AIFixGuard.words`): every word of the phrase, in
-    /// order and next to each other, its content words (`SpokenWords.isContent`) as they are or misheard again a
-    /// little differently (`SpokenWords.isVariant`: "a bundu" for "a Bundo") and its other words exactly, with the
-    /// same marks that end a phrase between them as the heard phrase has, usually none, and those it has at its
-    /// edges ("bull." is not said in "a bull request") (`Spoken`). Part of a phrase
+    /// order and next to each other, its content words (`SpokenWords.isContent`) as they are or, where the text's
+    /// word is not a real word (`lexicon`, by default the spell checker's for `language`), misheard again a little
+    /// differently (`SpokenWords.isVariant`: "a bundu" for "a Bundo", never "bat" for "bit") and its other words
+    /// exactly, with the same marks that end a phrase between them as the heard phrase has, usually none, and those
+    /// it has at its edges ("bull." is not said in "a bull request") (`Spoken`). Part of a phrase
     /// is not the phrase: "the basement" is not "this basement", "slash help" not "slash QC", "use bundu" not "a
     /// Bundo", and "the bull. Request access" does not say "bull request".
-    public static func matches(of heard: String, in text: String, language: String? = nil) -> [Range<Int>] {
-        Finder(text, language: language).matches(of: heard)
+    public static func matches(of heard: String, in text: String, language: String? = nil,
+                               lexicon: Lexicon? = nil) -> [Range<Int>] {
+        Finder(text, language: language, lexicon: lexicon ?? Lexicon(language: language)).matches(of: heard)
     }
 
     /// A text's words (`AIFixGuard.words`) and, for each, the marks that end a phrase just before it ("" for none):
@@ -797,26 +820,31 @@ public enum AIFixReference {
     final class Finder {
         let text: Spoken
         let language: String?
+        let lexicon: Lexicon
         private let positions: [String: [Int]]
         private let features: [String: SpokenWords.Features]
         private var said: [String: Set<Int>] = [:]
 
-        init(_ text: String, language: String?) {
+        init(_ text: String, language: String?, lexicon: Lexicon) {
             let spoken = Spoken(text)
             self.text = spoken
             self.language = language
+            self.lexicon = lexicon
             positions = Dictionary(grouping: spoken.words.indices, by: { spoken.words[$0] })
             features = Dictionary(uniqueKeysWithValues: positions.keys.map { ($0, SpokenWords.Features($0)) })
         }
 
-        /// Where `word`, a word of a heard phrase, was said: as it is, or for a content word, as a variant.
+        /// Where `word`, a word of a heard phrase, was said: as it is (as `AIFixGuard.words`), or for a content
+        /// word, as a variant where the text's word is not a real word (`Lexicon`): "a bundu" says "a Bundo", while
+        /// "bat" never says "bit", nor "unable" "enable": a real word says only itself.
         func positions(of word: String) -> Set<Int> {
             if let known = said[word] { return known }
             var found = Set(positions[word] ?? [])
             if SpokenWords.isContent(word, language: language) {
                 let heard = SpokenWords.Features(word)
                 for (other, at) in positions where other != word
-                    && SpokenWords.isVariant(features[other]!, of: heard, language: language) {
+                    && SpokenWords.isVariant(features[other]!, of: heard, language: language)
+                    && !lexicon.isWord(other) {
                     found.formUnion(at)
                 }
             }

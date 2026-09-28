@@ -174,8 +174,8 @@ import Testing
 @Test func fixerKeepsTheEdgesOfAChunkThatMayContinue() async {
     let quoted = await fixer { _, _ in "“Hello there.”" }.fix(" “hello there”", isFinal: false)
     #expect(quoted == .init(text: " “hello there”", outcome: .unchanged))
-    let fixed = await fixer { _, _ in "He called it “great.”" }.fix(" he cold it “great”", isFinal: false)
-    #expect(fixed == .init(text: " he called it “great”", outcome: .fixed))
+    let fixed = await fixer { _, _ in "He knew it “great.”" }.fix(" he new it “great”", isFinal: false)
+    #expect(fixed == .init(text: " he knew it “great”", outcome: .fixed))
     let middle = await fixer { _, _ in "They're going to review it tomorrow." }
         .fix(" their going to review it tomorrow", isFinal: false)
     #expect(middle == .init(text: " they're going to review it tomorrow", outcome: .fixed))
@@ -260,7 +260,9 @@ let taughtList = [
     #expect(selected("attach to my timox sessions") == ["Timok's sessions", "Timox sessions"])
     // One session is not several: a pair taught for the plural is not said by the singular.
     #expect(selected("attach to my timox session").isEmpty)
-    #expect(selected("open a T-Mix session") == ["T-Mox", "T-Max", "T-Mux"])
+    #expect(selected("open a T-Mux session") == ["T-Mox", "T-Max", "T-Mux"])
+    // A real word is not a heard word misheard again: "mix" says "mix", not "Max" nor "Mux".
+    #expect(selected("open a T-Mix session").isEmpty)
     // A phrase of function words only must be said as it is.
     #expect(selected("This is fine") == ["This is"])
     #expect(selected("this was fine").isEmpty)
@@ -378,7 +380,7 @@ let unrelatedWords = [
         == .reject(.implausibleSubstitution))
     #expect(AIFixGuard.check(original: "the internationalisation", fixed: "the internationalization Ubuntu")
         == .reject(.implausibleSubstitution))
-    #expect(AIFixGuard.check(original: "internationalisation windows", fixed: "internationalization windows")
+    #expect(AIFixGuard.check(original: "internationalizaton windows", fixed: "internationalization windows")
         == .accept)
     // A word split or joined is still one fix.
     #expect(AIFixGuard.check(original: "add a semi colon here", fixed: "add a semicolon here") == .accept)
@@ -601,12 +603,95 @@ func aMishearingIsFixed(original: String, fixed: String) {
             "\(original) -> \(fixed)")
 }
 
+/// A real word replaced by another real word that is not a listed homophone says something else, however close
+/// they sound: one tense, number, vowel or preposition for another. No taught pair was said there.
+@Test(arguments: [
+    ("Clean the tooth now", "Clean the teeth now"), ("The goose is loose", "The geese is loose"),
+    ("We want it", "We wanted it"), ("We need it", "We needed it"), ("We start it", "We started it"),
+    ("We should increase the limit", "We should decrease the limit"), ("Turn left here", "Turn lift here"),
+    ("Use the bat now", "Use the bit now"), ("Fill in the form now", "Fill in the from now"),
+    ("It came from Paris", "It came form Paris"), ("He cold it", "He called it"),
+    ("Open the food requests", "Open the pool requests"), ("Let's develop it on Windows", "Let's develop it on Ubuntu"),
+    ("I sent a bulk request", "I sent a pull request"), ("Please install it", "Please uninstall it"),
+])
+func aRealWordIsNotSwappedForAnother(original: String, fixed: String) {
+    #expect(AIFixGuard.check(original: original, fixed: fixed, language: "en-US") != .accept, "\(original) -> \(fixed)")
+    #expect(AIFixGuard.check(original: original, fixed: fixed) != .accept, "\(original) -> \(fixed)")
+}
+
+/// What the dictionary-word rule lets through: a word the language does not know replaced by a close one, a taught
+/// pair where its heard phrase was said, a listed homophone, and spelling, spacing or numbers written another way.
+@Test(arguments: [
+    // Words the language does not know.
+    ("open a timux session", "open a tmux session"), ("it runs onobunto", "it runs on ubuntu"),
+    ("it runs on a bundu", "it runs on ubuntu"), ("fix the wordz", "fix the words"),
+    // Taught pairs (the speaker's list): "Onobunto" and "Uguntu" start with a capital, so only their pair fixes them.
+    ("The build runs Onobunto.", "The build runs on Ubuntu."), ("The server runs Uguntu.", "The server runs Ubuntu."),
+    ("Open the food requests on GitHub.", "Open the pool requests on GitHub."),
+    // Homophones.
+    ("Number won is done.", "Number one is done."), ("Please right it down.", "Please write it down."),
+    ("I went their yesterday", "I went there yesterday"), ("I would like to by it", "I would like to buy it"),
+    // Case, apostrophes, spacing and numbers.
+    ("Its done", "It's done"), ("a semi colon", "a semicolon"), ("Set width ten height 20.", "Set width 10 height 20."),
+])
+func aMishearingOfANonWordOrAHomophoneIsFixed(original: String, fixed: String) {
+    #expect(AIFixGuard.check(original: original, fixed: fixed, protecting: taughtList, taught: taughtList,
+                             language: "en-US") == .accept, "\(original) -> \(fixed)")
+}
+
+@Test(arguments: [
+    ("Il prend ces affaires", "Il prend ses affaires"), ("Il est a Paris", "Il est à Paris"),
+    ("Je pense que ces une bonne idée", "Je pense que c'est une bonne idée"), ("je peut venir", "je peux venir"),
+    ("chambre quatre-vingt-dix-huit", "chambre 98"), ("il a dix-sept ans", "il a 17 ans"),
+])
+func aFrenchHomophoneOrNumberIsFixed(original: String, fixed: String) {
+    #expect(AIFixGuard.check(original: original, fixed: fixed, language: "fr-FR") == .accept, "\(original) -> \(fixed)")
+}
+
+@Test func aTaughtPairMatchesARealWordOnlyAsItIs() {
+    // A fuzzy match needs a word the language does not know: "bat" is a word, so "bit -> byte" is not said there.
+    let byte = Correction(heard: "bit", meant: "byte")
+    #expect(AIFixReference.matches(of: "bit", in: "Use the bat now", language: "en-US").isEmpty)
+    #expect(AIFixReference.select(from: [byte], for: "Use the bat now", budget: 1_000, language: "en-US").isEmpty)
+    #expect(AIFixGuard.check(original: "Use the bat now", fixed: "Use the byte now", taught: [byte], language: "en-US")
+        != .accept)
+    // Said as it is, the pair applies.
+    #expect(AIFixGuard.check(original: "Use the bit now", fixed: "Use the byte now", taught: [byte], language: "en-US")
+        == .accept)
+    // A word the language does not know still matches a heard word misheard again ("a bundu" for "a Bundo").
+    #expect(AIFixReference.matches(of: "a Bundo", in: "it runs on a bundu", language: "en-US") == [3..<5])
+    let pool = Correction(heard: "food requests", meant: "pool requests")
+    #expect(AIFixReference.matches(of: "food requests", in: "open the good requests", language: "en-US").isEmpty)
+    #expect(AIFixReference.matches(of: "food requests", in: "open the fuud requests", language: "en-US") == [2..<4])
+    #expect(AIFixGuard.check(original: "open the good requests", fixed: "open the pool requests", taught: [pool],
+                             language: "en-US") != .accept)
+}
+
+@Test func theLexiconKnowsTheLanguagesWordsNamesAndTaughtSpellings() {
+    let english = Lexicon(language: "en-US", taught: ["the nudger", "Jev model"])
+    for word in ["bat", "teeth", "wanted", "windows", "ubuntu", "mary", "don't", "10", "jev"] {
+        #expect(english.isWord(word), "\(word)")
+    }
+    for word in ["bundu", "onobunto", "uguntu", "timux", "wordz"] { #expect(!english.isWord(word), "\(word)") }
+    let french = Lexicon(language: "fr-FR")
+    #expect(french.isWord("c'est") && french.isWord("peux") && !french.isWord("bundu"))
+    // Without a dictionary for the language, every word is real: only homophones and taught pairs change words.
+    #expect(SystemSpelling.dictionaries(for: "zz-ZZ") == nil && SystemSpelling.dictionaries(for: "en-US") != nil)
+    #expect(Lexicon(language: "zz-ZZ").isWord("bundu"))
+    let fake = Lexicon(lookup: { _ in false })
+    #expect(!fake.isWord("bat") && fake.isWord("3pm"))
+    #expect(AIFixGuard.check(original: "it runs onobunto", fixed: "it runs on ubuntu", language: "en-US",
+                             lexicon: Lexicon(lookup: { _ in true })) != .accept)
+    #expect(AIFixGuard.check(original: "it runs onobunto", fixed: "it runs on ubuntu", language: "en-US",
+                             lexicon: fake) == .accept)
+}
+
 @Test func taughtPairsApplyBeforeTheLimitsAndMeaningCounts() {
     // A pair whose heard phrase holds a word of quantity: the reply is judged with the pair applied.
     let allstate = Correction(heard: "all state", meant: "Allstate")
-    #expect(AIFixGuard.check(original: "I called all stat today", fixed: "I called Allstate today",
+    #expect(AIFixGuard.check(original: "I called all stayt today", fixed: "I called Allstate today",
                              taught: [allstate]) == .accept)
-    #expect(AIFixGuard.check(original: "I called all stat today", fixed: "I called Allstate today")
+    #expect(AIFixGuard.check(original: "I called all stayt today", fixed: "I called Allstate today")
         == .reject(.changedMeaning))
     // A pair may add more words than the limit lets a reply add by itself.
     let server = Correction(heard: "server", meant: "production web server")
@@ -623,9 +708,25 @@ func aMishearingIsFixed(original: String, fixed: String) {
     #expect(SpokenWords.numberValue(["ten", "twenty"], language: "en-US") == nil)
     #expect(AIFixGuard.check(original: "chambre vingt et un", fixed: "chambre 21", language: "fr-FR") == .accept)
     #expect(AIFixGuard.check(original: "chambre quatre-vingt-dix", fixed: "chambre 90", language: "fr-FR") == .accept)
+    // Seventeen to nineteen are said as ten and a unit, alone or after sixty and eighty.
+    for (said, value) in [("quatre-vingt-dix-huit", 98), ("dix-sept", 17), ("soixante-dix-neuf", 79),
+                          ("quatre-vingt-dix-sept", 97), ("cent dix-huit", 118), ("soixante et onze", 71)] {
+        #expect(SpokenWords.numberValue(AIFixGuard.words(in: said.replacingOccurrences(of: "-", with: " ")),
+                                        language: "fr-FR") == value, "\(said)")
+    }
+    #expect(AIFixGuard.check(original: "chambre quatre-vingt-dix-huit", fixed: "chambre 98", language: "fr-FR")
+        == .accept)
+    #expect(AIFixGuard.check(original: "chambre quatre-vingt-dix-huit", fixed: "chambre 99", language: "fr-FR")
+        != .accept)
+    // Only "dix" takes a unit after it: "onze sept" and "ten seven" are two numbers.
+    #expect(SpokenWords.numberValue(["onze", "sept"], language: "fr-FR") == nil)
+    #expect(SpokenWords.numberValue(["ten", "seven"], language: "en-US") == nil)
+    #expect(SpokenWords.numberValue(["dix", "deux"], language: "fr-FR") == nil)
     #expect(AIFixGuard.check(original: "pages 1-2", fixed: "pages 1 2") == .reject(.changedStructure))
-    // A heard word is not said by its opposite: a pair taught for "enable" does not replace "unable".
-    #expect(!SpokenWords.isVariant("unable", of: "enable") && !SpokenWords.isVariant("uninstall", of: "install"))
+    // A heard word is not said by its opposite: "unable" is a real word, so a pair taught for "enable" does not
+    // replace it.
+    #expect(AIFixReference.matches(of: "enable", in: "unable").isEmpty)
+    #expect(AIFixReference.matches(of: "install", in: "uninstall").isEmpty)
     let enable = Correction(heard: "enable to access", meant: "able to access")
     #expect(AIFixReference.select(from: [enable], for: "Users are unable to access files", budget: 1_000).isEmpty)
     #expect(AIFixGuard.check(original: "Users are unable to access files", fixed: "Users are able to access files",
@@ -713,8 +814,8 @@ func aMishearingIsFixed(original: String, fixed: String) {
     #expect(SpokenWords.isContent("son", language: "en-US") && !SpokenWords.isContent("son", language: "fr_CA"))
     #expect(!SpokenWords.isContent("son") && !SpokenWords.isContent("the", language: "en-US"))
     let son = Correction(heard: "son called", meant: "Sean called")
-    #expect(AIFixReference.select(from: [son], for: "my sun called", budget: 1_000, language: "en-US") == [son])
-    #expect(AIFixReference.select(from: [son], for: "my sun called", budget: 1_000, language: "fr-FR").isEmpty)
+    #expect(AIFixReference.select(from: [son], for: "my sonn called", budget: 1_000, language: "en-US") == [son])
+    #expect(AIFixReference.select(from: [son], for: "my sonn called", budget: 1_000, language: "fr-FR").isEmpty)
     let taught = CorrectionList(entries: [Correction(heard: "sun", meant: "son")])
     #expect(taught.vocabulary(language: "en-GB") == ["son"])
     #expect(taught.vocabulary(language: "fr-FR").isEmpty && taught.vocabulary.isEmpty)
@@ -946,7 +1047,7 @@ private func fixer(corrections: CorrectionList = CorrectionList(), timeout: Dura
     #expect(seenInstructions.withLock { $0 } == TranscriptFixer.baseInstructions)
     // Other words may still be fixed around it.
     let kept = await fixer(corrections: corrections) { _, _ in "I opened a pull request on GitHub" }
-        .fix("I opened a bull request on GitHub", isFinal: false)
+        .fix("I opened a bul request on GitHub", isFinal: false)
     #expect(kept == .init(text: "I opened a pull request on GitHub", outcome: .fixed))
     // Where the heard phrase is said, the pair is listed and the model may apply it.
     let listed = await fixer(corrections: corrections) { instructions, _ in
@@ -970,7 +1071,7 @@ private func fixer(corrections: CorrectionList = CorrectionList(), timeout: Dura
     let shifted = await fixer(corrections: chain) { _, _ in "bar is open now to" }
         .fix("the bar is open now", isFinal: false)
     #expect(shifted == .init(text: "bar is open now to", outcome: .fixed))
-    let twin = await fixer(corrections: chain) { _, _ in "bar bar" }.fix("barr bar", isFinal: true)
+    let twin = await fixer(corrections: chain) { _, _ in "bar bar" }.fix("bahr bar", isFinal: true)
     #expect(twin == .init(text: "bar bar", outcome: .fixed))
 }
 
@@ -978,7 +1079,7 @@ private func fixer(corrections: CorrectionList = CorrectionList(), timeout: Dura
     let corrections = [Correction(heard: "bull request", meant: "pull request")]
     #expect(AIFixGuard.check(original: "a pull request and a pull request", fixed: "a pull request and a full request",
                              protecting: corrections) == .reject(.changedCorrection))
-    #expect(AIFixGuard.check(original: "a pull request and a bull", fixed: "a pull request and a pull",
+    #expect(AIFixGuard.check(original: "a pull request and a bul", fixed: "a pull request and a pull",
                              protecting: corrections) == .accept)
     #expect(AIFixGuard.check(original: "no such wordz here", fixed: "no such words here",
                              protecting: corrections) == .accept)

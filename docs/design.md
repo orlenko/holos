@@ -384,24 +384,31 @@ The opt-in misheard-word fix (`TranscriptFixer`) shows Apple's on-device model o
 the learned pairs whose whole heard phrase is in the chunk, word for word and in
 order, with no sentence or clause mark, line break, bracket or quote between its
 words: its function words exactly, and each content word (not a function word of the
-language dictated, English or French, and at least three letters) as is or misheard
-again a little differently
-(its plural, or the same pronunciation key and half the letters the same: "a bundu"
-says "a Bundo"; "a point", "a band" and "bulk request" for "bull request" do not). Sharing a word like "a" or "on", part of the phrase, or a word of the meant side
+language dictated, English or French, and at least three letters) as is or, where the
+chunk's word is not a real word, misheard again a little differently (the same
+pronunciation key and half the letters the same: "a bundu" says "a Bundo"; "a point",
+"a band" and "bulk request" for "bull request" do not, nor "bat" for "bit"). Sharing a word like "a" or "on", part of the phrase, or a word of the meant side
 does not count: listed that way, "a Bundo -> ubuntu" and "Onobunto -> on Ubuntu" made
 the model turn "on a Windows machine" into "on a Ubuntu machine". Each text word is
 compared once with each distinct heard word, and the choice and the guard run inside
 the fix's time limit. The guard then refuses any reply that replaces a word with one it could not
-have been misheard for, or adds a word other than a function word. A replacement
-passes when the words are close (the same letters; homophones such as "one" and "won";
-the same pronunciation key, with silent letters dropped, such as "write" and "right";
-in French the same silent endings, such as "peut" and "peux"; or the same rough
-consonants with half the letters the same, such as "cold" and "called"; spelling alone
-never, so "increase" is not "decrease" nor "file" "files", and never a word and its opposite
-by a prefix, such as "intended" and "unintended"; words replaced together are judged
-one by one, and a word split or joined by its shorter side), or when the reply is the chunk
-with listed pairs applied where their heard phrases were said, plus such close
-changes: "their food requests" may become "there pool requests". So no taught or
+have been misheard for, or adds a word other than a function word. Whether a word may
+be replaced depends first on whether it is a real word: one the system spell checker
+knows in the dictation language (lowercased or capitalized, so names such as "Mary"
+count), a word with a digit, or a word of a meant phrase the speaker taught. A real word
+says something, so it is replaced only by a listed homophone of the language ("their",
+"there" and "they're", "right" and "write", "one" and "won", "by" and "buy"; "ces" and
+"ses", "peut" and "peux") or by a listed pair said there: "bat" never becomes "bit",
+"want" "wanted", "tooth" "teeth", "left" "lift", "form" "from" nor "increase"
+"decrease", however alike they sound. A word the language does not know ("Onobunto",
+"bundu", "timux") is a mishearing, and may become a close word (the same letters,
+homophones, the same pronunciation key with silent letters dropped, or the same rough
+consonants with half the letters the same), split or joined with glue words ("a bundu"
+and "ubuntu"). Words replaced together are judged one by one, and a word split or
+joined by its shorter side. A reply also passes when it is the chunk with listed pairs
+applied where their heard phrases were said, plus such changes: "their food requests"
+may become "there pool requests". Without a spell checker dictionary for the language,
+every word counts as real. The spell checker is asked once per distinct word of a chunk. So no taught or
 invented spelling lands on unrelated words, or next to the heard phrase. The guard
 denies by default and judges each word at its place, lining the chunk's words up with
 the reply's in order: a word may keep its spelling but for case, be replaced by a close
