@@ -239,13 +239,20 @@ public enum SpokenWords {
     /// "nonblocking", "misread", "inconnu", "désactivé", "mécontent".
     static let negativePrefixes = ["un", "in", "im", "il", "ir", "dis", "non", "mis", "anti", "dé", "dés", "mé"]
 
+    /// Prefixes a word of `negativePrefixes` may be set against: "enable" and "unable", "export" and "import".
+    static let otherPrefixes = ["en", "em", "ex", "re"]
+
     /// Whether one of `a` and `b` is the other, or said like it (`isClose`), behind a prefix of `negativePrefixes`
-    /// the other does not have: "unencripted" and "encrypted", "uninsurred" and "insured".
+    /// the other does not have, the other bare or behind another prefix: "unencripted" and "encrypted", "uninsurred"
+    /// and "insured", "uneble" and "enable".
     static func changesPolarity(_ a: String, _ b: String, language: String?) -> Bool {
         for (one, other) in [(a, b), (b, a)] {
             for prefix in negativePrefixes where one.hasPrefix(prefix) && !other.hasPrefix(prefix) {
                 let rest = String(one.dropFirst(prefix.count))
-                if rest.count >= 3 && isClose(rest, other, language: language) { return true }
+                guard rest.count >= 3 else { continue }
+                let stems = [other] + (negativePrefixes + otherPrefixes).filter { other.hasPrefix($0) }
+                    .map { String(other.dropFirst($0.count)) }.filter { $0.count >= 3 }
+                if stems.contains(where: { isClose(rest, $0, language: language) }) { return true }
             }
         }
         return false

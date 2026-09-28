@@ -257,9 +257,10 @@ public enum AIFixGuard {
         var words: [String] = []
         /// `gaps[i]` is the text before word i, `gaps[raw.count]` the text after the last word.
         var gaps: [String] = []
-        /// Words in a unit, number, address, path or identifier: a run of characters without spaces that has a digit,
-        /// "@", "/", "\", "." or "_" inside ("5mW", "team@right.com", "/tmp/site.py", "v1.2"), or a word with a
-        /// capital past its first letter ("GitHub", "QC", "mW"). Only a taught pair may change them.
+        /// Words in a unit, number, address, path, tag, option or identifier: a run of characters without spaces
+        /// that has a digit or a symbol ("@", "/", "\", ".", "_", "#", "$", "=" and the like) inside or starts with
+        /// "-" ("5mW", "team@right.com", "/tmp/site.py", "v1.2", "#right", "--right"), or a word with a capital past
+        /// its first letter ("GitHub", "QC", "mW"). Only a taught pair may change them.
         var structured: [Bool] = []
         /// Words that may be names (`AIFixGuard.names`).
         var names: [Bool] = []
@@ -297,7 +298,7 @@ public enum AIFixGuard {
             // Quotes, brackets and the marks that end a clause belong to the sentence, not the token.
             while let first = run.first, "([{\"'“‘«¿¡".contains(first) { run = run.dropFirst() }
             while let last = run.last, ".,;:!?…)]}\"'”’»".contains(last) { run = run.dropLast() }
-            return run.contains { $0.isNumber || "@/\\._".contains($0) }
+            return run.first == "-" || run.contains { $0.isNumber || "@/\\._#$%&=+~`<>|*^[]{}".contains($0) }
         }
     }
 
@@ -380,7 +381,8 @@ public enum AIFixGuard {
             let meant = place.meant
             var result = tokens
             let before = dropping(suffix: place.heard.breaks[0], of: tokens.gaps[start]) + meant.gaps[0]
-            let after = meant.gaps[meant.count] + dropping(prefix: place.heard.trailing, of: tokens.gaps[end])
+            let after = meant.gaps[meant.count]
+                + dropping(prefix: place.heard.trailing, of: tokens.gaps[end], beforeWord: end < tokens.count)
             result.raw.replaceSubrange(start..<end, with: meant.raw)
             result.words.replaceSubrange(start..<end, with: meant.words)
             result.structured.replaceSubrange(start..<end, with: meant.structured)
@@ -407,28 +409,36 @@ public enum AIFixGuard {
         return result
     }
 
-    /// `gap` without the shortest end that holds `marks` (`AIFixReference.Spoken.breakMark`), or as it is.
+    /// `gap`, the text before a word, without the shortest end that holds `marks`
+    /// (`AIFixReference.Spoken.breakMark`), or as it is.
     static func dropping(suffix marks: String, of gap: String) -> String {
         guard !marks.isEmpty else { return gap }
+        let text = gap[...]
         var found = ""
-        var index = gap.endIndex
-        while index > gap.startIndex {
-            index = gap.index(before: index)
-            if let mark = AIFixReference.Spoken.breakMark(gap[index]) { found = String(mark) + found }
-            if found == marks { return String(gap[..<index]) }
+        var index = text.endIndex
+        while index > text.startIndex {
+            index = text.index(before: index)
+            if let mark = AIFixReference.Spoken.breakMark(in: text, at: index, beforeWord: true) {
+                found = String(mark) + found
+            }
+            if found == marks { return String(text[..<index]) }
         }
         return gap
     }
 
-    /// `gap` without the shortest start that holds `marks` (`AIFixReference.Spoken.breakMark`), or as it is.
-    static func dropping(prefix marks: String, of gap: String) -> String {
+    /// `gap`, the text after a word, without the shortest start that holds `marks`
+    /// (`AIFixReference.Spoken.breakMark`), or as it is. `beforeWord`: a word follows `gap`.
+    static func dropping(prefix marks: String, of gap: String, beforeWord: Bool) -> String {
         guard !marks.isEmpty else { return gap }
+        let text = gap[...]
         var found = ""
-        var index = gap.startIndex
-        while index < gap.endIndex {
-            if let mark = AIFixReference.Spoken.breakMark(gap[index]) { found.append(mark) }
-            index = gap.index(after: index)
-            if found == marks { return String(gap[index...]) }
+        var index = text.startIndex
+        while index < text.endIndex {
+            if let mark = AIFixReference.Spoken.breakMark(in: text, at: index, beforeWord: beforeWord) {
+                found.append(mark)
+            }
+            index = text.index(after: index)
+            if found == marks { return String(text[index...]) }
         }
         return gap
     }
@@ -732,24 +742,37 @@ public enum AIFixReference {
         init(_ text: String) {
             var cursor = text.startIndex
             for match in text.matches(of: AIFixGuard.wordPattern) {
-                breaks.append(String(text[cursor..<match.range.lowerBound].compactMap(Self.breakMark)))
+                breaks.append(Self.breakMarks(text[cursor..<match.range.lowerBound], beforeWord: true))
                 words.append(AIFixGuard.normalized(match.output))
                 cursor = match.range.upperBound
             }
-            trailing = String(text[cursor...].compactMap(Self.breakMark))
+            trailing = Self.breakMarks(text[cursor...], beforeWord: false)
         }
 
         /// The marks just after the word at `index`.
         func marks(after index: Int) -> String { index + 1 < breaks.count ? breaks[index + 1] : trailing }
 
-        /// The mark `character` is when it ends a phrase: a line break as "\n", a typographic double quote as a
-        /// plain one.
-        static func breakMark(_ character: Character) -> Character? {
+        /// The marks of `gap` that end a phrase (`breakMark`), in order.
+        static func breakMarks(_ gap: Substring, beforeWord: Bool) -> String {
+            String(gap.indices.compactMap { breakMark(in: gap, at: $0, beforeWord: beforeWord) })
+        }
+
+        /// The mark the character at `index` of `gap`, the text between two words, is when it ends a phrase: a line
+        /// break as "\n", a dash between clauses as "—", a double quote as an opening "“" or a closing "”" (a plain
+        /// one opens when `beforeWord` and nothing but marks lies between it and the word: "we say "hi"), never one
+        /// for the other. `beforeWord`: a word follows `gap`.
+        static func breakMark(in gap: Substring, at index: Substring.Index, beforeWord: Bool) -> Character? {
+            let character = gap[index]
             if character.isNewline { return "\n" }
-            if "“”«»".contains(character) { return "\"" }
+            if "“«".contains(character) { return "“" }
+            if "”»".contains(character) { return "”" }
+            if character == "\"" {
+                let opens = beforeWord && !gap[gap.index(after: index)...].contains(where: \.isWhitespace)
+                return opens ? "“" : "”"
+            }
             // A dash between clauses ends a phrase; a hyphen inside a word does not.
             if "—–".contains(character) { return "—" }
-            return ".!?…:;()[]{}\"".contains(character) ? character : nil
+            return ".!?…:;()[]{}".contains(character) ? character : nil
         }
     }
 
@@ -774,7 +797,8 @@ public enum AIFixReference {
 
         /// Where `word`, a word of a heard phrase, was said: as it is (as `AIFixGuard.words`), or for a content
         /// word, as a variant where the text's word is not a real word (`Lexicon`): "a bundu" says "a Bundo", while
-        /// "bat" never says "bit", nor "unable" "enable": a real word says only itself.
+        /// "bat" never says "bit", nor "unable" "enable": a real word says only itself. Nor is a word said by its
+        /// opposite misspelled (`SpokenWords.changesPolarity`: "uneble" for "enable").
         func positions(of word: String) -> Set<Int> {
             if let known = said[word] { return known }
             var found = Set(positions[word] ?? [])
@@ -782,7 +806,7 @@ public enum AIFixReference {
                 let heard = SpokenWords.Features(word)
                 for (other, at) in positions where other != word
                     && SpokenWords.isVariant(features[other]!, of: heard, language: language)
-                    && !lexicon.isWord(other) {
+                    && !lexicon.isWord(other) && !SpokenWords.changesPolarity(other, word, language: language) {
                     found.formUnion(at)
                 }
             }

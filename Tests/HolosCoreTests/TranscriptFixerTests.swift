@@ -572,6 +572,8 @@ let frenchOriginals: Set<String> = [
     ("Wait 10 ms", "Wait 10 mm"), ("Set the width to 10 mm", "Set the width to 10"), ("Cut it to 5 in", "Cut it to 5"),
     ("Take her to the ER now", "Take her to the now"), ("Send to team@right.com", "Send to team@write.com"),
     ("run /tmp/site.py", "run /tmp/sight.py"), ("send it to us", "send it to US"), ("use windows now", "use Windows now"),
+    ("Use #right today", "Use #write today"), ("Run --right now", "Run --write now"), ("Set $right now", "Set $write now"),
+    ("Open right.txt", "Open write.txt"), ("Call right_now()", "Call write_now()"),
     // Names, but for their apostrophes.
     ("Ask Mary about it", "Ask Marie about it"), ("Send it to Bob and Alice", "Send it to Alice and Bob"),
     ("Deploy to Windows now", "Deploy to Ubuntu now"), ("Ping John today", "Ping Joan today"),
@@ -654,6 +656,12 @@ func aFrenchMishearingIsFixed(original: String, fixed: String) {
     #expect(AIFixReference.select(from: [enable], for: "Users are unable to access files", budget: 1_000).isEmpty)
     #expect(AIFixGuard.check(original: "Users are unable to access files", fixed: "Users are able to access files",
                              taught: [enable]) != .accept)
+    // Nor by its opposite misspelled: "uneble" is no word, but it is "enable" behind "un".
+    #expect(SpokenWords.isVariant("uneble", of: "enable") && SpokenWords.changesPolarity("uneble", "enable", language: nil))
+    #expect(AIFixReference.select(from: [enable], for: "Users are uneble to access files", budget: 1_000).isEmpty)
+    #expect(AIFixGuard.check(original: "Users are uneble to access files", fixed: "Users are able to access files",
+                             taught: [enable]) != .accept)
+    #expect(AIFixReference.select(from: [enable], for: "Users are enible to access files", budget: 1_000) == [enable])
 }
 
 @Test func theLexiconKnowsTheLanguagesWordsNamesAndTaughtSpellings() async {
@@ -841,6 +849,12 @@ func aFrenchMishearingIsFixed(original: String, fixed: String) {
     #expect(AIFixReference.matches(of: "bull. request", in: "the bull; request").isEmpty)
     #expect(AIFixReference.matches(of: "bull. request", in: "the bull. request") == [1..<3])
     #expect(AIFixReference.matches(of: "say \"hi", in: "we say “hi") == [1..<3])
+    // An opening quote is not a closing one.
+    #expect(AIFixReference.matches(of: "“bull", in: "He said “cow” bull request").isEmpty)
+    #expect(AIFixReference.matches(of: "\"bull", in: "He said \"cow\" bull request").isEmpty)
+    #expect(AIFixReference.matches(of: "“bull", in: "He said “bull request”") == [2..<3])
+    #expect(AIFixReference.matches(of: "bull”", in: "He said “cow bull” request") == [3..<4])
+    #expect(AIFixReference.matches(of: "bull”", in: "He said “cow bull “request") .isEmpty)
     // Marks at the edges of a heard phrase must be there too.
     #expect(AIFixReference.matches(of: "bull.", in: "a bull request").isEmpty)
     #expect(AIFixReference.matches(of: "bull.", in: "a bull. Request") == [1..<2])

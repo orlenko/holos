@@ -422,8 +422,8 @@ so articles ("a elephant" stays, as "to store" does), contractions ("do not" and
 "don't"), repetitions ("vous vous") and hesitations stay as said; numbers written
 another way ("ten" and "10", "1,000" and "1000", "quatre-vingt-dix-huit" and "98"); a
 case change inside a sentence ("us" and "US", "windows" and "Windows"); any change to a
-word in a unit, number, address, path or identifier ("5 mW", "team@right.com",
-"/tmp/site.py", "GitHub"); a name (a capitalized word, sentence starts included, but
+word in a unit, number, address, path, tag, option or identifier ("5 mW",
+"team@right.com", "/tmp/site.py", "#right", "--right", "GitHub"); a name (a capitalized word, sentence starts included, but
 "I", function words, hesitations such as "Hmm", words under three letters and guarded
 words), which may change only in its apostrophes ("Jai" and "J'ai"); a comma between two
 numbers coming or going ("1,5" and "1 5"); any other mark added, removed or moved; more
