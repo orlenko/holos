@@ -84,8 +84,9 @@ public enum ReadingOutput {
         return value > 0 ? min(Int(value), defaultNameLimit) : defaultNameLimit
     }
 
-    /// `name` shortened to fit `limit`, keeping its extension, and never a reserved name.
+    /// `name` in NFC, shortened to fit `limit`, keeping its extension, and never a reserved name.
     static func fitting(_ name: String, limit: Int) -> String {
+        let name = name.precomposedStringWithCanonicalMapping
         guard !fits(name, limit: limit) || isReserved(name) else { return name }
         let stem = name.hasSuffix(fileExtension) ? String(name.dropLast(fileExtension.count)) : name
         return (fitted(stem, limit: limit) ?? fallbackName) + fileExtension
@@ -112,7 +113,8 @@ public enum ReadingOutput {
             name = String(name.prefix(maximumNameLength))
         }
         name = name.trimmingCharacters(in: CharacterSet(charactersIn: " .-"))
-        return name.isEmpty ? nil : name
+        // One defined spelling for every name made here: NFC, written byte for byte (see `RawFilePath`).
+        return name.isEmpty ? nil : name.precomposedStringWithCanonicalMapping
     }
 
     /// Resolves `--output`:
@@ -127,24 +129,28 @@ public enum ReadingOutput {
     /// `identity` (the text and settings, see `ReadingPipeline.identity`), so running the same
     /// command again with `--resume` finds it, and changed text or settings start a new reading.
     ///
+    /// `output` is kept spelled byte for byte as typed, and `<name>` is written in NFC (see
+    /// `RawFilePath`): on a volume that keeps a name's NFC and NFD spellings apart, each
+    /// spelling is its own file and its own cache.
+    ///
     /// Every destination is checked here, before anything is rendered (see `checkDestination`),
     /// and so is `readingsRoot`, which holds the cache. Without `resume`, a file already at the
     /// destination is an error: nothing is ever replaced.
     public static func locate(output: String?, name: String, identity: String, readingsRoot: URL,
-                              resume: Bool = false, fileManager: FileManager = .default) throws -> ReadingLocation {
-        if output == nil { try checkFolder(readingsRoot, role: "Readings folder", fileManager: fileManager) }
+                              resume: Bool = false) throws -> ReadingLocation {
+        if output == nil { try checkFolder(readingsRoot, role: "Readings folder") }
         let (location, destination) = try resolve(output: output, name: name, identity: identity,
-                                                  readingsRoot: readingsRoot, fileManager: fileManager)
+                                                  readingsRoot: readingsRoot)
         switch destination {
         case .newReading:
             try checkPathLength(location.output)
         case .readingFolder:
             // The reading's own folder: whether its finished file may exist is the pipeline's
             // call (it is this reading's when resuming, and a clear error otherwise).
-            try checkDestination(location.output, allowExisting: true, fileManager: fileManager)
+            try checkDestination(location.output, allowExisting: true)
         case .explicit:
-            try checkDestination(location.output, allowExisting: resume, fileManager: fileManager)
-            try checkFolder(readingsRoot, role: "Readings folder", fileManager: fileManager)
+            try checkDestination(location.output, allowExisting: resume)
+            try checkFolder(readingsRoot, role: "Readings folder")
         }
         return location
     }
@@ -152,13 +158,13 @@ public enum ReadingOutput {
     /// The file `locate` would give for the same arguments, resolved the same way but with
     /// nothing checked or created: what `voiceislocal read --print-text` shows. A new reading's
     /// folder is named when it is created, so it shows as `<new folder>`.
-    public static func previewPath(output: String?, name: String, identity: String, readingsRoot: URL,
-                                   fileManager: FileManager = .default) throws -> String {
+    public static func previewPath(output: String?, name: String, identity: String,
+                                   readingsRoot: URL) throws -> String {
         let (location, destination) = try resolve(output: output, name: name, identity: identity,
-                                                  readingsRoot: readingsRoot, fileManager: fileManager)
+                                                  readingsRoot: readingsRoot)
         guard destination == .newReading else { return location.output.path }
-        return readingsRoot.appendingPathComponent("<new folder>", isDirectory: true)
-            .appendingPathComponent(location.output.lastPathComponent).path
+        return RawFilePath.appending(location.output.lastPathComponent,
+                                     to: readingsRoot.appendingPathComponent("<new folder>", isDirectory: true)).path
     }
 
     /// Which kind of place `--output` names (see `locate`).
@@ -167,7 +173,6 @@ public enum ReadingOutput {
     /// `locate`'s resolution alone: reads the filesystem (whether `output` is a folder, holds a
     /// reading, and its volume's name limit) but checks and creates nothing.
     static func resolve(output: String?, name: String, identity: String, readingsRoot: URL,
-                        fileManager: FileManager,
                         volume: ReadingPathIdentity.VolumeQuery = ReadingPathIdentity.volumeRules)
         throws -> (ReadingLocation, Destination) {
         func hashed(output: URL) -> ReadingLocation {
@@ -176,17 +181,17 @@ public enum ReadingOutput {
         guard let output else {
             let directory = readingsRoot.appendingPathComponent(UUID().uuidString, isDirectory: true)
             let name = fitting(name, limit: nameLimit(in: readingsRoot))
-            return (ReadingLocation(workDirectory: directory, output: directory.appendingPathComponent(name)), .newReading)
+            return (ReadingLocation(workDirectory: directory, output: RawFilePath.appending(name, to: directory)),
+                    .newReading)
         }
-        let url = URL(fileURLWithPath: (output as NSString).expandingTildeInPath).standardizedFileURL
-        var isDirectory: ObjCBool = false
-        let exists = fileManager.fileExists(atPath: url.path, isDirectory: &isDirectory)
-        if exists && isDirectory.boolValue {
+        var url = RawFilePath.url(output)
+        if RawFilePath.isDirectory(url) {
+            url = RawFilePath.url(output, isDirectory: true)
             let name = fitting(name, limit: nameLimit(in: url))
             if ReadingManifest.isReading(url.appendingPathComponent(ReadingManifest.fileName)) {
-                return (ReadingLocation(workDirectory: url, output: url.appendingPathComponent(name)), .readingFolder)
+                return (ReadingLocation(workDirectory: url, output: RawFilePath.appending(name, to: url)), .readingFolder)
             }
-            return (hashed(output: url.appendingPathComponent(name)), .explicit)
+            return (hashed(output: RawFilePath.appending(name, to: url)), .explicit)
         }
         guard url.pathExtension.lowercased() == ReadingAudioFormat.fileExtension else {
             throw HolosError.invalidInput("--output must be a .m4a file path or an existing directory: \(url.path)")
@@ -198,11 +203,10 @@ public enum ReadingOutput {
     /// and accepts new files (checked by creating and removing one); its name fits the volume
     /// and its path fits `PATH_MAX`, with room for the temporary file written beside it; and,
     /// unless `allowExisting`, nothing (not even a broken link) is there yet.
-    public static func checkDestination(_ output: URL, allowExisting: Bool = false,
-                                        fileManager: FileManager = .default) throws {
+    public static func checkDestination(_ output: URL, allowExisting: Bool = false) throws {
         guard output.isFileURL else { throw HolosError.invalidInput("Reading output must be a file path.") }
         let folder = output.deletingLastPathComponent()
-        try checkFolder(folder, role: "Output folder", fileManager: fileManager)
+        try checkFolder(folder, role: "Output folder")
         guard fits(output.lastPathComponent, limit: nameLimit(in: folder)) else {
             throw HolosError.invalidInput("Output file name is too long for its volume: \(output.lastPathComponent)")
         }
@@ -226,12 +230,13 @@ public enum ReadingOutput {
     }
 
     /// Fails unless `folder` exists, is a folder, and a new file can be created in it.
-    static func checkFolder(_ folder: URL, role: String, fileManager: FileManager = .default) throws {
-        var isDirectory: ObjCBool = false
-        guard fileManager.fileExists(atPath: folder.path, isDirectory: &isDirectory) else {
+    static func checkFolder(_ folder: URL, role: String) throws {
+        // `stat` on the path as spelled (`FileManager` would decompose it; see `RawFilePath`).
+        var metadata = stat()
+        guard stat(folder.path, &metadata) == 0 else {
             throw HolosError.invalidInput("\(role) does not exist: \(folder.path)")
         }
-        guard isDirectory.boolValue else {
+        guard (metadata.st_mode & S_IFMT) == S_IFDIR else {
             throw HolosError.invalidInput("\(role) is not a folder: \(folder.path)")
         }
         // Permissions, ACLs, read-only volumes, and sandboxing all show in an actual create.
@@ -246,18 +251,97 @@ public enum ReadingOutput {
 
     private static func hashed(output: URL, identity: String, readingsRoot: URL,
                                volume: ReadingPathIdentity.VolumeQuery) -> ReadingLocation {
-        let canonical = output.deletingLastPathComponent().resolvingSymlinksInPath()
-            .appendingPathComponent(output.lastPathComponent)
+        let canonical = RawFilePath.resolvingFolder(of: output)
         // Keyed by the file's exact filesystem identity, so every spelling of one file
         // ("Book.m4a" and "book.m4a" on a volume known to ignore case, one name in NFC and NFD on
         // APFS or HFS+) finds the same cache, and two files (those names on a volume that may tell
-        // them apart) never share one. The key is hashed as bytes, so NFC and NFD spellings kept
-        // apart stay apart. The output lock stays conservative (see
-        // `ReadingDirectoryLock.acquire(output:beside:)`).
+        // them apart) never share one. `output` keeps its spelling as typed and the key is hashed
+        // as bytes, so NFC and NFD spellings kept apart stay apart. The output lock stays
+        // conservative (see `ReadingDirectoryLock.acquire(output:beside:)`).
         let key = ReadingPathIdentity.key(output, .exact, volume: volume)
         let digest = SHA256.hash(data: Data((key + "\u{0}" + identity).utf8)).map { String(format: "%02x", $0) }.joined()
         let directory = readingsRoot.appendingPathComponent("Output-\(digest.prefix(16))", isDirectory: true)
         return ReadingLocation(workDirectory: directory, output: canonical)
+    }
+}
+
+/// File URLs that keep a path's bytes as given. Foundation's own ways to make and change one
+/// (`URL(fileURLWithPath:)`, `standardizedFileURL`, `resolvingSymlinksInPath`, the name given to
+/// `appendingPathComponent`, `FileManager`'s path methods) decompose names: an NFC "Café.m4a"
+/// becomes NFD. APFS and HFS+ take both spellings for one file, but a volume that keeps names
+/// as bytes (some network shares) holds two, and the decomposed one is not the file typed. A URL
+/// made here keeps its spelling through `path`, `deletingLastPathComponent`, and system calls
+/// given `path` (Swift passes a `String` to C as its UTF-8 bytes).
+enum RawFilePath {
+    /// `path` as a file URL, spelled as given: "~" expanded, a relative path taken from the
+    /// current directory, and ".", "..", and repeated "/" removed without looking at the disk,
+    /// as `standardizedFileURL` removes them.
+    static func url(_ path: String, isDirectory: Bool = false) -> URL {
+        let expanded = (path as NSString).expandingTildeInPath
+        let absolute = expanded.hasPrefix("/") ? expanded : currentDirectory() + "/" + expanded
+        return standardized(absolute).withCString {
+            URL(fileURLWithFileSystemRepresentation: $0, isDirectory: isDirectory, relativeTo: nil)
+        }
+    }
+
+    /// `name` inside `directory`, both spelled as given.
+    static func appending(_ name: String, to directory: URL) -> URL {
+        url(directory.path + "/" + name)
+    }
+
+    /// `url` with the links in its folder resolved, as `resolvingSymlinksInPath` resolves them
+    /// ("/private/var/…" shown as "/var/…"), and its name as spelled. A folder that does not
+    /// exist stays as spelled.
+    static func resolvingFolder(of url: URL) -> URL {
+        let path = standardized(url.path)
+        let cut = path.utf8.lastIndex(of: UInt8(ascii: "/")) ?? path.utf8.startIndex
+        let folder = String(path[..<cut])
+        let name = String(path[path.utf8.index(after: cut)...])
+        guard var resolved = realPath(folder.isEmpty ? "/" : folder) else { return Self.url(path) }
+        let privatePrefix = "/private/"
+        if resolved.hasPrefix(privatePrefix) {
+            let shown = String(resolved.dropFirst(privatePrefix.count - 1))
+            if realPath(shown) == resolved { resolved = shown }
+        }
+        return appending(name, to: Self.url(resolved, isDirectory: true))
+    }
+
+    /// Whether `url` names a folder (links followed), asked with its spelling as given.
+    static func isDirectory(_ url: URL) -> Bool {
+        var metadata = stat()
+        return stat(url.path, &metadata) == 0 && (metadata.st_mode & S_IFMT) == S_IFDIR
+    }
+
+    /// `path` (absolute) without ".", "..", and empty components; bytes elsewhere untouched.
+    /// Split on the "/" byte, which never occurs inside another UTF-8 character.
+    static func standardized(_ path: String) -> String {
+        var parts: [Substring.UTF8View] = []
+        for part in path.utf8.split(separator: UInt8(ascii: "/")) {
+            if part.elementsEqual(".".utf8) { continue }
+            if part.elementsEqual("..".utf8) {
+                if !parts.isEmpty { parts.removeLast() }
+                continue
+            }
+            parts.append(part)
+        }
+        var bytes: [UInt8] = []
+        for part in parts {
+            bytes.append(UInt8(ascii: "/"))
+            bytes.append(contentsOf: part)
+        }
+        return bytes.isEmpty ? "/" : String(decoding: bytes, as: UTF8.self)
+    }
+
+    private static func currentDirectory() -> String {
+        guard let buffer = getcwd(nil, 0) else { return FileManager.default.currentDirectoryPath }
+        defer { free(buffer) }
+        return String(cString: buffer)
+    }
+
+    private static func realPath(_ path: String) -> String? {
+        guard let resolved = realpath(path, nil) else { return nil }
+        defer { free(resolved) }
+        return String(cString: resolved)
     }
 }
 

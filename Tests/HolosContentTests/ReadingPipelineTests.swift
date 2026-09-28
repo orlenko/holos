@@ -546,8 +546,8 @@ import Testing
         let readings = parent.appendingPathComponent("Readings")
         try FileManager.default.createDirectory(at: readings, withIntermediateDirectories: false)
         func cache(_ url: URL) throws -> URL {
-            try ReadingOutput.resolve(output: url.path, name: "x.m4a", identity: "i", readingsRoot: readings,
-                                      fileManager: .default).0.workDirectory
+            try ReadingOutput.resolve(output: url.path, name: "x.m4a", identity: "i", readingsRoot: readings)
+                .0.workDirectory
         }
         #expect(try cache(decomposed) == cache(composed))
         #expect(try (cache(upper) == cache(parent.appendingPathComponent("book.m4a"))) == !caseSensitive)
@@ -584,7 +584,7 @@ import Testing
         try FileManager.default.createDirectory(at: readings, withIntermediateDirectories: false)
         func cache(_ url: URL, _ query: @escaping ReadingPathIdentity.VolumeQuery) throws -> URL {
             try ReadingOutput.resolve(output: url.path, name: "x.m4a", identity: "i", readingsRoot: readings,
-                                      fileManager: .default, volume: query).0.workDirectory
+                                      volume: query).0.workDirectory
         }
         #expect(try cache(upper, unknown) != cache(lower, unknown))
         #expect(try cache(upper, insensitive) == cache(lower, insensitive))
@@ -610,9 +610,8 @@ import Testing
     /// On a volume that may keep a name's NFC and NFD spellings apart (a byte-preserving network
     /// share), "Café.m4a" spelled each way is two names: they share the conservative lock, but
     /// never an exact identity, and `--resume` of a reading saved under one does not accept the
-    /// other. On APFS and HFS+ (known to equate them) they are one name throughout. A file URL
-    /// carries one spelling already (Foundation decomposes its path), so its two spellings are
-    /// the one file this app writes, and share a cache on any volume.
+    /// other. On APFS and HFS+ (known to equate them) they are one name throughout. `--output`
+    /// keeps the spelling typed all the way to the file written and its cache.
     @Test func exactIdentitiesKeepNormalizationUnlessTheVolumeEquatesIt() async throws {
         let parent = try root()
         defer { try? FileManager.default.removeItem(at: parent) }
@@ -631,40 +630,59 @@ import Testing
         #expect(ReadingPathIdentity.normalizedName("CAFE\u{301}", caseSensitive: false, composed: false)
             .unicodeScalars.elementsEqual("cafe\u{301}".unicodeScalars))
 
-        // File URLs: one spelling, one cache, and one file on disk.
-        let composed = URL(fileURLWithPath: composedPath)
-        let decomposed = URL(fileURLWithPath: decomposedPath)
-        #expect(Data(composed.path.utf8) == Data(decomposed.path.utf8))
+        // `--output` as typed: Foundation's own file URL would decompose it, so both spellings
+        // would name one file and share one cache even where they are two files.
+        #expect(Data(URL(fileURLWithPath: composedPath).path.utf8) == Data(decomposedPath.utf8))
         let readings = parent.appendingPathComponent("Readings")
         try FileManager.default.createDirectory(at: readings, withIntermediateDirectories: false)
-        func cache(_ path: String, _ query: @escaping ReadingPathIdentity.VolumeQuery) throws -> URL {
+        func resolved(_ path: String, _ query: @escaping ReadingPathIdentity.VolumeQuery) throws -> ReadingLocation {
             try ReadingOutput.resolve(output: path, name: "x.m4a", identity: "i", readingsRoot: readings,
-                                      fileManager: .default, volume: query).0.workDirectory
+                                      volume: query).0
         }
-        #expect(try cache(composedPath, keepsBytes) == cache(decomposedPath, keepsBytes))
-        #expect(try cache(composedPath, equates) == cache(decomposedPath, equates))
+        for path in [composedPath, decomposedPath] {
+            #expect(try Data(resolved(path, keepsBytes).output.path.utf8) == Data(path.utf8))
+            // "~", ".", and ".." go as `standardizedFileURL` removes them; the spelling stays.
+            let roundabout = parent.path + "/./Readings/../" + (path as NSString).lastPathComponent
+            #expect(try Data(resolved(roundabout, keepsBytes).output.path.utf8) == Data(path.utf8))
+        }
+        #expect(try resolved(composedPath, keepsBytes).workDirectory != resolved(decomposedPath, keepsBytes).workDirectory)
+        #expect(try resolved(composedPath, equates).workDirectory == resolved(decomposedPath, equates).workDirectory)
 
-        // `--resume` compares the saved output byte for byte, then by exact identity.
+        // The file written is the one typed, byte for byte, and so is the manifest's output.
         let pipeline = ReadingPipeline(renderer: FakeRenderer(), joiner: FakeJoiner())
-        let place = ReadingLocation(workDirectory: parent.appendingPathComponent("work"), output: composed)
+        let place = try resolved(composedPath, keepsBytes)
         let made = try await pipeline.render(script: script(1), voiceIdentifier: voice, metadata: metadata,
                                              location: place).manifest
-        let names = try FileManager.default.contentsOfDirectory(atPath: parent.path).filter { $0.hasPrefix("Caf") }
-        #expect(names.map { Data($0.utf8) } == [Data("Cafe\u{301}.m4a".utf8)])
+        func names(_ prefix: String) throws -> [Data] {
+            try FileManager.default.contentsOfDirectory(atPath: parent.path).filter { $0.hasPrefix(prefix) }
+                .map { Data($0.utf8) }
+        }
+        #expect(try names("Caf") == [Data("Caf\u{E9}.m4a".utf8)])
+        #expect(Data(made.output.utf8) == Data(composedPath.utf8))
         // Removed, so the host volume's own rules (an existing file resolves to its on-disk name)
         // do not stand in for the simulated ones.
-        try FileManager.default.removeItem(at: composed)
-        // A manifest saved with the NFC spelling (as another program might have named the file).
-        var fields = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(made)) as? [String: Any])
-        fields["output"] = composedPath
-        let saved = try JSONDecoder().decode(ReadingManifest.self, from: JSONSerialization.data(withJSONObject: fields))
-        #expect(Data(saved.output.utf8) == Data(composedPath.utf8))
-        func same(_ url: URL, _ query: @escaping ReadingPathIdentity.VolumeQuery) -> Bool {
-            saved.sameSettings(voiceIdentifier: voice, rate: nil, metadata: metadata, output: url, volume: query)
+        try FileManager.default.removeItem(at: place.output)
+
+        // `--resume` compares the saved output byte for byte, then by exact identity.
+        func same(_ path: String, _ query: @escaping ReadingPathIdentity.VolumeQuery) throws -> Bool {
+            made.sameSettings(voiceIdentifier: voice, rate: nil, metadata: metadata,
+                              output: try resolved(path, query).output, volume: query)
         }
-        #expect(!same(decomposed, keepsBytes))
-        #expect(same(decomposed, equates))
-        #expect(made.sameSettings(voiceIdentifier: voice, rate: nil, metadata: metadata, output: composed, volume: keepsBytes))
+        #expect(try same(composedPath, keepsBytes))
+        #expect(try !same(decomposedPath, keepsBytes))
+        #expect(try same(decomposedPath, equates))
+
+        // A name made here (from a title) is NFC, whatever spelling it came in.
+        let title = "Nai\u{308}ve"
+        #expect(Data(ReadingOutput.fileName(title: title).utf8) == Data("Na\u{EF}ve.m4a".utf8))
+        let named = try ReadingOutput.resolve(output: parent.path, name: title + ".m4a", identity: "i",
+                                              readingsRoot: readings, volume: keepsBytes).0
+        #expect(Data(named.output.lastPathComponent.utf8) == Data("Na\u{EF}ve.m4a".utf8))
+        let fresh = try ReadingOutput.resolve(output: nil, name: title + ".m4a", identity: "i", readingsRoot: readings).0
+        let freshName = Data("/Na\u{EF}ve.m4a".utf8)
+        #expect(Data(fresh.output.path.utf8).suffix(freshName.count) == freshName)
+        _ = try await pipeline.render(script: script(1), voiceIdentifier: voice, metadata: metadata, location: named)
+        #expect(try names("Na") == [Data("Na\u{EF}ve.m4a".utf8)])
     }
 
     /// The volume's format tells whether it equates NFC and NFD names: APFS and HFS+ do; anything

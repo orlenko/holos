@@ -232,7 +232,9 @@ public struct AudioBookJoiner: ReadingAudioJoiner {
             guard !FileManager.default.fileExists(atPath: directory.path) else {
                 throw HolosError.invalidInput("A reading already exists at \(directory.path). Use --resume to continue it.")
             }
-            guard !FileManager.default.fileExists(atPath: output.path) else {
+            // `lstat` on the path as spelled (`FileManager` would decompose it; see `RawFilePath`).
+            var existing = stat()
+            guard lstat(output.path, &existing) != 0 else {
                 throw HolosError.invalidInput("Reading output already exists: \(output.path)")
             }
             manifest = ReadingManifest(kind: ReadingManifest.readingKind,
@@ -633,12 +635,11 @@ enum ReadingPathIdentity {
 
     typealias VolumeQuery = (String) -> NameRules
 
-    /// A file URL's path is already in one normalization: Foundation gives its file system
-    /// representation, decomposed (an NFC "Café.m4a" becomes NFD), and that is the name every
-    /// file this app creates at the URL gets. Both spellings of a URL therefore name one file on
-    /// any volume, and share every key.
+    /// The identity of the file `url` names, its path spelled as the URL holds it: as typed for
+    /// a `RawFilePath` URL (what `ReadingOutput` gives), decomposed for one Foundation made from a
+    /// path string (see `RawFilePath`).
     static func key(_ url: URL, _ rule: Rule = .lock, volume: VolumeQuery = volumeRules) -> String {
-        key(path: url.standardizedFileURL.path, rule, volume: volume)
+        key(path: RawFilePath.standardized(url.path), rule, volume: volume)
     }
 
     /// The identity of `path`, spelled as given.

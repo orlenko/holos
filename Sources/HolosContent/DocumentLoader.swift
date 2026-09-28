@@ -233,10 +233,11 @@ public enum MarkdownReader {
 /// are renamed so the parser keeps them (see `prepared`), the text is parsed once, and the tree
 /// is walked, leaving out skipped elements.
 public enum HTMLReader {
+    /// Preformatted code is `pre` and its legacy forms `xmp`, `listing`, and `plaintext`.
     static let skipped: Set<String> = [
         "script", "style", "noscript", "template", "nav", "footer", "aside", "form", "button",
-        "svg", "math", "iframe", "select", "textarea", "pre", "img", "picture", "video", "audio", "canvas",
-        "head", "object", "embed", "datalist",
+        "svg", "math", "iframe", "select", "textarea", "pre", "xmp", "listing", "plaintext", "img", "picture",
+        "video", "audio", "canvas", "head", "object", "embed", "datalist",
     ]
     static let blocks: Set<String> = [
         "p", "div", "section", "article", "main", "header", "li", "ul", "ol", "dl", "dt", "dd",
@@ -458,9 +459,8 @@ public enum HTMLReader {
             let count = bytes.count
             while position < count {
                 if starts("<!--", at: position) {
-                    // The dashes of `<!--` may close it too: `<!-->` is a whole comment.
-                    guard let end = find("-->", from: position + 2) else { return nil }
-                    position = end + 3
+                    guard let end = HTMLReader.commentEnd(in: bytes, from: position) else { return nil }
+                    position = end
                 } else if bytes[position] == TagScanner.lessThan, case let (name, closing)? = scanner.tagName() {
                     if !closing, name == "meta" {
                         if let encoding = meta() { return encoding }
@@ -556,10 +556,6 @@ public enum HTMLReader {
             return zip(bytes[index...], pattern).allSatisfy { HTMLReader.lowercased($0) == $1 }
         }
 
-        private func find(_ text: String, from index: Int) -> Int? {
-            Self.firstIndex(of: Array(text.utf8), in: bytes, from: index)
-        }
-
         private static func firstIndex(of pattern: [UInt8], in bytes: [UInt8], from index: Int) -> Int? {
             guard !pattern.isEmpty, bytes.count >= pattern.count, index <= bytes.count - pattern.count else { return nil }
             return (index...(bytes.count - pattern.count)).first { start in
@@ -630,7 +626,7 @@ public enum HTMLReader {
     /// contents, nested ones included, for `Walker` to read or skip. Only tag names change, a
     /// self-closing slash HTML ignores is dropped (see `void`), and `<` in raw text elements other
     /// than scripts and styles (which the parser reads as text) is escaped; comments are copied
-    /// as they are.
+    /// as they are, an abruptly closed one written out in full (see `commentEnd`).
     static func prepared(_ html: String, nameAttribute: String) -> String {
         let bytes = Array(html.utf8)
         let count = bytes.count
@@ -654,10 +650,15 @@ public enum HTMLReader {
                 continue
             }
             if starts("<!--", at: index) {
-                var end = index + 4
-                while end < count, bytes[end] != UInt8(ascii: "-") || !starts("-->", at: end) { end += 1 }
-                end = min(count, end + 3)
-                output += bytes[index..<end]
+                guard let end = commentEnd(in: bytes, from: index) else {
+                    // An unfinished comment: the rest is copied for the parser to make of it what it can.
+                    output += bytes[index...]
+                    break
+                }
+                // Written out in full, so the parser reads the comment where the prescan does: an
+                // abruptly closed `<!-->` or `<!--->` becomes `<!---->`.
+                let text = index + 4 <= end - 3 ? bytes[(index + 4)..<(end - 3)] : []
+                output += Array("<!--".utf8) + text + Array("-->".utf8)
                 index = end
                 continue
             }
@@ -751,6 +752,20 @@ public enum HTMLReader {
             }
         }
         return String(decoding: output, as: UTF8.self)
+    }
+
+    /// Where the comment whose `<!--` is at `start` ends: just past its `-->`, or nil when it
+    /// never ends. As HTML reads it, the dashes of `<!--` may close it too: `<!-->` and `<!--->`
+    /// are whole, empty comments. The charset prescan (`CharsetPrescan`) and `prepared` both
+    /// read comments by this rule, so neither takes text the other reads as a comment.
+    static func commentEnd(in bytes: [UInt8], from start: Int) -> Int? {
+        let dash = UInt8(ascii: "-"), greaterThan = UInt8(ascii: ">")
+        var index = start + 2
+        while index + 2 < bytes.count {
+            if bytes[index] == dash, bytes[index + 1] == dash, bytes[index + 2] == greaterThan { return index + 3 }
+            index += 1
+        }
+        return nil
     }
 
     private static func lowercased(_ byte: UInt8) -> UInt8 {

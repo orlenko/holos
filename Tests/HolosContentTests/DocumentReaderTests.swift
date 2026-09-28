@@ -464,6 +464,40 @@ import Testing
         #expect(title.title == "Less <nav> more")
     }
 
+    /// `<!-->` and `<!--->` are whole comments, to the page's parser as to the charset prescan:
+    /// what follows one, the body included, is read.
+    @Test func abruptlyClosedCommentsEndAtOnce() {
+        for comment in ["<!-->", "<!--->"] {
+            #expect(paragraphs("<!doctype html>\(comment)<html><head><title>T</title></head><body>"
+                + "<p>Kept one.</p>\(comment)<p>Kept two.</p><!-- <p>not read</p> --><p>Kept three.</p></body></html>")
+                == ["Kept one.", "Kept two.", "Kept three."])
+            #expect(paragraphs("\(comment)<p>Loose page.</p>") == ["Loose page."])
+            // The declaration after it is real, and the text is read in that encoding.
+            var page = Data("\(comment)<meta charset=windows-1252><body><p>Caf".utf8)
+            page.append(0xE9)
+            page += Data("</p></body>".utf8)
+            #expect(HTMLReader.document(from: page).sections.flatMap(\.paragraphs) == ["Café"])
+        }
+        let marker = "data-holos-x-tag"
+        #expect(HTMLReader.prepared("<!--><p>a</p><!---><!----><!-- b --><!-- c", nameAttribute: marker)
+            == "<!----><p>a</p><!----><!----><!-- b --><!-- c")
+        for (text, end) in [("<!-->", 5), ("<!--->", 6), ("<!---->", 7), ("<!-- a -- b -->", 15), ("<!-- a", nil)] {
+            #expect(HTMLReader.commentEnd(in: Array(text.utf8), from: 0) == end, "\(text)")
+        }
+    }
+
+    /// The legacy forms of `<pre>` are preformatted code too, and are not read.
+    @Test func legacyPreformattedElementsAreSkipped() {
+        #expect(paragraphs("""
+        <html><body><p>Before.</p>
+        <xmp><p>Markup shown as text</p> if (a < b) { run() }</xmp>
+        <p>Between.</p>
+        <listing>for i in 1...3 { print(i) }</listing>
+        <p>After.</p>
+        <plaintext>Everything after this is source text.
+        """) == ["Before.", "Between.", "After."])
+    }
+
     @Test func hiddenElementsAreSkipped() {
         #expect(paragraphs("""
         <html><body>
