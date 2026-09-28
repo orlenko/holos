@@ -392,7 +392,7 @@ public enum ReadingLibrary {
         var manifest: ReadingManifest?
         if let cache {
             let url = cache.appendingPathComponent(ReadingManifest.fileName)
-            if FileManager.default.fileExists(atPath: url.path) {
+            if try ReadingOutput.exists(url) {  // only "no such file" is no manifest
                 // A manifest that is there but cannot be read, is too large, or is not a reading's may hold the
                 // only identity of a partly copied file: that is an error, never "not the reading's".
                 let size = try url.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? .max
@@ -446,7 +446,7 @@ public enum ReadingLibrary {
                               trash: (URL) throws -> Void) -> RemovalReport {
         let name = output.lastPathComponent
         // A file that cannot be read is a failure (it goes back), never "not the reading's".
-        let removal = ExclusivePublisher.removeVerified(output, keepingName: true, token: token, matches: { staged in
+        let removal = ExclusivePublisher.removeVerified(output, token: token, matches: { staged in
             checksums.contains(try fileSHA256(staged))
         }, dispose: trash)
         return report(removal, name: name, action: "moved to the Trash", reportChanged: true)
@@ -479,9 +479,9 @@ public enum ReadingLibrary {
         }
     }
 
-    /// The name a reading's Delete moves its file aside to, beside it: `.holos-delete-<entry ID>` (a private folder
-    /// holding the finished file under its own name) or that plus ".partial" (the partly written copy). Derived from
-    /// the entry, so a Delete that a quit or a crash cut off after the move finds the file there next time.
+    /// The private folder beside its file that a reading's Delete moves the file into (under its own name):
+    /// `.holos-delete-<entry ID>` for the finished file, that plus ".partial" for the partly written copy. Derived
+    /// from the entry, so a Delete that a quit or a crash cut off after the move finds the file there next time.
     static func asideToken(_ id: UUID, partial: Bool) -> String {
         ExclusivePublisher.removalPrefix + id.uuidString + (partial ? ".partial" : "")
     }
@@ -491,9 +491,10 @@ public enum ReadingLibrary {
     static func asideCandidates(of entry: ReadingEntry) -> [URL] {
         guard let output = entry.outputURL else { return [] }
         let folder = output.deletingLastPathComponent()
-        let holding = RawFilePath.appending(asideToken(entry.id, partial: false), to: folder)
-        var candidates = [RawFilePath.appending(output.lastPathComponent, to: holding),
-                          RawFilePath.appending(asideToken(entry.id, partial: true), to: folder)]
+        var candidates = [false, true].map { partial in
+            RawFilePath.appending(output.lastPathComponent,
+                                  to: RawFilePath.appending(asideToken(entry.id, partial: partial), to: folder))
+        }
         if let recorded = entry.outputAside,
            !candidates.contains(where: { $0.path.utf8.elementsEqual(recorded.utf8) }) {
             candidates.append(ReadingOutput.fileURL(keepingSpelling: recorded))
@@ -507,6 +508,11 @@ public enum ReadingLibrary {
     public struct DeleteResult: Sendable, Equatable {
         public var problem: String?
         public var aside: String?
+
+        public init(problem: String? = nil, aside: String? = nil) {
+            self.problem = problem
+            self.aside = aside
+        }
     }
 
     /// Removes a deleted reading's files. Only the reading's own output is touched (see `ownership`): its finished

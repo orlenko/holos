@@ -122,47 +122,29 @@ public enum ExclusivePublisher {
 
     /// Removes the file at `url` only when it is the very one `matches` accepts. Checking a path and then removing it
     /// are two steps, between which another process (a sync client, a second Mac on a share) could put another file
-    /// there, so the file is first moved aside, and checked where nothing else can take its place: renamed within its
-    /// folder (same volume, so the file itself moves, not a copy) to a new name only this call knows, or, with
-    /// `keepingName` (for the Trash, which shows the name), into a new private folder beside it under its own name.
+    /// there, so the file is first moved aside, and checked where nothing else can take its place: into a private
+    /// folder (mode 0700) made beside it for this call (same volume, so the file itself moves, not a copy), under its
+    /// own name (the Trash shows it). The folder is new and empty when the file is renamed into it, so that rename
+    /// replaces nothing, whether or not the volume can rename exclusively.
     /// A file that does not match, that cannot be checked (`matches` throws), or that `dispose` refuses, goes back to
     /// `url` only with an operation that cannot replace a file put there meanwhile (see `restore`); where the volume
     /// has none, it stays aside and the result says where. `dispose` defaults to removing it. Every removal of a
     /// reading's file that depends on which file is there goes through here.
     ///
-    /// `token` names the place aside (it starts with `removalPrefix`; default: a new UUID). A caller that must find a
-    /// file left there after a crash (a reading's Delete) gives one it can derive again; nothing is ever moved over
-    /// something already at that place.
-    public static func removeVerified(_ url: URL, keepingName: Bool = false, token: String? = nil,
-                                      matches: (URL) throws -> Bool,
+    /// `token` names the private folder (it starts with `removalPrefix`; default: a new UUID). A caller that must
+    /// find a file left there after a crash (a reading's Delete) gives one it can derive again; when something is
+    /// already there, nothing is moved.
+    public static func removeVerified(_ url: URL, token: String? = nil, matches: (URL) throws -> Bool,
                                       dispose: (URL) throws -> Void = removeFile) -> Removal {
         let folder = url.deletingLastPathComponent()
-        let token = token ?? removalPrefix + UUID().uuidString
-        var holding: URL?
-        let staged: URL
-        if keepingName {
-            let made = spelled(folder.path + "/" + token, isDirectory: true)
-            guard mkdir(made.path, 0o700) == 0 else {
-                return .failed(reason: String(cString: strerror(errno)), keptAt: nil)
-            }
-            holding = made
-            staged = spelled(made.path + "/" + url.lastPathComponent)
-        } else {
-            staged = spelled(folder.path + "/" + token)
+        let holding = spelled(folder.path + "/" + (token ?? removalPrefix + UUID().uuidString), isDirectory: true)
+        guard mkdir(holding.path, 0o700) == 0 else {
+            return .failed(reason: String(cString: strerror(errno)), keptAt: nil)
         }
         // Removed when empty: a file that could not go back stays in it, named in the result.
-        defer { if let holding { _ = rmdir(holding.path) } }
-        // Never over something already at the place aside (a file an interrupted try left there).
-        var moved = systemExclusiveRename(url.path, staged.path)
-        if moved != 0, errno == ENOTSUP || errno == EINVAL || errno == ENOSYS {
-            var metadata = stat()
-            if lstat(staged.path, &metadata) == 0 {
-                errno = EEXIST
-            } else if errno == ENOENT {
-                moved = rename(url.path, staged.path)
-            }
-        }
-        guard moved == 0 else {
+        defer { _ = rmdir(holding.path) }
+        let staged = spelled(holding.path + "/" + url.lastPathComponent)
+        guard rename(url.path, staged.path) == 0 else {
             let error = errno
             return error == ENOENT ? .absent : .failed(reason: String(cString: strerror(error)), keptAt: nil)
         }

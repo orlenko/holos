@@ -167,6 +167,9 @@ import Testing
         #expect(result.manifest.status == "complete")
         #expect(result.manifest.parts.count > 3)
         #expect(result.manifest.outputSHA256 != nil)
+        // The identity of the file published, not of whatever is at the path later.
+        #expect(result.outputIdentity != nil)
+        #expect(result.outputIdentity == ExclusivePublisher.FileIdentity.of(place.output))
         #expect(try Data(contentsOf: place.output) == Data(renderer.calls.joined().utf8))
         #expect(!FileManager.default.fileExists(atPath: place.workDirectory.appendingPathComponent("parts").path))
         #expect(try String(contentsOf: place.workDirectory.appendingPathComponent("source.txt"), encoding: .utf8) == script.text)
@@ -182,8 +185,9 @@ import Testing
         }
 
         let calls = renderer.calls.count
-        _ = try await pipeline.render(script: script, voiceIdentifier: voice, metadata: metadata,
-                                      location: place, resume: true, maxPartUTF16Units: 120)
+        let noOp = try await pipeline.render(script: script, voiceIdentifier: voice, metadata: metadata,
+                                              location: place, resume: true, maxPartUTF16Units: 120)
+        #expect(noOp.outputIdentity == result.outputIdentity)
         #expect(renderer.calls.count == calls)
         #expect(joiner.joined.count == 1)
 

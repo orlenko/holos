@@ -113,6 +113,10 @@ public struct ReadingResult: Sendable, Equatable {
     /// Bookkeeping that failed after the finished file was published (saving the final manifest,
     /// removing the part files): one sentence each, for stderr. The reading itself succeeded.
     public var warnings: [String] = []
+    /// The identity of the file this run published at `output` (or, when it had been published before, of the file
+    /// found there, read unchanged while its checksum was checked); nil when that could not be told. Not looked up
+    /// at `output` afterwards, where another file may have taken its place.
+    public var outputIdentity: ReadingFileIdentity? = nil
 }
 
 @MainActor public protocol ReadingAudioRenderer {
@@ -327,8 +331,11 @@ public struct AudioBookJoiner: ReadingAudioJoiner {
                                  key: key, currentRun: run)
 
         // Finished before (possibly interrupted right after publishing): nothing to do.
+        let found = ExclusivePublisher.FileIdentity.of(output)
         if let published = manifest.outputSHA256, (try? await fileSHA256OffMain(output)) == published {
-            return finish(&manifest, manifestURL: manifestURL, directory: directory, output: output)
+            // The file checked is the file found only when it is unchanged across the check.
+            let identity = found != nil && ExclusivePublisher.FileIdentity.of(output) == found ? found : nil
+            return finish(&manifest, manifestURL: manifestURL, directory: directory, output: output, identity: identity)
         }
         // A copy into the destination that a crash cut off is this reading's own file: it goes,
         // and the reading is joined and published again. Anything else there is kept.
@@ -419,8 +426,12 @@ public struct AudioBookJoiner: ReadingAudioJoiner {
         manifest.chapters = summary.chapters
         try saveManifest(manifest, to: manifestURL)
         try Task.checkCancellation()
+        // The file published: the joined file itself when it is renamed into place (a rename keeps its identity),
+        // or the copy made into place.
+        var published = ExclusivePublisher.FileIdentity.of(temporary)
         do {
             try ReadingPublisher.publish(temporary, to: output, exclusiveRename: exclusiveRename) { claimed in
+                published = claimed
                 manifest.publishing = claimed
                 try saveManifest(manifest, to: manifestURL)
             }
@@ -430,7 +441,7 @@ public struct AudioBookJoiner: ReadingAudioJoiner {
             try? saveManifest(manifest, to: manifestURL)
             throw error
         }
-        return finish(&manifest, manifestURL: manifestURL, directory: directory, output: output)
+        return finish(&manifest, manifestURL: manifestURL, directory: directory, output: output, identity: published)
     }
 
     /// The bookkeeping once the finished file is at `output`: the manifest marked complete and
@@ -438,7 +449,7 @@ public struct AudioBookJoiner: ReadingAudioJoiner {
     /// that fails is reported as a warning. The manifest saved before publishing already holds
     /// the file's checksum, so a `--resume` recognizes the reading as done either way.
     private func finish(_ manifest: inout ReadingManifest, manifestURL: URL, directory: URL,
-                        output: URL) -> ReadingResult {
+                        output: URL, identity: ReadingFileIdentity?) -> ReadingResult {
         var warnings: [String] = []
         if manifest.status != "complete" || manifest.publishing != nil {
             manifest.status = "complete"
@@ -454,7 +465,7 @@ public struct AudioBookJoiner: ReadingAudioJoiner {
         } catch {
             warnings.append("The reading was saved to \(output.path), but its part files in \(directory.path) could not be removed: \(error.localizedDescription)")
         }
-        return ReadingResult(output: output, manifest: manifest, warnings: warnings)
+        return ReadingResult(output: output, manifest: manifest, warnings: warnings, outputIdentity: identity)
     }
 
     private func saveManifest(_ manifest: ReadingManifest, to url: URL) throws {

@@ -66,7 +66,7 @@ import Testing
         }
         #expect(try Data(contentsOf: file) == Data("newer".utf8))
         #expect(try Data(contentsOf: URL(fileURLWithPath: keptAt)) == Data("the user's".utf8))
-        #expect(URL(fileURLWithPath: keptAt).lastPathComponent.hasPrefix(ExclusivePublisher.removalPrefix))
+        #expect(URL(fileURLWithPath: keptAt).deletingLastPathComponent().lastPathComponent.hasPrefix(ExclusivePublisher.removalPrefix))
     }
 
     /// On a volume that cannot rename exclusively, a file goes back only through a hard link (which fails when
@@ -138,15 +138,15 @@ import Testing
         #expect(try names(root) == ["Story.m4a"])
     }
 
-    /// With `keepingName`, the file is handed over under its own name in a private folder; one `dispose` refuses goes
+    /// The file is handed over under its own name in a private folder; one `dispose` refuses goes
     /// back, and the folder is removed either way.
-    @Test func keepingNameHandsOverTheFileUnderItsNameAndPutsBackARefusedOne() throws {
+    @Test func theFileIsHandedOverUnderItsNameAndARefusedOneGoesBack() throws {
         let root = try folder()
         defer { try? FileManager.default.removeItem(at: root) }
         let file = root.appendingPathComponent("Story.m4a")
         try Data("audio".utf8).write(to: file)
         struct Refused: Error {}
-        let refused = ExclusivePublisher.removeVerified(file, keepingName: true, matches: { _ in true },
+        let refused = ExclusivePublisher.removeVerified(file, matches: { _ in true },
                                                         dispose: { _ in throw Refused() })
         guard case .failed(_, nil) = refused else {
             Issue.record("Expected a failure with the file back, got \(refused)")
@@ -155,7 +155,7 @@ import Testing
         #expect(try names(root) == ["Story.m4a"])
 
         var handed: URL?
-        let removal = ExclusivePublisher.removeVerified(file, keepingName: true, matches: { _ in true }) { staged in
+        let removal = ExclusivePublisher.removeVerified(file, matches: { _ in true }) { staged in
             handed = staged
             try ExclusivePublisher.removeFile(staged)
         }

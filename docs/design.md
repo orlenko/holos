@@ -275,8 +275,8 @@ file put at that path since is left alone; the file is first moved into a privat
 `.holos-delete-<UUID>` folder beside it under its own name and checked there, so the file
 trashed is the file checked, and one that no longer matches goes back;
 `ReadingLibrary.trashVerified`), removes a copy a crash cut off (the manifest's
-`publishing` identity; `ReadingLibrary.ownership`) the same way (moved aside to a
-`.holos-delete-<UUID>` name, its identity checked there, then removed; every removal that
+`publishing` identity; `ReadingLibrary.ownership`) the same way (moved into a private
+`.holos-delete-…` folder, its identity checked there, then removed; every removal that
 depends on which file is at a path, the pipeline's and `ExclusivePublisher`'s included,
 goes through `ExclusivePublisher.removeVerified`; a file goes back only by an exclusive rename
 or a hard link, never over a file put there meanwhile, and one that cannot go back stays

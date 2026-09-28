@@ -420,7 +420,7 @@ final class ReadingController {
             $0.duration = result.manifest.duration
             $0.chapters = result.manifest.chapters.count
             $0.outputSHA256 = result.manifest.outputSHA256
-            $0.outputIdentity = ExclusivePublisher.FileIdentity.of(result.output)
+            $0.outputIdentity = result.outputIdentity
             $0.part = nil
             $0.parts = result.manifest.parts.count
             // Bookkeeping that failed after the file was saved (see `ReadingResult.warnings`).
@@ -569,9 +569,17 @@ final class ReadingController {
     private func cleanUp(_ entry: ReadingEntry) async -> ReadingLibrary.DeleteResult {
         let store = store
         return await Task.detached(priority: .userInitiated) {
-            let readings = try? ReadingOutput.readingsRoot(
-                support: HolosPaths.supportRoot, configured: ProcessInfo.processInfo.environment["HOLOS_SUPPORT_DIR"],
-                create: false)
+            let readings: URL
+            do {
+                readings = try ReadingOutput.readingsRoot(
+                    support: HolosPaths.supportRoot, configured: ProcessInfo.processInfo.environment["HOLOS_SUPPORT_DIR"],
+                    create: false)
+            } catch {
+                // Without it the cache cannot be told or locked: the entry stays for another try.
+                return ReadingLibrary.DeleteResult(
+                    problem: "Its rendered parts could not be found: \(error.localizedDescription) Try Delete again.",
+                    aside: entry.outputAside)
+            }
             return ReadingLibrary.deleteFiles(of: entry, readingsRoot: readings, store: store) { url in
                 try FileManager.default.trashItem(at: url, resultingItemURL: nil)
             }

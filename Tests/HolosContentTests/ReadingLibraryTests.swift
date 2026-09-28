@@ -557,6 +557,23 @@ import Testing
         #expect(!ReadingLibrary.sameFile(composed, ReadingOutput.fileURL(keepingSpelling: decomposed)))
     }
 
+    /// A manifest that cannot be looked up may hold the only identity of a partly written file: an error, never "no
+    /// manifest".
+    @Test func aManifestThatCannotBeLookedUpIsAnError() throws {
+        let root = try folder()
+        let cache = root.appendingPathComponent("Output-0123456789abcdef", isDirectory: true)
+        defer {
+            _ = chmod(cache.path, 0o755)
+            try? FileManager.default.removeItem(at: root)
+        }
+        try FileManager.default.createDirectory(at: cache, withIntermediateDirectories: false)
+        let output = root.appendingPathComponent("Story.m4a")
+        try Data("partial".utf8).write(to: output)
+        #expect(chmod(cache.path, 0) == 0)
+        guard getuid() != 0 else { return }
+        #expect(throws: (any Error).self) { try ReadingLibrary.ownership(of: output, sha256: nil, cache: cache) }
+    }
+
     /// A render cache that cannot be looked up is not "gone": Delete keeps the entry for another try.
     @Test func aCacheThatCannotBeCheckedKeepsTheEntry() throws {
         let root = try folder()

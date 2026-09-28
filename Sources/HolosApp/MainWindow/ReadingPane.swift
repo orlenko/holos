@@ -365,8 +365,12 @@ final class ReadingPane: NSViewController, MainSectionContent, NSTableViewDataSo
         let folder = ReadingPreferences.folder
         if FileManager.default.fileExists(atPath: folder.path) {
             NSWorkspace.shared.activateFileViewerSelecting([folder])
-        } else {
+        } else if ReadingPreferences.isDefaultFolder {
             showMessage("\(ReadingPreferences.folderText) does not exist yet; it is made with the first reading.")
+        } else {
+            // A folder chosen in Settings is never made in its place (see `ReadingController.outputFolder`).
+            showMessage("\(ReadingPreferences.folderText), chosen in Settings › Reading, is not available. Connect "
+                + "its disk, or choose another folder there.", problem: true)
         }
     }
 
