@@ -39,7 +39,9 @@ private final class FakeCapture: DictationCapture {
 
     func releaseStart() { startWaiter?.resume(); startWaiter = nil }
     func fail(_ error: Error) { pair.continuation.finish(throwing: error) }
-    func emit(_ frame: PCMFrame) { pair.continuation.yield(CapturedAudio(track: "mic", frame: frame)) }
+    func emit(_ frame: PCMFrame, track: String = "mic") {
+        pair.continuation.yield(CapturedAudio(track: track, frame: frame))
+    }
 }
 
 private actor FakeSpeech: DictationSpeech {
@@ -356,4 +358,32 @@ private func eventually(_ condition: () -> Bool) async -> Bool {
     #expect(callbackBegin == false)
     #expect(await eventually { harness.capture.stops == 1 })
     controller = nil
+}
+
+@Test @MainActor func frameTapGetsEveryMicrophoneFrameTheRecognizerTookBeforeTheResult() async throws {
+    let harness = Harness()
+    await harness.speech.setSegments([.init(start: 0, end: 1, text: "hello")])
+    var tapped: [(UUID, Double)] = []
+    var phaseAtTap: [DictationPhase] = []
+    let controller = DictationController(dependencies: harness.dependencies) { _ in }
+    controller.frameTap = { id, frame in
+        tapped.append((id, frame.startTime))
+        phaseAtTap.append(controller.status.phase)
+    }
+    #expect(controller.begin())
+    let id = try #require(controller.status.utteranceID)
+    #expect(await eventually { controller.status.phase == .listening })
+    for index in 0..<3 {
+        harness.capture.emit(try PCMFrame(samples: Array(repeating: 0.1, count: 160), sampleRate: 16_000, channels: 1,
+                                          startTime: Double(index) * 0.01))
+    }
+    // Another track's audio is neither recognized nor kept.
+    harness.capture.emit(try PCMFrame(samples: [0.2], sampleRate: 16_000, channels: 1, startTime: 0), track: "system")
+    #expect(await eventually { tapped.count == 3 })
+    controller.end()
+    #expect(await eventually { controller.status.phase == .result })
+    #expect(tapped.map(\.0) == [id, id, id])
+    #expect(tapped.map(\.1) == [0, 0.01, 0.02])
+    #expect(await harness.speech.appended == 3)
+    #expect(!phaseAtTap.contains(.result))
 }

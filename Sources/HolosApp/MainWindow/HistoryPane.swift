@@ -14,6 +14,13 @@ final class HistoryPane: NSViewController, MainSectionContent, NSTableViewDataSo
         var correct: (DictationRecord) -> Void
         var delete: (DictationRecord) -> Void
         var clear: () -> Void
+        /// The dictation's saved audio file, when it is still on this Mac.
+        var audioURL: (DictationRecord) -> URL?
+        /// Run Again: recognizes the dictation's saved audio again with today's settings. Nothing is written into
+        /// any app and nothing is copied.
+        var rerun: @MainActor (DictationRecord) async throws -> DictationRerunReport
+        /// Update History: keeps a Run Again result as the dictation's text.
+        var update: (DictationRecord, DictationRerunReport) -> Void
     }
 
     private enum Row {
@@ -35,6 +42,10 @@ final class HistoryPane: NSViewController, MainSectionContent, NSTableViewDataSo
     private let footer = NSTextField(wrappingLabelWithString: "")
     private let clearButton = NSButton(title: "Clear History…", target: nil, action: nil)
     private let detail = HistoryDetailView()
+    private let player = HistoryAudioPlayer()
+    /// The last Run Again and its dictation: shown while that dictation is selected.
+    private var rerun: (id: UUID, state: RerunComparisonView.State)?
+    private var rerunTask: Task<Void, Never>?
     private let timeFormatter: DateFormatter = {
         let formatter = DateFormatter()
         formatter.dateStyle = .none
@@ -49,7 +60,16 @@ final class HistoryPane: NSViewController, MainSectionContent, NSTableViewDataSo
         detail.onCopy = { [weak self] heard in self?.copySelected(heard: heard) }
         detail.onCorrect = { [weak self] in self?.correctSelected() }
         detail.onDelete = { [weak self] in self?.deleteSelected() }
+        detail.onPlay = { [weak self] in _ = self?.togglePlay() }
+        detail.onRunAgain = { [weak self] in self?.runAgain() }
+        detail.onCopyNewResult = { [weak self] in self?.copyNewResult() }
+        detail.onUpdateHistory = { [weak self] in self?.updateHistory() }
+        player.onChange = { [weak self] in self?.showAudio() }
         showSelection()
+    }
+
+    func sectionDidHide() {
+        player.stop()
     }
 
     @available(*, unavailable)
@@ -80,6 +100,7 @@ final class HistoryPane: NSViewController, MainSectionContent, NSTableViewDataSo
         table.doubleAction = #selector(openSelected)
         table.onReturn = { [weak self] in self?.openSelected() }
         table.onDelete = { [weak self] in self?.deleteSelected() }
+        table.onSpace = { [weak self] in self?.togglePlay() ?? false }
         table.setAccessibilityLabel("Dictations")
         let scroll = NSScrollView()
         scroll.documentView = table
@@ -154,7 +175,8 @@ final class HistoryPane: NSViewController, MainSectionContent, NSTableViewDataSo
     static func clearTarget(count: Int, unreadable: Bool) -> (phrase: String, sentence: String)? {
         if count > 0 {
             let dictations = "\(count) \(count == 1 ? "dictation" : "dictations")"
-            return ("the \(dictations) already kept", "All \(dictations) kept on this Mac are deleted.")
+            return ("the \(dictations) already kept",
+                    "All \(dictations) kept on this Mac are deleted, with their audio.")
         }
         guard unreadable else { return nil }
         return ("what the history file keeps (it could not be read)",
@@ -220,7 +242,85 @@ final class HistoryPane: NSViewController, MainSectionContent, NSTableViewDataSo
     }
 
     private func showSelection() {
-        detail.show(selectedRecord, emptyText: records.isEmpty ? "" : "Select a dictation to see it here.")
+        let record = selectedRecord
+        // Another dictation, or none: its audio stops.
+        if player.id != nil, player.id != record?.id { player.stop() }
+        detail.show(record, emptyText: records.isEmpty ? "" : "Select a dictation to see it here.")
+        showAudio()
+        detail.showRerun(record.flatMap { record in rerun.flatMap { $0.id == record.id ? $0.state : nil } })
+    }
+
+    /// The selected dictation's audio row: its player, or why there is no audio.
+    private func showAudio() {
+        guard let record = selectedRecord else { return }
+        let state: HistoryDetailView.AudioState
+        if actions.audioURL(record) != nil {
+            let loaded = player.id == record.id
+            let duration = loaded ? player.duration ?? record.audio?.seconds ?? 0 : record.audio?.seconds ?? 0
+            state = .available(playing: loaded && player.isPlaying,
+                               time: HistoryAudioPlayer.timeText(loaded ? player.position : 0, of: duration))
+        } else if record.audio != nil {
+            state = .missing("The audio is no longer on this Mac.")
+        } else {
+            state = .missing("No audio was kept for this dictation.")
+        }
+        detail.showAudio(state, running: rerunTask != nil)
+    }
+
+    /// ▶/⏸, or Space in the list: false when the selected dictation has no audio (Space then does what it does).
+    private func togglePlay() -> Bool {
+        guard let record = selectedRecord, let url = actions.audioURL(record) else { return false }
+        do {
+            try player.toggle(id: record.id, url: url)
+        } catch {
+            detail.showFeedback("The audio could not be played.")
+        }
+        return true
+    }
+
+    /// Run Again (⌘R): the selected dictation's audio through the recognizer and today's text steps.
+    private func runAgain() {
+        guard rerunTask == nil, let record = selectedRecord, actions.audioURL(record) != nil else { return }
+        rerun = (record.id, .running)
+        rerunTask = Task { [weak self] in
+            guard let self else { return }
+            let state: RerunComparisonView.State
+            do {
+                state = .done(try await self.actions.rerun(record))
+            } catch {
+                state = .failed(error.localizedDescription)
+            }
+            self.rerunTask = nil
+            if self.rerun?.id == record.id { self.rerun = (record.id, state) }
+            self.showSelection()
+        }
+        showSelection()
+    }
+
+    private var selectedReport: DictationRerunReport? {
+        guard let record = selectedRecord, let rerun, rerun.id == record.id,
+              case .done(let report) = rerun.state else { return nil }
+        return report
+    }
+
+    /// Copy New Result: the text Run Again would write, only on this request.
+    private func copyNewResult() {
+        guard let report = selectedReport else { return }
+        detail.showFeedback(actions.copy(report.written.now) ? "Copied the new result." : "Clipboard write failed.")
+    }
+
+    /// Update History…: after a confirmation, the new result replaces the dictation's text.
+    private func updateHistory() {
+        guard let record = selectedRecord, let report = selectedReport else { return }
+        confirm("Replace this dictation's text with the new result?",
+                "History keeps the new text as written and as heard. Text already written into "
+                    + "\(record.app ?? "the app") stays as it is.", button: "Update History") { [weak self] in
+            guard let self, self.selectedRecord?.id == record.id else { return }
+            self.actions.update(record, report)
+            self.rerun = nil
+            self.showSelection()
+            self.detail.showFeedback("History updated.")
+        }
     }
 
     // MARK: - Table
@@ -318,8 +418,8 @@ final class HistoryPane: NSViewController, MainSectionContent, NSTableViewDataSo
 
     private func deleteSelected() {
         guard let record = selectedRecord else { return }
-        confirm("Delete this dictation?", "It is removed from History on this Mac. Text already written into "
-                    + "\(record.app ?? "the app") stays there.", button: "Delete") { [weak self] in
+        confirm("Delete this dictation?", "It is removed from History on this Mac, with its audio. Text already "
+                    + "written into \(record.app ?? "the app") stays there.", button: "Delete") { [weak self] in
             guard let self else { return }
             // The next row keeps the selection where it was.
             let index = self.table.selectedRow
@@ -469,6 +569,22 @@ final class HistoryDetailView: NSView {
     var onCopy: ((_ heard: Bool) -> Void)?
     var onCorrect: (() -> Void)?
     var onDelete: (() -> Void)?
+    var onPlay: (() -> Void)?
+    var onRunAgain: (() -> Void)?
+    var onCopyNewResult: (() -> Void)?
+    var onUpdateHistory: (() -> Void)?
+
+    /// The selected dictation's audio: playable (and whether it plays, "0:03 / 0:12"), or why there is none.
+    enum AudioState {
+        case available(playing: Bool, time: String)
+        case missing(String)
+    }
+
+    private let playButton = NSButton(title: "Play", target: nil, action: nil)
+    private let audioTime = NSTextField(labelWithString: "")
+    private let runAgainButton = NSButton(title: "Run Again", target: nil, action: nil)
+    private let audioRow = NSStackView()
+    private let comparison = RerunComparisonView()
 
     private let title = NSTextField(labelWithString: "")
     private let subtitle = NSTextField(labelWithString: "")
@@ -549,15 +665,42 @@ final class HistoryDetailView: NSView {
         let buttons = NSStackView(views: [copyButton, copyHeardButton, correctButton, deleteButton, feedback])
         buttons.spacing = 8
 
+        playButton.target = self
+        playButton.action = #selector(playPressed)
+        playButton.bezelStyle = .push
+        playButton.controlSize = .small
+        playButton.image = NSImage(systemSymbolName: "play.fill", accessibilityDescription: nil)
+        playButton.imagePosition = .imageLeading
+        playButton.toolTip = "Play the dictation's audio (Space in the list)"
+        audioTime.font = .monospacedDigitSystemFont(ofSize: 11, weight: .regular)
+        audioTime.textColor = .secondaryLabelColor
+        audioTime.setAccessibilityLabel("Audio position")
+        runAgainButton.target = self
+        runAgainButton.action = #selector(runAgainPressed)
+        runAgainButton.bezelStyle = .push
+        runAgainButton.controlSize = .small
+        runAgainButton.keyEquivalent = "r"
+        runAgainButton.keyEquivalentModifierMask = .command
+        runAgainButton.toolTip = "Recognize the saved audio again with today's language, corrections, filler "
+            + "removal, and Apple Intelligence fix, and compare (⌘R). Nothing is typed or copied."
+        for view in [playButton, audioTime, runAgainButton] { audioRow.addArrangedSubview(view) }
+        audioRow.spacing = 8
+        audioRow.alignment = .centerY
+        comparison.onCopy = { [weak self] in self?.onCopyNewResult?() }
+        comparison.onUpdate = { [weak self] in self?.onUpdateHistory?() }
+        comparison.isHidden = true
+
         let header = NSStackView(views: [title, subtitle])
         header.orientation = .vertical
         header.alignment = .leading
         header.spacing = 2
         let separator = NSBox()
         separator.boxType = .separator
-        for view in [header, text, restHeading, rest, heardHeading, heard, separator, grid, buttons] {
+        for view in [header, audioRow, comparison, text, restHeading, rest, heardHeading, heard, separator, grid,
+                     buttons] {
             content.addArrangedSubview(view)
         }
+        comparison.widthAnchor.constraint(equalTo: content.widthAnchor).isActive = true
         content.orientation = .vertical
         content.alignment = .leading
         content.spacing = 12
@@ -612,8 +755,13 @@ final class HistoryDetailView: NSView {
     func show(_ record: DictationRecord?, emptyText: String) {
         feedbackTask?.cancel()
         feedback.stringValue = ""
-        // With nothing selected the actions (and their keys: ⇧⌘C, ⌘E) are off, not merely hidden.
+        // With nothing selected the actions (and their keys: ⇧⌘C, ⌘E, ⌘R) are off, not merely hidden; `showAudio`
+        // turns Play and Run Again on for a dictation with audio.
         for button in [copyButton, copyHeardButton, correctButton, deleteButton] { button.isEnabled = record != nil }
+        if record == nil {
+            playButton.isEnabled = false
+            runAgainButton.isEnabled = false
+        }
         guard let record else {
             content.isHidden = true
             empty.stringValue = emptyText
@@ -649,6 +797,34 @@ final class HistoryDetailView: NSView {
         window?.makeFirstResponder(text)
     }
 
+    /// The audio row: ▶/⏸ and the position, and Run Again (off while one runs); or why there is no audio.
+    func showAudio(_ state: AudioState, running: Bool) {
+        switch state {
+        case .available(let playing, let time):
+            playButton.isHidden = false
+            playButton.isEnabled = true
+            playButton.title = playing ? "Pause" : "Play"
+            playButton.image = NSImage(systemSymbolName: playing ? "pause.fill" : "play.fill",
+                                       accessibilityDescription: nil)
+            audioTime.stringValue = time
+            runAgainButton.isHidden = false
+            runAgainButton.isEnabled = !running
+        case .missing(let reason):
+            playButton.isHidden = true
+            playButton.isEnabled = false
+            audioTime.stringValue = reason
+            runAgainButton.isHidden = true
+            runAgainButton.isEnabled = false  // a hidden button must not answer ⌘R either
+        }
+    }
+
+    /// The Run Again result for the selected dictation; nil hides it.
+    func showRerun(_ state: RerunComparisonView.State?) {
+        comparison.isHidden = state == nil
+        if let state { comparison.show(state) }
+        needsLayout = true
+    }
+
     func showFeedback(_ message: String) {
         feedback.stringValue = message
         feedbackTask?.cancel()
@@ -678,6 +854,8 @@ final class HistoryDetailView: NSView {
         return result
     }
 
+    @objc private func playPressed() { onPlay?() }
+    @objc private func runAgainPressed() { onRunAgain?() }
     @objc private func copyPressed() { onCopy?(false) }
     @objc private func copyHeardPressed() { onCopy?(true) }
     @objc private func correctPressed() { onCorrect?() }

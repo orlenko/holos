@@ -74,10 +74,28 @@ public struct DictationRecord: Codable, Sendable, Equatable, Identifiable {
     /// Seconds from Listening to release.
     public var seconds: Double
     public var words: Int
+    /// The microphone audio the recognizer heard, kept next to the history for Run Again; nil when none was kept
+    /// (the setting was off, the dictation predates it, or the file could not be finished).
+    public var audio: Audio?
+
+    /// A dictation's saved audio: `<History>/audio/<id>.m4a` (AAC, mono), and how long it is.
+    public struct Audio: Codable, Sendable, Equatable {
+        /// The file's name in the audio folder; always `<id>.m4a`.
+        public var file: String
+        public var seconds: Double
+
+        public init(file: String, seconds: Double) {
+            self.file = file
+            self.seconds = seconds.isFinite ? max(0, seconds) : 0
+        }
+
+        /// The name a dictation's audio file has.
+        public static func fileName(for id: UUID) -> String { "\(id.uuidString).m4a" }
+    }
 
     public init(id: UUID, date: Date, app: String?, language: String, text: String, heard: String,
                 unwritten: String? = nil, fixes: Fixes = Fixes(), outcome: Outcome, seconds: Double,
-                words: Int? = nil) {
+                words: Int? = nil, audio: Audio? = nil) {
         self.schemaVersion = Self.currentSchemaVersion
         self.id = id
         self.date = date
@@ -92,6 +110,7 @@ public struct DictationRecord: Codable, Sendable, Equatable, Identifiable {
         self.outcome = outcome
         self.seconds = max(0, seconds)
         self.words = words ?? Self.wordCount(text)
+        self.audio = audio
     }
 
     /// What History's Copy copies: the part that was not written for a partly written dictation (what Copy Result
@@ -248,7 +267,12 @@ extension DictationRecord {
 /// again to what the reload read (the file may not have had it yet).
 public enum DictationHistoryChange: Sendable, Equatable {
     case add(DictationRecord)
+    /// Replaces the record with the same ID, if it is still there (Update History, or the audio link an append
+    /// settled on).
+    case update(DictationRecord)
     case delete(UUID)
+    /// Drops every record's audio link (the audio files were deleted).
+    case removeAudio
     case clear
     /// Removes records dated before this.
     case sweep(before: Date)
@@ -257,8 +281,12 @@ public enum DictationHistoryChange: Sendable, Equatable {
         switch self {
         case .add(let record):
             if !records.contains(where: { $0.id == record.id }) { records.append(record) }
+        case .update(let record):
+            if let index = records.firstIndex(where: { $0.id == record.id }) { records[index] = record }
         case .delete(let id):
             records.removeAll { $0.id == id }
+        case .removeAudio:
+            for index in records.indices { records[index].audio = nil }
         case .clear:
             records.removeAll()
         case .sweep(let cutoff):
@@ -389,7 +417,7 @@ public enum WordDiff {
 
     /// Indices of `a` and `b` in one longest common subsequence. Long texts (over 2 000 words) compare position by
     /// position instead, so a very long dictation never costs a large table.
-    private static func lcsMatches(_ a: [String], _ b: [String]) -> (a: Set<Int>, b: Set<Int>) {
+    static func lcsMatches(_ a: [String], _ b: [String]) -> (a: Set<Int>, b: Set<Int>) {
         guard !a.isEmpty, !b.isEmpty else { return ([], []) }
         guard a.count <= 2_000, b.count <= 2_000 else {
             let same = (0..<min(a.count, b.count)).filter { a[$0] == b[$0] }

@@ -68,9 +68,22 @@ public final class DictationHistoryService {
         set { defaults.set(newValue.rawValue, forKey: HistoryRetention.defaultsKey) }
     }
 
-    /// At launch: sweeps what the retention setting no longer keeps, loads the rest, and sweeps again once a day.
+    /// Settings › Keep the audio of dictations (for Run Again); on when never set.
+    public var keepsAudio: Bool {
+        get { HistoryAudio.keeps(defaults.object(forKey: HistoryAudio.defaultsKey)) }
+        set { defaults.set(newValue, forKey: HistoryAudio.defaultsKey) }
+    }
+
+    /// Whether a dictation starting now should write its audio: History records it and the audio is kept.
+    public var recordsAudio: Bool { retention.records && keepsAudio }
+
+    /// What the kept audio takes on disk, as last measured (after each read and write); nil before the first.
+    public private(set) var audioBytes: Int64?
+
+    /// At launch: sweeps what the retention setting no longer keeps (and every partial audio file: no dictation is in
+    /// progress yet), loads the rest, and sweeps again once a day.
     public func start() {
-        sweep()
+        sweep(partialsBefore: Date())
         dailySweep?.cancel()
         dailySweep = Task { [weak self] in
             while !Task.isCancelled {
@@ -129,7 +142,7 @@ public final class DictationHistoryService {
         // Queued now, so it reads the file after every operation asked for before it and before any asked after.
         queue.async {
             do {
-                continuation.yield(.read(try store.load()))
+                continuation.yield(.read(try store.load(), audioBytes: store.audioBytes()))
             } catch {
                 Self.log.error("Cannot read the history: \(error.localizedDescription, privacy: .public)")
                 continuation.yield(.failed(error.localizedDescription))
@@ -144,7 +157,7 @@ public final class DictationHistoryService {
     }
 
     private enum LoadResult: Sendable {
-        case read(DictationHistoryStore.Contents)
+        case read(DictationHistoryStore.Contents, audioBytes: Int64)
         case failed(String)
     }
 
@@ -152,7 +165,8 @@ public final class DictationHistoryService {
         loadsInFlight -= 1
         let newer = journal.filter { $0.generation > asked }.map(\.change)
         switch result {
-        case .read(let contents):
+        case .read(let contents, let bytes):
+            audioBytes = bytes
             var merged = contents.records
             for change in newer { change.apply(to: &merged) }
             records = merged
@@ -179,35 +193,79 @@ public final class DictationHistoryService {
         for waiter in waiters { waiter() }
     }
 
-    /// Records a finished dictation, unless History is off.
-    public func add(_ record: DictationRecord) {
-        guard retention.records else { return }
-        change(.add(record), failure: "This dictation could not be saved in History.") { try $0.append(record) }
+    /// Records a finished dictation, unless History is off, with its audio (`audio`, the dictation's writer) when the
+    /// audio is kept: the writer finishes on the history queue, and the record gains its link once the file is in
+    /// place. Audio that is not kept (History or the audio setting is off) is deleted.
+    public func add(_ record: DictationRecord, audio: (any DictationAudioRecording)? = nil) {
+        guard retention.records else {
+            audio?.discard()
+            return
+        }
+        var audio = audio
+        if !keepsAudio {
+            audio?.discard()
+            audio = nil
+        }
+        var record = record
+        record.audio = nil  // linked once the file is in place
+        change(.add(record), failure: "This dictation could not be saved in History.") { [audio, record] store in
+            let finished = audio?.finish()
+            do {
+                let appended = try store.append(record, audio: finished)
+                return appended == record ? nil : .update(appended)
+            } catch {
+                if let finished { try? DictationHistoryStore.removeAudioFile(finished.partial) }
+                throw error
+            }
+        }
+    }
+
+    /// Replaces a dictation's text with a new result (Update History); a dictation deleted meanwhile stays deleted.
+    public func update(_ record: DictationRecord) {
+        change(.update(record), failure: "The dictation could not be updated in History.") { store in
+            try store.update(record)
+            return nil
+        }
     }
 
     public func delete(_ id: UUID) {
         change(.delete(id), failure: "The dictation could not be deleted; it is still kept on this Mac.") {
             try $0.delete(id: id)
+            return nil
         }
     }
 
     public func clear() {
         change(.clear, failure: "History could not be cleared; the dictations are still kept on this Mac.") {
             try $0.clear()
+            return nil
         }
     }
 
-    /// Removes what the retention setting no longer keeps (and compacts the file), then reloads.
-    public func sweep(now: Date = Date()) {
+    /// Deletes the audio of every dictation (keeping the audio was turned off, and the user chose to delete it).
+    public func removeAllAudio() {
+        change(.removeAudio, failure: "The dictations' audio could not be deleted; it is still kept on this Mac.") {
+            try $0.removeAllAudio()
+            return nil
+        }
+    }
+
+    /// Removes what the retention setting no longer keeps (and compacts the file), then reloads. Partial audio
+    /// written before `partialsBefore` (an hour ago unless given) belongs to no dictation in progress and goes too.
+    public func sweep(now: Date = Date(), partialsBefore: Date? = nil) {
         let cutoff = retention.cutoff(now: now) ?? .distantPast
+        let partials = partialsBefore ?? now.addingTimeInterval(-DictationHistoryStore.partialAudioLifetime)
         change(.sweep(before: cutoff), failure: "Old dictations could not be removed from History.") {
-            try $0.sweep(before: cutoff)
+            try $0.sweep(before: cutoff, partialsBefore: partials)
+            return nil
         }
         reload()
     }
 
+    /// `write` runs on the queue; the change it returns (the record as appended, with its audio link) is applied once
+    /// it succeeded.
     private func change(_ change: DictationHistoryChange, failure: String,
-                        _ write: @escaping @Sendable (DictationHistoryStore) throws -> Void) {
+                        _ write: @escaping @Sendable (DictationHistoryStore) throws -> DictationHistoryChange?) {
         generation += 1
         let generation = self.generation
         if loadsInFlight > 0 { journal.append((generation, change)) }
@@ -219,8 +277,11 @@ public final class DictationHistoryService {
         let state = queueState
         queue.async { [weak self] in
             do {
-                try write(store)
-                Task { @MainActor in self?.writeSucceeded(generation: generation, change) }
+                let followUp = try write(store)
+                let bytes = store.audioBytes()
+                Task { @MainActor in
+                    self?.writeSucceeded(generation: generation, change, followUp: followUp, audioBytes: bytes)
+                }
             } catch {
                 Self.log.error("History write failed: \(error.localizedDescription, privacy: .public)")
                 state.noteFailure()
@@ -244,8 +305,17 @@ public final class DictationHistoryService {
     /// A write succeeded. One asked for after a write that failed means the history works again, so the write problem
     /// clears; a Clear History replaced the file with an empty one, so an unreadable history is readable (and empty)
     /// again.
-    private func writeSucceeded(generation: Int, _ change: DictationHistoryChange) {
-        var changed = false
+    private func writeSucceeded(generation: Int, _ change: DictationHistoryChange, followUp: DictationHistoryChange?,
+                                audioBytes bytes: Int64) {
+        var changed = bytes != audioBytes
+        audioBytes = bytes
+        if let followUp {
+            // A reload reading meanwhile applies it after the change it follows (the same generation).
+            if loadsInFlight > 0 { journal.append((generation, followUp)) }
+            let before = records
+            followUp.apply(to: &records)
+            if records != before { changed = true }
+        }
         if let failed = problemGeneration, generation > failed {
             writeProblem = nil
             problemGeneration = nil

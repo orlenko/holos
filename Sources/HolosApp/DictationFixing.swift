@@ -1,44 +1,21 @@
 import Foundation
-import FoundationModels
+import HolosDictation
 import HolosCore
 import os
 
 /// The Setup option "Fix misheard words with Apple Intelligence", off by default.
 enum AIFixSetting {
-    static let key = "aiFixMisheard"
+    static let key = DictationPreferences.aiFixKey
 
     static var isOn: Bool {
         get { UserDefaults.standard.bool(forKey: key) }
         set { UserDefaults.standard.set(newValue, forKey: key) }
     }
 
-    /// Nil when Apple's on-device model can be used; otherwise why not, for Setup.
-    static var unavailableReason: String? {
-        switch SystemLanguageModel.default.availability {
-        case .available: nil
-        case .unavailable(let reason):
-            switch reason {
-            case .deviceNotEligible: "this Mac does not support Apple Intelligence"
-            case .appleIntelligenceNotEnabled: "turn on Apple Intelligence in System Settings"
-            case .modelNotReady: "the model is still downloading"
-            @unknown default: "the on-device model is not available"
-            }
-        }
-    }
-
-    /// Like `unavailableReason`, for dictation in `language` (a locale identifier). Only English and French have been
-    /// tried: the model fixed misheard French words as well as English ones, and the guard refused the replies that
-    /// translated or answered the text. Other languages stay off until someone tries them.
+    /// Nil when Apple's on-device model can be used for dictation in `language`; otherwise why not, for Settings
+    /// (`OnDeviceFix`, shared with Run Again).
     static func unavailableReason(language: String) -> String? {
-        if let reason = unavailableReason { return reason }
-        let name = DictationLanguage.name(of: language)
-        guard SystemLanguageModel.default.supportsLocale(Locale(identifier: language)) else {
-            return "Apple Intelligence does not support \(name)"
-        }
-        guard ["en", "fr"].contains(DictationLanguage.languageCode(of: language)) else {
-            return "not yet tried with \(name) dictation"
-        }
-        return nil
+        OnDeviceFix.unavailableReason(language: language)
     }
 }
 
@@ -49,7 +26,7 @@ enum AIFixSetting {
 final class DictationFixPipeline {
     /// How long a chunk waits for its fix before it is written as recognized. Fixes took 0.35–0.55 s per chunk on
     /// an M-series Mac once the model was loaded.
-    static let chunkTimeout: Duration = .milliseconds(1500)
+    static let chunkTimeout = OnDeviceFix.chunkTimeout
 
     private static let log = Logger(subsystem: "ca.orlenko.holos.app", category: "ai-fix")
     private let fixer: TranscriptFixer
@@ -73,17 +50,11 @@ final class DictationFixPipeline {
     static func make(corrections: CorrectionList, language: String,
                      deliver: @escaping (_ chunk: String, _ text: String) -> Bool) -> DictationFixPipeline? {
         guard AIFixSetting.isOn, AIFixSetting.unavailableReason(language: language) == nil else { return nil }
-        let model = SystemLanguageModel.default
         // Loads the model while the user starts speaking, so the first chunk does not wait for it.
-        LanguageModelSession(model: model, instructions: TranscriptFixer.instructions(reference: [])).prewarm()
-        // A quarter of the context for learned corrections leaves ample room for the chunk and the reply.
-        let fixer = TranscriptFixer(corrections: corrections, referenceBudget: model.contextSize / 4,
-                                    timeout: chunkTimeout) { instructions, prompt in
-            // A fresh session per chunk: earlier chunks must not steer this one, and the context stays small.
-            let session = LanguageModelSession(model: model, instructions: instructions)
-            return try await session.respond(to: prompt, options: GenerationOptions(samplingMode: .greedy)).content
-        }
-        return DictationFixPipeline(fixer: fixer, deliver: deliver)
+        OnDeviceFix.prewarm()
+        // The same model, sessions, and timeout Run Again uses (`OnDeviceFix`).
+        return DictationFixPipeline(fixer: OnDeviceFix.fixer(corrections: corrections, timeout: chunkTimeout),
+                                    deliver: deliver)
     }
 
     init(fixer: TranscriptFixer, deliver: @escaping (_ chunk: String, _ text: String) -> Bool) {

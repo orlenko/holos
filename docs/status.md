@@ -349,6 +349,26 @@ Hardware-facing and cross-app acceptance remain pending.
   writes. The store, the in-app history service (flush, reloads merged with changes made
   meanwhile), and the record rules are unit-tested; recording from live dictations has not
   been checked on screen.
+- Dictation audio and Run Again (docs/design.md "Dictation audio and Run Again"): each
+  recorded dictation's microphone audio, the frames the recognizer took, is kept as
+  `History/audio/<id>.m4a` (AAC mono 16 kHz, ~32 kbit/s, 0600) and linked from its record,
+  unless Settings › History and privacy › Keep the audio of dictations is off (it shows the
+  disk use; turning it off offers to delete the audio kept). Cancelled, refused, and
+  unrecorded dictations leave none; Delete, Clear History, and the retention sweep remove it
+  with the text, and sweeps also remove audio without a record and stale partial files.
+  History plays it (▶/⏸, Space) and Run Again (⌘R) recognizes it again with today's
+  language, corrections, filler removal, and Apple Intelligence fix, then compares then and
+  now word by word and names the steps that behaved differently; Copy New Result and Update
+  History… act only on request. `voiceislocal history rerun <id|latest>` and `rerun --all
+  [--since 7d] --json` do the same from Terminal. The writer (a synthesized tone through
+  format changes), the store's audio lifecycle (append, Delete, Clear, sweep, orphans,
+  partials, removing all audio), the service's handling of the setting and History Off, the
+  frame tap, the text steps with a stand-in fix, the comparison, and the JSON shapes are
+  unit-tested. The end-to-end test that renders a sentence with AVSpeechSynthesizer and
+  recognizes it again skips when the test process has no en-US speech model (it skipped on
+  the development Mac, where the test runner and the CLI report that model as supported, not
+  installed).
+  Nothing of it has been seen on screen or tried with real dictation yet.
 
 The CLI bundle embeds microphone and speech-recognition permission usage strings.
 `scripts/build.sh` ad-hoc signs the built executable to give macOS a stable CLI
@@ -469,6 +489,9 @@ Still requiring real-machine or user-data validation:
   the window's layout in light and dark mode, ⌘0, ⌘1–⌘5, ⌘, and ⌘F, Full Keyboard Access
   and VoiceOver, a dictation recorded in History with its app, language, and text as
   heard, Copy only on request, retention Off, and Clear History. None has been run yet.
+- Run the [dictation audio and Run Again checks](dictation-validation.md#dictation-audio-and-run-again):
+  audio kept and played, Run Again after changing a correction, Off stops keeping audio,
+  Clear History removes it. Not run yet.
 - Exercise capture failure/relaunch/recovery on hardware (`kill -9` a recorder, then
   `session recover`: the loss should be at most one 30 s chunk) and run multi-hour
   soak tests for memory growth, drift, interruptions, and audio continuity. The

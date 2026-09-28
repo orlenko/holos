@@ -58,6 +58,9 @@ struct SetupState {
     var historyCount = 0
     /// The history file could not be read: it may still keep dictations, so Clear History stays available.
     var historyUnreadable = false
+    /// Keep the audio of dictations (for Run Again), and what the kept audio takes (nil until measured).
+    var historyKeepsAudio = true
+    var historyAudioBytes: Int64?
 }
 
 enum SetupAction: Int, CaseIterable {
@@ -67,6 +70,8 @@ enum SetupAction: Int, CaseIterable {
     case toggleRecordSystemAudio
     /// Settings only: open People, clear the history, run the Setup Assistant.
     case people, clearHistory, setupAssistant
+    /// Settings › History and privacy › Keep the audio of dictations.
+    case toggleHistoryAudio
 }
 
 /// The main window's Settings section (it replaces the Setup window): cards for Permissions, Dictation, Meetings, and
@@ -106,6 +111,9 @@ final class SettingsPane: NSViewController, MainSectionContent {
     private let opacityValue = NSTextField(labelWithString: "")
     private let recordSystemAudioToggle = NSButton(
         checkboxWithTitle: "Record the computer's audio (system sound) in meetings", target: nil, action: nil)
+    private let historyAudioToggle = NSButton(
+        checkboxWithTitle: "Keep the audio of dictations (for Run Again)", target: nil, action: nil)
+    private let historyAudioUsage = SettingsPane.note("")
     private var rows: [SetupAction: Row] = [:]
     private static let textWidth: CGFloat = 360
 
@@ -248,11 +256,21 @@ final class SettingsPane: NSViewController, MainSectionContent {
         addControlRow("clock.arrow.circlepath", "Keep dictations", "Off stops recording new dictations",
                       control: retentionPopup, to: grid)
         addRow(.clearHistory, "History", to: grid)
+        historyAudioToggle.target = self
+        historyAudioToggle.action = #selector(buttonPressed(_:))
+        historyAudioToggle.tag = SetupAction.toggleHistoryAudio.rawValue
+        historyAudioToggle.toolTip = "Keeps the microphone audio of each dictation History records, so Run Again can "
+            + "recognize it again after you change a correction or a setting. It is deleted with its dictation."
+        let audio = NSStackView(views: [historyAudioToggle, historyAudioUsage])
+        audio.orientation = .vertical
+        audio.alignment = .leading
+        audio.spacing = 2
+        historyAudioUsage.setAccessibilityLabel("Dictation audio disk use")
         let note = Self.note("""
-            History keeps each dictation's text, the text as heard, the app, and the language, only on this Mac. \
-            Nothing is copied to the clipboard unless you choose Copy.
+            History keeps each dictation's text, the text as heard, the app, and the language, and, when the box \
+            above is on, its audio, only on this Mac. Nothing is copied to the clipboard unless you choose Copy.
             """)
-        return card("History and privacy", [grid, note], widths: [grid, note])
+        return card("History and privacy", [grid, audio, note], widths: [grid, note])
     }
 
     private func assistantFooter() -> NSView {
@@ -475,6 +493,10 @@ final class SettingsPane: NSViewController, MainSectionContent {
             button: "Clear History…", enabled: count > 0 || state.historyUnreadable)
         rows[.clearHistory]?.icon.image = NSImage(systemSymbolName: "tray.full", accessibilityDescription: nil)
         rows[.clearHistory]?.icon.contentTintColor = .secondaryLabelColor
+        historyAudioToggle.state = state.historyKeepsAudio ? .on : .off
+        historyAudioUsage.stringValue = HistoryAudio.usageText(bytes: state.historyAudioBytes,
+                                                               keeps: state.historyKeepsAudio
+                                                                   && state.historyRetention.records)
     }
 
     private func select(_ popup: NSPopUpButton, _ value: String) {
