@@ -31,34 +31,44 @@ extension HolosAppDelegate {
             correct: { [weak self] record in self?.correct(record) },
             delete: { [weak self] record in self?.history.delete(record.id) },
             clear: { [weak self] in self?.history.clear() }))
-        pane.update(records: history.records, retention: history.retention)
+        pane.update(records: history.records, retention: history.retention, problem: history.problem)
         return pane
     }
 
     /// Keeps the History section and Settings' count current.
     func historyChanged() {
         if let pane = mainWindow?.existingController(for: .history) as? HistoryPane {
-            pane.update(records: history.records, retention: history.retention)
+            pane.update(records: history.records, retention: history.retention, problem: history.problem)
         }
         updateSettings()
     }
 
-    /// Settings › Keep dictations. Off asks whether to clear what is already kept.
+    /// Settings › Keep dictations. Off asks whether to clear what is already kept: once the history has been read,
+    /// so an Off chosen before the launch load finished still counts (and offers to clear) the dictations on disk.
     func changeHistoryRetention(to retention: HistoryRetention) {
         guard retention != history.retention else { return }
         history.retention = retention
-        if retention == .off, !history.records.isEmpty {
-            let count = history.records.count
-            let alert = NSAlert()
-            alert.messageText = "History is off. Also clear the \(count) \(count == 1 ? "dictation" : "dictations") already kept?"
-            alert.informativeText = "New dictations are no longer kept. The ones already kept stay on this Mac until you clear them."
-            alert.addButton(withTitle: "Clear History")
-            alert.addButton(withTitle: "Keep Them")
-            NSApplication.shared.activate()
-            if alert.runModal() == .alertFirstButtonReturn { history.clear() }
+        if retention == .off {
+            history.whenLoaded { [weak self] in
+                // Asked outside the load's completion (and this action), so the modal alert never runs inside them.
+                DispatchQueue.main.async { self?.offerToClearHistoryAfterOff() }
+            }
         }
         history.sweep()
         historyChanged()
+    }
+
+    private func offerToClearHistoryAfterOff() {
+        // History may have been turned back on while the load finished.
+        guard history.retention == .off, !history.records.isEmpty else { return }
+        let count = history.records.count
+        let alert = NSAlert()
+        alert.messageText = "History is off. Also clear the \(count) \(count == 1 ? "dictation" : "dictations") already kept?"
+        alert.informativeText = "New dictations are no longer kept. The ones already kept stay on this Mac until you clear them."
+        alert.addButton(withTitle: "Clear History")
+        alert.addButton(withTitle: "Keep Them")
+        NSApplication.shared.activate()
+        if alert.runModal() == .alertFirstButtonReturn { history.clear() }
     }
 
     /// Settings › Clear History…, with a confirmation.

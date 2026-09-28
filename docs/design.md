@@ -219,7 +219,13 @@ interleave. The app (`DictationHistoryService`, HolosStorage) runs every file op
 one serial queue off the main actor, keeps the records in memory for the History section,
 applies changes made while a reload reads the file to what it read (a dictation finished
 during the launch load is merged, not lost), and waits for the queue (at most 5 seconds)
-when it quits, so a dictation just recorded, deleted, or cleared reaches the file.
+when it quits, so a dictation just recorded, deleted, or cleared reaches the file. A change
+shows at once; when its write then fails (a full disk, a folder that cannot be written),
+the History footer and the status message say so ("The dictation could not be deleted;
+it is still kept on this Mac.") and the records are read again from the file, so a failed
+delete or clear shows its dictations again and a failed append is not shown as kept.
+Turning History Off offers to clear what is kept once the history has been read, so an Off
+chosen before the launch load finished still counts the dictations on disk.
 Retention is UserDefaults `historyRetention`: `off`, `7`, `30` (the default), or
 `forever`, swept at launch, once a day, and when it changes. Off stops recording and
 offers to clear what is kept. The text never goes to `os.Logger`, and the clipboard is

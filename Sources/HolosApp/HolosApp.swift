@@ -203,6 +203,7 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
         }
         controller.contextualStrings = corrections.vocabulary
         history.onChange = { [weak self] in self?.historyChanged() }
+        history.onFailure = { [weak self] problem in self?.show(problem) }
         history.start()
         PeopleLaunch.resumePendingForgetsOnce()
         Task { await loadLanguages() }
@@ -259,7 +260,11 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
         history.stop()
         // A dictation just recorded, deleted, or cleared must reach the file before the process exits; bounded, so a
         // stuck disk never holds up the quit.
-        if !history.flush(timeout: 5) { log.error("Quit before the history's last change was written") }
+        switch history.flush(timeout: 5) {
+        case .written: break
+        case .failed: log.error("Quitting after a history write failed")
+        case .timedOut: log.error("Quit before the history's last change was written")
+        }
         monitor?.stop(); controller?.cancel()
         for observer in observers { NSWorkspace.shared.notificationCenter.removeObserver(observer) }
         overlay.hide()

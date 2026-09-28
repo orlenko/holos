@@ -146,11 +146,18 @@ final class HistoryPane: NSViewController, MainSectionContent, NSTableViewDataSo
     // MARK: - Data
 
     /// Shows `records` (oldest first, as stored) under `retention`'s footer, keeping the selected dictation.
-    func update(records: [DictationRecord], retention: HistoryRetention) {
+    /// `problem` is the last history write that failed (the list was read again from the file after it).
+    func update(records: [DictationRecord], retention: HistoryRetention, problem: String? = nil) {
         let selected = selectedRecord?.id
         self.records = records
         self.retention = retention
-        footer.stringValue = retention.footerText + " Nothing is copied unless you choose Copy."
+        if let problem {
+            footer.stringValue = problem
+            footer.textColor = .systemOrange
+        } else {
+            footer.stringValue = retention.footerText + " Nothing is copied unless you choose Copy."
+            footer.textColor = .secondaryLabelColor
+        }
         clearButton.isEnabled = !records.isEmpty
         reloadRows(selecting: selected)
     }

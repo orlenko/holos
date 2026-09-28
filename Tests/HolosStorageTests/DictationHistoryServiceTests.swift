@@ -66,21 +66,95 @@ private final class HeldHistoryLock {
     let lock = try HeldHistoryLock(fixture.store)
     service.add(kept)
     // The append is stuck behind the lock: flushing gives up when its time runs out instead of hanging the quit.
-    #expect(!service.flush(timeout: 0.05))
+    #expect(service.flush(timeout: 0.05) == .timedOut)
     lock.release()
     // Once the lock is free, the flush returns only after the append reached the file.
-    #expect(service.flush(timeout: 600))
+    #expect(service.flush(timeout: 600) == .written)
     #expect(try fixture.store.load().records == [kept])
 
     service.delete(kept.id)
-    #expect(service.flush(timeout: 600))
+    #expect(service.flush(timeout: 600) == .written)
     #expect(try fixture.store.load().records.isEmpty)
 
     service.add(dictation("one"))
     service.add(dictation("two"))
     service.clear()
-    #expect(service.flush(timeout: 600))
+    #expect(service.flush(timeout: 600) == .written)
     #expect(try fixture.store.load().records.isEmpty, "A clear asked for before quitting is on disk.")
+}
+
+/// Polls (a bounded number of turns, no clock) until `done` holds.
+@MainActor
+private func settle(_ done: () -> Bool) async {
+    for _ in 0..<20_000 where !done() {
+        try? await Task.sleep(for: .milliseconds(2))
+    }
+}
+
+@MainActor
+@Test func aFailedWriteIsReportedAndTheRecordsFollowTheFile() async throws {
+    let fixture = try ServiceFixture()
+    defer { fixture.remove() }
+    let service = fixture.service()
+    var failures: [String] = []
+    service.onFailure = { failures.append($0) }
+    let kept = dictation("still on disk")
+    service.add(kept)
+    #expect(service.flush(timeout: 600) == .written)
+
+    // The folder becomes read-only: the delete's atomic rewrite fails, and the dictation must not look deleted.
+    #expect(chmod(fixture.store.directory.path, 0o500) == 0)
+    defer { chmod(fixture.store.directory.path, 0o700) }
+    service.delete(kept.id)
+    #expect(service.records.isEmpty, "The delete shows at once…")
+    #expect(service.flush(timeout: 600) == .failed, "…and a flush reports that a write failed.")
+    await settle { !failures.isEmpty && service.records == [kept] }
+    #expect(service.records == [kept], "…until the failure brings it back from the file.")
+    #expect(failures.count == 1)
+    #expect(service.problem?.hasPrefix("The dictation could not be deleted; it is still kept on this Mac.") == true)
+
+    service.clear()
+    await settle { failures.count == 2 && service.records == [kept] }
+    #expect(service.records == [kept], "A failed Clear History leaves the kept dictations shown.")
+    #expect(service.problem?.hasPrefix("History could not be cleared") == true)
+
+    // The file itself becomes read-only: an append fails and the dictation is not shown as kept.
+    #expect(chmod(fixture.store.directory.path, 0o700) == 0)
+    #expect(chmod(fixture.store.fileURL.path, 0o400) == 0)
+    let lost = dictation("not saved")
+    service.add(lost)
+    #expect(service.records == [kept, lost])
+    await settle { failures.count == 3 && service.records == [kept] }
+    #expect(service.records == [kept])
+    #expect(service.problem?.hasPrefix("This dictation could not be saved in History.") == true)
+    #expect(service.flush(timeout: 600) == .failed)
+    #expect(service.flush(timeout: 600) == .written, "A flush reports each failure once.")
+
+    // The next change clears the warning.
+    #expect(chmod(fixture.store.fileURL.path, 0o600) == 0)
+    service.add(dictation("saved again"))
+    #expect(service.problem == nil)
+    #expect(service.flush(timeout: 600) == .written)
+}
+
+@MainActor
+@Test func whenLoadedWaitsForTheLaunchLoad() async throws {
+    let fixture = try ServiceFixture()
+    defer { fixture.remove() }
+    let earlier = [dictation("kept one"), dictation("kept two")]
+    for record in earlier { try fixture.store.append(record) }
+    let service = fixture.service()
+
+    let loading = service.reload()
+    var counted: Int?
+    service.whenLoaded { counted = service.records.count }
+    #expect(counted == nil, "Asked while the launch load reads: it waits.")
+    await loading.value
+    #expect(counted == 2, "It sees the dictations on disk, so History Off can offer to clear them.")
+
+    var immediate: Int?
+    service.whenLoaded { immediate = service.records.count }
+    #expect(immediate == 2, "With no load reading, it runs at once.")
 }
 
 @MainActor
