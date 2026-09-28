@@ -125,14 +125,11 @@ final class ReadingController {
         if !writable { readOnly = Set(loaded.entries.map(\.id)) }
         let plan = ReadingLibrary.launchPlan(loaded)
         var entries = plan.entries
-        for var entry in plan.delete {
+        for entry in plan.delete {
             // One whose files cannot be removed comes back, with the reason.
             if let problem = cleanUp(entry) {
                 notice = problem
-                entry.deletePending = nil
-                entry.message = problem
-                if entry.isActive { entry.state = .stopped }
-                entries.append(entry)
+                entries.append(ReadingLibrary.afterFailedDelete(entry, problem: problem))
             }
         }
         all = entries.sorted { $0.created > $1.created }
@@ -219,11 +216,12 @@ final class ReadingController {
 
     /// Voice is Local quits with readings waiting or being made: `keep` (Keep Rendering) continues them at the next
     /// launch; otherwise (Stop) they are stopped, with Resume. The render in progress is cancelled either way. Returns
-    /// whether the list was saved (when it was not, nothing continues at the next launch).
+    /// whether the saved list now says so (false: the save failed, and the saved list may still say otherwise).
     @discardableResult
     func prepareForQuit(keep: Bool) -> Bool {
         all = ReadingLibrary.forQuit(all, keep: keep)
-        let saved = save()
+        // A list that is never saved (a newer build's) keeps no request to continue anything: nothing to save.
+        let saved = save() || !writable
         queue.shutDown()
         activity.removeAll()
         preparedForQuit = true
@@ -387,7 +385,14 @@ final class ReadingController {
     /// anything is rendered, so Resume and Try Again read exactly this text. A copy that cannot be saved fails the
     /// reading: without it a resume would load the source again and could read different text.
     private func loadDocument(_ entry: ReadingEntry) async throws -> ReadableDocument {
-        if let saved = store.document(for: entry.id) { return saved }
+        let saved: ReadableDocument?
+        do {
+            saved = try store.document(for: entry.id)
+        } catch {
+            // Never loaded again in its place: the source may have changed since.
+            throw HolosError.io("The text saved for this reading could not be read: \(error.localizedDescription)")
+        }
+        if let saved { return saved }
         let document: ReadableDocument
         switch entry.source {
         case .web(let url):
@@ -450,10 +455,7 @@ final class ReadingController {
         guard let entry = entry(id) else { return nil }
         activity[id] = nil
         if let problem = cleanUp(entry) {
-            update(id) {
-                $0.deletePending = nil
-                $0.message = problem
-            }
+            update(id) { $0 = ReadingLibrary.afterFailedDelete($0, problem: problem) }
             save()
             return problem
         }

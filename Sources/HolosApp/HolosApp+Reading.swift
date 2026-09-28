@@ -37,7 +37,18 @@ extension HolosAppDelegate {
                 failed.runModal()
             }
         case (true, .alertSecondButtonReturn), (false, .alertFirstButtonReturn):
-            readings.prepareForQuit(keep: false)
+            if !readings.prepareForQuit(keep: false) {
+                // The saved list may still ask the next launch to continue these readings (an earlier Keep
+                // Rendering): quitting now would undo this Stop. The readings stay stopped, with Resume.
+                readings.quitCancelled()
+                let failed = NSAlert()
+                failed.messageText = "Voice is Local did not quit."
+                failed.informativeText = "The reading was stopped, but the Reading list could not be saved, so the "
+                    + "next launch could continue it anyway. Free some space or fix the folder's permissions, then "
+                    + "quit again.\n\n\(readings.notice ?? "")"
+                failed.runModal()
+                return false
+            }
         default:
             return false
         }

@@ -30,6 +30,8 @@ import Foundation
     /// The reading that was running at `shutDown`: its end is never reported, and it can be queued again after
     /// `reopen` while it still unwinds.
     private var abandoned: UUID?
+    /// Queued again after `reopen`, then stopped while the abandoned run of the same reading still unwound.
+    private var stoppedWhileAbandoned: Set<UUID> = []
     private var idleWaiters: [CheckedContinuation<Void, Never>] = []
 
     public init(work: @escaping Work) {
@@ -47,12 +49,17 @@ import Foundation
         startNext()
     }
 
-    /// Stops `id`: a waiting one leaves the queue (`onEnd` .stopped at once); a running one is cancelled (`onEnd`
-    /// once its work returns). False when it is neither.
+    /// Stops `id`: a waiting one leaves the queue (`onEnd` .stopped at once, or, when queued again while its run a quit
+    /// stopped still unwinds, once that run has ended: until then its work may still touch its files); a running one
+    /// is cancelled (`onEnd` once its work returns). False when it is neither.
     @discardableResult public func stop(_ id: UUID) -> Bool {
         if let index = pending.firstIndex(of: id) {
             pending.remove(at: index)
-            onEnd?(id, .stopped)
+            if abandoned == id && running == id {
+                stoppedWhileAbandoned.insert(id)
+            } else {
+                onEnd?(id, .stopped)
+            }
             resumeIdleWaiters()
             return true
         }
@@ -114,6 +121,7 @@ import Foundation
         if wasAbandoned { abandoned = nil }
         if wasAbandoned {
             onAbandonedEnd?(id)
+            if stoppedWhileAbandoned.remove(id) != nil, !shutting { onEnd?(id, .stopped) }
         } else if !shutting {
             onEnd?(id, outcome)
         }

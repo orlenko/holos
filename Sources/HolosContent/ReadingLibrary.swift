@@ -170,10 +170,17 @@ public final class ReadingLibraryStore: @unchecked Sendable {
         try Self.write(try JSONEncoder.reading.encode(document), to: documentURL(id))
     }
 
-    /// The document saved for `id`, or nil when there is none (or it cannot be read).
-    public func document(for id: UUID) -> ReadableDocument? {
-        guard let data = try? Data(contentsOf: documentURL(id)) else { return nil }
-        return try? JSONDecoder.reading.decode(ReadableDocument.self, from: data)
+    /// The document saved for `id`, or nil when none was saved. One that is there but cannot be read or decoded is
+    /// an error, never nil: a resume must not load its source again and read different text.
+    public func document(for id: UUID) throws -> ReadableDocument? {
+        let url = documentURL(id)
+        let data: Data
+        do {
+            data = try Data(contentsOf: url)
+        } catch let error as CocoaError where error.code == .fileReadNoSuchFile {
+            return nil
+        }
+        return try JSONDecoder.reading.decode(ReadableDocument.self, from: data)
     }
 
     /// Removes the text saved for `id`; one that is not there is not an error.
@@ -257,6 +264,17 @@ public enum ReadingLibrary {
         return (result, (first.sorted(by: order) + rest.sorted(by: order)).map(\.id))
     }
 
+    /// A reading whose deletion could not remove its files, back in the list: unmarked, with the reason, and, when it
+    /// was waiting or being made (its render has stopped by then), stopped and never continued at a launch.
+    public static func afterFailedDelete(_ entry: ReadingEntry, problem: String) -> ReadingEntry {
+        var entry = entry
+        entry.deletePending = nil
+        entry.message = problem
+        entry.resumeOnLaunch = false
+        if entry.isActive { entry.state = .stopped }
+        return entry
+    }
+
     /// The list as saved when Voice is Local quits with readings waiting or being made: `keep` (Keep Rendering)
     /// continues them at the next launch; otherwise (Stop) they are stopped, each with Resume.
     public static func forQuit(_ entries: [ReadingEntry], keep: Bool) -> [ReadingEntry] {
@@ -318,22 +336,25 @@ public enum ReadingLibrary {
 
     /// Whether the file at `output` is this reading's: the finished file (`sha256`, else the checksum the render
     /// cache's manifest saved for that output), or its own partly copied file (the manifest's `publishing`
-    /// identity). Nil for anything else (a file put there since, or nothing there): Delete leaves it alone.
-    public static func ownership(of output: URL, sha256: String?, cache: URL?) -> OutputOwnership? {
-        guard (try? ReadingOutput.exists(output)) == true else { return nil }
+    /// identity). Nil for anything else (a file put there since, or nothing there): Delete leaves it alone. Throws
+    /// when that cannot be told (the file or the manifest cannot be read), so nothing that identifies it is removed.
+    public static func ownership(of output: URL, sha256: String?, cache: URL?) throws -> OutputOwnership? {
+        guard try ReadingOutput.exists(output) else { return nil }
         var manifest: ReadingManifest?
         if let cache {
             let url = cache.appendingPathComponent(ReadingManifest.fileName)
-            let size = (try? url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? .max
-            if size <= ReadingManifest.maximumBytes, let data = try? Data(contentsOf: url),
-               let saved = try? JSONDecoder().decode(ReadingManifest.self, from: data),
-               saved.kind == ReadingManifest.readingKind,
-               URL(fileURLWithPath: saved.output).standardizedFileURL.path == output.standardizedFileURL.path {
-                manifest = saved
+            if FileManager.default.fileExists(atPath: url.path) {
+                let size = try url.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? .max
+                if size <= ReadingManifest.maximumBytes,
+                   let saved = try? JSONDecoder().decode(ReadingManifest.self, from: try Data(contentsOf: url)),
+                   saved.kind == ReadingManifest.readingKind,
+                   URL(fileURLWithPath: saved.output).standardizedFileURL.path == output.standardizedFileURL.path {
+                    manifest = saved
+                }
             }
         }
         let checksums = [sha256, manifest?.outputSHA256].compactMap { $0 }
-        if !checksums.isEmpty, let actual = try? fileSHA256(output), checksums.contains(actual) { return .finished }
+        if !checksums.isEmpty, checksums.contains(try fileSHA256(output)) { return .finished }
         if let claimed = manifest?.publishing, ExclusivePublisher.FileIdentity.of(output) == claimed {
             return .partial(claimed)
         }
@@ -349,8 +370,14 @@ public enum ReadingLibrary {
                                    trash: (URL) throws -> Void) -> String? {
         var problems: [String] = []
         if let output = entry.outputURL {
-            switch ownership(of: output, sha256: entry.outputSHA256,
-                             cache: entry.cache.map { URL(fileURLWithPath: $0, isDirectory: true) }) {
+            let owned: OutputOwnership?
+            do {
+                owned = try ownership(of: output, sha256: entry.outputSHA256,
+                                      cache: entry.cache.map { URL(fileURLWithPath: $0, isDirectory: true) })
+            } catch {
+                return "\(output.lastPathComponent) could not be checked: \(error.localizedDescription) Try Delete again."
+            }
+            switch owned {
             case .finished?:
                 do {
                     try trash(output)

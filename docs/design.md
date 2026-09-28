@@ -221,7 +221,8 @@ schema version) is shown exactly as saved: nothing in it is continued, changed, 
 deleted, and its rows refuse Try Again, Resume, and Delete (`ReadingLibrary.launchPlan`).
 The loaded document is saved beside it (`Documents/<id>.json`) before anything is
 rendered, and kept until the reading is made, so Resume and Try Again read the same text
-without fetching the page again; a document that cannot be saved fails the reading.
+without fetching the page again; a document that cannot be saved, or a saved one that
+cannot be read back, fails the reading rather than loading the source again.
 
 `ReadingController` (HolosApp) runs the readings one at a time through
 `ReadingWorkQueue` (HolosContent): first come, first made; Stop takes a waiting one out at
@@ -270,7 +271,9 @@ Quitting while a reading is made or waits asks: **Keep Rendering** (quit now; th
 marks those readings, and the next launch queues them again, the one being made first),
 **Stop** (they are saved as stopped, with Resume), or Cancel; while the index cannot be
 saved (unreadable, a newer build's, or its last save failed) only Stop and Cancel are
-offered, and a Keep Rendering whose save fails says the reading will show as stopped. A deletion waiting
+offered, and a Keep Rendering whose save fails says the reading will show as stopped. A
+Stop whose save fails cancels the quit (the saved list may still ask the next launch to
+continue the reading) and says why. A deletion waiting
 for a render the quit stopped finishes once that render ends if the quit is cancelled
 (`ReadingWorkQueue.onAbandonedEnd`). The render in progress is
 cancelled either way; the pipeline's next run removes what that leaves. A reading found

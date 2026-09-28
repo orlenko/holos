@@ -83,14 +83,19 @@ import Testing
         defer { try? FileManager.default.removeItem(at: root) }
         let store = ReadingLibraryStore(folder: root)
         let id = UUID()
-        #expect(store.document(for: id) == nil)
+        #expect(try store.document(for: id) == nil)
         let document = ReadableDocument(title: "Title", author: "Jane", language: "fr",
                                         sections: [.init(heading: "One", level: 2, paragraphs: ["Texte."])])
         try store.saveDocument(document, for: id)
-        #expect(store.document(for: id) == document)
+        #expect(try store.document(for: id) == document)
         try store.removeDocument(for: id)
-        #expect(store.document(for: id) == nil)
+        #expect(try store.document(for: id) == nil)
         try store.removeDocument(for: id)  // already gone: not an error
+        // A saved text that cannot be decoded is an error, never "none saved" (a resume would load the source again).
+        try FileManager.default.createDirectory(at: store.documentURL(id).deletingLastPathComponent(),
+                                                withIntermediateDirectories: true)
+        try Data("{".utf8).write(to: store.documentURL(id))
+        #expect(throws: (any Error).self) { try store.document(for: id) }
     }
 
     @Test func launchContinuesOnlyReadingsKeptOverTheQuitOldestFirst() {
@@ -180,12 +185,12 @@ import Testing
         let output = root.appendingPathComponent("Story.m4a")
         let cache = root.appendingPathComponent("Output-0123456789abcdef", isDirectory: true)
         try FileManager.default.createDirectory(at: cache, withIntermediateDirectories: false)
-        #expect(ReadingLibrary.ownership(of: output, sha256: "0", cache: cache) == nil)
+        #expect(try ReadingLibrary.ownership(of: output, sha256: "0", cache: cache) == nil)
 
         try Data("finished audio".utf8).write(to: output)
         let checksum = try fileSHA256(output)
-        #expect(ReadingLibrary.ownership(of: output, sha256: checksum, cache: nil) == .finished)
-        #expect(ReadingLibrary.ownership(of: output, sha256: nil, cache: nil) == nil)
+        #expect(try ReadingLibrary.ownership(of: output, sha256: checksum, cache: nil) == .finished)
+        #expect(try ReadingLibrary.ownership(of: output, sha256: nil, cache: nil) == nil)
 
         func writeManifest(outputSHA256: String?, publishing: ReadingFileIdentity?, output path: String) throws {
             var manifest = ReadingManifest(
@@ -198,20 +203,20 @@ import Testing
         }
         // A reading published but not yet recorded as made: the manifest's checksum names it.
         try writeManifest(outputSHA256: checksum, publishing: nil, output: output.path)
-        #expect(ReadingLibrary.ownership(of: output, sha256: nil, cache: cache) == .finished)
+        #expect(try ReadingLibrary.ownership(of: output, sha256: nil, cache: cache) == .finished)
 
         // Replaced by another file: not the reading's, whatever the entry and the manifest say.
         try FileManager.default.removeItem(at: output)
         try Data("the user's own file".utf8).write(to: output)
-        #expect(ReadingLibrary.ownership(of: output, sha256: checksum, cache: cache) == nil)
+        #expect(try ReadingLibrary.ownership(of: output, sha256: checksum, cache: cache) == nil)
 
         // A copy cut off by a crash: the manifest's publishing identity is this very file.
         let identity = try #require(ExclusivePublisher.FileIdentity.of(output))
         try writeManifest(outputSHA256: nil, publishing: identity, output: output.path)
-        #expect(ReadingLibrary.ownership(of: output, sha256: nil, cache: cache) == .partial(identity))
+        #expect(try ReadingLibrary.ownership(of: output, sha256: nil, cache: cache) == .partial(identity))
         // A manifest for another output is not trusted.
         try writeManifest(outputSHA256: nil, publishing: identity, output: root.appendingPathComponent("Other.m4a").path)
-        #expect(ReadingLibrary.ownership(of: output, sha256: nil, cache: cache) == nil)
+        #expect(try ReadingLibrary.ownership(of: output, sha256: nil, cache: cache) == nil)
     }
 
     /// Delete: the reading's finished file goes to the Trash, then its cache and saved text; a file that cannot be
@@ -239,7 +244,7 @@ import Testing
         }
         #expect(failed?.contains("could not be moved to the Trash") == true)
         #expect(FileManager.default.fileExists(atPath: cache.path))
-        #expect(store.document(for: reading.id) != nil)
+        #expect(try store.document(for: reading.id) != nil)
 
         let done = ReadingLibrary.deleteFiles(of: reading, readingsRoot: readings, store: store) { url in
             trashed.append(url)
@@ -248,7 +253,7 @@ import Testing
         #expect(done == nil)
         #expect(trashed == [output])
         #expect(!FileManager.default.fileExists(atPath: cache.path))
-        #expect(store.document(for: reading.id) == nil)
+        #expect(try store.document(for: reading.id) == nil)
 
         // A file put at the path since is not the reading's; a cache outside the Readings folder is never removed.
         try Data("someone else's".utf8).write(to: output)
@@ -259,6 +264,50 @@ import Testing
         } == nil)
         #expect(FileManager.default.fileExists(atPath: output.path))
         #expect(FileManager.default.fileExists(atPath: root.path))
+    }
+
+    /// A finished file that cannot be read to check its checksum is neither trashed nor forgotten: the cache and the
+    /// saved text stay for another try.
+    @Test func anOutputThatCannotBeCheckedKeepsEverything() throws {
+        let root = try folder()
+        defer {
+            _ = chmod(root.appendingPathComponent("Story.m4a").path, 0o644)
+            try? FileManager.default.removeItem(at: root)
+        }
+        let readings = root.appendingPathComponent("Readings", isDirectory: true)
+        let cache = readings.appendingPathComponent("Output-0123456789abcdef", isDirectory: true)
+        try FileManager.default.createDirectory(at: cache, withIntermediateDirectories: true)
+        let store = ReadingLibraryStore(folder: root.appendingPathComponent("ReadingLibrary"))
+        let output = root.appendingPathComponent("Story.m4a")
+        try Data("audio".utf8).write(to: output)
+        var reading = entry(.done)
+        reading.output = output.path
+        reading.cache = cache.path
+        reading.outputSHA256 = try fileSHA256(output)
+        try store.saveDocument(ReadableDocument(sections: [.init(paragraphs: ["Text."])]), for: reading.id)
+        #expect(chmod(output.path, 0) == 0)
+        // Root reads anything; the check only means something as an ordinary user.
+        guard getuid() != 0 else { return }
+        #expect(throws: (any Error).self) { try ReadingLibrary.ownership(of: output, sha256: reading.outputSHA256, cache: cache) }
+        let problem = ReadingLibrary.deleteFiles(of: reading, readingsRoot: readings, store: store) { _ in
+            Issue.record("Trashed a file whose checksum could not be read")
+        }
+        #expect(problem?.contains("could not be checked") == true)
+        #expect(FileManager.default.fileExists(atPath: cache.path))
+        #expect(try store.document(for: reading.id) != nil)
+    }
+
+    @Test func aReadingWhoseDeleteFailedComesBackStopped() {
+        var running = entry(.rendering, resume: true)
+        running.deletePending = true
+        let back = ReadingLibrary.afterFailedDelete(running, problem: "Could not.")
+        #expect(back.deletePending == nil)
+        #expect(back.state == .stopped)
+        #expect(!back.resumeOnLaunch)
+        #expect(back.message == "Could not.")
+        var done = entry(.done)
+        done.deletePending = true
+        #expect(ReadingLibrary.afterFailedDelete(done, problem: "x").state == .done)
     }
 
     @Test func durationsAndPositionsRead() {

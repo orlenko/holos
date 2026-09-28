@@ -168,6 +168,28 @@ import Testing
         #expect(startedIDs == [a, b])
     }
 
+    /// Queued again after a cancelled quit and stopped while its old run still unwinds: the stop is reported only once
+    /// that run has ended (a deletion must not remove files it may still write), and it does not run again.
+    @Test func stoppingAReadingQueuedBehindItsOwnAbandonedRunWaitsForThatRun() async {
+        let gates = Gates()
+        let queue = ReadingWorkQueue { try await gates.work($0) }
+        var events: [String] = []
+        queue.onEnd = { _, outcome in events.append("end " + outcomeName(outcome)) }
+        queue.onAbandonedEnd = { _ in events.append("abandoned end") }
+        let a = UUID()
+        queue.enqueue(a)
+        await gates.waitUntilStarted(a)
+        queue.shutDown()
+        queue.reopen()
+        queue.enqueue(a)
+        #expect(queue.stop(a))
+        #expect(events.isEmpty)
+        #expect(queue.pending.isEmpty)
+        await queue.waitUntilIdle()
+        #expect(events == ["abandoned end", "end stopped"])
+        #expect(gates.started == [a])
+    }
+
     /// The quit is cancelled while the reading it stopped still unwinds: queued again, it runs again once that run
     /// has ended, and only its second run is reported.
     @Test func aReadingStoppedByAQuitThatWasCancelledRunsAgain() async {
