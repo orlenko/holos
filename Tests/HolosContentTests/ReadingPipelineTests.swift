@@ -3,6 +3,7 @@ import CryptoKit
 import Foundation
 import HolosCore
 import HolosSynthesis
+import Synchronization
 import Testing
 @testable import HolosContent
 
@@ -582,9 +583,10 @@ import Testing
     }
 
     /// Caches under different support folders (`HOLOS_SUPPORT_DIR`) for one output: the output's
-    /// lock is in the destination's folder, so the second reading still fails before rendering. The
-    /// hidden lock file is gone once the first finishes.
-    @Test func readingsFromDifferentSupportFoldersShareTheOutputLock() async throws {
+    /// reservation is in the destination's folder, so the second reading still fails before
+    /// rendering. The reservation is readable by every user and names this process; it is gone
+    /// once the first finishes.
+    @Test func readingsFromDifferentSupportFoldersShareTheOutputReservation() async throws {
         let parent = try root()
         defer { try? FileManager.default.removeItem(at: parent) }
         let destination = parent.appendingPathComponent("Books")
@@ -603,15 +605,22 @@ import Testing
         let metadata = self.metadata
         let active = Task { try await pipeline.render(script: script, voiceIdentifier: voice, metadata: metadata, location: first) }
         await renderer.waitUntilRendering()
-        let lockName = ReadingDirectoryLock.outputLockName(output)
-        #expect(lockName.utf8.count < ReadingOutput.temporaryNameLength)
-        #expect(FileManager.default.fileExists(atPath: destination.appendingPathComponent(lockName).path))
+        let name = ReadingOutputReservation.name(for: output)
+        #expect(name.utf8.count < ReadingOutput.temporaryNameLength)
+        let reservation = destination.appendingPathComponent(name).path
+        var info = stat()
+        #expect(lstat(reservation, &info) == 0 && info.st_mode & 0o777 == 0o644)
+        let record = try JSONDecoder().decode(ReadingOutputReservation.Record.self,
+                                              from: Data(contentsOf: URL(fileURLWithPath: reservation)))
+        #expect(record.pid == getpid() && record.uid == getuid() && record.host == ReadingOutputReservation.hostName())
+        #expect(record.start == ReadingOutputReservation.processStart(getpid()))
         do {
             _ = try await pipeline.render(script: other, voiceIdentifier: voice, metadata: metadata, location: second)
             Issue.record("A reading from another support folder should fail while the first renders.")
         } catch let error as HolosError {
             if case .unavailable(let message) = error {
                 #expect(message.contains("Another reading is already being made"))
+                #expect(message.contains(reservation))
             } else {
                 Issue.record("Unexpected error: \(error)")
             }
@@ -625,27 +634,203 @@ import Testing
         #expect(try FileManager.default.contentsOfDirectory(atPath: destination.path) == ["Book.m4a"])
     }
 
-    /// An output lock excludes a second holder, its hidden file goes when it is released, and a
-    /// file a killed run left behind is taken like a new one.
-    @Test func anOutputLockFileIsRemovedOnRelease() throws {
+    private func writeReservation(_ record: ReadingOutputReservation.Record, at path: String) throws {
+        try JSONEncoder().encode(record).write(to: URL(fileURLWithPath: path))
+    }
+
+    /// The process ID of a process that has exited.
+    private func endedProcessID() throws -> Int32 {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/true")
+        try process.run()
+        process.waitUntilExit()
+        return process.processIdentifier
+    }
+
+    /// The message of the `.unavailable` error `body` throws; nil (and an issue) for anything else.
+    private func refusal(_ body: () throws -> Void) -> String? {
+        do {
+            try body()
+            Issue.record("Expected a refusal.")
+        } catch HolosError.unavailable(let message) {
+            return message
+        } catch {
+            Issue.record("Unexpected error: \(error)")
+        }
+        return nil
+    }
+
+    /// A reservation excludes a second holder and goes when released. One whose process has ended
+    /// (another process ID, or this one's with another start time: a reused ID), whoever made it,
+    /// is taken over; one whose process runs, one from another host, and one that cannot be read
+    /// are refused, naming the file, and kept.
+    @Test func aReservationIsTakenOverOnlyWhenItsProcessHasEnded() throws {
         let parent = try root()
         defer { try? FileManager.default.removeItem(at: parent) }
         let cache = parent.appendingPathComponent("support").appendingPathComponent("Output-a")
         let output = parent.appendingPathComponent("Book.m4a")
-        let lockPath = parent.appendingPathComponent(ReadingDirectoryLock.outputLockName(output)).path
+        let path = parent.appendingPathComponent(ReadingOutputReservation.name(for: output)).path
         do {
-            let held = try ReadingDirectoryLock.acquire(output: output, beside: cache)
-            #expect(throws: HolosError.self) { try ReadingDirectoryLock.acquire(output: output, beside: cache) }
+            let held = try #require(try ReadingOutputReservation.acquire(output: output, beside: cache))
+            let message = refusal { _ = try ReadingOutputReservation.acquire(output: output, beside: cache) }
+            #expect(message?.contains("Another reading is already being made for \(output.path)") == true)
+            #expect(message?.contains(path) == true)
             withExtendedLifetime(held) {}
         }
-        #expect(!FileManager.default.fileExists(atPath: lockPath))
-        // A lock file left by a killed run is simply taken, then removed.
-        FileManager.default.createFile(atPath: lockPath, contents: nil)
-        do {
-            let held = try ReadingDirectoryLock.acquire(output: output, beside: cache)
-            withExtendedLifetime(held) {}
+        #expect(!FileManager.default.fileExists(atPath: path))
+
+        let live = ReadingOutputReservation.Record.current()
+        let ended = [
+            ReadingOutputReservation.Record(host: live.host, pid: try endedProcessID(), start: live.start,
+                                            uid: live.uid, created: 1),
+            ReadingOutputReservation.Record(host: live.host, pid: live.pid, start: live.start - 1,
+                                            uid: live.uid, created: 2),
+            // Another user's run (its record says so; the file is this user's, in a folder this
+            // user can remove files from).
+            ReadingOutputReservation.Record(host: live.host, pid: try endedProcessID(), start: 7,
+                                            uid: live.uid &+ 1, created: 3),
+        ]
+        for record in ended {
+            try writeReservation(record, at: path)
+            do {
+                let held = try #require(try ReadingOutputReservation.acquire(output: output, beside: cache))
+                #expect(held.record.pid == getpid() && held.record.start == live.start)
+                let saved = try JSONDecoder().decode(ReadingOutputReservation.Record.self,
+                                                     from: Data(contentsOf: URL(fileURLWithPath: path)))
+                #expect(saved == held.record)
+                withExtendedLifetime(held) {}
+            }
+            #expect(!FileManager.default.fileExists(atPath: path))
         }
-        #expect(!FileManager.default.fileExists(atPath: lockPath))
+
+        let running = ReadingOutputReservation.Record(host: live.host, pid: live.pid, start: live.start,
+                                                      uid: live.uid &+ 1, created: 4)
+        let elsewhere = ReadingOutputReservation.Record(host: "elsewhere.invalid", pid: try endedProcessID(),
+                                                        start: 1, uid: live.uid, created: 5)
+        let kept: [(Data, String)] = [
+            (try JSONEncoder().encode(running), "Another reading is already being made"),
+            (try JSONEncoder().encode(elsewhere), "elsewhere.invalid"),
+            (Data(), "does not say which process holds it"),
+        ]
+        for (contents, expected) in kept {
+            try contents.write(to: URL(fileURLWithPath: path))
+            let message = refusal { _ = try ReadingOutputReservation.acquire(output: output, beside: cache) }
+            #expect(message?.contains(expected) == true)
+            #expect(message?.contains(path) == true)
+            #expect(try Data(contentsOf: URL(fileURLWithPath: path)) == contents)
+            try FileManager.default.removeItem(atPath: path)
+        }
+    }
+
+    /// A stale reservation that cannot be removed here (as another user's file in a shared folder
+    /// with the sticky bit) is refused with the file's path and who can delete it.
+    @Test func aStaleReservationThatCannotBeRemovedIsRefused() throws {
+        let parent = try root()
+        defer { try? FileManager.default.removeItem(at: parent) }
+        let destination = parent.appendingPathComponent("Shared")
+        try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: false)
+        let cache = parent.appendingPathComponent("support").appendingPathComponent("Output-a")
+        let output = destination.appendingPathComponent("Book.m4a")
+        let path = destination.appendingPathComponent(ReadingOutputReservation.name(for: output)).path
+        let live = ReadingOutputReservation.Record.current()
+        try writeReservation(.init(host: live.host, pid: try endedProcessID(), start: 1, uid: live.uid, created: 1),
+                             at: path)
+        // Read-only: no file in it can be removed, as for another user's in a sticky folder.
+        #expect(chmod(destination.path, 0o555) == 0)
+        defer { _ = chmod(destination.path, 0o755) }
+        let message = refusal { _ = try ReadingOutputReservation.acquire(output: output, beside: cache) }
+        #expect(message?.contains(path) == true)
+        #expect(message?.contains("can delete it") == true)
+        #expect(FileManager.default.fileExists(atPath: path))
+    }
+
+    /// The reservation goes when a reading fails and when it is cancelled.
+    @Test func theReservationIsRemovedAfterAFailureAndACancel() async throws {
+        let parent = try root()
+        defer { try? FileManager.default.removeItem(at: parent) }
+        let place = location(parent)
+        let path = parent.appendingPathComponent(ReadingOutputReservation.name(for: place.output)).path
+        let voice = self.voice
+        let metadata = self.metadata
+        let script = script(2)
+
+        let renderer = FakeRenderer()
+        renderer.failOnCall = 1
+        await #expect(throws: HolosError.self) {
+            try await ReadingPipeline(renderer: renderer, joiner: FakeJoiner())
+                .render(script: script, voiceIdentifier: voice, metadata: metadata, location: place)
+        }
+        #expect(!FileManager.default.fileExists(atPath: path))
+
+        let joiner = HangingJoiner()
+        let pipeline = ReadingPipeline(renderer: FakeRenderer(), joiner: joiner)
+        let task = Task {
+            try await pipeline.render(script: script, voiceIdentifier: voice, metadata: metadata,
+                                      location: place, resume: true)
+        }
+        await joiner.waitUntilJoining()
+        #expect(FileManager.default.fileExists(atPath: path))
+        task.cancel()
+        do {
+            _ = try await task.value
+            Issue.record("A cancelled render should throw.")
+        } catch {}
+        #expect(!FileManager.default.fileExists(atPath: path))
+    }
+
+    /// The reservation needs no `flock` on the destination's volume: with every `flock` there
+    /// failing as on a volume without it, a second reading from another support folder is still
+    /// refused before rendering, and no lock is ever attempted in the destination.
+    @Test func theReservationWorksWhereTheDestinationHasNoFlock() async throws {
+        let parent = try root()
+        defer { try? FileManager.default.removeItem(at: parent) }
+        let destination = parent.appendingPathComponent("Books")
+        let supports = ["support-a", "support-b"].map { parent.appendingPathComponent($0).appendingPathComponent("Readings") }
+        for folder in [destination] + supports {
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        }
+        let output = destination.appendingPathComponent("Book.m4a")
+        let first = ReadingLocation(workDirectory: supports[0].appendingPathComponent("Output-a"), output: output)
+        let second = ReadingLocation(workDirectory: supports[1].appendingPathComponent("Output-b"), output: output)
+        let destinationPath = try #require(realpath(destination.path, nil).map { pointer in
+            defer { free(pointer) }
+            return String(cString: pointer)
+        })
+        let attempts = Mutex<[String]>([])
+        let cacheLocks = Mutex(0)
+        let lockCall: @Sendable (String, Int32) -> Int32 = { path, descriptor in
+            if path.hasPrefix(destinationPath + "/") || path.hasPrefix(destination.path + "/") {
+                attempts.withLock { $0.append(path) }
+                errno = ENOTSUP
+                return -1
+            }
+            cacheLocks.withLock { $0 += 1 }
+            return flock(descriptor, LOCK_EX | LOCK_NB)
+        }
+        let renderer = GateRenderer()
+        let pipeline = ReadingPipeline(renderer: renderer, joiner: FakeJoiner())
+        let script = ReadingScript(document: ReadableDocument(sections: [.init(paragraphs: ["One short paragraph."])]))
+        let other = ReadingScript(document: ReadableDocument(sections: [.init(paragraphs: ["Another paragraph."])]))
+        let voice = self.voice
+        let metadata = self.metadata
+        try await ReadingDirectoryLock.$lockCall.withValue(lockCall) {
+            let active = Task { try await pipeline.render(script: script, voiceIdentifier: voice, metadata: metadata, location: first) }
+            await renderer.waitUntilRendering()
+            do {
+                _ = try await pipeline.render(script: other, voiceIdentifier: voice, metadata: metadata, location: second)
+                Issue.record("A reading from another support folder should fail while the first renders.")
+            } catch HolosError.unavailable(let message) {
+                #expect(message.contains("Another reading is already being made"))
+            }
+            #expect(renderer.calls == 1)
+            #expect(!FileManager.default.fileExists(atPath: second.workDirectory.path))
+            renderer.release()
+            #expect(try await active.value.manifest.status == "complete")
+        }
+        // The hook was in place (both caches were locked through it), and nothing was locked in the destination.
+        #expect(cacheLocks.withLock { $0 } >= 2)
+        #expect(attempts.withLock { $0 }.isEmpty)
+        #expect(try FileManager.default.contentsOfDirectory(atPath: destination.path) == ["Book.m4a"])
     }
 
     /// Spellings of one file on this volume: one lock and one cache. The temporary folder is on the

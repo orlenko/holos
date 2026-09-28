@@ -258,8 +258,8 @@ public enum ReadingOutput {
         // ("Book.m4a" and "book.m4a" on a volume known to ignore case, one name in NFC and NFD on
         // APFS or HFS+) finds the same cache, and two files (those names on a volume that may tell
         // them apart) never share one. `output` keeps its spelling as typed and the key is hashed
-        // as bytes, so NFC and NFD spellings kept apart stay apart. The output lock stays
-        // conservative (see `ReadingDirectoryLock.acquire(output:beside:)`).
+        // as bytes, so NFC and NFD spellings kept apart stay apart. The output's reservation stays
+        // conservative (see `ReadingOutputReservation`).
         let key = ReadingPathIdentity.key(output, .exact, volume: volume)
         let digest = SHA256.hash(data: Data((key + "\u{0}" + identity).utf8)).map { String(format: "%02x", $0) }.joined()
         let directory = readingsRoot.appendingPathComponent("Output-\(digest.prefix(16))", isDirectory: true)

@@ -285,8 +285,16 @@ cache is deleted after, so the finished file is the only large thing kept. A fai
 reading publishes nothing and returns a nonzero status. Publishing never replaces a file:
 an exclusive rename, or, on volumes without one, an exclusive create whose identity is
 saved in the manifest before the finished bytes are copied into it (so `--resume`
-recognizes a copy a crash cut off). A lock on the cache and one on the output path stop a
-second reading for the same file before it renders anything. Ctrl-C cancels the page load or the render, removes the partly joined
+recognizes a copy a crash cut off). A lock on the cache (`flock` in the support folder) and a
+reservation of the output stop a second reading for the same file before it renders anything.
+The reservation is a hidden `.holos-output-<hash>.lock` beside an explicit `--output`, created
+exclusively (mode 0644) and holding the host, process ID and start time, and user ID of the
+reading that made it, so it needs no `flock` on the destination's volume and works across
+users and support folders. It is removed when the reading ends; one left by a reading that was
+killed is taken over when its process (same ID and start time) is no longer running on this
+Mac. One made on another computer, one that cannot be read, or one that cannot be removed (another
+user's file in a sticky shared folder) is refused with its path, to be deleted by hand once no
+reading of that file is running. Ctrl-C cancels the page load or the render, removes the partly joined
 file, and exits 130 (SIGTERM: 143); every run also removes temporaries earlier runs of the
 same reading left behind, recognized by a per-reading marker in their names.
 

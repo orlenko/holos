@@ -29,6 +29,12 @@ struct Read: AsyncParsableCommand {
         An interrupted reading continues where it stopped: run the same command with --resume. A \
         reading made without --output resumes with --output set to its Readings folder. A web page \
         is loaded again; if its text changed since, the reading is refused.
+
+        While a reading runs, a hidden .holos-output-<hash>.lock file beside --output reserves the \
+        file, so a second reading of it is refused before it renders. It is removed when the \
+        reading ends, and one a killed reading left behind is taken over once that process is \
+        gone. If a reading is refused over one made on another computer or one it cannot remove, \
+        the message names the file: delete it when no reading of that file is running.
         """
     )
     @Argument(help: "An https:// web address, a local file path, or - for UTF-8 text on stdin.")

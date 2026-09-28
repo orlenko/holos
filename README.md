@@ -302,7 +302,11 @@ If no Premium voice is installed, download one in System Settings › Accessibil
 Content › System Voice › Manage Voices. `--print-text` prints the title, voice, output file,
 chapters, and text that would be read, without rendering or creating anything. Ctrl-C stops a reading (or the page load)
 and keeps its rendered parts; it continues with the same command plus `--resume` (a web
-page is loaded again, and a page that changed since is refused). OCR is not supported yet.
+page is loaded again, and a page that changed since is refused). While a reading runs, a
+hidden `.holos-output-<hash>.lock` beside `--output` reserves the file, so a second reading of
+it is refused; a reservation a killed reading left is taken over once that process is gone, and
+one made on another computer (or one this user cannot remove) is refused with its path, to be
+deleted by hand when no reading of that file is running. OCR is not supported yet.
 
 ```sh
 "$voiceislocal" read https://en.wikipedia.org/wiki/Speech_synthesis --print-text

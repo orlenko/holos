@@ -239,8 +239,8 @@ public struct AudioBookJoiner: ReadingAudioJoiner {
                      location: location, resume: resume)
         let text = script.text
         let writerLock = try ReadingDirectoryLock.acquire(for: directory)
-        let outputLock = try ReadingDirectoryLock.acquire(output: output, beside: directory)
-        defer { withExtendedLifetime((writerLock, outputLock)) {} }
+        let reservation = try ReadingOutputReservation.acquire(output: output, beside: directory)
+        defer { withExtendedLifetime((writerLock, reservation)) {} }
         // Caches that runs killed while creating them left behind (see `ReadingCache.create`).
         ReadingCache.sweep(beside: directory)
         let planned = script.parts(maxUTF16Units: maxPartUTF16Units)
@@ -539,10 +539,10 @@ enum ReadingPublisher {
     }
 }
 
-/// A sibling lock serializes new renders and resumes across processes. A cache's lock file is
-/// intentionally kept so another process cannot lock a replacement inode; an output's lock file
-/// (in the user's destination folder) is removed on release, and taking it checks that the path
-/// still names the file locked (see `acquire(name:in:busy:removingOnRelease:reportsUnsupported:)`).
+/// A sibling lock serializes new renders and resumes of one cache across processes: `flock` on a
+/// hidden file in the cache's parent (the support folder). The file is intentionally kept so
+/// another process cannot lock a replacement inode. An explicit output is reserved separately,
+/// beside the destination (see `ReadingOutputReservation`).
 final class ReadingDirectoryLock {
     private let descriptor: Int32
 
@@ -558,38 +558,8 @@ final class ReadingDirectoryLock {
                     busy: "Reading directory is already being rendered: \(directory.path)")
     }
 
-    /// A lock on the finished file's path. Readings of different text or settings for one explicit
-    /// output have different caches (see `ReadingOutput.locate`), possibly under different support
-    /// folders (`HOLOS_SUPPORT_DIR`), so this is what stops a second one before it renders anything.
-    /// It lives in the destination's own folder, the one place every producer of that file finds
-    /// whatever its support folder, home, temporary folder, or user; it is hidden, and removed
-    /// when released (see `removingOnRelease`). An output inside its own cache (a reading without
-    /// `--output`) has one producer, the cache's, so its lock is kept beside the cache's lock; so
-    /// is one whose folder's volume has no `flock`. It is named from the file's conservative
-    /// identity (see `ReadingPathIdentity.Rule.lock`), so "Book.m4a" and "book.m4a" on a
-    /// case-insensitive volume, or one name in NFC and NFD, share it. The name is shorter than the
-    /// join temporary's, so `ReadingOutput.checkPathLength` covers it.
-    static func acquire(output: URL, beside directory: URL) throws -> ReadingDirectoryLock {
-        let name = outputLockName(output)
-        let busy = "Another reading is already being made for \(output.path)."
-        let destination = output.deletingLastPathComponent()
-        if destination.standardizedFileURL.path != directory.standardizedFileURL.path {
-            do {
-                // The folder as spelled, links resolved (see `RawFilePath`).
-                return try acquire(name: name, in: RawFilePath.resolvingFolder(of: output).deletingLastPathComponent(),
-                                   busy: busy, removingOnRelease: true, reportsUnsupported: true)
-            } catch is LockUnsupported {}
-        }
-        return try acquire(name: name, in: folder(beside: directory), busy: busy, removingOnRelease: true)
-    }
-
-    /// `.holos-output-<first 32 hex digits of the identity's hash>.lock`.
-    static func outputLockName(_ output: URL) -> String {
-        ".holos-output-\(sha256(Data(ReadingPathIdentity.key(output).utf8)).prefix(32)).lock"
-    }
-
-    /// `flock` failed because the volume does not support it.
-    private struct LockUnsupported: Error {}
+    /// Takes the place of `flock(descriptor, LOCK_EX | LOCK_NB)` on the lock file at `path` (tests).
+    @TaskLocal static var lockCall: (@Sendable (_ path: String, _ descriptor: Int32) -> Int32)? = nil
 
     /// The folder a cache's locks are kept in: the cache's parent, links resolved.
     static func folder(beside directory: URL) -> URL {
@@ -605,76 +575,268 @@ final class ReadingDirectoryLock {
         try acquire(name: name, in: folder(beside: directory), busy: busy)
     }
 
-    /// Opens (creating if needed) and locks `name` in `parent`. With `removingOnRelease`, the file
-    /// is unlinked when the lock is released, while it is still held, and a lock taken is kept
-    /// only when the path still names the file locked: one another run removed (or replaced)
-    /// between this run's `open` and `flock` is let go and the path opened again, so two runs
-    /// never each hold a lock on a different file for one name. With `reportsUnsupported`, a
-    /// volume without `flock` throws `LockUnsupported` (the caller has another place to lock).
-    private static func acquire(name: String, in parent: URL, busy: String, removingOnRelease: Bool = false,
-                                reportsUnsupported: Bool = false) throws -> ReadingDirectoryLock {
+    /// Opens (creating if needed) and locks `name` in `parent`.
+    private static func acquire(name: String, in parent: URL, busy: String) throws -> ReadingDirectoryLock {
         let path = parent.appendingPathComponent(name).path
-        // Each retry follows another run's release; a bound keeps a pathological loop finite.
-        for _ in 0..<100 {
-            var descriptor = open(path, O_CREAT | O_EXCL | O_RDWR | O_CLOEXEC | O_NOFOLLOW, 0o600)
-            let created = descriptor >= 0
-            if !created && errno == EEXIST {
-                descriptor = open(path, O_CREAT | O_RDWR | O_CLOEXEC | O_NOFOLLOW, 0o600)
-            }
-            guard descriptor >= 0 else {
-                throw HolosError.io("Could not open reading lock: \(String(cString: strerror(errno)))")
-            }
-            var metadata = stat()
-            guard fstat(descriptor, &metadata) == 0, metadata.st_uid == getuid(),
-                  (metadata.st_mode & mode_t(S_IFMT)) == mode_t(S_IFREG) else {
-                close(descriptor)
-                throw HolosError.io("Reading lock is not a regular file owned by this user.")
-            }
-            guard flock(descriptor, LOCK_EX | LOCK_NB) == 0 else {
-                let error = errno
-                close(descriptor)
-                if error == EWOULDBLOCK || error == EAGAIN {
-                    throw HolosError.unavailable(busy)
-                }
-                if error == ENOTSUP || error == EOPNOTSUPP {
-                    // No run can lock a file on this volume, so one this call created is its own
-                    // to remove, and is not left behind.
-                    if created && removingOnRelease { unlinkIfSame(path, as: metadata) }
-                    if reportsUnsupported { throw LockUnsupported() }
-                }
-                throw HolosError.io("Could not acquire reading lock: \(String(cString: strerror(error)))")
-            }
-            guard removingOnRelease else { return ReadingDirectoryLock(descriptor: descriptor) }
-            var current = stat()
-            if lstat(path, &current) == 0, current.st_dev == metadata.st_dev, current.st_ino == metadata.st_ino {
-                return ReadingDirectoryLock(descriptor: descriptor, removing: path, identity: metadata)
-            }
-            _ = flock(descriptor, LOCK_UN)
-            close(descriptor)
+        var descriptor = open(path, O_CREAT | O_EXCL | O_RDWR | O_CLOEXEC | O_NOFOLLOW, 0o600)
+        if descriptor < 0 && errno == EEXIST {
+            descriptor = open(path, O_CREAT | O_RDWR | O_CLOEXEC | O_NOFOLLOW, 0o600)
         }
-        throw HolosError.unavailable(busy)
-    }
-
-    /// Unlinks `path` when it still names the file `identity` describes.
-    private static func unlinkIfSame(_ path: String, as identity: stat) {
-        var current = stat()
-        guard lstat(path, &current) == 0, current.st_dev == identity.st_dev, current.st_ino == identity.st_ino else { return }
-        _ = unlink(path)
-    }
-
-    private var removal: (path: String, identity: stat)?
-
-    private convenience init(descriptor: Int32, removing path: String, identity: stat) {
-        self.init(descriptor: descriptor)
-        removal = (path, identity)
+        guard descriptor >= 0 else {
+            throw HolosError.io("Could not open reading lock: \(String(cString: strerror(errno)))")
+        }
+        var metadata = stat()
+        guard fstat(descriptor, &metadata) == 0, metadata.st_uid == getuid(),
+              (metadata.st_mode & mode_t(S_IFMT)) == mode_t(S_IFREG) else {
+            close(descriptor)
+            throw HolosError.io("Reading lock is not a regular file owned by this user.")
+        }
+        guard (lockCall?(path, descriptor) ?? flock(descriptor, LOCK_EX | LOCK_NB)) == 0 else {
+            let error = errno
+            close(descriptor)
+            if error == EWOULDBLOCK || error == EAGAIN {
+                throw HolosError.unavailable(busy)
+            }
+            throw HolosError.io("Could not acquire reading lock: \(String(cString: strerror(error)))")
+        }
+        return ReadingDirectoryLock(descriptor: descriptor)
     }
 
     deinit {
-        // Unlinked while still locked: a run waiting on this file finds it gone and opens anew.
-        if let removal { Self.unlinkIfSame(removal.path, as: removal.identity) }
         _ = flock(descriptor, LOCK_UN)
         close(descriptor)
     }
+}
+
+/// The reservation of an explicit output: a hidden file beside the destination that names the
+/// process making it. Readings of different text or settings for one output have different
+/// caches (see `ReadingOutput.locate`), possibly under different support folders
+/// (`HOLOS_SUPPORT_DIR`) or users, so this is what stops a second one before it renders anything.
+/// The destination's folder is the one place every producer of that file finds. The reservation
+/// needs neither `flock` on the destination's volume nor that the next producer be the same user:
+/// - it is created with `O_CREAT | O_EXCL`, mode 0644, and holds a `Record` (host, process ID and
+///   start time, user ID, creation time), so any user can read who holds it;
+/// - an existing one is held while its process runs: on this host, a process with its ID and
+///   the same start time (a reused ID has another). One whose process has ended (a run killed
+///   before its release) is removed and taken, whoever owns it. One from another host (a shared
+///   network folder) cannot be checked, one that cannot be read or decoded (a run killed between
+///   creating and writing it) is not trusted, and one that cannot be removed (another user's
+///   file in a sticky shared folder) stays: each is refused with a message naming the file and
+///   who can delete it;
+/// - it is removed on release when it still holds this run's record.
+/// Two runs taking over one stale reservation at the same instant can both go on (each may
+/// remove the file the other just created); the exclusive publication (`ReadingPublisher`) still
+/// keeps either from replacing the other's finished file.
+/// It is named from the file's conservative identity (see `ReadingPathIdentity.Rule.lock`), so
+/// "Book.m4a" and "book.m4a" on a case-insensitive volume, or one name in NFC and NFD, share it.
+/// The name is shorter than the join temporary's, so `ReadingOutput.checkPathLength` covers it.
+final class ReadingOutputReservation {
+    struct Record: Codable, Equatable {
+        /// `gethostname`.
+        var host: String
+        var pid: Int32
+        /// The process's start time, microseconds since 1970 (see `processStart`).
+        var start: Int64
+        var uid: UInt32
+        /// Seconds since 1970.
+        var created: Double
+
+        /// This process's record, created now.
+        static func current() -> Record {
+            let pid = getpid()
+            return Record(host: hostName(), pid: pid, start: processStart(pid) ?? 0, uid: getuid(),
+                          created: Date().timeIntervalSince1970)
+        }
+    }
+
+    /// A record is well under this; a larger file is not a reservation.
+    static let maximumBytes = 4_096
+
+    let path: String
+    let record: Record
+
+    private init(path: String, record: Record) {
+        self.path = path
+        self.record = record
+    }
+
+    /// `.holos-output-<first 32 hex digits of the identity's hash>.lock`.
+    static func name(for output: URL) -> String {
+        ".holos-output-\(sha256(Data(ReadingPathIdentity.key(output).utf8)).prefix(32)).lock"
+    }
+
+    /// The reservation for `output`, or nil when the output is inside its own cache `directory` (a
+    /// reading without `--output`): only that cache's runs make it, and the cache's lock
+    /// serializes them.
+    static func acquire(output: URL, beside directory: URL) throws -> ReadingOutputReservation? {
+        let destination = output.deletingLastPathComponent()
+        guard destination.standardizedFileURL.path != directory.standardizedFileURL.path else { return nil }
+        // The folder as spelled, links resolved (see `RawFilePath`).
+        let folder = RawFilePath.resolvingFolder(of: output).deletingLastPathComponent()
+        return try acquire(path: folder.appendingPathComponent(name(for: output)).path, output: output)
+    }
+
+    /// Creates the reservation at `path` for `output`, taking over one whose process has ended.
+    static func acquire(path: String, output: URL) throws -> ReadingOutputReservation {
+        let mine = Record.current()
+        var tookOver = false
+        // A retry follows a holder's release or one stale reservation's removal.
+        for _ in 0..<3 {
+            let descriptor = open(path, O_CREAT | O_EXCL | O_WRONLY | O_CLOEXEC | O_NOFOLLOW, 0o644)
+            if descriptor >= 0 {
+                try write(mine, to: descriptor, path: path, output: output)
+                return ReadingOutputReservation(path: path, record: mine)
+            }
+            let error = errno
+            guard error == EEXIST else {
+                throw HolosError.io("Could not reserve \(output.path) with \(path): \(String(cString: strerror(error)))")
+            }
+            switch holder(at: path) {
+            case .gone:
+                continue
+            case .unreadable(let reason):
+                throw HolosError.unavailable("Another reading may be under way for \(output.path): its reservation \(path) \(reason). If no reading of that file is running, delete \(path).")
+            case .running(let record):
+                throw HolosError.unavailable("Another reading is already being made for \(output.path): process \(record.pid) of \(userName(record.uid)), since \(date(record.created)). Its reservation is \(path).")
+            case .otherHost(let record):
+                throw HolosError.unavailable("Another reading is already being made for \(output.path) on \(record.host.isEmpty ? "another computer" : record.host) (process \(record.pid) of user ID \(record.uid), since \(date(record.created))), which cannot be checked from here. If no reading of that file is running there, delete \(path).")
+            case .ended(let record, let owner, let file):
+                guard !tookOver else { continue }
+                tookOver = true
+                // Only the file just read: one another run made since is that run's.
+                var current = stat()
+                guard lstat(path, &current) == 0, current.st_dev == file.device, current.st_ino == file.inode else { continue }
+                guard unlink(path) == 0 || errno == ENOENT else {
+                    let reason = String(cString: strerror(errno))
+                    throw HolosError.unavailable("A reading for \(output.path) that is no longer running (process \(record.pid) of \(userName(record.uid))) left its reservation \(path), and it cannot be removed here: \(reason). \(userName(owner).capitalizedFirst), who owns it, or an administrator can delete it.")
+                }
+            }
+        }
+        throw HolosError.unavailable("Another reading is already being made for \(output.path). Its reservation is \(path).")
+    }
+
+    /// Writes `record` into the reservation just created, readable by every user whatever the
+    /// umask. A reservation that cannot be written is removed.
+    private static func write(_ record: Record, to descriptor: Int32, path: String, output: URL) throws {
+        defer { close(descriptor) }
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        // Strings and numbers only: this cannot fail.
+        guard let data = try? encoder.encode(record) else { preconditionFailure("Reservation did not encode.") }
+        var failure: Int32 = fchmod(descriptor, 0o644) == 0 ? 0 : errno
+        if failure == 0 {
+            failure = data.withUnsafeBytes { bytes -> Int32 in
+                var offset = 0
+                while offset < bytes.count {
+                    let written = Darwin.write(descriptor, bytes.baseAddress! + offset, bytes.count - offset)
+                    if written < 0 {
+                        if errno == EINTR { continue }
+                        return errno
+                    }
+                    offset += written
+                }
+                return 0
+            }
+        }
+        guard failure == 0 else {
+            _ = unlink(path)
+            throw HolosError.io("Could not reserve \(output.path) with \(path): \(String(cString: strerror(failure)))")
+        }
+    }
+
+    enum Holder {
+        /// Removed since it was found.
+        case gone
+        /// Why it cannot be trusted, as "cannot be read (reason)".
+        case unreadable(String)
+        /// Its process runs on this host.
+        case running(Record)
+        /// Made on another host.
+        case otherHost(Record)
+        /// Made on this host by a process that has ended; `owner` is the file's owner, `file` which
+        /// file was read.
+        case ended(Record, owner: uid_t, file: (device: dev_t, inode: ino_t))
+    }
+
+    /// Who holds the reservation at `path`.
+    static func holder(at path: String) -> Holder {
+        let descriptor = open(path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK)
+        guard descriptor >= 0 else {
+            let error = errno
+            return error == ENOENT ? .gone : .unreadable("cannot be read (\(String(cString: strerror(error))))")
+        }
+        defer { close(descriptor) }
+        var metadata = stat()
+        guard fstat(descriptor, &metadata) == 0, (metadata.st_mode & mode_t(S_IFMT)) == mode_t(S_IFREG) else {
+            return .unreadable("is not a regular file")
+        }
+        guard let data = readAll(descriptor), let record = try? JSONDecoder().decode(Record.self, from: data) else {
+            return .unreadable("does not say which process holds it")
+        }
+        guard record.host == hostName() else { return .otherHost(record) }
+        if let start = processStart(record.pid), start == record.start { return .running(record) }
+        return .ended(record, owner: metadata.st_uid, file: (metadata.st_dev, metadata.st_ino))
+    }
+
+    private static func readAll(_ descriptor: Int32) -> Data? {
+        var data = Data()
+        var buffer = [UInt8](repeating: 0, count: maximumBytes + 1)
+        while data.count <= maximumBytes {
+            let count = read(descriptor, &buffer, buffer.count)
+            if count < 0 {
+                if errno == EINTR { continue }
+                return nil
+            }
+            if count == 0 { return data }
+            data.append(contentsOf: buffer[0..<count])
+        }
+        return nil
+    }
+
+    /// When process `pid` started, in microseconds since 1970; nil when no such process runs (a
+    /// zombie, which has ended, included).
+    static func processStart(_ pid: Int32) -> Int64? {
+        guard pid > 0 else { return nil }
+        var info = kinfo_proc()
+        var size = MemoryLayout<kinfo_proc>.stride
+        var mib: [Int32] = [CTL_KERN, KERN_PROC, KERN_PROC_PID, pid]
+        guard sysctl(&mib, u_int(mib.count), &info, &size, nil, 0) == 0, size > 0,
+              info.kp_proc.p_pid == pid, Int32(info.kp_proc.p_stat) != SZOMB else { return nil }
+        let start = info.kp_proc.p_un.__p_starttime
+        return Int64(start.tv_sec) * 1_000_000 + Int64(start.tv_usec)
+    }
+
+    static func hostName() -> String {
+        var buffer = [CChar](repeating: 0, count: Int(MAXHOSTNAMELEN) + 1)
+        guard gethostname(&buffer, buffer.count - 1) == 0 else { return "" }
+        return buffer.withUnsafeBufferPointer { String(cString: $0.baseAddress!) }
+    }
+
+    private static func userName(_ uid: uid_t) -> String {
+        guard let entry = getpwuid(uid), let name = entry.pointee.pw_name else { return "user ID \(uid)" }
+        return "user \(String(cString: name))"
+    }
+
+    private static func date(_ seconds: Double) -> String {
+        ISO8601DateFormatter().string(from: Date(timeIntervalSince1970: seconds))
+    }
+
+    /// Removes the reservation when it still holds this run's record: one removed by hand and made
+    /// again by another run is that run's.
+    private func release() {
+        let descriptor = open(path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK)
+        guard descriptor >= 0 else { return }
+        let data = Self.readAll(descriptor)
+        close(descriptor)
+        guard let data, (try? JSONDecoder().decode(Record.self, from: data)) == record else { return }
+        _ = unlink(path)
+    }
+
+    deinit { release() }
+}
+
+private extension String {
+    var capitalizedFirst: String { prefix(1).uppercased() + dropFirst() }
 }
 
 /// One string for every spelling of one filesystem location, so the locks and cache keys that
