@@ -76,10 +76,14 @@ private func entry(_ text: String, date: Date = storeNow) -> DictationRecord {
     try AtomicFile.append(Data("not json\n".utf8), to: store.fileURL)
     #expect(try store.load().skippedLines == 1)
 
-    #expect(try store.sweep(.forever, now: storeNow) == 0)
     #expect(try store.sweep(.off, now: storeNow) == 0)
     #expect(try store.load().records.count == 3)
+    #expect(try store.sweep(.forever, now: storeNow) == 0)
+    let forever = try store.load()
+    #expect(forever.records == [old, week, recent], "Forever keeps every record…")
+    #expect(forever.skippedLines == 0, "…but its sweep still compacts damaged lines away.")
 
+    try AtomicFile.append(Data("damaged again\n".utf8), to: store.fileURL)
     #expect(try store.sweep(.days30, now: storeNow) == 1)
     let afterMonth = try store.load()
     #expect(afterMonth.records == [week, recent])
@@ -98,4 +102,44 @@ private func entry(_ text: String, date: Date = storeNow) -> DictationRecord {
     let after = entry("after")
     try store.append(after)
     #expect(try store.load().records == [after])
+}
+
+@Test func loadStreamsLinesAcrossReadsAndSkipsOnlyOversizedOnes() throws {
+    let root = try historyRoot()
+    defer { try? FileManager.default.removeItem(at: root) }
+    var store = DictationHistoryStore(directory: root.appendingPathComponent("History"))
+    let records = (0..<12).map { entry("dictation number \($0)") }
+    for record in records { try store.append(record) }
+    let lineBytes = try HolosJSON.line(records[0]).count
+    // A huge line (as if damaged, or from a much larger dictation) in the middle, and a torn last line.
+    try AtomicFile.append(Data(String(repeating: "x", count: lineBytes * 3).utf8) + Data("\n".utf8),
+                          to: store.fileURL)
+    let after = entry("after the long line")
+    try store.append(after)
+    try AtomicFile.append(Data("{\"schemaVersion\":1,\"id\"".utf8), to: store.fileURL)
+
+    // Reads far smaller than a line, and a line cap below the huge line: every record still loads.
+    store.readChunkBytes = 7
+    store.maxLineBytes = lineBytes * 2
+    let streamed = try store.load()
+    #expect(streamed.records == records + [after])
+    #expect(streamed.skippedLines == 2, "The oversized line and the torn tail, nothing else.")
+
+    // No size makes the whole file unreadable; the sweep compacts the skipped lines away.
+    store.readChunkBytes = 1 << 20
+    #expect(try store.sweep(.forever) == 0)
+    let compacted = try store.load()
+    #expect(compacted.records == records + [after])
+    #expect(compacted.skippedLines == 0)
+}
+
+@Test func loadRefusesASymbolicLinkInPlaceOfTheFile() throws {
+    let root = try historyRoot()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let store = DictationHistoryStore(directory: root.appendingPathComponent("History"))
+    try AtomicFile.ensurePrivateDirectory(store.directory)
+    let elsewhere = root.appendingPathComponent("elsewhere.jsonl")
+    try Data().write(to: elsewhere)
+    try FileManager.default.createSymbolicLink(at: store.fileURL, withDestinationURL: elsewhere)
+    #expect(throws: HolosError.self) { try store.load() }
 }

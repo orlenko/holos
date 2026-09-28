@@ -209,6 +209,17 @@ final class PeoplePane: NSViewController, NSTableViewDataSource, NSTableViewDele
         return row >= 0 && row < people.count ? people[row] : nil
     }
 
+    /// The selected person, for an action on them: nil (with a beep) while a change is saving, when their buttons
+    /// are off, so ⌫ and the other ways in follow the buttons.
+    private var actionablePerson: SpeakerProfile? {
+        guard let person = selectedPerson else { return nil }
+        guard !busy else {
+            NSSound.beep()
+            return nil
+        }
+        return person
+    }
+
     private func updateControls() {
         rememberBox.state = database.rememberVoices ? .on : .off
         rememberBox.isEnabled = !busy
@@ -328,7 +339,7 @@ final class PeoplePane: NSViewController, NSTableViewDataSource, NSTableViewDele
     }
 
     @objc private func renamePerson() {
-        guard let person = selectedPerson else { return }
+        guard let person = actionablePerson else { return }
         let alert = NSAlert()
         alert.messageText = "Rename \(person.displayName)"
         alert.informativeText = "Meetings keep the name the person had when they were named there."
@@ -345,7 +356,7 @@ final class PeoplePane: NSViewController, NSTableViewDataSource, NSTableViewDele
     }
 
     @objc private func mergePerson(_ sender: NSPopUpButton) {
-        guard let person = selectedPerson, let target = sender.selectedItem?.representedObject as? String,
+        guard let person = actionablePerson, let target = sender.selectedItem?.representedObject as? String,
               let other = people.first(where: { $0.id == target }) else { return }
         let alert = NSAlert()
         alert.messageText = "Merge \(person.displayName) into \(other.displayName)?"
@@ -359,8 +370,9 @@ final class PeoplePane: NSViewController, NSTableViewDataSource, NSTableViewDele
         }
     }
 
+    /// The Forget… button, and ⌫ in the list (refused while the button is off).
     @objc private func forgetPerson() {
-        guard let person = selectedPerson else { return }
+        guard let person = actionablePerson else { return }
         let alert = NSAlert()
         alert.messageText = "Forget \(person.displayName)?"
         alert.informativeText = "Voice is Local forgets this person and their \(person.samples.count) voice "
@@ -376,7 +388,7 @@ final class PeoplePane: NSViewController, NSTableViewDataSource, NSTableViewDele
     }
 
     @objc private func forgetSample(_ sender: NSButton) {
-        guard let person = selectedPerson, sender.tag >= 0, sender.tag < person.samples.count else { return }
+        guard let person = actionablePerson, sender.tag >= 0, sender.tag < person.samples.count else { return }
         let sample = person.samples[sender.tag]
         let alert = NSAlert()
         alert.messageText = "Forget the voice sample from “\(sample.sessionName)”?"
@@ -390,6 +402,7 @@ final class PeoplePane: NSViewController, NSTableViewDataSource, NSTableViewDele
     }
 
     @objc private func forgetAllVoices() {
+        guard !busy else { return }
         let samples = database.sampleCount
         let alert = NSAlert()
         alert.messageText = "Forget all voices?"

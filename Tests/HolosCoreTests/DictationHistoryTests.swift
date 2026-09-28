@@ -33,7 +33,9 @@ private func record(_ text: String, heard: String? = nil, app: String? = "Mail",
     #expect(record("hi", outcome: .init(kind: .targetChanged)).resultText.hasPrefix("Not inserted — the app or field changed"))
     #expect(record("hi", app: nil, outcome: .init(kind: .unverified)).resultText == "Unverified — check the app before using Copy.")
     let partial = record("hi", outcome: .init(kind: .needsCopy, reason: "Insertion stopped.", partial: true))
-    #expect(partial.resultText == "Partly written into Mail — Insertion stopped. Use Copy for the rest.")
+    #expect(partial.resultText
+        == "Partly written into Mail — Insertion stopped. Check the field before using Copy; it has the whole text.",
+        "No rest was kept, so Copy has the whole text (partlyWrittenRecordCopiesOnlyTheRestCopyResultOffered).")
 }
 
 @Test func badgesSayFixedOrNotInserted() {
@@ -111,4 +113,97 @@ private func record(_ text: String, heard: String? = nil, app: String? = "Mail",
     #expect(result.text == "open a pull request on GitHub, then another pull request")
     #expect(result.count == 3)
     #expect(CorrectionList().applyCounting(to: "nothing").count == 0)
+}
+
+// MARK: - How a dictation ends
+
+@Test func partlyWrittenRecordCopiesOnlyTheRestCopyResultOffered() throws {
+    let partial = DictationRecord(
+        id: UUID(), date: historyNow, app: "Mail", language: "en-CA", text: "Send it today and call Anna.",
+        heard: "send it today and call anna", unwritten: " and call Anna.",
+        outcome: .init(kind: .needsCopy, reason: "Insertion stopped.", partial: true), seconds: 3)
+    #expect(partial.unwritten == " and call Anna.", "The leading space is kept, as Copy Result keeps it.")
+    #expect(partial.copyText == " and call Anna.")
+    #expect(partial.text == "Send it today and call Anna.", "History still shows the whole dictation.")
+    #expect(partial.resultText == "Partly written into Mail — Insertion stopped. Use Copy for the rest.")
+
+    let decoded = try HolosJSON.decoder().decode(DictationRecord.self, from: HolosJSON.line(partial).dropLast())
+    #expect(decoded == partial)
+
+    // A dictation that was not partly written copies its whole text, whatever was passed.
+    let whole = DictationRecord(id: UUID(), date: historyNow, app: "Mail", language: "en-CA", text: "Hello.",
+                                heard: "hello", unwritten: "Hello.", outcome: .init(kind: .needsCopy), seconds: 1)
+    #expect(whole.unwritten == nil)
+    #expect(whole.copyText == "Hello.")
+    // A partial record without a kept rest (an older line) says Copy has the whole text.
+    let older = record("x y", outcome: .init(kind: .needsCopy, reason: "Stopped.", partial: true))
+    #expect(older.unwritten == nil)
+    #expect(older.resultText.hasSuffix("Check the field before using Copy; it has the whole text."))
+}
+
+@Test func recordLinesWithoutTheRestStillDecode() throws {
+    let line = try HolosJSON.line(record("Old line"))
+    let text = try #require(String(data: line, encoding: .utf8))
+    #expect(!text.contains("unwritten"), "Nothing is written for a dictation with no rest.")
+    let decoded = try HolosJSON.decoder().decode(DictationRecord.self, from: line.dropLast())
+    #expect(decoded.unwritten == nil)
+}
+
+@Test func failedDictationOutcomeFollowsTheStreamAsTheNormalEndDoes() {
+    typealias Outcome = DictationRecord.Outcome
+    // An unconfirmed streamed write, then a recognition failure: still unverified, never "Not inserted".
+    let unverified = Outcome.afterFailure(reason: "Recognition failed.", rest: " the rest", wroteAny: true,
+                                          typed: false, unverified: true, targetMoved: false)
+    #expect(unverified == .init(kind: .unverified, reason: "Recognition failed.", partial: true))
+    #expect(record("a", outcome: unverified).badge == "Unverified")
+    let moved = Outcome.afterFailure(reason: "Recognition failed.", rest: " the rest", wroteAny: true,
+                                     typed: false, unverified: false, targetMoved: true)
+    #expect(moved.kind == .targetChanged)
+    #expect(moved.partial)
+    let nothing = Outcome.afterFailure(reason: "Recognition failed.", rest: "all of it", wroteAny: false,
+                                       typed: false, unverified: false, targetMoved: false)
+    #expect(nothing == .init(kind: .needsCopy, reason: "Recognition failed.", partial: false))
+    #expect(Outcome.afterFailure(reason: "x", rest: nil, wroteAny: true, typed: false, unverified: false,
+                                 targetMoved: false) == .transcriptDiffers)
+    // Every committed word was written before the failure.
+    #expect(Outcome.afterFailure(reason: "x", rest: " ", wroteAny: true, typed: true, unverified: false,
+                                 targetMoved: false) == .init(kind: .typed))
+    #expect(Outcome.afterFailure(reason: "x", rest: "", wroteAny: true, typed: false, unverified: false,
+                                 targetMoved: false) == .init(kind: .inserted))
+    // The same order as the normal end's blocked outcome: unverified, then target changed, then Copy.
+    #expect(Outcome.notWritten(reason: "r", unverified: true, targetMoved: true, partial: false).kind == .unverified)
+    #expect(Outcome.notWritten(reason: "r", unverified: false, targetMoved: false, partial: false).kind == .needsCopy)
+}
+
+@Test func endTextIsWhatWasWrittenOrOfferedWithTheFix() {
+    // Apple Intelligence fixed the streamed chunk; the rest was offered as recognized.
+    let fixed = DictationRecord.endText(recognized: "I sent the male to Anna", fixChanged: true,
+                                        fixedWritten: "I sent the mail", rest: " to Anna")
+    #expect(fixed.text == "I sent the mail to Anna")
+    #expect(fixed.aiChangedWords == 1)
+    let unchanged = DictationRecord.endText(recognized: "I sent it", fixChanged: false, fixedWritten: "I sent",
+                                            rest: " it")
+    #expect(unchanged.text == "I sent it")
+    #expect(unchanged.aiChangedWords == 0)
+    // The transcript no longer extends what was written: the recognized text stays.
+    let diverged = DictationRecord.endText(recognized: "Something else", fixChanged: true,
+                                           fixedWritten: "I sent the mail", rest: nil)
+    #expect(diverged.text == "Something else")
+    #expect(diverged.aiChangedWords == 0)
+}
+
+@Test func historyChangesApplyAgainWithoutDuplicates() {
+    let old = record("old", date: historyNow.addingTimeInterval(-40 * 86_400))
+    let kept = record("kept")
+    let added = record("added")
+    var records = [old, kept]
+    DictationHistoryChange.add(added).apply(to: &records)
+    DictationHistoryChange.add(added).apply(to: &records)
+    #expect(records == [old, kept, added], "Adding a record already there does nothing.")
+    DictationHistoryChange.sweep(before: historyNow.addingTimeInterval(-30 * 86_400)).apply(to: &records)
+    #expect(records == [kept, added])
+    DictationHistoryChange.delete(kept.id).apply(to: &records)
+    #expect(records == [added])
+    DictationHistoryChange.clear.apply(to: &records)
+    #expect(records.isEmpty)
 }

@@ -12,15 +12,20 @@ extension HolosPaths {
 
 /// The dictation history on disk: `dictations.jsonl` (0600, one `DictationRecord` per line, oldest first) in a
 /// private folder (0700). New dictations are appended; deleting one, clearing, and the retention sweep rewrite the
-/// file atomically (`AtomicFile.write`), and the sweep also drops lines that cannot be read. Every write holds
-/// `dictations.lock` (flock), so the app and `voiceislocal history clear` never interleave. Reads take no lock: a
-/// line that is still being appended reads as damaged and is skipped. Nothing here logs the text.
+/// file atomically (`AtomicFile.write`), and every sweep (any retention, Forever too) drops lines that cannot be
+/// read. Every write holds `dictations.lock` (flock), so the app and `voiceislocal history clear` never interleave.
+/// Reads take no lock and stream the file a line at a time, so a Forever history of any size stays readable: a line
+/// that is still being appended reads as damaged and is skipped, and so is one longer than `maxLineBytes`, without
+/// being held in memory. Nothing here logs the text.
 public struct DictationHistoryStore: Sendable {
     static let fileName = "dictations.jsonl"
     static let lockName = "dictations.lock"
-    private static let maxBytes = 128 << 20
 
     public let directory: URL
+    /// A line longer than this is skipped as damaged; a dictation's line is far shorter.
+    var maxLineBytes = 8 << 20
+    /// How much a read takes from the file at a time.
+    var readChunkBytes = 256 << 10
 
     public init(directory: URL = HolosPaths.dictationHistory) {
         self.directory = directory
@@ -38,20 +43,61 @@ public struct DictationHistoryStore: Sendable {
 
     /// The records, oldest first; a missing file (or folder) is an empty history.
     public func load() throws -> Contents {
-        guard let data = try AtomicFile.readIfPresent(fileURL, maxBytes: Self.maxBytes) else {
+        guard let handle = try AtomicFile.openForReading(fileURL) else {
             return Contents(records: [], skippedLines: 0)
         }
+        defer { try? handle.close() }
         let decoder = HolosJSON.decoder()
         var records: [DictationRecord] = []
         var skipped = 0
-        for line in data.split(separator: 0x0A, omittingEmptySubsequences: true) {
-            guard let record = try? decoder.decode(DictationRecord.self, from: Data(line)),
+        var line = Data()
+        var oversized = false
+        func take(_ piece: Data.SubSequence) {
+            guard !oversized else { return }
+            if line.count + piece.count > maxLineBytes {
+                oversized = true
+                line = Data()
+            } else {
+                line.append(contentsOf: piece)
+            }
+        }
+        func endLine() {
+            defer {
+                line.removeAll(keepingCapacity: true)
+                oversized = false
+            }
+            if oversized {
+                skipped += 1
+                return
+            }
+            guard !line.isEmpty else { return }
+            guard let record = try? decoder.decode(DictationRecord.self, from: line),
                   record.schemaVersion <= DictationRecord.currentSchemaVersion else {
                 skipped += 1
-                continue
+                return
             }
             records.append(record)
         }
+        while true {
+            let chunk: Data
+            do {
+                chunk = try handle.read(upToCount: max(1, readChunkBytes)) ?? Data()
+            } catch {
+                throw HolosError.io("Cannot read the history: \(error.localizedDescription)")
+            }
+            if chunk.isEmpty { break }
+            var start = chunk.startIndex
+            while start < chunk.endIndex {
+                guard let newline = chunk[start...].firstIndex(of: 0x0A) else {
+                    take(chunk[start...])
+                    break
+                }
+                take(chunk[start..<newline])
+                endLine()
+                start = chunk.index(after: newline)
+            }
+        }
+        endLine()  // a last line without its newline: complete, or still being appended (then skipped)
         return Contents(records: records, skippedLines: skipped)
     }
 
@@ -99,11 +145,11 @@ public struct DictationHistoryStore: Sendable {
         }
     }
 
-    /// The retention sweep for a setting: nothing for Off and Forever (`HistoryRetention.cutoff`).
+    /// The retention sweep for a setting (`HistoryRetention.cutoff`). Off and Forever keep every record, but the file
+    /// is still compacted: lines that cannot be read are dropped.
     @discardableResult
     public func sweep(_ retention: HistoryRetention, now: Date = Date()) throws -> Int {
-        guard let cutoff = retention.cutoff(now: now) else { return 0 }
-        return try sweep(before: cutoff)
+        try sweep(before: retention.cutoff(now: now) ?? .distantPast)
     }
 
     // MARK: - Helpers

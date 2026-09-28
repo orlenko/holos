@@ -64,6 +64,9 @@ public struct DictationRecord: Codable, Sendable, Equatable, Identifiable {
     public var language: String
     /// The text as written, or as offered for Copy when it could not be written.
     public var text: String
+    /// When only part of `text` was written: the rest, exactly as Copy Result offered it (with its leading space, so
+    /// pasting it after the written part does not join words). History's Copy copies this; nil otherwise.
+    public var unwritten: String?
     /// The recognizer's text before filler removal, corrections, and Apple Intelligence's fix.
     public var heard: String
     public var fixes: Fixes
@@ -73,19 +76,27 @@ public struct DictationRecord: Codable, Sendable, Equatable, Identifiable {
     public var words: Int
 
     public init(id: UUID, date: Date, app: String?, language: String, text: String, heard: String,
-                fixes: Fixes = Fixes(), outcome: Outcome, seconds: Double, words: Int? = nil) {
+                unwritten: String? = nil, fixes: Fixes = Fixes(), outcome: Outcome, seconds: Double,
+                words: Int? = nil) {
         self.schemaVersion = Self.currentSchemaVersion
         self.id = id
         self.date = date
         self.app = app
         self.language = language
         self.text = text
+        // Only a partly written dictation has a rest of its own; any other Copy copies the whole text.
+        let rest = unwritten.flatMap { $0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : $0 }
+        self.unwritten = outcome.partial ? rest : nil
         self.heard = heard
         self.fixes = fixes
         self.outcome = outcome
         self.seconds = max(0, seconds)
         self.words = words ?? Self.wordCount(text)
     }
+
+    /// What History's Copy copies: the part that was not written for a partly written dictation (what Copy Result
+    /// offered), else the text.
+    public var copyText: String { unwritten ?? text }
 
     /// True when the text written differs from what was heard (the "Fixed" badge).
     public var wasFixed: Bool { WordDiff.normalized(text) != WordDiff.normalized(heard) }
@@ -110,15 +121,20 @@ public struct DictationRecord: Codable, Sendable, Equatable, Identifiable {
         case .inserted, .typed, .needsCopy:
             let reason = Self.sentence(outcome.reason) ?? "The field could not be written."
             return outcome.partial
-                ? "Partly written into \(target) — \(reason) Use Copy for the rest."
+                ? "Partly written into \(target) — \(reason) \(restAdvice)"
                 : "Not inserted — \(reason) Use Copy."
         case .targetChanged:
             return outcome.partial
-                ? "Partly written into \(target) — then the app or field changed. Use Copy for the rest."
+                ? "Partly written into \(target) — then the app or field changed. \(restAdvice)"
                 : "Not inserted — the app or field changed before Voice is Local could write. Use Copy."
         case .unverified:
             return "Unverified — check \(target) before using Copy."
         }
+    }
+
+    /// A partly written dictation: Copy has the rest when it was kept, else the whole text (part of it is written).
+    private var restAdvice: String {
+        unwritten == nil ? "Check the field before using Copy; it has the whole text." : "Use Copy for the rest."
     }
 
     /// "Apple Intelligence changed 1 word · 1 correction · fillers removed", or "None".
@@ -169,6 +185,73 @@ public struct DictationRecord: Codable, Sendable, Equatable, Identifiable {
         }
         if let last = text.last, !".!?".contains(last) { text += "." }
         return text
+    }
+}
+
+// MARK: - How a dictation ends
+
+extension DictationRecord.Outcome {
+    /// The final transcript no longer extends the text written while the user spoke: what is in the field is
+    /// unknown, so it is unverified.
+    public static let transcriptDiffers = Self(
+        kind: .unverified, reason: "The final transcript differs from the text inserted while you spoke.")
+
+    /// Text that could not be (all) written, classified as Copy Result's message classifies it: unverified when an
+    /// unconfirmed write may already have landed, targetChanged when the app or field changed, else needsCopy.
+    public static func notWritten(reason: String, unverified: Bool, targetMoved: Bool, partial: Bool) -> Self {
+        let kind: DictationRecord.OutcomeKind = unverified ? .unverified : targetMoved ? .targetChanged : .needsCopy
+        return Self(kind: kind, reason: reason, partial: partial)
+    }
+
+    /// A dictation whose recognition failed. `rest` is the committed text not yet written (nil when it no longer
+    /// extends what was written); `wroteAny` says a prefix was written; `typed` that it went in as keystrokes. The
+    /// stream's state (`unverified`, `targetMoved`) decides as it does on the normal end.
+    public static func afterFailure(reason: String, rest: String?, wroteAny: Bool, typed: Bool, unverified: Bool,
+                                    targetMoved: Bool) -> Self {
+        guard let rest else { return transcriptDiffers }
+        if wroteAny, !unverified, rest.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            // Every committed word is in the field; only words never recognized are missing.
+            return Self(kind: typed ? .typed : .inserted)
+        }
+        return notWritten(reason: reason, unverified: unverified, targetMoved: targetMoved, partial: wroteAny)
+    }
+}
+
+extension DictationRecord {
+    /// The text History keeps for a dictation that ended, however it ended: what Holos wrote or tried to write, and
+    /// how many words Apple Intelligence's fix changed. `recognized` is the transcript after filler removal and
+    /// corrections. When the fix changed something (`fixChanged`), the chunks written as fixed (`fixedWritten`) and
+    /// what was written or offered for the part after them (`rest`, `AIFixUnwritten.attempted`) replace it
+    /// (`AIFixTranscript.final`); nil `rest` (the transcript no longer extends what was written) keeps `recognized`.
+    public static func endText(recognized: String, fixChanged: Bool, fixedWritten: String,
+                               rest: String?) -> (text: String, aiChangedWords: Int) {
+        guard fixChanged, let final = AIFixTranscript.final(written: fixedWritten, rest: rest) else {
+            return (recognized, 0)
+        }
+        return (final, WordDiff.changedWordCount(from: recognized, to: final))
+    }
+}
+
+/// One change the app made to the history, kept while a reload is reading the file so the change can be applied
+/// again to what the reload read (the file may not have had it yet).
+public enum DictationHistoryChange: Sendable, Equatable {
+    case add(DictationRecord)
+    case delete(UUID)
+    case clear
+    /// Removes records dated before this.
+    case sweep(before: Date)
+
+    public func apply(to records: inout [DictationRecord]) {
+        switch self {
+        case .add(let record):
+            if !records.contains(where: { $0.id == record.id }) { records.append(record) }
+        case .delete(let id):
+            records.removeAll { $0.id == id }
+        case .clear:
+            records.removeAll()
+        case .sweep(let cutoff):
+            records.removeAll { $0.date < cutoff }
+        }
     }
 }
 

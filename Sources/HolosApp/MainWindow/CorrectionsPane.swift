@@ -13,9 +13,9 @@ final class CorrectionsPane: NSViewController, NSTextFieldDelegate, MainSectionC
         var edit: DeclinedCorrectionQueue.PendingEdit?
     }
 
-    /// Learns from the edited text against the text it was edited from (the dictation as recognized); returns the
-    /// learned and declined pairs, or nil when the change could not be saved.
-    private let onLearn: (_ edited: String, _ original: String) -> LearnResult?
+    /// Learns from the edited text against the text it was edited from (the dictation as recognized), for the
+    /// dictation with that ID; returns the learned and declined pairs, or nil when the change could not be saved.
+    private let onLearn: (_ edited: String, _ original: String, _ dictation: UUID?) -> LearnResult?
     /// Adds a rule, with the edit of the declined swap it resolves (if any). False means not saved.
     private let onAdd: (Correction, DeclinedCorrectionQueue.PendingEdit?) -> Bool
     private let onRemove: (Correction) -> Bool
@@ -36,12 +36,14 @@ final class CorrectionsPane: NSViewController, NSTextFieldDelegate, MainSectionC
     private var editing: Correction?
     /// What the dictation in the text box is compared with to learn: the text as recognized, before corrections.
     private var baseline = ""
+    /// The ID of the dictation in the text box (the last one's, or a History dictation's).
+    private var dictation: UUID?
     private var shown: [Correction] = []
     private var declined = DeclinedCorrectionQueue()
     /// The feedback lines shown above the declined-swap suggestion, so a refill can redraw them.
     private var reported: [String] = []
 
-    init(onLearn: @escaping (_ edited: String, _ original: String) -> LearnResult?,
+    init(onLearn: @escaping (_ edited: String, _ original: String, _ dictation: UUID?) -> LearnResult?,
          onAdd: @escaping (Correction, DeclinedCorrectionQueue.PendingEdit?) -> Bool,
          onRemove: @escaping (Correction) -> Bool,
          onReplace: @escaping (Correction, Correction, DeclinedCorrectionQueue.PendingEdit?) -> Bool) {
@@ -156,10 +158,11 @@ final class CorrectionsPane: NSViewController, NSTextFieldDelegate, MainSectionC
     private let transcriptHeading = NSTextField(labelWithString: "")
 
     /// Puts a dictation in the text box: `transcript` as written, compared on Learn with `recognized` (the text as
-    /// recognized, before corrections). `title` says which dictation it is.
-    func load(transcript: String, recognized: String, title: String, corrections: [Correction]) {
+    /// recognized, before corrections). `dictation` is its ID and `title` says which dictation it is.
+    func load(transcript: String, recognized: String, dictation: UUID?, title: String, corrections: [Correction]) {
         transcriptView.string = transcript
         baseline = recognized
+        self.dictation = dictation
         transcriptHeading.stringValue = title
         let hasTranscript = !transcript.isEmpty
         transcriptView.isEditable = hasTranscript
@@ -206,7 +209,7 @@ final class CorrectionsPane: NSViewController, NSTextFieldDelegate, MainSectionC
 
     @objc private func learn() {
         let edited = transcriptView.string
-        guard let result = onLearn(edited, baseline) else {
+        guard let result = onLearn(edited, baseline, dictation) else {
             feedbackLabel.stringValue = Self.saveFailure
             return
         }
@@ -298,9 +301,9 @@ final class CorrectionsPane: NSViewController, NSTextFieldDelegate, MainSectionC
     }
 
     /// A declined swap's edit was kept with the rule that resolved it: its edited text becomes the baseline while
-    /// the box still holds the dictation it was edited from.
+    /// the box still holds the dictation it was edited from (by ID: another one with the same text does not count).
     private func keepBaseline(of edit: DeclinedCorrectionQueue.PendingEdit?) {
-        if let transcript = edit?.transcript(whenLastRecognized: baseline) { baseline = transcript }
+        if let transcript = edit?.transcript(for: dictation, whenLastRecognized: baseline) { baseline = transcript }
     }
 
     @objc private func skipDeclined() {

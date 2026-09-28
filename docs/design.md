@@ -170,7 +170,11 @@ separate windows.
 Keyboard: ⌘1–⌘5 and ⌘, switch sections; ⌘F focuses the section's search field; ↑↓ move
 in lists, Return opens (History: the text; Meetings: Review or the transcript), ⌫ deletes
 after a confirmation (History: the dictation; Meetings: Delete Meeting…; People:
-Forget…); Tab reaches the sidebar, list, and detail. Escape keeps `AppKeyboard`'s rule
+Forget…); Tab reaches the sidebar, list, and detail. A key does exactly what its button
+does and only while that button is enabled (Meetings: `MeetingActionPolicy`, so ⌫ on a
+meeting another process holds only beeps; People: not while a change saves; History:
+⇧⌘C only for a dictation the fixes changed); Edit › Copy is off with no dictation
+selected. Escape keeps `AppKeyboard`'s rule
 (it closes the key window unless a field is being edited or a dictation runs). Controls
 are standard AppKit controls with semantic colours, so light and dark mode, Full
 Keyboard Access, and VoiceOver work without custom handling.
@@ -190,27 +194,41 @@ through `NSRunningApplication`), the locale, the text as written (or as offered 
 when it could not be written), the recognizer's text before filler removal, corrections,
 and Apple Intelligence, the fixes (fillers removed, corrections applied, words the
 on-device fix changed, counted with `WordDiff`), the outcome (inserted, typed, needsCopy,
-unverified, targetChanged, partly written or not, with the reason), the seconds from
-Listening to release, and the word count. A failed dictation that had recognized words
-is recorded as not inserted; a cancelled one, one that recognized nothing, and one
+unverified, targetChanged, partly written or not, with the reason), for a partly written
+one the rest exactly as Copy Result offered it (`unwritten`, with its leading space;
+History's Copy copies it, and the detail shows it under the whole text), the seconds from
+Listening to release, and the word count. Every way a dictation ends builds its record by
+one rule (`DictationRecord.endText`, `Outcome.afterFailure`): a failed dictation that had
+recognized words keeps the text as written or offered, with Apple Intelligence's fix and
+its changed-word count, and the outcome the stream left (unverified after an unconfirmed
+write, targetChanged after the app or field changed, else not inserted; partly written
+when a prefix went in); a cancelled one, one that recognized nothing, and one
 refused at key-down (a secure or password field, secure input on) are not: the draft a
 record is made from exists only after the key-down checks passed, and nothing is
 recorded while secure input is on at the end either.
 
 Storage (`DictationHistoryStore`, HolosStorage): `<supportRoot>/History/dictations.jsonl`
 (Application Support/Holos unless `HOLOS_SUPPORT_DIR` is set), one compact JSON line per
-dictation appended with `AtomicFile.append` (0600, folder 0700). Deleting one, Clear
-History, and the retention sweep rewrite the file atomically; the sweep also drops lines
-that cannot be read. Writes hold `dictations.lock` (flock), so the app and
-`voiceislocal history clear --yes` never interleave; the app runs every file operation on
-one serial queue off the main actor and keeps the records in memory for the History
-section. Retention is UserDefaults `historyRetention`: `off`, `7`, `30` (the default), or
+dictation appended with `AtomicFile.append` (0600, folder 0700). Reads stream the file a
+line at a time, so a Forever history of any size stays readable; a line longer than 8 MiB
+(or damaged, or torn by an append in progress) is skipped, never the whole file. Deleting
+one, Clear History, and the retention sweep rewrite the file atomically; every sweep,
+Forever and Off included, also drops lines that cannot be read. Writes hold
+`dictations.lock` (flock), so the app and `voiceislocal history clear --yes` never
+interleave. The app (`DictationHistoryService`, HolosStorage) runs every file operation on
+one serial queue off the main actor, keeps the records in memory for the History section,
+applies changes made while a reload reads the file to what it read (a dictation finished
+during the launch load is merged, not lost), and waits for the queue (at most 5 seconds)
+when it quits, so a dictation just recorded, deleted, or cleared reaches the file.
+Retention is UserDefaults `historyRetention`: `off`, `7`, `30` (the default), or
 `forever`, swept at launch, once a day, and when it changes. Off stops recording and
 offers to clear what is kept. The text never goes to `os.Logger`, and the clipboard is
 touched only by the user's Copy or Copy As Heard (History) and Copy Result / Copy
 Original (menu). History's Correct… opens Corrections with that dictation: the last one
 is compared with its text as recognized, as before; an older one with its text as
-written, the only form History keeps.
+written, the only form History keeps. Corrections knows which dictation it holds by ID,
+so learning from an older one never replaces what Correct Last Dictation opens, even
+when the two have the same text.
 
 ### First-launch setup
 

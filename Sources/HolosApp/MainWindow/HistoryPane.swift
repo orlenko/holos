@@ -5,7 +5,8 @@ import HolosCore
 /// by day, with a search field; the selected one's text, the text as heard (changed words highlighted), what
 /// happened to it, and its actions. Copy and Copy As Heard are the only ways its text reaches the clipboard.
 @MainActor
-final class HistoryPane: NSViewController, MainSectionContent, NSTableViewDataSource, NSTableViewDelegate {
+final class HistoryPane: NSViewController, MainSectionContent, NSTableViewDataSource, NSTableViewDelegate,
+    NSMenuItemValidation {
     struct Actions {
         /// Copies `text` to the clipboard (only ever on the user's Copy).
         var copy: (_ text: String) -> Bool
@@ -257,15 +258,28 @@ final class HistoryPane: NSViewController, MainSectionContent, NSTableViewDataSo
         copySelected(heard: true)
     }
 
+    /// Copy copies what Copy Result offered: the part not written of a partly written dictation, else the text.
+    /// Copy As Heard exists only for a dictation the fixes changed (its button shows only then).
     private func copySelected(heard: Bool) {
-        guard let record = selectedRecord else { return }
-        let copied = actions.copy(heard ? record.heard : record.text)
-        detail.showFeedback(copied ? (heard ? "Copied the text as heard." : "Copied.") : "Clipboard write failed.")
+        guard let record = selectedRecord, !heard || HistoryDetailView.offersCopyAsHeard(record) else { return }
+        let copied = actions.copy(heard ? record.heard : record.copyText)
+        let done = heard ? "Copied the text as heard." : record.unwritten == nil ? "Copied." : "Copied the part not written."
+        detail.showFeedback(copied ? done : "Clipboard write failed.")
     }
 
     private func correctSelected() {
         guard let record = selectedRecord else { return }
         actions.correct(record)
+    }
+
+    /// The Edit menu's Copy (⌘C) and the Copy As Heard key follow the buttons: on only for a selected dictation that
+    /// has them.
+    func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+        switch menuItem.action {
+        case #selector(copy(_:)): selectedRecord != nil
+        case #selector(copyAsHeard(_:)): selectedRecord.map(HistoryDetailView.offersCopyAsHeard) ?? false
+        default: true
+        }
     }
 
     private func deleteSelected() {
@@ -428,6 +442,8 @@ final class HistoryDetailView: NSView {
     private let text = NSTextField(wrappingLabelWithString: "")
     private let heardHeading = NSTextField(labelWithString: "As heard, before fixes")
     private let heard = NSTextField(wrappingLabelWithString: "")
+    private let restHeading = NSTextField(labelWithString: "Not written — what Copy copies")
+    private let rest = NSTextField(wrappingLabelWithString: "")
     private let grid = NSGridView()
     private var values: [String: NSTextField] = [:]
     private let copyButton = NSButton(title: "Copy", target: nil, action: nil)
@@ -460,6 +476,11 @@ final class HistoryDetailView: NSView {
         heard.isSelectable = true
         heard.allowsEditingTextAttributes = true  // keeps the highlight when selected
         heard.setAccessibilityLabel("Text as heard, before fixes")
+        restHeading.font = .systemFont(ofSize: 11, weight: .semibold)
+        restHeading.textColor = .secondaryLabelColor
+        rest.font = .systemFont(ofSize: 13)
+        rest.isSelectable = true
+        rest.setAccessibilityLabel("Text not written, what Copy copies")
 
         grid.rowSpacing = 6
         grid.columnSpacing = 14
@@ -501,10 +522,13 @@ final class HistoryDetailView: NSView {
         header.spacing = 2
         let separator = NSBox()
         separator.boxType = .separator
-        for view in [header, text, heardHeading, heard, separator, grid, buttons] { content.addArrangedSubview(view) }
+        for view in [header, text, restHeading, rest, heardHeading, heard, separator, grid, buttons] {
+            content.addArrangedSubview(view)
+        }
         content.orientation = .vertical
         content.alignment = .leading
         content.spacing = 12
+        content.setCustomSpacing(4, after: restHeading)
         content.setCustomSpacing(4, after: heardHeading)
         content.setCustomSpacing(18, after: heard)
         content.translatesAutoresizingMaskIntoConstraints = false
@@ -546,8 +570,8 @@ final class HistoryDetailView: NSView {
     override func layout() {
         super.layout()
         let width = max(200, bounds.width - 48)
-        for label in [text, heard] + Array(values.values) {
-            let target = label === text || label === heard ? width : max(120, width - 90)
+        for label in [text, heard, rest] + Array(values.values) {
+            let target = label === text || label === heard || label === rest ? width : max(120, width - 90)
             if label.preferredMaxLayoutWidth != target { label.preferredMaxLayoutWidth = target }
         }
     }
@@ -555,6 +579,8 @@ final class HistoryDetailView: NSView {
     func show(_ record: DictationRecord?, emptyText: String) {
         feedbackTask?.cancel()
         feedback.stringValue = ""
+        // With nothing selected the actions (and their keys: ⇧⌘C, ⌘E) are off, not merely hidden.
+        for button in [copyButton, copyHeardButton, correctButton, deleteButton] { button.isEnabled = record != nil }
         guard let record else {
             content.isHidden = true
             empty.stringValue = emptyText
@@ -566,10 +592,18 @@ final class HistoryDetailView: NSView {
         title.stringValue = record.app ?? "Unknown app"
         subtitle.stringValue = dateFormatter.string(from: record.date)
         text.stringValue = record.text
-        let differs = record.wasFixed
+        // A partly written dictation shows both: the whole text, and the rest Copy copies (as Copy Result did).
+        restHeading.isHidden = record.unwritten == nil
+        rest.isHidden = record.unwritten == nil
+        rest.stringValue = record.unwritten?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        copyButton.toolTip = record.unwritten == nil
+            ? "Copy the text to the clipboard (⌘C in the list)"
+            : "Copy the part that was not written, as Copy Result did (⌘C in the list)"
+        let differs = Self.offersCopyAsHeard(record)
         heardHeading.isHidden = !differs
         heard.isHidden = !differs
         copyHeardButton.isHidden = !differs
+        copyHeardButton.isEnabled = differs  // a hidden button must not answer ⇧⌘C either
         if differs { heard.attributedStringValue = Self.highlighted(record.heard, comparedTo: record.text) }
         values["Result"]?.stringValue = record.resultText
         values["Language"]?.stringValue = DictationLanguage.name(of: record.language)
@@ -591,6 +625,9 @@ final class HistoryDetailView: NSView {
             self?.feedback.stringValue = ""
         }
     }
+
+    /// Copy As Heard (and its ⇧⌘C) is offered only when the fixes changed the text.
+    static func offersCopyAsHeard(_ record: DictationRecord) -> Bool { record.wasFixed }
 
     /// The text as heard, with the words the fixes changed or removed marked.
     static func highlighted(_ heard: String, comparedTo written: String) -> NSAttributedString {

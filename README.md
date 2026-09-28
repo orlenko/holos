@@ -140,7 +140,7 @@ Meeting can also forget the voice samples learned from that meeting. See the
 
 | Section | Key | What it does |
 | --- | --- | --- |
-| History | ⌘1 | Dictations kept on this Mac, grouped by day, with search (⌘F). The selected one shows its text, the text as heard before fixes (changed words marked), where it went, its language, what was fixed, and its length. Copy (⌘C), Copy As Heard (⇧⌘C), Correct… (⌘E), Delete (⌫, asks first); Clear History… in the footer. |
+| History | ⌘1 | Dictations kept on this Mac, grouped by day, with search (⌘F). The selected one shows its text, the text as heard before fixes (changed words marked), where it went, its language, what was fixed, and its length. Copy (⌘C; for a partly written dictation, only the part that was not written, as Copy Result had it), Copy As Heard (⇧⌘C), Correct… (⌘E), Delete (⌫, asks first); Clear History… in the footer. |
 | Corrections | ⌘2 | Fix a dictation and learn the word swaps, and edit the learned list (was the Corrections window). **Correct Last Dictation…** in the menu opens it with the last dictation, History's Correct… with the chosen one. |
 | Meetings | ⌘3 | The saved meetings (was the Meetings window). Return opens Review, ⌫ is Delete Meeting…. |
 | People | ⌘4 | People you have named and their voice samples (was the People window). |

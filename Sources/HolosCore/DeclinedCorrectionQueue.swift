@@ -4,20 +4,31 @@ import Foundation
 /// or skips each one, so every declined pair can still be added by hand.
 public struct DeclinedCorrectionQueue: Equatable, Sendable {
     /// An edited transcript whose only changes were declined swaps. It becomes the last transcript once
-    /// the user adds one of its swaps, provided the last recognized text is still the one it was edited from.
+    /// the user adds one of its swaps, provided it was made from the last dictation (`dictation`, its ID) and the
+    /// last recognized text is still the one it was edited from.
     public struct PendingEdit: Equatable, Sendable {
         public var recognized: String
         public var edited: String
+        /// The dictation it was edited from; an older dictation with the same text is a different one.
+        public var dictation: UUID?
 
-        public init(recognized: String, edited: String) {
+        public init(recognized: String, edited: String, dictation: UUID? = nil) {
             self.recognized = recognized
             self.edited = edited
+            self.dictation = dictation
         }
 
         /// The transcript to keep when one of this edit's swaps is added: the edited text while
         /// `lastRecognized` is still the text it was edited from, otherwise nil.
         public func transcript(whenLastRecognized lastRecognized: String) -> String? {
             recognized == lastRecognized ? edited : nil
+        }
+
+        /// Like `transcript(whenLastRecognized:)`, for the dictation `id`: nil when the edit came from another
+        /// dictation, even one whose text is the same.
+        public func transcript(for id: UUID?, whenLastRecognized lastRecognized: String) -> String? {
+            guard let id, dictation == id else { return nil }
+            return transcript(whenLastRecognized: lastRecognized)
         }
     }
 

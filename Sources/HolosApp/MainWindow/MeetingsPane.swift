@@ -285,13 +285,30 @@ final class MeetingsPane: NSViewController, NSTableViewDataSource, NSTableViewDe
 
     // MARK: - Buttons
 
+    /// What `MeetingActionPolicy` enables for `summary` now, the rules of the commands behind the actions. The
+    /// buttons show it, and every way to an action (button, ⌫, Return, double-click) checks it again when used.
+    private func enabledActions(_ summary: SessionSummary?) -> Set<MeetingActionPolicy.Action> {
+        let hasExport = summary.map { Self.isRegularFile(SessionPaths.export("md", in: $0.directory)) } ?? false
+        return MeetingActionPolicy.enabled(summary, inUse: summary.map { running[$0.id] != nil } ?? false,
+                                           hasExport: hasExport)
+    }
+
+    /// The selected meeting, when `action` is enabled for it; else nil, and a keyboard use beeps.
+    private func selection(for action: MeetingActionPolicy.Action) -> SessionSummary? {
+        guard let summary = selectedSession else { return nil }
+        guard enabledActions(summary).contains(action) else {
+            NSSound.beep()
+            updateButtons()
+            return nil
+        }
+        return summary
+    }
+
     /// The buttons follow `MeetingActionPolicy`, the rules of the commands behind them.
     private func updateButtons() {
         let summary = selectedSession
         buttons["Review…"]?.isEnabled = summary.map(canReview) ?? false
-        let hasExport = summary.map { Self.isRegularFile(SessionPaths.export("md", in: $0.directory)) } ?? false
-        let enabled = MeetingActionPolicy.enabled(summary, inUse: summary.map { running[$0.id] != nil } ?? false,
-                                                  hasExport: hasExport)
+        let enabled = enabledActions(summary)
         let titles: [(String, MeetingActionPolicy.Action)] = [
             ("Recover…", .recover), ("Label Speakers", .labelSpeakers), ("Show in Finder", .showInFinder),
             ("Open Transcript", .openTranscript), ("Save Transcript As…", .saveTranscript),
@@ -327,7 +344,11 @@ final class MeetingsPane: NSViewController, NSTableViewDataSource, NSTableViewDe
     }
 
     @objc private func review() {
-        guard let summary = selectedSession, canReview(summary) else { return }
+        guard let summary = selectedSession else { return }
+        guard canReview(summary) else {
+            NSSound.beep()
+            return
+        }
         openReview(summary)
     }
 
@@ -337,7 +358,8 @@ final class MeetingsPane: NSViewController, NSTableViewDataSource, NSTableViewDe
         openSelection()
     }
 
-    /// Return, or a double-click: Review for a labelled meeting, else the transcript preview.
+    /// Return, or a double-click: Review for a labelled meeting, else the transcript preview (when Open Transcript is
+    /// enabled; otherwise a beep, as for any action that is off).
     private func openSelection() {
         guard let summary = selectedSession else { return }
         if canReview(summary) {
@@ -347,28 +369,30 @@ final class MeetingsPane: NSViewController, NSTableViewDataSource, NSTableViewDe
         }
     }
 
-    @objc private func recover() { act(.recover) }
+    @objc private func recover() { act(.recover, .recover) }
 
-    @objc private func labelSpeakers() { act(.labelSpeakers) }
+    @objc private func labelSpeakers() { act(.labelSpeakers, .labelSpeakers) }
 
-    @objc private func deleteAudio() { act(.deleteAudio) }
+    @objc private func deleteAudio() { act(.deleteAudio, .deleteAudio) }
 
-    @objc private func deleteMeeting() { act(.deleteMeeting) }
+    /// The button, and ⌫ in the list: refused (with a beep) whenever the button is off, for example while another
+    /// process holds the meeting.
+    @objc private func deleteMeeting() { act(.deleteMeeting, .deleteMeeting) }
 
-    private func act(_ action: Action) {
-        guard let summary = selectedSession else { return }
+    private func act(_ action: Action, _ policy: MeetingActionPolicy.Action) {
+        guard let summary = selection(for: policy) else { return }
         perform(action, summary)
         updateButtons()
     }
 
     @objc private func showInFinder() {
-        guard let summary = selectedSession else { return }
+        guard let summary = selection(for: .showInFinder) else { return }
         NSWorkspace.shared.activateFileViewerSelecting([summary.directory])
     }
 
     /// A Quick Look preview of exports/transcript.md (read-only; Save Transcript As… gives an editable copy).
     @objc private func openTranscript() {
-        guard let summary = selectedSession else { return }
+        guard let summary = selection(for: .openTranscript) else { return }
         let url = SessionPaths.export("md", in: summary.directory)
         guard Self.isRegularFile(url) else { return }
         previewURL = url
@@ -383,7 +407,7 @@ final class MeetingsPane: NSViewController, NSTableViewDataSource, NSTableViewDe
 
     /// Renders the chosen format from the session (off the main actor) and writes it where the user says.
     @objc private func saveTranscript() {
-        guard let summary = selectedSession else { return }
+        guard let summary = selection(for: .saveTranscript) else { return }
         let panel = NSSavePanel()
         let formats = NSPopUpButton()
         formats.addItems(withTitles: ["Markdown (.md)", "Plain text (.txt)"])
@@ -444,7 +468,7 @@ final class MeetingsPane: NSViewController, NSTableViewDataSource, NSTableViewDe
     /// Deletes leftover speaker-labelling renders under the processing lease, while the meeting is registered as in
     /// use: the automatic relabel skips it, instead of losing the lease race and using up an attempt.
     @objc private func cleanUp() {
-        guard let summary = selectedSession else { return }
+        guard let summary = selection(for: .cleanUp) else { return }
         let session = summary.directory
         let id = summary.id
         guard beginUsing(id, "Cleaning up…") else {

@@ -8,6 +8,7 @@ import HolosDesktop
 import HolosDictation
 import HolosMeeting
 import HolosSpeech
+import HolosStorage
 import os
 import Security
 
@@ -256,6 +257,9 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
         enableTask?.cancel(); assetTask?.cancel(); overlayHideTask?.cancel(); resultExpiryTask?.cancel()
         setupRefreshTask?.cancel(); assistantRefreshTask?.cancel()
         history.stop()
+        // A dictation just recorded, deleted, or cleared must reach the file before the process exits; bounded, so a
+        // stuck disk never holds up the quit.
+        if !history.flush(timeout: 5) { log.error("Quit before the history's last change was written") }
         monitor?.stop(); controller?.cancel()
         for observer in observers { NSWorkspace.shared.notificationCenter.removeObserver(observer) }
         overlay.hide()
@@ -631,7 +635,8 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
             if !text.isEmpty {
                 lastTranscript = text
                 lastRecognized = recognized
-                lastTranscriptID = historyDraft?.id
+                // Its History ID, else one of its own: Corrections tells the last dictation apart by ID, not text.
+                lastTranscriptID = historyDraft?.id ?? UUID()
             }
             if let pipeline = fixPipeline {
                 // Earlier chunks may still be waiting for their fix; the target stays until they are written.
@@ -643,22 +648,20 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
             let destination = target
             target = nil // No callback or retry can write to this target again.
             finish(text, into: destination)
-            recordHistory(written: text, heard: update.text)
+            recordHistory(recognized: text, heard: update.text)
             presentResult()
         case .failed:
             // Keep committed words that were withheld or not yet written, so Copy Result still has them. A chunk
             // whose fixed write failed is offered as fixed, the text Holos tried to write.
             let committed = cleaned(latestCommitted).trimmingCharacters(in: .whitespacesAndNewlines)
             let unwritten = TextInsertion.unwritten(committed, after: insertedText)
+            // Read before `endFixing` drops the pipeline: the chunks it wrote as fixed, for History.
+            let fixedWritten = fixPipeline?.written ?? ""
             let attempted = unwritten.map {
                 AIFixUnwritten.attempted($0, fixedRest: nil, failedWrite: fixPipeline?.failedWrite)
             }
             endFixing(heard: latestCommitted, offered: attempted ?? "", recognized: unwritten ?? "")
             target = nil
-            // History keeps what was recognized before the failure, as not (fully) inserted.
-            historyOutcome = .init(kind: .needsCopy, reason: update.message ?? "Dictation failed.",
-                                   partial: !insertedText.isEmpty)
-            recordHistory(written: committed, heard: latestCommitted)
             message = update.message ?? "Dictation failed; no text was inserted."
             if !insertedText.isEmpty { message += " Text inserted before the failure stays in the field." }
             if !resultOriginal.isEmpty { message += " Copy Original has what was heard, before Apple Intelligence's fix." }
@@ -674,23 +677,21 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
                 } else {
                     message += " Copy Result has the words that were not inserted."
                 }
-                retainResult()
-                overlay.show(title: message, text: resultText, attention: true)
-                scheduleOverlayHide()
-                rebuildMenu()
-                return
-            }
-            if unwritten == nil, !committed.isEmpty {
+            } else if unwritten == nil, !committed.isEmpty {
                 // The transcript no longer extends what was inserted, so no tail is safe to paste.
                 resultText = committed
                 message += " The transcript changed after text was inserted; check the field. Copy Result has the full transcript."
-                retainResult()
-                overlay.show(title: message, text: resultText, attention: true)
-                scheduleOverlayHide()
-                rebuildMenu()
-                return
+            } else {
+                resultText = update.text
             }
-            resultText = update.text
+            // History keeps what was recognized before the failure, by the same rules as a released dictation: the
+            // text as written or offered (with Apple Intelligence's fix), and the outcome the stream left
+            // (unverified, the app or field changed, or not inserted), partly written when a prefix went in.
+            historyOutcome = .afterFailure(reason: update.message ?? insertionBlockReason ?? "Dictation failed.",
+                                           rest: unwritten, wroteAny: !insertedText.isEmpty,
+                                           typed: typedAppName != nil, unverified: streamUnverified,
+                                           targetMoved: targetMoved)
+            recordHistory(recognized: committed, heard: latestCommitted, fixedWritten: fixedWritten, rest: attempted)
             retainResult()
             overlay.show(title: message, text: resultText, attention: true)
             scheduleOverlayHide()
@@ -779,9 +780,7 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
         endFixing(heard: heard, offered: attempted ?? "", recognized: unwritten ?? "")
         let written = finish(text, into: destination, writing: attempted == unwritten ? nil : attempted)
         // History: what Holos wrote or tried to write, and how many words Apple Intelligence changed.
-        let final = resultOriginal.isEmpty ? nil : AIFixTranscript.final(written: pipeline.written, rest: attempted)
-        recordHistory(written: final ?? text, heard: heard,
-                      aiChangedWords: final.map { WordDiff.changedWordCount(from: text, to: $0) } ?? 0)
+        recordHistory(recognized: text, heard: heard, fixedWritten: pipeline.written, rest: attempted)
         if !resultOriginal.isEmpty {
             // What Holos wrote or tried to write: the fixed chunks, then the fix of the rest.
             let fixed = pipeline.written + (attempted ?? "")
@@ -863,8 +862,7 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
                 ? "Text was inserted while you spoke, but the final transcript came back empty. Check the field."
                 : "Text was inserted while you spoke, but the final transcript differs. Check the field; Copy Result copies the full transcript."
             resultNeedsAttention = true
-            historyOutcome = .init(kind: .unverified,
-                                   reason: "The final transcript differs from the text inserted while you spoke.")
+            historyOutcome = .transcriptDiffers
             return false
         }
         let remainder = rest.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -995,15 +993,22 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
         historyDraft = draft
     }
 
-    /// Records the dictation that just ended in History: `written` is the text as written (or offered for Copy),
-    /// `heard` the recognizer's text before fillers, corrections, and Apple Intelligence. Once per dictation, never
-    /// for one refused at key-down (no draft), never with History off, and never while secure input is on.
-    private func recordHistory(written: String, heard: String, aiChangedWords: Int = 0) {
+    /// Records the dictation that just ended in History, by one rule however it ended (released, with or without
+    /// Apple Intelligence's fix, or failed). `recognized` is the transcript after fillers and corrections, `heard` the
+    /// recognizer's text before them; with the fix, `fixedWritten` is what its pipeline wrote and `rest` what was
+    /// written or offered after that (`AIFixUnwritten.attempted`), so the text kept is the text written or offered
+    /// (`DictationRecord.endText`). The outcome is `historyOutcome`, and a partly written dictation keeps what Copy
+    /// Result offers (`resultText`) for History's Copy, so this runs once both are set. Once per dictation, never for
+    /// one refused at key-down (no draft), never with History off, and never while secure input is on.
+    private func recordHistory(recognized: String, heard: String, fixedWritten: String = "", rest: String? = nil) {
         guard let draft = historyDraft else { return }
         historyDraft = nil
         let outcome = historyOutcome
         historyOutcome = nil
-        let text = written.trimmingCharacters(in: .whitespacesAndNewlines)
+        let written = DictationRecord.endText(recognized: recognized, fixChanged: !resultOriginal.isEmpty,
+                                              fixedWritten: fixedWritten, rest: rest)
+        let aiChangedWords = written.aiChangedWords
+        let text = written.text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let outcome, !text.isEmpty, history.retention.records, !TextInsertion.isSecureInputActive() else {
             return
         }
@@ -1013,7 +1018,7 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
         let swaps = corrections.applyCounting(to: withoutFill.trimmingCharacters(in: .whitespacesAndNewlines)).count
         history.add(DictationRecord(
             id: draft.id ?? UUID(), date: draft.date, app: draft.app, language: draft.language, text: text,
-            heard: heard.isEmpty ? text : heard,
+            heard: heard.isEmpty ? text : heard, unwritten: resultText,
             fixes: .init(fillersRemoved: fillersRemoved, corrections: swaps, aiChangedWords: aiChangedWords),
             outcome: outcome, seconds: draft.seconds(now: Date())))
     }
@@ -1022,7 +1027,7 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
     @objc private func showCorrections() {
         showMainWindow(.corrections)
         (mainWindow?.existingController(for: .corrections) as? CorrectionsPane)?.load(
-            transcript: lastTranscript, recognized: lastRecognized,
+            transcript: lastTranscript, recognized: lastRecognized, dictation: lastTranscriptID,
             title: "Last dictation — fix any misheard words, then Learn", corrections: corrections.entries)
     }
 
@@ -1033,13 +1038,15 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
         showMainWindow(.corrections)
         (mainWindow?.existingController(for: .corrections) as? CorrectionsPane)?.load(
             transcript: isLast ? lastTranscript : record.text, recognized: isLast ? lastRecognized : record.text,
-            title: "Dictation in \(record.app ?? "an app") — fix any misheard words, then Learn",
+            dictation: record.id, title: "Dictation in \(record.app ?? "an app") — fix any misheard words, then Learn",
             corrections: corrections.entries)
     }
 
     func makeCorrectionsPane() -> CorrectionsPane {
         let pane = CorrectionsPane(
-            onLearn: { [weak self] edited, original in self?.learnCorrections(from: edited, original: original) },
+            onLearn: { [weak self] edited, original, dictation in
+                self?.learnCorrections(from: edited, original: original, dictation: dictation)
+            },
             onAdd: { [weak self] correction, edit in
                 self?.addCorrection(correction, resolving: edit) ?? false
             },
@@ -1047,14 +1054,16 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
             onReplace: { [weak self] old, new, edit in
                 self?.replaceCorrection(old, with: new, resolving: edit) ?? false
             })
-        pane.load(transcript: lastTranscript, recognized: lastRecognized,
+        pane.load(transcript: lastTranscript, recognized: lastRecognized, dictation: lastTranscriptID,
                   title: "Last dictation — fix any misheard words, then Learn", corrections: corrections.entries)
         return pane
     }
 
     /// Learns from `edited` against `original`, the text it was edited from as recognized (the last dictation's
-    /// `lastRecognized`, or a History dictation's text).
-    private func learnCorrections(from edited: String, original: String) -> CorrectionsPane.LearnResult? {
+    /// `lastRecognized`, or a History dictation's text). `dictation` is the ID of the dictation edited: only the last
+    /// one's edit replaces what Correct Last Dictation opens, even when an older one has the same text.
+    private func learnCorrections(from edited: String, original: String,
+                                  dictation: UUID?) -> CorrectionsPane.LearnResult? {
         // Diff against the recognizer's words, so fixing text an existing rule produced replaces that rule.
         // A word counts as "common" only if its lowercase form is in the dictionary: the spell checker also
         // accepts capitalized names ("Gwen"), which should be learned on their own.
@@ -1067,10 +1076,10 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
             // Nothing is saved yet; each declined swap carries the edit, kept once the user adds that swap.
             return CorrectionsPane.LearnResult(
                 learned: [], declined: declined,
-                edit: .init(recognized: original, edited: edited))
+                edit: .init(recognized: original, edited: edited, dictation: dictation))
         }
         guard changeCorrections({ list in for correction in learned { list.add(correction) } }) else { return nil }
-        if original == lastRecognized {
+        if let dictation, dictation == lastTranscriptID, original == lastRecognized {
             lastTranscript = edited
             lastRecognized = edited
         }
@@ -1094,10 +1103,10 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
         return true
     }
 
-    /// Keeps a declined swap's edited transcript, unless a newer dictation or kept edit has replaced the text it
-    /// was edited from.
+    /// Keeps a declined swap's edited transcript when it was edited from the last dictation (by ID: an older one
+    /// with the same text does not count), unless a kept edit has replaced the text it was edited from.
     private func keep(_ edit: DeclinedCorrectionQueue.PendingEdit?) {
-        if let transcript = edit?.transcript(whenLastRecognized: lastRecognized) {
+        if let transcript = edit?.transcript(for: lastTranscriptID, whenLastRecognized: lastRecognized) {
             lastTranscript = transcript
             lastRecognized = transcript
         }

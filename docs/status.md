@@ -332,8 +332,12 @@ Hardware-facing and cross-app acceptance remain pending.
   fixes changed, and offers Copy, Copy As Heard, Correct…, Delete, and Clear History….
   Refused (secure-field) and cancelled dictations are not recorded, the text is never
   logged, and only an explicit Copy writes to the clipboard. `voiceislocal history list
-  [--json] [--limit N]` and `history clear --yes` script it. The store and record texts
-  are unit-tested; recording from live dictations has not been checked on screen.
+  [--json] [--limit N]` and `history clear --yes` script it. Reads stream the file line by
+  line (Forever never becomes unreadable); a partly written dictation keeps the rest Copy
+  Result offered, which History's Copy copies; quitting waits (bounded) for queued history
+  writes. The store, the in-app history service (flush, reloads merged with changes made
+  meanwhile), and the record rules are unit-tested; recording from live dictations has not
+  been checked on screen.
 
 The CLI bundle embeds microphone and speech-recognition permission usage strings.
 `scripts/build.sh` ad-hoc signs the built executable to give macOS a stable CLI

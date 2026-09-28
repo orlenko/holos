@@ -132,7 +132,9 @@ recording), then:
    changed in Settings, not the menu.
 10. **Hosted sections**: Meetings (Review…, Recover…, Quick Look of a transcript, Save
     Transcript As… as a sheet, Delete Meeting… with ⌫) and People (Rename…, Merge,
-    Forget…) behave as their windows did.
+    Forget…) behave as their windows did. While a meeting records or is processed (by
+    the app or `voiceislocal` in Terminal), Delete Meeting… is disabled and ⌫ on it only
+    beeps, with no confirmation.
 
 ## Result and privacy behavior
 
