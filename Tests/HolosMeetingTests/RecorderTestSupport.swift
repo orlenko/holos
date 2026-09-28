@@ -56,7 +56,10 @@ func recorderSend(_ command: ControlCommand, label: String? = nil, to session: U
     let sessionID = session.deletingPathExtension().lastPathComponent
     let request = try RecorderChannel.send(command, label: label, session: session, sessionID: sessionID,
                                            sender: "cli")
-    return await RecorderChannel.waitForAck(request, session: session, timeout: .seconds(3))
+    // Generous on purpose: the question is whether the recorder answered, not whether it answered within three
+    // seconds. Under the suite's load a recorder can take longer than that to be scheduled, and a short wait here
+    // failed `epochsRecordDiscontinuityWithReason` and `liveTrackFollowsResume` on a `.result == .applied` check.
+    return await RecorderChannel.waitForAck(request, session: session, timeout: .seconds(60))
 }
 
 func recorderEvents(_ directory: URL, _ kind: String) throws -> [ArchiveEvent] {
