@@ -224,7 +224,7 @@ final class ReadingPane: NSViewController, MainSectionContent, NSTableViewDataSo
             guard let found = self?.sources(in: pasteboard) else { return false }
             return !found.sources.isEmpty || !found.problems.isEmpty
         }
-        dropView.onDrop = { [weak self] pasteboard in self?.take(pasteboard) ?? false }
+        dropView.onDrop = { [weak self] pasteboard in self?.takeDrop(pasteboard) ?? false }
         dropView.onShareKey = { [weak self] in self?.shareSelected() ?? false }
         return dropView
     }
@@ -324,6 +324,13 @@ final class ReadingPane: NSViewController, MainSectionContent, NSTableViewDataSo
 
     private func take(_ pasteboard: NSPasteboard) -> Bool {
         take(sources(in: pasteboard))
+    }
+
+    /// A drop is taken when anything in it was used or explained under the card (a folder or an unreadable file
+    /// says why): only a drop of nothing at all is refused, so AppKit shows failure only then.
+    private func takeDrop(_ pasteboard: NSPasteboard) -> Bool {
+        let found = sources(in: pasteboard)
+        return take(found) || !found.problems.isEmpty
     }
 
     private func sources(in pasteboard: NSPasteboard) -> (sources: [ReadingSource], problems: [ReadingSourceProblem]) {
@@ -454,16 +461,18 @@ final class ReadingPane: NSViewController, MainSectionContent, NSTableViewDataSo
         return Int64(size)
     }
 
+    /// The player's state or position changed (twice a second while it plays): only the rows it concerns, the one
+    /// loaded and the one loaded before, are shown again, so a tick never looks up every visible reading's file.
     private func playerChanged() {
         // Each tick checks too: a file moved or replaced while it plays stops it before its row loses Pause.
         if stopPlaybackOfGoneFile() { return }
-        for (index, entry) in rows.enumerated() {
-            guard let cell = table.view(atColumn: 0, row: index, makeIfNecessary: false) as? ReadingRowView else {
-                continue
-            }
-            configure(cell, entry)
-        }
+        let concerned = Set([player.entryID, lastPlayerEntry].compactMap { $0 })
+        lastPlayerEntry = player.entryID
+        for id in concerned { reloadRow(id) }
     }
+
+    /// The reading the player had loaded when it last changed, so its row is shown again once another is loaded.
+    private var lastPlayerEntry: UUID?
 
     // MARK: - Row actions
 
@@ -552,15 +561,19 @@ final class ReadingPane: NSViewController, MainSectionContent, NSTableViewDataSo
             if self.player.entryID == id { self.player.stop() }
             Task { @MainActor [weak self] in
                 // The row leaves the list at once; its files are removed off the main actor.
-                guard let problem = await self?.controller.delete(id), let self else {
+                guard let outcome = await self?.controller.delete(id), let self else { return }
+                switch outcome {
+                case .kept(let problem):
+                    self.showMessage(problem, problem: true)
+                case .deleted(let note):
+                    // An earlier failure's message no longer holds.
+                    self.showMessage(note, problem: note != nil)
                     // The row that takes its place is selected, so ⌫ can go on down the list.
-                    if let self, index >= 0, !self.rows.isEmpty, self.table.selectedRow < 0 {
+                    if index >= 0, !self.rows.isEmpty, self.table.selectedRow < 0 {
                         self.table.selectRowIndexes(IndexSet(integer: min(index, self.rows.count - 1)),
                                                     byExtendingSelection: false)
                     }
-                    return
                 }
-                self.showMessage(problem, problem: true)
             }
         }
         if let window = view.window {

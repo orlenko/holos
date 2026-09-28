@@ -508,10 +508,14 @@ public enum ReadingLibrary {
     public struct DeleteResult: Sendable, Equatable {
         public var problem: String?
         public var aside: String?
+        /// With no problem: something to tell although the reading is deleted (its file had changed since it was
+        /// made, so it was left in place).
+        public var note: String?
 
-        public init(problem: String? = nil, aside: String? = nil) {
+        public init(problem: String? = nil, aside: String? = nil, note: String? = nil) {
             self.problem = problem
             self.aside = aside
+            self.note = note
         }
     }
 
@@ -557,6 +561,7 @@ public enum ReadingLibrary {
                                           trash: (URL) throws -> Void) -> DeleteResult {
         var problems: [String] = []
         var aside: String?
+        var note: String?
         if let output = entry.outputURL {
             let cache = entry.cache.map { URL(fileURLWithPath: $0, isDirectory: true) }
             let owned: OutputOwnership?
@@ -596,6 +601,12 @@ public enum ReadingLibrary {
                     report = removePartial(output, identity: identity, token: token(partial: true))
                 case nil:
                     report = RemovalReport()
+                    // A made reading's file that is there but no longer matches (edited in place, or replaced) is
+                    // left alone, and said so: Delete promised to move it to the Trash.
+                    if entry.state == .done, (try? ReadingOutput.exists(output)) == true {
+                        note = "\(output.lastPathComponent) changed since it was made, so it was left in place at "
+                            + "\((output.deletingLastPathComponent().path as NSString).abbreviatingWithTildeInPath)."
+                    }
                 }
                 if let problem = report.problem {
                     problems.append(problem)
@@ -621,14 +632,15 @@ public enum ReadingLibrary {
                 problems.append("Its saved text could not be removed: \(error.localizedDescription)")
             }
         }
-        return problems.isEmpty ? DeleteResult()
+        return problems.isEmpty ? DeleteResult(note: note)
             : DeleteResult(problem: problems.joined(separator: " ") + " Try Delete again.", aside: aside)
     }
 
     /// A file an earlier Delete may have moved aside and left at `url`: moved to the Trash when it is the finished
-    /// file, removed when it is the partly written copy, and left alone when it is neither (another file, which that
-    /// Delete's message named) or not there. It is in a place only a Delete of this reading uses, so nothing else
-    /// takes its place between the check and the removal. The private folder it was in goes once empty.
+    /// file, removed when it is the partly written copy. One that is neither (changed since, or another file that
+    /// Delete moved aside and could not put back) is left there and is a problem, so the entry keeps pointing at it
+    /// until the user deals with it. It is in a place only a Delete of this reading uses, so nothing else takes its
+    /// place between the check and the removal. The private folder it was in goes once empty.
     static func removeAside(_ url: URL, evidence: (checksums: [String], publishing: ReadingFileIdentity?),
                             trash: (URL) throws -> Void) -> RemovalReport {
         do {
@@ -637,6 +649,10 @@ public enum ReadingLibrary {
                     try trash(url)
                 } else if let claimed = evidence.publishing, try ExclusivePublisher.FileIdentity.lookup(url) == claimed {
                     try ExclusivePublisher.removeFile(url)
+                } else {
+                    return RemovalReport(problem: "An earlier Delete left \(url.lastPathComponent) at \(url.path), and "
+                                            + "it is not this reading's file as it was made. Move it back or remove it "
+                                            + "in Finder, then Delete again.", keptAt: url.path)
                 }
             }
         } catch {

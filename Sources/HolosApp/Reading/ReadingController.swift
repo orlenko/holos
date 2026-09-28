@@ -250,28 +250,28 @@ final class ReadingController {
     /// be removed the reading stays in the list, and the problem is returned (or, after a stop, shown as the notice).
     /// The row leaves the list at once; its files are checked and removed off the main actor (a long reading's
     /// checksum takes a while on a slow drive), so this returns when they are.
-    func delete(_ id: UUID) async -> String? {
-        guard !readOnly.contains(id) else { return Self.readOnlyMessage }
-        guard entry(id) != nil, !deleting.contains(id) else { return nil }
+    func delete(_ id: UUID) async -> DeleteOutcome {
+        guard !readOnly.contains(id) else { return .kept(Self.readOnlyMessage) }
+        guard entry(id) != nil, !deleting.contains(id) else { return .deleted(note: nil) }
         update(id) { $0.deletePending = true }
         // Nothing is stopped or removed unless the mark is saved: otherwise the reading would come back at the next
         // launch with its files gone. (A list that is not saved at all keeps nothing to come back.)
         if writable && !save() {
             update(id) { $0.deletePending = nil }
-            return "“\(entry(id)?.title ?? "The reading")” was not deleted: "
-                + (notice ?? "the Reading list could not be saved.")
+            return .kept("“\(entry(id)?.title ?? "The reading")” was not deleted: "
+                + (notice ?? "the Reading list could not be saved."))
         }
         if queue.running == id {
             deleteWhenStopped.insert(id)
             queue.stop(id)
             onChange?()
-            return nil
+            return .deleted(note: nil)
         }
         queue.stop(id)
         onChange?()
-        let problem = await finishDelete(id)
+        let outcome = await finishDelete(id)
         onChange?()
-        return problem
+        return outcome
     }
 
     /// Voice is Local quits with readings waiting or being made: `keep` (Keep Rendering) continues them at the next
@@ -524,32 +524,45 @@ final class ReadingController {
     }
 
     // MARK: - Storage
+    /// What a Delete came to.
+    enum DeleteOutcome: Equatable {
+        /// The reading is deleted (or will be once its render has stopped); `note` is something the user should know
+        /// (its file had changed, so it was left in place).
+        case deleted(note: String?)
+        /// The reading stays in the list, for the reason given.
+        case kept(String)
+    }
 
     /// Removes a reading marked for deletion once its files are gone; when one cannot be removed, the reading comes
-    /// back to the list (unmarked) and the problem is returned. The entry stays marked (hidden, and saved so) while
-    /// its files are removed off the main actor; a second call for it meanwhile does nothing.
-    private func finishDelete(_ id: UUID) async -> String? {
-        guard let entry = entry(id), deleting.insert(id).inserted else { return nil }
+    /// back to the list (unmarked) with the reason. The entry stays marked (hidden, and saved so) while its files are
+    /// removed off the main actor; a second call for it meanwhile does nothing.
+    private func finishDelete(_ id: UUID) async -> DeleteOutcome {
+        guard let entry = entry(id), deleting.insert(id).inserted else { return .deleted(note: nil) }
         defer { deleting.remove(id) }
         activity[id] = nil
         let result = await cleanUp(entry)
         if let problem = result.problem {
             update(id) { $0 = ReadingLibrary.afterFailedDelete($0, problem: problem, aside: result.aside) }
             save()
-            return problem
+            return .kept(problem)
         }
         all.removeAll { $0.id == id }
         save()
         clearDeleteNotice(id)
-        return nil
+        return .deleted(note: result.note)
     }
 
-    /// `finishDelete` for a deletion nobody waits for (a launch, a render that ended): a problem becomes the notice.
+    /// `finishDelete` for a deletion nobody waits for (a launch, a render that ended): what it says becomes the notice.
     private func finishDeleteLater(_ id: UUID) {
         Task {
-            if let problem = await finishDelete(id) {
+            switch await finishDelete(id) {
+            case .kept(let problem):
                 notice = problem
                 deleteNotices[id] = problem
+            case .deleted(let note?):
+                notice = note
+            case .deleted(nil):
+                break
             }
             onChange?()
         }

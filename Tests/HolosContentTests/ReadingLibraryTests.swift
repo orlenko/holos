@@ -474,7 +474,9 @@ import Testing
             trashed.append(url.lastPathComponent)
             try FileManager.default.removeItem(at: url)
         }
-        #expect(done == .init())
+        #expect(done.problem == nil)
+        // The file now at the path is not the reading's: left alone, and said so.
+        #expect(done.note?.contains("left in place") == true)
         #expect(trashed == ["Story.m4a"])
         #expect(try Data(contentsOf: output) == Data("someone else's".utf8))
         #expect(try FileManager.default.contentsOfDirectory(atPath: root.path).filter { $0.hasPrefix(".holos-delete-") }
@@ -509,6 +511,32 @@ import Testing
         #expect(trashed.map(\.lastPathComponent) == ["Story.m4a"])
         #expect(!FileManager.default.fileExists(atPath: holding.path))
         #expect(!FileManager.default.fileExists(atPath: cache.path))
+    }
+
+    /// A file left aside that is not the reading's any more (changed since) stays attached to the entry: Delete keeps
+    /// the entry, its cache, and names the file, rather than forget it hidden.
+    @Test func aFileLeftAsideThatChangedKeepsTheEntry() throws {
+        let root = try folder()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let readings = root.appendingPathComponent("Readings", isDirectory: true)
+        let cache = readings.appendingPathComponent("Output-0123456789abcdef", isDirectory: true)
+        try FileManager.default.createDirectory(at: cache, withIntermediateDirectories: true)
+        let store = ReadingLibraryStore(folder: root.appendingPathComponent("ReadingLibrary"))
+        var reading = entry(.done)
+        reading.output = root.appendingPathComponent("Story.m4a").path
+        reading.cache = cache.path
+        reading.outputSHA256 = String(repeating: "a", count: 64)
+        let holding = root.appendingPathComponent(ReadingLibrary.asideToken(reading.id, partial: false))
+        try FileManager.default.createDirectory(at: holding, withIntermediateDirectories: false)
+        let aside = holding.appendingPathComponent("Story.m4a")
+        try Data("edited".utf8).write(to: aside)
+        let result = ReadingLibrary.deleteFiles(of: reading, readingsRoot: readings, store: store) { _ in
+            Issue.record("Trashed a file that is not the reading's")
+        }
+        #expect(result.problem?.contains("not this reading's file") == true)
+        #expect(result.aside == aside.path)
+        #expect(FileManager.default.fileExists(atPath: aside.path))
+        #expect(FileManager.default.fileExists(atPath: cache.path))
     }
 
     /// While another process renders the same cache (it holds its lock), Delete removes nothing and keeps the entry.

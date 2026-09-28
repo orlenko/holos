@@ -271,7 +271,7 @@ so its reason shows under the card. Delete (⌫, with a
 confirmation) first saves the entry marked for deletion (`deletePending`, hidden from the
 list), stops it if it is being made, then moves the reading's finished file to the Trash
 (only when its SHA-256 matches the one saved at completion or in the cache's manifest: a
-file put at that path since is left alone; the file is first moved into a private
+file put at that path since, or the file edited in place, is left alone, and Delete says so; the file is first moved into a private
 `.holos-delete-<UUID>` folder beside it under its own name and checked there, so the file
 trashed is the file checked, and one that no longer matches goes back;
 `ReadingLibrary.trashVerified`), removes a copy a crash cut off (the manifest's
