@@ -598,6 +598,31 @@ import Testing
         #expect(!HTMLReader.Walker.hidesElement("color: red"))
     }
 
+    /// A `display` with `var()` is valid as written and counts once its variables are
+    /// substituted from the attribute's own custom properties; one the attribute cannot resolve
+    /// shows the element.
+    @Test func inlineDisplayWithVariables() {
+        #expect(paragraphs("""
+        <html><body>
+        <p style="--mode:block; display:none; display:var(--mode)">Variable block.</p>
+        <p style="--mode:none; display:var(--mode)">Variable none.</p>
+        <p style="display:none; display:var(--unset)">Unresolved.</p>
+        <p style="--Mode:none; --mode:block; display:var(--mode)">Case of the name.</p>
+        </body></html>
+        """) == ["Variable block.", "Unresolved.", "Case of the name."])
+        #expect(!HTMLReader.Walker.hidesElement("--mode:block; display:none; display:var(--mode)"))
+        #expect(HTMLReader.Walker.hidesElement("--mode:NONE; display:VAR( --mode )"))
+        #expect(HTMLReader.Walker.hidesElement("--a:var(--b); --b:none; display:var(--a)"))
+        #expect(HTMLReader.Walker.hidesElement("--a:initial; display:var(--a, none)"))
+        #expect(HTMLReader.Walker.hidesElement("--a:none !important; --a:block; display:var(--a)"))
+        #expect(!HTMLReader.Walker.hidesElement("--a:none; display:var(--a) block"))
+        #expect(!HTMLReader.Walker.hidesElement("--a:var(--a); display:none; display:var(--a)"))
+        #expect(!HTMLReader.Walker.hidesElement("display:none; display:var(--missing, none)"))
+        #expect(HTMLReader.Walker.hidesElement("--a:none; display:var(--a"))
+        // An important declaration still beats a later variable one.
+        #expect(HTMLReader.Walker.hidesElement("--a:block; display:none !important; display:var(--a)"))
+    }
+
     /// A multi-keyword `display` counts only when the property's grammar allows it; an invalid one
     /// is dropped from the cascade, as a browser drops it, and never overrides a valid `none`.
     @Test func inlineDisplayFollowsTheDisplayGrammar() {

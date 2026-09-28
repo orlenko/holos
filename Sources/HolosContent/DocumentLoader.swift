@@ -1027,9 +1027,21 @@ public enum HTMLReader {
 
         /// Whether an inline style's effective `display` is `none`: the declaration that wins the
         /// cascade within the attribute, so `display:none; display:block` shows the element and
-        /// `display:none !important; display:block` hides it.
+        /// `display:none !important; display:block` hides it. A value with `var()` is accepted,
+        /// as a browser accepts it, and counts once its variables are substituted from the
+        /// attribute's own custom properties (`--mode:none; display:var(--mode)` hides). One this
+        /// attribute cannot resolve is taken as showing the element: the text is read rather
+        /// than possibly visible text dropped.
         static func hidesElement(_ style: String) -> Bool {
-            InlineStyle(style).value(of: "display", isValid: InlineStyle.isDisplayValue) == "none"
+            let style = InlineStyle(style)
+            guard var display = style.value(of: "display", isValid: {
+                InlineStyle.isDisplayValue($0) || InlineStyle.usesVariables($0)
+            }) else { return false }
+            if InlineStyle.usesVariables(display) {
+                guard let substituted = style.substitutingVariables(in: display) else { return false }
+                display = substituted
+            }
+            return HTMLReader.collapse(display).lowercased() == "none"
         }
 
         /// The attribute whose local name is `name` in any ASCII case (HTML attribute names are
@@ -1112,16 +1124,74 @@ public enum HTMLReader {
             declarations = Self.split(Self.strippingComments(style)).compactMap(Self.declaration)
         }
 
-        /// The effective value of `property`, lowercased, among declarations whose value
+        /// The effective value of `property`, as written, among declarations whose value
         /// `isValid` accepts; nil when none sets it.
         func value(of property: String, isValid: (String) -> Bool = { _ in true }) -> String? {
-            let property = property.lowercased()
+            let property = Self.propertyName(property)
             var winner: Declaration?
             for declaration in declarations where declaration.property == property && isValid(declaration.value) {
                 if let current = winner, current.important, !declaration.important { continue }
                 winner = declaration
             }
             return winner?.value
+        }
+
+        /// A property name as CSS matches it: a custom property's (`--name`) by case, any
+        /// other's in any ASCII case.
+        static func propertyName(_ name: String) -> String {
+            name.hasPrefix("--") ? name : name.lowercased()
+        }
+
+        /// Whether `value` uses a custom property (`var(`, in any case). A browser accepts such
+        /// a declaration whatever the rest of it says, and gives the property its value once the
+        /// variables are substituted (see `substitutingVariables`).
+        static func usesVariables(_ value: String) -> Bool {
+            value.range(of: "var(", options: .caseInsensitive) != nil
+        }
+
+        /// `value` with each `var(--name[, fallback])` replaced by the value this attribute's
+        /// own `--name` declaration gives, itself substituted. nil when that cannot be told
+        /// here: the attribute does not set `--name` (an ancestor or a style sheet may), the
+        /// name is not a custom property, or references nest too deep (a cycle). A variable set
+        /// to `initial` has no value, and its fallback, if any, is used.
+        func substitutingVariables(in value: String, depth: Int = 0) -> String? {
+            guard depth < 16 else { return nil }
+            let characters = Array(value)
+            var result = ""
+            var index = 0
+            while index < characters.count {
+                guard index + 4 <= characters.count,
+                      String(characters[index..<(index + 4)]).lowercased() == "var(" else {
+                    result.append(characters[index])
+                    index += 1
+                    continue
+                }
+                // The reference's arguments, to its matching ")", and the first top-level comma.
+                var nesting = 1
+                var close = index + 4
+                var comma: Int?
+                while close < characters.count {
+                    let character = characters[close]
+                    if character == "(" { nesting += 1 }
+                    if character == ")" { nesting -= 1; if nesting == 0 { break } }
+                    if character == ",", nesting == 1, comma == nil { comma = close }
+                    close += 1
+                }
+                // An unclosed reference ends with the value, as CSS closes it.
+                let name = String(characters[(index + 4)..<(comma ?? close)]).trimmingCharacters(in: .whitespacesAndNewlines)
+                guard name.hasPrefix("--"), let own = self.value(of: name) else { return nil }
+                let replacement: String
+                if own.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "initial" {
+                    guard let comma else { return nil }
+                    replacement = String(characters[(comma + 1)..<close])
+                } else {
+                    replacement = own
+                }
+                guard let substituted = substitutingVariables(in: replacement, depth: depth + 1) else { return nil }
+                result += " " + substituted + " "
+                index = close + 1
+            }
+            return result
         }
 
         /// A `display` value a browser accepts, by the property's grammar (CSS Display 3, with
@@ -1132,7 +1202,7 @@ public enum HTMLReader {
         /// internal and legacy values, and the CSS-wide keywords stand alone. So "block flow"
         /// and "list-item block" are valid, and "none block" and "inline inline" are not.
         static func isDisplayValue(_ value: String) -> Bool {
-            let words = value.split(whereSeparator: \.isWhitespace).map(String.init)
+            let words = value.lowercased().split(whereSeparator: \.isWhitespace).map(String.init)
             guard (1...3).contains(words.count), Set(words).count == words.count else { return false }
             if words.count == 1, displaySingles.contains(words[0]) { return true }
             let outside = words.filter(displayOutside.contains)
@@ -1165,15 +1235,16 @@ public enum HTMLReader {
             "-webkit-box", "-webkit-inline-box", "-webkit-flex", "-webkit-inline-flex",
         ])
 
-        /// One `name: value [!important]` declaration, lowercased, or nil when it has no name or
-        /// no value.
+        /// One `name: value [!important]` declaration, or nil when it has no name or no value.
+        /// Names are lowercased, except a custom property's (`--name`), which CSS matches by
+        /// case; values are kept as written (a `var()` in one names a custom property).
         static func declaration(_ text: String) -> Declaration? {
             guard let colon = text.firstIndex(of: ":") else { return nil }
-            let property = text[..<colon].trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-            var value = text[text.index(after: colon)...].trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            let property = propertyName(text[..<colon].trimmingCharacters(in: .whitespacesAndNewlines))
+            var value = text[text.index(after: colon)...].trimmingCharacters(in: .whitespacesAndNewlines)
             var important = false
             if let bang = value.lastIndex(of: "!"),
-               value[value.index(after: bang)...].trimmingCharacters(in: .whitespacesAndNewlines) == "important" {
+               value[value.index(after: bang)...].trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "important" {
                 important = true
                 value = value[..<bang].trimmingCharacters(in: .whitespacesAndNewlines)
             }
