@@ -217,6 +217,19 @@ import Testing
         // A manifest for another output is not trusted.
         try writeManifest(outputSHA256: nil, publishing: identity, output: root.appendingPathComponent("Other.m4a").path)
         #expect(try ReadingLibrary.ownership(of: output, sha256: nil, cache: cache) == nil)
+        // A manifest that is there but cannot be decoded may hold the only identity of a partial copy: an error.
+        try Data("{".utf8).write(to: cache.appendingPathComponent(ReadingManifest.fileName))
+        #expect(throws: (any Error).self) { try ReadingLibrary.ownership(of: output, sha256: nil, cache: cache) }
+        let reading = { () -> ReadingEntry in
+            var reading = entry(.stopped)
+            reading.output = output.path
+            reading.cache = cache.path
+            return reading
+        }()
+        let store = ReadingLibraryStore(folder: root.appendingPathComponent("ReadingLibrary"))
+        #expect(ReadingLibrary.deleteFiles(of: reading, readingsRoot: root, store: store) { _ in }?
+            .contains("could not be checked") == true)
+        #expect(FileManager.default.fileExists(atPath: cache.path))
     }
 
     /// Delete: the reading's finished file goes to the Trash, then its cache and saved text; a file that cannot be

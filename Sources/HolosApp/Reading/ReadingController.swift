@@ -342,7 +342,12 @@ final class ReadingController {
             $0.output = output.path
             $0.cache = location.workDirectory.path
         }
-        save()
+        // Nothing is rendered until the index knows where: otherwise a resume after an exit would pick another name
+        // and cache, render the reading twice, and leave the first file and cache unknown.
+        if writable && !save() {
+            throw HolosError.io("The Reading list could not be saved, so the reading was not started: "
+                + (notice ?? "unknown error"))
+        }
         onChange?()
 
         let result = try await ReadingPipeline().render(

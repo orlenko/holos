@@ -344,11 +344,18 @@ public enum ReadingLibrary {
         if let cache {
             let url = cache.appendingPathComponent(ReadingManifest.fileName)
             if FileManager.default.fileExists(atPath: url.path) {
+                // A manifest that is there but cannot be read, is too large, or is not a reading's may hold the
+                // only identity of a partly copied file: that is an error, never "not the reading's".
                 let size = try url.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? .max
-                if size <= ReadingManifest.maximumBytes,
-                   let saved = try? JSONDecoder().decode(ReadingManifest.self, from: try Data(contentsOf: url)),
-                   saved.kind == ReadingManifest.readingKind,
-                   URL(fileURLWithPath: saved.output).standardizedFileURL.path == output.standardizedFileURL.path {
+                guard size <= ReadingManifest.maximumBytes else {
+                    throw HolosError.io("The reading's manifest \(url.path) is larger than \(ReadingManifest.maximumBytes) bytes.")
+                }
+                let saved = try JSONDecoder().decode(ReadingManifest.self, from: try Data(contentsOf: url))
+                guard saved.kind == ReadingManifest.readingKind else {
+                    throw HolosError.io("\(url.path) is not a Voice is Local reading's manifest.")
+                }
+                // One made for another output says nothing about this file.
+                if URL(fileURLWithPath: saved.output).standardizedFileURL.path == output.standardizedFileURL.path {
                     manifest = saved
                 }
             }

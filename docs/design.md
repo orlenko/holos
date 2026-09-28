@@ -190,8 +190,9 @@ shortcut submenus moved to Settings.
 
 Reading (⌘5, `ReadingPane`) makes the same file as `voiceislocal read` from inside the
 app. A **New reading** card holds one field ("Paste a link, or drop a PDF, Word, HTML,
-Markdown or text file here"), **Choose File…**, a Voice pop-up, **▶ Preview**, a Speed
-slider, and **Make Audio** (Return). The field takes an `https://` link (a bare
+Markdown or text file here") with **Choose File…**, a row with the Voice pop-up and
+**▶ Preview**, and a row with the Speed slider and **Make Audio** (Return), so it fits
+the section's narrowest width. The field takes an `https://` link (a bare
 "example.com/page" gets `https://`; `http://` is refused with a hint, as in the CLI), a
 `file://` URL, or a path; files are the extensions `DocumentLoader` reads
 (`ReadingSourceParser`, HolosContent). Files and links dropped anywhere on the section, or
@@ -232,7 +233,8 @@ main thread), fixes the voice, picks the output (`<folder>/<Title>.m4a`, "Title 
 when the name is on disk or taken by another reading in the list; `ReadingLibrary.outputURL`),
 and renders with `ReadingPipeline` in this process into the pipeline's cache in
 `Application Support/Holos/Readings/Output-<hash>` (the explicit-output cache of
-`voiceislocal read -o`), resuming it when it exists. The pipeline reports progress
+`voiceislocal read -o`), resuming it when it exists. The chosen output and cache are saved
+in the index before rendering starts; a save that fails stops the reading. The pipeline reports progress
 (`ReadingRenderProgress`: each part as it starts, then the join) to the row. The pipeline is
 main-actor isolated, so it runs as a task on the main actor: speech synthesis and AAC
 encoding happen on AVFoundation's threads, while loading a document and hashing the parts

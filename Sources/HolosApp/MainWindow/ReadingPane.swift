@@ -89,7 +89,12 @@ final class ReadingPane: NSViewController, MainSectionContent, NSTableViewDataSo
         chooseButton.toolTip = "Choose one or more documents to read"
 
         voicePopup.setAccessibilityLabel("Voice")
-        voicePopup.widthAnchor.constraint(equalToConstant: 280).isActive = true
+        // Wide enough for "Ava (Premium) — English (United States)", narrower when the section is.
+        let voiceWidth = voicePopup.widthAnchor.constraint(equalToConstant: 340)
+        voiceWidth.priority = .defaultLow
+        voiceWidth.isActive = true
+        voicePopup.widthAnchor.constraint(greaterThanOrEqualToConstant: 180).isActive = true
+        voicePopup.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         previewButton.target = self
         previewButton.action = #selector(togglePreview)
         previewButton.bezelStyle = .push
@@ -114,17 +119,23 @@ final class ReadingPane: NSViewController, MainSectionContent, NSTableViewDataSo
         let sourceRow = NSStackView(views: [field, chooseButton])
         sourceRow.spacing = 8
         field.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        // Two rows, so everything fits the section's narrowest width (600 pt, the window at 900 pt): the voice with
+        // Preview, then the speed with Make Audio at the end.
         let voiceLabel = NSTextField(labelWithString: "Voice")
         let speedTitle = NSTextField(labelWithString: "Speed")
-        let settingsRow = NSStackView(views: [voiceLabel, voicePopup, previewButton, NSView(), speedTitle, speedSlider,
-                                              speedLabel, NSView(), makeButton])
-        settingsRow.spacing = 8
-        settingsRow.alignment = .centerY
-        settingsRow.setCustomSpacing(18, after: previewButton)
-        settingsRow.setCustomSpacing(18, after: speedLabel)
+        for label in [voiceLabel, speedTitle] {
+            label.alignment = .right
+            label.widthAnchor.constraint(equalToConstant: 44).isActive = true
+        }
+        let voiceRow = NSStackView(views: [voiceLabel, voicePopup, previewButton])
+        voiceRow.spacing = 8
+        voiceRow.alignment = .centerY
+        let speedRow = NSStackView(views: [speedTitle, speedSlider, speedLabel, NSView(), makeButton])
+        speedRow.spacing = 8
+        speedRow.alignment = .centerY
         let heading = NSTextField(labelWithString: "New reading")
         heading.font = .systemFont(ofSize: 13, weight: .semibold)
-        let cardStack = NSStackView(views: [sourceRow, settingsRow, messageLabel])
+        let cardStack = NSStackView(views: [sourceRow, voiceRow, speedRow, messageLabel])
         cardStack.orientation = .vertical
         cardStack.alignment = .leading
         cardStack.spacing = 10
@@ -140,7 +151,8 @@ final class ReadingPane: NSViewController, MainSectionContent, NSTableViewDataSo
             cardStack.topAnchor.constraint(equalTo: card.topAnchor, constant: 14),
             cardStack.bottomAnchor.constraint(equalTo: card.bottomAnchor, constant: -14),
             sourceRow.widthAnchor.constraint(equalTo: cardStack.widthAnchor),
-            settingsRow.widthAnchor.constraint(equalTo: cardStack.widthAnchor),
+            speedRow.widthAnchor.constraint(equalTo: cardStack.widthAnchor),
+            voiceRow.widthAnchor.constraint(lessThanOrEqualTo: cardStack.widthAnchor),
             messageLabel.widthAnchor.constraint(equalTo: cardStack.widthAnchor),
         ])
 
