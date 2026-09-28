@@ -27,8 +27,8 @@ struct Record: AsyncParsableCommand {
                 printed on stderr.
 
                 Meetings started from Voice is Local record the system default input and system audio with \
-                --others-in-room (--source mic --microphone default when system audio is off in Setup's Advanced \
-                section or not allowed). The defaults here are unchanged for scripts. With mic+system, speaker \
+                --others-in-room (--source mic --microphone default when system audio is off in Settings › Meetings \
+                or not allowed). The defaults here are unchanged for scripts. With mic+system, speaker \
                 labelling leaves the microphone's echo of the system audio out of the labelled transcript.
                 """)
         @Option(help: "Session display name.") var name = "Meeting"

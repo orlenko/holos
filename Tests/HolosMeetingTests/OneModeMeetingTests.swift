@@ -39,7 +39,7 @@ private let oneModeID = "3F2A9C1E-0000-4000-8000-000000000002"
         #expect(settings.microphone == .systemDefault, "The system default input, not the built-in microphone.")
         #expect(MeetingStartSettings.sourceNotice(settings, recordSystemAudio: false) == nil, "Nothing to explain.")
         #expect(MeetingStartSettings.sourcesDescription(recordSystemAudio: false, systemAudioAllowed: allowed)
-            == "Microphone only — the computer's audio is off in Setup › Advanced.")
+            == "Microphone only — the computer's audio is off in Settings › Meetings.")
         #expect(ChildProcessLauncher.arguments(settings, sessionID: oneModeID, root: oneModeRoot, vocabularyFile: nil)
             == ["record", "start", "--session-id", oneModeID, "--name=Board", "--source", "mic",
                 "--microphone", "default", "--no-live-text", "--directory", oneModeRoot.path])
@@ -52,7 +52,7 @@ private let oneModeID = "3F2A9C1E-0000-4000-8000-000000000002"
     #expect(!settings.othersInRoom)
     #expect(settings.microphone == .systemDefault)
     #expect(MeetingStartSettings.sourceNotice(settings, recordSystemAudio: true)
-        == "Recording the microphone only — allow System audio in Setup to include the computer's sound.")
+        == "Recording the microphone only — allow System audio in Settings to include the computer's sound.")
     #expect(MeetingStartSettings.sourcesDescription(recordSystemAudio: true, systemAudioAllowed: false)
         == MeetingStartSettings.systemAudioNotAllowedNotice)
 }

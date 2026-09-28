@@ -21,7 +21,7 @@ final class MeetingStartPanel: NSObject, NSWindowDelegate {
         /// `voiceislocal setup --speakers` progress while it runs.
         var installProgress: String?
         var installError: String?
-        /// Setup › Advanced › "Record the computer's audio (system sound) in meetings".
+        /// Settings › Meetings › "Record the computer's audio (system sound) in meetings".
         var recordSystemAudio = true
         /// `CGPreflightScreenCaptureAccess()`: without it the meeting records the microphone alone.
         var systemAudioAllowed = false
@@ -185,7 +185,7 @@ final class MeetingStartPanel: NSObject, NSWindowDelegate {
     }
 
     /// Opens the panel with a fresh default name and the meeting languages (`HolosAppDelegate.meetingLocales`).
-    /// `saved` is the last settings started; what is recorded does not come from them but from Setup and the
+    /// `saved` is the last settings started; what is recorded does not come from them but from Settings and the
     /// permission (`MeetingStartSettings.app`).
     func show(name: String, saved: MeetingStartSettings?, locales: [String], consentDismissed: Bool) {
         if !window.isVisible {
@@ -231,13 +231,13 @@ final class MeetingStartPanel: NSObject, NSWindowDelegate {
         let source = planned.source
         var allowed = true
 
-        // What a meeting started now records: the microphone, plus the computer's audio unless it is off in Setup's
-        // Advanced section or not allowed.
+        // What a meeting started now records: the microphone, plus the computer's audio unless it is off in Settings
+        // (Meetings card) or not allowed.
         let sources = MeetingStartSettings.sourcesDescription(recordSystemAudio: current.recordSystemAudio,
                                                               systemAudioAllowed: current.systemAudioAllowed)
         if sourcesLabel.stringValue != sources {
             sourcesLabel.stringValue = sources
-            // The line may wrap differently (the setting changed in Setup while the panel is open).
+            // The line may wrap differently (the setting changed in Settings while the panel is open).
             if positioned { window.setContentSize(window.contentView?.fittingSize ?? window.frame.size) }
         }
         if let input = current.devices.systemDefault {

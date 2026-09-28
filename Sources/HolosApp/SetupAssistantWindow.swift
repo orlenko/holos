@@ -22,12 +22,12 @@ enum SetupAssistantAction: Int {
     case microphone, accessibility, systemAudio, inputMonitoring, toggleMeetings
     /// Done or Reopen Voice is Local on the Finish page.
     case finish
-    /// The check after reopening: open the full Setup window, or close.
+    /// The check after reopening: open Settings in the main window, or close.
     case openSetup, done
 }
 
 /// The first-launch Setup Assistant: one page at a time, in `SetupAssistantFlow`'s order. A regular titled window
-/// like `SetupWindow`, so it stays visible while the user works in System Settings; it refreshes every second.
+/// like the main window, so it stays visible while the user works in System Settings; it refreshes every second.
 @MainActor
 final class SetupAssistantWindow: NSObject, NSWindowDelegate {
     private enum Mark: Equatable { case done, pending, problem, off }
@@ -241,7 +241,7 @@ final class SetupAssistantWindow: NSObject, NSWindowDelegate {
         if state.verify {
             page = Page(title: "Setup check",
                         body: "Voice is Local reopened. This is where setup stands now.")
-            page.trailing = [Page.Button(title: "Open Full Setup", action: .openSetup),
+            page.trailing = [Page.Button(title: "Open Settings", action: .openSetup),
                              Page.Button(title: "Done", action: .done)]
         } else if flow.reopenNeeded {
             page = Page(title: "Finish setup",
@@ -265,7 +265,7 @@ final class SetupAssistantWindow: NSObject, NSWindowDelegate {
             return Page.Row(mark: mark, title: title(of: item.kind), detail: item.detail)
         }
         if items.contains(where: { $0.state == .missing }) {
-            page.note = "Everything here can also be set up later with Setup… in the Voice is Local menu."
+            page.note = "Everything here can also be set up later in Settings (Settings… in the Voice is Local menu)."
         }
         return page
     }
