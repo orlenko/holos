@@ -217,9 +217,10 @@ public enum AIFixGuard {
                 return .reject(.changedCorrection)
             }
         }
-        let now = shape(of: fixed)
+        // A number spelled with hyphens is one number, not words joined: "twenty-one" may become "21".
+        let now = shape(of: numberHyphensAsSpaces(fixed, language: language))
         func sameStructure(_ text: String) -> Bool {
-            let was = shape(of: text)
+            let was = shape(of: numberHyphensAsSpaces(text, language: language))
             guard was.marks == now.marks else { return false }
             // The same marks, but moved to other words: matching the words between each pair of marks separately
             // then costs more than matching all of them at once.
@@ -248,6 +249,27 @@ public enum AIFixGuard {
             return .reject(spelling ? .changedMeaning : .implausibleSubstitution)
         }
         return .accept
+    }
+
+    /// `text` with each hyphen between two words of a number (`SpokenWords.mayBeInNumber`: "twenty-one",
+    /// "quatre-vingt-dix", "vingt-et-un") made a space, for the structure check.
+    static func numberHyphensAsSpaces(_ text: String, language: String?) -> String {
+        let found = text.matches(of: wordPattern)
+        guard found.count > 1 else { return text }
+        var result = ""
+        var cursor = text.startIndex
+        for (previous, next) in zip(found, found.dropFirst()) {
+            let gap = text[previous.range.upperBound..<next.range.lowerBound]
+            result += text[cursor..<previous.range.upperBound]
+            // Number words only: "1-2" is a range.
+            func spelled(_ word: Substring) -> Bool {
+                !word.allSatisfy(\.isNumber) && SpokenWords.mayBeInNumber(normalized(word), language: language)
+            }
+            let inNumber = spelled(previous.output) && spelled(next.output)
+            result += gap == "-" && inNumber ? " " : String(gap)
+            cursor = next.range.lowerBound
+        }
+        return result + text[cursor...]
     }
 
     /// Most words a fix may add or drop in a chunk of `count` words: 1, or 10 %.
@@ -440,6 +462,8 @@ public enum AIFixGuard {
                 if named && SpokenWords.letters(a[0]) != SpokenWords.letters(b[0]) { return false }
                 return SpokenWords.mayReplace(a[0], with: b[0], language: language)
             }
+            if a.count == 1 && SpokenWords.expands(a[0], to: b, language: language)
+                || b.count == 1 && SpokenWords.expands(b[0], to: a, language: language) { return true }
             guard SpokenWords.isCloseSplit(a.joined(), b.joined()) else { return false }
             guard protecting else { return true }
             if named && SpokenWords.letters(a.joined()) != SpokenWords.letters(b.joined()) { return false }

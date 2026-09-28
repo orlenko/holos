@@ -406,7 +406,9 @@ invented spelling lands on unrelated words, or next to the heard phrase. The gua
 denies by default and judges each word at its place, lining the chunk's words up with
 the reply's in order: a word may keep its spelling but for case, be replaced by a close
 word, be split or joined, or come and go only as a glue word (articles, prepositions,
-conjunctions); hesitations (the fillers filler removal takes out, so not the "mm" of
+conjunctions, but not "that" nor the French "le", "la", "les", "en", which are also
+pronouns); a contraction may be spelled out with its own auxiliary ("I've" and "I
+have"); hesitations (the fillers filler removal takes out, so not the "mm" of
 "10 mm") and stutters may go ("You should go" is not "You go"); a number said in words
 may be written in digits with the same value ("twenty one" and "21"). A
 negation, modal, auxiliary, abbreviated unit or word of quantity, frequency or degree may

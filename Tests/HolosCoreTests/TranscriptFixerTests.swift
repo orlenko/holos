@@ -538,6 +538,9 @@ let unrelatedWords = [
     ("I don't agree", "I didn't agree"), ("It isn't ready", "It wasn't ready"), ("I do agree", "I did agree"),
     ("It is done", "It was done"), ("They were going home", "They we're going home"),
     ("He hasn't left", "He hadn't left"),
+    // A pronoun spelled like an article is not dropped; a contraction is spelled out with its own auxiliary.
+    ("Je le prends", "Je prends"), ("Je la vois", "Je vois"), ("Je les appelle", "Je appelle"),
+    ("I know that", "I know"), ("I've finished", "I had finished"), ("We're ready", "We were ready"),
     // Another vowel is another word; so is another unit.
     ("Turn left here", "Turn lift here"), ("I hate it", "I hit it"), ("Take a note", "Take a not"),
     ("They came late", "They come late"), ("Run 5 km today", "Run 5 cm today"), ("Wait 10 ms", "Wait 10 mm"),
@@ -590,6 +593,8 @@ func aFixThatChangesMeaningIsRefused(original: String, fixed: String) {
     ("go to um the store", "go to the store"), ("Set it to twenty one", "Set it to 21"),
     ("Pick one hundred and five", "Pick 105"), ("Room 21 please", "Room twenty one please"),
     ("Jai fini", "J'ai fini"), ("Quil arrive demain", "Qu'il arrive demain"),
+    ("Set it to twenty-one", "Set it to 21"), ("I've finished", "I have finished"), ("We're ready", "We are ready"),
+    ("I'm ready", "I am ready"), ("It's done", "It is done"), ("I won't go", "I will not go"),
 ])
 func aMishearingIsFixed(original: String, fixed: String) {
     #expect(AIFixGuard.check(original: original, fixed: fixed, protecting: taughtList, taught: taughtList) == .accept,
@@ -617,6 +622,14 @@ func aMishearingIsFixed(original: String, fixed: String) {
     #expect(SpokenWords.numberValue(["two", "thousand", "twenty", "six"], language: "en-US") == 2026)
     #expect(SpokenWords.numberValue(["ten", "twenty"], language: "en-US") == nil)
     #expect(AIFixGuard.check(original: "chambre vingt et un", fixed: "chambre 21", language: "fr-FR") == .accept)
+    #expect(AIFixGuard.check(original: "chambre quatre-vingt-dix", fixed: "chambre 90", language: "fr-FR") == .accept)
+    #expect(AIFixGuard.check(original: "pages 1-2", fixed: "pages 1 2") == .reject(.changedStructure))
+    // A heard word is not said by its opposite: a pair taught for "enable" does not replace "unable".
+    #expect(!SpokenWords.isVariant("unable", of: "enable") && !SpokenWords.isVariant("uninstall", of: "install"))
+    let enable = Correction(heard: "enable to access", meant: "able to access")
+    #expect(AIFixReference.select(from: [enable], for: "Users are unable to access files", budget: 1_000).isEmpty)
+    #expect(AIFixGuard.check(original: "Users are unable to access files", fixed: "Users are able to access files",
+                             taught: [enable]) != .accept)
 }
 
 @Test func aTaughtPairBringsItsMarksWhereItWasSaid() {

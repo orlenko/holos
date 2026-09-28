@@ -353,13 +353,27 @@ public enum SpokenWords {
         return ["ca": "can", "wo": "will", "sha": "shall"][String(stem)] ?? String(stem)
     }
 
+    /// Whether `words`, two words, spell out the English `contraction` with the auxiliary it stands for: "I've" and
+    /// "I have", "we're" and "we are", "I'm" and "I am", "it's" and "it is" or "it has", "I'd" and "I would" or "I
+    /// had", "don't" and "do not", "won't" and "will not"; never another auxiliary ("I've" is not "I had").
+    static func expands(_ contraction: String, to words: [String], language: String?) -> Bool {
+        guard words.count == 2, language.map(DictationLanguage.languageCode) != "fr",
+              contraction.contains("'") else { return false }
+        if let auxiliary = negativeAuxiliary(contraction) { return words == [auxiliary, "not"] }
+        let parts = contraction.split(separator: "'", omittingEmptySubsequences: false)
+        guard parts.count == 2, String(parts[0]) == words[0] else { return false }
+        let spelledOut: [String: Set<String>] = ["ve": ["have"], "re": ["are"], "m": ["am"], "s": ["is", "has"],
+                                                 "d": ["would", "had"], "ll": ["will", "shall"]]
+        return spelledOut[String(parts[1])]?.contains(words[1]) == true
+    }
+
     /// Words a fix may add or drop, by language: articles and the prepositions and conjunctions that tie words
     /// together ("to the store", "je ne sais pas"). Any other word, a pronoun, an auxiliary, a modal or a negation,
-    /// says something: "You should go" is not "You go".
+    /// says something: "You should go" is not "You go". Words that are also pronouns are left out: "that" ("I know
+    /// that"), and the French "le", "la", "les" and "en" ("Je le prends", "J'en veux").
     static let englishGlue: Set<String> = ["a", "an", "the", "to", "of", "in", "on", "at", "for", "with", "from",
-                                          "by", "as", "and", "that"]
-    static let frenchGlue: Set<String> = ["le", "la", "les", "un", "une", "des", "du", "de", "à", "au", "aux", "en",
-                                         "et", "que", "ne"]
+                                          "by", "as", "and"]
+    static let frenchGlue: Set<String> = ["un", "une", "des", "du", "de", "à", "au", "aux", "et", "que", "ne"]
 
     static func isGlue(_ word: String, language: String?) -> Bool {
         switch language.map(DictationLanguage.languageCode) {
@@ -475,7 +489,8 @@ public enum SpokenWords {
     /// differently ("bundu" for "Bundo", "Timox" for "Timok's", "mix" for "Max"). Stricter than `isClose`: a match
     /// lets the taught spelling replace the word. The same letters or homophones; otherwise the same `sound`, so only
     /// the spelling of its vowels or of one sound differs, and at least half the letters the same. A plural is not
-    /// its singular: a pair taught for "delete file" does not replace "delete files". "point" is not "Bundo", "band"
+    /// its singular, nor a word its opposite by a prefix (`differInPolarity`): a pair taught for "delete file" does
+    /// not replace "delete files", nor one for "enable" "unable". "point" is not "Bundo", "band"
     /// not "Bundo", "tax" not "Max", "bulk" not "bull", "buy" not "bus". Homophones are those of `language`.
     public static func isVariant(_ word: String, of heard: String, language: String? = nil) -> Bool {
         isVariant(Features(word), of: Features(heard), language: language)
@@ -485,7 +500,8 @@ public enum SpokenWords {
         if word.letters == heard.letters || areHomophones(word.spelling, heard.spelling, language: language) {
             return true
         }
-        guard !word.letters.isEmpty, !heard.letters.isEmpty, word.sound == heard.sound else { return false }
+        guard !word.letters.isEmpty, !heard.letters.isEmpty, word.sound == heard.sound,
+              !differInPolarity(word.letters, heard.letters) else { return false }
         let longer = max(word.characters.count, heard.characters.count)
         return editDistance(word.characters, heard.characters) <= max(1, longer / 2)
     }
