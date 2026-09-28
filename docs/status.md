@@ -259,10 +259,21 @@ Hardware-facing and cross-app acceptance remain pending.
   Playback uses the saved chunks at their session times (off after Delete Audio). The
   footer box "Learn voices of people I name in this meeting" decides whether naming learns
   a voice. Delete Meeting can also forget the voice samples learned from that meeting.
-- `voices list` and `say` provide native voice discovery, playback, and `.m4a`,
-  `.wav`, or `.caf` export. Text comes from arguments or UTF-8 stdin.
-- `read` renders a local UTF-8 text/Markdown file or stdin as an ordered AAC
-  playlist, with resume and optional playback. Markdown is read verbatim.
+- `voices list` and `say` provide native voice discovery (with each voice's quality, and a
+  hint to download Premium voices when none is installed), playback, and `.m4a`, `.wav`,
+  or `.caf` export. Text comes from arguments or UTF-8 stdin. `--voice` takes a name as
+  `say -v '?'` prints it ("Ava (Premium)") or an identifier.
+- `read` turns a local .txt, .md, .html, .pdf, .rtf, .rtfd, .docx, .doc, or .odt file,
+  stdin, or an `https://` web article (Mozilla Readability in an offscreen web view; the
+  byline becomes the author) into one AAC `.m4a` (mono, 22.05 kHz, about 32 kbit/s, about 14 MB per hour) named
+  after the document's title, with title/author metadata and a chapter at each heading.
+  Markdown markup is dropped; code blocks and images are skipped. The default voice is the
+  best installed voice for the text's language. `--output` takes a `.m4a` path or a
+  directory; `--resume` continues an interrupted reading (a web page is loaded again, and a page
+  whose text changed is refused); `--play` plays the file;
+  `--print-text` shows what would be read. The sample output was checked with `afinfo` and
+  `ffprobe`; playback on an iPhone of this command's output has not been tried yet (a
+  `say`-made file with the same settings played there).
 - `scripts/build-app.sh` builds and ad-hoc signs `build/VoiceIsLocal.app`, an accessory
   menu bar app. Dictation is disabled on first launch; the user explicitly grants
   Microphone and Accessibility, picks the dictation language (by default the supported one closest to
@@ -473,11 +484,11 @@ Still requiring real-machine or user-data validation:
   other condition (room vs call) are less reliable. Speaker counts are approximate:
   quieter or briefer speakers can merge into others. Nothing deletes old meetings
   automatically.
-- PDF text extraction and OCR. `read` supports local UTF-8 text/Markdown, stdin,
-  and `https://` web articles (Mozilla Readability in an offscreen web view). Pages
-  behind a sign-in or paywall fail with a hint to save their text to a file; `http://`
-  is refused; code blocks, tables, and figures are not read; some bylines and "min
-  read" lines leak into the spoken text.
+- OCR. `read` supports local files, stdin, and `https://` web articles; a scanned PDF
+  without a text layer is refused. PDF paragraphs and Word/RTF headings are guessed from
+  line lengths and fonts. Web pages behind a sign-in or paywall fail with a hint to save
+  their text to a file; `http://` is refused; code blocks, tables, and figures are not
+  read; some bylines and "min read" lines leak into the spoken text.
 - Broader install/update/uninstall packaging and the T14 acceptance run.
 
 `reference-data/` is for private, user-provided evaluation material and is excluded

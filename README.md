@@ -168,7 +168,9 @@ voiceislocal="$BIN_DIR/voiceislocal"
 "$voiceislocal" say "The build is ready."      # native speech playback
 printf '%s\n' "Piped text" | "$voiceislocal" say
 "$voiceislocal" say --output greeting.m4a "Hello."
-"$voiceislocal" read ./article.md              # local UTF-8 text/Markdown to AAC playlist
+"$voiceislocal" read ./article.md              # one .m4a named after the title, to send to a phone
+"$voiceislocal" read ./paper.pdf -o ~/Desktop --voice "Ava (Premium)"
+"$voiceislocal" voices list --language en      # installed voices and their quality
 ```
 
 Recording sources are `mic`, `system`, and `mic+system`. macOS may request
@@ -284,17 +286,31 @@ good), keeping the transcript, speaker labels, and exports. Both refuse while th
 session is recording or another Voice is Local command is working on it.
 
 `say` accepts text arguments or UTF-8 stdin and can play speech or save `.m4a`,
-`.wav`, or `.caf`. `read` accepts a local UTF-8 text/Markdown file, `-` for stdin, or an
-`https://` web address; Markdown is read verbatim. A web page is loaded in an offscreen web
-view that keeps no cookies or history, and Mozilla Readability picks out the article: title,
-byline, headings, paragraphs, and list items (code blocks, tables, figures, and reference
-sections are skipped). `--print-text` prints what would be read without rendering. Pages
-behind a sign-in or paywall fail; save their text to a file instead. PDF/OCR are not
-implemented.
+`.wav`, or `.caf`. `read` turns a local .txt, .md, .html, .pdf, .rtf, .rtfd, .docx,
+.doc, or .odt file, `-` for stdin, or an `https://` web address into one AAC `.m4a`
+(mono, about 14 MB per hour) named after the document's title, with a chapter at each
+heading. A web page is loaded in an offscreen web view that keeps no cookies or history,
+and Mozilla Readability picks out the article: title, byline (the file's author), headings,
+paragraphs, and list items (code blocks, tables, figures, and reference sections are
+skipped). Pages behind a sign-in or paywall fail; save their text to a file instead. The
+file plays on iPhone, Android, Windows, and in browsers; send it with AirDrop, Messages, or
+Mail. MP3 is not offered: macOS has no MP3 encoder. Without `--output` the file goes in
+Application Support/Holos/Readings/<UUID>/; `--output` takes a `.m4a` path or a directory.
+The voice is the best installed one for the text's language (Premium, then Enhanced);
+`--voice` takes a name as `say -v '?'` or `voices list` prints it, such as "Ava (Premium)".
+If no Premium voice is installed, download one in System Settings › Accessibility › Spoken
+Content › System Voice › Manage Voices. `--print-text` prints the title, voice, output file,
+chapters, and text that would be read, without rendering or creating anything. Ctrl-C stops a reading (or the page load)
+and keeps its rendered parts; it continues with the same command plus `--resume` (a web
+page is loaded again, and a page that changed since is refused). While a reading runs, a
+hidden `.holos-output-<hash>.lock` beside `--output` reserves the file, so a second reading of
+it is refused; a reservation a killed reading left is taken over once that process is gone, and
+one made on another computer (or one this user cannot remove) is refused with its path, to be
+deleted by hand when no reading of that file is running. OCR is not supported yet.
 
 ```sh
 "$voiceislocal" read https://en.wikipedia.org/wiki/Speech_synthesis --print-text
-"$voiceislocal" read https://en.wikipedia.org/wiki/Speech_synthesis --play
+"$voiceislocal" read https://en.wikipedia.org/wiki/Speech_synthesis -o ~/Desktop --play
 ```
 
 Sessions are portable `.holos` directories. Inspect, recover, and retranscribe an
