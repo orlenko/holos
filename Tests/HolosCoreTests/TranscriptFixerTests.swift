@@ -92,9 +92,10 @@ import Testing
 @Test func editLimitGrowsWithLength() {
     let words = (1...30).map { "word\($0)" }
     var changed = words
-    for index in [3, 9, 15, 21, 27] { changed[index] = "other\(index)" }  // 5 edits; 20 % of 30 is 6
+    // Each replacement is one letter off, so it could be a mishearing.
+    for index in [3, 9, 15, 21, 27] { changed[index] = "ward\(index + 1)" }  // 5 edits; 20 % of 30 is 6
     #expect(AIFixGuard.check(original: words.joined(separator: " "), fixed: changed.joined(separator: " ")) == .accept)
-    for index in [1, 5] { changed[index] = "other\(index)" }  // 7 edits
+    for index in [1, 5] { changed[index] = "ward\(index + 1)" }  // 7 edits
     #expect(AIFixGuard.check(original: words.joined(separator: " "), fixed: changed.joined(separator: " "))
         == .reject(.tooManyEdits))
     #expect(AIFixGuard.editDistance(["a", "b", "c"], ["a", "x", "c", "d"]) == 2)
@@ -209,16 +210,125 @@ import Testing
     // Only related pairs: unrelated ones led the model to put their spellings into unrelated text.
     #expect(AIFixReference.select(from: entries, for: "I opened a bull request", budget: 1_000) == [entries[2]])
     #expect(AIFixReference.select(from: entries, for: "nothing related", budget: 1_000).isEmpty)
-    // Relevance also counts the meant side, case-insensitively; the most recent pair comes first.
-    #expect(AIFixReference.select(from: entries, for: "is github down on mac", budget: 1_000)
+    // Case-insensitive; the most recent pair comes first.
+    #expect(AIFixReference.select(from: entries, for: "is Get Hub down on mac", budget: 1_000)
         == [entries[1], entries[0]])
+    // The meant side never selects a pair: the text already has the spelling.
+    #expect(AIFixReference.select(from: entries, for: "is github down", budget: 1_000).isEmpty)
     // A pair that does not fit is skipped, and a later one that fits is still taken.
     let short = Correction(heard: "get hub", meant: "GitHub")
     let long = Correction(heard: "mac os ventura beta build", meant: "macOS Ventura beta build")
     let budget = AIFixReference.estimatedTokens(short)
     #expect(AIFixReference.estimatedTokens(long) > budget)
-    #expect(AIFixReference.select(from: [short, long], for: "is github down on mac", budget: budget) == [short])
-    #expect(AIFixReference.select(from: entries, for: "github", budget: 0).isEmpty)
+    #expect(AIFixReference.select(from: [short, long], for: "is get hub down on mac os ventura beta build",
+                                  budget: budget) == [short])
+    #expect(AIFixReference.select(from: entries, for: "get hub", budget: 0).isEmpty)
+}
+
+/// The speaker's learned corrections when "windows" and "develop" became "Ubuntu" in dictation.
+let taughtList = [
+    Correction(heard: "Jav model", meant: "Jev model"), Correction(heard: "common free", meant: "comment-free"),
+    Correction(heard: "God forbid", meant: "god forbid"), Correction(heard: "T-Mux", meant: "tmux"),
+    Correction(heard: "Onobunto", meant: "on Ubuntu"), Correction(heard: "T-Max", meant: "tmux"),
+    Correction(heard: "Timox sessions", meant: "tmux sessions"), Correction(heard: "Keystrokes in", meant: "keystrokes in"),
+    Correction(heard: "T-Mox", meant: "tmux"), Correction(heard: "food requests", meant: "pool requests"),
+    Correction(heard: "Timok's sessions", meant: "tmux sessions"), Correction(heard: "Maestra is", meant: "Maestro is"),
+    Correction(heard: "a Bundo", meant: "ubuntu"), Correction(heard: "the Najer", meant: "the nudger"),
+    Correction(heard: "slash QC", meant: "/qc"), Correction(heard: "slash APRS", meant: "/aprs"),
+    Correction(heard: "this basement", meant: "the spaceman"), Correction(heard: "Ubundu machine", meant: "Ubuntu machine"),
+    Correction(heard: "Uguntu", meant: "Ubuntu"), Correction(heard: "BitHub", meant: "GitHub"),
+    Correction(heard: "death instance", meant: "dev instance"), Correction(heard: "quarter much", meant: "quota much"),
+    Correction(heard: "a bunch of ubuntu", meant: "a bunch of windows"), Correction(heard: "This is", meant: "this is"),
+]
+
+@Test func referenceSelectsAPairOnlyWhereItsHeardPhraseIsSaid() {
+    func selected(_ text: String) -> [String] {
+        AIFixReference.select(from: taughtList, for: text, budget: 1_000).map(\.heard)
+    }
+    // Sharing "on", "a", "this" or a meant word ("windows") no longer brings in the Ubuntu pairs.
+    #expect(selected("I tested this on Windows and then pushed it to the develop branch.").isEmpty)
+    #expect(selected("Let's develop it on a Windows machine first.").isEmpty)
+    #expect(selected("We should develop a plan for the windows laptop.").isEmpty)
+    #expect(selected("it runs Onobunto") == ["Onobunto"])
+    // The recognizer mishears the heard phrase again, a little differently.
+    #expect(selected("it runs on a bundo") == ["a Bundo"])
+    #expect(selected("it runs on a bundu") == ["a Bundo"])
+    #expect(selected("an Ubundo machine") == ["Ubundu machine", "a Bundo"])
+    #expect(selected("attach to my timox session") == ["Timok's sessions", "Timox sessions"])
+    // A phrase of function words only must be said as it is.
+    #expect(selected("This is fine") == ["This is"])
+    #expect(selected("this was fine").isEmpty)
+    // A match covers the heard phrase's function words where the text has them.
+    #expect(AIFixReference.matches(of: "a Bundo", in: AIFixGuard.words(in: "it runs on a bundu")) == [3..<5])
+    #expect(AIFixReference.matches(of: "a Bundo", in: AIFixGuard.words(in: "bundu")) == [0..<1])
+}
+
+@Test func mishearingsAreCloseAndUnrelatedWordsAreNot() {
+    for (heard, meant) in [("their", "there"), ("pear", "pair"), ("by", "buy"), ("whether", "weather"),
+                           ("cold", "called"), ("bull", "pull"), ("a", "I"), ("ces", "c'est"), ("sa", "ça"),
+                           ("et", "est"), ("Onobunto", "on Ubuntu"), ("abundo", "ubuntu"), ("GitHub", "github")] {
+        #expect(SpokenWords.isClose(heard, meant), "\(heard) -> \(meant)")
+    }
+    for (heard, meant) in [("windows", "Ubuntu"), ("develop", "Ubuntu"), ("count", "Uguntu"), ("Najer", "nudger"),
+                           ("laptop", "Ubuntu"), ("fool", "bar")] {
+        #expect(!SpokenWords.isClose(heard, meant), "\(heard) -> \(meant)")
+    }
+    #expect(!SpokenWords.isContent("the") && !SpokenWords.isContent("a") && !SpokenWords.isContent("qc"))
+    #expect(!SpokenWords.isContent("dans") && !SpokenWords.isContent("C’est"))
+    #expect(SpokenWords.isContent("Ubuntu") && SpokenWords.isContent("develop"))
+}
+
+@Test func guardRefusesAWordSwappedInThatWasNotMisheard() {
+    // The replies Apple's on-device model gave with the Ubuntu pairs listed.
+    let listed = [taughtList[22], taughtList[17], taughtList[12], taughtList[4]]
+    #expect(AIFixGuard.check(original: "Let's develop it on a Windows machine first.",
+                             fixed: "Let's develop it on a Ubuntu machine first.", protecting: taughtList,
+                             taught: listed) == .reject(.implausibleSubstitution))
+    #expect(AIFixGuard.check(original: "We should develop a plan for the windows laptop.",
+                             fixed: "We should develop a plan for the ubuntu laptop.", protecting: taughtList,
+                             taught: listed) == .reject(.implausibleSubstitution))
+    #expect(AIFixGuard.check(original: "Let's develop it on a Windows machine first.",
+                             fixed: "Let's Ubuntu it on a Windows machine first.", protecting: taughtList,
+                             taught: listed) == .reject(.implausibleSubstitution))
+    // An added word other than a function word is not a fix either.
+    #expect(AIFixGuard.check(original: "it runs on a Windows machine", fixed: "it runs on a Ubuntu Windows machine")
+        == .reject(.implausibleSubstitution))
+    // Close words pass without being taught; a taught pair passes where its heard phrase was said.
+    #expect(AIFixGuard.check(original: "I went their. Then we left", fixed: "I went there. Then we left") == .accept)
+    #expect(AIFixGuard.check(original: "The build runs Onobunto.", fixed: "The build runs on Ubuntu.",
+                             protecting: taughtList, taught: [taughtList[4]]) == .accept)
+    #expect(AIFixGuard.check(original: "go ask the Najer", fixed: "go ask the nudger") == .reject(.implausibleSubstitution))
+    #expect(AIFixGuard.check(original: "go ask the Najer", fixed: "go ask the nudger", taught: [taughtList[13]])
+        == .accept)
+    // The taught pair covers only where its heard phrase was said.
+    #expect(AIFixGuard.check(original: "go ask the Najer about windows", fixed: "go ask the Najer about nudger",
+                             taught: [taughtList[13]]) == .reject(.implausibleSubstitution))
+    // Function words may come and go around a fix.
+    #expect(AIFixGuard.check(original: "we went to store", fixed: "we went to the store") == .accept)
+}
+
+@Test func fixerRefusesAnUnrelatedTaughtSpelling() async {
+    let corrections = CorrectionList(entries: taughtList)
+    let seen = Mutex("")
+    let result = await fixer(corrections: corrections) { instructions, _ in
+        seen.withLock { $0 = instructions }
+        return "Let's develop it on a Ubuntu machine first."
+    }.fix("Let's develop it on a Windows machine first.", isFinal: true)
+    #expect(result == .init(text: "Let's develop it on a Windows machine first.", outcome: .rejected,
+                            rejection: .implausibleSubstitution))
+    #expect(seen.withLock { $0 } == TranscriptFixer.baseInstructions)
+    let taught = await fixer(corrections: corrections) { _, _ in "The build runs on Ubuntu." }
+        .fix("The build runs Onobunto.", isFinal: true)
+    #expect(taught == .init(text: "The build runs on Ubuntu.", outcome: .fixed))
+}
+
+@Test func hunksAreTheStretchesThatDiffer() {
+    let hunks = AIFixGuard.hunks(["a", "b", "c", "d"], ["a", "x", "c", "d", "e"])
+    #expect(hunks.map(\.old) == [1..<2, 4..<4] && hunks.map(\.new) == [1..<2, 4..<5])
+    // A substitution is preferred over a removal and an addition.
+    #expect(AIFixGuard.hunks(["bat", "bar"], ["bar", "bar"]).map(\.old) == [0..<1])
+    #expect(AIFixGuard.hunks(["a", "semi", "colon"], ["a", "semicolon"]).map(\.old) == [1..<3])
+    #expect(AIFixGuard.hunks(["same"], ["same"]).isEmpty)
 }
 
 @Test func instructionsListTheReferencePairs() {
@@ -268,11 +378,19 @@ private func fixer(corrections: CorrectionList = CorrectionList(), timeout: Dura
     let result = await fix.fix("I opened a bull request on GitHub", isFinal: false)
     #expect(result == .init(text: "I opened a bull request on GitHub", outcome: .rejected,
                             rejection: .changedCorrection))
-    #expect(seenInstructions.withLock { $0 }.contains("get hub -> GitHub"))
+    // The chunk has the meant spelling, not the heard one, so the pair was not listed.
+    #expect(seenInstructions.withLock { $0 } == TranscriptFixer.baseInstructions)
     // Other words may still be fixed around it.
     let kept = await fixer(corrections: corrections) { _, _ in "I opened a pull request on GitHub" }
         .fix("I opened a bull request on GitHub", isFinal: false)
     #expect(kept == .init(text: "I opened a pull request on GitHub", outcome: .fixed))
+    // Where the heard phrase is said, the pair is listed and the model may apply it.
+    let listed = await fixer(corrections: corrections) { instructions, _ in
+        seenInstructions.withLock { $0 = instructions }
+        return "I opened a pull request on GitHub"
+    }.fix("I opened a pull request on get hub", isFinal: false)
+    #expect(listed == .init(text: "I opened a pull request on GitHub", outcome: .fixed))
+    #expect(seenInstructions.withLock { $0 }.contains("get hub -> GitHub"))
 }
 
 @Test func fixerNeverRewritesACorrectedWordThroughAChain() async {
@@ -288,7 +406,7 @@ private func fixer(corrections: CorrectionList = CorrectionList(), timeout: Dura
     let shifted = await fixer(corrections: chain) { _, _ in "bar is open now too" }
         .fix("the bar is open now", isFinal: false)
     #expect(shifted == .init(text: "bar is open now too", outcome: .fixed))
-    let twin = await fixer(corrections: chain) { _, _ in "bar bar" }.fix("fool bar", isFinal: true)
+    let twin = await fixer(corrections: chain) { _, _ in "bar bar" }.fix("bat bar", isFinal: true)
     #expect(twin == .init(text: "bar bar", outcome: .fixed))
 }
 

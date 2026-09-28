@@ -43,6 +43,17 @@ import Testing
     list.add(.init(heard: "same", meant: "same"))
     #expect(list.entries == [.init(heard: "Clod", meant: "Claude")])
     #expect(list.vocabulary == ["Claude"])
+    // Only distinctive words, once each whatever their case, with the capital a meant phrase gave them.
+    let taught = CorrectionList(entries: [
+        .init(heard: "Onobunto", meant: "on Ubuntu"), .init(heard: "a Bundo", meant: "ubuntu"),
+        .init(heard: "Ubundu machine", meant: "Ubuntu machine"), .init(heard: "Uguntu", meant: "Ubuntu"),
+        .init(heard: "a bunch of ubuntu", meant: "a bunch of windows"), .init(heard: "T-Mux", meant: "tmux"),
+        .init(heard: "T-Max", meant: "tmux"), .init(heard: "slash QC", meant: "/qc"),
+        .init(heard: "this basement", meant: "the spaceman"), .init(heard: "This is", meant: "this is"),
+    ])
+    #expect(taught.vocabulary == ["Ubuntu", "machine", "bunch", "windows", "tmux", "spaceman"])
+    #expect(CorrectionList(entries: [.init(heard: "ubunto", meant: "ubuntu"), .init(heard: "Uguntu", meant: "Ubuntu")])
+        .vocabulary == ["Ubuntu"])
     let url = FileManager.default.temporaryDirectory
         .appendingPathComponent(UUID().uuidString).appendingPathComponent("corrections.json")
     defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }

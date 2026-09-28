@@ -73,7 +73,10 @@ final class DictationFixPipeline {
     static func make(corrections: CorrectionList, language: String,
                      deliver: @escaping (_ chunk: String, _ text: String) -> Bool) -> DictationFixPipeline? {
         guard AIFixSetting.isOn, AIFixSetting.unavailableReason(language: language) == nil else { return nil }
-        let model = SystemLanguageModel.default
+        // The default guardrails refused about half of ordinary dictated sentences ("We should develop a plan for the
+        // windows laptop." threw "May contain unsafe content"); fixing the speaker's own words is a content
+        // transformation, which these guardrails are for. A reply that still throws leaves the chunk as recognized.
+        let model = SystemLanguageModel(guardrails: .permissiveContentTransformations)
         // Loads the model while the user starts speaking, so the first chunk does not wait for it.
         LanguageModelSession(model: model, instructions: TranscriptFixer.instructions(reference: [])).prewarm()
         // A quarter of the context for learned corrections leaves ample room for the chunk and the reply.

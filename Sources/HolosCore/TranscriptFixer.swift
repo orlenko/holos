@@ -48,7 +48,8 @@ public struct TranscriptFixer: Sendable {
 
     /// `isFinal` marks the end of the dictation: only there may the model change the closing punctuation, since a
     /// chunk in the middle of a sentence continues in the next one. Learned corrections are listed for the model as
-    /// a reference, and a reply that changes a word one of them produced is refused.
+    /// a reference, and a reply that changes a word one of them produced, or swaps in a word that does not sound
+    /// like the one it replaces, is refused.
     public func fix(_ chunk: String, isFinal: Bool) async -> Result {
         let leading = String(chunk.prefix { $0.isWhitespace })
         let trailing = String(chunk.reversed().prefix { $0.isWhitespace }.reversed())
@@ -66,7 +67,7 @@ public struct TranscriptFixer: Sendable {
         case .failed: return Result(text: chunk, outcome: .failed)
         }
         let fixed = AIFixGuard.keepingEdges(of: core, in: AIFixGuard.sanitized(reply, for: core), isFinal: isFinal)
-        switch AIFixGuard.check(original: core, fixed: fixed, protecting: corrections.entries) {
+        switch AIFixGuard.check(original: core, fixed: fixed, protecting: corrections.entries, taught: reference) {
         case .accept: return Result(text: leading + fixed + trailing, outcome: .fixed)
         case .unchanged: return Result(text: chunk, outcome: .unchanged)
         case .reject(let why): return Result(text: chunk, outcome: .rejected, rejection: why)
@@ -159,8 +160,9 @@ public enum AIFixGuard {
     public enum Rejection: String, Sendable, Equatable {
         /// `changedStructure`: a mark other than a comma or apostrophe was added, removed or moved (a period, colon,
         /// quote, bracket or line break), apart from closing marks at the very end. `changedCorrection`: a word a
-        /// learned correction produced was changed.
-        case empty, tooManyEdits, wordCountChanged, changedStructure, changedCorrection
+        /// learned correction produced was changed. `implausibleSubstitution`: a word was replaced by one it could
+        /// not have been misheard for ("windows" by "Ubuntu"), or a word other than a function word was added.
+        case empty, tooManyEdits, wordCountChanged, changedStructure, changedCorrection, implausibleSubstitution
     }
 
     public enum Verdict: Sendable, Equatable {
@@ -176,7 +178,10 @@ public enum AIFixGuard {
     /// moved mark (a period, colon, quote, bracket or line break) is a new sentence, label or line, not a fix.
     /// Case changes are free. Words a learned correction produced (each occurrence in `original` of a
     /// correction's meant phrase, compared as lowercased words) must all still be there: the speaker taught them.
-    public static func check(original: String, fixed: String, protecting corrections: [Correction] = []) -> Verdict {
+    /// Every replaced word must be a plausible mishearing of what replaces it (`plausible`), `taught` being the
+    /// learned corrections listed for the model.
+    public static func check(original: String, fixed: String, protecting corrections: [Correction] = [],
+                             taught: [Correction] = []) -> Verdict {
         let original = original.trimmingCharacters(in: .whitespacesAndNewlines)
         let fixed = fixed.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !fixed.isEmpty else { return .reject(.empty) }
@@ -199,7 +204,66 @@ public enum AIFixGuard {
         let segmented = zip(was.segments, now.segments).reduce(0) { $0 + editDistance($1.0, $1.1) }
         if segmented > edits { return .reject(.changedStructure) }
         if edits > max(2, before.count / 5) { return .reject(.tooManyEdits) }
+        for hunk in hunks(before, after)
+        where !plausible(Array(before[hunk.old]), Array(after[hunk.new]), at: hunk.old, in: before, taught: taught) {
+            return .reject(.implausibleSubstitution)
+        }
         return .accept
+    }
+
+    /// Whether `new` could replace `old`, the words at `range` of `before`, as a fix of a mishearing: `old` dropped;
+    /// function words added (`SpokenWords.isContent` false); `old` close to `new` (`SpokenWords.isClose`) as a
+    /// whole, word by word, or content word by content word; or a correction in `taught` whose heard phrase matches
+    /// around `range` (`AIFixReference.matches`) and whose meant phrase holds `new`. Anything else is a word the
+    /// model swapped in: a spelling from the taught list ("windows" became "Ubuntu") or one of its own.
+    static func plausible(_ old: [String], _ new: [String], at range: Range<Int>, in before: [String],
+                          taught: [Correction]) -> Bool {
+        if new.isEmpty { return true }
+        for correction in taught where occurrences(of: new, in: words(in: correction.meant)) > 0 {
+            let windows = AIFixReference.matches(of: correction.heard, in: before)
+            if windows.contains(where: { $0.lowerBound <= range.lowerBound && range.upperBound <= $0.upperBound }) {
+                return true
+            }
+        }
+        if old.isEmpty { return !new.contains(where: SpokenWords.isContent) }
+        if SpokenWords.isClose(old.joined(), new.joined()) { return true }
+        if old.count == new.count, zip(old, new).allSatisfy(SpokenWords.isClose) { return true }
+        let oldContent = old.filter(SpokenWords.isContent)
+        let newContent = new.filter(SpokenWords.isContent)
+        return !newContent.isEmpty && oldContent.count == newContent.count
+            && zip(oldContent, newContent).allSatisfy(SpokenWords.isClose)
+    }
+
+    /// The stretches where `a` and `b` differ, as ranges of each, from a word-level alignment with the edits of
+    /// `editDistance` (a substitution costs less than a removal and an addition).
+    static func hunks(_ a: [String], _ b: [String]) -> [(old: Range<Int>, new: Range<Int>)] {
+        let table = editTable(a, b)
+        var matched: [(Int, Int)] = []
+        var i = a.count, j = b.count
+        while i > 0 || j > 0 {
+            let cost = table[i][j]
+            if i > 0, j > 0, a[i - 1] == b[j - 1], cost == table[i - 1][j - 1] {
+                i -= 1; j -= 1
+                matched.append((i, j))
+            } else if i > 0, j > 0, cost == table[i - 1][j - 1] + 1 {
+                i -= 1; j -= 1
+            } else if i > 1, j > 0, a[i - 2] + a[i - 1] == b[j - 1], cost == table[i - 2][j - 1] + 1 {
+                i -= 2; j -= 1
+            } else if i > 0, j > 1, a[i - 1] == b[j - 2] + b[j - 1], cost == table[i - 1][j - 2] + 1 {
+                i -= 1; j -= 2
+            } else if i > 0, cost == table[i - 1][j] + 1 {
+                i -= 1
+            } else {
+                j -= 1
+            }
+        }
+        var result: [(old: Range<Int>, new: Range<Int>)] = []
+        var (lastA, lastB) = (0, 0)
+        for (x, y) in matched.reversed() + [(a.count, b.count)] {
+            if x > lastA || y > lastB { result.append((lastA..<x, lastB..<y)) }
+            (lastA, lastB) = (x + 1, y + 1)
+        }
+        return result
     }
 
     /// How many times `phrase` appears in `words`, overlapping matches included.
@@ -302,6 +366,11 @@ public enum AIFixGuard {
     /// Word-level Levenshtein distance, where joining two words into one ("semi colon" → "semicolon") or splitting
     /// one into two also counts as a single edit.
     static func editDistance(_ a: [String], _ b: [String]) -> Int {
+        editTable(a, b)[a.count][b.count]
+    }
+
+    /// `editDistance`'s table: the distance between the first i words of `a` and the first j of `b`.
+    private static func editTable(_ a: [String], _ b: [String]) -> [[Int]] {
         var table = Array(repeating: Array(repeating: 0, count: b.count + 1), count: a.count + 1)
         for i in 0...a.count { table[i][0] = i }
         for j in 0...b.count { table[0][j] = j }
@@ -314,7 +383,7 @@ public enum AIFixGuard {
                 table[i][j] = best
             }
         }
-        return table[a.count][b.count]
+        return table
     }
 }
 
@@ -363,14 +432,13 @@ public enum AIFixOriginal {
 
 /// Picks which learned corrections to list for the model, within a token budget.
 public enum AIFixReference {
-    /// Corrections sharing a word with `text` (in their heard or meant phrase), most recently added first. A pair
-    /// that does not fit the remaining budget is skipped. Unrelated pairs are left out: listed, the model put their
-    /// spellings into text they had nothing to do with ("a new pear of shoes" became "a new Codex of shoes").
+    /// Corrections whose heard phrase is in `text` (`matches`), most recently added first. A pair that does not fit
+    /// the remaining budget is skipped. Any other pair is left out: listed, the model put its spelling into text it
+    /// had nothing to do with ("a new pear of shoes" became "a new Codex of shoes"; with "a Bundo -> ubuntu" listed
+    /// because of the "a", "on a Windows machine" became "on a Ubuntu machine").
     public static func select(from entries: [Correction], for text: String, budget: Int) -> [Correction] {
-        let words = Set(AIFixGuard.words(in: text))
-        let relevant = entries.reversed().filter {
-            !words.isDisjoint(with: AIFixGuard.words(in: $0.heard + " " + $0.meant))
-        }
+        let words = AIFixGuard.words(in: text)
+        let relevant = entries.reversed().filter { !matches(of: $0.heard, in: words).isEmpty }
         var remaining = budget
         var chosen: [Correction] = []
         for entry in relevant {
@@ -380,6 +448,37 @@ public enum AIFixReference {
             remaining -= cost
         }
         return chosen
+    }
+
+    /// Where `heard` appears in `words` (from `AIFixGuard.words`): the whole phrase as is, or its content words
+    /// (`SpokenWords.isContent`) each close to (`SpokenWords.isClose`) the content word in the same place of a run
+    /// of the text's content words, the recognizer having misheard it again a little differently ("a bundu" for
+    /// "a Bundo"). Function words alone never match: a phrase made only of them must appear exactly. A match's
+    /// range covers the phrase's function words at either end, where the text has room for them.
+    public static func matches(of heard: String, in words: [String]) -> [Range<Int>] {
+        let phrase = AIFixGuard.words(in: heard)
+        guard !phrase.isEmpty else { return [] }
+        var found: [Range<Int>] = []
+        if phrase.count <= words.count {
+            for start in 0...(words.count - phrase.count)
+            where words[start..<(start + phrase.count)].elementsEqual(phrase) {
+                found.append(start..<(start + phrase.count))
+            }
+        }
+        let key = phrase.indices.filter { SpokenWords.isContent(phrase[$0]) }
+        let content = words.indices.filter { SpokenWords.isContent(words[$0]) }
+        guard let first = key.first, let last = key.last, key.count <= content.count else { return found }
+        let span = last - first + 1
+        for start in 0...(content.count - key.count) {
+            let window = content[start..<(start + key.count)]
+            // The heard phrase's content words, a stop word or two apart at most.
+            guard window.last! - window.first! + 1 <= span + 2,
+                  zip(window, key).allSatisfy({ SpokenWords.isClose(words[$0], phrase[$1]) }) else { continue }
+            let lower = max(0, window.first! - first)
+            let upper = min(words.count, window.last! + 1 + (phrase.count - 1 - last))
+            if !found.contains(where: { $0.overlaps(lower..<upper) }) { found.append(lower..<upper) }
+        }
+        return found
     }
 
     /// A deliberate overestimate (about 3 characters per token, plus the arrow and line break), so the budget holds

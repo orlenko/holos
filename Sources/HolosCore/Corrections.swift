@@ -23,10 +23,27 @@ public struct CorrectionList: Codable, Sendable, Equatable {
         HolosPaths.applicationSupport.appendingPathComponent("corrections.json")
     }
 
-    /// Phrases the recognizer should expect.
+    /// Words the recognizer should expect: the content words (`SpokenWords.isContent`) of the meant phrases, once
+    /// each ignoring case, spelled with a capital when any meant phrase has one. "on Ubuntu", "ubuntu" and "Ubuntu
+    /// machine" give "Ubuntu" and "machine": listing "on Ubuntu" or "a bunch of windows" as phrases biased the
+    /// recognizer toward words the speaker says everywhere.
     public var vocabulary: [String] {
-        var seen = Set<String>()
-        return entries.map(\.meant).filter { seen.insert(Self.normalized($0)).inserted }
+        var order: [String] = []
+        var spelling: [String: String] = [:]
+        for entry in entries {
+            for match in entry.meant.matches(of: /[\p{L}\p{N}]+(?:['’][\p{L}\p{N}]+)*/) {
+                let word = String(match.output)
+                guard SpokenWords.isContent(word) else { continue }
+                let key = word.lowercased()
+                if let known = spelling[key] {
+                    if !known.contains(where: \.isUppercase), word.contains(where: \.isUppercase) { spelling[key] = word }
+                } else {
+                    order.append(key)
+                    spelling[key] = word
+                }
+            }
+        }
+        return order.compactMap { spelling[$0] }
     }
 
     /// Adds or replaces the entry for the same heard phrase. Blank or identical pairs are ignored.
