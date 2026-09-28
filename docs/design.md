@@ -404,8 +404,10 @@ invented spelling lands on unrelated words, or next to the heard phrase. The gua
 also refuses a reply that adds or drops any word but glue words (articles,
 prepositions, conjunctions), hesitations and repeats ("You should go" is not "You
 go"), or that changes its negations, words of quantity or modals ("I do agree" is not
-"I do not agree", "should" not "could"); function words, glue words and homophones are
-those of the language dictated (English or French). The model
+"I do not agree", "should" not "could", "couldn't" not "wouldn't"), or its numbers
+("Ship 10 units" is not "Ship 100 units") unless a listed pair said there brings them;
+function words, glue words and homophones are those of the language dictated (English
+or French). The model
 runs with the `permissiveContentTransformations` guardrails: with the defaults about
 half the fixes in a day's log failed in about 200 ms, ordinary sentences refused as
 "May contain unsafe content". A refusal that still happens leaves the chunk as

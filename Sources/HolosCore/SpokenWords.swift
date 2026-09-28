@@ -70,7 +70,7 @@ public enum SpokenWords {
         "not", "no", "never", "nothing", "none", "nobody", "nowhere", "neither", "nor", "cannot", "without",
         // Contractions dictated without their apostrophe ("dont"); those with one end in "n't".
         "dont", "cant", "wont", "isnt", "arent", "wasnt", "werent", "doesnt", "didnt", "hasnt", "havent", "hadnt",
-        "couldnt", "wouldnt", "shouldnt", "mustnt", "neednt", "aint",
+        "couldnt", "wouldnt", "shouldnt", "mustnt", "neednt", "aint", "shant", "mightnt",
     ]
     static let frenchNegations: Set<String> = ["pas", "jamais", "rien", "personne", "aucun", "aucune", "ni", "sans",
                                                "non", "nul", "nulle", "guère"]
@@ -91,12 +91,18 @@ public enum SpokenWords {
 
     /// How many times each meaning word (see `englishNegations`) is in `words` (from `AIFixGuard.words`), for
     /// `language` (both English and French when nil or another one): negations all count as "not", "I'll" as
-    /// "will" and "I'd" as "would", French modals as their verb.
+    /// "will" and "I'd" as "would", French modals as their verb. A negative modal counts as both: "couldn't" is
+    /// "not" and "could", so it is not "wouldn't".
     static func meaningWords(in words: [String], language: String?) -> [String: Int] {
         let code = language.map(DictationLanguage.languageCode)
         let english = code != "fr", french = code != "en"
         var counts: [String: Int] = [:]
         for word in words {
+            if english, let modal = negativeModal(word) {
+                counts["not", default: 0] += 1
+                counts[modal, default: 0] += 1
+                continue
+            }
             let kind: String? =
                 if (english && (englishNegations.contains(word) || word.hasSuffix("n't")))
                     || (french && frenchNegations.contains(word)) { "not" }
@@ -109,6 +115,18 @@ public enum SpokenWords {
             if let kind { counts[kind, default: 0] += 1 }
         }
         return counts
+    }
+
+    /// The modal of a negative contraction, with or without its apostrophe: "can" for "can't", "cant" and "cannot",
+    /// "will" for "won't", "could" for "couldn't".
+    static func negativeModal(_ word: String) -> String? {
+        if word == "cannot" { return "can" }
+        let stem: Substring =
+            if word.hasSuffix("n't") { word.dropLast(3) }
+            else if word.hasSuffix("nt"), englishNegations.contains(word) { word.dropLast(2) }
+            else { "" }
+        let modal = ["ca": "can", "wo": "will", "sha": "shall"][String(stem)] ?? String(stem)
+        return englishModals.contains(modal) ? modal : nil
     }
 
     /// Words a fix may add or drop, by language: articles and the prepositions and conjunctions that tie words

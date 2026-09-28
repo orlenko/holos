@@ -241,11 +241,16 @@ public enum AIFixGuard {
     /// other change `plausible`. Only places a change touches are tried, each applied or not. So a pair vouches for
     /// its spelling exactly where its heard phrase was said, whatever changed next to it: with "food requests ->
     /// pool requests", "their food requests" may become "there pool requests", while "a Bundo" may not become
-    /// "Ubuntu Bundo" nor "use Bundo" "Ubuntu Bundo". Each try compares only what lies between the first and the
+    /// "Ubuntu Bundo" nor "use Bundo" "Ubuntu Bundo". A change right at the edge of such a place counts as touching
+    /// it ("server -> production server"). Numbers (words with a digit) must be the same, but for those a pair
+    /// brings: "Ship 10 units" is not "Ship 100 units". Each try compares only what lies between the first and the
     /// last word that differ, and a cancelled task (the fixer's time limit) stops trying.
     static func plausibleReply(original: String, before: [String], after: [String], taught: [Correction],
                                language: String? = nil) -> Bool {
+        func numbers(_ words: [String]) -> [String] { words.filter { $0.contains(where: \.isNumber) }.sorted() }
+        let numbersAfter = numbers(after)
         func allPlausible(from start: [String]) -> Bool {
+            guard numbers(start) == numbersAfter else { return false }
             let head = zip(start, after).prefix { $0 == $1 }.count
             let tail = zip(start.dropFirst(head).reversed(), after.dropFirst(head).reversed()).prefix { $0 == $1 }.count
             let old = Array(start[head..<(start.count - tail)]), new = Array(after[head..<(after.count - tail)])
@@ -258,8 +263,8 @@ public enum AIFixGuard {
         if allPlausible(from: before) { return true }
         let changed = hunks(before, after).map(\.old)
         func touched(_ span: Range<Int>) -> Bool {
-            changed.contains { $0.overlaps(span) || ($0.isEmpty && span.lowerBound < $0.lowerBound
-                                                     && $0.lowerBound < span.upperBound) }
+            changed.contains { $0.overlaps(span) || ($0.isEmpty && span.lowerBound <= $0.lowerBound
+                                                     && $0.lowerBound <= span.upperBound) }
         }
         var places: [(span: Range<Int>, meant: [String])] = []
         for correction in taught {

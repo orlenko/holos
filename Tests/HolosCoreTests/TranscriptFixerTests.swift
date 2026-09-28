@@ -90,12 +90,15 @@ import Testing
 }
 
 @Test func editLimitGrowsWithLength() {
-    let words = (1...30).map { "word\($0)" }
+    // Letters only: a number keeps its value, so "word4" could not become "ward4".
+    let alphabet = Array("abcdefghijklmnopqrstuvwxyz")
+    let suffixes: [String] = (0..<30).map { index in String([alphabet[index / 26], alphabet[index % 26]]) }
+    let words = suffixes.map { "word\($0)" }
     var changed = words
     // Each replacement is one letter off, so it could be a mishearing.
-    for index in [3, 9, 15, 21, 27] { changed[index] = "ward\(index + 1)" }  // 5 edits; 20 % of 30 is 6
+    for index in [3, 9, 15, 21, 27] { changed[index] = "ward\(suffixes[index])" }  // 5 edits; 20 % of 30 is 6
     #expect(AIFixGuard.check(original: words.joined(separator: " "), fixed: changed.joined(separator: " ")) == .accept)
-    for index in [1, 5] { changed[index] = "ward\(index + 1)" }  // 7 edits
+    for index in [1, 5] { changed[index] = "ward\(suffixes[index])" }  // 7 edits
     #expect(AIFixGuard.check(original: words.joined(separator: " "), fixed: changed.joined(separator: " "))
         == .reject(.tooManyEdits))
     #expect(AIFixGuard.editDistance(["a", "b", "c"], ["a", "x", "c", "d"]) == 2)
@@ -462,6 +465,40 @@ let unrelatedWords = [
     // Articles, prepositions and conjunctions may come and go.
     #expect(AIFixGuard.check(original: "we went to store", fixed: "we went to the store") == .accept)
     #expect(AIFixGuard.check(original: "je parle à ami", fixed: "je parle à un ami", language: "fr-FR") == .accept)
+}
+
+@Test func negativeModalsKeepTheirModalNumbersTheirValue() {
+    // "couldn't" is "not" and "could": it is not "wouldn't".
+    #expect(AIFixGuard.check(original: "You couldn't go", fixed: "You wouldn't go", language: "en-US")
+        == .reject(.changedMeaning))
+    #expect(AIFixGuard.check(original: "You cant go", fixed: "You won't go") == .reject(.changedMeaning))
+    #expect(AIFixGuard.check(original: "You can't go", fixed: "You cannot go") == .accept)
+    #expect(AIFixGuard.check(original: "You can not go", fixed: "You cannot go") == .accept)
+    // A number keeps its value, whatever its digits look like.
+    for (original, fixed) in [("Ship 10 units", "Ship 100 units"), ("Meet at 3 pm", "Meet at 8 pm"),
+                              ("Version 1 is out", "Version 2 is out")] {
+        #expect(AIFixGuard.check(original: original, fixed: fixed) == .reject(.implausibleSubstitution),
+                "\(original) -> \(fixed)")
+    }
+    // Unless a pair said there brings it.
+    let version = Correction(heard: "version to", meant: "version 2")
+    #expect(AIFixGuard.check(original: "use version to now", fixed: "use version 2 now", taught: [version]) == .accept)
+    #expect(AIFixGuard.check(original: "use version to now", fixed: "use version 3 now", taught: [version])
+        == .reject(.implausibleSubstitution))
+}
+
+@Test func aPairMayAddWordsAtTheEdgesOfItsHeardPhrase() {
+    let prefix = Correction(heard: "server", meant: "production server")
+    #expect(AIFixGuard.check(original: "open server now", fixed: "open production server now", taught: [prefix])
+        == .accept)
+    let suffix = Correction(heard: "server", meant: "server production")
+    #expect(AIFixGuard.check(original: "open server now", fixed: "open server production now", taught: [suffix])
+        == .accept)
+    // Without the pair, or with another word added, it is not a fix.
+    #expect(AIFixGuard.check(original: "open server now", fixed: "open production server now")
+        == .reject(.implausibleSubstitution))
+    #expect(AIFixGuard.check(original: "open server now", fixed: "open staging server now", taught: [prefix])
+        == .reject(.implausibleSubstitution))
 }
 
 @Test func homophonesAreThoseOfTheLanguageDictated() {
