@@ -4,7 +4,7 @@ import Foundation
 /// Settings first, then the ones System Settings grants without a reopen, then the ones that take effect only after
 /// Voice is Local reopens, grouped so the app reopens once, at the end.
 public enum SetupAssistantStep: Int, CaseIterable, Comparable, Sendable {
-    /// What will be set up; Start, or skip to the full Setup window.
+    /// What will be set up; Start, or skip to Settings in the main window.
     case welcome
     /// Dictation language, microphone (macOS's own prompt), and "Also set up meetings".
     case basics
@@ -97,7 +97,7 @@ public enum SetupAssistantLaunch: Equatable, Sendable {
     case verify
     /// An install set up before the assistant existed: it is marked done without being shown, then `normal`.
     case markDone
-    /// Today's behaviour: dictation turns on when it was on, else the full Setup window opens.
+    /// Today's behaviour: dictation turns on when it was on, else Settings opens in the main window.
     case normal
 }
 
@@ -308,11 +308,11 @@ public struct SetupAssistantFlow: Equatable, Sendable {
         var items: [SetupAssistantItem] = []
         items.append(facts.microphoneGranted
             ? .init(.microphone, .done, "Allowed")
-            : .init(.microphone, .missing, "Not allowed — dictation cannot hear you. Open full Setup to allow it."))
+            : .init(.microphone, .missing, "Not allowed — dictation cannot hear you. Open Settings to allow it."))
         items.append(facts.accessibility
             ? .init(.accessibility, .done, "Allowed")
             : .init(.accessibility, .missing,
-                    "Not allowed — dictation cannot notice the key or type text. Open full Setup to allow it."))
+                    "Not allowed — dictation cannot notice the key or type text. Open Settings to allow it."))
         if facts.inputMonitoringNeeded || requestedInputMonitoring {
             if facts.inputMonitoring {
                 items.append(.init(.inputMonitoring, .done, "Allowed"))
@@ -344,7 +344,7 @@ public struct SetupAssistantFlow: Equatable, Sendable {
         case "installed": return .init(.speechModel, .done, "\(language): installed")
         case nil: return .init(.speechModel, .waiting, "\(language): checking…")
         case "unsupported": return .init(.speechModel, .missing, "\(language) is not supported on this Mac")
-        default: return .init(.speechModel, .missing, "\(language): not installed — Open full Setup to install it")
+        default: return .init(.speechModel, .missing, "\(language): not installed — Open Settings to install it")
         }
     }
 
@@ -356,7 +356,7 @@ public struct SetupAssistantFlow: Equatable, Sendable {
         default:
             // Asked for this run and not there: the install failed. Otherwise meetings simply go without labels.
             if setUpMeetings && startedInstalls && !verify {
-                return .init(.speakerModels, .missing, "Not installed — Open full Setup to try again")
+                return .init(.speakerModels, .missing, "Not installed — Open Settings to try again")
             }
             return .init(.speakerModels, .off, "Not installed — meetings are saved without speaker labels")
         }
@@ -376,7 +376,7 @@ public struct SetupAssistantFlow: Equatable, Sendable {
         case .notPossible:
             if facts.microphoneGranted && facts.accessibility && facts.inputMonitoringNeeded && !facts.inputMonitoring {
                 return .init(.dictation, .missing,
-                             "Stays off until Input Monitoring is allowed — Open full Setup to allow it")
+                             "Stays off until Input Monitoring is allowed — Open Settings to allow it")
             }
             return .init(.dictation, .missing, "Stays off until Microphone, Accessibility and the speech model are ready")
         }

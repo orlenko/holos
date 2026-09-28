@@ -69,15 +69,22 @@ public struct CorrectionList: Codable, Sendable, Equatable {
     }
 
     public func apply(to text: String) -> String {
-        guard !entries.isEmpty, let pattern = matcher() else { return text }
+        applyCounting(to: text).text
+    }
+
+    /// `apply`, and how many phrases it replaced (History's "2 corrections").
+    public func applyCounting(to text: String) -> (text: String, count: Int) {
+        guard !entries.isEmpty, let pattern = matcher() else { return (text, 0) }
         let replacements = Dictionary(entries.map { (Self.normalized($0.heard), $0) },
                                       uniquingKeysWith: { _, last in last })
         let source = text as NSString
         var output = ""
         var cursor = 0
+        var count = 0
         for match in pattern.matches(in: text, range: NSRange(location: 0, length: source.length)) {
             let found = source.substring(with: match.range)
             guard let entry = replacements[Self.normalized(found)] else { continue }
+            count += 1
             var meant = entry.meant
             // A capital the saved phrase lacks came from sentence position, so carry it over; a saved
             // capital ("Mac OS" → "macOS") means the lowercase replacement is deliberate.
@@ -89,7 +96,7 @@ public struct CorrectionList: Codable, Sendable, Equatable {
             output += meant
             cursor = match.range.location + match.range.length
         }
-        return output + source.substring(from: cursor)
+        return (output + source.substring(from: cursor), count)
     }
 
     /// For text still growing while the user speaks: withholds trailing words that could become the start

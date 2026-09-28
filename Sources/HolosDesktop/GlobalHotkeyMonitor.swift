@@ -191,7 +191,7 @@ public enum HotkeyStartError: Error, LocalizedError, Equatable, Sendable {
         case .accessibilityNotGranted:
             "The hold-to-talk shortcut needs Accessibility access for Voice is Local. Turn it on in System Settings, then retry."
         case .tapRefused:
-            "macOS refused the hold-to-talk shortcut although Accessibility is on. Turn on Voice is Local under Input Monitoring in System Settings (Setup shows it), then quit and reopen Voice is Local."
+            "macOS refused the hold-to-talk shortcut although Accessibility is on. Turn on Voice is Local under Input Monitoring in System Settings (Settings shows it), then quit and reopen Voice is Local."
         case .runLoopUnavailable:
             "Could not attach the global hotkey event tap to the main run loop."
         }

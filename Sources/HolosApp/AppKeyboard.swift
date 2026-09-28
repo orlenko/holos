@@ -54,7 +54,14 @@ enum AppKeyboard {
             item.keyEquivalentModifierMask = modifiers
             return item
         }
-        submenu("Voice is Local", [item("Quit Voice is Local", #selector(NSApplication.terminate(_:)), "q")])
+        // The app delegate answers the main window's items through the responder chain (HolosApp+MainWindow.swift).
+        submenu("Voice is Local", [
+            item("About Voice is Local", Selector(("showAbout")), ""),
+            .separator(),
+            item("Settings…", Selector(("showSettingsFromMenu:")), ","),
+            .separator(),
+            item("Quit Voice is Local", #selector(NSApplication.terminate(_:)), "q"),
+        ])
         submenu("Edit", [
             item("Undo", Selector(("undo:")), "z"),
             item("Redo", Selector(("redo:")), "z", [.command, .shift]),
@@ -63,10 +70,19 @@ enum AppKeyboard {
             item("Copy", #selector(NSText.copy(_:)), "c"),
             item("Paste", #selector(NSText.paste(_:)), "v"),
             item("Select All", #selector(NSText.selectAll(_:)), "a"),
+            .separator(),
+            item("Find…", Selector(("focusSearch:")), "f"),
         ])
+        // ⌘1 … ⌘5 switch the main window's sections, and show it when it is closed.
+        submenu("Go", MainSection.allCases.filter { $0 != .settings }.map { section in
+            let entry = item(section.title, Selector(("showMainSection:")), section.keyEquivalent)
+            entry.tag = section.rawValue
+            return entry
+        })
         let close = item("Close", #selector(NSWindow.performClose(_:)), "w")
         let minimize = item("Minimize", #selector(NSWindow.performMiniaturize(_:)), "m")
-        submenu("Window", [close, minimize])
+        let open = item("Voice is Local", Selector(("showMainWindowFromMenu:")), "0")
+        submenu("Window", [close, minimize, .separator(), open])
         NSApp.windowsMenu = main.items.last?.submenu
         return main
     }

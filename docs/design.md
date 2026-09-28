@@ -138,14 +138,85 @@ Accessibility. Its hold-to-talk key uses an active CGEvent tap (it consumes the
 shortcut), which macOS authorises with Accessibility; Input Monitoring is what
 listen-only taps need, so it is not requested. Only if `CGEvent.tapCreate` still
 fails with Accessibility granted does the app name Input Monitoring as the fallback
-and show it in Setup. Validate under the actual installed app identity, not just
+and show it in Settings. Validate under the actual installed app identity, not just
 `swift run`.
+
+### Main window
+
+The app's windows other than the transient ones are one main window, "Voice is Local"
+(`MainWindowController`, Sources/HolosApp/MainWindow): an `NSSplitViewController` with a
+native source-list sidebar and the selected section's content. Sections: Dictation ›
+History (⌘1), Corrections (⌘2); Meetings › Meetings (⌘3), People (⌘4); Listen › Reading
+(⌘5, a placeholder that points to `voiceislocal read`); Settings (⌘,). A status card at
+the sidebar's bottom shows the dictation state and message ("Dictation paused during
+meeting recording" while a meeting records). The window is 1280 × 800 by default
+(900 × 560 at least), remembers its frame and sidebar width, and opens from the menu's
+**Open Voice is Local** (⌘0), from History / Meetings / Settings… there, from the main
+menu's Go and Window menus (shown while the window is key), and from every "Setup…"
+path (the launch with dictation off, a refused enable, the assistant's "Open Settings").
+Each section is a view controller created on first use and kept: Corrections, Meetings,
+and People are the former windows' view hierarchies unchanged in behaviour (Meetings
+still drives Quick Look through the main window, `PreviewingWindow`; its 2 s refresh and
+People's reread run while the section is on screen). Settings is the former Setup window
+in cards: Permissions (Microphone, Accessibility, System audio, Input Monitoring only
+after macOS refused the hotkey tap), Dictation (on/off, hold-to-talk shortcut, language,
+speech model, fillers, Apple Intelligence fix, preview and its opacity), Meetings (record
+system audio, speaker labels, a link to People for remembered voices), History and
+privacy (Keep dictations, the count, Clear History…), and Run Setup Assistant…; it polls
+the permissions every second while on screen. The Setup Assistant, the meeting start
+panel, the live transcript, Review (Name Speakers), and the dictation preview stay
+separate windows.
+
+Keyboard: ⌘1–⌘5 and ⌘, switch sections; ⌘F focuses the section's search field; ↑↓ move
+in lists, Return opens (History: the text; Meetings: Review or the transcript), ⌫ deletes
+after a confirmation (History: the dictation; Meetings: Delete Meeting…; People:
+Forget…); Tab reaches the sidebar, list, and detail. Escape keeps `AppKeyboard`'s rule
+(it closes the key window unless a field is being edited or a dictation runs). Controls
+are standard AppKit controls with semantic colours, so light and dark mode, Full
+Keyboard Access, and VoiceOver work without custom handling.
+
+The menu bar menu keeps what is needed without the window: the status line, the
+dictation toggle (and Cancel Dictation while one runs), Copy Result / Copy Original /
+Discard Result while a result is kept, Correct Last Dictation…, the meeting block, then
+Open Voice is Local, History, Meetings, Settings…, About, and Quit. The language and
+shortcut submenus moved to Settings.
+
+### Dictation history
+
+Each finished dictation that produced text is recorded (`DictationRecord`, HolosCore):
+its utterance ID, time, the target app's display name (the typed-into app for keystroke
+targets, else the owner of the Accessibility target or the frontmost app at key-down,
+through `NSRunningApplication`), the locale, the text as written (or as offered for Copy
+when it could not be written), the recognizer's text before filler removal, corrections,
+and Apple Intelligence, the fixes (fillers removed, corrections applied, words the
+on-device fix changed, counted with `WordDiff`), the outcome (inserted, typed, needsCopy,
+unverified, targetChanged, partly written or not, with the reason), the seconds from
+Listening to release, and the word count. A failed dictation that had recognized words
+is recorded as not inserted; a cancelled one, one that recognized nothing, and one
+refused at key-down (a secure or password field, secure input on) are not: the draft a
+record is made from exists only after the key-down checks passed, and nothing is
+recorded while secure input is on at the end either.
+
+Storage (`DictationHistoryStore`, HolosStorage): `<supportRoot>/History/dictations.jsonl`
+(Application Support/Holos unless `HOLOS_SUPPORT_DIR` is set), one compact JSON line per
+dictation appended with `AtomicFile.append` (0600, folder 0700). Deleting one, Clear
+History, and the retention sweep rewrite the file atomically; the sweep also drops lines
+that cannot be read. Writes hold `dictations.lock` (flock), so the app and
+`voiceislocal history clear --yes` never interleave; the app runs every file operation on
+one serial queue off the main actor and keeps the records in memory for the History
+section. Retention is UserDefaults `historyRetention`: `off`, `7`, `30` (the default), or
+`forever`, swept at launch, once a day, and when it changes. Off stops recording and
+offers to clear what is kept. The text never goes to `os.Logger`, and the clipboard is
+touched only by the user's Copy or Copy As Heard (History) and Copy Result / Copy
+Original (menu). History's Correct… opens Corrections with that dictation: the last one
+is compared with its text as recognized, as before; an older one with its text as
+written, the only form History keeps.
 
 ### First-launch setup
 
 A first launch opens the Setup Assistant, one page at a time, ordered so the app
-reopens at most once: (1) Welcome, with Start or "Skip — Show All Settings" (the full
-Setup window); (2) the dictation language and the microphone, both in-app (macOS's own
+reopens at most once: (1) Welcome, with Start or "Skip — Show All Settings" (Settings in
+the main window); (2) the dictation language and the microphone, both in-app (macOS's own
 prompt), plus "Also set up meetings", checked by default; leaving this page starts the
 speech model download and, for meetings, the speaker models, which continue in the
 background; (3) Accessibility, granted in System Settings and effective at once: the
@@ -333,7 +404,8 @@ local control interface for app status/enable/disable. If recording needs a bund
 worker for reliable permission attribution, settle that in the permissions spike;
 do not make a recording depend on the hotkey app remaining enabled.
 
-Store app configuration and SQLite correction memory under Application Support.
+Store app configuration and SQLite correction memory under Application Support; the
+dictation history is `History/dictations.jsonl` there ("Dictation history" above).
 Allow a configurable session/output root. A session is a portable directory:
 
 ```text

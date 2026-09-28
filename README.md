@@ -61,8 +61,8 @@ keeps the same bundle ID, settings, sessions, corrections, and people, so they c
 over. Because the app's path changed, macOS may ask for its permissions again. Once
 `build/VoiceIsLocal.app` works, delete `build/Holos.app`.
 On first launch, dictation is disabled and the Setup Assistant opens (run it again
-with **Setup Assistant…** in the menu, or click **Skip — Show All Settings** to go
-straight to the full Setup window). It goes one page at a time: pick the dictation
+with **Run Setup Assistant…** in Settings, or click **Skip — Show All Settings** to go
+straight to Settings in the main window). It goes one page at a time: pick the dictation
 language (by default the supported language closest to your macOS preferred languages
 and region, English (Canada) when none of them is supported; any language Apple's speech
 transcriber supports, such as French (Canada)) and allow the Microphone; Apple's speech
@@ -74,10 +74,10 @@ Reopen, and the assistant's **Reopen Voice is Local** reopens the app once at th
 and shows what is set up. Dictation turns on as soon as the microphone, Accessibility
 and the speech model allow it. Input Monitoring is not asked for: the hold-to-talk
 key's event tap runs on Accessibility (still to be confirmed on a real Mac; see the
-validation guide). Only if macOS refuses the tap anyway does Setup (and the
+validation guide). Only if macOS refuses the tap anyway do Settings (and the
 assistant) show an Input Monitoring row. An install that was already set up never sees
-the assistant; later launches open the full Setup window (**Setup…** in the menu) while
-dictation is off. The default hold-to-talk choice
+the assistant; later launches open the main window on Settings (**Settings…** ⌘, in the
+menu) while dictation is off. The default hold-to-talk choice
 is Right Option; Control–Option–Space is available as an alternate. The menu bar
 app shows a live preview, and releasing the shortcut finalizes one utterance.
 See the [dictation validation guide](docs/dictation-validation.md) before relying
@@ -86,11 +86,11 @@ on insertion into other apps.
 The app also records meetings from the menu bar: **Start Meeting Recording…**, then
 Pause, Add Marker, Show Live Transcript, and **Stop and Save…**. Every meeting records
 the system default microphone and everything the Mac plays (the other side of a call, a
-video), and labels speakers on both. There is no meeting type to choose. Setup's System
-audio row grants the permission for the computer's audio; without it a meeting records
-the microphone only and the menu says so. Setup's collapsed **Advanced** section has
-"Record the computer's audio (system sound) in meetings" (on by default); turned off,
-meetings record the microphone only. The recorder is the
+video), and labels speakers on both. There is no meeting type to choose. The System
+audio row in Settings › Permissions grants the permission for the computer's audio;
+without it a meeting records the microphone only and the menu says so. Settings ›
+Meetings has "Record the computer's audio (system sound) in meetings" (on by default);
+turned off, meetings record the microphone only. The recorder is the
 bundled `voiceislocal` tool (`VoiceIsLocal.app/Contents/MacOS/voiceislocal`, which `build-app.sh` now
 builds and signs) running as a child of the app: it keeps recording if the app quits
 or crashes, and the app finds it again on relaunch, as it does a meeting started from
@@ -110,12 +110,12 @@ message says so. Dictation keeps its one language. The recorder's log is
 `defaults write ca.orlenko.holos.app meetingRecorderMode inProcess` records inside
 the app instead. Dictation is paused while a meeting records. If a permission prompt
 is open when you choose Stop Recording, the recorder stops once the prompt is
-answered. **Meetings…** lists recordings and can recover them, label their speakers,
-open or save the transcript, delete the audio or the whole meeting, and clean up
-leftover renders. Setup has a "Speaker labels" row that installs the speaker models
-(about 21 MB). Voice is Local relabels a meeting automatically when its labelling was
-interrupted (at most twice per meeting, within 7 days). **People…** lists the people
-you have named and their remembered voices (below). When the Mac's speakers play a call,
+answered. **Meetings** (⌘3 in the main window) lists recordings and can recover them,
+label their speakers, open or save the transcript, delete the audio or the whole meeting,
+and clean up leftover renders. Settings › Meetings has a "Speaker labels" row that
+installs the speaker models (about 21 MB). Voice is Local relabels a meeting automatically
+when its labelling was interrupted (at most twice per meeting, within 7 days). **People**
+(⌘4) lists the people you have named and their remembered voices (below). When the Mac's speakers play a call,
 labelling drops the microphone's echo of it (below); nothing warns about it.
 
 **Review…** in Meetings (or double-clicking a labelled meeting, or the
@@ -133,6 +133,41 @@ is refused and the window shows the current labels. The footer box "Learn voices
 I name in this meeting" decides whether naming a person also learns their voice. Delete
 Meeting can also forget the voice samples learned from that meeting. See the
 [meeting validation guide](docs/meeting-validation.md) for the manual checks.
+
+## The main window
+
+**Open Voice is Local** (⌘0) in the menu bar menu opens one window with a sidebar:
+
+| Section | Key | What it does |
+| --- | --- | --- |
+| History | ⌘1 | Dictations kept on this Mac, grouped by day, with search (⌘F). The selected one shows its text, the text as heard before fixes (changed words marked), where it went, its language, what was fixed, and its length. Copy (⌘C), Copy As Heard (⇧⌘C), Correct… (⌘E), Delete (⌫, asks first); Clear History… in the footer. |
+| Corrections | ⌘2 | Fix a dictation and learn the word swaps, and edit the learned list (was the Corrections window). **Correct Last Dictation…** in the menu opens it with the last dictation, History's Correct… with the chosen one. |
+| Meetings | ⌘3 | The saved meetings (was the Meetings window). Return opens Review, ⌫ is Delete Meeting…. |
+| People | ⌘4 | People you have named and their voice samples (was the People window). |
+| Reading | ⌘5 | Coming soon; use `voiceislocal read` meanwhile. |
+| Settings | ⌘, | Permissions, Dictation (on/off, shortcut, language, speech model, fillers, Apple Intelligence fix, preview), Meetings (system audio, speaker labels), History and privacy, and **Run Setup Assistant…** (was the Setup window). |
+
+A card at the bottom of the sidebar shows the dictation status ("Dictation ready", or
+"Dictation paused during meeting recording"). The window remembers its size and place;
+↑↓ move in lists, Return opens, Tab reaches the sidebar, list and detail, and every
+control is a standard one, so Full Keyboard Access and VoiceOver work. The Setup
+Assistant, the meeting start panel, the live transcript, Review (Name Speakers), and the
+dictation preview stay separate windows.
+
+The menu bar menu is short: the status line, the dictation toggle, Copy Result / Copy
+Original / Discard Result while a result is kept, Correct Last Dictation…, the meeting
+lines, then Open Voice is Local, History, Meetings, Settings…, About, and Quit. The
+dictation language and shortcut are chosen in Settings.
+
+**History** keeps each finished dictation that produced text: the text as written (or as
+offered for Copy), the text as heard, the app it was for, the language, what happened to
+it, what was fixed, and its length. It lives only in
+`~/Library/Application Support/Holos/History/dictations.jsonl` (readable only by you), for
+30 days unless Settings › History and privacy says 7 days, Forever, or Off (Off stops
+recording and offers to clear what is kept). Nothing is sent anywhere or logged, a
+dictation refused in a password field is never recorded, and nothing reaches the clipboard
+unless you choose Copy. `voiceislocal history list [--json] [--limit N]` and
+`voiceislocal history clear --yes` do the same from Terminal.
 
 ## Quick start
 

@@ -112,18 +112,27 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
     var corrections = CorrectionList()
     /// False when an existing corrections file could not be read, so it is never overwritten.
     private var correctionsWritable = true
-    private var correctionsWindow: CorrectionsWindow?
-    /// The last complete transcript as Holos wrote it, for the Corrections window.
+    /// The main window (HolosApp+MainWindow.swift), made on first use.
+    var mainWindow: MainWindowController?
+    /// The dictation history (HolosApp+History.swift).
+    let history = DictationHistoryService()
+    /// The dictation in progress, for its History record; nil when there is none or it was refused.
+    private var historyDraft: HistoryDraft?
+    /// What happened to this dictation's text, for its History record.
+    private var historyOutcome: DictationRecord.Outcome?
+    /// The last complete transcript as Holos wrote it, for Corrections.
     private var lastTranscript = ""
     /// The same transcript before corrections, so edits are learned against what the recognizer heard.
     private var lastRecognized = ""
+    /// The History ID of the dictation `lastTranscript` came from.
+    private var lastTranscriptID: UUID?
     /// The recognizer's latest committed text, kept so a failure can still offer what was not written.
     private var latestCommitted = ""
     private let log = Logger(subsystem: "ca.orlenko.holos.app", category: "insertion")
     /// This dictation's text for Copy Result; the menu offers it once the dictation concludes (`retainResult`).
     private var resultText = ""
-    private var message = "Disabled — open Setup… to get started"
-    private var setupWindow: SetupWindow?
+    private var message = "Disabled — open Settings… to get started"
+    /// Polls permissions while Settings is on screen (TCC has no change notification).
     private var setupRefreshTask: Task<Void, Never>?
     /// The Setup Assistant (HolosApp+SetupAssistant.swift). Its progress stays in memory when the window is closed.
     var assistantWindow: SetupAssistantWindow?
@@ -149,7 +158,7 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
     var reopenAfterQuit = false
     private(set) var assetState: String?
     private var shortcut: HotkeyChoice = .rightOption
-    /// The dictation language, chosen in Setup or the menu; until then, the supported one closest to the user's
+    /// The dictation language, chosen in Settings; until then, the supported one closest to the user's
     /// languages (`DictationLanguage.preferred`). Meetings keep their own (`meetingLocales`). Shown as
     /// `DictationLanguage.standard` while that default is not known yet (`resolvedLocale` nil): an action that uses
     /// the language (enabling dictation, installing its speech model) awaits `loadLanguages` first.
@@ -192,6 +201,9 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
             message = "Could not read corrections.json; corrections are off until it is fixed or removed."
         }
         controller.contextualStrings = corrections.vocabulary
+        history.onChange = { [weak self] in self?.historyChanged() }
+        history.start()
+        PeopleLaunch.resumePendingForgetsOnce()
         Task { await loadLanguages() }
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         statusItem.button?.image = NSImage(systemSymbolName: "waveform", accessibilityDescription: "Voice is Local")
@@ -222,7 +234,8 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
         let dictationEnabled = UserDefaults.standard.bool(forKey: "dictationEnabled")
         // Before the assistant's window opens, so it shows the downloads it started before a quit or its reopen.
         resumeSetupAssistantWork(dictationEnabled: dictationEnabled)
-        // First launch opens the Setup Assistant; later launches open the full Setup window while dictation is off.
+        // First launch opens the Setup Assistant; later launches open Settings in the main window while dictation is
+        // off.
         // The window opens first, so an enable that fails leaves it in front instead of opening Setup over it.
         switch setupAssistantLaunch(dictationEnabled: dictationEnabled) {
         case .assistant: showSetupAssistant(verify: false)
@@ -242,6 +255,7 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
         if reopenAfterQuit { reopenOnceExited() }
         enableTask?.cancel(); assetTask?.cancel(); overlayHideTask?.cancel(); resultExpiryTask?.cancel()
         setupRefreshTask?.cancel(); assistantRefreshTask?.cancel()
+        history.stop()
         monitor?.stop(); controller?.cancel()
         for observer in observers { NSWorkspace.shared.notificationCenter.removeObserver(observer) }
         overlay.hide()
@@ -268,12 +282,13 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(discard)
     }
 
+    /// The menu bar menu: the dictation status and toggle, the kept result's Copy items, the meeting block, then the
+    /// main window's items (docs/design.md "Menu bar menu"). The language and shortcut are chosen in Settings.
     func rebuildMenu() {
         guard statusItem != nil else { return }
         let menu = NSMenu()
         menu.autoenablesItems = false
         menu.delegate = self
-        addMeetingItems(to: menu)
         if meeting.dictationPaused {
             // A meeting is recording: this line replaces the dictation block (§4.12), except a result kept from
             // before the meeting, which stays reachable because nothing copies it to the clipboard on its own.
@@ -283,62 +298,25 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
             let status = NSMenuItem(title: message, action: nil, keyEquivalent: "")
             status.isEnabled = false
             menu.addItem(status)
-            menu.addItem(.separator())
             let toggle = item("\(enabled ? "Disable" : "Enable") \(shortcutTitle) Dictation", #selector(toggleEnabled))
             toggle.state = enabled ? .on : .off
             toggle.isEnabled = !enabling && !installingAssets
             menu.addItem(toggle)
-            let shortcuts = NSMenuItem(title: "Hold-to-talk shortcut", action: nil, keyEquivalent: "")
-            let choices = NSMenu()
-            choices.autoenablesItems = false
-            for (choice, title) in [(HotkeyChoice.rightOption, "Right Option"), (.controlOptionSpace, "Control–Option–Space")] {
-                let entry = item(title, #selector(changeShortcut(_:)))
-                entry.representedObject = choice.rawValue
-                entry.state = shortcut == choice ? .on : .off
-                entry.isEnabled = !isBusy && !enabling
-                choices.addItem(entry)
-            }
-            shortcuts.submenu = choices
-            menu.addItem(shortcuts)
-            if !localeGroups.isEmpty { menu.addItem(languageItem()) }
-            let cancel = item("Cancel Dictation", #selector(cancelDictation))
-            cancel.isEnabled = isBusy
-            menu.addItem(cancel)
-            addResultItems(to: menu)
+            if isBusy { menu.addItem(item("Cancel Dictation", #selector(cancelDictation))) }
+            if !retention.kept.isEmpty { addResultItems(to: menu) }
             menu.addItem(item("Correct Last Dictation…", #selector(showCorrections)))
         }
         menu.addItem(.separator())
-        addMeetingsItem(to: menu)
-        addPeopleItem(to: menu)
-        menu.addItem(item("Setup…", #selector(showSetup)))
-        menu.addItem(item("Setup Assistant…", #selector(showSetupAssistantFromMenu)))
-        addAboutItem(to: menu)
+        addMeetingItems(to: menu)
+        addWindowItems(to: menu)
         menu.addItem(.separator())
+        addAboutItem(to: menu)
         menu.addItem(item("Quit Voice is Local", #selector(quit)))
         statusItem.menu = menu
         statusItem.button?.toolTip = meetingToolTip() ?? "Voice is Local — \(message)"
         updateStatusItemAppearance()
-        updateSetupWindow()
+        updateSettings()
         updateSetupAssistant()
-    }
-
-    /// "Language: French (Canada)", with a submenu of the supported languages grouped as in Setup.
-    private func languageItem() -> NSMenuItem {
-        let language = NSMenuItem(title: "Language: \(languageName)", action: nil, keyEquivalent: "")
-        let choices = NSMenu()
-        choices.autoenablesItems = false
-        for (index, group) in localeGroups.enumerated() {
-            if index > 0 { choices.addItem(.separator()) }
-            for identifier in group {
-                let entry = item(DictationLanguage.name(of: identifier), #selector(changeLanguage(_:)))
-                entry.representedObject = identifier
-                entry.state = identifier == locale ? .on : .off
-                entry.isEnabled = canChangeLanguage
-                choices.addItem(entry)
-            }
-        }
-        language.submenu = choices
-        return language
     }
 
     func item(_ title: String, _ action: Selector) -> NSMenuItem {
@@ -380,7 +358,7 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
         guard !enabled, !enabling, !installingAssets, !meeting.dictationPaused else { return }
         guard !refuseIfReplaced() else { return }
         guard AudioCapture.microphonePermission == "authorized", AXIsProcessTrusted() else {
-            show("Grant Microphone and Accessibility access in Voice is Local Setup, then enable dictation.")
+            show("Grant Microphone and Accessibility access in Voice is Local Settings, then enable dictation.")
             showSetupUnlessAssistant()
             return
         }
@@ -400,7 +378,7 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
                 self.assetState = state
                 guard state == "installed" else {
                     self.enabling = false
-                    self.show("Install the speech model for \(self.languageName) in Voice is Local Setup first.")
+                    self.show("Install the speech model for \(self.languageName) in Voice is Local Settings first.")
                     self.showSetupUnlessAssistant()
                     return
                 }
@@ -443,8 +421,14 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
         overlay.hide()
     }
 
-    @objc private func changeShortcut(_ sender: NSMenuItem) {
-        guard !isBusy, !meeting.dictationPaused, let raw = sender.representedObject as? String, let choice = HotkeyChoice(rawValue: raw) else { return }
+    /// Not during a dictation, an enable, or a meeting recording; Settings then shows the current shortcut again.
+    var canChangeShortcut: Bool { !isBusy && !enabling && !meeting.dictationPaused }
+
+    func changeShortcut(to choice: HotkeyChoice) {
+        guard choice != shortcut, canChangeShortcut else {
+            updateSettings()  // puts a refused choice back in Settings
+            return
+        }
         let wasEnabled = enabled
         disable()
         shortcut = choice
@@ -455,14 +439,9 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
     /// Not while a dictation, install, or enable is in progress: a change applies from the next dictation.
     var canChangeLanguage: Bool { !isBusy && !enabling && !installingAssets }
 
-    @objc private func changeLanguage(_ sender: NSMenuItem) {
-        guard let identifier = sender.representedObject as? String else { return }
-        changeLanguage(to: identifier)
-    }
-
     func changeLanguage(to identifier: String) {
         guard identifier != locale, canChangeLanguage else {
-            updateSetupWindow()  // puts a refused choice back in Setup
+            updateSettings()  // puts a refused choice back in Settings
             return
         }
         locale = identifier
@@ -577,6 +556,12 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
             resultText = ""
             resultOriginal = ""
             retention.begin()
+            // Only now, past the secure-field checks above: a refused dictation never gets a History record.
+            let fieldPID: pid_t? = if case .field(let field) = target { field.pid } else { nil }
+            historyOutcome = nil
+            historyDraft = HistoryDraft(date: Date(),
+                                        app: Self.historyAppName(typed: typedAppName, pid: fieldPID ?? originPID),
+                                        language: locale)
             if controller.begin() {
                 // A pending opacity sample must not hide this dictation's own preview or result.
                 // A rejected begin leaves the timer running so the sample still hides on time.
@@ -589,6 +574,7 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
                 }
             } else {
                 target = nil
+                historyDraft = nil
                 _ = retention.conclude(DictationResult())  // nothing started, so the previous result stays
                 show("Previous dictation is still stopping; release and try again shortly.")
             }
@@ -599,9 +585,11 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
 
     private func receive(_ update: DictationStatus) {
         monitor?.setSessionActive([.preparing, .listening, .finalizing].contains(update.phase))
+        noteHistoryPhase(update)
         switch update.phase {
         case .idle:
             target = nil
+            historyDraft = nil  // cancelled or disabled: nothing is recorded
             overlay.hide()
             message = enabled ? "Ready — hold \(shortcutTitle)" : "Disabled"
             // Cancelled or disabled: usually nothing to keep, but Copy Original may hold what was heard when Apple
@@ -643,6 +631,7 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
             if !text.isEmpty {
                 lastTranscript = text
                 lastRecognized = recognized
+                lastTranscriptID = historyDraft?.id
             }
             if let pipeline = fixPipeline {
                 // Earlier chunks may still be waiting for their fix; the target stays until they are written.
@@ -654,6 +643,7 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
             let destination = target
             target = nil // No callback or retry can write to this target again.
             finish(text, into: destination)
+            recordHistory(written: text, heard: update.text)
             presentResult()
         case .failed:
             // Keep committed words that were withheld or not yet written, so Copy Result still has them. A chunk
@@ -665,6 +655,10 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
             }
             endFixing(heard: latestCommitted, offered: attempted ?? "", recognized: unwritten ?? "")
             target = nil
+            // History keeps what was recognized before the failure, as not (fully) inserted.
+            historyOutcome = .init(kind: .needsCopy, reason: update.message ?? "Dictation failed.",
+                                   partial: !insertedText.isEmpty)
+            recordHistory(written: committed, heard: latestCommitted)
             message = update.message ?? "Dictation failed; no text was inserted."
             if !insertedText.isEmpty { message += " Text inserted before the failure stays in the field." }
             if !resultOriginal.isEmpty { message += " Copy Original has what was heard, before Apple Intelligence's fix." }
@@ -784,6 +778,10 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
         }
         endFixing(heard: heard, offered: attempted ?? "", recognized: unwritten ?? "")
         let written = finish(text, into: destination, writing: attempted == unwritten ? nil : attempted)
+        // History: what Holos wrote or tried to write, and how many words Apple Intelligence changed.
+        let final = resultOriginal.isEmpty ? nil : AIFixTranscript.final(written: pipeline.written, rest: attempted)
+        recordHistory(written: final ?? text, heard: heard,
+                      aiChangedWords: final.map { WordDiff.changedWordCount(from: text, to: $0) } ?? 0)
         if !resultOriginal.isEmpty {
             // What Holos wrote or tried to write: the fixed chunks, then the fix of the rest.
             let fixed = pipeline.written + (attempted ?? "")
@@ -865,11 +863,14 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
                 ? "Text was inserted while you spoke, but the final transcript came back empty. Check the field."
                 : "Text was inserted while you spoke, but the final transcript differs. Check the field; Copy Result copies the full transcript."
             resultNeedsAttention = true
+            historyOutcome = .init(kind: .unverified,
+                                   reason: "The final transcript differs from the text inserted while you spoke.")
             return false
         }
         let remainder = rest.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !remainder.isEmpty else {
             message = outcomeMessage(typedAppName == nil ? .inserted : .typed)
+            historyOutcome = .init(kind: typedAppName == nil ? .inserted : .typed)
             return true
         }
         let outcome: InsertionOutcome = if enabled, insertionBlockReason == nil, let destination {
@@ -923,6 +924,13 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
     /// Text that could not be written is kept for Copy Result in the menu. It is never put on the clipboard on its
     /// own: dictated text can be sensitive (even a password), so only the user's Copy Result or Copy Original does.
     private func conclude(_ outcome: InsertionOutcome, unwritten: String, partial: Bool) {
+        historyOutcome = switch outcome {
+        case .inserted: .init(kind: .inserted)
+        case .typed: .init(kind: .typed)
+        case .needsCopy(let reason): .init(kind: .needsCopy, reason: reason, partial: partial)
+        case .unverified(let reason): .init(kind: .unverified, reason: reason, partial: partial)
+        case .targetChanged(let reason): .init(kind: .targetChanged, reason: reason, partial: partial)
+        }
         switch outcome {
         case .inserted, .typed:
             message = outcomeMessage(outcome)
@@ -961,40 +969,112 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
         return NSPasteboard.general.setString(text, forType: .string)
     }
 
-    @objc private func showCorrections() {
-        if correctionsWindow == nil {
-            correctionsWindow = CorrectionsWindow(
-                onLearn: { [weak self] edited in self?.learnCorrections(from: edited) },
-                onAdd: { [weak self] correction, edit in
-                    self?.addCorrection(correction, resolving: edit) ?? false
-                },
-                onRemove: { [weak self] correction in self?.changeCorrections { $0.remove(correction) } ?? false },
-                onReplace: { [weak self] old, new, edit in
-                    self?.replaceCorrection(old, with: new, resolving: edit) ?? false
-                })
-        }
-        correctionsWindow?.show(lastTranscript: lastTranscript, corrections: corrections.entries)
+    /// History's Copy and Copy As Heard: only ever on the user's request.
+    func copyToClipboardOnRequest(_ text: String) -> Bool {
+        guard !text.isEmpty else { return false }
+        return copyToClipboard(text)
     }
 
-    private func learnCorrections(from edited: String) -> CorrectionsWindow.LearnResult? {
+    // MARK: - History
+
+    /// Follows the dictation in progress for its History record: its ID, and when Listening started and ended.
+    private func noteHistoryPhase(_ update: DictationStatus) {
+        guard var draft = historyDraft else { return }
+        if let id = update.utteranceID {
+            if draft.id == nil { draft.id = id } else if draft.id != id { return }  // an earlier dictation's update
+        }
+        let now = Date()
+        switch update.phase {
+        case .listening:
+            if draft.listeningStarted == nil { draft.listeningStarted = now }
+        case .finalizing, .result, .failed:
+            if draft.listeningStarted != nil, draft.listeningEnded == nil { draft.listeningEnded = now }
+        case .idle, .preparing:
+            break
+        }
+        historyDraft = draft
+    }
+
+    /// Records the dictation that just ended in History: `written` is the text as written (or offered for Copy),
+    /// `heard` the recognizer's text before fillers, corrections, and Apple Intelligence. Once per dictation, never
+    /// for one refused at key-down (no draft), never with History off, and never while secure input is on.
+    private func recordHistory(written: String, heard: String, aiChangedWords: Int = 0) {
+        guard let draft = historyDraft else { return }
+        historyDraft = nil
+        let outcome = historyOutcome
+        historyOutcome = nil
+        let text = written.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let outcome, !text.isEmpty, history.retention.records, !TextInsertion.isSecureInputActive() else {
+            return
+        }
+        let heard = heard.trimmingCharacters(in: .whitespacesAndNewlines)
+        let withoutFill = withoutFillers(heard)
+        let fillersRemoved = removeFillers && WordDiff.normalized(withoutFill) != WordDiff.normalized(heard)
+        let swaps = corrections.applyCounting(to: withoutFill.trimmingCharacters(in: .whitespacesAndNewlines)).count
+        history.add(DictationRecord(
+            id: draft.id ?? UUID(), date: draft.date, app: draft.app, language: draft.language, text: text,
+            heard: heard.isEmpty ? text : heard,
+            fixes: .init(fillersRemoved: fillersRemoved, corrections: swaps, aiChangedWords: aiChangedWords),
+            outcome: outcome, seconds: draft.seconds(now: Date())))
+    }
+
+    /// "Correct Last Dictation…": the main window's Corrections section with the last dictation.
+    @objc private func showCorrections() {
+        showMainWindow(.corrections)
+        (mainWindow?.existingController(for: .corrections) as? CorrectionsPane)?.load(
+            transcript: lastTranscript, recognized: lastRecognized,
+            title: "Last dictation — fix any misheard words, then Learn", corrections: corrections.entries)
+    }
+
+    /// History's Correct…: Corrections with that dictation. The last dictation is compared with its text as
+    /// recognized; an older one with its text as written, the only form History keeps of it.
+    func correct(_ record: DictationRecord) {
+        let isLast = record.id == lastTranscriptID && !lastTranscript.isEmpty
+        showMainWindow(.corrections)
+        (mainWindow?.existingController(for: .corrections) as? CorrectionsPane)?.load(
+            transcript: isLast ? lastTranscript : record.text, recognized: isLast ? lastRecognized : record.text,
+            title: "Dictation in \(record.app ?? "an app") — fix any misheard words, then Learn",
+            corrections: corrections.entries)
+    }
+
+    func makeCorrectionsPane() -> CorrectionsPane {
+        let pane = CorrectionsPane(
+            onLearn: { [weak self] edited, original in self?.learnCorrections(from: edited, original: original) },
+            onAdd: { [weak self] correction, edit in
+                self?.addCorrection(correction, resolving: edit) ?? false
+            },
+            onRemove: { [weak self] correction in self?.changeCorrections { $0.remove(correction) } ?? false },
+            onReplace: { [weak self] old, new, edit in
+                self?.replaceCorrection(old, with: new, resolving: edit) ?? false
+            })
+        pane.load(transcript: lastTranscript, recognized: lastRecognized,
+                  title: "Last dictation — fix any misheard words, then Learn", corrections: corrections.entries)
+        return pane
+    }
+
+    /// Learns from `edited` against `original`, the text it was edited from as recognized (the last dictation's
+    /// `lastRecognized`, or a History dictation's text).
+    private func learnCorrections(from edited: String, original: String) -> CorrectionsPane.LearnResult? {
         // Diff against the recognizer's words, so fixing text an existing rule produced replaces that rule.
         // A word counts as "common" only if its lowercase form is in the dictionary: the spell checker also
         // accepts capitalized names ("Gwen"), which should be learned on their own.
-        let result = CorrectionList.learnReportingDeclined(original: lastRecognized, corrected: edited) { word in
+        let result = CorrectionList.learnReportingDeclined(original: original, corrected: edited) { word in
             NSSpellChecker.shared.checkSpelling(of: word.lowercased(), startingAt: 0).location == NSNotFound
         }
         let learned = result.learned.filter { corrections.apply(to: $0.heard) != $0.meant }
         let declined = result.declined.filter { corrections.apply(to: $0.heard) != $0.meant }
         guard !learned.isEmpty else {
             // Nothing is saved yet; each declined swap carries the edit, kept once the user adds that swap.
-            return CorrectionsWindow.LearnResult(
+            return CorrectionsPane.LearnResult(
                 learned: [], declined: declined,
-                edit: .init(recognized: lastRecognized, edited: edited))
+                edit: .init(recognized: original, edited: edited))
         }
         guard changeCorrections({ list in for correction in learned { list.add(correction) } }) else { return nil }
-        lastTranscript = edited
-        lastRecognized = edited
-        return CorrectionsWindow.LearnResult(learned: learned, declined: declined, edit: nil)
+        if original == lastRecognized {
+            lastTranscript = edited
+            lastRecognized = edited
+        }
+        return CorrectionsPane.LearnResult(learned: learned, declined: declined, edit: nil)
     }
 
     /// A manual Add; one that resolves a declined swap also keeps the edit that swap came from, as Learn
@@ -1032,7 +1112,7 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
         }
         change(&corrections)
         controller.contextualStrings = corrections.vocabulary
-        correctionsWindow?.update(corrections: corrections.entries)
+        (mainWindow?.existingController(for: .corrections) as? CorrectionsPane)?.update(corrections: corrections.entries)
         do {
             try corrections.save(to: CorrectionList.defaultURL)
             return true
@@ -1124,34 +1204,34 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    /// "Setup…" everywhere: the main window on Settings.
     @objc func showSetup() {
-        if setupWindow == nil {
-            setupWindow = SetupWindow(perform: { [weak self] action in self?.performSetup(action) },
-                                      onClose: { [weak self] in
-                                          self?.setupRefreshTask?.cancel(); self?.setupRefreshTask = nil
-                                          self?.setDockPresence(false, for: "setup")
-                                      },
-                                      onOpacityChange: { [weak self] value in self?.changePreviewOpacity(value) },
-                                      onLanguageChange: { [weak self] identifier in self?.changeLanguage(to: identifier) })
-        }
-        setDockPresence(true, for: "setup")
-        setupWindow?.show()
+        showMainWindow(.settings)
+    }
+
+    /// Settings came on screen: checks the speech model and speaker models, and polls the permissions every second
+    /// while it stays (TCC has no change notification).
+    func startSettingsRefresh() {
         if localeGroups.isEmpty { Task { await loadLanguages() } }
         refreshAssetState()
         refreshSpeakerModels()
-        // TCC has no change notification, so poll while the window is open.
         setupRefreshTask?.cancel()
         setupRefreshTask = Task { [weak self] in
             while !Task.isCancelled {
-                self?.updateSetupWindow()
+                self?.updateSettings()
                 try? await Task.sleep(for: .seconds(1))
             }
         }
     }
 
+    func stopSettingsRefresh() {
+        setupRefreshTask?.cancel()
+        setupRefreshTask = nil
+    }
+
     /// Applies the new opacity and shows a sample preview for a moment so the user can see the effect,
     /// unless a dictation is in progress (its own preview already shows it).
-    private func changePreviewOpacity(_ value: Double) {
+    func changePreviewOpacity(_ value: Double) {
         previewOpacity = value
         overlay.setOpacity(previewOpacity)
         // A visible preview or result already shows the new opacity; never replace it with the sample.
@@ -1171,16 +1251,21 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    func updateSetupWindow() {
-        guard let setupWindow, setupWindow.isVisible else { return }
+    /// Refreshes the main window while it is visible: the sidebar's status card, and Settings when it shows.
+    func updateSettings() {
+        guard let mainWindow, mainWindow.isVisible else { return }
+        mainWindow.updateStatus(mainStatus())
+        guard mainWindow.current == .settings,
+              let settings = mainWindow.existingController(for: .settings) as? SettingsPane else { return }
         let speakerLabels = speakerLabelsSetupState()
-        setupWindow.update(SetupState(
+        settings.update(SetupState(
             microphone: AudioCapture.microphonePermission, accessibility: AXIsProcessTrusted(),
             inputMonitoring: CGPreflightListenEventAccess(), inputMonitoringNeeded: inputMonitoringNeeded,
             systemAudio: CGPreflightScreenCaptureAccess(),
             recordSystemAudio: MeetingAppState.recordSystemAudio,
             assets: assetState, installingAssets: installingAssets,
             dictationEnabled: enabled, enabling: enabling, busy: isBusy, shortcutTitle: shortcutTitle,
+            shortcut: shortcut, shortcutChangeable: canChangeShortcut,
             removeFillers: removeFillers, showPreview: showPreview, previewOpacity: previewOpacity,
             // While a meeting records, its pause takes precedence over every other dictation message (§4.12).
             message: meeting.dictationPaused ? "Dictation paused during meeting recording" : message,
@@ -1189,7 +1274,20 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
             speakerModelsBusy: speakerLabels.busy,
             aiFix: AIFixSetting.isOn, aiFixUnavailable: AIFixSetting.unavailableReason(language: locale),
             locale: locale, localeGroups: localeGroups, localeChangeable: canChangeLanguage,
-            fillerExamples: FillerWords.examples(language: locale)))
+            fillerExamples: FillerWords.examples(language: locale),
+            historyRetention: history.retention, historyCount: history.records.count))
+    }
+
+    /// The sidebar's status card: "Dictation ready" and the current message; during a meeting, the pause.
+    private func mainStatus() -> MainStatus {
+        if meeting.dictationPaused {
+            return MainStatus(tone: .paused, title: "Dictation paused",
+                              message: "Dictation paused during meeting recording")
+        }
+        if isBusy { return MainStatus(tone: .busy, title: "Dictating", message: message) }
+        if enabling || installingAssets { return MainStatus(tone: .busy, title: "Starting…", message: message) }
+        if enabled { return MainStatus(tone: .ready, title: "Dictation ready", message: message) }
+        return MainStatus(tone: .off, title: "Dictation off", message: message)
     }
 
     func refreshAssetState() {
@@ -1199,7 +1297,7 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
             // A check for a language changed since is dropped; the change started its own.
             guard let self, self.locale == locale else { return }
             self.assetState = state
-            self.updateSetupWindow()
+            self.updateSettings()
         }
     }
 
@@ -1222,19 +1320,19 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
         case .dictation: toggleEnabled()
         case .toggleFillers:
             removeFillers.toggle()
-            updateSetupWindow()
+            updateSettings()
         case .togglePreview:
             showPreview.toggle()
             // Anything that does not need the user goes away at once, during or after a dictation.
             if !showPreview && !overlay.showingAttention { overlay.hide() }
-            updateSetupWindow()
+            updateSettings()
         case .toggleAIFix:
             AIFixSetting.isOn.toggle()  // takes effect from the next dictation
-            updateSetupWindow()
+            updateSettings()
         case .toggleRecordSystemAudio:
             MeetingAppState.recordSystemAudio.toggle()  // takes effect from the next meeting
             meeting.startPanel?.refresh()
-            updateSetupWindow()
+            updateSettings()
         case .speakerModels:
             installSpeakerModels()
         case .systemAudio:
@@ -1242,6 +1340,12 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
             // and the permission takes effect after Holos is reopened.
             if !CGPreflightScreenCaptureAccess() { _ = CGRequestScreenCaptureAccess() }
             openPrivacySettings("Privacy_ScreenCapture")
+        case .people:
+            showMainWindow(.people)
+        case .clearHistory:
+            confirmClearHistory()
+        case .setupAssistant:
+            showSetupAssistant(verify: false)
         }
     }
 
@@ -1253,7 +1357,7 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
     func installAssets() {
         guard !installingAssets, !isBusy, !enabled, !enabling else { return }
         installingAssets = true  // also keeps the language from changing until the install ends
-        updateSetupWindow()
+        updateSettings()
         assetTask = Task { [weak self] in
             guard let self else { return }
             // Without a saved choice the language is the default one, known once the languages are loaded: installing

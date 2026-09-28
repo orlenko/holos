@@ -277,10 +277,10 @@ Hardware-facing and cross-app acceptance remain pending.
   microphone, then Accessibility, then the permissions that need a reopen, then a
   re-check) that downloads the speech and speaker models in the background, reopens the
   app once at the end when Screen & System Audio Recording was requested, and shows a
-  one-page check after the reopen. **Setup Assistant…** in the menu runs it again;
+  one-page check after the reopen. **Run Setup Assistant…** in Settings runs it again;
   installs that were already set up never see it (docs/design.md "First-launch setup").
   Input Monitoring is no longer required: the hotkey's active event tap is gated on
-  Accessibility only, and Setup shows an Input Monitoring row only when macOS refuses
+  Accessibility only, and Settings shows an Input Monitoring row only when macOS refuses
   the tap with Accessibility granted. The decisions are unit-tested; the windows and
   the reopen have not been run on screen yet.
 - Finalized phrases are written into the focused field while the user speaks: through
@@ -305,14 +305,35 @@ Hardware-facing and cross-app acceptance remain pending.
   [dictation validation](dictation-validation.md).
   Dictation audio is not saved.
 - Dictation text is cleaned before it is written: filler words are removed (English and
-  French lists; off in Setup), then learned corrections are applied. **Correct Last
-  Dictation…** learns word swaps from the user's edits, and the Corrections window adds,
-  edits and removes them. An opt-in Setup option, off by default, fixes misheard words
+  French lists; off in Settings), then learned corrections are applied. **Correct Last
+  Dictation…** learns word swaps from the user's edits, and the Corrections section adds,
+  edits and removes them. An opt-in Settings option, off by default, fixes misheard words
   in each chunk with Apple's on-device Foundation Models before it is written; a guard
   keeps the original text when the reply changes more than a few words, undoes a
   learned correction, or changes punctuation other than commas and apostrophes (the
   last piece of a dictation may also change its closing `.`, `!`, `?` or `…`). **Copy Original** keeps
   the text as heard.
+- Main window (docs/design.md "Main window"): **Open Voice is Local** (⌘0) opens one
+  window with a sidebar: History (⌘1), Corrections (⌘2), Meetings (⌘3), People (⌘4),
+  Reading (⌘5, a placeholder pointing to `voiceislocal read`), and Settings (⌘,), with a
+  dictation status card at the sidebar's bottom. Corrections, Meetings, and People are the
+  former windows' contents hosted as sections; Settings replaces the Setup window
+  (Permissions, Dictation, Meetings, History and privacy, Run Setup Assistant…), and every
+  "Setup…" path opens it. The menu bar menu is slimmed to the dictation status and toggle,
+  the kept result's Copy items, Correct Last Dictation…, the meeting block, and the window's
+  items; the language and shortcut submenus moved to Settings. The Setup Assistant, the
+  meeting start panel, the live transcript, Review, and the dictation preview stay separate
+  windows. Built and compiled only: nothing of the main window has been seen on screen yet.
+- Dictation history (docs/design.md "Dictation history"): each finished dictation that
+  produced text is kept in `Application Support/Holos/History/dictations.jsonl` (0600, one
+  JSON line each) with its app, language, text as written and as heard, fixes, outcome,
+  length, and word count, for 30 days by default (Settings: Off, 7 days, 30 days, Forever;
+  swept at launch and daily). History lists them by day with search, shows the words the
+  fixes changed, and offers Copy, Copy As Heard, Correct…, Delete, and Clear History….
+  Refused (secure-field) and cancelled dictations are not recorded, the text is never
+  logged, and only an explicit Copy writes to the clipboard. `voiceislocal history list
+  [--json] [--limit N]` and `history clear --yes` script it. The store and record texts
+  are unit-tested; recording from live dictations has not been checked on screen.
 
 The CLI bundle embeds microphone and speech-recognition permission usage strings.
 `scripts/build.sh` ad-hoc signs the built executable to give macOS a stable CLI
@@ -429,6 +450,10 @@ Still requiring real-machine or user-data validation:
 - Run the [Setup Assistant checks](dictation-validation.md#setup-assistant), including
   dictating with Input Monitoring switched off for Voice is Local (expected to work with
   Accessibility alone; not yet confirmed on the target Mac).
+- Run the [main window and history checks](dictation-validation.md#main-window-and-history):
+  the window's layout in light and dark mode, ⌘0, ⌘1–⌘5, ⌘, and ⌘F, Full Keyboard Access
+  and VoiceOver, a dictation recorded in History with its app, language, and text as
+  heard, Copy only on request, retention Off, and Clear History. None has been run yet.
 - Exercise capture failure/relaunch/recovery on hardware (`kill -9` a recorder, then
   `session recover`: the loss should be at most one 30 s chunk) and run multi-hour
   soak tests for memory growth, drift, interruptions, and audio continuity. The
@@ -440,8 +465,8 @@ Still requiring real-machine or user-data validation:
 - Run the menu bar meeting checks in the [meeting validation guide](meeting-validation.md)
   (permission prompts and ownership, an app or recorder killed mid-meeting, dictation
   paused during a meeting, quitting while recording, installing speaker models from
-  Setup, automatic relabel after a shutdown, a meeting on the laptop speakers with people
-  in the room and on a call, the Advanced setting and a missing System audio permission,
+  Settings, automatic relabel after a shutdown, a meeting on the laptop speakers with people
+  in the room and on a call, the system audio setting and a missing System audio permission,
   naming the speakers of the 89-minute Otter meeting and of a real 3 h meeting in the
   review window in under 10 minutes; the review window's layout, keys, and playback have
   not been seen on screen yet) and the

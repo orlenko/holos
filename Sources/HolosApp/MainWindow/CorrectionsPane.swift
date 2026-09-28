@@ -1,10 +1,10 @@
 import AppKit
 import HolosCore
 
-/// Fix the last dictation here; Holos compares it with what it wrote and keeps the word swaps.
+/// The main window's Corrections section: fix a dictation here (the last one, or one chosen in History); Holos
+/// compares it with what it wrote and keeps the word swaps.
 @MainActor
-final class CorrectionsWindow: NSObject, NSWindowDelegate, NSTextFieldDelegate {
-    private let window: NSWindow
+final class CorrectionsPane: NSViewController, NSTextFieldDelegate, MainSectionContent {
     struct LearnResult {
         var learned: [Correction]
         /// Single common-word swaps with no neighbouring word to anchor them; offered for manual adding.
@@ -13,8 +13,9 @@ final class CorrectionsWindow: NSObject, NSWindowDelegate, NSTextFieldDelegate {
         var edit: DeclinedCorrectionQueue.PendingEdit?
     }
 
-    /// Returns the learned and declined pairs, or nil when the change could not be saved.
-    private let onLearn: (String) -> LearnResult?
+    /// Learns from the edited text against the text it was edited from (the dictation as recognized); returns the
+    /// learned and declined pairs, or nil when the change could not be saved.
+    private let onLearn: (_ edited: String, _ original: String) -> LearnResult?
     /// Adds a rule, with the edit of the declined swap it resolves (if any). False means not saved.
     private let onAdd: (Correction, DeclinedCorrectionQueue.PendingEdit?) -> Bool
     private let onRemove: (Correction) -> Bool
@@ -33,31 +34,26 @@ final class CorrectionsWindow: NSObject, NSWindowDelegate, NSTextFieldDelegate {
     private let cancelEditButton = NSButton(title: "Cancel", target: nil, action: nil)
     /// The rule being edited in the fields below the list; Add becomes Save while it is set.
     private var editing: Correction?
-    private var positioned = false
+    /// What the dictation in the text box is compared with to learn: the text as recognized, before corrections.
+    private var baseline = ""
     private var shown: [Correction] = []
     private var declined = DeclinedCorrectionQueue()
     /// The feedback lines shown above the declined-swap suggestion, so a refill can redraw them.
     private var reported: [String] = []
 
-    init(onLearn: @escaping (String) -> LearnResult?,
+    init(onLearn: @escaping (_ edited: String, _ original: String) -> LearnResult?,
          onAdd: @escaping (Correction, DeclinedCorrectionQueue.PendingEdit?) -> Bool,
          onRemove: @escaping (Correction) -> Bool,
          onReplace: @escaping (Correction, Correction, DeclinedCorrectionQueue.PendingEdit?) -> Bool) {
-        window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 560, height: 600),
-                          styleMask: [.titled, .closable, .miniaturizable, .resizable],
-                          backing: .buffered, defer: true)
         self.onLearn = onLearn
         self.onAdd = onAdd
         self.onRemove = onRemove
         self.onReplace = onReplace
         let transcriptScroll = NSTextView.scrollableTextView()
         transcriptView = transcriptScroll.documentView as! NSTextView
-        super.init()
-        window.title = "Voice is Local Corrections"
-        window.isReleasedWhenClosed = false
-        window.delegate = self
-        window.contentMinSize = NSSize(width: 480, height: 480)
+        super.init(nibName: nil, bundle: nil)
 
+        transcriptView.setAccessibilityLabel("Dictation to fix")
         transcriptView.isRichText = false
         transcriptView.font = .systemFont(ofSize: 14)
         transcriptView.textContainerInset = NSSize(width: 6, height: 6)
@@ -129,8 +125,10 @@ final class CorrectionsWindow: NSObject, NSWindowDelegate, NSTextFieldDelegate {
         note.font = .systemFont(ofSize: 11)
         note.textColor = .secondaryLabelColor
 
+        transcriptHeading.font = .systemFont(ofSize: 13, weight: .semibold)
+        transcriptHeading.stringValue = "Last dictation — fix any misheard words, then Learn"
         let stack = NSStackView(views: [
-            heading("Last dictation — fix any misheard words, then Learn"), transcriptScroll, actions,
+            transcriptHeading, transcriptScroll, actions,
             feedbackLabel, heading("Corrections"), listScroll, addRow, note,
         ])
         stack.orientation = .vertical
@@ -141,33 +139,38 @@ final class CorrectionsWindow: NSObject, NSWindowDelegate, NSTextFieldDelegate {
         let content = NSView()
         content.addSubview(stack)
         NSLayoutConstraint.activate([
-            stack.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 20),
-            stack.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -20),
+            stack.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 24),
+            stack.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -24),
             stack.topAnchor.constraint(equalTo: content.topAnchor, constant: 18),
             stack.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -18),
         ])
         for view in [transcriptScroll, feedbackLabel, listScroll, addRow, note] {
             view.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
         }
-        window.contentView = content
+        view = content
     }
 
-    func show(lastTranscript: String, corrections: [Correction]) {
-        transcriptView.string = lastTranscript
-        let hasTranscript = !lastTranscript.isEmpty
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
+
+    private let transcriptHeading = NSTextField(labelWithString: "")
+
+    /// Puts a dictation in the text box: `transcript` as written, compared on Learn with `recognized` (the text as
+    /// recognized, before corrections). `title` says which dictation it is.
+    func load(transcript: String, recognized: String, title: String, corrections: [Correction]) {
+        transcriptView.string = transcript
+        baseline = recognized
+        transcriptHeading.stringValue = title
+        let hasTranscript = !transcript.isEmpty
         transcriptView.isEditable = hasTranscript
         learnButton.isEnabled = hasTranscript
         copyButton.isEnabled = hasTranscript
         report(hasTranscript ? [] : ["No dictation yet. You can still add corrections below."])
         update(corrections: corrections)
-        if !positioned {
-            window.center()
-            positioned = true
-        }
-        NSApplication.shared.activate()
-        window.makeKeyAndOrderFront(nil)
-        if hasTranscript { window.makeFirstResponder(transcriptView) }
+        if hasTranscript, let window = view.window { window.makeFirstResponder(transcriptView) }
     }
+
+    var preferredFirstResponder: NSView? { transcriptView.isEditable ? transcriptView : heardField }
 
     func update(corrections: [Correction]) {
         shown = corrections
@@ -202,10 +205,13 @@ final class CorrectionsWindow: NSObject, NSWindowDelegate, NSTextFieldDelegate {
     }
 
     @objc private func learn() {
-        guard let result = onLearn(transcriptView.string) else {
+        let edited = transcriptView.string
+        guard let result = onLearn(edited, baseline) else {
             feedbackLabel.stringValue = Self.saveFailure
             return
         }
+        // Learned rules were saved: the edited text is now what later edits are compared with.
+        if !result.learned.isEmpty { baseline = edited }
         declined.receive(result.declined, edit: result.edit)
         var lines: [String] = []
         if !result.learned.isEmpty {
@@ -284,10 +290,17 @@ final class CorrectionsWindow: NSObject, NSWindowDelegate, NSTextFieldDelegate {
             feedbackLabel.stringValue = Self.saveFailure
             return
         }
+        keepBaseline(of: resolved?.edit)
         declined = remaining
         heardField.stringValue = ""
         meantField.stringValue = ""
         report(["Added: \(correction.heard) → \(correction.meant)"])
+    }
+
+    /// A declined swap's edit was kept with the rule that resolved it: its edited text becomes the baseline while
+    /// the box still holds the dictation it was edited from.
+    private func keepBaseline(of edit: DeclinedCorrectionQueue.PendingEdit?) {
+        if let transcript = edit?.transcript(whenLastRecognized: baseline) { baseline = transcript }
     }
 
     @objc private func skipDeclined() {
@@ -330,7 +343,7 @@ final class CorrectionsWindow: NSObject, NSWindowDelegate, NSTextFieldDelegate {
         cancelEditButton.isHidden = false
         skipButton.isHidden = true
         feedbackLabel.stringValue = "Editing \(correction.heard) → \(correction.meant). Change it below, then Save."
-        window.makeFirstResponder(meantField)
+        view.window?.makeFirstResponder(meantField)
     }
 
     @objc private func cancelEdit() {
@@ -361,6 +374,7 @@ final class CorrectionsWindow: NSObject, NSWindowDelegate, NSTextFieldDelegate {
             feedbackLabel.stringValue = Self.saveFailure
             return
         }
+        keepBaseline(of: resolved?.edit)
         declined = remaining
         var lines = ["Changed: \(original.heard) → \(original.meant) is now \(changed.heard) → \(changed.meant)."]
         if !replaced.isEmpty {
@@ -381,6 +395,6 @@ final class CorrectionsWindow: NSObject, NSWindowDelegate, NSTextFieldDelegate {
 }
 
 /// Scroll views lay out documents bottom-up unless the document is flipped.
-private final class FlippedView: NSView {
+final class FlippedView: NSView {
     override var isFlipped: Bool { true }
 }
