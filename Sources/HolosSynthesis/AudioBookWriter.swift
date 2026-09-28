@@ -222,7 +222,11 @@ public enum AudioBookWriter {
         ).map { (title: $0.title, frame: $0.position) }
 
         let language = AudioBookMetadata.languageTag(metadata.language)
-        let writer = try AVAssetWriter(outputURL: output, fileType: .m4a)
+        // Encoded into a temporary of this call's own beside `output`, then published without
+        // replacing anything (see `ExclusivePublisher`): a failure removes only that temporary, so
+        // a file another writer or process put at `output` meanwhile is never touched.
+        let temporary = temporaryURL(for: output)
+        let writer = try AVAssetWriter(outputURL: temporary, fileType: .m4a)
         let audioInput = AVAssetWriterInput(mediaType: .audio, outputSettings: [
             AVFormatIDKey: kAudioFormatMPEG4AAC,
             AVSampleRateKey: ReadingAudioFormat.sampleRate,
@@ -250,7 +254,7 @@ public enum AudioBookWriter {
         defer {
             if !finished {
                 if writer.status == .writing { writer.cancelWriting() }
-                try? FileManager.default.removeItem(at: output)
+                _ = unlink(temporary.path)
             }
         }
         try writer.start()
@@ -288,9 +292,30 @@ public enum AudioBookWriter {
         guard writer.status == .completed else {
             throw HolosError.io("Could not write the reading audio: \(writer.error?.localizedDescription ?? "unknown error")")
         }
+        // Moves the temporary to `output` (or copies it, then removes it); on failure it is left
+        // for the `defer` above.
+        try ExclusivePublisher.publish(temporary, to: output, existing: "Reading output already exists")
         finished = true
         return AudioBookSummary(url: output, duration: Double(total) / rate,
                                 chapters: chapterMarks.map { AudioBookChapter(title: $0.title, start: Double($0.frame) / rate) })
+    }
+
+    /// The name `write` encodes into before publishing a file named `name`: hidden, the name's
+    /// stem, "-", a new UUID, and its extension (".Book-<UUID>.m4a" for "Book.m4a",
+    /// ".holos-join-<key>-<run>-<UUID>.m4a" for a reading's join file, which its sweep then
+    /// recognizes). A name too long for that gets ".holos-book-<UUID>" and the extension.
+    public static func temporaryName(for name: String) -> String {
+        let ext = (name as NSString).pathExtension
+        let suffix = "-" + UUID().uuidString + (ext.isEmpty ? "" : "." + ext)
+        let stem = ext.isEmpty ? name : String(name.dropLast(ext.count + 1))
+        let derived = (stem.hasPrefix(".") ? "" : ".") + stem + suffix
+        return derived.utf8.count <= Int(NAME_MAX) ? derived : ".holos-book" + suffix
+    }
+
+    /// `temporaryName(for:)` beside `output`, the folder spelled as `output` spells it.
+    static func temporaryURL(for output: URL) -> URL {
+        let path = output.deletingLastPathComponent().path + "/" + temporaryName(for: output.lastPathComponent)
+        return path.withCString { URL(fileURLWithFileSystemRepresentation: $0, isDirectory: false, relativeTo: nil) }
     }
 
     private struct ChapterMark: Sendable {

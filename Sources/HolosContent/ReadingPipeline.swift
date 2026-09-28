@@ -376,7 +376,8 @@ public struct AudioBookJoiner: ReadingAudioJoiner {
         try Task.checkCancellation()
         let temporary = output.deletingLastPathComponent()
             .appendingPathComponent(ReadingTemporaries.joinName(key: key, run: run))
-        // Runs on every exit, cancellation (Ctrl-C in `voiceislocal read`) included.
+        // Runs on every exit, cancellation (Ctrl-C in `voiceislocal read`) included. The name
+        // carries this run's UUID, so nothing but this run's joiner makes a file there.
         defer { _ = unlink(temporary.path) }
         let audioParts = manifest.parts.map { part in
             AudioBookPart(url: directory.appendingPathComponent(part.relativeAudioPath),
@@ -538,8 +539,10 @@ enum ReadingPublisher {
     }
 }
 
-/// A persistent sibling lock serializes new renders and resumes across processes.
-/// The lock file is intentionally kept so another process cannot lock a replacement inode.
+/// A sibling lock serializes new renders and resumes across processes. A cache's lock file is
+/// intentionally kept so another process cannot lock a replacement inode; an output's lock file
+/// (in the user's destination folder) is removed on release, and taking it checks that the path
+/// still names the file locked (see `acquire(name:in:busy:removingOnRelease:reportsUnsupported:)`).
 final class ReadingDirectoryLock {
     private let descriptor: Int32
 
@@ -555,15 +558,38 @@ final class ReadingDirectoryLock {
                     busy: "Reading directory is already being rendered: \(directory.path)")
     }
 
-    /// A lock on the finished file's path, kept beside the cache's lock. Readings of different
-    /// text or settings for one explicit output have different caches (see
-    /// `ReadingOutput.locate`), so this is what stops a second one before it renders anything.
-    /// It is keyed by the file's filesystem identity (see `ReadingPathIdentity`), so "Book.m4a"
-    /// and "book.m4a" on a case-insensitive volume, or one name in NFC and NFD, share it.
+    /// A lock on the finished file's path. Readings of different text or settings for one explicit
+    /// output have different caches (see `ReadingOutput.locate`), possibly under different support
+    /// folders (`HOLOS_SUPPORT_DIR`), so this is what stops a second one before it renders anything.
+    /// It lives in the destination's own folder, the one place every producer of that file finds
+    /// whatever its support folder, home, temporary folder, or user; it is hidden, and removed
+    /// when released (see `removingOnRelease`). An output inside its own cache (a reading without
+    /// `--output`) has one producer, the cache's, so its lock is kept beside the cache's lock; so
+    /// is one whose folder's volume has no `flock`. It is named from the file's conservative
+    /// identity (see `ReadingPathIdentity.Rule.lock`), so "Book.m4a" and "book.m4a" on a
+    /// case-insensitive volume, or one name in NFC and NFD, share it. The name is shorter than the
+    /// join temporary's, so `ReadingOutput.checkPathLength` covers it.
     static func acquire(output: URL, beside directory: URL) throws -> ReadingDirectoryLock {
-        try acquire(name: ".holos-output-\(sha256(Data(ReadingPathIdentity.key(output).utf8))).lock",
-                    beside: directory, busy: "Another reading is already being made for \(output.path).")
+        let name = outputLockName(output)
+        let busy = "Another reading is already being made for \(output.path)."
+        let destination = output.deletingLastPathComponent()
+        if destination.standardizedFileURL.path != directory.standardizedFileURL.path {
+            do {
+                // The folder as spelled, links resolved (see `RawFilePath`).
+                return try acquire(name: name, in: RawFilePath.resolvingFolder(of: output).deletingLastPathComponent(),
+                                   busy: busy, removingOnRelease: true, reportsUnsupported: true)
+            } catch is LockUnsupported {}
+        }
+        return try acquire(name: name, in: folder(beside: directory), busy: busy, removingOnRelease: true)
     }
+
+    /// `.holos-output-<first 32 hex digits of the identity's hash>.lock`.
+    static func outputLockName(_ output: URL) -> String {
+        ".holos-output-\(sha256(Data(ReadingPathIdentity.key(output).utf8)).prefix(32)).lock"
+    }
+
+    /// `flock` failed because the volume does not support it.
+    private struct LockUnsupported: Error {}
 
     /// The folder a cache's locks are kept in: the cache's parent, links resolved.
     static func folder(beside directory: URL) -> URL {
@@ -579,30 +605,73 @@ final class ReadingDirectoryLock {
         try acquire(name: name, in: folder(beside: directory), busy: busy)
     }
 
-    private static func acquire(name: String, in parent: URL, busy: String) throws -> ReadingDirectoryLock {
+    /// Opens (creating if needed) and locks `name` in `parent`. With `removingOnRelease`, the file
+    /// is unlinked when the lock is released, while it is still held, and a lock taken is kept
+    /// only when the path still names the file locked: one another run removed (or replaced)
+    /// between this run's `open` and `flock` is let go and the path opened again, so two runs
+    /// never each hold a lock on a different file for one name. With `reportsUnsupported`, a
+    /// volume without `flock` throws `LockUnsupported` (the caller has another place to lock).
+    private static func acquire(name: String, in parent: URL, busy: String, removingOnRelease: Bool = false,
+                                reportsUnsupported: Bool = false) throws -> ReadingDirectoryLock {
         let path = parent.appendingPathComponent(name).path
-        let descriptor = open(path, O_CREAT | O_RDWR | O_CLOEXEC | O_NOFOLLOW, 0o600)
-        guard descriptor >= 0 else {
-            throw HolosError.io("Could not open reading lock: \(String(cString: strerror(errno)))")
-        }
-        var metadata = stat()
-        guard fstat(descriptor, &metadata) == 0, metadata.st_uid == getuid(),
-              (metadata.st_mode & mode_t(S_IFMT)) == mode_t(S_IFREG) else {
-            close(descriptor)
-            throw HolosError.io("Reading lock is not a regular file owned by this user.")
-        }
-        guard flock(descriptor, LOCK_EX | LOCK_NB) == 0 else {
-            let error = errno
-            close(descriptor)
-            if error == EWOULDBLOCK || error == EAGAIN {
-                throw HolosError.unavailable(busy)
+        // Each retry follows another run's release; a bound keeps a pathological loop finite.
+        for _ in 0..<100 {
+            var descriptor = open(path, O_CREAT | O_EXCL | O_RDWR | O_CLOEXEC | O_NOFOLLOW, 0o600)
+            let created = descriptor >= 0
+            if !created && errno == EEXIST {
+                descriptor = open(path, O_CREAT | O_RDWR | O_CLOEXEC | O_NOFOLLOW, 0o600)
             }
-            throw HolosError.io("Could not acquire reading lock: \(String(cString: strerror(error)))")
+            guard descriptor >= 0 else {
+                throw HolosError.io("Could not open reading lock: \(String(cString: strerror(errno)))")
+            }
+            var metadata = stat()
+            guard fstat(descriptor, &metadata) == 0, metadata.st_uid == getuid(),
+                  (metadata.st_mode & mode_t(S_IFMT)) == mode_t(S_IFREG) else {
+                close(descriptor)
+                throw HolosError.io("Reading lock is not a regular file owned by this user.")
+            }
+            guard flock(descriptor, LOCK_EX | LOCK_NB) == 0 else {
+                let error = errno
+                close(descriptor)
+                if error == EWOULDBLOCK || error == EAGAIN {
+                    throw HolosError.unavailable(busy)
+                }
+                if error == ENOTSUP || error == EOPNOTSUPP {
+                    // No run can lock a file on this volume, so one this call created is its own
+                    // to remove, and is not left behind.
+                    if created && removingOnRelease { unlinkIfSame(path, as: metadata) }
+                    if reportsUnsupported { throw LockUnsupported() }
+                }
+                throw HolosError.io("Could not acquire reading lock: \(String(cString: strerror(error)))")
+            }
+            guard removingOnRelease else { return ReadingDirectoryLock(descriptor: descriptor) }
+            var current = stat()
+            if lstat(path, &current) == 0, current.st_dev == metadata.st_dev, current.st_ino == metadata.st_ino {
+                return ReadingDirectoryLock(descriptor: descriptor, removing: path, identity: metadata)
+            }
+            _ = flock(descriptor, LOCK_UN)
+            close(descriptor)
         }
-        return ReadingDirectoryLock(descriptor: descriptor)
+        throw HolosError.unavailable(busy)
+    }
+
+    /// Unlinks `path` when it still names the file `identity` describes.
+    private static func unlinkIfSame(_ path: String, as identity: stat) {
+        var current = stat()
+        guard lstat(path, &current) == 0, current.st_dev == identity.st_dev, current.st_ino == identity.st_ino else { return }
+        _ = unlink(path)
+    }
+
+    private var removal: (path: String, identity: stat)?
+
+    private convenience init(descriptor: Int32, removing path: String, identity: stat) {
+        self.init(descriptor: descriptor)
+        removal = (path, identity)
     }
 
     deinit {
+        // Unlinked while still locked: a run waiting on this file finds it gone and opens anew.
+        if let removal { Self.unlinkIfSame(removal.path, as: removal.identity) }
         _ = flock(descriptor, LOCK_UN)
         close(descriptor)
     }
@@ -724,8 +793,9 @@ public typealias ReadingFileIdentity = ExclusivePublisher.FileIdentity
 /// left behind. Each name carries a marker only this reading's runs use, so a sweep never touches
 /// another reading's (or anyone else's) files:
 /// - beside the output: `.holos-join-<reading key>-<run UUID>.m4a`, the joined file before it is
-///   published. The key is a hash of the cache directory, whose lock serializes runs, so one
-///   with another run's UUID is left over from an earlier run;
+///   published, and `.holos-join-<reading key>-<run UUID>-<UUID>.m4a`, the temporary
+///   `AudioBookWriter` encodes it into. The key is a hash of the cache directory, whose lock
+///   serializes runs, so one with another run's UUID is left over from an earlier run;
 /// - in the cache: `.holos-manifest-<UUID>.tmp`, a manifest being saved;
 /// - in the cache's `parts`: `.holos-<UUID>.<ext>` from the speech renderer and
 ///   `.invalid-<UUID>-<part>`, a part that failed its checksum.
@@ -750,7 +820,7 @@ enum ReadingTemporaries {
         let joinStart = "\(joinPrefix)\(key)-"
         let joinEnd = "." + ReadingAudioFormat.fileExtension
         remove(in: outputFolder) { name in
-            guard let run = uuid(between: joinStart, and: joinEnd, in: name) else { return false }
+            guard let run = joinRun(name, start: joinStart, end: joinEnd) else { return false }
             return run != currentRun
         }
         remove(in: workDirectory) { name in
@@ -768,6 +838,17 @@ enum ReadingTemporaries {
             return UUID(uuidString: String(stem)) != nil && !ext.isEmpty
                 && ext.allSatisfy { $0.isASCII && ($0.isLetter || $0.isNumber) }
         }
+    }
+
+    /// The run in a join file's name (`<start><run UUID><end>`), or in the name of the temporary
+    /// `AudioBookWriter` encodes it into (`<start><run UUID>-<UUID><end>`); nil for any other name.
+    static func joinRun(_ name: String, start: String, end: String) -> UUID? {
+        if let run = uuid(between: start, and: end, in: name) { return run }
+        guard name.hasPrefix(start), name.hasSuffix(end) else { return nil }
+        let middle = name.dropFirst(start.count).dropLast(end.count)
+        guard middle.count == 36 + 1 + 36, middle.dropFirst(36).first == "-",
+              UUID(uuidString: String(middle.suffix(36))) != nil else { return nil }
+        return UUID(uuidString: String(middle.prefix(36)))
     }
 
     static func uuid(between prefix: String, and suffix: String, in name: String) -> UUID? {

@@ -246,6 +246,78 @@ import Testing
         #expect(summary.chapters.map(\.title) == ["One", "Two", "Three", "Four"])
     }
 
+    /// Files in `folder` other than the parts.
+    private func others(in folder: URL) throws -> Set<String> {
+        Set(try FileManager.default.contentsOfDirectory(atPath: folder.path).filter { !$0.hasPrefix("part") })
+    }
+
+    /// Two writers to one file: both pass the "already exists" check before either has written
+    /// anything; one finishes and publishes, then the other fails. The finished file stays, and
+    /// the failed writer removes only its own temporary.
+    @Test(.timeLimit(.minutes(1))) func aFailedWriterLeavesAnotherWritersFile() async throws {
+        let folder = try directory()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let parts = try fourChapters(in: folder)
+        let output = folder.appendingPathComponent("Book.m4a")
+        let path = output.path
+        let encoding = Furthest()
+        let failing = Task {
+            try await AudioBookWriter.write(
+                parts: parts, metadata: AudioBookMetadata(title: "Book"), to: output,
+                faults: AudioBookWriter.Faults(audio: { frame in
+                    guard frame > 0 else { return }
+                    encoding.reach(frame)
+                    // A poll budget, not a deadline: the failure comes either way.
+                    for _ in 0..<3_000 where !FileManager.default.fileExists(atPath: path) {
+                        try await Task.sleep(for: .milliseconds(10))
+                    }
+                    throw InjectedFailure(side: "audio")
+                }))
+        }
+        // The first writer is past its check and encoding before the second starts.
+        for _ in 0..<3_000 where encoding.value == 0 { try await Task.sleep(for: .milliseconds(10)) }
+        #expect(encoding.value > 0)
+        let summary = try await AudioBookWriter.write(parts: parts, metadata: AudioBookMetadata(title: "Other"), to: output)
+        await #expect(throws: InjectedFailure(side: "audio")) { try await failing.value }
+        #expect(summary.chapters.map(\.title) == ["One", "Two", "Three", "Four"])
+        let asset = AVURLAsset(url: output)
+        #expect(abs(try await asset.load(.duration).seconds - summary.duration) < 0.05)
+        #expect(try others(in: folder) == ["Book.m4a"])
+    }
+
+    /// A file put at the output while the book is encoded is kept, whether the writer then fails
+    /// or finishes (it cannot publish over the file); neither leaves its temporary behind.
+    @Test(.timeLimit(.minutes(1))) func aFileReplacedDuringEncodingIsNotDeleted() async throws {
+        let folder = try directory()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let parts = try fourChapters(in: folder)
+        let theirs = Data("someone else's file".utf8)
+        for fails in [true, false] {
+            let output = folder.appendingPathComponent("Book-\(fails).m4a")
+            let faults = AudioBookWriter.Faults(audio: { frame in
+                guard frame > 0, !FileManager.default.fileExists(atPath: output.path) else { return }
+                try theirs.write(to: output, options: [.withoutOverwriting])
+                if fails { throw InjectedFailure(side: "audio") }
+            })
+            await #expect(throws: (any Error).self, "\(fails)") {
+                try await AudioBookWriter.write(parts: parts, metadata: AudioBookMetadata(title: "Book"), to: output,
+                                                faults: faults)
+            }
+            #expect(try Data(contentsOf: output) == theirs, "\(fails)")
+        }
+        #expect(try others(in: folder) == ["Book-true.m4a", "Book-false.m4a"])
+    }
+
+    /// The temporary is hidden, beside the output, and named after it; a name too long for that
+    /// gets a fixed stem.
+    @Test func temporaryNamesFollowTheOutput() {
+        let name = AudioBookWriter.temporaryName(for: "Book.m4a")
+        #expect(name.hasPrefix(".Book-") && name.hasSuffix(".m4a") && name.utf8.count == ".Book-.m4a".utf8.count + 36)
+        #expect(AudioBookWriter.temporaryName(for: ".hidden.m4a").hasPrefix(".hidden-"))
+        let long = AudioBookWriter.temporaryName(for: String(repeating: "a", count: 240) + ".m4a")
+        #expect(long.hasPrefix(".holos-book-") && long.hasSuffix(".m4a"))
+    }
+
     /// Silence that would overflow the frame count (or is not a number) is an error, never a trap.
     @Test(.timeLimit(.minutes(1))) func absurdSilenceIsRejected() async throws {
         let folder = try directory()

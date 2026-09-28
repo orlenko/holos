@@ -581,6 +581,73 @@ import Testing
         #expect(try Data(contentsOf: output) == Data("One short paragraph.".utf8))
     }
 
+    /// Caches under different support folders (`HOLOS_SUPPORT_DIR`) for one output: the output's
+    /// lock is in the destination's folder, so the second reading still fails before rendering. The
+    /// hidden lock file is gone once the first finishes.
+    @Test func readingsFromDifferentSupportFoldersShareTheOutputLock() async throws {
+        let parent = try root()
+        defer { try? FileManager.default.removeItem(at: parent) }
+        let destination = parent.appendingPathComponent("Books")
+        let supports = ["support-a", "support-b"].map { parent.appendingPathComponent($0).appendingPathComponent("Readings") }
+        for folder in [destination] + supports {
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        }
+        let output = destination.appendingPathComponent("Book.m4a")
+        let first = ReadingLocation(workDirectory: supports[0].appendingPathComponent("Output-a"), output: output)
+        let second = ReadingLocation(workDirectory: supports[1].appendingPathComponent("Output-b"), output: output)
+        let renderer = GateRenderer()
+        let pipeline = ReadingPipeline(renderer: renderer, joiner: FakeJoiner())
+        let script = ReadingScript(document: ReadableDocument(sections: [.init(paragraphs: ["One short paragraph."])]))
+        let other = ReadingScript(document: ReadableDocument(sections: [.init(paragraphs: ["Another paragraph."])]))
+        let voice = self.voice
+        let metadata = self.metadata
+        let active = Task { try await pipeline.render(script: script, voiceIdentifier: voice, metadata: metadata, location: first) }
+        await renderer.waitUntilRendering()
+        let lockName = ReadingDirectoryLock.outputLockName(output)
+        #expect(lockName.utf8.count < ReadingOutput.temporaryNameLength)
+        #expect(FileManager.default.fileExists(atPath: destination.appendingPathComponent(lockName).path))
+        do {
+            _ = try await pipeline.render(script: other, voiceIdentifier: voice, metadata: metadata, location: second)
+            Issue.record("A reading from another support folder should fail while the first renders.")
+        } catch let error as HolosError {
+            if case .unavailable(let message) = error {
+                #expect(message.contains("Another reading is already being made"))
+            } else {
+                Issue.record("Unexpected error: \(error)")
+            }
+        }
+        #expect(renderer.calls == 1)
+        // Nothing of the second reading was created.
+        #expect(!FileManager.default.fileExists(atPath: second.workDirectory.path))
+        renderer.release()
+        #expect(try await active.value.manifest.status == "complete")
+        #expect(try Data(contentsOf: output) == Data("One short paragraph.".utf8))
+        #expect(try FileManager.default.contentsOfDirectory(atPath: destination.path) == ["Book.m4a"])
+    }
+
+    /// An output lock excludes a second holder, its hidden file goes when it is released, and a
+    /// file a killed run left behind is taken like a new one.
+    @Test func anOutputLockFileIsRemovedOnRelease() throws {
+        let parent = try root()
+        defer { try? FileManager.default.removeItem(at: parent) }
+        let cache = parent.appendingPathComponent("support").appendingPathComponent("Output-a")
+        let output = parent.appendingPathComponent("Book.m4a")
+        let lockPath = parent.appendingPathComponent(ReadingDirectoryLock.outputLockName(output)).path
+        do {
+            let held = try ReadingDirectoryLock.acquire(output: output, beside: cache)
+            #expect(throws: HolosError.self) { try ReadingDirectoryLock.acquire(output: output, beside: cache) }
+            withExtendedLifetime(held) {}
+        }
+        #expect(!FileManager.default.fileExists(atPath: lockPath))
+        // A lock file left by a killed run is simply taken, then removed.
+        FileManager.default.createFile(atPath: lockPath, contents: nil)
+        do {
+            let held = try ReadingDirectoryLock.acquire(output: output, beside: cache)
+            withExtendedLifetime(held) {}
+        }
+        #expect(!FileManager.default.fileExists(atPath: lockPath))
+    }
+
     /// Spellings of one file on this volume: one lock and one cache. The temporary folder is on the
     /// boot volume (APFS: normalization-insensitive, case-insensitive by default).
     @Test func outputIdentityFollowsTheFilesystemsNameRules() throws {
@@ -1111,6 +1178,8 @@ import Testing
         let stale = [
             parent.appendingPathComponent(ReadingTemporaries.joinName(key: key, run: UUID())),
             parent.appendingPathComponent(ReadingTemporaries.joinName(key: key, run: UUID())),
+            // The temporary the book writer encodes a join file into.
+            parent.appendingPathComponent(AudioBookWriter.temporaryName(for: ReadingTemporaries.joinName(key: key, run: UUID()))),
             place.workDirectory.appendingPathComponent(ReadingTemporaries.manifestName()),
             parts.appendingPathComponent(".holos-\(UUID().uuidString).caf"),
             parts.appendingPathComponent(".invalid-\(UUID().uuidString)-part0001.caf"),
@@ -1120,6 +1189,7 @@ import Testing
             parent.appendingPathComponent(ReadingTemporaries.joinName(key: "0123456789abcdef", run: UUID())),
             parent.appendingPathComponent(".holos-\(UUID().uuidString).m4a"),
             parent.appendingPathComponent(".holos-join-\(key)-notes.m4a"),
+            parent.appendingPathComponent(".holos-join-\(key)-\(UUID().uuidString)-notes.m4a"),
             parent.appendingPathComponent("Other.m4a"),
             place.workDirectory.appendingPathComponent(".holos-manifest-mine.tmp"),
             parts.appendingPathComponent(".holos-notes.caf"),

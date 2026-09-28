@@ -648,6 +648,33 @@ import Testing
         #expect(HTMLReader.encoding(named: "not-a-charset") == nil)
     }
 
+    /// A declared legacy multibyte charset decides the encoding: a malformed or truncated sequence
+    /// becomes one U+FFFD and the rest stays in the declared encoding, never re-read as UTF-8 or
+    /// Windows-1252.
+    @Test func aDeclaredCharsetSurvivesMalformedBytes() throws {
+        func encoding(_ name: String) throws -> String.Encoding { try #require(HTMLReader.encoding(named: name)) }
+        let cases: [(charset: String, before: String, after: String)] = [
+            ("Shift_JIS", "日本語のテキスト", "続きの文章"),
+            ("EUC-JP", "日本語のテキスト", "続きの文章"),
+            ("GB18030", "中文文本", "继续"),
+        ]
+        for (charset, before, after) in cases {
+            let encoding = try encoding(charset)
+            let head = #"<meta charset="\#(charset)"><p>"#
+            // A lead byte cut off by the newline: one truncated sequence.
+            let data = Data(head.utf8) + (try #require(before.data(using: encoding))) + Data([0x82, 0x0A])
+                + (try #require(after.data(using: encoding))) + Data("</p>".utf8)
+            #expect(String(data: data, encoding: encoding) == nil, "\(charset)")
+            #expect(HTMLReader.decode(data) == head + before + "\u{FFFD}\n" + after + "</p>", "\(charset)")
+            #expect(HTMLReader.document(from: data).sections.flatMap(\.paragraphs) == [before + "\u{FFFD} " + after],
+                    "\(charset)")
+        }
+        // A single-byte legacy charset with no undefined bytes decodes every byte in it.
+        let koi8 = try encoding("KOI8-R")
+        let russian = Data(#"<meta charset="KOI8-R"><p>"#.utf8) + (try #require("Привет".data(using: koi8)))
+        #expect(HTMLReader.decode(russian) == #"<meta charset="KOI8-R"><p>Привет"#)
+    }
+
     /// Only a real `<meta>` tag declares a charset: one in a comment or in a raw text element's
     /// contents (a script writing it, a title quoting it) is text, as in browsers.
     @Test func charsetDeclarationsInCommentsAndRawTextAreIgnored() {

@@ -308,21 +308,41 @@ public enum HTMLReader {
     ///    means UTF-8;
     /// 3. else UTF-8 when the bytes are valid UTF-8;
     /// 4. else Windows-1252, HTML's default.
-    /// A declared UTF-8 page with invalid bytes is read as UTF-8 with replacement characters; bytes
-    /// invalid in another declared encoding fall through to 3 and 4. One leading U+FEFF is dropped,
-    /// and line endings are made LF (see `DocumentText.normalized`).
+    /// Once 1 or 2 decides the encoding, the page is read in it and nothing else: each malformed
+    /// or truncated sequence becomes U+FFFD (see `lossy`), never a reason to try another encoding.
+    /// Only a page with neither a mark nor a supported declaration gets the 3-then-4 probe. One
+    /// leading U+FEFF is dropped, and line endings are made LF (see `DocumentText.normalized`).
     static func decode(_ data: Data) -> String {
         DocumentText.normalized(decodeKeepingMark(data))
     }
 
     private static func decodeKeepingMark(_ data: Data) -> String {
         if let text = DocumentText.decodeMarked(data) { return text }
-        if let declared = declaredEncoding(data) {
-            if declared == .windowsCP1252 { return windows1252(data) }
-            if let text = DocumentText.decode(data, as: declared) { return text }
-            if declared == .utf8 { return String(decoding: data, as: UTF8.self) }
-        }
+        if let declared = declaredEncoding(data), let text = lossy(data, as: declared) { return text }
         return DocumentText.decode(data, as: .utf8) ?? windows1252(data)
+    }
+
+    /// `data` in `encoding`, each malformed or truncated sequence replaced with U+FFFD and the
+    /// rest kept. Nil only when Foundation cannot decode `encoding` at all, which makes the
+    /// declaration unsupported (as an unknown charset name is).
+    static func lossy(_ data: Data, as encoding: String.Encoding) -> String? {
+        switch encoding {
+        case .utf8: return String(decoding: data, as: UTF8.self)
+        case .windowsCP1252: return windows1252(data)
+        default:
+            if let text = String(data: data, encoding: encoding) { return text }
+            // Foundation's detector, limited to the one encoding, decodes lossily: a malformed
+            // sequence becomes U+FFFD and decoding resumes at the next byte that can start one.
+            var converted: NSString?
+            var usedLossy: ObjCBool = false
+            let used = NSString.stringEncoding(
+                for: data,
+                encodingOptions: [.suggestedEncodingsKey: [encoding.rawValue], .useOnlySuggestedEncodingsKey: true,
+                                  .allowLossyKey: true],
+                convertedString: &converted, usedLossyConversion: &usedLossy)
+            guard used == encoding.rawValue, let converted else { return nil }
+            return converted as String
+        }
     }
 
     /// Characters for bytes 0x80-0x9F in Windows-1252; the five it leaves undefined stand for
