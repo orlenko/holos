@@ -411,13 +411,16 @@ may become "there pool requests". Without a spell checker dictionary for the lan
 every word counts as real. The spell checker is asked once per distinct word of a chunk. So no taught or
 invented spelling lands on unrelated words, or next to the heard phrase. The guard
 denies by default and judges each word at its place, lining the chunk's words up with
-the reply's in order: a word may keep its spelling but for case, be replaced by a close
-word, be split or joined, or come and go only as a glue word (articles, prepositions,
+the reply's in order: a word may keep its spelling but for case, be replaced as above,
+be split or joined when it is not a real word ("therapist" is not "the rapist"), or come
+and go only as a glue word (articles, prepositions,
 conjunctions, but not "that" nor the French "le", "la", "les", "en", which are also
 pronouns); a contraction may be spelled out with its own auxiliary ("I've" and "I
 have"); hesitations (the fillers filler removal takes out, so not the "mm" of
-"10 mm") and stutters may go ("You should go" is not "You go"); a number said in words
-may be written in digits with the same value ("twenty one" and "21"). A
+"10 mm") and stutters may go, one copy kept ("You should go" is not "You go"); a number
+said in words
+may be written in digits with the same value ("twenty one" and "21", "quatre-vingt-dix-huit"
+and "98", but not the range "one-two"). A
 negation, modal, auxiliary, abbreviated unit or word of quantity, frequency or degree may
 only be spelled another way as the same one
 ("don't" and "dont"; "I do agree" is not "I do not agree", "should" not "could",

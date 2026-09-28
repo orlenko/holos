@@ -8,7 +8,7 @@ import Testing
                              fixed: "When I press escape, they don't disappear.") == .accept)
     #expect(AIFixGuard.check(original: "I would like to by a new pear of shoes for the whether this weekend.",
                              fixed: "I would like to buy a new pair of shoes for the weather this weekend.") == .accept)
-    #expect(AIFixGuard.check(original: "and then it failed because of a missing semi colon",
+    #expect(AIFixGuard.check(original: "and then it failed because of a missing semicolen",
                              fixed: "and then it failed because of a missing semicolon") == .accept)
     #expect(AIFixGuard.check(original: "meet me there", fixed: "Meet me there.") == .accept)
 }
@@ -382,8 +382,18 @@ let unrelatedWords = [
         == .reject(.implausibleSubstitution))
     #expect(AIFixGuard.check(original: "internationalizaton windows", fixed: "internationalization windows")
         == .accept)
-    // A word split or joined is still one fix.
-    #expect(AIFixGuard.check(original: "add a semi colon here", fixed: "add a semicolon here") == .accept)
+    // A word the language does not know, split or joined, is still one fix.
+    #expect(AIFixGuard.check(original: "go tothe store", fixed: "go to the store") == .accept)
+    #expect(AIFixGuard.check(original: "it runs onobunto", fixed: "it runs on ubuntu") == .accept)
+    #expect(AIFixGuard.check(original: "You can not go", fixed: "You cannot go") == .accept)
+    // Real words split or joined are other words, even with the same letters.
+    for (original, fixed) in [("Call the therapist now", "Call the rapist now"),
+                              ("Call the rapist now", "Call the therapist now"),
+                              ("add a semi colon here", "add a semicolon here"), ("It is not able", "It is notable"),
+                              ("then open the get hub page", "then open the GitHub page")] {
+        #expect(AIFixGuard.check(original: original, fixed: fixed, language: "en-US") != .accept,
+                "\(original) -> \(fixed)")
+    }
     // "Onobunto", capitalized mid-sentence, is a name: only its pair may spell it otherwise.
     #expect(AIFixGuard.check(original: "The build runs Onobunto.", fixed: "The build runs on Ubuntu.",
                              taught: [taughtList[4]]) == .accept)
@@ -453,6 +463,13 @@ let unrelatedWords = [
     #expect(AIFixGuard.check(original: "go to the the store", fixed: "go to the store") == .accept)
     #expect(AIFixGuard.check(original: "go to um the store", fixed: "go to the store") == .accept)
     #expect(AIFixGuard.check(original: "go build build it now", fixed: "go build it now") == .accept)
+    // A stutter keeps one copy, even where the limits would let a reply drop two words.
+    let long = "we met today and talked about the budget budget discussion for the next quarter with the whole team today now"
+    #expect(AIFixGuard.words(in: long).count == 20)
+    #expect(AIFixGuard.check(original: long, fixed: long.replacingOccurrences(of: "budget budget", with: "budget"))
+        == .accept)
+    #expect(AIFixGuard.check(original: long, fixed: long.replacingOccurrences(of: "budget budget ", with: ""))
+        != .accept)
 }
 
 @Test func onlyGlueWordsComeAndGoAndModalsStay() {
@@ -632,7 +649,7 @@ func aRealWordIsNotSwappedForAnother(original: String, fixed: String) {
     ("Number won is done.", "Number one is done."), ("Please right it down.", "Please write it down."),
     ("I went their yesterday", "I went there yesterday"), ("I would like to by it", "I would like to buy it"),
     // Case, apostrophes, spacing and numbers.
-    ("Its done", "It's done"), ("a semi colon", "a semicolon"), ("Set width ten height 20.", "Set width 10 height 20."),
+    ("Its done", "It's done"), ("go tothe store", "go to the store"), ("Set width ten height 20.", "Set width 10 height 20."),
 ])
 func aMishearingOfANonWordOrAHomophoneIsFixed(original: String, fixed: String) {
     #expect(AIFixGuard.check(original: original, fixed: fixed, protecting: taughtList, taught: taughtList,
@@ -723,6 +740,12 @@ func aFrenchHomophoneOrNumberIsFixed(original: String, fixed: String) {
     #expect(SpokenWords.numberValue(["ten", "seven"], language: "en-US") == nil)
     #expect(SpokenWords.numberValue(["dix", "deux"], language: "fr-FR") == nil)
     #expect(AIFixGuard.check(original: "pages 1-2", fixed: "pages 1 2") == .reject(.changedStructure))
+    // Only words that say one number together lose their hyphens: "one-two" is a range.
+    #expect(AIFixGuard.check(original: "Set range one-two", fixed: "Set range one two") == .reject(.changedStructure))
+    #expect(AIFixGuard.numberHyphensAsSpaces("range one-two, then twenty-one", language: "en-US")
+        == "range one-two, then twenty one")
+    #expect(AIFixGuard.numberHyphensAsSpaces("dix-sept-huit and quatre-vingt-dix-huit", language: "fr-FR")
+        == "dix-sept-huit and quatre vingt dix huit")
     // A heard word is not said by its opposite: "unable" is a real word, so a pair taught for "enable" does not
     // replace it.
     #expect(AIFixReference.matches(of: "enable", in: "unable").isEmpty)

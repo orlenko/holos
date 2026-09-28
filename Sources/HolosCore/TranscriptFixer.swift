@@ -258,23 +258,34 @@ public enum AIFixGuard {
         return .accept
     }
 
-    /// `text` with each hyphen between two words of a number (`SpokenWords.mayBeInNumber`: "twenty-one",
-    /// "quatre-vingt-dix", "vingt-et-un") made a space, for the structure check.
+    /// `text` with the hyphens inside one number spelled in words made spaces, for the structure check: the words
+    /// joined by hyphens must say one number together (`SpokenWords.numberValue`: "twenty-one", "quatre-vingt-dix",
+    /// "vingt-et-un"). "one-two" is a range, as is "1-2".
     static func numberHyphensAsSpaces(_ text: String, language: String?) -> String {
         let found = text.matches(of: wordPattern)
         guard found.count > 1 else { return text }
+        // Number words only: digits are not spelled.
+        func spelled(_ word: Substring) -> Bool {
+            !word.allSatisfy(\.isNumber) && SpokenWords.mayBeInNumber(normalized(word), language: language)
+        }
+        func hyphen(after index: Int) -> Bool {
+            text[found[index].range.upperBound..<found[index + 1].range.lowerBound] == "-"
+                && spelled(found[index].output) && spelled(found[index + 1].output)
+        }
         var result = ""
         var cursor = text.startIndex
-        for (previous, next) in zip(found, found.dropFirst()) {
-            let gap = text[previous.range.upperBound..<next.range.lowerBound]
-            result += text[cursor..<previous.range.upperBound]
-            // Number words only: "1-2" is a range.
-            func spelled(_ word: Substring) -> Bool {
-                !word.allSatisfy(\.isNumber) && SpokenWords.mayBeInNumber(normalized(word), language: language)
+        var start = 0
+        while start < found.count {
+            var end = start
+            while end + 1 < found.count && hyphen(after: end) { end += 1 }
+            let run = found[start...end]
+            if end > start,
+               SpokenWords.numberValue(run.map { normalized($0.output) }, language: language) != nil {
+                result += text[cursor..<run.first!.range.lowerBound]
+                result += run.map { String($0.output) }.joined(separator: " ")
+                cursor = run.last!.range.upperBound
             }
-            let inNumber = spelled(previous.output) && spelled(next.output)
-            result += gap == "-" && inNumber ? " " : String(gap)
-            cursor = next.range.lowerBound
+            start = end + 1
         }
         return result + text[cursor...]
     }
@@ -443,15 +454,17 @@ public enum AIFixGuard {
     /// mishearing. Nothing is allowed but what is listed, each at its place: `old` and `new` must line up, in
     /// order, as words kept but for their case; one word replaced by one (`SpokenWords.mayReplace`: a real word of
     /// `lexicon` only by a listed homophone, a word it does not know by a close word, and a negation, modal,
-    /// quantity, pronoun or number only by the same one or a listed homophone); one word split in two or three or
-    /// joined from them (`SpokenWords.isCloseSplit`), saying together what they said (`SpokenWords.Meaning.all`),
-    /// with other letters only where a word `lexicon` does not know is split or joined with glue words ("a bundu"
-    /// and "ubuntu", not "a line" and "alone"); a number said in words written in digits or the reverse, with the
-    /// same value (`SpokenWords.numberValue`: "twenty one" and "21"); glue words added (`SpokenWords.isGlue`: "the", "to",
-    /// "de"); and glue words, hesitations (`FillerWords.isFiller`: "um", not the "mm" of "10 mm") or a stutter ("I
-    /// I", "build build", not "no no" nor "10 10", `SpokenWords.keepsRepeats`) dropped. `names` flags the words of
-    /// each side that may be names (`names(in:)`): a name changes only in case or with the same letters ("Jai" and
-    /// "J'ai", "Git Hub" and "GitHub"); a taught pair alone may spell one otherwise (`plausibleReply`). A glue word
+    /// quantity, pronoun or number only by the same one or a listed homophone); a word `lexicon` does not know split
+    /// in two or three, or joined with others and glue words (`SpokenWords.isCloseSplit`: "onobunto" and "on
+    /// ubuntu", "a bundu" and "ubuntu"), saying together what they said (`SpokenWords.Meaning.all`), while real
+    /// words split or joined are other words ("therapist" is not "the rapist", "a line" not "alone") but for a
+    /// negation or modal spelled another way ("can not" and "cannot"); a number said in words written in digits or
+    /// the reverse, with the same value (`SpokenWords.numberValue`: "twenty one" and "21"); glue words added
+    /// (`SpokenWords.isGlue`: "the", "to", "de"); and glue words, hesitations (`FillerWords.isFiller`: "um", not the
+    /// "mm" of "10 mm") or a stutter ("I I", "build build", not "no no" nor "10 10", `SpokenWords.keepsRepeats`)
+    /// dropped, one copy of it kept. `names` flags the words of each side that may be names (`names(in:)`): a name
+    /// changes only in case or apostrophes ("Jai" and "J'ai"); a taught pair alone may spell one otherwise
+    /// (`plausibleReply`). A glue word
     /// dropped and another added in the same place are one replaced ("to" by "from"), judged as such. So "he" does
     /// not become "she", "10 and 20" not "20 and 10", "not" does not move, and "Windows" does not become "Ubuntu".
     /// `protecting` false judges spelling alone: close words (any number for another), splits and joins, glue and
@@ -480,22 +493,29 @@ public enum AIFixGuard {
                 || b.count == 1 && SpokenWords.expands(b[0], to: a, language: language) { return true }
             guard SpokenWords.isCloseSplit(a.joined(), b.joined()) else { return false }
             guard protecting else { return true }
-            if SpokenWords.letters(a.joined()) != SpokenWords.letters(b.joined()) {
-                // Only spacing may change for a name or a real word; a word the language does not know may be
-                // split, or joined with glue words ("a bundu" and "ubuntu"), but "a line" is not "alone".
-                if named { return false }
-                guard a.contains(where: { !lexicon.isWord($0) }),
-                      a.allSatisfy({ !lexicon.isWord($0) || isGlue($0) }) else { return false }
+            let said = a.flatMap { SpokenWords.meaning(of: $0, language: language).all }.sorted()
+            guard said == b.flatMap({ SpokenWords.meaning(of: $0, language: language).all }).sorted() else {
+                return false
             }
-            return a.flatMap { SpokenWords.meaning(of: $0, language: language).all }.sorted()
-                == b.flatMap { SpokenWords.meaning(of: $0, language: language).all }.sorted()
+            let sameLetters = SpokenWords.letters(a.joined()) == SpokenWords.letters(b.joined())
+            if named && !sameLetters { return false }
+            // Real words split or joined are other words, even with the same letters: "therapist" is not "the
+            // rapist", "a line" not "alone". A word the language does not know may be split, or joined with glue
+            // words ("a bundu" and "ubuntu"); a negation or modal only spelled another way ("can not" and "cannot").
+            if a.contains(where: { !lexicon.isWord($0) }) && a.allSatisfy({ !lexicon.isWord($0) || isGlue($0) }) {
+                return true
+            }
+            return sameLetters && !said.isEmpty
         }
         func drops(_ index: Int) -> Bool {
             let word = old[index]
             if names.old[index] { return false }
             if isGlue(word) || FillerWords.isFiller(word, language: language) { return true }
-            let previous = index > 0 ? old[index - 1] : left, next = index + 1 < old.count ? old[index + 1] : right
-            guard word == previous || word == next else { return false }
+            // A stutter keeps one copy: a word goes as the copy before the next one, which stays or goes the same
+            // way, or after `left`, the word kept before these. So the last copy stays: "budget budget" is
+            // "budget", never "".
+            let next = index + 1 < old.count ? old[index + 1] : right
+            guard word == next || (index == 0 && word == left) else { return false }
             return !protecting || !SpokenWords.keepsRepeats(word, language: language)
         }
         func adds(_ index: Int) -> Bool { !names.new[index] && isGlue(new[index]) }
@@ -676,7 +696,7 @@ public enum AIFixGuard {
         text.matches(of: wordPattern).map { normalized($0.output) }
     }
 
-    /// Word-level Levenshtein distance, where joining two words into one ("semi colon" → "semicolon") or splitting
+    /// Word-level Levenshtein distance, where joining two words into one ("on ubuntu" → "onubuntu") or splitting
     /// one into two also counts as a single edit.
     static func editDistance(_ a: [String], _ b: [String]) -> Int {
         editTable(a, b)[a.count][b.count]
