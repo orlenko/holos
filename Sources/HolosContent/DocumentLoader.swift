@@ -832,10 +832,16 @@ public enum HTMLReader {
             inline = ""
         }
 
-        mutating func emit(_ text: String) {
+        /// Writes a block of text, the pending list marker ("3. ") before it: a paragraph, the
+        /// next of a table cell's paragraphs, or, with `heading`, a section heading outside cells
+        /// (so "<ol><li><h2>Install</h2></li></ol>" gives the section, and its chapter, "1. Install").
+        /// Every block the walker writes goes through here, so no block drops an item's number.
+        mutating func emit(_ text: String, heading level: Int? = nil) {
             guard !text.isEmpty else { return }
             if cell != nil {
                 cell?.append((marker ?? "") + text)
+            } else if let level {
+                builder.heading((marker ?? "") + text, level: level)
             } else {
                 builder.paragraph((marker ?? "") + text)
             }
@@ -850,11 +856,12 @@ public enum HTMLReader {
             guard node.kind == .element else { return }
             if isSkipped(node) { return }
             let name = self.name(of: node)
-            // A heading in a table cell is part of the cell's text, read as a block.
+            // A heading in a table cell is part of the cell's text, read as a block. Elsewhere it
+            // starts a section, an ordered item's number before it.
             let heading = name.count == 2 && name.first == "h" ? Int(String(name.last!)).flatMap { (1...6).contains($0) ? $0 : nil } : nil
             if let level = heading, cell == nil {
                 flush()
-                builder.heading(collapse(text(of: node)), level: level)
+                emit(collapse(text(of: node)), heading: level)
                 return
             }
             // A cell is read like the rest of the page (lists keep their numbers, blocks stay

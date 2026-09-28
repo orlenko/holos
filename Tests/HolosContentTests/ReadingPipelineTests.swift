@@ -559,15 +559,16 @@ import Testing
     @Test func locksStayConservativeWhileCachesKeepDistinctSpellings() async throws {
         let parent = try root()
         defer { try? FileManager.default.removeItem(at: parent) }
-        let unknown: ReadingPathIdentity.CaseQuery = { _ in nil }
-        let insensitive: ReadingPathIdentity.CaseQuery = { _ in false }
-        let sensitive: ReadingPathIdentity.CaseQuery = { _ in true }
+        // Normalization as on APFS; case as each query says.
+        let unknown: ReadingPathIdentity.VolumeQuery = { _ in .init(caseSensitive: nil, equatesNormalization: true) }
+        let insensitive: ReadingPathIdentity.VolumeQuery = { _ in .init(caseSensitive: false, equatesNormalization: true) }
+        let sensitive: ReadingPathIdentity.VolumeQuery = { _ in .init(caseSensitive: true, equatesNormalization: true) }
         let upper = parent.appendingPathComponent("Book.m4a")
         let lower = parent.appendingPathComponent("book.m4a")
         let decomposed = parent.appendingPathComponent("Cafe\u{301}.m4a")
         let composed = parent.appendingPathComponent("Caf\u{E9}.m4a")
-        func key(_ url: URL, _ rule: ReadingPathIdentity.Rule, _ query: @escaping ReadingPathIdentity.CaseQuery) -> String {
-            ReadingPathIdentity.key(url, rule, caseSensitivity: query)
+        func key(_ url: URL, _ rule: ReadingPathIdentity.Rule, _ query: @escaping ReadingPathIdentity.VolumeQuery) -> String {
+            ReadingPathIdentity.key(url, rule, volume: query)
         }
         #expect(key(upper, .lock, unknown) == key(lower, .lock, unknown))
         #expect(key(upper, .exact, unknown) != key(lower, .exact, unknown))
@@ -576,14 +577,14 @@ import Testing
         #expect(key(upper, .lock, insensitive) == key(lower, .lock, insensitive))
         #expect(key(upper, .exact, insensitive) == key(lower, .exact, insensitive))
         for query in [unknown, insensitive, sensitive] {
-            #expect(key(decomposed, .exact, query) == key(composed, .exact, query))
+            #expect(key(decomposed, .exact, query).utf8.elementsEqual(key(composed, .exact, query).utf8))
         }
 
         let readings = parent.appendingPathComponent("Readings")
         try FileManager.default.createDirectory(at: readings, withIntermediateDirectories: false)
-        func cache(_ url: URL, _ query: @escaping ReadingPathIdentity.CaseQuery) throws -> URL {
+        func cache(_ url: URL, _ query: @escaping ReadingPathIdentity.VolumeQuery) throws -> URL {
             try ReadingOutput.resolve(output: url.path, name: "x.m4a", identity: "i", readingsRoot: readings,
-                                      fileManager: .default, caseSensitivity: query).0.workDirectory
+                                      fileManager: .default, volume: query).0.workDirectory
         }
         #expect(try cache(upper, unknown) != cache(lower, unknown))
         #expect(try cache(upper, insensitive) == cache(lower, insensitive))
@@ -597,13 +598,84 @@ import Testing
         // Removed, so the host volume's own case rules (an existing file resolves to its on-disk
         // name) do not stand in for the simulated ones.
         try FileManager.default.removeItem(at: upper)
-        func same(_ url: URL, _ query: @escaping ReadingPathIdentity.CaseQuery) -> Bool {
-            manifest.sameSettings(voiceIdentifier: voice, rate: nil, metadata: metadata, output: url, caseSensitivity: query)
+        func same(_ url: URL, _ query: @escaping ReadingPathIdentity.VolumeQuery) -> Bool {
+            manifest.sameSettings(voiceIdentifier: voice, rate: nil, metadata: metadata, output: url, volume: query)
         }
         #expect(same(upper, unknown))
         #expect(!same(parent.appendingPathComponent("BOOK.m4a"), unknown))
         #expect(!same(parent.appendingPathComponent("BOOK.m4a"), sensitive))
         #expect(same(parent.appendingPathComponent("BOOK.m4a"), insensitive))
+    }
+
+    /// On a volume that may keep a name's NFC and NFD spellings apart (a byte-preserving network
+    /// share), "Café.m4a" spelled each way is two names: they share the conservative lock, but
+    /// never an exact identity, and `--resume` of a reading saved under one does not accept the
+    /// other. On APFS and HFS+ (known to equate them) they are one name throughout. A file URL
+    /// carries one spelling already (Foundation decomposes its path), so its two spellings are
+    /// the one file this app writes, and share a cache on any volume.
+    @Test func exactIdentitiesKeepNormalizationUnlessTheVolumeEquatesIt() async throws {
+        let parent = try root()
+        defer { try? FileManager.default.removeItem(at: parent) }
+        let keepsBytes: ReadingPathIdentity.VolumeQuery = { _ in .init(caseSensitive: true, equatesNormalization: nil) }
+        let equates: ReadingPathIdentity.VolumeQuery = { _ in .init(caseSensitive: true, equatesNormalization: true) }
+        let composedPath = parent.path + "/Caf\u{E9}.m4a"
+        let decomposedPath = parent.path + "/Cafe\u{301}.m4a"
+        func key(_ path: String, _ rule: ReadingPathIdentity.Rule, _ query: @escaping ReadingPathIdentity.VolumeQuery) -> Data {
+            Data(ReadingPathIdentity.key(path: path, rule, volume: query).utf8)
+        }
+        #expect(key(composedPath, .lock, keepsBytes) == key(decomposedPath, .lock, keepsBytes))
+        #expect(key(composedPath, .exact, keepsBytes) != key(decomposedPath, .exact, keepsBytes))
+        let spelled = Data("/Caf\u{E9}.m4a".utf8)
+        #expect(key(composedPath, .exact, keepsBytes).suffix(spelled.count) == spelled)
+        #expect(key(composedPath, .exact, equates) == key(decomposedPath, .exact, equates))
+        #expect(ReadingPathIdentity.normalizedName("CAFE\u{301}", caseSensitive: false, composed: false)
+            .unicodeScalars.elementsEqual("cafe\u{301}".unicodeScalars))
+
+        // File URLs: one spelling, one cache, and one file on disk.
+        let composed = URL(fileURLWithPath: composedPath)
+        let decomposed = URL(fileURLWithPath: decomposedPath)
+        #expect(Data(composed.path.utf8) == Data(decomposed.path.utf8))
+        let readings = parent.appendingPathComponent("Readings")
+        try FileManager.default.createDirectory(at: readings, withIntermediateDirectories: false)
+        func cache(_ path: String, _ query: @escaping ReadingPathIdentity.VolumeQuery) throws -> URL {
+            try ReadingOutput.resolve(output: path, name: "x.m4a", identity: "i", readingsRoot: readings,
+                                      fileManager: .default, volume: query).0.workDirectory
+        }
+        #expect(try cache(composedPath, keepsBytes) == cache(decomposedPath, keepsBytes))
+        #expect(try cache(composedPath, equates) == cache(decomposedPath, equates))
+
+        // `--resume` compares the saved output byte for byte, then by exact identity.
+        let pipeline = ReadingPipeline(renderer: FakeRenderer(), joiner: FakeJoiner())
+        let place = ReadingLocation(workDirectory: parent.appendingPathComponent("work"), output: composed)
+        let made = try await pipeline.render(script: script(1), voiceIdentifier: voice, metadata: metadata,
+                                             location: place).manifest
+        let names = try FileManager.default.contentsOfDirectory(atPath: parent.path).filter { $0.hasPrefix("Caf") }
+        #expect(names.map { Data($0.utf8) } == [Data("Cafe\u{301}.m4a".utf8)])
+        // Removed, so the host volume's own rules (an existing file resolves to its on-disk name)
+        // do not stand in for the simulated ones.
+        try FileManager.default.removeItem(at: composed)
+        // A manifest saved with the NFC spelling (as another program might have named the file).
+        var fields = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(made)) as? [String: Any])
+        fields["output"] = composedPath
+        let saved = try JSONDecoder().decode(ReadingManifest.self, from: JSONSerialization.data(withJSONObject: fields))
+        #expect(Data(saved.output.utf8) == Data(composedPath.utf8))
+        func same(_ url: URL, _ query: @escaping ReadingPathIdentity.VolumeQuery) -> Bool {
+            saved.sameSettings(voiceIdentifier: voice, rate: nil, metadata: metadata, output: url, volume: query)
+        }
+        #expect(!same(decomposed, keepsBytes))
+        #expect(same(decomposed, equates))
+        #expect(made.sameSettings(voiceIdentifier: voice, rate: nil, metadata: metadata, output: composed, volume: keepsBytes))
+    }
+
+    /// The volume's format tells whether it equates NFC and NFD names: APFS and HFS+ do; anything
+    /// else, or a folder whose volume cannot be read, is unknown.
+    @Test func normalizationRulesComeFromTheVolumeFormat() throws {
+        let parent = try root()
+        defer { try? FileManager.default.removeItem(at: parent) }
+        let type = try #require(ReadingPathIdentity.fileSystemType(parent.path))
+        #expect(ReadingPathIdentity.volumeEquatesNormalization(parent.path)
+            == (["apfs", "hfs"].contains(type) ? true : nil))
+        #expect(ReadingPathIdentity.volumeEquatesNormalization(parent.appendingPathComponent("missing/folder").path) == nil)
     }
 
     /// A second reading for another spelling of the same file (NFD for NFC, and other case where
@@ -713,6 +785,89 @@ import Testing
 
     private func joinTemporaries(_ folder: URL) throws -> [String] {
         try FileManager.default.contentsOfDirectory(atPath: folder.path).filter { $0.hasPrefix(ReadingTemporaries.joinPrefix) }
+    }
+
+    private struct InjectedFailure: Error {}
+
+    /// A new reading's cache appears whole or not at all: a failure at any step of creating it
+    /// (a full disk while writing `source.txt`, say) removes everything that run created, so the
+    /// same command simply works again.
+    @Test func aFailedCacheCreationLeavesNothingBehind() async throws {
+        for step in ReadingCache.Step.allCases {
+            let parent = try root()
+            defer { try? FileManager.default.removeItem(at: parent) }
+            let place = ReadingLocation(workDirectory: parent.appendingPathComponent("Output-0123456789abcdef"),
+                                        output: parent.appendingPathComponent("Book.m4a"))
+            let renderer = FakeRenderer()
+            let failing = ReadingPipeline(renderer: renderer, joiner: FakeJoiner(), initializationFault: {
+                if $0 == step { throw InjectedFailure() }
+            })
+            await #expect(throws: InjectedFailure.self, "step \(step)") {
+                try await failing.render(script: script(2), voiceIdentifier: voice, metadata: metadata, location: place)
+            }
+            #expect(renderer.calls.isEmpty)
+            let left = try FileManager.default.contentsOfDirectory(atPath: parent.path)
+                .filter { !($0.hasPrefix(".holos-") && $0.hasSuffix(".lock")) }
+            #expect(left.isEmpty, "step \(step): \(left)")
+
+            let retried = try await ReadingPipeline(renderer: renderer, joiner: FakeJoiner())
+                .render(script: script(2), voiceIdentifier: voice, metadata: metadata, location: place)
+            #expect(retried.manifest.status == "complete", "step \(step)")
+        }
+    }
+
+    /// What a run killed while creating a cache leaves goes on the next run: its staging folder
+    /// (this reading's, or another's that no run is making), and a cache an earlier version left
+    /// in place without a manifest. A staging folder whose reading is being made, and a folder
+    /// with anything else in it, are kept.
+    @Test func leftoversOfAnInterruptedCacheCreationAreRemovedOnTheNextRun() async throws {
+        let parent = try root()
+        defer { try? FileManager.default.removeItem(at: parent) }
+        let place = ReadingLocation(workDirectory: parent.appendingPathComponent("Output-0123456789abcdef"),
+                                    output: parent.appendingPathComponent("Book.m4a"))
+        func staging(for directory: URL) throws -> URL {
+            let url = parent.appendingPathComponent(
+                "\(ReadingCache.stagingPrefix)\(ReadingDirectoryLock.key(for: directory))-\(UUID().uuidString)")
+            try FileManager.default.createDirectory(at: url.appendingPathComponent("parts"), withIntermediateDirectories: true)
+            try Data("text".utf8).write(to: url.appendingPathComponent("source.txt"))
+            return url
+        }
+        let own = try staging(for: place.workDirectory)
+        let idle = try staging(for: parent.appendingPathComponent("Output-fedcba9876543210"))
+        let busyDirectory = parent.appendingPathComponent("Output-00000000000000ff")
+        let busyLock = try ReadingDirectoryLock.acquire(for: busyDirectory)
+        let busy = try staging(for: busyDirectory)
+        // An earlier version's cache, cut off before its manifest was saved.
+        try FileManager.default.createDirectory(at: place.workDirectory.appendingPathComponent("parts"),
+                                                withIntermediateDirectories: true)
+        try Data("text".utf8).write(to: place.workDirectory.appendingPathComponent("source.txt"))
+        try Data("{".utf8).write(to: place.workDirectory.appendingPathComponent(ReadingTemporaries.manifestName()))
+
+        let result = try await ReadingPipeline(renderer: FakeRenderer(), joiner: FakeJoiner())
+            .render(script: script(2), voiceIdentifier: voice, metadata: metadata, location: place)
+        #expect(result.manifest.status == "complete")
+        #expect(!FileManager.default.fileExists(atPath: own.path))
+        #expect(!FileManager.default.fileExists(atPath: idle.path))
+        #expect(FileManager.default.fileExists(atPath: busy.path))
+        withExtendedLifetime(busyLock) {}
+
+        // Anything besides what creating a cache writes, or a folder not named as caches are, is kept.
+        let kept = [
+            (parent.appendingPathComponent("Output-1111111111111111"), "notes.txt"),
+            (parent.appendingPathComponent("work"), nil),
+        ]
+        for (directory, extra) in kept {
+            try FileManager.default.createDirectory(at: directory.appendingPathComponent("parts"),
+                                                    withIntermediateDirectories: true)
+            if let extra { try Data("mine".utf8).write(to: directory.appendingPathComponent(extra)) }
+            let other = ReadingLocation(workDirectory: directory, output: parent.appendingPathComponent("Other.m4a"))
+            await #expect(throws: HolosError.self) {
+                try await ReadingPipeline(renderer: FakeRenderer(), joiner: FakeJoiner())
+                    .render(script: script(2), voiceIdentifier: voice, metadata: metadata, location: other)
+            }
+            #expect(FileManager.default.fileExists(atPath: directory.appendingPathComponent("parts").path))
+            if let extra { #expect(FileManager.default.fileExists(atPath: directory.appendingPathComponent(extra).path)) }
+        }
     }
 
     @Test func streamedChecksumMatchesWholeFileChecksum() throws {

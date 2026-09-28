@@ -266,6 +266,30 @@ import Testing
         ])
     }
 
+    /// Every block in an ordered item takes the item's number when it comes first: a heading (so
+    /// the section and its chapter are "1. Install"), a definition term, a figure caption, and a
+    /// table caption alike.
+    @Test func headingsAndCaptionsInListItemsKeepTheItemsNumber() {
+        let html = """
+        <html><body>
+        <ol><li><h2>Install</h2><p>Download it.</p></li><li><h2>Run</h2><p>Open it.</p></li></ol>
+        <ol start="3"><li><dl><dt>Term</dt><dd>Meaning</dd></dl></li>
+        <li><figure><figcaption>Figure caption</figcaption></figure></li>
+        <li><table><caption>Table caption</caption><tr><td>Cell</td></tr></table></li>
+        <li><h3>   </h3>Text after an empty heading</li></ol>
+        </body></html>
+        """
+        let document = HTMLReader.document(from: Data(html.utf8))
+        #expect(document.sections.map(\.heading) == ["1. Install", "2. Run"])
+        #expect(document.sections.map(\.paragraphs) == [
+            ["Download it."],
+            ["Open it.", "3. Term", "Meaning", "4. Figure caption", "5. Table caption", "Cell",
+             "6. Text after an empty heading"],
+        ])
+        let chapters = ReadingScript(document: document).segments.compactMap(\.chapter)
+        #expect(chapters == ["1. Install", "2. Run"])
+    }
+
     @Test func extremeListNumbersNeverTrap() {
         let html = """
         <html><body>

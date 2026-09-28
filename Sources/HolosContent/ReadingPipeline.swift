@@ -84,13 +84,14 @@ public struct ReadingManifest: Codable, Sendable, Equatable {
     /// The output compares by exact identity (see `ReadingPathIdentity.Rule.exact`): another
     /// spelling resumes this reading only when it names the same file.
     func sameSettings(voiceIdentifier: String, rate: Float?, metadata: AudioBookMetadata, output: URL,
-                      caseSensitivity: ReadingPathIdentity.CaseQuery = ReadingPathIdentity.volumeCaseSensitivity) -> Bool {
+                      volume: ReadingPathIdentity.VolumeQuery = ReadingPathIdentity.volumeRules) -> Bool {
         self.voiceIdentifier == voiceIdentifier && self.rate == rate
             && title == metadata.title && author == metadata.author && language == metadata.language
             && comment == metadata.comment && format == .current
-            && (self.output == output.path
-                || ReadingPathIdentity.key(URL(fileURLWithPath: self.output), .exact, caseSensitivity: caseSensitivity)
-                    == ReadingPathIdentity.key(output, .exact, caseSensitivity: caseSensitivity))
+            // Compared byte for byte: Swift's `==` takes NFC and NFD spellings for one string.
+            && (self.output.utf8.elementsEqual(output.path.utf8)
+                || ReadingPathIdentity.key(path: self.output, .exact, volume: volume).utf8
+                    .elementsEqual(ReadingPathIdentity.key(output, .exact, volume: volume).utf8))
     }
 }
 
@@ -137,19 +138,25 @@ public struct AudioBookJoiner: ReadingAudioJoiner {
     private let renderer: any ReadingAudioRenderer
     private let joiner: any ReadingAudioJoiner
     private let exclusiveRename: ReadingPublisher.ExclusiveRename
+    /// Called after each step of creating a new reading's cache; tests fail one to check that
+    /// nothing is left behind.
+    private let initializationFault: (ReadingCache.Step) throws -> Void
 
     public init(renderer: any ReadingAudioRenderer = NativeSpeechRenderer(),
                 joiner: any ReadingAudioJoiner = AudioBookJoiner()) {
         self.renderer = renderer
         self.joiner = joiner
         self.exclusiveRename = ReadingPublisher.systemExclusiveRename
+        self.initializationFault = { _ in }
     }
 
     init(renderer: any ReadingAudioRenderer, joiner: any ReadingAudioJoiner,
-         exclusiveRename: @escaping ReadingPublisher.ExclusiveRename) {
+         exclusiveRename: @escaping ReadingPublisher.ExclusiveRename = ReadingPublisher.systemExclusiveRename,
+         initializationFault: @escaping (ReadingCache.Step) throws -> Void = { _ in }) {
         self.renderer = renderer
         self.joiner = joiner
         self.exclusiveRename = exclusiveRename
+        self.initializationFault = initializationFault
     }
 
     /// The cache key for a reading with an explicit output: the text and every setting that
@@ -180,6 +187,8 @@ public struct AudioBookJoiner: ReadingAudioJoiner {
         let writerLock = try ReadingDirectoryLock.acquire(for: directory)
         let outputLock = try ReadingDirectoryLock.acquire(output: output, beside: directory)
         defer { withExtendedLifetime((writerLock, outputLock)) {} }
+        // Caches that runs killed while creating them left behind (see `ReadingCache.create`).
+        ReadingCache.sweep(beside: directory)
         let planned = script.parts(maxUTF16Units: maxPartUTF16Units)
         let sourceHash = sha256(Data(text.utf8))
         let sourceURL = directory.appendingPathComponent("source.txt")
@@ -215,17 +224,17 @@ public struct AudioBookJoiner: ReadingAudioJoiner {
                 throw HolosError.invalidInput("Reading part boundaries differ from the saved reading.")
             }
         } else {
+            // A cache an earlier version left half made, with no manifest, goes, and the
+            // locations are checked as for a new reading (`validate` skipped them while it was there).
+            if ReadingCache.removeAbandoned(directory) {
+                try Self.checkLocation(directory: directory, output: output, resume: false)
+            }
             guard !FileManager.default.fileExists(atPath: directory.path) else {
                 throw HolosError.invalidInput("A reading already exists at \(directory.path). Use --resume to continue it.")
             }
             guard !FileManager.default.fileExists(atPath: output.path) else {
                 throw HolosError.invalidInput("Reading output already exists: \(output.path)")
             }
-            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false,
-                                                    attributes: [.posixPermissions: 0o700])
-            try FileManager.default.createDirectory(at: directory.appendingPathComponent("parts"),
-                                                    withIntermediateDirectories: false)
-            try Data(text.utf8).write(to: sourceURL, options: [.withoutOverwriting])
             manifest = ReadingManifest(kind: ReadingManifest.readingKind,
                                        schemaVersion: ReadingManifest.currentSchemaVersion,
                                        sourceSHA256: sourceHash, voiceIdentifier: voiceIdentifier, rate: rate,
@@ -233,7 +242,8 @@ public struct AudioBookJoiner: ReadingAudioJoiner {
                                        comment: metadata.comment, format: .current, output: output.path,
                                        outputSHA256: nil, duration: nil, chapters: [],
                                        status: "incomplete", parts: expected)
-            try save(manifest, to: manifestURL)
+            try ReadingCache.create(directory, source: Data(text.utf8), manifest: manifest,
+                                    fault: initializationFault)
         }
 
         // This run's name for the joined file. Temporaries an interrupted earlier run left behind
@@ -549,8 +559,21 @@ final class ReadingDirectoryLock {
                     beside: directory, busy: "Another reading is already being made for \(output.path).")
     }
 
+    /// The folder a cache's locks are kept in: the cache's parent, links resolved.
+    static func folder(beside directory: URL) -> URL {
+        directory.standardizedFileURL.resolvingSymlinksInPath().deletingLastPathComponent()
+    }
+
+    /// The lock of the cache whose `key` is given, in `folder`, when no run holds it; else nil.
+    static func acquireIfIdle(key: String, in folder: URL) -> ReadingDirectoryLock? {
+        try? acquire(name: ".holos-reading-\(key).lock", in: folder, busy: "")
+    }
+
     private static func acquire(name: String, beside directory: URL, busy: String) throws -> ReadingDirectoryLock {
-        let parent = directory.standardizedFileURL.resolvingSymlinksInPath().deletingLastPathComponent()
+        try acquire(name: name, in: folder(beside: directory), busy: busy)
+    }
+
+    private static func acquire(name: String, in parent: URL, busy: String) throws -> ReadingDirectoryLock {
         let path = parent.appendingPathComponent(name).path
         let descriptor = open(path, O_CREAT | O_RDWR | O_CLOEXEC | O_NOFOLLOW, 0o600)
         guard descriptor >= 0 else {
@@ -583,51 +606,76 @@ final class ReadingDirectoryLock {
 /// name a file follow the filesystem's own rules rather than the path's spelling:
 /// - the parent folder is its real path (`realpath(3)`: links resolved, "..", and on macOS each
 ///   component's on-disk case);
-/// - the last component (which may not exist yet) is put in Unicode canonical composition (APFS
-///   and HFS+ treat NFC and NFD spellings as one name), and case-folded as `Rule` says.
+/// - the last component (which may not exist yet) is put in Unicode canonical composition and
+///   case-folded as `Rule` and the volume's `NameRules` say.
 enum ReadingPathIdentity {
-    /// How a name's case counts.
+    /// How a name's case and Unicode normalization count.
     enum Rule {
-        /// For locks: case is folded unless the volume is known to tell names apart by case, so
-        /// every spelling that may name one file shares the lock. On a case-sensitive volume
-        /// whose rules cannot be told, "Book.m4a" and "book.m4a" share a lock, which only
-        /// serializes them.
+        /// For locks: case is folded unless the volume is known to tell names apart by case, and
+        /// NFC and NFD spellings are always one, so every spelling that may name one file shares
+        /// the lock. On a volume whose rules cannot be told, "Book.m4a" and "book.m4a" (or one
+        /// name in NFC and NFD) share a lock, which only serializes them.
         case lock
         /// For render caches and `--resume`: case is folded only when the volume is known to
-        /// ignore it, so two spellings share a cache only when they name one file.
+        /// ignore it, and a name is composed only when the volume is known to treat NFC and NFD
+        /// spellings as one (APFS, HFS+), so two spellings share a cache only when they name
+        /// one file.
         case exact
     }
 
-    /// Whether the volume holding a folder tells names apart by case; nil when unknown.
-    typealias CaseQuery = (String) -> Bool?
+    /// How the volume holding a folder compares names; nil where that cannot be told.
+    struct NameRules: Equatable {
+        /// Whether "Book" and "book" are two names.
+        var caseSensitive: Bool?
+        /// Whether a name's NFC and NFD spellings name one file.
+        var equatesNormalization: Bool?
+    }
 
-    static func key(_ url: URL, _ rule: Rule = .lock, caseSensitivity: CaseQuery = volumeCaseSensitivity) -> String {
-        let path = url.standardizedFileURL.path
+    typealias VolumeQuery = (String) -> NameRules
+
+    /// A file URL's path is already in one normalization: Foundation gives its file system
+    /// representation, decomposed (an NFC "Café.m4a" becomes NFD), and that is the name every
+    /// file this app creates at the URL gets. Both spellings of a URL therefore name one file on
+    /// any volume, and share every key.
+    static func key(_ url: URL, _ rule: Rule = .lock, volume: VolumeQuery = volumeRules) -> String {
+        key(path: url.standardizedFileURL.path, rule, volume: volume)
+    }
+
+    /// The identity of `path`, spelled as given.
+    static func key(path: String, _ rule: Rule = .lock, volume: VolumeQuery = volumeRules) -> String {
         // An existing path resolves whole, so a link in the last component is followed too.
         let resolved = realPath(path) ?? path
         let name = (resolved as NSString).lastPathComponent
         let parentPath = (resolved as NSString).deletingLastPathComponent
         let parent = realPath(parentPath)
             ?? URL(fileURLWithPath: parentPath).standardizedFileURL.resolvingSymlinksInPath().path
-        let sensitivity = caseSensitivity(parent)
-        let keepsCase = switch rule {
-        case .lock: sensitivity == true
-        case .exact: sensitivity != false
+        let rules = volume(parent)
+        let (keepsCase, composes) = switch rule {
+        case .lock: (rules.caseSensitive == true, true)
+        case .exact: (rules.caseSensitive != false, rules.equatesNormalization == true)
         }
-        let folded = normalizedName(name, caseSensitive: keepsCase)
+        let folded = normalizedName(name, caseSensitive: keepsCase, composed: composes)
         return parent == "/" ? "/" + folded : parent + "/" + folded
     }
 
-    /// `name` as the volume compares names: composed, and case-folded unless `caseSensitive`.
-    static func normalizedName(_ name: String, caseSensitive: Bool) -> String {
-        let composed = name.precomposedStringWithCanonicalMapping
-        guard !caseSensitive else { return composed }
-        return composed.folding(options: [.caseInsensitive], locale: nil).precomposedStringWithCanonicalMapping
+    /// `name` as the volume compares names: composed when `composed`, and case-folded unless
+    /// `caseSensitive`. A name not composed keeps its spelling as given.
+    static func normalizedName(_ name: String, caseSensitive: Bool, composed: Bool = true) -> String {
+        let spelled = composed ? name.precomposedStringWithCanonicalMapping : name
+        guard !caseSensitive else { return spelled }
+        let folded = spelled.folding(options: [.caseInsensitive], locale: nil)
+        return composed ? folded.precomposedStringWithCanonicalMapping : folded
     }
 
     /// Whether the volume holding `folder` tells names apart by case; false when unknown.
     static func caseSensitive(_ folder: String) -> Bool {
         volumeCaseSensitivity(folder) ?? false
+    }
+
+    /// How the volume holding `folder` compares names, as far as it can be told.
+    static func volumeRules(_ folder: String) -> NameRules {
+        NameRules(caseSensitive: volumeCaseSensitivity(folder),
+                  equatesNormalization: volumeEquatesNormalization(folder))
     }
 
     /// Whether the volume holding `folder` tells names apart by case, as the volume reports it;
@@ -636,6 +684,25 @@ enum ReadingPathIdentity {
         let values = try? URL(fileURLWithPath: folder, isDirectory: true)
             .resourceValues(forKeys: [.volumeSupportsCaseSensitiveNamesKey])
         return values?.volumeSupportsCaseSensitiveNames
+    }
+
+    /// Whether the volume holding `folder` treats a name's NFC and NFD spellings as one file:
+    /// true for APFS and HFS+ (by their format, `statfs`'s `f_fstypename`); nil for any other
+    /// or when it cannot be told (a network share may keep the bytes as given).
+    static func volumeEquatesNormalization(_ folder: String) -> Bool? {
+        guard let type = fileSystemType(folder) else { return nil }
+        return normalizationInsensitiveTypes.contains(type) ? true : nil
+    }
+
+    static let normalizationInsensitiveTypes: Set<String> = ["apfs", "hfs"]
+
+    /// The format name of the volume holding `path` ("apfs", "hfs", "smbfs", "exfat"), or nil.
+    static func fileSystemType(_ path: String) -> String? {
+        var info = statfs()
+        guard statfs(path, &info) == 0 else { return nil }
+        return withUnsafeBytes(of: &info.f_fstypename) { bytes in
+            String(decoding: bytes.prefix { $0 != 0 }, as: UTF8.self)
+        }.lowercased()
     }
 
     private static func realPath(_ path: String) -> String? {
@@ -718,7 +785,7 @@ enum ReadingTemporaries {
         }
     }
 
-    private static func uuid(between prefix: String, and suffix: String, in name: String) -> UUID? {
+    static func uuid(between prefix: String, and suffix: String, in name: String) -> UUID? {
         guard name.hasPrefix(prefix), name.hasSuffix(suffix), name.count > prefix.count + suffix.count else { return nil }
         return UUID(uuidString: String(name.dropFirst(prefix.count).dropLast(suffix.count)))
     }
@@ -732,6 +799,131 @@ enum ReadingTemporaries {
                   metadata.st_uid == getuid() else { continue }
             _ = unlink(path)
         }
+    }
+}
+
+/// Creating a new reading's cache as one step: it is made under a temporary name beside its
+/// place (`.holos-init-<lock key>-<UUID>`), filled (`parts`, `source.txt`, the first manifest), and
+/// only then renamed into place. A cache is therefore never at its place without a manifest, and
+/// a failure removes everything the run created, so the reading can simply be started again.
+enum ReadingCache {
+    /// The steps of `create`, after each of which a test may fail it.
+    enum Step: CaseIterable { case directory, parts, source, manifest }
+
+    static let stagingPrefix = ".holos-init-"
+
+    /// `directory`'s contents, made beside it and renamed into place. Fails, leaving nothing,
+    /// when anything is in the way.
+    static func create(_ directory: URL, source: Data, manifest: ReadingManifest,
+                       fault: (Step) throws -> Void = { _ in }) throws {
+        let folder = ReadingDirectoryLock.folder(beside: directory)
+        let staging = folder.appendingPathComponent(
+            "\(stagingPrefix)\(ReadingDirectoryLock.key(for: directory))-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: staging, withIntermediateDirectories: false,
+                                                attributes: [.posixPermissions: 0o700])
+        do {
+            try fault(.directory)
+            try FileManager.default.createDirectory(at: staging.appendingPathComponent("parts"),
+                                                    withIntermediateDirectories: false)
+            try fault(.parts)
+            try source.write(to: staging.appendingPathComponent("source.txt"), options: [.withoutOverwriting])
+            try fault(.source)
+            try save(manifest, to: staging.appendingPathComponent(ReadingManifest.fileName))
+            try fault(.manifest)
+            try commit(staging, to: folder.appendingPathComponent(directory.lastPathComponent))
+        } catch {
+            try? FileManager.default.removeItem(at: staging)
+            throw error
+        }
+    }
+
+    /// Renames the filled cache into place, never over anything there: exclusively where the
+    /// volume can, else with rename(2), which replaces only an empty folder.
+    private static func commit(_ staging: URL, to directory: URL) throws {
+        if ReadingPublisher.systemExclusiveRename(staging.path, directory.path) == 0 { return }
+        var error = errno
+        if error == ENOTSUP || error == EINVAL || error == ENOSYS {
+            if rename(staging.path, directory.path) == 0 { return }
+            error = errno
+        }
+        if error == EEXIST || error == ENOTEMPTY || error == ENOTDIR || error == EISDIR {
+            throw HolosError.invalidInput("A reading already exists at \(directory.path). Use --resume to continue it.")
+        }
+        throw HolosError.io("Could not create the reading cache \(directory.path): \(String(cString: strerror(error)))")
+    }
+
+    /// Removes the caches that runs killed in the middle of `create` left beside `directory`:
+    /// this reading's (whose lock the caller holds), and any other reading's whose lock no run
+    /// holds. Only folders owned by this user and named as `create` names them are touched.
+    static func sweep(beside directory: URL) {
+        let folder = ReadingDirectoryLock.folder(beside: directory)
+        let own = ReadingDirectoryLock.key(for: directory)
+        guard let names = try? FileManager.default.contentsOfDirectory(atPath: folder.path) else { return }
+        for name in names {
+            guard let key = stagingKey(name) else { continue }
+            let staging = folder.appendingPathComponent(name, isDirectory: true)
+            var metadata = stat()
+            guard lstat(staging.path, &metadata) == 0, (metadata.st_mode & S_IFMT) == S_IFDIR,
+                  metadata.st_uid == getuid() else { continue }
+            if key == own {
+                try? FileManager.default.removeItem(at: staging)
+            } else if let lock = ReadingDirectoryLock.acquireIfIdle(key: key, in: folder) {
+                withExtendedLifetime(lock) { try? FileManager.default.removeItem(at: staging) }
+            }
+        }
+    }
+
+    /// The lock key in a name `create` gives, or nil for any other name.
+    static func stagingKey(_ name: String) -> String? {
+        guard name.hasPrefix(stagingPrefix) else { return nil }
+        let rest = name.dropFirst(stagingPrefix.count)
+        guard rest.count == 64 + 1 + 36 else { return nil }
+        let key = rest.prefix(64)
+        guard key.allSatisfy({ $0.isASCII && $0.isHexDigit && !$0.isUppercase }), rest.dropFirst(64).first == "-",
+              UUID(uuidString: String(rest.suffix(36))) != nil else { return nil }
+        return String(key)
+    }
+
+    /// Removes a cache that an earlier version (which created it in place) left half made: a
+    /// folder owned by this user, named as caches are (`Output-<16 hex digits>` or a UUID), with
+    /// no manifest and nothing in it but what that creation writes (an empty `parts`,
+    /// `source.txt`, a manifest being saved). Returns whether it was removed; anything else is kept.
+    static func removeAbandoned(_ directory: URL) -> Bool {
+        guard isCacheName(directory.lastPathComponent) else { return false }
+        var metadata = stat()
+        guard lstat(directory.path, &metadata) == 0, (metadata.st_mode & S_IFMT) == S_IFDIR,
+              metadata.st_uid == getuid(),
+              let names = try? FileManager.default.contentsOfDirectory(atPath: directory.path) else { return false }
+        var files: [String] = []
+        var parts: String?
+        for name in names {
+            let path = directory.appendingPathComponent(name).path
+            var entry = stat()
+            guard lstat(path, &entry) == 0, entry.st_uid == getuid() else { return false }
+            let type = entry.st_mode & S_IFMT
+            if name == "parts", type == S_IFDIR,
+               (try? FileManager.default.contentsOfDirectory(atPath: path))?.isEmpty == true {
+                parts = path
+            } else if type == S_IFREG, name == "source.txt"
+                        || ReadingTemporaries.uuid(between: ReadingTemporaries.manifestPrefix,
+                                                   and: ReadingTemporaries.manifestSuffix, in: name) != nil {
+                files.append(path)
+            } else {
+                return false
+            }
+        }
+        for path in files { _ = unlink(path) }
+        if let parts { _ = rmdir(parts) }
+        return rmdir(directory.path) == 0
+    }
+
+    /// `Output-<16 lowercase hex digits>` (a reading with `--output`) or a UUID (one without).
+    static func isCacheName(_ name: String) -> Bool {
+        if UUID(uuidString: name) != nil { return true }
+        let prefix = "Output-"
+        guard name.hasPrefix(prefix) else { return false }
+        let digest = name.dropFirst(prefix.count)
+        return digest.count == 16 && digest.allSatisfy { $0.isASCII && $0.isHexDigit && !$0.isUppercase }
     }
 }
 

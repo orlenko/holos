@@ -168,10 +168,10 @@ public enum ReadingOutput {
     /// reading, and its volume's name limit) but checks and creates nothing.
     static func resolve(output: String?, name: String, identity: String, readingsRoot: URL,
                         fileManager: FileManager,
-                        caseSensitivity: ReadingPathIdentity.CaseQuery = ReadingPathIdentity.volumeCaseSensitivity)
+                        volume: ReadingPathIdentity.VolumeQuery = ReadingPathIdentity.volumeRules)
         throws -> (ReadingLocation, Destination) {
         func hashed(output: URL) -> ReadingLocation {
-            Self.hashed(output: output, identity: identity, readingsRoot: readingsRoot, caseSensitivity: caseSensitivity)
+            Self.hashed(output: output, identity: identity, readingsRoot: readingsRoot, volume: volume)
         }
         guard let output else {
             let directory = readingsRoot.appendingPathComponent(UUID().uuidString, isDirectory: true)
@@ -245,14 +245,16 @@ public enum ReadingOutput {
     }
 
     private static func hashed(output: URL, identity: String, readingsRoot: URL,
-                               caseSensitivity: ReadingPathIdentity.CaseQuery) -> ReadingLocation {
+                               volume: ReadingPathIdentity.VolumeQuery) -> ReadingLocation {
         let canonical = output.deletingLastPathComponent().resolvingSymlinksInPath()
             .appendingPathComponent(output.lastPathComponent)
         // Keyed by the file's exact filesystem identity, so every spelling of one file
-        // ("Book.m4a" and "book.m4a" on a volume known to ignore case) finds the same cache, and
-        // two files (those names on a volume that may tell them apart) never share one. The
-        // output lock stays conservative (see `ReadingDirectoryLock.acquire(output:beside:)`).
-        let key = ReadingPathIdentity.key(output, .exact, caseSensitivity: caseSensitivity)
+        // ("Book.m4a" and "book.m4a" on a volume known to ignore case, one name in NFC and NFD on
+        // APFS or HFS+) finds the same cache, and two files (those names on a volume that may tell
+        // them apart) never share one. The key is hashed as bytes, so NFC and NFD spellings kept
+        // apart stay apart. The output lock stays conservative (see
+        // `ReadingDirectoryLock.acquire(output:beside:)`).
+        let key = ReadingPathIdentity.key(output, .exact, volume: volume)
         let digest = SHA256.hash(data: Data((key + "\u{0}" + identity).utf8)).map { String(format: "%02x", $0) }.joined()
         let directory = readingsRoot.appendingPathComponent("Output-\(digest.prefix(16))", isDirectory: true)
         return ReadingLocation(workDirectory: directory, output: canonical)
