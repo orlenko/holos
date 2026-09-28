@@ -74,7 +74,7 @@ import Testing
     #expect(AIFixGuard.check(original: "Wait here. Dont leave", fixed: "Wait, here. Don't leave,") == .accept)
     #expect(AIFixGuard.check(original: "I went their. Then we left", fixed: "I went there. Then, we left.")
         == .accept)
-    #expect(AIFixGuard.check(original: "x. y", fixed: "y. x") == .accept)  // two substitutions, the mark stays put
+    #expect(AIFixGuard.check(original: "right. write", fixed: "write. right") == .accept)  // two substitutions, marks put
     // Closing marks may change at the very end, including before closing quotes.
     #expect(AIFixGuard.check(original: "he called it “great”", fixed: "he called it “great.”") == .accept)
     #expect(AIFixGuard.check(original: "Is it done?", fixed: "Is it done?!") == .accept)
@@ -522,6 +522,9 @@ let unrelatedWords = [
     ("Some tests passed", "Most tests passed"), ("Run each test", "Run every test"),
     ("We saw few errors", "We saw new errors"), ("It rarely works", "It barely works"),
     ("It often fails", "It soften fails"), ("Il vient souvent", "Il vient suivant"),
+    // Words spelled close but said apart, and a glue word replaced by another by dropping one and adding the other.
+    ("We should increase the limit", "We should decrease the limit"), ("Please include the tests", "Please exclude the tests"),
+    ("Send it to Alice", "Send it from Alice"), ("Put it in the box", "Put it at the box"),
     // A leading zero counts: a code is not a number said.
     ("Use code 021 now", "Use code twenty one now"),
     // Names, but for their case.
@@ -775,7 +778,8 @@ func aMishearingIsFixed(original: String, fixed: String) {
         #expect(SpokenWords.isClose(heard, meant), "\(heard) -> \(meant)")
     }
     for (heard, meant) in [("windows", "Ubuntu"), ("develop", "Ubuntu"), ("count", "Uguntu"), ("food", "pool"),
-                           ("laptop", "Ubuntu"), ("fool", "bar")] {
+                           ("laptop", "Ubuntu"), ("fool", "bar"), ("increase", "decrease"), ("include", "exclude"),
+                           ("to", "from"), ("x", "y")] {
         #expect(!SpokenWords.isClose(heard, meant), "\(heard) -> \(meant)")
     }
     #expect(!SpokenWords.isContent("the") && !SpokenWords.isContent("a") && !SpokenWords.isContent("qc"))
@@ -912,7 +916,7 @@ private func fixer(corrections: CorrectionList = CorrectionList(), timeout: Dura
     let shifted = await fixer(corrections: chain) { _, _ in "bar is open now to" }
         .fix("the bar is open now", isFinal: false)
     #expect(shifted == .init(text: "bar is open now to", outcome: .fixed))
-    let twin = await fixer(corrections: chain) { _, _ in "bar bar" }.fix("bat bar", isFinal: true)
+    let twin = await fixer(corrections: chain) { _, _ in "bar bar" }.fix("barr bar", isFinal: true)
     #expect(twin == .init(text: "bar bar", outcome: .fixed))
 }
 

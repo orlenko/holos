@@ -370,9 +370,11 @@ public enum AIFixGuard {
     /// "de"); and glue words, hesitations (`FillerWords.isFiller`: "um", not the "mm" of "10 mm") or a stutter ("I
     /// I", "build build", not "no no" nor "10 10", `SpokenWords.keepsRepeats`) dropped. `names` flags the words of
     /// each side that may be names (`names(in:)`): a name changes only in case or with the same letters ("Jai" and
-    /// "J'ai", "Git Hub" and "GitHub"); a taught pair alone may spell one otherwise (`plausibleReply`). So "he" does not become "she", "10 and 20" not "20 and
-    /// 10", "not" does not move, and "Windows" does not become "Ubuntu". `protecting` false judges spelling alone:
-    /// close words, splits and joins, glue and repeats, without meanings or names.
+    /// "J'ai", "Git Hub" and "GitHub"); a taught pair alone may spell one otherwise (`plausibleReply`). A glue word
+    /// dropped and another added in the same place are one replaced ("to" by "from"), judged as such. So "he" does
+    /// not become "she", "10 and 20" not "20 and 10", "not" does not move, and "Windows" does not become "Ubuntu".
+    /// `protecting` false judges spelling alone: close words (any number for another), splits and joins, glue and
+    /// repeats, without meanings or names.
     static func plausible(_ old: [String], _ new: [String], names: (old: [Bool], new: [Bool])? = nil,
                           left: String? = nil, right: String? = nil, language: String? = nil,
                           protecting: Bool = true) -> Bool {
@@ -384,7 +386,11 @@ public enum AIFixGuard {
             let named = names.old[was].contains(true) || names.new[now].contains(true)
             if a.count == 1 && b.count == 1 {
                 if a == b { return true }
-                guard protecting else { return SpokenWords.isClose(a[0], b[0], language: language) }
+                guard protecting else {
+                    let numbers = SpokenWords.meaning(of: a[0], language: language).number != nil
+                        && SpokenWords.meaning(of: b[0], language: language).number != nil
+                    return numbers || SpokenWords.isClose(a[0], b[0], language: language)
+                }
                 if named && SpokenWords.letters(a[0]) != SpokenWords.letters(b[0]) { return false }
                 return SpokenWords.mayReplace(a[0], with: b[0], language: language)
             }
@@ -407,19 +413,34 @@ public enum AIFixGuard {
         func numberRun(_ words: [String], from index: Int) -> Int {
             words[index...].prefix(8).prefix { SpokenWords.mayBeInNumber($0, language: language) }.count
         }
-        // reach[i][j]: the first i words of `old` line up with the first j of `new`.
-        var reach = Array(repeating: Array(repeating: false, count: new.count + 1), count: old.count + 1)
-        reach[0][0] = true
+        // reach[i][j]: how the first i words of `old` line up with the first j of `new`, as the edits since the
+        // last word kept or replaced: `aligned` (none), `dropped` (words dropped) or `added` (words added). A word
+        // dropped and another added between the same two words is one word replaced by another ("to" by "from"),
+        // which only `replaces` may allow; a hesitation dropped counts as neither.
+        let aligned: UInt8 = 1, dropped: UInt8 = 2, added: UInt8 = 4
+        var reach = Array(repeating: Array(repeating: UInt8(0), count: new.count + 1), count: old.count + 1)
+        reach[0][0] = aligned
         for i in 0...old.count {
             if Task.isCancelled { return false }
-            for j in 0...new.count where reach[i][j] {
-                if i < old.count, drops(i) { reach[i + 1][j] = true }
-                if j < new.count, adds(j) { reach[i][j + 1] = true }
+            for j in 0...new.count where reach[i][j] != 0 {
+                let state = reach[i][j]
+                if i < old.count, drops(i) {
+                    if FillerWords.isFiller(old[i], language: language) {
+                        reach[i + 1][j] |= state
+                    } else if state & (aligned | dropped) != 0 {
+                        reach[i + 1][j] |= dropped
+                    }
+                }
+                if j < new.count, state & (aligned | added) != 0, adds(j) { reach[i][j + 1] |= added }
                 guard i < old.count, j < new.count else { continue }
-                if replaces(i..<(i + 1), j..<(j + 1)) { reach[i + 1][j + 1] = true }
+                if replaces(i..<(i + 1), j..<(j + 1)) { reach[i + 1][j + 1] |= aligned }
                 for parts in 2...3 {
-                    if j + parts <= new.count, replaces(i..<(i + 1), j..<(j + parts)) { reach[i + 1][j + parts] = true }
-                    if i + parts <= old.count, replaces(i..<(i + parts), j..<(j + 1)) { reach[i + parts][j + 1] = true }
+                    if j + parts <= new.count, replaces(i..<(i + 1), j..<(j + parts)) {
+                        reach[i + 1][j + parts] |= aligned
+                    }
+                    if i + parts <= old.count, replaces(i..<(i + parts), j..<(j + 1)) {
+                        reach[i + parts][j + 1] |= aligned
+                    }
                 }
                 // A number said in words written in digits, or the reverse: "twenty one" and "21".
                 let oldRun = numberRun(old, from: i), newRun = numberRun(new, from: j)
@@ -427,13 +448,13 @@ public enum AIFixGuard {
                     for m in stride(from: 1, through: newRun, by: 1) where k > 1 || m > 1 {
                         if let value = SpokenWords.numberValue(Array(old[i..<(i + k)]), language: language),
                            value == SpokenWords.numberValue(Array(new[j..<(j + m)]), language: language) {
-                            reach[i + k][j + m] = true
+                            reach[i + k][j + m] |= aligned
                         }
                     }
                 }
             }
         }
-        return reach[old.count][new.count]
+        return reach[old.count][new.count] != 0
     }
 
     /// The stretches where `a` and `b` differ, as ranges of each, from a word-level alignment with the edits of

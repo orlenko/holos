@@ -54,6 +54,10 @@ import Testing
     #expect(taught.vocabulary == ["Ubuntu", "machine", "bunch", "windows", "tmux", "spaceman"])
     #expect(CorrectionList(entries: [.init(heard: "ubunto", meant: "ubuntu"), .init(heard: "Uguntu", meant: "Ubuntu")])
         .vocabulary == ["Ubuntu"])
+    // A meeting keeps a word that carries meaning in any of its languages: "son" is a French function word only.
+    let son = CorrectionList(entries: [.init(heard: "sun", meant: "son")])
+    #expect(son.vocabulary(languages: ["en-US"]) == ["son"] && son.vocabulary(languages: ["fr-CA", "en-US"]) == ["son"])
+    #expect(son.vocabulary(languages: ["fr-CA"]).isEmpty && son.vocabulary(languages: []).isEmpty)
     let url = FileManager.default.temporaryDirectory
         .appendingPathComponent(UUID().uuidString).appendingPathComponent("corrections.json")
     defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }

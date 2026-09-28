@@ -36,12 +36,13 @@ private func makeController(root: URL, launcher: FakeRecorderLauncher, probe: Co
                             devices: InputDevices = InputDevices(builtIn: controllerBuiltIn,
                                                                  systemDefault: controllerBuiltIn),
                             vocabulary: [String] = [], vocabularyDirectory: URL? = nil,
+                            vocabularyFor: (@MainActor ([String]) -> [String])? = nil,
                             maintenance: MaintenanceLauncher? = nil,
                             modelsInstalled: Bool = false,
                             now: @escaping @MainActor () -> Date = { Date() }) -> MeetingController {
     let controller = MeetingController(
         root: root, launcher: launcher, maintenance: maintenance, freeSpace: FixedFreeSpace(free),
-        findInputDevices: { devices }, vocabulary: { vocabulary }, modelsInstalled: { modelsInstalled }, now: now,
+        findInputDevices: { devices }, vocabulary: vocabularyFor ?? { _ in vocabulary }, modelsInstalled: { modelsInstalled }, now: now,
         onChange: { probe.states.append($0) }, onEffect: { probe.effects.append($0) })
     controller.tuning = MeetingControllerTuning(poll: .milliseconds(20), rescan: .milliseconds(40),
                                                 relabel: .seconds(3_600), ackTimeout: .milliseconds(200))
@@ -478,6 +479,20 @@ private final class ControllerHeartbeat {
     #expect(id == launcher.launches.first?.sessionID)
     #expect(pid == 4_242)
     #expect(probe.dictation == [true])
+}
+
+@Test @MainActor func vocabularyIsAskedForTheMeetingLanguages() throws {
+    let temp = try TemporaryDirectory("controller")
+    defer { temp.remove() }
+    let launcher = FakeRecorderLauncher()
+    var asked: [[String]] = []
+    let controller = makeController(root: temp.url, launcher: launcher, probe: ControllerProbe(),
+                                    vocabularyFor: { languages in
+                                        asked.append(languages)
+                                        return ["son"]
+                                    })
+    try controller.start(MeetingStartSettings(name: "Standup", source: .microphone, locales: ["en-US", "fr-CA"]))
+    #expect(asked == [["en-US", "fr-CA"]])
 }
 
 @Test @MainActor func vocabularyFileIsPrivate() throws {

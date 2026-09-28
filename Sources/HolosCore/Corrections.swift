@@ -33,12 +33,24 @@ public struct CorrectionList: Codable, Sendable, Equatable {
     /// `vocabulary` for dictation in `language` (a locale identifier): English dictation keeps "son", a French
     /// function word.
     public func vocabulary(language: String?) -> [String] {
+        vocabulary { SpokenWords.isContent($0, language: language) }
+    }
+
+    /// `vocabulary` for a meeting in `languages` (locale identifiers, the meeting's languages): a word that carries
+    /// meaning in any of them stays, so an English meeting keeps "son". No languages (the recorder's default) leaves
+    /// out the function words of both English and French.
+    public func vocabulary(languages: [String]) -> [String] {
+        guard !languages.isEmpty else { return vocabulary(language: nil) }
+        return vocabulary { word in languages.contains { SpokenWords.isContent(word, language: $0) } }
+    }
+
+    private func vocabulary(keeping isContent: (String) -> Bool) -> [String] {
         var order: [String] = []
         var spelling: [String: String] = [:]
         for entry in entries {
             for match in entry.meant.matches(of: /[\p{L}\p{N}]+(?:['’][\p{L}\p{N}]+)*/) {
                 let word = String(match.output)
-                guard SpokenWords.isContent(word, language: language) else { continue }
+                guard isContent(word) else { continue }
                 let key = word.lowercased()
                 if let known = spelling[key] {
                     if !known.contains(where: \.isUppercase), word.contains(where: \.isUppercase) { spelling[key] = word }

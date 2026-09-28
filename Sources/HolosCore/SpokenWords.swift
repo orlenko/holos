@@ -178,8 +178,8 @@ public enum SpokenWords {
     static let frenchNumbers: [String: String] = [
         "zero": "0", "deux": "2", "trois": "3", "quatre": "4", "cinq": "5", "six": "6", "sept": "7", "huit": "8",
         "neuf": "9", "dix": "10", "onze": "11", "douze": "12", "treize": "13", "quatorze": "14", "quinze": "15",
-        "seize": "16", "vingt": "20", "vingts": "20", "cents": "100", "trente": "30", "quarante": "40", "cinquante": "50", "soixante": "60",
-        "cent": "100", "mille": "1000", "million": "1000000", "milliard": "1000000000",
+        "seize": "16", "vingt": "20", "vingts": "20", "trente": "30", "quarante": "40", "cinquante": "50",
+        "soixante": "60", "cent": "100", "cents": "100", "mille": "1000", "million": "1000000", "milliard": "1000000000",
     ]
 
     /// What a word says that a fix must keep where it is (`AIFixGuard.plausible`). `strict`: its negation, modal
@@ -355,20 +355,24 @@ public enum SpokenWords {
 
     /// Whether `heard` could be a mishearing of `meant` (or the reverse), for the guard on a model's reply. Compared
     /// as `letters`: the same letters; homophones of `language` the rules miss (`homophones`: "one" and "won", "you"
-    /// and "ewe"); at most one letter apart or 70 % of the letters the same (by edit distance); the same `sound`
-    /// ("write" and "right", "ate" and "eight", "knight" and "night", "their" and "there"); or the same `roughSound`
-    /// with at least half the letters the same ("cold" and "called", "a bundo" and "ubuntu"). "windows" and "Ubuntu"
-    /// are none of these, nor "opened" and "Ubuntu", nor "point" and "Bundo".
+    /// and "ewe"); the same `sound` ("write" and "right", "ate" and "eight", "knight" and "night", "their" and
+    /// "there"); a plural ("words" and "word"); in French dictation the same `frenchSound` ("peut" and "peux"); or
+    /// the same `roughSound` with at least half the letters the same ("cold" and "called", "a bundo" and "ubuntu"). Letters
+    /// alone never are: "increase" and "decrease" sound apart. "windows" and "Ubuntu" are none of these, nor
+    /// "opened" and "Ubuntu", nor "point" and "Bundo".
     public static func isClose(_ heard: String, _ meant: String, language: String? = nil) -> Bool {
         let a = letters(heard), b = letters(meant)
         if a == b || areHomophones(spelling(heard), spelling(meant), language: language) { return true }
         guard !a.isEmpty, !b.isEmpty else { return false }
-        let distance = editDistance(Array(a), Array(b))
-        let longer = max(a.count, b.count)
-        if distance <= 1 || Double(distance) <= 0.3 * Double(longer) { return true }
         let soundA = sound(a), soundB = sound(b)
-        if soundA == soundB { return true }
-        return 2 * distance <= longer && roughSound(soundA) == roughSound(soundB)
+        if soundA == soundB || isPlural(a, of: b) || isPlural(b, of: a) { return true }
+        if language.map(DictationLanguage.languageCode) ?? "fr" == "fr", frenchSound(heard) == frenchSound(meant) {
+            return true
+        }
+        // Spelling alone is no evidence: "increase" and "decrease", "include" and "exclude" are a few letters apart
+        // but sound apart.
+        let distance = editDistance(Array(a), Array(b))
+        return 2 * distance <= max(a.count, b.count) && roughSound(soundA) == roughSound(soundB)
     }
 
     /// `isClose` for a word split in two or two joined into one ("Onobunto" and "on Ubuntu", "semi colon" and
@@ -379,12 +383,27 @@ public enum SpokenWords {
         let a = letters(heard), b = letters(meant)
         if a == b { return true }
         guard !a.isEmpty, !b.isEmpty else { return false }
-        let distance = editDistance(Array(a), Array(b))
-        let shorter = min(a.count, b.count)
-        if distance <= 1 || Double(distance) <= 0.3 * Double(shorter) { return true }
         let soundA = sound(a), soundB = sound(b)
         if soundA == soundB { return true }
-        return 2 * distance <= shorter && roughSound(soundA) == roughSound(soundB)
+        let distance = editDistance(Array(a), Array(b))
+        return 2 * distance <= min(a.count, b.count) && roughSound(soundA) == roughSound(soundB)
+    }
+
+    /// French endings said alike, for `frenchSound`, longest first: the "é" of "mangé", "manger", "mangez", "mangées"
+    /// and of "et", "est", "ai", "ais", "ait", "aient".
+    static let frenchEndings = ["aient", "ées", "ais", "ait", "est", "ée", "és", "er", "ez", "ai", "et", "é"]
+
+    /// A French pronunciation key of `word`: an ending of `frenchEndings` as one sound, then one silent final "s",
+    /// "x", "t", "d" or "z" dropped ("peut" and "peux" are "peu"), then the letters without diacritics. Only for
+    /// French dictation or one whose language is not given: English endings are said.
+    static func frenchSound(_ word: String) -> String {
+        var s = word.lowercased().filter { $0.isLetter }
+        if let ending = frenchEndings.first(where: { s.count > $0.count && s.hasSuffix($0) }) {
+            s = String(s.dropLast(ending.count)) + "É"
+        } else if s.count > 2, let last = s.last, "sxtdz".contains(last) {
+            s.removeLast()
+        }
+        return letters(s.replacingOccurrences(of: "É", with: "0"))
     }
 
     /// Whether `word`, in a text, could be `heard`, a word of a taught heard phrase, misheard again a little
@@ -461,7 +480,7 @@ public enum SpokenWords {
         ["pere", "paire", "pair", "perd"], ["sa", "ca"], ["ces", "ses", "c'est", "s'est", "sais", "sait"],
         ["son", "sont"], ["ma", "m'a"], ["ta", "t'a"], ["mes", "mais", "met", "mets"], ["tes", "t'es"],
         ["leur", "leurs"], ["il", "ils"], ["elle", "elles"], ["mon", "m'ont"], ["ton", "t'ont", "thon"],
-        ["dix", "dis", "dit"],
+        ["dix", "dis", "dit"], ["et", "est"],
     ]
 
     /// Whether `a` and `b` (as `spelling`) are listed homophones of `language`: English, French, or either when the
