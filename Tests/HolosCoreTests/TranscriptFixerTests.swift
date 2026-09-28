@@ -437,6 +437,33 @@ let unrelatedWords = [
     #expect(AIFixGuard.check(original: "go build build it now", fixed: "go build it now") == .accept)
 }
 
+@Test func onlyGlueWordsComeAndGoAndModalsStay() {
+    // A negation moved to another verb: the count is the same, but "not" may not be dropped or added.
+    #expect(AIFixGuard.check(original: "I do not leave but stay", fixed: "I do leave but not stay")
+        == .reject(.implausibleSubstitution))
+    // Modals, pronouns and auxiliaries say something: they are not added or dropped.
+    for (original, fixed) in [("You should go", "You go"), ("You go", "You should go"), ("It must work", "It work"),
+                              ("We may leave", "We leave"), ("They might win", "They win")] {
+        #expect(AIFixGuard.check(original: original, fixed: fixed) == .reject(.changedMeaning),
+                "\(original) -> \(fixed)")
+        // Judged without the count of modals, the change is still not a fix.
+        #expect(!AIFixGuard.plausibleReply(original: original, before: AIFixGuard.words(in: original),
+                                           after: AIFixGuard.words(in: fixed), taught: []))
+    }
+    for (original, fixed) in [("I told him twice", "I told twice"), ("It done", "It was done")] {
+        #expect(AIFixGuard.check(original: original, fixed: fixed) == .reject(.implausibleSubstitution),
+                "\(original) -> \(fixed)")
+    }
+    // Nor swapped for a close word.
+    #expect(AIFixGuard.check(original: "You should go", fixed: "You could go") == .reject(.changedMeaning))
+    #expect(AIFixGuard.check(original: "I'll go", fixed: "I'd go") == .reject(.changedMeaning))
+    // A French modal keeps its verb when a homophone fixes its ending.
+    #expect(AIFixGuard.check(original: "je peut venir", fixed: "je peux venir", language: "fr-FR") == .accept)
+    // Articles, prepositions and conjunctions may come and go.
+    #expect(AIFixGuard.check(original: "we went to store", fixed: "we went to the store") == .accept)
+    #expect(AIFixGuard.check(original: "je parle à ami", fixed: "je parle à un ami", language: "fr-FR") == .accept)
+}
+
 @Test func homophonesAreThoseOfTheLanguageDictated() {
     // "sang" and "sent" are French homophones, not English ones.
     #expect(AIFixGuard.check(original: "I sang it", fixed: "I sent it", language: "en-US")
@@ -454,7 +481,9 @@ let unrelatedWords = [
     let childcare = Correction(heard: "child care", meant: "childcare")
     #expect(AIFixReference.select(from: [childcare], for: "You should care", budget: 1_000).isEmpty)
     #expect(AIFixGuard.check(original: "You should care", fixed: "You childcare", taught: [childcare])
-        == .reject(.implausibleSubstitution))
+        == .reject(.changedMeaning))
+    #expect(!SpokenWords.isVariant("shield", of: "child"))
+    #expect(AIFixReference.select(from: [childcare], for: "the shield care", budget: 1_000).isEmpty)
     // "ch" is a "k" in "chr", "chl" and "sch"; "tch" is "ch".
     #expect(SpokenWords.sound("chrome") == SpokenWords.sound("krome") && SpokenWords.sound("school") == "skal")
     #expect(SpokenWords.sound("witch") == SpokenWords.sound("which"))
@@ -708,9 +737,9 @@ private func fixer(corrections: CorrectionList = CorrectionList(), timeout: Dura
     #expect(punctuated == .init(text: "I said bar, then left.", outcome: .fixed))
     // The model's own words are not run through the rules again: a word it shifted keeps its spelling, and one it
     // introduced stays as the model wrote it.
-    let shifted = await fixer(corrections: chain) { _, _ in "bar is open now too" }
+    let shifted = await fixer(corrections: chain) { _, _ in "bar is open now to" }
         .fix("the bar is open now", isFinal: false)
-    #expect(shifted == .init(text: "bar is open now too", outcome: .fixed))
+    #expect(shifted == .init(text: "bar is open now to", outcome: .fixed))
     let twin = await fixer(corrections: chain) { _, _ in "bar bar" }.fix("bat bar", isFinal: true)
     #expect(twin == .init(text: "bar bar", outcome: .fixed))
 }

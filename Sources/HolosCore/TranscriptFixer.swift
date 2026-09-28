@@ -292,30 +292,40 @@ public enum AIFixGuard {
     }
 
     /// Whether `new` could replace `old`, between the words `left` and `right` of the original, as a fix of a
-    /// mishearing: `old` dropped when it is function words (`SpokenWords.isContent` false), hesitations
-    /// (`SpokenWords.fillers`) or a repeat of `left` or `right` ("the the"); function words added; as many words, each
+    /// mishearing: `old` dropped when it is glue words (`SpokenWords.isGlue`: "the", "to", "de"), hesitations
+    /// (`SpokenWords.fillers`) or a repeat of `left` or `right` ("the the"); glue words added; as many words, each
     /// close to what replaces it (`SpokenWords.isClose`); one word split or joined (`SpokenWords.isCloseSplit`); or
-    /// function words come and gone around content words, each close to what replaces it. Anything else is a word
-    /// the model swapped in, a spelling from the taught list ("windows" became "Ubuntu") or one of its own, which
-    /// only `plausibleReply` may allow, or a word it dropped. Negations and words of quantity are checked apart
+    /// glue words come and gone around content words, each close to what replaces it. Anything else is a word the
+    /// model swapped in, a spelling from the taught list ("windows" became "Ubuntu") or one of its own, which only
+    /// `plausibleReply` may allow, or a word that says something added, dropped or moved ("should", "not").
+    /// Negations, words of quantity and modals swapped for close words are checked apart
     /// (`SpokenWords.meaningWords`).
     static func plausible(_ old: [String], _ new: [String], left: String? = nil, right: String? = nil,
                           language: String? = nil) -> Bool {
         let isContent = { SpokenWords.isContent($0, language: language) }
         let isClose = { SpokenWords.isClose($0, $1, language: language) }
+        let isGlue = { SpokenWords.isGlue($0, language: language) }
         if new.isEmpty {
-            return old.allSatisfy { !isContent($0) || SpokenWords.fillers.contains($0) || $0 == left || $0 == right }
+            return old.allSatisfy { isGlue($0) || SpokenWords.fillers.contains($0) || $0 == left || $0 == right }
         }
-        if old.isEmpty { return !new.contains(where: isContent) }
+        if old.isEmpty { return new.allSatisfy(isGlue) }
         // As many words: each replaced by one it could have been misheard for, never judged run together, where a
         // long word close to its fix would carry an unrelated one ("internationalisation windows").
         if old.count == new.count { return zip(old, new).allSatisfy(isClose) }
         // A word split in two or more, or joined from them.
         if min(old.count, new.count) == 1, SpokenWords.isCloseSplit(old.joined(), new.joined()) { return true }
+        // Glue words come and gone around content words, each close to what replaces it.
         let oldContent = old.filter(isContent)
         let newContent = new.filter(isContent)
+        var oldOther = old.filter { !isContent($0) }
+        let added = new.filter { !isContent($0) }.filter { word in
+            guard let index = oldOther.firstIndex(of: word) else { return true }
+            oldOther.remove(at: index)
+            return false
+        }
         return !newContent.isEmpty && oldContent.count == newContent.count
-            && zip(oldContent, newContent).allSatisfy(isClose)
+            && zip(oldContent, newContent).allSatisfy(isClose) && added.allSatisfy(isGlue)
+            && oldOther.allSatisfy { isGlue($0) || SpokenWords.fillers.contains($0) }
     }
 
     /// The stretches where `a` and `b` differ, as ranges of each, from a word-level alignment with the edits of

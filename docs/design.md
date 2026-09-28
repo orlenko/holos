@@ -220,10 +220,11 @@ one by one, and a word split or joined by its shorter side), or when the reply i
 with listed pairs applied where their heard phrases were said, plus such close
 changes: "their food requests" may become "there pool requests". So no taught or
 invented spelling lands on unrelated words, or next to the heard phrase. The guard
-also refuses a reply that adds, drops or swaps a negation or a word of quantity ("I
-do agree" is not "I do not agree"), or drops a word other than a function word, a
-hesitation or a repeat; function words and homophones are those of the language
-dictated (English or French). The model
+also refuses a reply that adds or drops any word but glue words (articles,
+prepositions, conjunctions), hesitations and repeats ("You should go" is not "You
+go"), or that changes its negations, words of quantity or modals ("I do agree" is not
+"I do not agree", "should" not "could"); function words, glue words and homophones are
+those of the language dictated (English or French). The model
 runs with the `permissiveContentTransformations` guardrails: with the defaults about
 half the fixes in a day's log failed in about 200 ms, ordinary sentences refused as
 "May contain unsafe content". A refusal that still happens leaves the chunk as

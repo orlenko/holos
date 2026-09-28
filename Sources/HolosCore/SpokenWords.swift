@@ -61,9 +61,11 @@ public enum SpokenWords {
         return String(folded.filter { $0.isLetter || $0.isNumber })
     }
 
-    /// Words that change what a sentence says when added or dropped, by language: negations, counted as one kind
-    /// ("do not" and "don't" say the same; the French "ne" is left out, speech drops it), and words of quantity
-    /// or frequency, each its own kind. A fix must keep them all ("I do agree" is not "I do not agree").
+    /// Words that change what a sentence says when swapped, by language: negations, counted as one kind ("do not"
+    /// and "don't" say the same; the French "ne" is left out, speech drops it), words of quantity or frequency,
+    /// and modal verbs ("should", "might"; French ones by verb, "peux" and "peut" being one), each its own kind. A
+    /// fix must keep them all ("I do agree" is not "I do not agree", "should" not "could"). Adding or dropping any
+    /// word but `glue` is refused apart.
     static let englishNegations: Set<String> = [
         "not", "no", "never", "nothing", "none", "nobody", "nowhere", "neither", "nor", "cannot", "without",
         // Contractions dictated without their apostrophe ("dont"); those with one end in "n't".
@@ -76,22 +78,53 @@ public enum SpokenWords {
                                                  "less", "most", "least"]
     static let frenchQuantities: Set<String> = ["tout", "tous", "toute", "toutes", "seulement", "toujours", "chaque",
                                                 "quelques", "plusieurs", "plus", "moins"]
+    static let englishModals: Set<String> = ["can", "could", "should", "would", "will", "shall", "may", "might",
+                                             "must", "ought"]
+    /// Forms of the French modal verbs, by verb.
+    static let frenchModals: [String: String] = [
+        "peux": "pouvoir", "peut": "pouvoir", "pouvons": "pouvoir", "pouvez": "pouvoir", "peuvent": "pouvoir",
+        "pourrais": "pouvoir", "pourrait": "pouvoir", "pourrions": "pouvoir", "pourriez": "pouvoir",
+        "pourraient": "pouvoir", "dois": "devoir", "doit": "devoir", "devons": "devoir", "devez": "devoir",
+        "doivent": "devoir", "devrais": "devoir", "devrait": "devoir", "devrions": "devoir", "devriez": "devoir",
+        "devraient": "devoir", "faut": "falloir", "faudrait": "falloir",
+    ]
 
     /// How many times each meaning word (see `englishNegations`) is in `words` (from `AIFixGuard.words`), for
-    /// `language` (both English and French when nil or another one); negations all count as "not".
+    /// `language` (both English and French when nil or another one): negations all count as "not", "I'll" as
+    /// "will" and "I'd" as "would", French modals as their verb.
     static func meaningWords(in words: [String], language: String?) -> [String: Int] {
         let code = language.map(DictationLanguage.languageCode)
         let english = code != "fr", french = code != "en"
         var counts: [String: Int] = [:]
         for word in words {
-            if (english && (englishNegations.contains(word) || word.hasSuffix("n't")))
-                || (french && frenchNegations.contains(word)) {
-                counts["not", default: 0] += 1
-            } else if (english && englishQuantities.contains(word)) || (french && frenchQuantities.contains(word)) {
-                counts[word, default: 0] += 1
-            }
+            let kind: String? =
+                if (english && (englishNegations.contains(word) || word.hasSuffix("n't")))
+                    || (french && frenchNegations.contains(word)) { "not" }
+                else if english && word.hasSuffix("'ll") { "will" }
+                else if english && word.hasSuffix("'d") { "would" }
+                else if (english && (englishQuantities.contains(word) || englishModals.contains(word)))
+                    || (french && frenchQuantities.contains(word)) { word }
+                else if french { frenchModals[word] }
+                else { nil }
+            if let kind { counts[kind, default: 0] += 1 }
         }
         return counts
+    }
+
+    /// Words a fix may add or drop, by language: articles and the prepositions and conjunctions that tie words
+    /// together ("to the store", "je ne sais pas"). Any other word, a pronoun, an auxiliary, a modal or a negation,
+    /// says something: "You should go" is not "You go".
+    static let englishGlue: Set<String> = ["a", "an", "the", "to", "of", "in", "on", "at", "for", "with", "from",
+                                          "by", "as", "and", "that"]
+    static let frenchGlue: Set<String> = ["le", "la", "les", "un", "une", "des", "du", "de", "à", "au", "aux", "en",
+                                         "et", "que", "ne"]
+
+    static func isGlue(_ word: String, language: String?) -> Bool {
+        switch language.map(DictationLanguage.languageCode) {
+        case "en": englishGlue.contains(word)
+        case "fr": frenchGlue.contains(word)
+        default: englishGlue.contains(word) || frenchGlue.contains(word)
+        }
     }
 
     /// Hesitations a fix may drop.
