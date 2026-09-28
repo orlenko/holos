@@ -3,6 +3,7 @@ import AudioToolbox
 import Darwin
 import Foundation
 import HolosCore
+import Synchronization
 
 public struct VoiceDescriptor: Codable, Sendable, Equatable {
     public let id: String
@@ -209,7 +210,12 @@ private final class RenderDelegate: NSObject, AVSpeechSynthesizerDelegate {
 }
 
 /// AVFoundation callbacks may arrive outside the main actor. This lock owns all writer and
-/// continuation state; AVSpeechSynthesizer itself is only touched on the main actor.
+/// continuation state; AVSpeechSynthesizer itself is only touched on the main actor. It is never
+/// held for long work: completing claims the render under the lock, then encodes and publishes
+/// (a whole-file copy on volumes without exclusive rename) outside it, so `cancel()` never waits
+/// for that work. `cancel()` raises `cancelRequested` first, which the encoding and the copy
+/// check between chunks: a cancelled render stops there and leaves no output, whichever thread
+/// (the synthesizer's delegate callback, not the awaiting task) is finishing it.
 ///
 /// Completing the render (success, failure, or cancellation) resumes the caller but does not
 /// release the synthesizer, its utterance, or its delegate. `AVSpeechSynthesizer.delegate` does
@@ -237,17 +243,22 @@ final class RenderOperation: @unchecked Sendable {
     private let output: URL
     private let fileExtension: String
     private let exclusiveRename: ExclusivePublisher.ExclusiveRename
+    private let copyPacing: ExclusivePublisher.CopyPacing
+    /// Set by `cancel()` before it takes `lock`; read without it by the finishing work.
+    private let cancelRequested = Atomic<Bool>(false)
 
     init(synthesizer: AVSpeechSynthesizer, utterance: AVSpeechUtterance,
          temporary: URL, output: URL,
          fileExtension: String,
-         exclusiveRename: @escaping ExclusivePublisher.ExclusiveRename = ExclusivePublisher.systemExclusiveRename) {
+         exclusiveRename: @escaping ExclusivePublisher.ExclusiveRename = ExclusivePublisher.systemExclusiveRename,
+         copyPacing: ExclusivePublisher.CopyPacing = .init()) {
         self.synthesizer = synthesizer
         self.utterance = utterance
         self.temporary = temporary
         self.output = output
         self.fileExtension = fileExtension
         self.exclusiveRename = exclusiveRename
+        self.copyPacing = copyPacing
         let delegate = RenderDelegate(operation: self)
         self.delegate = delegate
         synthesizer.delegate = delegate
@@ -318,9 +329,14 @@ final class RenderOperation: @unchecked Sendable {
         complete(error: nil)
     }
 
+    /// Returns at once, even while a finished render is being encoded or copied into place: that
+    /// work sees the request between chunks, stops, and resumes the caller with `CancellationError`.
     func cancel() {
+        cancelRequested.store(true, ordering: .sequentiallyConsistent)
         complete(error: CancellationError())
     }
+
+    private var isCancelRequested: Bool { cancelRequested.load(ordering: .sequentiallyConsistent) }
 
     func fail(_ error: Error) {
         complete(error: error)
@@ -337,6 +353,9 @@ final class RenderOperation: @unchecked Sendable {
         writer = nil
         let frames = frameCount
         let rate = sampleRate
+        // The render is claimed (`completed`), so no other call touches the files below; the
+        // lock is released before the long work, so `cancel()` never waits for it.
+        lock.unlock()
         var resultError = error
         let encoded = temporary.deletingPathExtension().appendingPathExtension("m4a")
         var published = temporary
@@ -355,8 +374,10 @@ final class RenderOperation: @unchecked Sendable {
             // parts of a reading are published this way into its cache, wherever that is.
             if resultError == nil {
                 do {
+                    if isCancelRequested { throw CancellationError() }
                     try ExclusivePublisher.publish(published, to: output, exclusiveRename: exclusiveRename,
-                                                   existing: "Speech output already exists")
+                                                   existing: "Speech output already exists",
+                                                   isCancelled: { self.isCancelRequested }, pacing: copyPacing)
                 } catch {
                     resultError = error
                 }
@@ -364,7 +385,6 @@ final class RenderOperation: @unchecked Sendable {
         }
         _ = unlink(temporary.path)
         if fileExtension == "m4a" { _ = unlink(encoded.path) }
-        lock.unlock()
         if let resultError { continuation?.resume(throwing: resultError) }
         else { continuation?.resume(returning: RenderedAudio(url: output, duration: Double(frames) / rate,
                                                              frameCount: frames, sampleRate: rate)) }
@@ -412,6 +432,7 @@ final class RenderOperation: @unchecked Sendable {
             throw HolosError.io("Could not allocate speech encoding buffer.")
         }
         while source.framePosition < source.length {
+            if isCancelRequested { throw CancellationError() }
             let remaining = source.length - source.framePosition
             try source.read(into: buffer, frameCount: AVAudioFrameCount(min(Int64(buffer.frameCapacity), remaining)))
             guard buffer.frameLength > 0 else {

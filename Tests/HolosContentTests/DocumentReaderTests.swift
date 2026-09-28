@@ -148,6 +148,52 @@ import Testing
         #expect(DocumentText.decode(Data([0xFF, 0x41])) == nil)
     }
 
+    /// A byte order mark decides the encoding: a malformed sequence after it is one U+FFFD, and
+    /// never sends the text, HTML or not, to another encoding (Windows-1252 would turn the valid
+    /// text to mojibake and show the mark as "ï»¿").
+    @MainActor @Test func aByteOrderMarkDecidesTheEncodingOfMalformedText() throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("holos-bom-bad-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: false)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        // UTF-8: "Café " + an invalid byte + " crème."; UTF-16LE: the same with a lone surrogate.
+        let utf8 = Data([0xEF, 0xBB, 0xBF]) + Data("Café ".utf8) + Data([0xFF]) + Data(" crème.".utf8)
+        let utf16 = Data([0xFF, 0xFE]) + "Café ".data(using: .utf16LittleEndian)! + Data([0x00, 0xD8])
+            + " crème.".data(using: .utf16LittleEndian)!
+        let utf16BE = Data([0xFE, 0xFF]) + "Café ".data(using: .utf16BigEndian)! + Data([0xDC, 0x00])
+            + " crème.".data(using: .utf16BigEndian)!
+        let utf32 = Data([0xFF, 0xFE, 0x00, 0x00]) + "Café ".data(using: .utf32LittleEndian)!
+            + Data([0x00, 0xD8, 0x00, 0x00]) + " crème.".data(using: .utf32LittleEndian)!
+        let expected = "Café \u{FFFD} crème."
+        for (index, data) in [utf8, utf16, utf16BE, utf32].enumerated() {
+            #expect(DocumentText.decode(data) == expected, "\(index)")
+            let url = folder.appendingPathComponent("text\(index).txt")
+            try data.write(to: url)
+            #expect(try DocumentLoader.load(url).sections.flatMap(\.paragraphs) == [expected], "\(index)")
+
+            // HTML without a charset declaration, and with one that names another encoding.
+            for head in ["", #"<meta charset="windows-1252">"#] {
+                let page = "<html><head>\(head)<title>T</title></head><body><p>"
+                let tail = "</p></body></html>"
+                let marked: Data
+                switch index {
+                case 0: marked = Data([0xEF, 0xBB, 0xBF]) + Data(page.utf8) + utf8.dropFirst(3) + Data(tail.utf8)
+                case 1: marked = Data([0xFF, 0xFE]) + page.data(using: .utf16LittleEndian)! + utf16.dropFirst(2)
+                    + tail.data(using: .utf16LittleEndian)!
+                case 2: marked = Data([0xFE, 0xFF]) + page.data(using: .utf16BigEndian)! + utf16BE.dropFirst(2)
+                    + tail.data(using: .utf16BigEndian)!
+                default: marked = Data([0xFF, 0xFE, 0x00, 0x00]) + page.data(using: .utf32LittleEndian)!
+                    + utf32.dropFirst(4) + tail.data(using: .utf32LittleEndian)!
+                }
+                let decoded = HTMLReader.decode(marked)
+                #expect(!decoded.contains("ï»¿") && !decoded.hasPrefix("\u{FEFF}"), "\(index) \(head)")
+                #expect(decoded.filter { $0 == "\u{FFFD}" }.count == 1, "\(index) \(head)")
+                #expect(HTMLReader.document(from: marked).sections.flatMap(\.paragraphs) == [expected], "\(index) \(head)")
+            }
+        }
+        // A trailing partial code unit is one more replacement character.
+        #expect(DocumentText.decode(Data([0xFF, 0xFE, 0x41, 0x00, 0x42])) == "A\u{FFFD}")
+    }
+
     /// Classic Mac (CR) and Windows (CRLF) line endings are made LF when the text is decoded, so
     /// front matter, headings, and paragraphs are found in every file.
     @MainActor @Test func everyLineEndingIsReadAsOne() throws {

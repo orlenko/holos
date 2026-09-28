@@ -35,6 +35,13 @@ public enum ExclusivePublisher {
         }
     }
 
+    /// How the fallback copy runs: its chunk size, and a hook called with each chunk's number
+    /// after it is written (tests slow the copy down or cancel it there).
+    struct CopyPacing: Sendable {
+        var chunkSize = 1 << 20
+        var afterChunk: @Sendable (Int) -> Void = { _ in }
+    }
+
     /// Moves `source` to `destination`. `source` must be in the destination's directory (every
     /// caller writes it there), so the move never crosses volumes. The rename is exclusive
     /// (`renamex_np` with `RENAME_EXCL`). Volumes that cannot rename exclusively get the
@@ -45,16 +52,31 @@ public enum ExclusivePublisher {
     /// only that file is removed, and only while it is still the one at `destination`. `source`
     /// is removed once published. A file already at `destination` fails with `existing` and the
     /// path.
+    ///
+    /// `isCancelled` is asked between chunks of the copy; when it says yes, the copy stops with
+    /// `CancellationError` and the partial file is removed (as on any failure). It must report the
+    /// cancellation of whoever asked for the file: the default, the current task's, is right only
+    /// when the caller is that task (a render finished from a delegate callback passes its own).
     public static func publish(_ source: URL, to destination: URL,
                                exclusiveRename: ExclusiveRename = systemExclusiveRename,
                                existing: String = "Output already exists",
+                               isCancelled: () -> Bool = { Task.isCancelled },
                                claimed: (FileIdentity) throws -> Void = { _ in }) throws {
+        try publish(source, to: destination, exclusiveRename: exclusiveRename, existing: existing,
+                    isCancelled: isCancelled, pacing: CopyPacing(), claimed: claimed)
+    }
+
+    static func publish(_ source: URL, to destination: URL,
+                        exclusiveRename: ExclusiveRename, existing: String,
+                        isCancelled: () -> Bool, pacing: CopyPacing,
+                        claimed: (FileIdentity) throws -> Void = { _ in }) throws {
         if exclusiveRename(source.path, destination.path) == 0 { return }
         let error = errno
         guard error == ENOTSUP || error == EINVAL || error == ENOSYS else {
             throw failure(destination, error, existing: existing)
         }
-        try copyExclusively(source, to: destination, existing: existing, claimed: claimed)
+        try copyExclusively(source, to: destination, existing: existing, isCancelled: isCancelled,
+                            pacing: pacing, claimed: claimed)
         _ = unlink(source.path)
     }
 
@@ -65,6 +87,7 @@ public enum ExclusivePublisher {
     }
 
     private static func copyExclusively(_ source: URL, to destination: URL, existing: String,
+                                        isCancelled: () -> Bool, pacing: CopyPacing,
                                         claimed: (FileIdentity) throws -> Void) throws {
         let input = open(source.path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW)
         guard input >= 0 else { throw failure(source, errno, existing: existing) }
@@ -83,7 +106,8 @@ public enum ExclusivePublisher {
         var isOpen = true
         do {
             try claimed(identity)
-            try copy(from: input, to: output, destination: destination, existing: existing)
+            try copy(from: input, to: output, destination: destination, existing: existing,
+                     isCancelled: isCancelled, pacing: pacing)
             if fsync(output) != 0, errno != ENOTSUP, errno != EINVAL {
                 throw failure(destination, errno, existing: existing)
             }
@@ -99,13 +123,15 @@ public enum ExclusivePublisher {
         }
     }
 
-    private static func copy(from input: Int32, to output: Int32, destination: URL, existing: String) throws {
-        let size = 1 << 20
+    private static func copy(from input: Int32, to output: Int32, destination: URL, existing: String,
+                             isCancelled: () -> Bool, pacing: CopyPacing) throws {
+        let size = max(1, pacing.chunkSize)
         let buffer = UnsafeMutableRawPointer.allocate(byteCount: size, alignment: 16)
         defer { buffer.deallocate() }
+        var chunk = 0
         while true {
-            // A cancelled render (Ctrl-C) stops here, and the partial copy is removed.
-            try Task.checkCancellation()
+            // A cancelled render or reading (Ctrl-C) stops here, and the partial copy is removed.
+            if isCancelled() { throw CancellationError() }
             let count = read(input, buffer, size)
             if count == 0 { return }
             if count < 0 {
@@ -121,6 +147,8 @@ public enum ExclusivePublisher {
                 }
                 offset += written
             }
+            chunk += 1
+            pacing.afterChunk(chunk)
         }
     }
 

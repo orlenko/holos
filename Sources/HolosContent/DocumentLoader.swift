@@ -42,18 +42,47 @@ public enum DocumentLoader {
 }
 
 /// Bytes of a text file (or stdin) as a string: UTF-8, or UTF-16 or UTF-32 when a byte order
-/// mark says so (Windows Notepad saves "Unicode" as UTF-16 with one). Nil for anything else.
+/// mark says so (Windows Notepad saves "Unicode" as UTF-16 with one). A byte order mark decides
+/// the encoding: malformed sequences after one become U+FFFD, never a reason to read the bytes
+/// in another encoding (see `decodeMarked`). Without a mark, nil for anything but valid UTF-8.
 /// One leading byte order mark is dropped, so it never hides YAML front matter or ends up in a
 /// title, and every line ends in LF (see `withLFLineEndings`).
 public enum DocumentText {
     public static func decode(_ data: Data) -> String? {
-        let text: String?
-        if let (length, encoding) = byteOrderMark(data) {
-            text = decode(data.dropFirst(length), as: encoding)
-        } else {
-            text = decode(data, as: .utf8)
-        }
+        let text = decodeMarked(data) ?? decode(data, as: .utf8)
         return text.map(withLFLineEndings)
+    }
+
+    /// When `data` starts with a byte order mark: the rest in the encoding it names, each malformed
+    /// sequence (an invalid UTF-8 byte, a lone surrogate, a trailing partial code unit) replaced
+    /// with U+FFFD. The mark itself is dropped. Nil without a mark.
+    static func decodeMarked(_ data: Data) -> String? {
+        guard let (length, encoding) = byteOrderMark(data) else { return nil }
+        let bytes = [UInt8](data.dropFirst(length))
+        switch encoding {
+        case .utf16LittleEndian, .utf16BigEndian:
+            return repaired(bytes, width: 2, bigEndian: encoding == .utf16BigEndian, as: UTF16.self)
+        case .utf32LittleEndian, .utf32BigEndian:
+            return repaired(bytes, width: 4, bigEndian: encoding == .utf32BigEndian, as: UTF32.self)
+        default:
+            return String(decoding: bytes, as: UTF8.self)
+        }
+    }
+
+    /// `bytes` as code units of `width` bytes in the given byte order, decoded with `codec`,
+    /// malformed sequences replaced with U+FFFD; leftover bytes that make no whole unit are one
+    /// more U+FFFD.
+    private static func repaired<Codec: Unicode.Encoding>(
+        _ bytes: [UInt8], width: Int, bigEndian: Bool, as codec: Codec.Type
+    ) -> String where Codec.CodeUnit: FixedWidthInteger {
+        let whole = bytes.count / width * width
+        let units = stride(from: 0, to: whole, by: width).map { start in
+            bytes[start..<(start + width)].enumerated().reduce(Codec.CodeUnit(0)) { unit, pair in
+                let shift = (bigEndian ? width - 1 - pair.offset : pair.offset) * 8
+                return unit | (Codec.CodeUnit(pair.element) << shift)
+            }
+        }
+        return String(decoding: units, as: codec) + (whole < bytes.count ? "\u{FFFD}" : "")
     }
 
     /// `text` with Windows (CRLF) and classic Mac (CR) line endings made LF, so front matter,
@@ -270,7 +299,8 @@ public enum HTMLReader {
     // MARK: Encoding
 
     /// A page's bytes as text, the encoding picked as a browser picks it:
-    /// 1. a byte order mark: UTF-8, UTF-16, or UTF-32;
+    /// 1. a byte order mark: UTF-8, UTF-16, or UTF-32, malformed sequences read as U+FFFD (the
+    ///    mark decides; see `DocumentText.decodeMarked`);
     /// 2. else the charset declared in the first 1024 bytes, by `<meta charset>` or
     ///    `<meta http-equiv="Content-Type" content="…; charset=…">` (any ASCII case), outside
     ///    comments and scripts (see `CharsetPrescan`). As in
@@ -286,10 +316,7 @@ public enum HTMLReader {
     }
 
     private static func decodeKeepingMark(_ data: Data) -> String {
-        if let (length, encoding) = DocumentText.byteOrderMark(data),
-           let text = DocumentText.decode(data.dropFirst(length), as: encoding) {
-            return text
-        }
+        if let text = DocumentText.decodeMarked(data) { return text }
         if let declared = declaredEncoding(data) {
             if declared == .windowsCP1252 { return windows1252(data) }
             if let text = DocumentText.decode(data, as: declared) { return text }
