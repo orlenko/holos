@@ -80,7 +80,7 @@ public enum ReadingOutput {
 
     /// The volume's file name limit for names in `directory` (its `NAME_MAX`), at most 255.
     static func nameLimit(in directory: URL) -> Int {
-        let value = pathconf(directory.path, _PC_NAME_MAX)
+        let value = pathconf(RawFilePath.system(directory), _PC_NAME_MAX)
         return value > 0 ? min(Int(value), defaultNameLimit) : defaultNameLimit
     }
 
@@ -188,7 +188,7 @@ public enum ReadingOutput {
         if RawFilePath.isDirectory(url) {
             url = RawFilePath.url(output, isDirectory: true)
             let name = fitting(name, limit: nameLimit(in: url))
-            if ReadingManifest.isReading(url.appendingPathComponent(ReadingManifest.fileName)) {
+            if ReadingManifest.isReading(RawFilePath.appending(ReadingManifest.fileName, to: url)) {
                 return (ReadingLocation(workDirectory: url, output: RawFilePath.appending(name, to: url)), .readingFolder)
             }
             return (hashed(output: RawFilePath.appending(name, to: url)), .explicit)
@@ -212,7 +212,7 @@ public enum ReadingOutput {
         }
         try checkPathLength(output)
         var metadata = stat()
-        if !allowExisting, lstat(output.path, &metadata) == 0 {
+        if !allowExisting, lstat(RawFilePath.system(output), &metadata) == 0 {
             throw HolosError.invalidInput("Reading output already exists: \(output.path)")
         }
     }
@@ -235,20 +235,21 @@ public enum ReadingOutput {
     static func checkFolder(_ folder: URL, role: String) throws {
         // `stat` on the path as spelled (`FileManager` would decompose it; see `RawFilePath`).
         var metadata = stat()
-        guard stat(folder.path, &metadata) == 0 else {
+        guard stat(RawFilePath.system(folder), &metadata) == 0 else {
             throw HolosError.invalidInput("\(role) does not exist: \(folder.path)")
         }
         guard (metadata.st_mode & S_IFMT) == S_IFDIR else {
             throw HolosError.invalidInput("\(role) is not a folder: \(folder.path)")
         }
-        // Permissions, ACLs, read-only volumes, and sandboxing all show in an actual create.
-        let probe = folder.appendingPathComponent(".holos-probe-\(UUID().uuidString)")
-        let descriptor = open(probe.path, O_CREAT | O_EXCL | O_WRONLY | O_CLOEXEC | O_NOFOLLOW, 0o600)
+        // Permissions, ACLs, read-only volumes, and sandboxing all show in an actual create. The
+        // probe is made in the folder as spelled.
+        let probe = RawFilePath.system(RawFilePath.appending(".holos-probe-\(UUID().uuidString)", to: folder))
+        let descriptor = open(probe, O_CREAT | O_EXCL | O_WRONLY | O_CLOEXEC | O_NOFOLLOW, 0o600)
         guard descriptor >= 0 else {
             throw HolosError.invalidInput("\(role) is not writable: \(folder.path) (\(String(cString: strerror(errno))))")
         }
         close(descriptor)
-        unlink(probe.path)
+        unlink(probe)
     }
 
     private static func hashed(output: URL, identity: String, readingsRoot: URL,
@@ -311,7 +312,36 @@ enum RawFilePath {
     /// Whether `url` names a folder (links followed), asked with its spelling as given.
     static func isDirectory(_ url: URL) -> Bool {
         var metadata = stat()
-        return stat(url.path, &metadata) == 0 && (metadata.st_mode & S_IFMT) == S_IFDIR
+        return stat(system(url), &metadata) == 0 && (metadata.st_mode & S_IFMT) == S_IFDIR
+    }
+
+    /// Stands in for the volume in tests: the path a system call is given for a path as spelled,
+    /// so a test can simulate a volume that keeps NFC and NFD names apart. nil: the path itself.
+    @TaskLocal static var volume: (@Sendable (String) -> String)? = nil
+
+    /// `path` as a system call is given it: its bytes as spelled (Swift passes a `String` to C
+    /// as its UTF-8 bytes).
+    static func system(_ path: String) -> String { volume?(path) ?? path }
+
+    /// `url`'s path as a system call is given it (see `system(_:)`).
+    static func system(_ url: URL) -> String { system(url.path) }
+
+    /// The names in `folder`, listed with its spelling as given (`FileManager` would decompose
+    /// it), "." and ".." left out; nil when it cannot be listed. A name that is not UTF-8 is left
+    /// out too: no file this app makes has one.
+    static func names(in folder: URL) -> [String]? {
+        guard let stream = opendir(system(folder)) else { return nil }
+        defer { closedir(stream) }
+        var names: [String] = []
+        while let entry = readdir(stream) {
+            let length = Int(entry.pointee.d_namlen)
+            let name = withUnsafeBytes(of: &entry.pointee.d_name) { bytes in
+                String(validating: bytes.prefix(length), as: UTF8.self)
+            }
+            guard let name, name != ".", name != ".." else { continue }
+            names.append(name)
+        }
+        return names
     }
 
     /// `path` (absolute) without ".", "..", and empty components; bytes elsewhere untouched.

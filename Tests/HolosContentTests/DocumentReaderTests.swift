@@ -590,6 +590,34 @@ import Testing
         #expect(!HTMLReader.Walker.hidesElement("color: red"))
     }
 
+    /// A multi-keyword `display` counts only when the property's grammar allows it; an invalid one
+    /// is dropped from the cascade, as a browser drops it, and never overrides a valid `none`.
+    @Test func inlineDisplayFollowsTheDisplayGrammar() {
+        // Valid later values show the element.
+        for value in ["block flow", "flow block", "list-item block", "block list-item", "inline flow-root list-item",
+                      "list-item", "inline flex", "run-in ruby", "block math", "table-cell", "inline-block",
+                      "contents", "flow-root", "grid", "-webkit-box", "unset", "  inline   grid  "] {
+            #expect(!HTMLReader.Walker.hidesElement("display:none; display:\(value)"), "\(value)")
+        }
+        // Invalid ones leave it hidden: `none` or `contents` combined, duplicates, two outside or
+        // two inside keywords, an inside other than flow or flow-root with list-item, internal,
+        // legacy, or CSS-wide keywords combined, and more than three keywords.
+        for value in ["none block", "block none", "contents block", "inline inline", "block inline", "flex grid",
+                      "list-item table", "list-item flow flow-root", "list-item list-item", "table-cell block",
+                      "inline-block flow", "inherit block", "block flow list-item inline", "none none",
+                      "block bogus"] {
+            #expect(HTMLReader.Walker.hidesElement("display:none; display:\(value)"), "\(value)")
+        }
+        #expect(paragraphs("""
+        <html><body>
+        <p style="display:none; display:none block">Hidden, none block.</p>
+        <p style="display:none; display:block flow">Block flow.</p>
+        <p style="display:none; display:list-item block">List item block.</p>
+        <p style="display:none; display:inline inline">Hidden, duplicate.</p>
+        </body></html>
+        """) == ["Block flow.", "List item block."])
+    }
+
     /// Legacy-encoded pages are decoded before parsing and read like UTF-8 ones, navigation and
     /// footers skipped.
     @Test func legacyEncodedPagesSkipNavigationToo() throws {

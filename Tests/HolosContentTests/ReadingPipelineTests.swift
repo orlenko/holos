@@ -744,6 +744,197 @@ import Testing
         #expect(FileManager.default.fileExists(atPath: path))
     }
 
+    /// What two contenders for one reservation did, one run inside the other's takeover.
+    private final class Contenders: @unchecked Sendable {
+        var fired = false
+        var inner: ReadingOutputReservation?
+        var innerInode: ino_t?
+        var innerMessage: String?
+    }
+
+    /// The reservation file's record and inode.
+    private func reservationFile(_ path: String) throws -> (ReadingOutputReservation.Record, ino_t) {
+        var metadata = stat()
+        #expect(lstat(path, &metadata) == 0)
+        let record = try JSONDecoder().decode(ReadingOutputReservation.Record.self,
+                                              from: Data(contentsOf: URL(fileURLWithPath: path)))
+        return (record, metadata.st_ino)
+    }
+
+    /// Two runs taking over one stale reservation: exactly one goes on, the other is refused, and
+    /// the reservation of the one that goes on is never removed, whichever way their steps
+    /// interleave. The second run is made to act at the first one's takeover steps.
+    @Test func twoRunsTakingOverOneStaleReservationLeaveExactlyOne() throws {
+        let parent = try root()
+        defer { try? FileManager.default.removeItem(at: parent) }
+        let output = parent.appendingPathComponent("Book.m4a")
+        let path = parent.appendingPathComponent(ReadingOutputReservation.name(for: output)).path
+        let guardPath = ReadingOutputReservation.guardPath(for: path)
+        let live = ReadingOutputReservation.Record.current()
+        let stale = ReadingOutputReservation.Record(host: live.host, pid: try endedProcessID(), start: 1,
+                                                    uid: live.uid, created: 1)
+
+        // The race of a removal checked and made in two steps: both read the stale reservation;
+        // the other run takes it over completely before this one goes on.
+        do {
+            try writeReservation(stale, at: path)
+            let contenders = Contenders()
+            let message = ReadingOutputReservation.$takeoverStep.withValue({ step in
+                guard step == .found, !contenders.fired else { return }
+                contenders.fired = true
+                contenders.inner = try? ReadingOutputReservation.acquire(path: path, output: output)
+                var metadata = stat()
+                if lstat(path, &metadata) == 0 { contenders.innerInode = metadata.st_ino }
+            }) {
+                refusal { _ = try ReadingOutputReservation.acquire(path: path, output: output) }
+            }
+            let winner = try #require(contenders.inner)
+            #expect(message?.contains("Another reading is already being made for \(output.path)") == true)
+            #expect(message?.contains(path) == true)
+            let (record, inode) = try reservationFile(path)
+            #expect(record == winner.record && inode == contenders.innerInode)
+            #expect(!FileManager.default.fileExists(atPath: guardPath))
+            withExtendedLifetime(winner) {}
+        }
+        #expect(!FileManager.default.fileExists(atPath: path))
+
+        // The other run arrives while this one holds the guard, between its check and its removal.
+        do {
+            try writeReservation(stale, at: path)
+            let contenders = Contenders()
+            let held = try ReadingOutputReservation.$takeoverStep.withValue({ step in
+                guard step == .verified, !contenders.fired else { return }
+                contenders.fired = true
+                do {
+                    contenders.inner = try ReadingOutputReservation.acquire(path: path, output: output)
+                } catch HolosError.unavailable(let message) {
+                    contenders.innerMessage = message
+                } catch {
+                    contenders.innerMessage = "Unexpected error: \(error)"
+                }
+            }) {
+                try ReadingOutputReservation.acquire(path: path, output: output)
+            }
+            #expect(contenders.inner == nil)
+            let message = contenders.innerMessage
+            #expect(message?.contains("is taking over its reservation \(path) (with \(guardPath))") == true)
+            let (record, _) = try reservationFile(path)
+            #expect(record == held.record)
+            #expect(!FileManager.default.fileExists(atPath: guardPath))
+            withExtendedLifetime(held) {}
+        }
+        #expect(!FileManager.default.fileExists(atPath: path))
+    }
+
+    /// A takeover guard held by a running process, or from another host, or that cannot be read,
+    /// refuses the takeover, naming the reservation and the guard, and both are kept. One left by
+    /// a process that has ended is removed, and the stale reservation taken over.
+    @Test func aTakeoverGuardIsHonoredUnlessItsProcessHasEnded() throws {
+        let parent = try root()
+        defer { try? FileManager.default.removeItem(at: parent) }
+        let output = parent.appendingPathComponent("Book.m4a")
+        let path = parent.appendingPathComponent(ReadingOutputReservation.name(for: output)).path
+        let guardPath = ReadingOutputReservation.guardPath(for: path)
+        #expect((guardPath as NSString).lastPathComponent.utf8.count < ReadingOutput.temporaryNameLength)
+        let live = ReadingOutputReservation.Record.current()
+        let stale = ReadingOutputReservation.Record(host: live.host, pid: try endedProcessID(), start: 1,
+                                                    uid: live.uid, created: 1)
+        let running = ReadingOutputReservation.Record(host: live.host, pid: live.pid, start: live.start,
+                                                      uid: live.uid, created: 2)
+        let elsewhere = ReadingOutputReservation.Record(host: "elsewhere.invalid", pid: 1, start: 1,
+                                                        uid: live.uid, created: 3)
+        let kept: [(Data, String)] = [
+            (try JSONEncoder().encode(running), "is taking over its reservation"),
+            (try JSONEncoder().encode(elsewhere), "elsewhere.invalid"),
+            (Data(), "does not say which process holds it"),
+        ]
+        for (contents, expected) in kept {
+            try writeReservation(stale, at: path)
+            try contents.write(to: URL(fileURLWithPath: guardPath))
+            let message = refusal { _ = try ReadingOutputReservation.acquire(path: path, output: output) }
+            #expect(message?.contains(expected) == true)
+            #expect(message?.contains(path) == true && message?.contains(guardPath) == true)
+            #expect(try reservationFile(path).0 == stale)
+            #expect(try Data(contentsOf: URL(fileURLWithPath: guardPath)) == contents)
+            try FileManager.default.removeItem(atPath: guardPath)
+        }
+
+        try JSONEncoder().encode(
+            ReadingOutputReservation.Record(host: live.host, pid: try endedProcessID(), start: 1, uid: live.uid, created: 4)
+        ).write(to: URL(fileURLWithPath: guardPath))
+        do {
+            let held = try ReadingOutputReservation.acquire(path: path, output: output)
+            #expect(try reservationFile(path).0 == held.record)
+            #expect(!FileManager.default.fileExists(atPath: guardPath))
+            withExtendedLifetime(held) {}
+        }
+        #expect(!FileManager.default.fileExists(atPath: path))
+    }
+
+    /// On a volume that keeps names as bytes, an NFC folder "Café" is not its NFD spelling. Every
+    /// file made beside the output (the writability probe, the reservation, the join file and its
+    /// sweep, the checksum read, a reading's manifest) is in the folder as typed. Simulated: a path spelled with the NFC
+    /// folder goes to a real folder, and any other spelling of it (NFD) names nothing.
+    @Test func filesBesideTheOutputKeepTheFolderSpelling() throws {
+        let parent = try root()
+        defer { try? FileManager.default.removeItem(at: parent) }
+        let store = parent.appendingPathComponent("store")
+        try FileManager.default.createDirectory(at: store, withIntermediateDirectories: false)
+        let composed = parent.path + "/Caf\u{E9}"
+        let decomposed = parent.path + "/Cafe\u{301}"
+        let storePath = store.path
+        let volume: @Sendable (String) -> String = { path in
+            let bytes = Array(path.utf8)
+            let prefix = Array(composed.utf8)
+            guard bytes.starts(with: prefix),
+                  bytes.count == prefix.count || bytes[prefix.count] == UInt8(ascii: "/") else { return path }
+            return storePath + String(decoding: bytes[prefix.count...], as: UTF8.self)
+        }
+        func stored() throws -> [String] { try FileManager.default.contentsOfDirectory(atPath: storePath).sorted() }
+        let folder = RawFilePath.url(composed, isDirectory: true)
+        let output = RawFilePath.appending("Book.m4a", to: folder)
+        #expect(Data(output.path.utf8) == Data((composed + "/Book.m4a").utf8))
+        try RawFilePath.$volume.withValue(volume) {
+            #expect(RawFilePath.isDirectory(folder))
+            #expect(!RawFilePath.isDirectory(RawFilePath.url(decomposed, isDirectory: true)))
+            try ReadingOutput.checkDestination(output)
+            #expect(throws: HolosError.self) {
+                try ReadingOutput.checkDestination(RawFilePath.appending("Book.m4a", to: RawFilePath.url(decomposed)))
+            }
+            #expect(try stored().isEmpty)
+
+            let cache = parent.appendingPathComponent("support").appendingPathComponent("Output-a")
+            do {
+                let held = try #require(try ReadingOutputReservation.acquire(output: output, beside: cache))
+                #expect(Data(held.path.utf8).starts(with: Data((composed + "/").utf8)))
+                #expect(try stored() == [ReadingOutputReservation.name(for: output)])
+                withExtendedLifetime(held) {}
+            }
+            #expect(try stored().isEmpty)
+
+            let key = "0123456789abcdef"
+            let current = UUID()
+            let earlier = ReadingTemporaries.joinURL(beside: output, key: key, run: UUID())
+            let now = ReadingTemporaries.joinURL(beside: output, key: key, run: current)
+            #expect(Data(earlier.path.utf8).starts(with: Data((composed + "/").utf8)))
+            for url in [earlier, now] {
+                #expect(FileManager.default.createFile(atPath: volume(url.path), contents: Data("x".utf8)))
+            }
+            ReadingTemporaries.sweep(workDirectory: parent.appendingPathComponent("work"), outputFolder: folder,
+                                     key: key, currentRun: current)
+            #expect(try stored() == [now.lastPathComponent])
+            #expect(try fileSHA256(now) == SHA256.hash(data: Data("x".utf8)).map { String(format: "%02x", $0) }.joined())
+
+            // A reading's folder typed as `--output` is found by its manifest, read as typed.
+            let marker = #"{"kind":"\#(ReadingManifest.readingKind)","schemaVersion":1}"#
+            #expect(FileManager.default.createFile(atPath: store.appendingPathComponent(ReadingManifest.fileName).path,
+                                                   contents: Data(marker.utf8)))
+            let (_, destination) = try ReadingOutput.resolve(output: composed, name: "x.m4a", identity: "i",
+                                                             readingsRoot: parent)
+            #expect(destination == .readingFolder)
+        }
+    }
+
     /// The reservation goes when a reading fails and when it is cancelled.
     @Test func theReservationIsRemovedAfterAFailureAndACancel() async throws {
         let parent = try root()

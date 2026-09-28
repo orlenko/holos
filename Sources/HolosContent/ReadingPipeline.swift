@@ -288,7 +288,7 @@ public struct AudioBookJoiner: ReadingAudioJoiner {
             }
             // `lstat` on the path as spelled (`FileManager` would decompose it; see `RawFilePath`).
             var existing = stat()
-            guard lstat(output.path, &existing) != 0 else {
+            guard lstat(RawFilePath.system(output), &existing) != 0 else {
                 throw HolosError.invalidInput("Reading output already exists: \(output.path)")
             }
             manifest = ReadingManifest(kind: ReadingManifest.readingKind,
@@ -323,7 +323,7 @@ public struct AudioBookJoiner: ReadingAudioJoiner {
             try saveManifest(manifest, to: manifestURL)
         }
         var existing = stat()
-        guard lstat(output.path, &existing) != 0 else {
+        guard lstat(RawFilePath.system(output), &existing) != 0 else {
             throw HolosError.invalidInput("Reading output already exists and is not this reading: \(output.path)")
         }
         manifest.status = "incomplete"
@@ -374,11 +374,10 @@ public struct AudioBookJoiner: ReadingAudioJoiner {
         }
 
         try Task.checkCancellation()
-        let temporary = output.deletingLastPathComponent()
-            .appendingPathComponent(ReadingTemporaries.joinName(key: key, run: run))
+        let temporary = ReadingTemporaries.joinURL(beside: output, key: key, run: run)
         // Runs on every exit, cancellation (Ctrl-C in `voiceislocal read`) included. The name
         // carries this run's UUID, so nothing but this run's joiner makes a file there.
-        defer { _ = unlink(temporary.path) }
+        defer { _ = unlink(RawFilePath.system(temporary)) }
         let audioParts = manifest.parts.map { part in
             AudioBookPart(url: directory.appendingPathComponent(part.relativeAudioPath),
                           silenceBefore: part.index == 0 ? 0
@@ -618,18 +617,18 @@ final class ReadingDirectoryLock {
 ///   start time, user ID, creation time), so any user can read who holds it;
 /// - an existing one is held while its process runs: on this host, a process with its ID and
 ///   the same start time (a reused ID has another). One whose process has ended (a run killed
-///   before its release) is removed and taken, whoever owns it. One from another host (a shared
-///   network folder) cannot be checked, one that cannot be read or decoded (a run killed between
-///   creating and writing it) is not trusted, and one that cannot be removed (another user's
-///   file in a sticky shared folder) stays: each is refused with a message naming the file and
-///   who can delete it;
+///   before its release) is removed and taken, whoever owns it, under a takeover guard (see
+///   `takeOver`), so of two runs taking it over at once exactly one goes on. One from another
+///   host (a shared network folder) cannot be checked, one that cannot be read or decoded (a run
+///   killed between creating and writing it) is not trusted, and one that cannot be removed
+///   (another user's file in a sticky shared folder) stays: each is refused with a message
+///   naming the file and who can delete it;
 /// - it is removed on release when it still holds this run's record.
-/// Two runs taking over one stale reservation at the same instant can both go on (each may
-/// remove the file the other just created); the exclusive publication (`ReadingPublisher`) still
-/// keeps either from replacing the other's finished file.
 /// It is named from the file's conservative identity (see `ReadingPathIdentity.Rule.lock`), so
 /// "Book.m4a" and "book.m4a" on a case-insensitive volume, or one name in NFC and NFD, share it.
-/// The name is shorter than the join temporary's, so `ReadingOutput.checkPathLength` covers it.
+/// Its name and its guard's are shorter than the join temporary's, so
+/// `ReadingOutput.checkPathLength` covers them. Its path is the destination folder as spelled
+/// (see `RawFilePath`).
 final class ReadingOutputReservation {
     struct Record: Codable, Equatable {
         /// `gethostname`.
@@ -673,24 +672,26 @@ final class ReadingOutputReservation {
         guard destination.standardizedFileURL.path != directory.standardizedFileURL.path else { return nil }
         // The folder as spelled, links resolved (see `RawFilePath`).
         let folder = RawFilePath.resolvingFolder(of: output).deletingLastPathComponent()
-        return try acquire(path: folder.appendingPathComponent(name(for: output)).path, output: output)
+        return try acquire(path: RawFilePath.appending(name(for: output), to: folder).path, output: output)
     }
+
+    /// The takeover guard of the reservation at `path` (see `takeOver`).
+    static func guardPath(for path: String) -> String { path + ".takeover" }
+
+    /// Where a takeover may be interleaved with another run's, for tests: `found` after a stale
+    /// reservation is read and before its guard is taken, `verified` under the guard after the
+    /// reservation is checked again and before it is removed.
+    enum TakeoverStep: Sendable { case found, verified }
+
+    /// Runs at each `TakeoverStep` (tests).
+    @TaskLocal static var takeoverStep: (@Sendable (TakeoverStep) -> Void)? = nil
 
     /// Creates the reservation at `path` for `output`, taking over one whose process has ended.
     static func acquire(path: String, output: URL) throws -> ReadingOutputReservation {
         let mine = Record.current()
-        var tookOver = false
-        // A retry follows a holder's release or one stale reservation's removal.
+        // A retry follows a holder's release, or a takeover that found the reservation changed.
         for _ in 0..<3 {
-            let descriptor = open(path, O_CREAT | O_EXCL | O_WRONLY | O_CLOEXEC | O_NOFOLLOW, 0o644)
-            if descriptor >= 0 {
-                try write(mine, to: descriptor, path: path, output: output)
-                return ReadingOutputReservation(path: path, record: mine)
-            }
-            let error = errno
-            guard error == EEXIST else {
-                throw HolosError.io("Could not reserve \(output.path) with \(path): \(String(cString: strerror(error)))")
-            }
+            if let made = try create(mine, at: path, output: output) { return made }
             switch holder(at: path) {
             case .gone:
                 continue
@@ -701,22 +702,102 @@ final class ReadingOutputReservation {
             case .otherHost(let record):
                 throw HolosError.unavailable("Another reading is already being made for \(output.path) on \(record.host.isEmpty ? "another computer" : record.host) (process \(record.pid) of user ID \(record.uid), since \(date(record.created))), which cannot be checked from here. If no reading of that file is running there, delete \(path).")
             case .ended(let record, let owner, let file):
-                guard !tookOver else { continue }
-                tookOver = true
-                // Only the file just read: one another run made since is that run's.
-                var current = stat()
-                guard lstat(path, &current) == 0, current.st_dev == file.device, current.st_ino == file.inode else { continue }
-                guard unlink(path) == 0 || errno == ENOENT else {
-                    let reason = String(cString: strerror(errno))
-                    throw HolosError.unavailable("A reading for \(output.path) that is no longer running (process \(record.pid) of \(userName(record.uid))) left its reservation \(path), and it cannot be removed here: \(reason). \(userName(owner).capitalizedFirst), who owns it, or an administrator can delete it.")
+                takeoverStep?(.found)
+                if let made = try takeOver(path: path, stale: record, owner: owner, file: file, mine: mine,
+                                           output: output) {
+                    return made
                 }
             }
         }
         throw HolosError.unavailable("Another reading is already being made for \(output.path). Its reservation is \(path).")
     }
 
-    /// Writes `record` into the reservation just created, readable by every user whatever the
-    /// umask. A reservation that cannot be written is removed.
+    /// Creates the reservation at `path` holding `record`; nil when a file is already there.
+    private static func create(_ record: Record, at path: String, output: URL) throws -> ReadingOutputReservation? {
+        let descriptor = open(RawFilePath.system(path), O_CREAT | O_EXCL | O_WRONLY | O_CLOEXEC | O_NOFOLLOW, 0o644)
+        guard descriptor >= 0 else {
+            let error = errno
+            guard error == EEXIST else {
+                throw HolosError.io("Could not reserve \(output.path) with \(path): \(String(cString: strerror(error)))")
+            }
+            return nil
+        }
+        try write(record, to: descriptor, path: path, output: output)
+        return ReadingOutputReservation(path: path, record: record)
+    }
+
+    /// Replaces the reservation at `path`, the file `file` holding `stale` (made by a process
+    /// that has ended), with this run's (`mine`); nil when the reservation changed since it was
+    /// read, for the caller to read again.
+    ///
+    /// Checking that `path` is still that file and removing it are two steps, and between them
+    /// another run could replace it, so both happen only while holding the reservation's takeover
+    /// guard (`guardPath(for:)`): a file created with `O_CREAT | O_EXCL`, holding this run's
+    /// record, and removed once this run's reservation is in place. Only a guard holder removes
+    /// a reservation it did not make, so the file checked under the guard is the file removed; a
+    /// run that finds the guard held is refused (see `takeGuard`); and a run that read the same
+    /// stale reservation but takes the guard later finds this run's reservation instead and does
+    /// not touch it.
+    private static func takeOver(path: String, stale: Record, owner: uid_t, file: (device: dev_t, inode: ino_t),
+                                 mine: Record, output: URL) throws -> ReadingOutputReservation? {
+        let guardPath = guardPath(for: path)
+        try takeGuard(guardPath, reservation: path, stale: stale, owner: owner, mine: mine, output: output)
+        defer { removeIfHolding(guardPath, mine) }
+        guard case .ended(let current, _, let still) = holder(at: path), current == stale,
+              still.device == file.device, still.inode == file.inode else { return nil }
+        takeoverStep?(.verified)
+        guard unlink(RawFilePath.system(path)) == 0 || errno == ENOENT else {
+            let reason = String(cString: strerror(errno))
+            throw HolosError.unavailable("A reading for \(output.path) that is no longer running (process \(stale.pid) of \(userName(stale.uid))) left its reservation \(path), and it cannot be removed here: \(reason). \(userName(owner).capitalizedFirst), who owns it, or an administrator can delete it.")
+        }
+        return try create(mine, at: path, output: output)
+    }
+
+    /// Creates the takeover guard at `guardPath` holding `mine`, or refuses, naming the
+    /// reservation and its guard, while another run holds it. A guard whose run has ended on this
+    /// host (killed during its takeover) is removed and taken, as a stale reservation is, but
+    /// without a guard of its own: two runs that find one such guard at the same instant can both
+    /// go on (one may remove the guard the other just made). That takes a run killed within the
+    /// guard's lifetime (a few system calls) and two more starting within that instant; the
+    /// exclusive publication (`ReadingPublisher`) still keeps either from replacing the other's
+    /// finished file.
+    private static func takeGuard(_ guardPath: String, reservation path: String, stale: Record, owner: uid_t,
+                                  mine: Record, output: URL) throws {
+        for _ in 0..<2 {
+            let descriptor = open(RawFilePath.system(guardPath), O_CREAT | O_EXCL | O_WRONLY | O_CLOEXEC | O_NOFOLLOW, 0o644)
+            if descriptor >= 0 {
+                try write(mine, to: descriptor, path: guardPath, output: output)
+                return
+            }
+            let error = errno
+            guard error == EEXIST else {
+                // Nothing can be created beside it (a read-only folder, or another user's sticky one).
+                throw HolosError.unavailable("A reading for \(output.path) that is no longer running (process \(stale.pid) of \(userName(stale.uid))) left its reservation \(path), and it cannot be replaced here: \(String(cString: strerror(error))). \(userName(owner).capitalizedFirst), who owns it, or an administrator can delete it.")
+            }
+            switch holder(at: guardPath) {
+            case .gone:
+                continue
+            case .running(let record):
+                throw HolosError.unavailable("Another reading is already being made for \(output.path): process \(record.pid) of \(userName(record.uid)) is taking over its reservation \(path) (with \(guardPath)).")
+            case .otherHost(let record):
+                throw HolosError.unavailable("Another reading is already being made for \(output.path): process \(record.pid) of user ID \(record.uid) on \(record.host.isEmpty ? "another computer" : record.host) is taking over its reservation \(path) (with \(guardPath)), which cannot be checked from here. If no reading of that file is running there, delete \(guardPath).")
+            case .unreadable(let reason):
+                throw HolosError.unavailable("Another reading may be taking over the reservation \(path) of \(output.path): its takeover file \(guardPath) \(reason). If no reading of that file is running, delete \(guardPath).")
+            case .ended(let record, let guardOwner, let file):
+                var current = stat()
+                guard lstat(RawFilePath.system(guardPath), &current) == 0, current.st_dev == file.device,
+                      current.st_ino == file.inode else { continue }
+                guard unlink(RawFilePath.system(guardPath)) == 0 || errno == ENOENT else {
+                    let reason = String(cString: strerror(errno))
+                    throw HolosError.unavailable("A reading for \(output.path) that is no longer running (process \(record.pid) of \(userName(record.uid))) left the takeover file \(guardPath) beside its reservation \(path), and it cannot be removed here: \(reason). \(userName(guardOwner).capitalizedFirst), who owns it, or an administrator can delete it.")
+                }
+            }
+        }
+        throw HolosError.unavailable("Another reading is already being made for \(output.path): its reservation \(path) is being taken over (with \(guardPath)).")
+    }
+
+    /// Writes `record` into the reservation (or guard) just created, readable by every user
+    /// whatever the umask. One that cannot be written is removed.
     private static func write(_ record: Record, to descriptor: Int32, path: String, output: URL) throws {
         defer { close(descriptor) }
         let encoder = JSONEncoder()
@@ -739,7 +820,7 @@ final class ReadingOutputReservation {
             }
         }
         guard failure == 0 else {
-            _ = unlink(path)
+            _ = unlink(RawFilePath.system(path))
             throw HolosError.io("Could not reserve \(output.path) with \(path): \(String(cString: strerror(failure)))")
         }
     }
@@ -760,7 +841,7 @@ final class ReadingOutputReservation {
 
     /// Who holds the reservation at `path`.
     static func holder(at path: String) -> Holder {
-        let descriptor = open(path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK)
+        let descriptor = open(RawFilePath.system(path), O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK)
         guard descriptor >= 0 else {
             let error = errno
             return error == ENOENT ? .gone : .unreadable("cannot be read (\(String(cString: strerror(error))))")
@@ -821,18 +902,18 @@ final class ReadingOutputReservation {
         ISO8601DateFormatter().string(from: Date(timeIntervalSince1970: seconds))
     }
 
-    /// Removes the reservation when it still holds this run's record: one removed by hand and made
-    /// again by another run is that run's.
-    private func release() {
-        let descriptor = open(path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK)
+    /// Removes the file at `path` (a reservation or its guard) when it still holds `record`: one
+    /// removed by hand and made again by another run is that run's.
+    private static func removeIfHolding(_ path: String, _ record: Record) {
+        let descriptor = open(RawFilePath.system(path), O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK)
         guard descriptor >= 0 else { return }
-        let data = Self.readAll(descriptor)
+        let data = readAll(descriptor)
         close(descriptor)
         guard let data, (try? JSONDecoder().decode(Record.self, from: data)) == record else { return }
-        _ = unlink(path)
+        _ = unlink(RawFilePath.system(path))
     }
 
-    deinit { release() }
+    deinit { Self.removeIfHolding(path, record) }
 }
 
 private extension String {
@@ -974,6 +1055,11 @@ enum ReadingTemporaries {
         "\(joinPrefix)\(key)-\(run.uuidString).\(ReadingAudioFormat.fileExtension)"
     }
 
+    /// The join file of run `run` beside `output`, in its folder as spelled (see `RawFilePath`).
+    static func joinURL(beside output: URL, key: String, run: UUID) -> URL {
+        RawFilePath.appending(joinName(key: key, run: run), to: output.deletingLastPathComponent())
+    }
+
     static func manifestName() -> String { "\(manifestPrefix)\(UUID().uuidString)\(manifestSuffix)" }
 
     /// Removes this reading's temporaries from earlier runs: regular files owned by this user whose
@@ -1018,10 +1104,11 @@ enum ReadingTemporaries {
         return UUID(uuidString: String(name.dropFirst(prefix.count).dropLast(suffix.count)))
     }
 
+    /// Listed and removed with `folder` spelled as given (see `RawFilePath`).
     private static func remove(in folder: URL, where matches: (String) -> Bool) {
-        guard let names = try? FileManager.default.contentsOfDirectory(atPath: folder.path) else { return }
+        guard let names = RawFilePath.names(in: folder) else { return }
         for name in names where matches(name) {
-            let path = folder.appendingPathComponent(name).path
+            let path = RawFilePath.system(RawFilePath.appending(name, to: folder))
             var metadata = stat()
             guard lstat(path, &metadata) == 0, (metadata.st_mode & S_IFMT) == S_IFREG,
                   metadata.st_uid == getuid() else { continue }
@@ -1164,8 +1251,19 @@ private func hex(_ digest: SHA256.Digest) -> String {
 }
 
 /// SHA-256 of a file read in 1 MiB chunks, so a book-length file never sits in memory at once.
+/// `url` opened for reading with its path as spelled (`FileHandle(forReadingFrom:)` would
+/// decompose it; see `RawFilePath`): the output, its join file, and a manifest found through
+/// `--output` are in the folder the user typed.
+private func rawHandle(_ url: URL) throws -> FileHandle {
+    let descriptor = open(RawFilePath.system(url), O_RDONLY | O_CLOEXEC)
+    guard descriptor >= 0 else {
+        throw HolosError.io("Could not read \(url.path): \(String(cString: strerror(errno)))")
+    }
+    return FileHandle(fileDescriptor: descriptor, closeOnDealloc: true)
+}
+
 func fileSHA256(_ url: URL) throws -> String {
-    let handle = try FileHandle(forReadingFrom: url)
+    let handle = try rawHandle(url)
     defer { try? handle.close() }
     var hasher = SHA256()
     while true {
@@ -1181,7 +1279,7 @@ func fileSHA256(_ url: URL) throws -> String {
 
 /// The contents of a file expected to be small; a larger one is an error, not read whole.
 private func readSmallFile(_ url: URL, maximumBytes: Int) throws -> Data {
-    let handle = try FileHandle(forReadingFrom: url)
+    let handle = try rawHandle(url)
     defer { try? handle.close() }
     let data = try handle.read(upToCount: maximumBytes + 1) ?? Data()
     guard data.count <= maximumBytes else {

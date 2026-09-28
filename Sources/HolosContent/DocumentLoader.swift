@@ -1110,23 +1110,46 @@ public enum HTMLReader {
             return winner?.value
         }
 
-        /// A `display` value a browser accepts: one to three known keywords, or a CSS-wide
-        /// keyword alone.
+        /// A `display` value a browser accepts, by the property's grammar (CSS Display 3, with
+        /// MathML Core's `math`):
+        /// `[<display-outside> || <display-inside>] | <display-listitem> | <display-internal> |
+        /// <display-box> | <display-legacy>`, or a CSS-wide keyword alone. Keywords of a
+        /// multi-keyword value come in any order, each at most once; `none`, `contents`, the
+        /// internal and legacy values, and the CSS-wide keywords stand alone. So "block flow"
+        /// and "list-item block" are valid, and "none block" and "inline inline" are not.
         static func isDisplayValue(_ value: String) -> Bool {
             let words = value.split(whereSeparator: \.isWhitespace).map(String.init)
-            if words.count == 1, cssWide.contains(words[0]) { return true }
-            return (1...3).contains(words.count) && words.allSatisfy(displayKeywords.contains)
+            guard (1...3).contains(words.count), Set(words).count == words.count else { return false }
+            if words.count == 1, displaySingles.contains(words[0]) { return true }
+            let outside = words.filter(displayOutside.contains)
+            let inside = words.filter(displayInside.contains)
+            let listItem = words.filter { $0 == "list-item" }
+            guard outside.count + inside.count + listItem.count == words.count, outside.count <= 1 else { return false }
+            if listItem.isEmpty {
+                // <display-outside> || <display-inside>: one of each at most (one alone is a single).
+                return inside.count <= 1
+            }
+            // <display-listitem>: list-item with at most one outside and at most flow or flow-root.
+            return inside.count <= 1 && inside.allSatisfy { $0 == "flow" || $0 == "flow-root" }
         }
 
         static let cssWide: Set<String> = ["inherit", "initial", "unset", "revert", "revert-layer"]
 
-        static let displayKeywords: Set<String> = [
-            "none", "contents", "block", "inline", "run-in", "flow", "flow-root", "table", "flex", "grid",
-            "ruby", "math", "list-item", "inline-block", "inline-table", "inline-flex", "inline-grid",
+        static let displayOutside: Set<String> = ["block", "inline", "run-in"]
+
+        static let displayInside: Set<String> = ["flow", "flow-root", "table", "flex", "grid", "ruby", "math"]
+
+        /// Values valid only as the whole declaration: <display-box>, <display-internal>,
+        /// <display-legacy> (with the prefixed forms every engine still accepts), and the
+        /// CSS-wide keywords. The outside and inside keywords and `list-item` are valid alone too.
+        static let displaySingles: Set<String> = cssWide.union(displayOutside).union(displayInside).union([
+            "none", "contents", "list-item",
             "table-row-group", "table-header-group", "table-footer-group", "table-row", "table-cell",
             "table-column-group", "table-column", "table-caption", "ruby-base", "ruby-text",
             "ruby-base-container", "ruby-text-container",
-        ]
+            "inline-block", "inline-table", "inline-flex", "inline-grid",
+            "-webkit-box", "-webkit-inline-box", "-webkit-flex", "-webkit-inline-flex",
+        ])
 
         /// One `name: value [!important]` declaration, lowercased, or nil when it has no name or
         /// no value.
