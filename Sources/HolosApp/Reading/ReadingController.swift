@@ -198,7 +198,13 @@ final class ReadingController {
         guard !readOnly.contains(id) else { return Self.readOnlyMessage }
         guard entry(id) != nil else { return nil }
         update(id) { $0.deletePending = true }
-        save()
+        // Nothing is stopped or removed unless the mark is saved: otherwise the reading would come back at the next
+        // launch with its files gone. (A list that is not saved at all keeps nothing to come back.)
+        if writable && !save() {
+            update(id) { $0.deletePending = nil }
+            return "“\(entry(id)?.title ?? "The reading")” was not deleted: "
+                + (notice ?? "the Reading list could not be saved.")
+        }
         if queue.running == id {
             deleteWhenStopped.insert(id)
             queue.stop(id)
@@ -356,10 +362,9 @@ final class ReadingController {
             // Bookkeeping that failed after the file was saved (see `ReadingResult.warnings`).
             $0.message = result.warnings.isEmpty ? nil : result.warnings.joined(separator: " ")
         }
-        // Saved as made before its text goes, so an exit in between never leaves a reading to resume without it.
-        save()
-        // The saved text is no longer needed; one that stays is removed with the reading.
-        try? store.removeDocument(for: id)
+        // The saved text goes only once the index says the reading is made (or keeps nothing of it): a reading the
+        // index still calls unfinished always has its text to resume from. One that stays is removed with the reading.
+        if save() || !writable { try? store.removeDocument(for: id) }
     }
 
     /// The folder new files go to. The default one is made when missing; a folder chosen in Settings that is missing
@@ -457,49 +462,15 @@ final class ReadingController {
         return nil
     }
 
-    /// Removes a reading's files: the `.m4a` of a finished reading goes to the Trash; the render cache is removed
-    /// only when it is one the pipeline made in the support folder; the saved text is removed. Nil when all are gone.
+    /// Removes a reading's files (see `ReadingLibrary.deleteFiles`): its finished file goes to the Trash. Nil when
+    /// all are gone.
     private func cleanUp(_ entry: ReadingEntry) -> String? {
-        var problems: [String] = []
-        // Only this reading's own file: the finished one goes to the Trash, a copy a crash cut off is removed, and
-        // anything else at that path (a file put there since) is left alone. Checked before the cache, whose
-        // manifest identifies them, is removed.
-        if let output = entry.outputURL {
-            switch ReadingLibrary.ownership(of: output, sha256: entry.outputSHA256,
-                                            cache: entry.cache.map { URL(fileURLWithPath: $0, isDirectory: true) }) {
-            case .finished?:
-                do {
-                    try FileManager.default.trashItem(at: output, resultingItemURL: nil)
-                } catch {
-                    problems.append("\(output.lastPathComponent) could not be moved to the Trash: \(error.localizedDescription)")
-                }
-            case .partial(let identity)?:
-                ExclusivePublisher.removeIfIdentical(output, to: identity)
-                // It reports nothing: whether the partial copy is gone is checked here.
-                if ExclusivePublisher.FileIdentity.of(output) == identity {
-                    problems.append("The partly written \(output.lastPathComponent) could not be removed.")
-                }
-            case nil:
-                break
-            }
+        let readings = try? ReadingOutput.readingsRoot(support: HolosPaths.supportRoot,
+                                                       configured: ProcessInfo.processInfo.environment["HOLOS_SUPPORT_DIR"],
+                                                       create: false)
+        return ReadingLibrary.deleteFiles(of: entry, readingsRoot: readings, store: store) { url in
+            try FileManager.default.trashItem(at: url, resultingItemURL: nil)
         }
-        if let cache = entry.cache, FileManager.default.fileExists(atPath: cache),
-           let readings = try? ReadingOutput.readingsRoot(support: HolosPaths.supportRoot,
-                                                          configured: ProcessInfo.processInfo.environment["HOLOS_SUPPORT_DIR"],
-                                                          create: false),
-           ReadingLibrary.isRenderCache(cache, in: readings) {
-            do {
-                try FileManager.default.removeItem(atPath: cache)
-            } catch {
-                problems.append("Its rendered parts in \(cache) could not be removed: \(error.localizedDescription)")
-            }
-        }
-        do {
-            try store.removeDocument(for: entry.id)
-        } catch {
-            problems.append("Its saved text could not be removed: \(error.localizedDescription)")
-        }
-        return problems.isEmpty ? nil : problems.joined(separator: " ") + " Try Delete again."
     }
 
     private func update(_ id: UUID, _ change: (inout ReadingEntry) -> Void) {

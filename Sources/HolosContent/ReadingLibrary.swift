@@ -340,6 +340,51 @@ public enum ReadingLibrary {
         return nil
     }
 
+    /// Removes a deleted reading's files, returning nil when all are gone, else the problems (and " Try Delete
+    /// again."). Only the reading's own output is touched (see `ownership`): its finished file goes to `trash`, a copy
+    /// a crash cut off is removed, and anything else at that path is left alone. While that file is still there the
+    /// render cache stays, since its manifest is what identifies the file next time. The cache is removed only when it
+    /// is one the pipeline made directly in `readingsRoot` (`isRenderCache`); then the saved text is removed.
+    public static func deleteFiles(of entry: ReadingEntry, readingsRoot: URL?, store: ReadingLibraryStore,
+                                   trash: (URL) throws -> Void) -> String? {
+        var problems: [String] = []
+        if let output = entry.outputURL {
+            switch ownership(of: output, sha256: entry.outputSHA256,
+                             cache: entry.cache.map { URL(fileURLWithPath: $0, isDirectory: true) }) {
+            case .finished?:
+                do {
+                    try trash(output)
+                } catch {
+                    problems.append("\(output.lastPathComponent) could not be moved to the Trash: \(error.localizedDescription)")
+                }
+            case .partial(let identity)?:
+                ExclusivePublisher.removeIfIdentical(output, to: identity)
+                // It reports nothing: whether the partial copy is gone is checked here.
+                if ExclusivePublisher.FileIdentity.of(output) == identity {
+                    problems.append("The partly written \(output.lastPathComponent) could not be removed.")
+                }
+            case nil:
+                break
+            }
+        }
+        if problems.isEmpty, let cache = entry.cache, FileManager.default.fileExists(atPath: cache),
+           let readingsRoot, isRenderCache(cache, in: readingsRoot) {
+            do {
+                try FileManager.default.removeItem(atPath: cache)
+            } catch {
+                problems.append("Its rendered parts in \(cache) could not be removed: \(error.localizedDescription)")
+            }
+        }
+        if problems.isEmpty {
+            do {
+                try store.removeDocument(for: entry.id)
+            } catch {
+                problems.append("Its saved text could not be removed: \(error.localizedDescription)")
+            }
+        }
+        return problems.isEmpty ? nil : problems.joined(separator: " ") + " Try Delete again."
+    }
+
     /// "25 min", "1 h 5 min", "40 s".
     public static func durationText(_ seconds: Double) -> String {
         guard seconds.isFinite, seconds >= 0 else { return "" }

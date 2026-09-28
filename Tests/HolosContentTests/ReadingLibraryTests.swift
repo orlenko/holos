@@ -214,6 +214,53 @@ import Testing
         #expect(ReadingLibrary.ownership(of: output, sha256: nil, cache: cache) == nil)
     }
 
+    /// Delete: the reading's finished file goes to the Trash, then its cache and saved text; a file that cannot be
+    /// trashed keeps the cache (whose manifest identifies it) and the text, for another try; a file that is not the
+    /// reading's is left alone.
+    @Test func deleteRemovesOnlyTheReadingsFilesAndKeepsTheCacheUntilItsFileIsGone() throws {
+        let root = try folder()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let readings = root.appendingPathComponent("Readings", isDirectory: true)
+        let cache = readings.appendingPathComponent("Output-0123456789abcdef", isDirectory: true)
+        try FileManager.default.createDirectory(at: cache, withIntermediateDirectories: true)
+        let store = ReadingLibraryStore(folder: root.appendingPathComponent("ReadingLibrary"))
+        let output = root.appendingPathComponent("Story.m4a")
+        try Data("audio".utf8).write(to: output)
+        var reading = entry(.done)
+        reading.output = output.path
+        reading.cache = cache.path
+        reading.outputSHA256 = try fileSHA256(output)
+        try store.saveDocument(ReadableDocument(sections: [.init(paragraphs: ["Text."])]), for: reading.id)
+
+        struct TrashFailed: Error {}
+        var trashed: [URL] = []
+        let failed = ReadingLibrary.deleteFiles(of: reading, readingsRoot: readings, store: store) { _ in
+            throw TrashFailed()
+        }
+        #expect(failed?.contains("could not be moved to the Trash") == true)
+        #expect(FileManager.default.fileExists(atPath: cache.path))
+        #expect(store.document(for: reading.id) != nil)
+
+        let done = ReadingLibrary.deleteFiles(of: reading, readingsRoot: readings, store: store) { url in
+            trashed.append(url)
+            try FileManager.default.removeItem(at: url)
+        }
+        #expect(done == nil)
+        #expect(trashed == [output])
+        #expect(!FileManager.default.fileExists(atPath: cache.path))
+        #expect(store.document(for: reading.id) == nil)
+
+        // A file put at the path since is not the reading's; a cache outside the Readings folder is never removed.
+        try Data("someone else's".utf8).write(to: output)
+        var stray = reading
+        stray.cache = root.path
+        #expect(ReadingLibrary.deleteFiles(of: stray, readingsRoot: readings, store: store) { _ in
+            Issue.record("Trashed a file that is not the reading's")
+        } == nil)
+        #expect(FileManager.default.fileExists(atPath: output.path))
+        #expect(FileManager.default.fileExists(atPath: root.path))
+    }
+
     @Test func durationsAndPositionsRead() {
         #expect(ReadingLibrary.durationText(40) == "40 s")
         #expect(ReadingLibrary.durationText(25 * 60 + 10) == "25 min")
