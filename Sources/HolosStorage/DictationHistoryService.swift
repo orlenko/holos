@@ -28,10 +28,20 @@ public final class DictationHistoryService {
     private let defaults: UserDefaults
     /// Oldest first, as stored.
     public private(set) var records: [DictationRecord] = []
-    /// The last write that failed, as a sentence for the History section (no dictated text); cleared once a write
-    /// asked for after it succeeds.
-    public private(set) var problem: String?
-    /// The generation of the change whose write failed (`problem`).
+    /// Dictations a newer Voice is Local recorded in the file: not shown, but kept on this Mac until Clear History.
+    public private(set) var newerLines = 0
+    /// Everything the file keeps that Clear History deletes: `records` and `newerLines`.
+    public var keptCount: Int { records.count + newerLines }
+    /// The last read of the file failed: what it holds is unknown (it may still keep dictations), so Clear History
+    /// and History Off's offer to clear stay available.
+    public var unreadable: Bool { readProblem != nil }
+    /// What is wrong with the history, as a sentence for the History section and the status (no dictated text): a
+    /// write that failed (cleared once a write asked for after it succeeds), else a read that failed (cleared once a
+    /// read succeeds).
+    public var problem: String? { writeProblem ?? readProblem }
+    private var writeProblem: String?
+    private var readProblem: String?
+    /// The generation of the change whose write failed (`writeProblem`).
     private var problemGeneration: Int?
     /// Bumped by every change made here.
     private var generation = 0
@@ -97,8 +107,9 @@ public final class DictationHistoryService {
         }
     }
 
-    /// Runs `body` once no reload is reading the file (at once when none is), so `records` holds what the file holds:
-    /// for a question about them (History Off offers to clear what is kept) asked before the launch load finished.
+    /// Runs `body` once no reload is reading the file (at once when none is), so `records`, `newerLines`, and
+    /// `unreadable` say what the file holds: for a question about them (History Off offers to clear what is kept)
+    /// asked before the launch load finished. A load that failed counts as finished; `unreadable` then says so.
     public func whenLoaded(_ body: @escaping () -> Void) {
         guard loadsInFlight > 0 else {
             body()
@@ -114,31 +125,48 @@ public final class DictationHistoryService {
         let asked = generation
         loadsInFlight += 1
         let store = self.store
-        let (stream, continuation) = AsyncStream.makeStream(of: DictationHistoryStore.Contents?.self)
+        let (stream, continuation) = AsyncStream.makeStream(of: LoadResult.self)
         // Queued now, so it reads the file after every operation asked for before it and before any asked after.
         queue.async {
             do {
-                continuation.yield(try store.load())
+                continuation.yield(.read(try store.load()))
             } catch {
                 Self.log.error("Cannot read the history: \(error.localizedDescription, privacy: .public)")
-                continuation.yield(nil)
+                continuation.yield(.failed(error.localizedDescription))
             }
             continuation.finish()
         }
         return Task { [weak self] in
-            var contents: DictationHistoryStore.Contents?
-            for await value in stream { contents = value }
-            self?.loaded(contents, asked: asked)
+            var result = LoadResult.failed("The read did not finish.")
+            for await value in stream { result = value }
+            self?.loaded(result, asked: asked)
         }
     }
 
-    private func loaded(_ contents: DictationHistoryStore.Contents?, asked: Int) {
+    private enum LoadResult: Sendable {
+        case read(DictationHistoryStore.Contents)
+        case failed(String)
+    }
+
+    private func loaded(_ result: LoadResult, asked: Int) {
         loadsInFlight -= 1
-        if let contents {
+        let newer = journal.filter { $0.generation > asked }.map(\.change)
+        switch result {
+        case .read(let contents):
             var merged = contents.records
-            for entry in journal where entry.generation > asked { entry.change.apply(to: &merged) }
+            for change in newer { change.apply(to: &merged) }
             records = merged
+            // A clear asked for after this read also deletes the newer build's lines.
+            newerLines = newer.contains(.clear) ? 0 : contents.newerLines
+            readProblem = nil
             onChange?()
+        case .failed(let error):
+            // Not an empty history: what the file keeps is unknown, and the History section and status say so.
+            let wasReadable = readProblem == nil
+            readProblem = "History could not be read (\(error)); dictations may still be kept on this Mac. "
+                + "Clear History deletes them."
+            onChange?()
+            if wasReadable, writeProblem == nil, let problem { onFailure?(problem) }
         }
         guard loadsInFlight == 0 else { return }
         journal.removeAll()
@@ -179,9 +207,10 @@ public final class DictationHistoryService {
         generation += 1
         let generation = self.generation
         if loadsInFlight > 0 { journal.append((generation, change)) }
-        let before = records
+        let before = (records, newerLines)
         change.apply(to: &records)
-        if records != before { onChange?() }
+        if change == .clear { newerLines = 0 }
+        if records != before.0 || newerLines != before.1 { onChange?() }
         let store = self.store
         let state = queueState
         queue.async { [weak self] in
@@ -201,17 +230,18 @@ public final class DictationHistoryService {
     /// failed delete or clear shows its dictations again and a failed append is not shown as kept.
     private func writeFailed(generation: Int, _ text: String) {
         journal.removeAll { $0.generation == generation }
-        problem = text
+        writeProblem = text
         problemGeneration = generation
         onChange?()
         onFailure?(text)
         reload()
     }
 
-    /// A write asked for after the one that failed has succeeded: the history works again, so `problem` clears.
+    /// A write asked for after the one that failed has succeeded: the history works again, so the write problem
+    /// clears.
     private func writeSucceeded(generation: Int) {
         guard let failed = problemGeneration, generation > failed else { return }
-        problem = nil
+        writeProblem = nil
         problemGeneration = nil
         onChange?()
     }

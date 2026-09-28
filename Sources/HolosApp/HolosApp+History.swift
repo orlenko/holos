@@ -31,16 +31,19 @@ extension HolosAppDelegate {
             correct: { [weak self] record in self?.correct(record) },
             delete: { [weak self] record in self?.history.delete(record.id) },
             clear: { [weak self] in self?.history.clear() }))
-        pane.update(records: history.records, retention: history.retention, problem: history.problem)
+        updateHistoryPane(pane)
         return pane
+    }
+
+    private func updateHistoryPane(_ pane: HistoryPane) {
+        pane.update(records: history.records, retention: history.retention, problem: history.problem,
+                    hidden: history.newerLines, unreadable: history.unreadable)
     }
 
     /// Keeps the History section, Settings' count, and the status message current: once a later change clears the
     /// history's problem, the status stops reporting it.
     func historyChanged() {
-        if let pane = mainWindow?.existingController(for: .history) as? HistoryPane {
-            pane.update(records: history.records, retention: history.retention, problem: history.problem)
-        }
+        if let pane = mainWindow?.existingController(for: .history) as? HistoryPane { updateHistoryPane(pane) }
         if history.problem == nil { showHistoryProblem(nil) }
         updateSettings()
     }
@@ -62,10 +65,12 @@ extension HolosAppDelegate {
 
     private func offerToClearHistoryAfterOff() {
         // History may have been turned back on while the load finished.
-        guard history.retention == .off, !history.records.isEmpty else { return }
-        let count = history.records.count
+        guard history.retention == .off, let kept = HistoryPane.clearTarget(count: history.keptCount,
+                                                                           unreadable: history.unreadable) else {
+            return
+        }
         let alert = NSAlert()
-        alert.messageText = "History is off. Also clear the \(count) \(count == 1 ? "dictation" : "dictations") already kept?"
+        alert.messageText = "History is off. Also clear \(kept.phrase)?"
         alert.informativeText = "New dictations are no longer kept. The ones already kept stay on this Mac until you clear them."
         alert.addButton(withTitle: "Clear History")
         alert.addButton(withTitle: "Keep Them")
@@ -75,11 +80,12 @@ extension HolosAppDelegate {
 
     /// Settings › Clear History…, with a confirmation.
     func confirmClearHistory() {
-        let count = history.records.count
-        guard count > 0 else { return }
+        guard let kept = HistoryPane.clearTarget(count: history.keptCount, unreadable: history.unreadable) else {
+            return
+        }
         let alert = NSAlert()
         alert.messageText = "Clear History?"
-        alert.informativeText = "All \(count) \(count == 1 ? "dictation" : "dictations") kept on this Mac are deleted. Text already written into other apps stays there."
+        alert.informativeText = "\(kept.sentence) Text already written into other apps stays there."
         alert.alertStyle = .warning
         alert.addButton(withTitle: "Clear History")
         alert.addButton(withTitle: "Cancel")

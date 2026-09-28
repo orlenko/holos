@@ -24,6 +24,10 @@ final class HistoryPane: NSViewController, MainSectionContent, NSTableViewDataSo
     private let actions: Actions
     private var records: [DictationRecord] = []
     private var retention = HistoryRetention.standard
+    /// Dictations a newer Voice is Local recorded: not listed, but Clear History deletes them.
+    private var hidden = 0
+    /// The history file could not be read.
+    private var unreadable = false
     private var rows: [Row] = []
     private let search = NSSearchField()
     private let table = KeyTableView()
@@ -145,12 +149,28 @@ final class HistoryPane: NSViewController, MainSectionContent, NSTableViewDataSo
 
     // MARK: - Data
 
+    /// What Clear History deletes, for its questions; nil when there is nothing to clear. `count` is every dictation
+    /// the file keeps (a newer build's too); `unreadable` says the file could not be read, so what it keeps is unknown.
+    static func clearTarget(count: Int, unreadable: Bool) -> (phrase: String, sentence: String)? {
+        if count > 0 {
+            let dictations = "\(count) \(count == 1 ? "dictation" : "dictations")"
+            return ("the \(dictations) already kept", "All \(dictations) kept on this Mac are deleted.")
+        }
+        guard unreadable else { return nil }
+        return ("what the history file keeps (it could not be read)",
+                "Whatever the history file keeps is deleted; it could not be read, so it may hold dictations.")
+    }
+
     /// Shows `records` (oldest first, as stored) under `retention`'s footer, keeping the selected dictation.
-    /// `problem` is the last history write that failed (the list was read again from the file after it).
-    func update(records: [DictationRecord], retention: HistoryRetention, problem: String? = nil) {
+    /// `problem` is what is wrong with the history (a write that failed, or a read that failed: `unreadable`);
+    /// `hidden` counts dictations a newer Voice is Local recorded, not shown here but deleted by Clear History.
+    func update(records: [DictationRecord], retention: HistoryRetention, problem: String?, hidden: Int,
+                unreadable: Bool) {
         let selected = selectedRecord?.id
         self.records = records
         self.retention = retention
+        self.hidden = hidden
+        self.unreadable = unreadable
         if let problem {
             footer.stringValue = problem
             footer.textColor = .systemOrange
@@ -158,7 +178,7 @@ final class HistoryPane: NSViewController, MainSectionContent, NSTableViewDataSo
             footer.stringValue = retention.footerText + " Nothing is copied unless you choose Copy."
             footer.textColor = .secondaryLabelColor
         }
-        clearButton.isEnabled = !records.isEmpty
+        clearButton.isEnabled = Self.clearTarget(count: records.count + hidden, unreadable: unreadable) != nil
         reloadRows(selecting: selected)
     }
 
@@ -176,9 +196,16 @@ final class HistoryPane: NSViewController, MainSectionContent, NSTableViewDataSo
             table.deselectAll(nil)
         }
         if records.isEmpty {
-            emptyLabel.stringValue = retention.records
-                ? "No dictations yet.\nEach dictation you finish appears here."
-                : "History is off.\nTurn it on in Settings › History and privacy."
+            emptyLabel.stringValue = if unreadable {
+                "History could not be read.\nIt may still keep dictations on this Mac; Clear History… deletes them."
+            } else if hidden > 0 {
+                "\(hidden) \(hidden == 1 ? "dictation was" : "dictations were") recorded by a newer Voice is Local "
+                    + "and \(hidden == 1 ? "is" : "are") not shown here.\nClear History… deletes \(hidden == 1 ? "it" : "them")."
+            } else if retention.records {
+                "No dictations yet.\nEach dictation you finish appears here."
+            } else {
+                "History is off.\nTurn it on in Settings › History and privacy."
+            }
         } else if filtered.isEmpty {
             emptyLabel.stringValue = "No dictations match “\(search.stringValue)”."
         }
@@ -305,9 +332,8 @@ final class HistoryPane: NSViewController, MainSectionContent, NSTableViewDataSo
     }
 
     @objc private func clearHistory() {
-        guard !records.isEmpty else { return }
-        confirm("Clear History?", "All \(records.count) \(records.count == 1 ? "dictation" : "dictations") kept on "
-                    + "this Mac are deleted. Text already written into other apps stays there.",
+        guard let kept = Self.clearTarget(count: records.count + hidden, unreadable: unreadable) else { return }
+        confirm("Clear History?", "\(kept.sentence) Text already written into other apps stays there.",
                 button: "Clear History") { [weak self] in self?.actions.clear() }
     }
 

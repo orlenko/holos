@@ -143,6 +143,57 @@ private func settle(_ done: () -> Bool) async {
 }
 
 @MainActor
+@Test func aNewerBuildsDictationsCountAsKeptAndClearDeletesThem() async throws {
+    let fixture = try ServiceFixture()
+    defer { fixture.remove() }
+    try AtomicFile.ensurePrivateDirectory(fixture.store.directory)
+    try AtomicFile.append(Data("{\"schemaVersion\":9,\"text\":\"private words\"}\n".utf8), to: fixture.store.fileURL)
+    let service = fixture.service()
+    await service.reload().value
+    #expect(service.records.isEmpty, "Not shown…")
+    #expect(service.newerLines == 1)
+    #expect(service.keptCount == 1, "…but counted, so Clear History and History Off's offer stay available.")
+
+    service.clear()
+    #expect(service.keptCount == 0)
+    await service.flushed()
+    await service.reload().value
+    #expect(service.keptCount == 0)
+    #expect(try Data(contentsOf: fixture.store.fileURL).isEmpty)
+}
+
+@MainActor
+@Test func anUnreadableHistoryIsReportedNotShownAsEmpty() async throws {
+    let fixture = try ServiceFixture()
+    defer { fixture.remove() }
+    try fixture.store.append(dictation("private words"))
+    #expect(chmod(fixture.store.fileURL.path, 0o000) == 0)
+    defer { chmod(fixture.store.fileURL.path, 0o600) }
+    let service = fixture.service()
+    var failures: [String] = []
+    service.onFailure = { failures.append($0) }
+
+    let loading = service.reload()
+    var unreadableWhenLoaded: Bool?
+    service.whenLoaded { unreadableWhenLoaded = service.unreadable }
+    await loading.value
+    #expect(unreadableWhenLoaded == true, "The waiter runs, and learns the read failed rather than seeing no records.")
+    #expect(service.unreadable)
+    #expect(service.problem?.hasPrefix("History could not be read") == true)
+    #expect(failures.count == 1)
+    await service.reload().value
+    #expect(failures.count == 1, "A failure already reported is not reported again on every reload.")
+
+    // Clear History still works on the unreadable file, and the history reads again afterwards.
+    service.clear()
+    await service.flushed()
+    await service.reload().value
+    #expect(!service.unreadable)
+    #expect(service.problem == nil)
+    #expect(service.keptCount == 0)
+}
+
+@MainActor
 @Test func whenLoadedWaitsForTheLaunchLoad() async throws {
     let fixture = try ServiceFixture()
     defer { fixture.remove() }

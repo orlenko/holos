@@ -1307,7 +1307,8 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
             aiFix: AIFixSetting.isOn, aiFixUnavailable: AIFixSetting.unavailableReason(language: locale),
             locale: locale, localeGroups: localeGroups, localeChangeable: canChangeLanguage,
             fillerExamples: FillerWords.examples(language: locale),
-            historyRetention: history.retention, historyCount: history.records.count))
+            historyRetention: history.retention, historyCount: history.keptCount,
+            historyUnreadable: history.unreadable))
     }
 
     /// The sidebar's status card: "Dictation ready" and the current message; during a meeting, the pause.

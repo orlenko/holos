@@ -216,7 +216,10 @@ one, Clear History, and the retention sweep rewrite the file atomically; every s
 Forever and Off included, also drops lines that cannot be read. A line of a later schema
 version (a newer Voice is Local) is not shown but is kept byte for byte by every rewrite
 (the retention sweep removes it only when it can read its date and it is past the cutoff;
-Clear History removes it), so opening the history with an older build loses nothing. Writes hold
+Clear History removes it), so opening the history with an older build loses nothing; such
+lines count as kept (History and Settings say so, and Clear History and History Off's
+offer stay available). A history file that cannot be read is reported (footer, status,
+Settings), never shown as an empty history, and Clear History stays available. Writes hold
 `dictations.lock` (flock), so the app and `voiceislocal history clear --yes` never
 interleave. The app (`DictationHistoryService`, HolosStorage) runs every file operation on
 one serial queue off the main actor, keeps the records in memory for the History section,

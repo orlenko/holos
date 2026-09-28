@@ -54,7 +54,10 @@ struct SetupState {
     var fillerExamples: String?
     /// History and privacy: how long dictations are kept, and how many are kept now.
     var historyRetention = HistoryRetention.standard
+    /// Every dictation the file keeps (a newer build's too): what Clear History deletes.
     var historyCount = 0
+    /// The history file could not be read: it may still keep dictations, so Clear History stays available.
+    var historyUnreadable = false
 }
 
 enum SetupAction: Int, CaseIterable {
@@ -464,11 +467,12 @@ final class SettingsPane: NSViewController, MainSectionContent {
         }
 
         let count = state.historyCount
-        let kept = count == 0 ? "No dictations kept"
+        let kept = state.historyUnreadable ? "History could not be read; it may still keep dictations on this Mac"
+            : count == 0 ? "No dictations kept"
             : "\(count) \(count == 1 ? "dictation" : "dictations") kept on this Mac"
         let recording = state.historyRetention.records ? "" : " — History is off; new dictations are not kept"
-        set(.clearHistory, count == 0 ? .pending : .done, kept + recording, button: "Clear History…",
-            enabled: count > 0)
+        set(.clearHistory, state.historyUnreadable ? .problem : count == 0 ? .pending : .done, kept + recording,
+            button: "Clear History…", enabled: count > 0 || state.historyUnreadable)
         rows[.clearHistory]?.icon.image = NSImage(systemSymbolName: "tray.full", accessibilityDescription: nil)
         rows[.clearHistory]?.icon.contentTintColor = .secondaryLabelColor
     }
