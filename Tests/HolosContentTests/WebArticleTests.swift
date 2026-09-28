@@ -1265,6 +1265,15 @@ private func isPrintable(_ text: String) -> Bool {
                                                     .paragraph(Fixture.closing)])
     }
 
+    @Test func aRawTextBlockThatSurvivesBringsItsHeadingBack() async throws {
+        // `xmp` text is never wrapped (re-parsed, a wrapper would become text), so the element carries the mark.
+        let backMatter = "\(wrappedHeading("Listing"))<xmp>\(Fixture.closing)</xmp>"
+        let article = try await WebArticleExtractor(options: fast).extract(
+            html: Fixture.article(backMatter: backMatter), baseURL: Fixture.base)
+        #expect(article.spokenText.contains(Fixture.closing))
+        #expect(headings(article) == ["h2 A daily climb", "h2 Listing"])
+    }
+
     @Test(arguments: [
         // Readability takes the heading itself for the byline.
         #"<h3 class="byline">Ada Harbour</h3>"#,

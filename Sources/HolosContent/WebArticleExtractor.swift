@@ -508,8 +508,8 @@ import WebKit
     ///    moves with the text into the paragraphs it builds, and goes with any element it removes, such as a
     ///    `<span class="share">`), and unlike `span` it is not one of the tags whose text Readability's
     ///    `_cleanConditionally` counts as text density, so the wrappers do not change what it keeps. Text in
-    ///    raw-text elements (`xmp`, `noembed`, `noframes`, `plaintext`) is not wrapped: re-parsed, a wrapper there
-    ///    would become text. Readability 0.6.0 keeps `data-*` attributes on the nodes it keeps (it strips only
+    ///    raw-text elements (`xmp`, `noembed`, `noframes`, `plaintext`) is not wrapped (re-parsed, a wrapper there
+    ///    would become text): the element itself carries the block's mark. Readability 0.6.0 keeps `data-*` attributes on the nodes it keeps (it strips only
     ///    `class`, `style`, and presentational attributes) and copies them when it retags a node, and its retries
     ///    re-parse the page from serialized HTML, so the marks survive where node identity would not.
     ///
@@ -621,7 +621,12 @@ import WebKit
         const id = String(blockCount++);
         for (const node of item.nodes) {
           const parent = node.parentNode;
-          if (!parent || !/\S/.test(node.data) || rawText.has(parent.localName)) continue;
+          if (!parent || !/\S/.test(node.data)) continue;
+          // Raw text is one text node: its element carries the mark instead.
+          if (rawText.has(parent.localName)) {
+            if (!parent.hasAttribute("data-holos-b")) parent.setAttribute("data-holos-b", id);
+            continue;
+          }
           const mark = doc.createElement("data");
           mark.setAttribute("data-holos-b", id);
           parent.insertBefore(mark, node);
