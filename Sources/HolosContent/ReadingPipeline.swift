@@ -137,7 +137,7 @@ public struct AudioBookJoiner: ReadingAudioJoiner {
 /// Renders a script part by part into a cache of PCM files (so an interrupted reading resumes
 /// where it stopped), then joins the parts into one AAC `.m4a` with chapters.
 @MainActor public final class ReadingPipeline {
-    static let partExtension = "caf"
+    nonisolated static let partExtension = "caf"
     /// The longest part rendered at once, in UTF-16 units.
     nonisolated public static let defaultMaxPartUTF16Units = 3_000
 
@@ -239,7 +239,12 @@ public struct AudioBookJoiner: ReadingAudioJoiner {
                      location: location, resume: resume)
         let text = script.text
         let writerLock = try ReadingDirectoryLock.acquire(for: directory)
-        let reservation = try ReadingOutputReservation.acquire(output: output, beside: directory)
+        // An output inside its cache (a reading without `--output`) is reserved in the cache,
+        // beside it: when resuming, now; for a new reading, once the cache is in place.
+        let outputInCache = output.deletingLastPathComponent().standardizedFileURL.path
+            == directory.standardizedFileURL.path
+        var reservation = outputInCache && !(resume && FileManager.default.fileExists(atPath: directory.path))
+            ? nil : try ReadingOutputReservation.acquire(output: output)
         defer { withExtendedLifetime((writerLock, reservation)) {} }
         // Caches that runs killed while creating them left behind (see `ReadingCache.create`).
         ReadingCache.sweep(beside: directory)
@@ -300,6 +305,7 @@ public struct AudioBookJoiner: ReadingAudioJoiner {
                                        status: "incomplete", parts: expected)
             try ReadingCache.create(directory, source: Data(text.utf8), manifest: manifest,
                                     fault: initializationFault)
+            if reservation == nil { reservation = try ReadingOutputReservation.acquire(output: output) }
         }
 
         // This run's name for the joined file. Temporaries an interrupted earlier run left behind
@@ -477,7 +483,8 @@ public struct AudioBookJoiner: ReadingAudioJoiner {
         // clearer message ("use --resume", "no reading to resume").
         if cacheExists != resume { return }
         if !cacheExists {
-            try ReadingOutput.checkFolder(directory.deletingLastPathComponent(), role: "Reading cache folder")
+            try ReadingOutput.checkFolder(directory.deletingLastPathComponent(), role: "Reading cache folder",
+                                          names: ReadingOutput.cacheFolderNameLength)
         }
         let folder = output.deletingLastPathComponent()
         if !cacheExists && folder.standardizedFileURL.path == directory.standardizedFileURL.path {
@@ -491,7 +498,7 @@ public struct AudioBookJoiner: ReadingAudioJoiner {
         }
     }
 
-    static func partPath(_ index: Int) -> String {
+    nonisolated static func partPath(_ index: Int) -> String {
         String(format: "parts/part%04d.%@", index + 1, partExtension)
     }
 
@@ -552,8 +559,11 @@ final class ReadingDirectoryLock {
         sha256(Data(ReadingPathIdentity.key(directory).utf8))
     }
 
+    /// `.holos-reading-<key>.lock`, in the cache's parent.
+    static func lockName(key: String) -> String { ".holos-reading-\(key).lock" }
+
     static func acquire(for directory: URL) throws -> ReadingDirectoryLock {
-        try acquire(name: ".holos-reading-\(key(for: directory)).lock", beside: directory,
+        try acquire(name: lockName(key: key(for: directory)), beside: directory,
                     busy: "Reading directory is already being rendered: \(directory.path)")
     }
 
@@ -567,7 +577,7 @@ final class ReadingDirectoryLock {
 
     /// The lock of the cache whose `key` is given, in `folder`, when no run holds it; else nil.
     static func acquireIfIdle(key: String, in folder: URL) -> ReadingDirectoryLock? {
-        try? acquire(name: ".holos-reading-\(key).lock", in: folder, busy: "")
+        try? acquire(name: lockName(key: key), in: folder, busy: "")
     }
 
     private static func acquire(name: String, beside directory: URL, busy: String) throws -> ReadingDirectoryLock {
@@ -607,7 +617,7 @@ final class ReadingDirectoryLock {
     }
 }
 
-/// The reservation of an explicit output: a hidden file beside the destination that names the
+/// The reservation of a reading's output: a hidden file beside the destination that names the
 /// process making it. Readings of different text or settings for one output have different
 /// caches (see `ReadingOutput.locate`), possibly under different support folders
 /// (`HOLOS_SUPPORT_DIR`) or users, so this is what stops a second one before it renders anything.
@@ -626,9 +636,10 @@ final class ReadingDirectoryLock {
 /// - it is removed on release when it still holds this run's record.
 /// It is named from the file's conservative identity (see `ReadingPathIdentity.Rule.lock`), so
 /// "Book.m4a" and "book.m4a" on a case-insensitive volume, or one name in NFC and NFD, share it.
-/// Its name and its guard's are shorter than the join temporary's, so
-/// `ReadingOutput.checkPathLength` covers them. Its path is the destination folder as spelled
-/// (see `RawFilePath`).
+/// Its name and its guard's are among the names `ReadingOutput` checks against the volume's
+/// limits before anything is rendered (see `ReadingOutput.outputFolderNameLength`). Its path is
+/// the destination folder as spelled (see `RawFilePath`). A reading without `--output` holds one
+/// in its cache, beside its `.m4a`.
 final class ReadingOutputReservation {
     struct Record: Codable, Equatable {
         /// `gethostname`.
@@ -661,22 +672,27 @@ final class ReadingOutputReservation {
 
     /// `.holos-output-<first 32 hex digits of the identity's hash>.lock`.
     static func name(for output: URL) -> String {
-        ".holos-output-\(sha256(Data(ReadingPathIdentity.key(output).utf8)).prefix(32)).lock"
+        name(hash: sha256(Data(ReadingPathIdentity.key(output).utf8)))
     }
 
-    /// The reservation for `output`, or nil when the output is inside its own cache `directory` (a
-    /// reading without `--output`): only that cache's runs make it, and the cache's lock
-    /// serializes them.
-    static func acquire(output: URL, beside directory: URL) throws -> ReadingOutputReservation? {
-        let destination = output.deletingLastPathComponent()
-        guard destination.standardizedFileURL.path != directory.standardizedFileURL.path else { return nil }
+    private static func name(hash: String) -> String { ".holos-output-\(hash.prefix(32)).lock" }
+
+    static let guardSuffix = ".takeover"
+
+    /// The longest name a reservation writes beside the output: its guard's.
+    static let longestNameLength = (name(hash: String(repeating: "0", count: 32)) + guardSuffix).utf8.count
+
+    /// The reservation for `output`. A reading without `--output` takes one too, in its cache
+    /// (once that exists), so a run given that cache's `.m4a` as its `--output` is refused while
+    /// it renders.
+    static func acquire(output: URL) throws -> ReadingOutputReservation {
         // The folder as spelled, links resolved (see `RawFilePath`).
         let folder = RawFilePath.resolvingFolder(of: output).deletingLastPathComponent()
         return try acquire(path: RawFilePath.appending(name(for: output), to: folder).path, output: output)
     }
 
     /// The takeover guard of the reservation at `path` (see `takeOver`).
-    static func guardPath(for path: String) -> String { path + ".takeover" }
+    static func guardPath(for path: String) -> String { path + guardSuffix }
 
     /// Where a takeover may be interleaved with another run's, for tests: `found` after a stale
     /// reservation is read and before its guard is taken, `verified` under the guard after the
@@ -1127,13 +1143,16 @@ enum ReadingCache {
 
     static let stagingPrefix = ".holos-init-"
 
+    /// `.holos-init-<lock key>-<UUID>`, a new cache's name while it is made.
+    static func stagingName(key: String) -> String { "\(stagingPrefix)\(key)-\(UUID().uuidString)" }
+
     /// `directory`'s contents, made beside it and renamed into place. Fails, leaving nothing,
     /// when anything is in the way.
     static func create(_ directory: URL, source: Data, manifest: ReadingManifest,
                        fault: (Step) throws -> Void = { _ in }) throws {
         let folder = ReadingDirectoryLock.folder(beside: directory)
         let staging = folder.appendingPathComponent(
-            "\(stagingPrefix)\(ReadingDirectoryLock.key(for: directory))-\(UUID().uuidString)", isDirectory: true)
+            stagingName(key: ReadingDirectoryLock.key(for: directory)), isDirectory: true)
         try FileManager.default.createDirectory(at: staging, withIntermediateDirectories: false,
                                                 attributes: [.posixPermissions: 0o700])
         do {

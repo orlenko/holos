@@ -481,7 +481,7 @@ public enum HTMLReader {
     /// `<title>`, `<textarea>`, `<noscript>`, …) are skipped, other tags are read attribute by
     /// attribute (see `TagScanner`), and only a real `<meta>` tag declares: by `charset`, or by
     /// `http-equiv="content-type"` with a `content` that names a charset. A `<meta>` whose charset
-    /// is unknown is passed over for the next one.
+    /// is unknown is passed over for the next one. `<plaintext>` ends the scan: all after it is text.
     struct CharsetPrescan {
         /// Elements whose contents is text: a `<meta>` in one is not a tag.
         static let rawText: Set<String> = [
@@ -518,6 +518,8 @@ public enum HTMLReader {
                     // does not end it.
                     while scanner.attribute() != nil {}
                     position += 1
+                    // `<plaintext>` has no end tag: everything after it is text.
+                    if !closing, name == "plaintext" { return nil }
                     if !closing, Self.rawText.contains(name), !skipRawText(name) { return nil }
                 } else if starts("<!", at: position) || starts("</", at: position) || starts("<?", at: position) {
                     guard let end = bytes[position...].firstIndex(of: Self.greaterThan) else { return nil }
@@ -756,6 +758,18 @@ public enum HTMLReader {
             }
 
             let insideOpaque = !opaqueOpen.isEmpty
+            if name == "plaintext", !insideForeign {
+                // `<plaintext>` has no end tag: all after it is its text, `</plaintext>` included,
+                // so the rest is escaped into it (and it is not read, see `skipped`). In an opaque
+                // element it is a `span` like every other element there, all of it unread.
+                let element = insideOpaque ? "span" : "plaintext"
+                output += Array("<\(element)>".utf8)
+                for byte in bytes[index...] {
+                    if byte == UInt8(ascii: "<") { output += Array("&lt;".utf8) } else { output.append(byte) }
+                }
+                output += Array("</\(element)>".utf8)
+                break
+            }
             // In an opaque element a raw text element keeps its name, so the parser still reads
             // its contents as text; `<title>` there is an SVG title, which is markup.
             let isRawText = rawText.contains(name) && !(insideOpaque && name == "title") && !selfClosing
@@ -1179,7 +1193,8 @@ public enum HTMLReader {
                 if escaped { escaped = false; current.append(character); continue }
                 if character == "\\" { escaped = true; current.append(character); continue }
                 if let open = quote {
-                    if character == open { quote = nil }
+                    // A line break ends a string too (CSS makes it a bad string).
+                    if character == open || character.isNewline { quote = nil }
                 } else if character == "\"" || character == "'" {
                     quote = character
                 } else if character == "(" || character == "[" {
@@ -1197,17 +1212,42 @@ public enum HTMLReader {
             return parts
         }
 
-        /// The text without `/* … */` comments (an unclosed one runs to the end).
+        /// The text without `/* … */` comments (an unclosed one runs to the end). As CSS reads
+        /// it, `/*` in a quoted string (`url("/*")`) or after a backslash (`\/*`) starts no
+        /// comment: strings and escapes are read as `split` reads them, and a string also ends
+        /// at a line break.
         static func strippingComments(_ text: String) -> String {
+            let characters = Array(text)
             var result = ""
-            var rest = text[...]
-            while let open = rest.range(of: "/*") {
-                result += rest[..<open.lowerBound]
-                guard let close = rest[open.upperBound...].range(of: "*/") else { return result }
-                result += " "
-                rest = rest[close.upperBound...]
+            var quote: Character?
+            var index = 0
+            while index < characters.count {
+                let character = characters[index]
+                if character == "\\" {
+                    // An escape: the backslash and the character after it, whatever that is.
+                    result.append(character)
+                    if index + 1 < characters.count { result.append(characters[index + 1]) }
+                    index += 2
+                    continue
+                }
+                if let open = quote {
+                    if character == open || character.isNewline { quote = nil }
+                } else if character == "\"" || character == "'" {
+                    quote = character
+                } else if character == "/", index + 1 < characters.count, characters[index + 1] == "*" {
+                    var close = index + 2
+                    while close + 1 < characters.count, !(characters[close] == "*" && characters[close + 1] == "/") {
+                        close += 1
+                    }
+                    guard close + 1 < characters.count else { return result }
+                    result += " "
+                    index = close + 2
+                    continue
+                }
+                result.append(character)
+                index += 1
             }
-            return result + rest
+            return result
         }
     }
 

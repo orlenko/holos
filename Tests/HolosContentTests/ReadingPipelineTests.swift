@@ -582,6 +582,148 @@ import Testing
         #expect(try Data(contentsOf: output) == Data("One short paragraph.".utf8))
     }
 
+    /// A reading without `--output` reserves its `.m4a` in its cache, so a run given that file as
+    /// its `--output` (another cache, another lock) is refused while it renders, and a resume of
+    /// it takes the reservation too. The reservation goes when the reading finishes.
+    @Test func aReadingWithoutOutputReservesItsFile() async throws {
+        let parent = try root()
+        defer { try? FileManager.default.removeItem(at: parent) }
+        let readings = parent.appendingPathComponent("Readings")
+        try FileManager.default.createDirectory(at: readings, withIntermediateDirectories: false)
+        let place = try ReadingOutput.locate(output: nil, name: "Book.m4a", identity: "i", readingsRoot: readings)
+        let renderer = GateRenderer()
+        let pipeline = ReadingPipeline(renderer: renderer, joiner: FakeJoiner())
+        let script = ReadingScript(document: ReadableDocument(sections: [.init(paragraphs: ["One short paragraph."])]))
+        let other = ReadingScript(document: ReadableDocument(sections: [.init(paragraphs: ["Another paragraph."])]))
+        let voice = self.voice
+        let metadata = self.metadata
+        let active = Task { try await pipeline.render(script: script, voiceIdentifier: voice, metadata: metadata, location: place) }
+        await renderer.waitUntilRendering()
+        let reservation = RawFilePath.resolvingFolder(of: place.output).deletingLastPathComponent()
+            .appendingPathComponent(ReadingOutputReservation.name(for: place.output)).path
+        #expect(FileManager.default.fileExists(atPath: reservation))
+
+        let explicit = try ReadingOutput.locate(output: place.output.path, name: "x.m4a", identity: "other",
+                                                readingsRoot: readings)
+        #expect(explicit.workDirectory.path != place.workDirectory.path)
+        let message = await asyncRefusal {
+            _ = try await pipeline.render(script: other, voiceIdentifier: voice, metadata: metadata, location: explicit)
+        }
+        #expect(message?.contains("Another reading is already being made for \(place.output.path)") == true)
+        #expect(message?.contains(reservation) == true)
+        #expect(renderer.calls == 1)
+        #expect(!FileManager.default.fileExists(atPath: explicit.workDirectory.path))
+        renderer.release()
+        #expect(try await active.value.manifest.status == "complete")
+        #expect(!FileManager.default.fileExists(atPath: reservation))
+        #expect(try Data(contentsOf: place.output) == Data("One short paragraph.".utf8))
+
+        // A resume holds it from the start: here, an explicit run holds it first.
+        try FileManager.default.removeItem(at: place.output)
+        let held = try ReadingOutputReservation.acquire(output: place.output)
+        let resumed = await asyncRefusal {
+            _ = try await pipeline.render(script: script, voiceIdentifier: voice, metadata: metadata,
+                                          location: place, resume: true)
+        }
+        #expect(resumed?.contains("Another reading is already being made") == true)
+        withExtendedLifetime(held) {}
+    }
+
+    /// The message of the `.unavailable` error `body` throws; nil (and an issue) for anything else.
+    private func asyncRefusal(_ body: () async throws -> Void) async -> String? {
+        do {
+            try await body()
+            Issue.record("Expected a refusal.")
+        } catch HolosError.unavailable(let message) {
+            return message
+        } catch {
+            Issue.record("Unexpected error: \(error)")
+        }
+        return nil
+    }
+
+    /// ".." after a link leaves the link's target, as the system reads the path: the output,
+    /// its reservation, and its cache are the file the system would write. A ".." after a
+    /// folder that does not exist is kept, and the destination is refused.
+    @Test func dotDotAfterALinkLeavesTheLinksTarget() throws {
+        let parent = try root()
+        defer { try? FileManager.default.removeItem(at: parent) }
+        let books = parent.appendingPathComponent("books")
+        let other = parent.appendingPathComponent("other")
+        try FileManager.default.createDirectory(at: books.appendingPathComponent("sub"), withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: other, withIntermediateDirectories: false)
+        try FileManager.default.createSymbolicLink(atPath: other.appendingPathComponent("link").path,
+                                                   withDestinationPath: books.appendingPathComponent("sub").path)
+        let expected = RawFilePath.resolvingFolder(of: RawFilePath.appending("Book.m4a", to: books)).path
+        let typed = other.path + "/link/../Book.m4a"
+        #expect(RawFilePath.url(typed).path == expected)
+        #expect(RawFilePath.url(other.path + "/./link/.././Book.m4a").path == expected)
+        let readings = parent.appendingPathComponent("Readings")
+        try FileManager.default.createDirectory(at: readings, withIntermediateDirectories: false)
+        let place = try ReadingOutput.locate(output: typed, name: "x.m4a", identity: "i", readingsRoot: readings)
+        #expect(place.output.path == expected)
+        #expect(place.workDirectory == (try ReadingOutput.locate(output: books.path + "/Book.m4a", name: "x.m4a",
+                                                                 identity: "i", readingsRoot: readings)).workDirectory)
+        // As a folder: the name goes inside the link's target's parent.
+        let folder = try ReadingOutput.locate(output: other.path + "/link/..", name: "Named.m4a", identity: "i",
+                                              readingsRoot: readings)
+        #expect(folder.output.path == RawFilePath.resolvingFolder(of: RawFilePath.appending("Named.m4a", to: books)).path)
+        // Components after the last ".." keep their spelling.
+        #expect(Data(RawFilePath.url(other.path + "/link/../Caf\u{E9}.m4a").path.utf8).suffix(10)
+            == Data("/Caf\u{E9}.m4a".utf8))
+
+        let missing = parent.path + "/missing/../Book.m4a"
+        #expect(RawFilePath.url(missing).path.hasSuffix("/missing/../Book.m4a"))
+        #expect(throws: HolosError.self) {
+            _ = try ReadingOutput.locate(output: missing, name: "x.m4a", identity: "i", readingsRoot: readings)
+        }
+    }
+
+    /// Every name written beside the output (the join temporaries, the reservation and its guard,
+    /// the probe) and beside a cache (its lock and staging folder) is checked against the
+    /// volume's `NAME_MAX` before anything is rendered.
+    @Test func temporaryNamesAreCheckedAgainstTheVolumesNameLimit() throws {
+        let parent = try root()
+        defer { try? FileManager.default.removeItem(at: parent) }
+        let readings = parent.appendingPathComponent("Readings")
+        try FileManager.default.createDirectory(at: readings, withIntermediateDirectories: false)
+        let output = parent.path + "/Book.m4a"
+        #expect(ReadingOutput.outputFolderNameLength >= ReadingOutput.temporaryNameLength)
+        #expect(ReadingOutput.outputFolderNameLength >= ReadingOutputReservation.longestNameLength)
+        #expect(ReadingOutput.cacheFolderNameLength >= ReadingOutput.outputFolderNameLength)
+        #expect(ReadingOutput.cacheFolderNameLength
+            >= ReadingCache.stagingName(key: ReadingDirectoryLock.key(for: readings)).utf8.count)
+        // Room for the output's name and the reservation, not for the join's temporary.
+        ReadingOutput.$volumeNameLimit.withValue(ReadingOutput.temporaryNameLength - 1) {
+            do {
+                _ = try ReadingOutput.locate(output: output, name: "x.m4a", identity: "i", readingsRoot: readings)
+                Issue.record("A volume too small for the temporaries should be refused.")
+            } catch HolosError.invalidInput(let message) {
+                #expect(message.contains("Output folder is on a volume whose file names are limited"))
+            } catch {
+                Issue.record("Unexpected error: \(error)")
+            }
+            #expect(throws: HolosError.self) {
+                _ = try ReadingOutput.locate(output: nil, name: "x.m4a", identity: "i", readingsRoot: readings)
+            }
+        }
+        // Room for everything beside the output, not for a cache's staging folder.
+        ReadingOutput.$volumeNameLimit.withValue(ReadingOutput.outputFolderNameLength) {
+            #expect(throws: Never.self) { try ReadingOutput.checkDestination(RawFilePath.url(output)) }
+            if ReadingOutput.cacheFolderNameLength > ReadingOutput.outputFolderNameLength {
+                #expect(throws: HolosError.self) {
+                    _ = try ReadingOutput.locate(output: output, name: "x.m4a", identity: "i", readingsRoot: readings)
+                }
+            }
+        }
+        ReadingOutput.$volumeNameLimit.withValue(ReadingOutput.cacheFolderNameLength) {
+            #expect(throws: Never.self) {
+                _ = try ReadingOutput.locate(output: output, name: "x.m4a", identity: "i", readingsRoot: readings)
+            }
+        }
+        #expect(try FileManager.default.contentsOfDirectory(atPath: parent.path).sorted() == ["Readings"])
+    }
+
     /// Caches under different support folders (`HOLOS_SUPPORT_DIR`) for one output: the output's
     /// reservation is in the destination's folder, so the second reading still fails before
     /// rendering. The reservation is readable by every user and names this process; it is gone
@@ -667,12 +809,11 @@ import Testing
     @Test func aReservationIsTakenOverOnlyWhenItsProcessHasEnded() throws {
         let parent = try root()
         defer { try? FileManager.default.removeItem(at: parent) }
-        let cache = parent.appendingPathComponent("support").appendingPathComponent("Output-a")
         let output = parent.appendingPathComponent("Book.m4a")
         let path = parent.appendingPathComponent(ReadingOutputReservation.name(for: output)).path
         do {
-            let held = try #require(try ReadingOutputReservation.acquire(output: output, beside: cache))
-            let message = refusal { _ = try ReadingOutputReservation.acquire(output: output, beside: cache) }
+            let held = try ReadingOutputReservation.acquire(output: output)
+            let message = refusal { _ = try ReadingOutputReservation.acquire(output: output) }
             #expect(message?.contains("Another reading is already being made for \(output.path)") == true)
             #expect(message?.contains(path) == true)
             withExtendedLifetime(held) {}
@@ -693,7 +834,7 @@ import Testing
         for record in ended {
             try writeReservation(record, at: path)
             do {
-                let held = try #require(try ReadingOutputReservation.acquire(output: output, beside: cache))
+                let held = try ReadingOutputReservation.acquire(output: output)
                 #expect(held.record.pid == getpid() && held.record.start == live.start)
                 let saved = try JSONDecoder().decode(ReadingOutputReservation.Record.self,
                                                      from: Data(contentsOf: URL(fileURLWithPath: path)))
@@ -714,7 +855,7 @@ import Testing
         ]
         for (contents, expected) in kept {
             try contents.write(to: URL(fileURLWithPath: path))
-            let message = refusal { _ = try ReadingOutputReservation.acquire(output: output, beside: cache) }
+            let message = refusal { _ = try ReadingOutputReservation.acquire(output: output) }
             #expect(message?.contains(expected) == true)
             #expect(message?.contains(path) == true)
             #expect(try Data(contentsOf: URL(fileURLWithPath: path)) == contents)
@@ -729,7 +870,6 @@ import Testing
         defer { try? FileManager.default.removeItem(at: parent) }
         let destination = parent.appendingPathComponent("Shared")
         try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: false)
-        let cache = parent.appendingPathComponent("support").appendingPathComponent("Output-a")
         let output = destination.appendingPathComponent("Book.m4a")
         let path = destination.appendingPathComponent(ReadingOutputReservation.name(for: output)).path
         let live = ReadingOutputReservation.Record.current()
@@ -738,7 +878,7 @@ import Testing
         // Read-only: no file in it can be removed, as for another user's in a sticky folder.
         #expect(chmod(destination.path, 0o555) == 0)
         defer { _ = chmod(destination.path, 0o755) }
-        let message = refusal { _ = try ReadingOutputReservation.acquire(output: output, beside: cache) }
+        let message = refusal { _ = try ReadingOutputReservation.acquire(output: output) }
         #expect(message?.contains(path) == true)
         #expect(message?.contains("can delete it") == true)
         #expect(FileManager.default.fileExists(atPath: path))
@@ -903,9 +1043,8 @@ import Testing
             }
             #expect(try stored().isEmpty)
 
-            let cache = parent.appendingPathComponent("support").appendingPathComponent("Output-a")
             do {
-                let held = try #require(try ReadingOutputReservation.acquire(output: output, beside: cache))
+                let held = try ReadingOutputReservation.acquire(output: output)
                 #expect(Data(held.path.utf8).starts(with: Data((composed + "/").utf8)))
                 #expect(try stored() == [ReadingOutputReservation.name(for: output)])
                 withExtendedLifetime(held) {}

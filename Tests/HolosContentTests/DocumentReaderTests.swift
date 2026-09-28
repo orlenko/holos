@@ -579,9 +579,17 @@ import Testing
         <p style="display:none; display:bogus">Invalid value ignored.</p>
         <p style="background:url('a;display:none'); display:block">Quoted semicolon.</p>
         <p style="display:/* none */block">Comment.</p>
+        <p style='display:none;background:url("/*");display:block'>Quoted comment start.</p>
+        <p style="display:none;content:'\\'/*';display:block">Escaped quote.</p>
+        <p style="display:none;x:\\/*;display:block">Escaped slash.</p>
+        <p style="display:block;background:url('/*');/* x */display:none">Real comment after a string.</p>
         </body></html>
         """) == ["Later block wins.", "Important block wins.", "Last important wins.", "Quoted semicolon.",
-                 "Comment."])
+                 "Comment.", "Quoted comment start.", "Escaped quote.", "Escaped slash."])
+        #expect(HTMLReader.InlineStyle.strippingComments(#"a:"/*";b:1/* c */;d:'x"/*'"#) == #"a:"/*";b:1 ;d:'x"/*'"#)
+        #expect(HTMLReader.InlineStyle.strippingComments("a:1/* open") == "a:1")
+        // A line break ends a string (a bad string, in CSS): the comment after it is one.
+        #expect(HTMLReader.InlineStyle.strippingComments("a:'x\n/* c */b") == "a:'x\n b")
         #expect(!HTMLReader.Walker.hidesElement("display:none; display:block"))
         #expect(!HTMLReader.Walker.hidesElement("display:block !important; display:none"))
         #expect(HTMLReader.Walker.hidesElement("display:none !important; display:block"))
@@ -734,10 +742,22 @@ import Testing
             ("<STYLE/><meta charset=windows-1252></style><meta charset=utf-8>", .utf8),
             ("<title/ ><meta charset=windows-1252></title><meta charset=utf-8>", .utf8),
             ("<meta/charset=windows-1252>", .windowsCP1252),
+            // `<plaintext>` has no end tag: everything after it is text, its "end tag" included.
+            ("<plaintext><meta charset=utf-8>", nil),
+            ("<PLAINTEXT class=x></plaintext><meta charset=utf-8>", nil),
+            ("<meta charset=windows-1252><plaintext><meta charset=utf-8>", .windowsCP1252),
         ]
         for (html, encoding) in pages {
             #expect(declared(html) == encoding, "\(html)")
         }
+        // The case from the review: the page decodes as Windows-1252, HTML's default.
+        #expect(HTMLReader.decode(Data("<plaintext><meta charset=utf-8>Caf".utf8) + Data([0xE9]))
+            == "<plaintext><meta charset=utf-8>Café")
+        // And the page's parser reads it as text to the end: nothing after it is read.
+        #expect(HTMLReader.document(from: Data("<p>Before.</p><plaintext></plaintext><p>After.</p>".utf8))
+            .sections.flatMap(\.paragraphs) == ["Before."])
+        #expect(HTMLReader.prepared("<p>A</p><plaintext><b>x</b></plaintext><p>B", nameAttribute: "data-x")
+            == "<p>A</p><plaintext>&lt;b>x&lt;/b>&lt;/plaintext>&lt;p>B</plaintext>")
         // The cases from the reviews: valid UTF-8 is not read as Windows-1252 mojibake, and the
         // step that prepares the page for parsing reads `<script/>` the same way.
         for page in ["<!-- <meta charset=windows-1252> --><meta charset=utf-8><p>Café</p>",
