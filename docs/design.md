@@ -163,7 +163,7 @@ after macOS refused the hotkey tap), Dictation (on/off, hold-to-talk shortcut, l
 speech model, fillers, Apple Intelligence fix, preview and its opacity), Meetings (record
 system audio, speaker labels, a link to People for remembered voices), Reading (default
 voice, speed, output folder), History and privacy (Keep dictations, the count, Clear
-History…), and Run Setup Assistant…; it polls
+History…, Keep the audio of dictations and its disk use), and Run Setup Assistant…; it polls
 the permissions every second while on screen. The Setup Assistant, the meeting start
 panel, the live transcript, Review (Name Speakers), and the dictation preview stay
 separate windows.
@@ -171,10 +171,12 @@ separate windows.
 Keyboard: ⌘1–⌘5 and ⌘, switch sections; ⌘F focuses the section's search field; ↑↓ move
 in lists, Return opens (History: the text; Meetings: Review or the transcript), ⌫ deletes
 after a confirmation (History: the dictation; Meetings: Delete Meeting…; People:
-Forget…); Tab reaches the sidebar, list, and detail. A key does exactly what its button
+Forget…); in History, Space plays or pauses the selected dictation's audio and ⌘R runs it
+again; Tab reaches the sidebar, list, and detail. A key does exactly what its button
 does and only while that button is enabled (Meetings: `MeetingActionPolicy`, so ⌫ on a
 meeting another process holds only beeps; People: not while a change saves; History:
-⇧⌘C only for a dictation the fixes changed); Edit › Copy is off with no dictation
+⇧⌘C only for a dictation the fixes changed, ⌘R only for one with audio and no Run Again
+running); Edit › Copy is off with no dictation
 selected. Escape keeps `AppKeyboard`'s rule
 (it closes the key window unless a field is being edited or a dictation runs). Controls
 are standard AppKit controls with semantic colours, so light and dark mode, Full
@@ -358,6 +360,77 @@ is compared with its text as recognized, as before; an older one with its text a
 written, the only form History keeps. Corrections knows which dictation it holds by ID,
 so learning from an older one never replaces what Correct Last Dictation opens, even
 when the two have the same text.
+
+### Dictation audio and Run Again
+
+History can keep each recorded dictation's microphone audio, so a change to the corrections,
+the language, filler removal, or Apple Intelligence's fix can be tried on what was really
+said. Settings › History and privacy › **Keep the audio of dictations (for Run Again)**
+(UserDefaults `historyKeepAudio`, on unless turned off) shows what the audio takes on disk;
+turning it off stops keeping new audio and offers to delete the audio already kept (the text
+stays). History Off keeps no audio either.
+
+Capture: `DictationController.frameTap` hands the app every microphone frame the recognizer
+took, with its utterance ID, in order and before the result; the app gives them to a
+`DictationAudioWriter` (HolosAudio) made at key-down, only once the secure-field checks passed
+and only when History records and keeps audio. The writer converts and encodes on its own
+queue (AAC, mono, 16 kHz, about 32 kbit/s; roughly 4 KB a second plus a 25 KB container)
+into `<supportRoot>/History/audio/<id>.partial.m4a` (0600, folder 0700), made on the first
+frame. When the dictation's History record is added, the history queue finishes the file
+and, holding `dictations.lock`, renames it to `audio/<id>.m4a` and appends the record, which
+links it (`audio: {file, seconds}`; an optional field, so the schema stays 1 and older builds
+read the line). A dictation History does not record (cancelled, refused at key-down, nothing
+recognized, History or the audio setting off, secure input on at the end) deletes its
+partial file. Audio that cannot be finished or moved is deleted and the record kept without
+it.
+
+Retention follows the text: Delete removes the dictation's audio, Clear History and
+`voiceislocal history clear` remove all of it (but a partial file younger than an hour, a
+dictation still in progress), and every retention sweep removes the audio of the records it
+removes, audio no kept record links (its record is gone, or an older build rewrote the line
+without the link, so nothing could play it), and partial files older than an hour (at
+launch, all of them). Audio of a newer build's lines is kept with them. Each of these, and
+Delete Audio, first moves the audio aside (`<id>.m4a.removing`), rewrites the file, then
+deletes it; a rewrite that fails puts it back, so a failure never leaves a record without
+the audio it links. Audio a crash left aside is put back by the next sweep when its record
+still links it, else deleted. Update History keeps the audio link the file has. In memory,
+the audio link lands once the append finished (`linkAudio`), under the changes made since
+(a Delete Audio or an Update History made meanwhile stays), and an Update History whose
+record another writer removed meanwhile leaves it removed.
+
+Run Again (History detail, ⌘R; `voiceislocal history rerun`) reads the file back as 0.1 s
+frames and feeds them to the recognizer live dictation uses (`AppleSpeechSession`, the
+speech backend's progressive preset, the current dictation language, the learned
+corrections' phrases as contextual strings), then runs the text steps of live dictation
+(`DictationTextPipeline`, HolosCore): filler removal and corrections as on the final text,
+and, when Apple Intelligence's fix is on and available, the fix as dictation streams it:
+each recognizer result is taken as committed in turn (the last one too: the recognizer
+commits it when it finishes, before the result) and each new part, cleaned as streaming
+cleans it, is fixed as a chunk; what streaming held back (a trailing comma, the start of a
+correction) is fixed on release as final; with the same model, sessions, and timeout
+(`OnDeviceFix`, HolosDictation, which the app's `DictationFixPipeline` uses too). This is
+dictation writing into a field; the live grouping of chunks (those queued while the model
+is busy are fixed together) depends on timing, so a fix may differ slightly from the live
+one. The comparison (`DictationRerunReport`) shows the
+text as heard and as written, then and now, with the words that differ marked; what each
+step did now (word changes); and `changedBy`, the steps that behaved differently from then:
+the recognizer heard other words; filler removal removed fillers where it did not (in the
+words heard now, or replayed on the words heard then); the corrections replaced a different
+number of phrases (the same two ways) or, with no other explanation, other words; Apple
+Intelligence changed a different number of words. Nothing is typed anywhere and nothing is
+copied: **Copy New Result** copies only when chosen, and **Update History…** (after a
+confirmation) replaces the record's text, text as heard, fixes, and language, keeping its
+date, app, outcome, and audio. The player row plays the file (▶/⏸, position; Space with the
+list focused) and stops when another dictation is selected or History leaves the screen.
+
+`voiceislocal history rerun <id|latest> [--json] [--no-ai-fix] [--language xx-YY]` prints
+the same comparison; `--all [--since 7d] [--json]` runs every dictation with audio and
+reports, per dictation, whether the text changed and `changedBy`, with a summary per step,
+to judge a change on the user's real dictations. The command reads the history, the
+corrections file (Application Support/Holos/corrections.json), and the app's saved settings
+(its defaults domain `ca.orlenko.holos.app`: `dictationLocale`, `removeFillers`,
+`aiFixMisheard`); it writes nothing. The recognizer needs the language's speech model
+installed for the process running it.
 
 ### First-launch setup
 
@@ -599,7 +672,8 @@ worker for reliable permission attribution, settle that in the permissions spike
 do not make a recording depend on the hotkey app remaining enabled.
 
 Store app configuration and SQLite correction memory under Application Support; the
-dictation history is `History/dictations.jsonl` there ("Dictation history" above).
+dictation history is `History/dictations.jsonl` there, its audio `History/audio/<id>.m4a`
+("Dictation history" and "Dictation audio and Run Again" above).
 Allow a configurable session/output root. A session is a portable directory:
 
 ```text
@@ -623,8 +697,9 @@ PCM is about 1.38 GB per hour for one track, before the microphone track. Monito
 free space and surface a clear stop condition; compression is a later measured
 storage tradeoff, not an excuse to discard the full recording.
 
-Meeting audio is retained by default until the user removes it. Dictation audio is
-ephemeral by default; confirmed corrections are retained, while recent raw results
+Meeting audio is retained by default until the user removes it. Dictation audio is kept
+only with its History record, for as long as the text ("Dictation audio and Run Again";
+Settings can turn it off); confirmed corrections are retained, while recent raw results
 have a configurable short retention period. Debug logs contain timing/status rather
 than full documents. No recording or transcript is committed as a test fixture
 without deliberate selection.

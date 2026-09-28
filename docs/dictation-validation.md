@@ -193,6 +193,45 @@ Voice › Manage Voices).
 12. **Privacy**: with Little Snitch or `nettop`, a reading of a local file makes no network
     connection; a link fetches only that page (and what it loads).
 
+## Dictation audio and Run Again
+
+Not run yet. With History on (30 days) and Settings › History and privacy › **Keep the
+audio of dictations (for Run Again)** on (the default):
+
+1. **Audio is kept**: dictate a sentence with a word the recognizer gets wrong (for
+   example "Ubuntu") into TextEdit. In History, the dictation's detail shows **Play**
+   with "0:00 / 0:04" (its length) and **Run Again**. `ls -l ~/Library/Application\
+   Support/Holos/History/audio` shows `<id>.m4a` as `-rw-------` (the ID is the one
+   `voiceislocal history list --json` prints) and no `.partial.m4a` left. Settings shows
+   "Dictation audio uses … on this Mac".
+2. **Play it**: **Play** plays what you said, from the start (the position counts up;
+   the button becomes **Pause**). With the list focused, Space pauses and plays again.
+   Selecting another dictation, or another section, stops it.
+3. **Run Again after a correction**: in Corrections, teach the misheard phrase → the
+   right word. Back in History, select the dictation and press ⌘R (or **Run Again**).
+   After a few seconds the Run Again box shows Heard then / Heard now, Written then /
+   Written now with the differing words marked, the steps ("Corrections: “a boon to” →
+   “Ubuntu”"; Apple Intelligence off or its change), and "Different: Corrections".
+   Nothing was typed into the frontmost app and the clipboard still holds what it held.
+   **Copy New Result** copies the new text; **Update History…** asks, then the
+   dictation's text in History becomes the new text (its audio stays).
+4. **Terminal**: `voiceislocal history rerun latest` prints the same comparison;
+   `voiceislocal history rerun latest --json --no-ai-fix` prints it as JSON without the
+   fix; `voiceislocal history rerun --all --since 1d --json` lists each dictation of the
+   last day with `changed` and `changedBy`, and dictations without audio as skipped.
+   (The CLI needs the language's speech model installed for itself: if it says the
+   speech assets are missing, run `voiceislocal setup --locale <language>` first.)
+5. **Off stops keeping audio**: untick **Keep the audio of dictations**; it asks whether
+   to also delete the audio already kept; choose **Keep It**. Dictate: the new dictation
+   has "No audio was kept for this dictation." and no new file appears in `audio/`. Tick
+   it again, untick it and choose **Delete Audio**: `audio/` is empty, the older
+   dictations say no audio was kept, and their text stays. Tick it again.
+6. **Cancelled and refused dictations leave no audio**: press Escape while dictating,
+   and try a password field: no file appears in `audio/`.
+7. **Delete and Clear remove audio**: Delete one dictation (⌫): its `.m4a` is gone.
+   **Clear History…**: `audio/` is empty. `voiceislocal history clear --yes` also
+   removes the audio.
+
 ## Result and privacy behavior
 
 The app previews the current recognition hypothesis. Words the recognizer has
@@ -250,8 +289,8 @@ replaced, discarded, or the app quits). Only a later dictation that produces a
 result replaces it: recognized text, or text left unwritten. A press that is
 cancelled, released before Listening, or recognizes nothing leaves the earlier
 result, its menu items and its ten-minute expiry as they were. The system clipboard is overwritten only when
-**Copy Result** or **Copy Original** is chosen, or **Copy** / **Copy As Heard** in History. No raw dictation audio
-is saved; the text of finished dictations is kept in History on this Mac for 30 days
+**Copy Result** or **Copy Original** is chosen, or **Copy** / **Copy As Heard** / **Copy New Result** in History. Dictation audio
+is kept only with its History record (unless Settings turns it off; [Dictation audio and Run Again](#dictation-audio-and-run-again)); the text of finished dictations is kept in History on this Mac for 30 days
 unless Settings says otherwise ([Main window and history](#main-window-and-history)).
 
 ## Corrections

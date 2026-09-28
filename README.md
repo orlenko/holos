@@ -140,12 +140,12 @@ Meeting can also forget the voice samples learned from that meeting. See the
 
 | Section | Key | What it does |
 | --- | --- | --- |
-| History | ⌘1 | Dictations kept on this Mac, grouped by day, with search (⌘F). The selected one shows its text, the text as heard before fixes (changed words marked), where it went, its language, what was fixed, and its length. Copy (⌘C; for a partly written dictation, only the part that was not written, as Copy Result had it), Copy As Heard (⇧⌘C), Correct… (⌘E), Delete (⌫, asks first); Clear History… in the footer. |
+| History | ⌘1 | Dictations kept on this Mac, grouped by day, with search (⌘F). The selected one shows its text, the text as heard before fixes (changed words marked), where it went, its language, what was fixed, and its length. Copy (⌘C; for a partly written dictation, only the part that was not written, as Copy Result had it), Copy As Heard (⇧⌘C), Correct… (⌘E), Delete (⌫, asks first); its audio plays (▶, Space in the list) and Run Again (⌘R) recognizes it again with today's settings and compares; Clear History… in the footer. |
 | Corrections | ⌘2 | Fix a dictation and learn the word swaps, and edit the learned list (was the Corrections window). **Correct Last Dictation…** in the menu opens it with the last dictation, History's Correct… with the chosen one. |
 | Meetings | ⌘3 | The saved meetings (was the Meetings window). Return opens Review, ⌫ is Delete Meeting…. |
 | People | ⌘4 | People you have named and their voice samples (was the People window). |
 | Reading | ⌘5 | Articles and documents made into one audio file each (see below). |
-| Settings | ⌘, | Permissions, Dictation (on/off, shortcut, language, speech model, fillers, Apple Intelligence fix, preview), Meetings (system audio, speaker labels), Reading (default voice, speed, output folder), History and privacy, and **Run Setup Assistant…** (was the Setup window). |
+| Settings | ⌘, | Permissions, Dictation (on/off, shortcut, language, speech model, fillers, Apple Intelligence fix, preview), Meetings (system audio, speaker labels), Reading (default voice, speed, output folder), History and privacy (how long, Clear History…, keep the audio and its disk use), and **Run Setup Assistant…** (was the Setup window). |
 
 A card at the bottom of the sidebar shows the dictation status ("Dictation ready", or
 "Dictation paused during meeting recording"). The window remembers its size and place;
@@ -195,6 +195,20 @@ recording and offers to clear what is kept). Nothing is sent anywhere or logged,
 dictation refused in a password field is never recorded, and nothing reaches the clipboard
 unless you choose Copy. `voiceislocal history list [--json] [--limit N]` and
 `voiceislocal history clear --yes` do the same from Terminal.
+
+History also keeps each dictation's **audio** (AAC, about 4 KB a second, in
+`History/audio/<id>.m4a`, readable only by you) unless Settings › History and privacy ›
+**Keep the audio of dictations (for Run Again)** is off; Settings shows the space it takes,
+and it is deleted with its dictation (Delete, Clear History, and the 7- or 30-day sweep).
+In History, ▶ (or Space in the list) plays it, and **Run Again** (⌘R) recognizes it again
+with today's language, corrections, filler removal, and Apple Intelligence fix, then shows
+the text as heard and as written, then and now, with the changed words marked and which
+step changed what. Nothing is typed or copied; **Copy New Result** copies it on request and
+**Update History…** keeps it as the dictation's text. From Terminal,
+`voiceislocal history rerun <id|latest> [--json] [--no-ai-fix] [--language en-US]` prints
+the same comparison, and `voiceislocal history rerun --all [--since 7d] --json` reports,
+for every dictation with audio, whether its text changes and which step changed it, to try a
+new correction or the fix on your real dictations.
 
 ## Quick start
 

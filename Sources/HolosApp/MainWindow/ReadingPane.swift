@@ -166,7 +166,10 @@ final class ReadingPane: NSViewController, MainSectionContent, NSTableViewDataSo
         table.allowsMultipleSelection = false
         table.usesAutomaticRowHeights = false
         table.onDelete = { [weak self] in self?.deleteSelected() }
-        table.onSpace = { [weak self] in self?.playSelected() }
+        table.onSpace = { [weak self] in
+            self?.playSelected()
+            return true
+        }
         table.target = self
         table.doubleAction = #selector(playSelected)
         table.setAccessibilityLabel("Readings")

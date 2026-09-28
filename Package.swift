@@ -44,7 +44,7 @@ let package = Package(
         ]),
         .executableTarget(name: "HolosCLI", dependencies: [
             "HolosCore", "HolosSpeech", "HolosSynthesis", "HolosStorage", "HolosAudio", "HolosContent",
-            "HolosMeeting", "HolosSpeakers", "HolosDiarization",
+            "HolosMeeting", "HolosSpeakers", "HolosDiarization", "HolosDictation",
             .product(name: "ArgumentParser", package: "swift-argument-parser"),
         ], linkerSettings: [.unsafeFlags([
             "-Xlinker", "-sectcreate", "-Xlinker", "__TEXT", "-Xlinker", "__info_plist", "-Xlinker", cliInfoPlist,
@@ -56,7 +56,9 @@ let package = Package(
         .testTarget(name: "HolosAudioTests", dependencies: ["HolosAudio", "HolosCore", "HolosStorage"]),
         .testTarget(name: "HolosContentTests", dependencies: ["HolosContent", "HolosCore"]),
         .testTarget(name: "HolosDesktopTests", dependencies: ["HolosDesktop", "HolosCore"]),
-        .testTarget(name: "HolosDictationTests", dependencies: ["HolosDictation", "HolosCore"]),
+        .testTarget(name: "HolosDictationTests", dependencies: [
+            "HolosDictation", "HolosCore", "HolosAudio", "HolosStorage", "HolosSpeech", "HolosSynthesis",
+        ]),
         .testTarget(name: "HolosSpeakersTests", dependencies: ["HolosSpeakers", "HolosCore"]),
         .testTarget(name: "HolosMeetingTests", dependencies: [
             "HolosMeeting", "HolosCore", "HolosStorage", "HolosAudio", "HolosSpeakers",
