@@ -196,6 +196,11 @@ extension DictationRecord.Outcome {
     public static let transcriptDiffers = Self(
         kind: .unverified, reason: "The final transcript differs from the text inserted while you spoke.")
 
+    /// The final transcript came back empty after text was written while the user spoke: that text stays in the
+    /// field, unconfirmed by the result.
+    public static let transcriptEmpty = Self(
+        kind: .unverified, reason: "The final transcript came back empty after text was inserted while you spoke.")
+
     /// Text that could not be (all) written, classified as Copy Result's message classifies it: unverified when an
     /// unconfirmed write may already have landed, targetChanged when the app or field changed, else needsCopy.
     public static func notWritten(reason: String, unverified: Bool, targetMoved: Bool, partial: Bool) -> Self {
@@ -223,8 +228,15 @@ extension DictationRecord {
     /// corrections. When the fix changed something (`fixChanged`), the chunks written as fixed (`fixedWritten`) and
     /// what was written or offered for the part after them (`rest`, `AIFixUnwritten.attempted`) replace it
     /// (`AIFixTranscript.final`); nil `rest` (the transcript no longer extends what was written) keeps `recognized`.
-    public static func endText(recognized: String, fixChanged: Bool, fixedWritten: String,
-                               rest: String?) -> (text: String, aiChangedWords: Int) {
+    /// A final transcript that came back empty after text was written while the user spoke (`inserted`, the
+    /// recognized chunks written) keeps what is in the field: those chunks, or their fixed form.
+    public static func endText(recognized: String, fixChanged: Bool, fixedWritten: String, rest: String?,
+                               inserted: String = "") -> (text: String, aiChangedWords: Int) {
+        let isEmpty: (String) -> Bool = { $0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+        if isEmpty(recognized), !isEmpty(inserted) {
+            guard fixChanged, !isEmpty(fixedWritten) else { return (inserted, 0) }
+            return (fixedWritten, WordDiff.changedWordCount(from: inserted, to: fixedWritten))
+        }
         guard fixChanged, let final = AIFixTranscript.final(written: fixedWritten, rest: rest) else {
             return (recognized, 0)
         }

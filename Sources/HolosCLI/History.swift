@@ -44,6 +44,9 @@ struct History: ParsableCommand {
                     Console.output(line)
                 }
             }
+            if contents.newerLines > 0 {
+                Console.error("Note: \(contents.newerLines) \(contents.newerLines == 1 ? "dictation was" : "dictations were") recorded by a newer Voice is Local and \(contents.newerLines == 1 ? "is" : "are") not shown.")
+            }
             if contents.skippedLines > 0 {
                 Console.error("Note: \(contents.skippedLines) unreadable \(contents.skippedLines == 1 ? "line was" : "lines were") skipped.")
             }

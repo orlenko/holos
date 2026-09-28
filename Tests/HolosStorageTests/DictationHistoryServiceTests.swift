@@ -130,10 +130,15 @@ private func settle(_ done: () -> Bool) async {
     #expect(service.flush(timeout: 600) == .failed)
     #expect(service.flush(timeout: 600) == .written, "A flush reports each failure once.")
 
-    // The next change clears the warning.
+    // Once a later write succeeds, the warning clears (and the app's status message with it).
     #expect(chmod(fixture.store.fileURL.path, 0o600) == 0)
+    var changes = 0
+    service.onChange = { changes += 1 }
     service.add(dictation("saved again"))
+    #expect(service.problem != nil, "Not before the write succeeded.")
+    await settle { service.problem == nil }
     #expect(service.problem == nil)
+    #expect(changes >= 2, "The add, then the recovery, are both reported.")
     #expect(service.flush(timeout: 600) == .written)
 }
 

@@ -213,7 +213,10 @@ dictation appended with `AtomicFile.append` (0600, folder 0700). Reads stream th
 line at a time, so a Forever history of any size stays readable; a line longer than 8 MiB
 (or damaged, or torn by an append in progress) is skipped, never the whole file. Deleting
 one, Clear History, and the retention sweep rewrite the file atomically; every sweep,
-Forever and Off included, also drops lines that cannot be read. Writes hold
+Forever and Off included, also drops lines that cannot be read. A line of a later schema
+version (a newer Voice is Local) is not shown but is kept byte for byte by every rewrite
+(the retention sweep removes it only when it can read its date and it is past the cutoff;
+Clear History removes it), so opening the history with an older build loses nothing. Writes hold
 `dictations.lock` (flock), so the app and `voiceislocal history clear --yes` never
 interleave. The app (`DictationHistoryService`, HolosStorage) runs every file operation on
 one serial queue off the main actor, keeps the records in memory for the History section,
@@ -223,7 +226,10 @@ when it quits, so a dictation just recorded, deleted, or cleared reaches the fil
 shows at once; when its write then fails (a full disk, a folder that cannot be written),
 the History footer and the status message say so ("The dictation could not be deleted;
 it is still kept on this Mac.") and the records are read again from the file, so a failed
-delete or clear shows its dictations again and a failed append is not shown as kept.
+delete or clear shows its dictations again and a failed append is not shown as kept. Once
+a later write succeeds, the footer and the status message stop reporting the failure. A
+final transcript that comes back empty after text was written while the user spoke is
+still recorded, as unverified, with the text written (or its fixed form).
 Turning History Off offers to clear what is kept once the history has been read, so an Off
 chosen before the launch load finished still counts the dictations on disk.
 Retention is UserDefaults `historyRetention`: `off`, `7`, `30` (the default), or

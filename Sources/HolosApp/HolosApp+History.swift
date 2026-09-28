@@ -35,11 +35,13 @@ extension HolosAppDelegate {
         return pane
     }
 
-    /// Keeps the History section and Settings' count current.
+    /// Keeps the History section, Settings' count, and the status message current: once a later change clears the
+    /// history's problem, the status stops reporting it.
     func historyChanged() {
         if let pane = mainWindow?.existingController(for: .history) as? HistoryPane {
             pane.update(records: history.records, retention: history.retention, problem: history.problem)
         }
+        if history.problem == nil { showHistoryProblem(nil) }
         updateSettings()
     }
 

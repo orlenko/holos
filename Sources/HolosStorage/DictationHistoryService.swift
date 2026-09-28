@@ -28,9 +28,11 @@ public final class DictationHistoryService {
     private let defaults: UserDefaults
     /// Oldest first, as stored.
     public private(set) var records: [DictationRecord] = []
-    /// The last write that failed, as a sentence for the History section (no dictated text); cleared by the next
-    /// change.
+    /// The last write that failed, as a sentence for the History section (no dictated text); cleared once a write
+    /// asked for after it succeeds.
     public private(set) var problem: String?
+    /// The generation of the change whose write failed (`problem`).
+    private var problemGeneration: Int?
     /// Bumped by every change made here.
     private var generation = 0
     /// The changes made while a reload reads the file, by generation: each reload applies the ones made after it
@@ -179,14 +181,13 @@ public final class DictationHistoryService {
         if loadsInFlight > 0 { journal.append((generation, change)) }
         let before = records
         change.apply(to: &records)
-        let hadProblem = problem != nil
-        problem = nil
-        if records != before || hadProblem { onChange?() }
+        if records != before { onChange?() }
         let store = self.store
         let state = queueState
         queue.async { [weak self] in
             do {
                 try write(store)
+                Task { @MainActor in self?.writeSucceeded(generation: generation) }
             } catch {
                 Self.log.error("History write failed: \(error.localizedDescription, privacy: .public)")
                 state.noteFailure()
@@ -201,9 +202,18 @@ public final class DictationHistoryService {
     private func writeFailed(generation: Int, _ text: String) {
         journal.removeAll { $0.generation == generation }
         problem = text
+        problemGeneration = generation
         onChange?()
         onFailure?(text)
         reload()
+    }
+
+    /// A write asked for after the one that failed has succeeded: the history works again, so `problem` clears.
+    private func writeSucceeded(generation: Int) {
+        guard let failed = problemGeneration, generation > failed else { return }
+        problem = nil
+        problemGeneration = nil
+        onChange?()
     }
 }
 

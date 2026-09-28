@@ -190,6 +190,17 @@ private func record(_ text: String, heard: String? = nil, app: String? = "Mail",
                                            fixedWritten: "I sent the mail", rest: nil)
     #expect(diverged.text == "Something else")
     #expect(diverged.aiChangedWords == 0)
+    // The final transcript came back empty after text was written while speaking: what is in the field is kept.
+    let emptyFinal = DictationRecord.endText(recognized: "", fixChanged: false, fixedWritten: "", rest: nil,
+                                             inserted: "Send the report ")
+    #expect(emptyFinal.text == "Send the report ")
+    let emptyFinalFixed = DictationRecord.endText(recognized: " ", fixChanged: true, fixedWritten: "I sent the mail",
+                                                  rest: nil, inserted: "I sent the male")
+    #expect(emptyFinalFixed.text == "I sent the mail")
+    #expect(emptyFinalFixed.aiChangedWords == 1)
+    #expect(DictationRecord.endText(recognized: "", fixChanged: false, fixedWritten: "", rest: nil).text.isEmpty,
+            "Nothing recognized and nothing written: no record.")
+    #expect(DictationRecord.Outcome.transcriptEmpty.kind == .unverified)
 }
 
 @Test func historyChangesApplyAgainWithoutDuplicates() {

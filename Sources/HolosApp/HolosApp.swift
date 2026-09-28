@@ -133,6 +133,8 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
     /// This dictation's text for Copy Result; the menu offers it once the dictation concludes (`retainResult`).
     private var resultText = ""
     private var message = "Disabled — open Settings… to get started"
+    /// A history write failure shown as `message`, and the message it replaced (`showHistoryProblem`).
+    private var historyProblemStatus: (shown: String, replaced: String)?
     /// Polls permissions while Settings is on screen (TCC has no change notification).
     private var setupRefreshTask: Task<Void, Never>?
     /// The Setup Assistant (HolosApp+SetupAssistant.swift). Its progress stays in memory when the window is closed.
@@ -203,7 +205,7 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
         }
         controller.contextualStrings = corrections.vocabulary
         history.onChange = { [weak self] in self?.historyChanged() }
-        history.onFailure = { [weak self] problem in self?.show(problem) }
+        history.onFailure = { [weak self] problem in self?.showHistoryProblem(problem) }
         history.start()
         PeopleLaunch.resumePendingForgetsOnce()
         Task { await loadLanguages() }
@@ -867,7 +869,8 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
                 ? "Text was inserted while you spoke, but the final transcript came back empty. Check the field."
                 : "Text was inserted while you spoke, but the final transcript differs. Check the field; Copy Result copies the full transcript."
             resultNeedsAttention = true
-            historyOutcome = .transcriptDiffers
+            // History keeps this dictation too: an empty final result still left the streamed text in the field.
+            historyOutcome = text.isEmpty ? .transcriptEmpty : .transcriptDiffers
             return false
         }
         let remainder = rest.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1010,14 +1013,16 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
         historyDraft = nil
         let outcome = historyOutcome
         historyOutcome = nil
+        // Text written while the user spoke counts even when the final transcript came back empty.
         let written = DictationRecord.endText(recognized: recognized, fixChanged: !resultOriginal.isEmpty,
-                                              fixedWritten: fixedWritten, rest: rest)
+                                              fixedWritten: fixedWritten, rest: rest, inserted: insertedText)
         let aiChangedWords = written.aiChangedWords
         let text = written.text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let outcome, !text.isEmpty, history.retention.records, !TextInsertion.isSecureInputActive() else {
             return
         }
-        let heard = heard.trimmingCharacters(in: .whitespacesAndNewlines)
+        var heard = heard.trimmingCharacters(in: .whitespacesAndNewlines)
+        if heard.isEmpty { heard = latestCommitted.trimmingCharacters(in: .whitespacesAndNewlines) }
         let withoutFill = withoutFillers(heard)
         let fillersRemoved = removeFillers && WordDiff.normalized(withoutFill) != WordDiff.normalized(heard)
         let swaps = corrections.applyCounting(to: withoutFill.trimmingCharacters(in: .whitespacesAndNewlines)).count
@@ -1156,6 +1161,19 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
     func show(_ value: String) {
         message = value
         rebuildMenu()
+    }
+
+    /// A history write failure as the status message (`problem`), or, with nil once the history works again, the
+    /// message it replaced, if the failure is still what the status shows.
+    func showHistoryProblem(_ problem: String?) {
+        if let problem {
+            let replaced = historyProblemStatus.flatMap { message == $0.shown ? $0.replaced : nil } ?? message
+            historyProblemStatus = (problem, replaced)
+            show(problem)
+        } else if let status = historyProblemStatus {
+            historyProblemStatus = nil
+            if message == status.shown { show(status.replaced) }
+        }
     }
 
     private func scheduleOverlayHide() {

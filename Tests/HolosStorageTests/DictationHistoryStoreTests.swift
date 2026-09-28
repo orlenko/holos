@@ -133,6 +133,47 @@ private func entry(_ text: String, date: Date = storeNow) -> DictationRecord {
     #expect(compacted.skippedLines == 0)
 }
 
+@Test func linesFromANewerSchemaSurviveEveryRewriteButClear() throws {
+    let root = try historyRoot()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let store = DictationHistoryStore(directory: root.appendingPathComponent("History"))
+    let first = entry("first", date: storeNow.addingTimeInterval(-3600))
+    try store.append(first)
+    // A newer build's lines: one this build could decode, one it cannot, one old enough for the 30-day sweep.
+    let decodable = Data("{\"schemaVersion\":2,\"id\":\"\(UUID().uuidString)\",\"date\":\"2026-09-21T10:00:00Z\",\"future\":true}".utf8)
+    let undecodable = Data("{\"schemaVersion\":3,\"shape\":[1,2,3]}".utf8)
+    let stale = Data("{\"schemaVersion\":2,\"date\":\"2020-01-01T00:00:00Z\"}".utf8)
+    for line in [decodable, undecodable, stale] { try AtomicFile.append(line + Data("\n".utf8), to: store.fileURL) }
+    let second = entry("second", date: storeNow.addingTimeInterval(-60))
+    try store.append(second)
+    try AtomicFile.append(Data("damaged\n".utf8), to: store.fileURL)
+
+    let loaded = try store.load()
+    #expect(loaded.records == [first, second], "A newer build's lines are not shown…")
+    #expect(loaded.newerLines == 3)
+    #expect(loaded.skippedLines == 1, "…and are not counted as damaged.")
+
+    // Forever's compaction and a delete keep them, byte for byte.
+    #expect(try store.sweep(.forever, now: storeNow) == 0)
+    #expect(try store.delete(id: first.id))
+    let text = try String(contentsOf: store.fileURL, encoding: .utf8)
+    for line in [decodable, undecodable, stale] {
+        #expect(text.contains(String(decoding: line, as: UTF8.self)))
+    }
+    #expect(!text.contains("damaged"), "The damaged line was compacted away.")
+    #expect(try store.load().records == [second])
+
+    // The retention sweep removes a newer line whose date it can read and is past the cutoff.
+    #expect(try store.sweep(.days30, now: storeNow) == 1)
+    let swept = try store.load()
+    #expect(swept.newerLines == 2)
+    #expect(!(try String(contentsOf: store.fileURL, encoding: .utf8)).contains("2020-01-01"))
+
+    // Clear History deletes everything, a newer build's text too.
+    #expect(try store.clear() == 3)
+    #expect(try Data(contentsOf: store.fileURL).isEmpty)
+}
+
 @Test func loadRefusesASymbolicLinkInPlaceOfTheFile() throws {
     let root = try historyRoot()
     defer { try? FileManager.default.removeItem(at: root) }
