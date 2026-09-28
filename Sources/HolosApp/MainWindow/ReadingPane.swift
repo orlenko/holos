@@ -429,7 +429,8 @@ final class ReadingPane: NSViewController, MainSectionContent, NSTableViewDataSo
         switch action {
         case .play: play(id)
         case .stop: controller.stop(id)
-        case .retry: controller.retry(id)
+        case .retry:
+            if let problem = controller.retry(id) { showMessage(problem, problem: true) }
         case .share: share(id, from: cell.shareAnchor)
         case .reveal: reveal(id)
         case .delete: confirmDelete(id)

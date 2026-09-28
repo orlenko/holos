@@ -85,8 +85,9 @@ import Testing
                                         sections: [.init(heading: "One", level: 2, paragraphs: ["Texte."])])
         try store.saveDocument(document, for: id)
         #expect(store.document(for: id) == document)
-        store.removeDocument(for: id)
+        try store.removeDocument(for: id)
         #expect(store.document(for: id) == nil)
+        try store.removeDocument(for: id)  // already gone: not an error
     }
 
     @Test func launchContinuesOnlyReadingsKeptOverTheQuitOldestFirst() {
@@ -95,8 +96,10 @@ import Testing
         let older = entry(.queued, created: 40, resume: true)
         let crashed = entry(.rendering, created: 20)
         let done = entry(.done, created: 10)
+        var deleting = entry(.rendering, created: 60, resume: true)
+        deleting.deletePending = true
         // The list is newest first.
-        let (entries, resume) = ReadingLibrary.afterLaunch([newer, older, running, crashed, done])
+        let (entries, resume) = ReadingLibrary.afterLaunch([deleting, newer, older, running, crashed, done])
         #expect(resume == [running.id, older.id, newer.id])
         let byID = Dictionary(uniqueKeysWithValues: entries.map { ($0.id, $0) })
         for id in [running.id, newer.id, older.id] {
@@ -106,6 +109,27 @@ import Testing
         #expect(byID[crashed.id]?.state == .stopped)
         #expect(byID[crashed.id]?.message?.contains("quit") == true)
         #expect(byID[done.id] == done)
+        // A reading marked for deletion is left for the caller to delete, never resumed.
+        #expect(byID[deleting.id] == deleting)
+    }
+
+    @Test func launchFinishesInterruptedDeletionsButLeavesANewerBuildsListAlone() {
+        let running = entry(.rendering, created: 30, resume: true)
+        let crashed = entry(.queued, created: 20)
+        var deleting = entry(.done, created: 10)
+        deleting.deletePending = true
+        let list = [running, crashed, deleting]
+
+        let plan = ReadingLibrary.launchPlan(.init(entries: list, notice: nil, writable: true))
+        #expect(plan.delete == [deleting])
+        #expect(plan.entries.map(\.id) == [running.id, crashed.id])
+        #expect(plan.resume == [running.id])
+        #expect(plan.entries.last?.state == .stopped)
+
+        let newer = ReadingLibrary.launchPlan(.init(entries: list, notice: "newer", writable: false))
+        #expect(newer.entries == list)
+        #expect(newer.resume.isEmpty)
+        #expect(newer.delete.isEmpty)
     }
 
     @Test func quittingKeepsOrStopsTheActiveReadings() {

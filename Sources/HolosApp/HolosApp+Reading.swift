@@ -3,10 +3,10 @@ import AppKit
 /// The Reading section's part of quitting (docs/design.md "Reading section").
 extension HolosAppDelegate {
     /// Asks what becomes of the readings being made or waiting: Keep Rendering (quit now; they continue at the next
-    /// launch), Stop (they stop, with Resume), or Cancel. Returns nil to cancel the quit, else whether the readings
-    /// were prepared for it (`ReadingController.quitCancelled` undoes that if the quit is cancelled later).
-    func readingShouldTerminate() -> Bool? {
-        guard readings.isBusy else { return false }
+    /// launch), Stop (they stop, with Resume), or Cancel. Returns false to cancel the quit.
+    /// `ReadingController.quitCancelled` undoes the preparation when the quit is cancelled later.
+    func readingShouldTerminate() -> Bool {
+        guard readings.isBusy else { return true }
         let alert = NSAlert()
         let title = readings.runningTitle.map { "“\($0)”" } ?? "A reading"
         let waiting = readings.waitingCount
@@ -25,7 +25,7 @@ extension HolosAppDelegate {
         case .alertSecondButtonReturn:
             readings.prepareForQuit(keep: false)
         default:
-            return nil
+            return false
         }
         return true
     }

@@ -217,9 +217,11 @@ path, render cache, state, progress, duration, chapters) in an index,
 `Application Support/Holos/ReadingLibrary/library.json` (0600, written atomically;
 `ReadingLibraryStore`). An index that cannot be decoded is renamed aside
 (`library.json.unreadable-<date>`) and a new list starts; one a newer build wrote (a higher
-schema version) is shown but never rewritten. The loaded document is kept beside it
-(`Documents/<id>.json`) until the reading is made, so Resume and Try Again read the same
-text without fetching the page again.
+schema version) is shown exactly as saved: nothing in it is continued, changed, or
+deleted, and its rows refuse Try Again, Resume, and Delete (`ReadingLibrary.launchPlan`).
+The loaded document is saved beside it (`Documents/<id>.json`) before anything is
+rendered, and kept until the reading is made, so Resume and Try Again read the same text
+without fetching the page again; a document that cannot be saved fails the reading.
 
 `ReadingController` (HolosApp) runs the readings one at a time through
 `ReadingWorkQueue` (HolosContent): first come, first made; Stop takes a waiting one out at
@@ -242,21 +244,29 @@ waiting (Stop); loading or "Rendering part N of M" with a bar (Stop); joining; m
 stopped when the window closes), **Share…** (`NSSharingServicePicker`, ⇧⌘S), **Show in
 Finder**, **Delete…**; failed (the error, **Try Again**); stopped (where, **Resume**). A
 made reading whose file is no longer there says so and offers only Delete. Delete (⌫, with a
-confirmation) moves a made file to the Trash, removes the render cache only when it is an
-`Output-<16 hex>` folder directly in the Readings cache folder, and removes the row.
+confirmation) first saves the entry marked for deletion (`deletePending`, hidden from the
+list), stops it if it is being made, then moves a made file to the Trash, removes the render
+cache only when it is an `Output-<16 hex>` folder directly in the Readings cache folder, and
+removes the saved text; only then does the entry leave the index. A file that cannot be
+removed brings the row back with the reason, to delete again; a quit or crash in between is
+finished at the next launch.
 
 Files go to `~/Music/Voice is Local/Readings` unless Settings › Reading names another
 folder: a folder the user sees in Finder, outside Documents and Desktop, which iCloud
-Drive's "Desktop & Documents Folders" would upload. Nothing is uploaded; the only network
-access is loading the page the user pasted.
+Drive's "Desktop & Documents Folders" would upload. The default folder is created when
+missing; a chosen one is not (its disk may be disconnected, and creating the path would
+write to the startup disk), so the reading fails asking to connect it or choose another.
+Documents dropped or chosen are the files `DocumentLoader` reads, RTFD packages included.
+Nothing is uploaded; the only network access is loading the page the user pasted.
 
 Quitting while a reading is made or waits asks: **Keep Rendering** (quit now; the index
 marks those readings, and the next launch queues them again, the one being made first),
 **Stop** (they are saved as stopped, with Resume), or Cancel. The render in progress is
 cancelled either way; the pipeline's next run removes what that leaves. A reading found
 waiting or being made at launch without that mark (the app crashed or was killed) shows as
-stopped, with Resume. When a later question (a meeting recording) cancels the quit, the
-kept readings continue at once.
+stopped, with Resume. When the quit is cancelled after that question, at once (a meeting's
+question answered Cancel) or later (a meeting that could not be stopped,
+`waitBeforeQuitting`), the kept readings continue at once (`quitCancelled`).
 
 ### Dictation history
 

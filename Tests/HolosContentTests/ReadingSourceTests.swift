@@ -6,7 +6,7 @@ import Testing
     /// A pretend disk: these paths are files, these are folders, nothing else exists.
     private let files: Set<String> = ["/Users/me/Downloads/Paper.pdf", "/Users/me/notes.md", "/Users/me/photo.png",
                                       "/Users/me/Letter.docx"]
-    private let folders: Set<String> = ["/Users/me/Downloads"]
+    private let folders: Set<String> = ["/Users/me/Downloads", "/Users/me/Notes.rtfd", "/Users/me/Album.app"]
 
     private func disk(_ path: String) -> Bool? {
         folders.contains(path) ? true : files.contains(path) ? false : nil
@@ -39,6 +39,9 @@ import Testing
         #expect(try parse("/Users/me/Downloads/Paper.pdf").get() == .file(URL(fileURLWithPath: "/Users/me/Downloads/Paper.pdf")))
         #expect(try parse("file:///Users/me/Letter.docx").get() == .file(URL(fileURLWithPath: "/Users/me/Letter.docx")))
         #expect(message(parse("/Users/me/Downloads"))?.contains("folder") == true)
+        // An RTFD document is a package (a folder); other packages are refused like folders.
+        #expect(try parse("/Users/me/Notes.rtfd").get() == .file(URL(fileURLWithPath: "/Users/me/Notes.rtfd")))
+        #expect(message(parse("/Users/me/Album.app"))?.contains("folder") == true)
         #expect(message(parse("/Users/me/photo.png"))?.contains("cannot be read") == true)
         #expect(message(parse("/Users/me/missing.pdf"))?.contains("No file") == true)
         let home = NSHomeDirectory()

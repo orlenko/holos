@@ -255,14 +255,15 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         // A reading being made asks first (Keep Rendering or Stop); a meeting's question can still cancel the quit.
-        guard let readingsPrepared = readingShouldTerminate() else {
+        // A quit the meeting cancels, now or later (`waitBeforeQuitting`), calls `readings.quitCancelled()`.
+        guard readingShouldTerminate() else {
             reopenAfterQuit = false
             return .terminateCancel
         }
         let reply = meetingShouldTerminate()
         if reply == .terminateCancel {
             reopenAfterQuit = false
-            if readingsPrepared { readings.quitCancelled() }
+            readings.quitCancelled()
         }
         return reply
     }

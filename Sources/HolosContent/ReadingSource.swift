@@ -43,6 +43,8 @@ public struct ReadingSourceProblem: Error, Sendable, Equatable {
 /// Turns what the user typed, pasted, dropped, or chose into sources to read (docs/design.md "Reading section").
 public enum ReadingSourceParser {
     public static let kinds = "a PDF, Word, HTML, Markdown, RTF, OpenDocument, or text file"
+    /// Document formats `DocumentLoader` reads that are saved as packages (folders).
+    static let packageExtensions: Set<String> = ["rtfd"]
 
     /// One source from the New Reading field: an `https://` address (a bare "example.com/page" gets `https://`), a
     /// `file://` URL, or a file path (absolute, or starting with "~"). `http://` is refused with a hint, as in
@@ -117,6 +119,9 @@ public enum ReadingSourceParser {
         switch isDirectory(url.path) {
         case nil:
             return .failure(ReadingSourceProblem("No file at \((url.path as NSString).abbreviatingWithTildeInPath)."))
+        case true? where packageExtensions.contains(url.pathExtension.lowercased()):
+            // An RTFD document is a package: a folder that Finder shows as one file.
+            return .success(.file(url))
         case true?:
             return .failure(ReadingSourceProblem("\(url.lastPathComponent) is a folder. Choose \(kinds)."))
         case false?:

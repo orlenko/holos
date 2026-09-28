@@ -47,6 +47,9 @@ public struct ReadingEntry: Codable, Sendable, Equatable, Identifiable {
     /// Voice is Local quit while this reading was made or waiting and the user chose Keep Rendering: the next launch
     /// continues it.
     public var resumeOnLaunch: Bool
+    /// Delete was chosen: the entry is saved marked before its files are removed, so a quit or a crash in between
+    /// finishes the deletion at the next launch instead of bringing the reading back. Nil when not.
+    public var deletePending: Bool?
 
     public init(id: UUID = UUID(), created: Date = Date(), source: ReadingSource, requestedVoice: String?,
                 speed: Double) {
@@ -168,8 +171,13 @@ public final class ReadingLibraryStore: @unchecked Sendable {
         return try? JSONDecoder.reading.decode(ReadableDocument.self, from: data)
     }
 
-    public func removeDocument(for id: UUID) {
-        try? FileManager.default.removeItem(at: documentURL(id))
+    /// Removes the text saved for `id`; one that is not there is not an error.
+    public func removeDocument(for id: UUID) throws {
+        do {
+            try FileManager.default.removeItem(at: documentURL(id))
+        } catch let error as CocoaError where error.code == .fileNoSuchFile {
+            return
+        }
     }
 
     func documentURL(_ id: UUID) -> URL {
@@ -211,14 +219,26 @@ public final class ReadingLibraryStore: @unchecked Sendable {
 
 /// The decisions about the list that do not touch the disk.
 public enum ReadingLibrary {
-    /// The list as the app finds it at launch: a reading that was waiting or being made when Voice is Local quit
+    /// What the app does with the list it loaded at launch: the readings whose deletion a quit interrupted (to
+    /// finish deleting), the list without them after `afterLaunch`, and the readings to continue. A list a newer
+    /// build wrote (`writable` false) is shown exactly as loaded: nothing is deleted, changed, or continued.
+    public static func launchPlan(_ loaded: ReadingLibraryStore.Loaded)
+        -> (entries: [ReadingEntry], resume: [UUID], delete: [ReadingEntry]) {
+        guard loaded.writable else { return (loaded.entries, [], []) }
+        let delete = loaded.entries.filter { $0.deletePending == true }
+        let (entries, resume) = afterLaunch(loaded.entries.filter { $0.deletePending != true })
+        return (entries, resume, delete)
+    }
+
+    /// The list as the app finds it at launch (a reading marked for deletion is left as it is, for the caller to
+    /// finish deleting): a reading that was waiting or being made when Voice is Local quit
     /// continues when the user chose Keep Rendering (`resumeOnLaunch`; it is returned in `resume`: the one that was
     /// being made first, then the waiting ones oldest first, as they were asked for), and is otherwise shown as
     /// stopped, with Resume. `resumeOnLaunch` is used once.
     public static func afterLaunch(_ entries: [ReadingEntry]) -> (entries: [ReadingEntry], resume: [UUID]) {
         var result = entries
         var first: [ReadingEntry] = [], rest: [ReadingEntry] = []
-        for index in result.indices where result[index].isActive {
+        for index in result.indices where result[index].isActive && result[index].deletePending != true {
             if result[index].resumeOnLaunch {
                 if result[index].state == .rendering { first.append(result[index]) } else { rest.append(result[index]) }
                 result[index].state = .queued

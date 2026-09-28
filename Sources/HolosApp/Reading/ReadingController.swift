@@ -53,6 +53,11 @@ enum ReadingPreferences {
             .appendingPathComponent("Readings", isDirectory: true)
     }
 
+    /// Whether new files go to `defaultFolder` (none chosen in Settings, or that same folder chosen).
+    static var isDefaultFolder: Bool {
+        folder.standardizedFileURL.path == defaultFolder.standardizedFileURL.path
+    }
+
     /// The folder as the Reading section and Settings show it ("~/Music/Voice is Local/Readings").
     static var folderText: String { (folder.path as NSString).abbreviatingWithTildeInPath }
 }
@@ -70,8 +75,8 @@ final class ReadingController {
         case joining(parts: Int)
     }
 
-    /// Newest first.
-    private(set) var entries: [ReadingEntry] = []
+    /// The list as shown, newest first: without the readings being deleted.
+    var entries: [ReadingEntry] { all.filter { $0.deletePending != true } }
     /// What the list should say about its index (see `ReadingLibraryStore.load`).
     private(set) var notice: String?
     private(set) var activity: [UUID: Activity] = [:]
@@ -80,9 +85,16 @@ final class ReadingController {
     /// One reading's progress changed.
     var onProgress: ((UUID) -> Void)?
 
+    /// Every entry of the index, those being deleted included (they are saved marked, so a quit or a crash before
+    /// their files are gone finishes the deletion at the next launch).
+    private var all: [ReadingEntry] = []
     private let store = ReadingLibraryStore.standard()
     private var writable = true
+    /// Readings of an index a newer Voice is Local wrote: shown, never changed here.
+    private var readOnly: Set<UUID> = []
     private var started = false
+    /// `prepareForQuit` ran and no quit has been cancelled since.
+    private var preparedForQuit = false
     /// Readings to delete once their render has stopped.
     private var deleteWhenStopped: Set<UUID> = []
     private lazy var queue: ReadingWorkQueue = {
@@ -92,21 +104,36 @@ final class ReadingController {
         return queue
     }()
 
-    /// Reads the list and continues the readings kept over the last quit. Once.
+    static let readOnlyMessage = "This reading belongs to a list a newer Voice is Local saved; it is shown here but not changed."
+
+    /// Reads the list, finishes the deletions a quit interrupted, and continues the readings kept over the last quit.
+    /// Once. A list a newer build wrote is only shown.
     func start() {
         guard !started else { return }
         started = true
         let loaded = store.load()
         notice = loaded.notice
         writable = loaded.writable
-        let (recovered, resume) = ReadingLibrary.afterLaunch(loaded.entries)
-        entries = recovered.sorted { $0.created > $1.created }
-        if recovered != loaded.entries { save() }
-        resume.forEach(queue.enqueue)
+        if !writable { readOnly = Set(loaded.entries.map(\.id)) }
+        let plan = ReadingLibrary.launchPlan(loaded)
+        var entries = plan.entries
+        for var entry in plan.delete {
+            // One whose files cannot be removed comes back, with the reason.
+            if let problem = cleanUp(entry) {
+                notice = problem
+                entry.deletePending = nil
+                entry.message = problem
+                if entry.isActive { entry.state = .stopped }
+                entries.append(entry)
+            }
+        }
+        all = entries.sorted { $0.created > $1.created }
+        if all != loaded.entries { save() }  // never for a newer build's list (`save` checks `writable`)
+        plan.resume.forEach(queue.enqueue)
         onChange?()
     }
 
-    func entry(_ id: UUID) -> ReadingEntry? { entries.first { $0.id == id } }
+    func entry(_ id: UUID) -> ReadingEntry? { all.first { $0.id == id } }
 
     /// Whether a reading is being made or waits.
     var isBusy: Bool { !queue.isIdle }
@@ -117,7 +144,7 @@ final class ReadingController {
     @discardableResult
     func add(_ source: ReadingSource, voice: String?, speed: Double) -> UUID {
         let entry = ReadingEntry(source: source, requestedVoice: voice, speed: ReadingSpeed.clamped(speed))
-        entries.insert(entry, at: 0)
+        all.insert(entry, at: 0)
         save()
         onChange?()
         queue.enqueue(entry.id)
@@ -129,9 +156,11 @@ final class ReadingController {
         queue.stop(id)
     }
 
-    /// Try Again or Resume: queues a failed or stopped reading again; its rendered parts are reused.
-    func retry(_ id: UUID) {
-        guard let entry = entry(id), entry.state == .failed || entry.state == .stopped else { return }
+    /// Try Again or Resume: queues a failed or stopped reading again; its rendered parts are reused. Returns a
+    /// problem to show when it cannot.
+    func retry(_ id: UUID) -> String? {
+        guard !readOnly.contains(id) else { return Self.readOnlyMessage }
+        guard let entry = entry(id), entry.state == .failed || entry.state == .stopped else { return nil }
         update(id) {
             $0.state = .queued
             $0.message = nil
@@ -139,19 +168,25 @@ final class ReadingController {
         save()
         onChange?()
         queue.enqueue(id)
+        return nil
     }
 
-    /// Deletes a reading: its `.m4a` goes to the Trash, and its render cache and saved text are removed. A reading
-    /// being made is stopped first. Returns a problem to show, if the file could not be moved.
+    /// Deletes a reading: its `.m4a` goes to the Trash, and its render cache and saved text are removed. The entry is
+    /// saved marked first, so it never comes back; a reading being made is stopped, then deleted. When a file cannot
+    /// be removed the reading stays in the list, and the problem is returned (or, after a stop, shown as the notice).
     func delete(_ id: UUID) -> String? {
+        guard !readOnly.contains(id) else { return Self.readOnlyMessage }
         guard entry(id) != nil else { return nil }
+        update(id) { $0.deletePending = true }
+        save()
         if queue.running == id {
             deleteWhenStopped.insert(id)
             queue.stop(id)
+            onChange?()
             return nil
         }
         queue.stop(id)
-        let problem = remove(id)
+        let problem = finishDelete(id)
         onChange?()
         return problem
     }
@@ -159,18 +194,21 @@ final class ReadingController {
     /// Voice is Local quits with readings waiting or being made: `keep` (Keep Rendering) continues them at the next
     /// launch; otherwise (Stop) they are stopped, with Resume. The render in progress is cancelled either way.
     func prepareForQuit(keep: Bool) {
-        entries = ReadingLibrary.forQuit(entries, keep: keep)
+        all = ReadingLibrary.forQuit(all, keep: keep)
         save()
         queue.shutDown()
         activity.removeAll()
+        preparedForQuit = true
     }
 
-    /// The quit was cancelled after `prepareForQuit` (a meeting's question was answered Cancel): the readings kept
-    /// for the next launch continue now.
+    /// The quit was cancelled, at once or later (a meeting that could not be stopped): after `prepareForQuit`, the
+    /// readings kept for the next launch continue now. Otherwise nothing happens.
     func quitCancelled() {
-        let (recovered, resume) = ReadingLibrary.afterLaunch(entries)
+        guard preparedForQuit else { return }
+        preparedForQuit = false
+        let (recovered, resume) = ReadingLibrary.afterLaunch(all)
         queue.reopen()
-        entries = recovered
+        all = recovered
         save()
         resume.forEach(queue.enqueue)
         onChange?()
@@ -190,11 +228,6 @@ final class ReadingController {
 
     private func ended(_ id: UUID, _ outcome: ReadingWorkQueue.Outcome) {
         activity[id] = nil
-        if deleteWhenStopped.remove(id) != nil {
-            if let problem = remove(id) { notice = problem }
-            onChange?()
-            return
-        }
         switch outcome {
         case .finished:
             // Its work returned without making the file (it cannot, but a row must never stay "rendering").
@@ -212,6 +245,7 @@ final class ReadingController {
                 $0.message = nil
             }
         }
+        if deleteWhenStopped.remove(id) != nil, let problem = finishDelete(id) { notice = problem }
         save()
         onChange?()
     }
@@ -247,9 +281,8 @@ final class ReadingController {
             if try ReadingOutput.exists(found.workDirectory) || !ReadingOutput.exists(found.output) { location = found }
         }
         if location == nil {
-            let folder = ReadingPreferences.folder
-            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-            let taken = Set(entries.filter { $0.id != id }.compactMap(\.output))
+            let folder = try Self.outputFolder()
+            let taken = Set(all.filter { $0.id != id }.compactMap(\.output))
             let chosen = ReadingLibrary.outputURL(in: folder, title: metadata.title, fallback: entry.source.fallbackName,
                                                   taken: taken) { url in (try? ReadingOutput.exists(url)) ?? true }
             output = chosen
@@ -283,9 +316,29 @@ final class ReadingController {
             // Bookkeeping that failed after the file was saved (see `ReadingResult.warnings`).
             $0.message = result.warnings.isEmpty ? nil : result.warnings.joined(separator: " ")
         }
-        store.removeDocument(for: id)
+        // The saved text is no longer needed; one that stays is removed with the reading.
+        try? store.removeDocument(for: id)
     }
 
+    /// The folder new files go to. The default one is made when missing; a folder chosen in Settings that is missing
+    /// (its disk is not connected) is not, so nothing is written on the startup disk in its place.
+    static func outputFolder() throws -> URL {
+        let folder = ReadingPreferences.folder
+        if ReadingPreferences.isDefaultFolder {
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        } else {
+            var isDirectory: ObjCBool = false
+            guard FileManager.default.fileExists(atPath: folder.path, isDirectory: &isDirectory), isDirectory.boolValue else {
+                throw HolosError.unavailable("The folder \(ReadingPreferences.folderText) chosen in Settings › Reading is "
+                    + "not available. Connect its disk, or choose another folder there, then Try Again.")
+            }
+        }
+        return folder
+    }
+
+    /// The reading's text: the copy saved when it was first loaded, else its source, loaded now and saved before
+    /// anything is rendered, so Resume and Try Again read exactly this text. A copy that cannot be saved fails the
+    /// reading: without it a resume would load the source again and could read different text.
     private func loadDocument(_ entry: ReadingEntry) async throws -> ReadableDocument {
         if let saved = store.document(for: entry.id) { return saved }
         let document: ReadableDocument
@@ -298,8 +351,12 @@ final class ReadingController {
             }
             document = try DocumentLoader.load(url)
         }
-        // Without the copy a resume loads the source again, which refuses a page whose text changed.
-        try? store.saveDocument(document, for: entry.id)
+        do {
+            try store.saveDocument(document, for: entry.id)
+        } catch {
+            throw HolosError.io("The text to read could not be saved for Resume in \(store.folder.path): "
+                + error.localizedDescription)
+        }
         return document
     }
 
@@ -340,41 +397,63 @@ final class ReadingController {
 
     // MARK: - Storage
 
-    /// Removes the reading and its files: the `.m4a` of a finished reading goes to the Trash; the render cache is
-    /// removed only when it is one the pipeline made in the support folder.
-    private func remove(_ id: UUID) -> String? {
+    /// Removes a reading marked for deletion once its files are gone; when one cannot be removed, the reading comes
+    /// back to the list (unmarked) and the problem is returned.
+    private func finishDelete(_ id: UUID) -> String? {
         guard let entry = entry(id) else { return nil }
-        var problem: String?
+        activity[id] = nil
+        if let problem = cleanUp(entry) {
+            update(id) {
+                $0.deletePending = nil
+                $0.message = problem
+            }
+            save()
+            return problem
+        }
+        all.removeAll { $0.id == id }
+        save()
+        return nil
+    }
+
+    /// Removes a reading's files: the `.m4a` of a finished reading goes to the Trash; the render cache is removed
+    /// only when it is one the pipeline made in the support folder; the saved text is removed. Nil when all are gone.
+    private func cleanUp(_ entry: ReadingEntry) -> String? {
+        var problems: [String] = []
         if entry.state == .done, let output = entry.outputURL, FileManager.default.fileExists(atPath: output.path) {
             do {
                 try FileManager.default.trashItem(at: output, resultingItemURL: nil)
             } catch {
-                problem = "\(output.lastPathComponent) could not be moved to the Trash: \(error.localizedDescription)"
+                problems.append("\(output.lastPathComponent) could not be moved to the Trash: \(error.localizedDescription)")
             }
         }
-        if let cache = entry.cache,
+        if let cache = entry.cache, FileManager.default.fileExists(atPath: cache),
            let readings = try? ReadingOutput.readingsRoot(support: HolosPaths.supportRoot,
                                                           configured: ProcessInfo.processInfo.environment["HOLOS_SUPPORT_DIR"],
                                                           create: false),
            ReadingLibrary.isRenderCache(cache, in: readings) {
-            try? FileManager.default.removeItem(atPath: cache)
+            do {
+                try FileManager.default.removeItem(atPath: cache)
+            } catch {
+                problems.append("Its rendered parts in \(cache) could not be removed: \(error.localizedDescription)")
+            }
         }
-        store.removeDocument(for: id)
-        entries.removeAll { $0.id == id }
-        activity[id] = nil
-        save()
-        return problem
+        do {
+            try store.removeDocument(for: entry.id)
+        } catch {
+            problems.append("Its saved text could not be removed: \(error.localizedDescription)")
+        }
+        return problems.isEmpty ? nil : problems.joined(separator: " ") + " Try Delete again."
     }
 
     private func update(_ id: UUID, _ change: (inout ReadingEntry) -> Void) {
-        guard let index = entries.firstIndex(where: { $0.id == id }) else { return }
-        change(&entries[index])
+        guard let index = all.firstIndex(where: { $0.id == id }) else { return }
+        change(&all[index])
     }
 
     private func save() {
         guard writable else { return }
         do {
-            try store.save(entries)
+            try store.save(all)
         } catch {
             notice = "The Reading list could not be saved: \(error.localizedDescription)"
         }
