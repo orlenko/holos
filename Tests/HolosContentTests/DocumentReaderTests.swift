@@ -193,6 +193,33 @@ import Testing
         #expect(HTMLReader.Walker.marker(0, type: "A") == "0.")
     }
 
+    /// A table cell is read like the rest of the page: its lists keep their numbers, its blocks
+    /// stay apart, and a nested table's rows are read, all on the cell's line.
+    @Test func tableCellsAreReadLikeThePage() {
+        #expect(paragraphs("""
+        <html><body>
+        <table>
+        <caption>Steps</caption>
+        <tr><td><ol><li>First</li><li>Second</li></ol></td></tr>
+        <tr><th>Rank</th><td><ol start="3" type="i"><li>Third</li></ol><ul><li>Dot</li></ul></td></tr>
+        <tr><td><dl><dt>Term</dt><dd>Meaning</dd></dl></td><td><blockquote><p>Quoted</p><p>twice</p></blockquote></td></tr>
+        <tr><td><h3>Cell heading</h3>Cell body</td><td><table><tr><td>Inner</td><td>cell</td></tr><tr><td>Row two</td></tr></table></td></tr>
+        <tr><td>Hidden <span hidden>menu</span> text<br>after break</td></tr>
+        </table>
+        <ol><li><table><tr><td><ol><li>Nested</li></ol></td><td>Other</td></tr></table></li><li>Next</li></ol>
+        </body></html>
+        """) == [
+            "Steps",
+            "1. First 2. Second",
+            "Rank; iii. Third Dot",
+            "Term Meaning; Quoted twice",
+            "Cell heading Cell body; Inner; cell Row two",
+            "Hidden text after break",
+            "1. 1. Nested; Other",
+            "2. Next",
+        ])
+    }
+
     @Test func anItemsNumberWaitsForItsOwnTextPastANestedList() {
         let html = """
         <html><body>
@@ -329,6 +356,38 @@ import Testing
         <p>Last.</p></body></html>
         """) == ["Header text", "First.", "Second custom inline and marked text.", "Caption.", "Real cell",
                  "Price now.", "Last."])
+    }
+
+    /// `/>` ends only a void element or foreign content (SVG, MathML); on any other element HTML
+    /// ignores the slash, and the element stays open up to its end tag.
+    @Test func selfClosingSyntaxFollowsHTML() {
+        #expect(paragraphs("""
+        <html><body>
+        <p>One.</p>
+        <template/>hidden template</template>
+        <nav/>menu</nav>
+        <NAV CLASS="x" />upper menu</NAV>
+        <p>Line<br/>break <img src="a.png"/>image<wbr/>end.</p>
+        <p>Icon <svg><path d="M0 0"/><circle r="1"/><title/>svg text</svg> after.</p>
+        <p>Empty <svg/> and <math/> foreign.</p>
+        <video><source src="a.mp4">video text</video>
+        <p>Media <audio><source src="a.mp3"><track src="t.vtt"></audio>done.</p>
+        <template><svg><path/></svg>still hidden<div/>hidden div</template>
+        <aside/>aside text</aside>
+        <script/>document.write("x")</script>
+        <p><a href=/next/>Next</a> page.</p>
+        <p>Last.</p>
+        </body></html>
+        """) == ["One.", "Line", "break imageend.", "Icon after.", "Empty and foreign.", "Media done.",
+                 "Next page.", "Last."])
+        let marker = "data-holos-x-tag"
+        #expect(HTMLReader.prepared("<template/>a</template>", nameAttribute: marker)
+            == #"<div data-holos-x-tag="template">a</div>"#)
+        #expect(HTMLReader.prepared("<div/>a</div><br/><source src=x>", nameAttribute: marker)
+            == #"<div>a</div><br/><span data-holos-x-tag="source" src=x></span>"#)
+        #expect(HTMLReader.prepared("<svg><path/></svg>", nameAttribute: marker)
+            == #"<span data-holos-x-tag="svg"><span></span></span>"#)
+        #expect(HTMLReader.prepared("<a href=/next/>x</a>", nameAttribute: marker) == "<a href=/next/>x</a>")
     }
 
     /// Tags inside comments and raw text elements are not tags.

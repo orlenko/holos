@@ -81,12 +81,16 @@ public struct ReadingManifest: Codable, Sendable, Equatable {
 
     /// Whether this saved reading was made from the same settings: every value that ends up
     /// in the finished file, besides the text and the part plan (which includes chapter titles).
-    func sameSettings(voiceIdentifier: String, rate: Float?, metadata: AudioBookMetadata, output: URL) -> Bool {
+    /// The output compares by exact identity (see `ReadingPathIdentity.Rule.exact`): another
+    /// spelling resumes this reading only when it names the same file.
+    func sameSettings(voiceIdentifier: String, rate: Float?, metadata: AudioBookMetadata, output: URL,
+                      caseSensitivity: ReadingPathIdentity.CaseQuery = ReadingPathIdentity.volumeCaseSensitivity) -> Bool {
         self.voiceIdentifier == voiceIdentifier && self.rate == rate
             && title == metadata.title && author == metadata.author && language == metadata.language
             && comment == metadata.comment && format == .current
             && (self.output == output.path
-                || ReadingPathIdentity.key(URL(fileURLWithPath: self.output)) == ReadingPathIdentity.key(output))
+                || ReadingPathIdentity.key(URL(fileURLWithPath: self.output), .exact, caseSensitivity: caseSensitivity)
+                    == ReadingPathIdentity.key(output, .exact, caseSensitivity: caseSensitivity))
     }
 }
 
@@ -548,12 +552,24 @@ final class ReadingDirectoryLock {
 /// - the parent folder is its real path (`realpath(3)`: links resolved, "..", and on macOS each
 ///   component's on-disk case);
 /// - the last component (which may not exist yet) is put in Unicode canonical composition (APFS
-///   and HFS+ treat NFC and NFD spellings as one name), and case-folded when the volume ignores
-///   case (the default on macOS), or when that cannot be told.
-/// On a stricter volume two such spellings can name different files; they then only share a
-/// lock, which serializes them, never a file.
+///   and HFS+ treat NFC and NFD spellings as one name), and case-folded as `Rule` says.
 enum ReadingPathIdentity {
-    static func key(_ url: URL) -> String {
+    /// How a name's case counts.
+    enum Rule {
+        /// For locks: case is folded unless the volume is known to tell names apart by case, so
+        /// every spelling that may name one file shares the lock. On a case-sensitive volume
+        /// whose rules cannot be told, "Book.m4a" and "book.m4a" share a lock, which only
+        /// serializes them.
+        case lock
+        /// For render caches and `--resume`: case is folded only when the volume is known to
+        /// ignore it, so two spellings share a cache only when they name one file.
+        case exact
+    }
+
+    /// Whether the volume holding a folder tells names apart by case; nil when unknown.
+    typealias CaseQuery = (String) -> Bool?
+
+    static func key(_ url: URL, _ rule: Rule = .lock, caseSensitivity: CaseQuery = volumeCaseSensitivity) -> String {
         let path = url.standardizedFileURL.path
         // An existing path resolves whole, so a link in the last component is followed too.
         let resolved = realPath(path) ?? path
@@ -561,7 +577,12 @@ enum ReadingPathIdentity {
         let parentPath = (resolved as NSString).deletingLastPathComponent
         let parent = realPath(parentPath)
             ?? URL(fileURLWithPath: parentPath).standardizedFileURL.resolvingSymlinksInPath().path
-        let folded = normalizedName(name, caseSensitive: caseSensitive(parent))
+        let sensitivity = caseSensitivity(parent)
+        let keepsCase = switch rule {
+        case .lock: sensitivity == true
+        case .exact: sensitivity != false
+        }
+        let folded = normalizedName(name, caseSensitive: keepsCase)
         return parent == "/" ? "/" + folded : parent + "/" + folded
     }
 
@@ -574,9 +595,15 @@ enum ReadingPathIdentity {
 
     /// Whether the volume holding `folder` tells names apart by case; false when unknown.
     static func caseSensitive(_ folder: String) -> Bool {
+        volumeCaseSensitivity(folder) ?? false
+    }
+
+    /// Whether the volume holding `folder` tells names apart by case, as the volume reports it;
+    /// nil when that cannot be told.
+    static func volumeCaseSensitivity(_ folder: String) -> Bool? {
         let values = try? URL(fileURLWithPath: folder, isDirectory: true)
             .resourceValues(forKeys: [.volumeSupportsCaseSensitiveNamesKey])
-        return values?.volumeSupportsCaseSensitiveNames ?? false
+        return values?.volumeSupportsCaseSensitiveNames
     }
 
     private static func realPath(_ path: String) -> String? {

@@ -167,7 +167,12 @@ public enum ReadingOutput {
     /// `locate`'s resolution alone: reads the filesystem (whether `output` is a folder, holds a
     /// reading, and its volume's name limit) but checks and creates nothing.
     static func resolve(output: String?, name: String, identity: String, readingsRoot: URL,
-                        fileManager: FileManager) throws -> (ReadingLocation, Destination) {
+                        fileManager: FileManager,
+                        caseSensitivity: ReadingPathIdentity.CaseQuery = ReadingPathIdentity.volumeCaseSensitivity)
+        throws -> (ReadingLocation, Destination) {
+        func hashed(output: URL) -> ReadingLocation {
+            Self.hashed(output: output, identity: identity, readingsRoot: readingsRoot, caseSensitivity: caseSensitivity)
+        }
         guard let output else {
             let directory = readingsRoot.appendingPathComponent(UUID().uuidString, isDirectory: true)
             let name = fitting(name, limit: nameLimit(in: readingsRoot))
@@ -181,13 +186,12 @@ public enum ReadingOutput {
             if ReadingManifest.isReading(url.appendingPathComponent(ReadingManifest.fileName)) {
                 return (ReadingLocation(workDirectory: url, output: url.appendingPathComponent(name)), .readingFolder)
             }
-            return (hashed(output: url.appendingPathComponent(name), identity: identity, readingsRoot: readingsRoot),
-                    .explicit)
+            return (hashed(output: url.appendingPathComponent(name)), .explicit)
         }
         guard url.pathExtension.lowercased() == ReadingAudioFormat.fileExtension else {
             throw HolosError.invalidInput("--output must be a .m4a file path or an existing directory: \(url.path)")
         }
-        return (hashed(output: url, identity: identity, readingsRoot: readingsRoot), .explicit)
+        return (hashed(output: url), .explicit)
     }
 
     /// Fails unless the finished file can be saved at `output`: its folder exists, is a folder,
@@ -240,12 +244,15 @@ public enum ReadingOutput {
         unlink(probe.path)
     }
 
-    private static func hashed(output: URL, identity: String, readingsRoot: URL) -> ReadingLocation {
+    private static func hashed(output: URL, identity: String, readingsRoot: URL,
+                               caseSensitivity: ReadingPathIdentity.CaseQuery) -> ReadingLocation {
         let canonical = output.deletingLastPathComponent().resolvingSymlinksInPath()
             .appendingPathComponent(output.lastPathComponent)
-        // Keyed by the file's filesystem identity, so every spelling of one file ("Book.m4a" and
-        // "book.m4a" on a case-insensitive volume) finds the same cache.
-        let key = ReadingPathIdentity.key(output)
+        // Keyed by the file's exact filesystem identity, so every spelling of one file
+        // ("Book.m4a" and "book.m4a" on a volume known to ignore case) finds the same cache, and
+        // two files (those names on a volume that may tell them apart) never share one. The
+        // output lock stays conservative (see `ReadingDirectoryLock.acquire(output:beside:)`).
+        let key = ReadingPathIdentity.key(output, .exact, caseSensitivity: caseSensitivity)
         let digest = SHA256.hash(data: Data((key + "\u{0}" + identity).utf8)).map { String(format: "%02x", $0) }.joined()
         let directory = readingsRoot.appendingPathComponent("Output-\(digest.prefix(16))", isDirectory: true)
         return ReadingLocation(workDirectory: directory, output: canonical)

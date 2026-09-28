@@ -550,15 +550,22 @@ public enum HTMLReader {
     /// text elements aside), so the parser keeps the contents in place: it moves a template's
     /// table cells into the table around the template otherwise.
     static let opaque: Set<String> = ["template", "svg", "math"]
+    /// Elements that are foreign content (SVG, MathML), where `/>` ends an element.
+    static let foreign: Set<String> = ["svg", "math"]
+    /// HTML's void elements: never any contents, and the only HTML elements `/>` ends.
+    static let void: Set<String> = [
+        "area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "source", "track", "wbr",
+    ]
     /// Elements whose contents is text, never tags.
     static let rawText: Set<String> = ["script", "style", "textarea", "title", "xmp", "iframe", "noembed", "noframes"]
 
     /// `html` with every element the tidying parser does not know renamed to one it does, its own
     /// name kept in `nameAttribute` (see `originalNameAttribute`): `<nav class="x">` becomes
     /// `<div data-holos-…-tag="nav" class="x">`. The parser then keeps it as an element with all its
-    /// contents, nested ones included, for `Walker` to read or skip. Only tag names change, and
-    /// `<` in raw text elements other than scripts and styles (which the parser reads as text)
-    /// is escaped; comments are copied as they are.
+    /// contents, nested ones included, for `Walker` to read or skip. Only tag names change, a
+    /// self-closing slash HTML ignores is dropped (see `void`), and `<` in raw text elements other
+    /// than scripts and styles (which the parser reads as text) is escaped; comments are copied
+    /// as they are.
     static func prepared(_ html: String, nameAttribute: String) -> String {
         let bytes = Array(html.utf8)
         let count = bytes.count
@@ -609,6 +616,7 @@ public enum HTMLReader {
             var end = cursor
             var quote: UInt8?
             var afterEquals = false
+            var unquotedValue = false
             while end < count {
                 let byte = bytes[end]
                 if let open = quote {
@@ -617,6 +625,10 @@ public enum HTMLReader {
                     quote = byte
                 } else if byte == UInt8(ascii: ">") {
                     break
+                } else if isSpace(byte) {
+                    unquotedValue = false
+                } else if afterEquals {
+                    unquotedValue = true
                 }
                 if quote == nil, !isSpace(byte) { afterEquals = byte == UInt8(ascii: "=") }
                 end += 1
@@ -626,8 +638,16 @@ public enum HTMLReader {
                 output += bytes[tagStart...]
                 break
             }
-            let attributes = bytes[cursor..<end]
-            let selfClosing = attributes.last == UInt8(ascii: "/")
+            // `/>` outside an unquoted value (in `href=a/>` the slash is the value's).
+            let slash = !closing && !unquotedValue && bytes[end - 1] == UInt8(ascii: "/")
+            // As HTML reads it, the slash makes an empty element only of a void element or in
+            // foreign content (SVG, MathML, `<svg/>` itself); `<template/>` and `<nav/>` stay open
+            // up to their end tags. The parser would take every `/>` as empty, so an ignored slash
+            // is dropped. A void element is empty with or without it.
+            let insideForeign = opaqueOpen.contains { foreign.contains($0) }
+            let selfClosing = slash && (void.contains(name) || foreign.contains(name) || insideForeign)
+            let empty = selfClosing || (void.contains(name) && !insideForeign)
+            let attributes = slash && !selfClosing ? bytes[cursor..<(end - 1)] : bytes[cursor..<end]
             index = end + 1
 
             if closing {
@@ -663,17 +683,15 @@ public enum HTMLReader {
                     tag += " \(nameAttribute)=\"\(name)\""
                 }
                 output += Array(tag.utf8)
-                if selfClosing {
-                    // `<path/>` becomes an explicitly empty element: `<span/>` could be taken for
-                    // an open one, hiding the text after it.
-                    output += attributes.dropLast()
-                    output += Array("></\(renamed)>".utf8)
-                } else {
-                    output += attributes
-                    output.append(UInt8(ascii: ">"))
-                }
+                output += selfClosing ? attributes.dropLast() : attributes
+                // `<path/>` and `<source>` become explicitly empty elements: `<span/>` could be
+                // taken for an open one, hiding the text after it.
+                output += Array((empty ? "></\(renamed)>" : ">").utf8)
             } else {
-                output += bytes[tagStart..<index]
+                // As written, less an ignored slash.
+                output += bytes[tagStart..<cursor]
+                output += attributes
+                output.append(UInt8(ascii: ">"))
             }
             if isRawText {
                 // Copied as it is up to its end tag, which the loop then reads.
@@ -773,6 +791,8 @@ public enum HTMLReader {
         var lists: [OrderedList?] = []
         /// "3. " before the first text of an ordered list item.
         var marker: String?
+        /// The paragraphs of the table cell being read, which make up its text; nil outside cells.
+        var cell: [String]?
 
         mutating func flush() {
             emit(collapse(inline))
@@ -781,7 +801,11 @@ public enum HTMLReader {
 
         mutating func emit(_ text: String) {
             guard !text.isEmpty else { return }
-            builder.paragraph((marker ?? "") + text)
+            if cell != nil {
+                cell?.append((marker ?? "") + text)
+            } else {
+                builder.paragraph((marker ?? "") + text)
+            }
             marker = nil
         }
 
@@ -793,22 +817,41 @@ public enum HTMLReader {
             guard node.kind == .element else { return }
             if isSkipped(node) { return }
             let name = self.name(of: node)
-            if name.count == 2, name.first == "h", let level = Int(String(name.last!)), (1...6).contains(level) {
+            // A heading in a table cell is part of the cell's text, read as a block.
+            let heading = name.count == 2 && name.first == "h" ? Int(String(name.last!)).flatMap { (1...6).contains($0) ? $0 : nil } : nil
+            if let level = heading, cell == nil {
                 flush()
                 builder.heading(collapse(text(of: node)), level: level)
                 return
             }
+            // A cell is read like the rest of the page (lists keep their numbers, blocks stay
+            // apart, a nested table's rows are read), its paragraphs joined into one line. The
+            // cell stands on its own: a list around its table does not number its items, and an
+            // item's number stays for the row.
             if name == "td" || name == "th" {
-                let cell = collapse(text(of: node))
-                if !cell.isEmpty { row?.append(cell) }
+                flush()
+                let outer = (cell, lists, marker)
+                cell = []
+                lists = []
+                marker = nil
+                for child in node.children ?? [] { walk(child) }
+                flush()
+                let text = cell?.joined(separator: " ") ?? ""
+                (cell, lists, marker) = outer
+                if !text.isEmpty {
+                    if row != nil { row?.append(text) } else { emit(text) }
+                }
                 return
             }
             if name == "tr" {
                 flush()
+                let outer = row
                 row = []
                 for child in node.children ?? [] { walk(child) }
-                if let row, !row.isEmpty { emit(row.joined(separator: "; ")) }
-                row = nil
+                flush()
+                let cells = row ?? []
+                row = outer
+                if !cells.isEmpty { emit(cells.joined(separator: "; ")) }
                 return
             }
             // Ordered list items keep their numbers, as the page shows them: `start`, `reversed`,
@@ -841,7 +884,7 @@ public enum HTMLReader {
                 marker = nil
                 return
             }
-            let isBlock = HTMLReader.blocks.contains(name)
+            let isBlock = HTMLReader.blocks.contains(name) || heading != nil
             if isBlock { flush() }
             for child in node.children ?? [] { walk(child) }
             if isBlock { flush() }

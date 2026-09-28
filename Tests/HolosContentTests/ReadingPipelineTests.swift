@@ -499,6 +499,59 @@ import Testing
         #expect(try (cache(upper) == cache(parent.appendingPathComponent("book.m4a"))) == !caseSensitive)
     }
 
+    /// On a volume whose case rules cannot be told, "Book.m4a" and "book.m4a" may be two files:
+    /// they share the conservative lock, but never a render cache, and `--resume` of one does not
+    /// accept the other. On a volume known to ignore case they are one file throughout.
+    @Test func locksStayConservativeWhileCachesKeepDistinctSpellings() async throws {
+        let parent = try root()
+        defer { try? FileManager.default.removeItem(at: parent) }
+        let unknown: ReadingPathIdentity.CaseQuery = { _ in nil }
+        let insensitive: ReadingPathIdentity.CaseQuery = { _ in false }
+        let sensitive: ReadingPathIdentity.CaseQuery = { _ in true }
+        let upper = parent.appendingPathComponent("Book.m4a")
+        let lower = parent.appendingPathComponent("book.m4a")
+        let decomposed = parent.appendingPathComponent("Cafe\u{301}.m4a")
+        let composed = parent.appendingPathComponent("Caf\u{E9}.m4a")
+        func key(_ url: URL, _ rule: ReadingPathIdentity.Rule, _ query: @escaping ReadingPathIdentity.CaseQuery) -> String {
+            ReadingPathIdentity.key(url, rule, caseSensitivity: query)
+        }
+        #expect(key(upper, .lock, unknown) == key(lower, .lock, unknown))
+        #expect(key(upper, .exact, unknown) != key(lower, .exact, unknown))
+        #expect(key(upper, .lock, sensitive) != key(lower, .lock, sensitive))
+        #expect(key(upper, .exact, sensitive) != key(lower, .exact, sensitive))
+        #expect(key(upper, .lock, insensitive) == key(lower, .lock, insensitive))
+        #expect(key(upper, .exact, insensitive) == key(lower, .exact, insensitive))
+        for query in [unknown, insensitive, sensitive] {
+            #expect(key(decomposed, .exact, query) == key(composed, .exact, query))
+        }
+
+        let readings = parent.appendingPathComponent("Readings")
+        try FileManager.default.createDirectory(at: readings, withIntermediateDirectories: false)
+        func cache(_ url: URL, _ query: @escaping ReadingPathIdentity.CaseQuery) throws -> URL {
+            try ReadingOutput.resolve(output: url.path, name: "x.m4a", identity: "i", readingsRoot: readings,
+                                      fileManager: .default, caseSensitivity: query).0.workDirectory
+        }
+        #expect(try cache(upper, unknown) != cache(lower, unknown))
+        #expect(try cache(upper, insensitive) == cache(lower, insensitive))
+        #expect(try cache(decomposed, unknown) == cache(composed, unknown))
+
+        // `--resume` compares the saved output by exact identity.
+        let pipeline = ReadingPipeline(renderer: FakeRenderer(), joiner: FakeJoiner())
+        let place = ReadingLocation(workDirectory: parent.appendingPathComponent("work"), output: upper)
+        let manifest = try await pipeline.render(script: script(1), voiceIdentifier: voice, metadata: metadata,
+                                                 location: place).manifest
+        // Removed, so the host volume's own case rules (an existing file resolves to its on-disk
+        // name) do not stand in for the simulated ones.
+        try FileManager.default.removeItem(at: upper)
+        func same(_ url: URL, _ query: @escaping ReadingPathIdentity.CaseQuery) -> Bool {
+            manifest.sameSettings(voiceIdentifier: voice, rate: nil, metadata: metadata, output: url, caseSensitivity: query)
+        }
+        #expect(same(upper, unknown))
+        #expect(!same(parent.appendingPathComponent("BOOK.m4a"), unknown))
+        #expect(!same(parent.appendingPathComponent("BOOK.m4a"), sensitive))
+        #expect(same(parent.appendingPathComponent("BOOK.m4a"), insensitive))
+    }
+
     /// A second reading for another spelling of the same file (NFD for NFC, and other case where
     /// the volume ignores it) fails before it renders anything.
     @Test func aSecondReadingForAnotherSpellingOfTheOutputFailsBeforeRendering() async throws {
