@@ -376,8 +376,16 @@ let unrelatedWords = [
     #expect(AIFixGuard.check(original: "internationalisation windows", fixed: "internationalization windows")
         == .accept)
     // A word split or joined is still one fix.
-    #expect(AIFixGuard.check(original: "The build runs Onobunto.", fixed: "The build runs on Ubuntu.") == .accept)
     #expect(AIFixGuard.check(original: "add a semi colon here", fixed: "add a semicolon here") == .accept)
+    // "Onobunto", capitalized mid-sentence, is a name: only its pair may spell it otherwise.
+    #expect(AIFixGuard.check(original: "The build runs Onobunto.", fixed: "The build runs on Ubuntu.",
+                             taught: [taughtList[4]]) == .accept)
+    #expect(AIFixGuard.check(original: "The build runs Onobunto.", fixed: "The build runs on Ubuntu.")
+        == .reject(.changedMeaning))
+    // Nor may the model bring a name of its own.
+    #expect(AIFixGuard.check(original: "The build runs onobunto.", fixed: "The build runs on Ubuntu.")
+        == .reject(.changedMeaning))
+    #expect(AIFixGuard.check(original: "The build runs onobunto.", fixed: "The build runs on ubuntu.") == .accept)
 }
 
 @Test func soundAndSpellingEdgesDoNotJoinUnrelatedWords() {
@@ -477,14 +485,90 @@ let unrelatedWords = [
     // A number keeps its value, whatever its digits look like.
     for (original, fixed) in [("Ship 10 units", "Ship 100 units"), ("Meet at 3 pm", "Meet at 8 pm"),
                               ("Version 1 is out", "Version 2 is out")] {
-        #expect(AIFixGuard.check(original: original, fixed: fixed) == .reject(.implausibleSubstitution),
+        #expect(AIFixGuard.check(original: original, fixed: fixed) == .reject(.changedMeaning),
                 "\(original) -> \(fixed)")
     }
     // Unless a pair said there brings it.
     let version = Correction(heard: "version to", meant: "version 2")
     #expect(AIFixGuard.check(original: "use version to now", fixed: "use version 2 now", taught: [version]) == .accept)
     #expect(AIFixGuard.check(original: "use version to now", fixed: "use version 3 now", taught: [version])
-        == .reject(.implausibleSubstitution))
+        == .reject(.changedMeaning))
+}
+
+/// Edits that change what a dictation says: who, how many, whether, which modal or quantity, which name. Each is
+/// refused at its place, however close its spelling.
+@Test(arguments: [
+    // Pronouns and possessives.
+    ("He approved it.", "She approved it."), ("Your build passed.", "Our build passed."),
+    ("I will send it.", "We will send it."), ("Give it to him.", "Give it to her."),
+    ("They said we won.", "They said he won."), ("Tell them now.", "Tell then now."),
+    ("We told she and he.", "We told he and she."), ("Il est là.", "Elle est là."),
+    ("Je viens demain.", "Tu viens demain."),
+    // Numbers and number words, by position.
+    ("Set width 10 height 20.", "Set width 20 height 10."), ("Ship 10 units", "Ship 100 units"),
+    ("Room 12 and 21", "Room 21 and 12"), ("Set width 10 height 20.", "Set width 10 height 10."),
+    ("Page one then two", "Page two then one"), ("We need ten", "We need then"),
+    ("we can go then", "we can go ten"),
+    // Negations added, removed or moved.
+    ("I do agree", "I do not agree"), ("I do not agree", "I do agree"),
+    ("I do not leave but stay", "I do leave but not stay"), ("I can come", "I can't come"),
+    ("We go there", "We never go there"), ("Not now, maybe later", "Now, maybe not later"),
+    ("Call me, no rush", "Call me, now rush"),
+    // Modals.
+    ("You should go", "You could go"), ("I'll go", "I'd go"), ("You may go", "You must go"),
+    ("je peux venir", "je dois venir"),
+    // Quantifiers.
+    ("Delete all files", "Delete some files"), ("We only need tea", "We all need tea"),
+    ("Some tests passed", "Most tests passed"), ("Run each test", "Run every test"),
+    // Names, but for their case.
+    ("Ask Mary about it", "Ask Marie about it"), ("Send it to Bob and Alice", "Send it to Alice and Bob"),
+    ("Deploy to Windows now", "Deploy to Ubuntu now"), ("Ping John today", "Ping Joan today"),
+    ("GitHub is down.", "GitLab is down."), ("then open the get hub page", "then open the GitHub page"),
+])
+func aFixThatChangesMeaningIsRefused(original: String, fixed: String) {
+    let verdict = AIFixGuard.check(original: original, fixed: fixed, protecting: taughtList, taught: taughtList)
+    #expect(verdict != .accept && verdict != .unchanged, "\(original) -> \(fixed)")
+    // Without the taught list, it is still refused.
+    #expect(AIFixGuard.check(original: original, fixed: fixed) != .accept, "\(original) -> \(fixed)")
+}
+
+/// Mishearings fixed: close words, listed homophones (pronouns and numbers too), taught pairs where they were said,
+/// glue words, stutters, case and punctuation.
+@Test(arguments: [
+    ("When a press escape they don't disappear.", "When I press escape, they don't disappear."),
+    ("I would like to by a new pear of shoes for the whether this weekend.",
+     "I would like to buy a new pair of shoes for the weather this weekend."),
+    ("Number won is done.", "Number one is done."), ("Please right it down.", "Please write it down."),
+    ("I went their. Then we left", "I went there. Then we left"), ("Your right about that", "You're right about that"),
+    ("Its broken again", "It's broken again"), ("See you in an our.", "See you in an hour."),
+    ("I think ewe are right.", "I think you are right."), ("I eight lunch early.", "I ate lunch early."),
+    ("The build runs Onobunto.", "The build runs on Ubuntu."),
+    ("It runs on a bundu machine.", "It runs on an Ubuntu machine."),
+    ("Open the food requests on GitHub.", "Open the pool requests on GitHub."),
+    ("I do not know", "I don't know"), ("You can not go", "You cannot go"),
+    ("Wait here. Dont leave", "Wait here. Don't leave"),
+    ("Set width ten height 20.", "Set width 10 height 20."), ("we went to store", "we went to the store"),
+    ("I I think so", "I think so"), ("use windows now", "use Windows now"), ("meet me there", "Meet me there."),
+    ("Merci pour ton aide je te revaudrai sa", "Merci pour ton aide, je te revaudrai ça."),
+    ("je peut venir", "je peux venir"), ("Je pense que ces une bonne idée", "Je pense que c'est une bonne idée"),
+])
+func aMishearingIsFixed(original: String, fixed: String) {
+    #expect(AIFixGuard.check(original: original, fixed: fixed, protecting: taughtList, taught: taughtList) == .accept,
+            "\(original) -> \(fixed)")
+}
+
+@Test func namesAndMeaningsAreFoundWordByWord() {
+    #expect(AIFixGuard.names(in: "Ask Mary. Then use GitHub, I think")
+        == [false, true, false, false, true, false, false])
+    #expect(AIFixGuard.names(in: "Ubuntu machine", midSentence: true) == [true, false])
+    #expect(SpokenWords.meaning(of: "his", language: "en-US").person == "he"
+        && SpokenWords.meaning(of: "he's", language: nil).person == "he")
+    #expect(SpokenWords.meaning(of: "ten", language: "en-US").number == "10")
+    #expect(SpokenWords.meaning(of: "couldn't", language: "en-US").strict == ["not", "could"])
+    // French pronouns are found past an apostrophe; an English contraction's "t" is not "tu".
+    #expect(SpokenWords.meaning(of: "j'ai", language: "fr-FR").person == "je")
+    #expect(SpokenWords.meaning(of: "qu'il", language: "fr-FR").person == "il")
+    #expect(SpokenWords.meaning(of: "don't", language: nil).person == nil)
 }
 
 @Test func aPairMayAddWordsAtTheEdgesOfItsHeardPhrase() {

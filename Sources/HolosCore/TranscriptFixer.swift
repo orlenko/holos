@@ -175,8 +175,10 @@ public enum AIFixGuard {
         /// quote, bracket or line break), apart from closing marks at the very end. `changedCorrection`: a word a
         /// learned correction produced was changed. `implausibleSubstitution`: a word was replaced by one it could
         /// not have been misheard for ("windows" by "Ubuntu"), a word other than a function word was added, or one
-        /// other than a function word, hesitation or repeat was dropped. `changedMeaning`: a negation or a word of
-        /// quantity was added, dropped or replaced ("I do agree" became "I do not agree", "can" "can't").
+        /// other than a function word, hesitation or repeat was dropped. `changedMeaning`: a negation, modal or word of
+        /// quantity was added, dropped or replaced ("I do agree" became "I do not agree", "can" "can't"), or a word
+        /// that says who, how many or which name was replaced by one spelled close to it ("He" became "She", "10"
+        /// "100", "Mary" "Marie").
         case empty, tooManyEdits, wordCountChanged, changedStructure, changedCorrection, implausibleSubstitution,
              changedMeaning
     }
@@ -196,7 +198,9 @@ public enum AIFixGuard {
     /// correction's meant phrase, compared as lowercased words) must all still be there: the speaker taught them.
     /// Every replaced word must be a plausible mishearing of what replaces it (`plausible`), or part of a pair of
     /// `taught`, the learned corrections listed for the model, applied where its heard phrase was said
-    /// (`plausibleReply`). Negations and words of quantity must stay as they were (`SpokenWords.meaningWords`).
+    /// (`plausibleReply`), each word judged at its place: a pronoun, number, negation, modal, word of quantity or
+    /// name keeps what it says there (`plausible`). Negations, modals and words of quantity are also counted
+    /// (`SpokenWords.meaningWords`).
     /// `language` (a locale identifier) says which function words, homophones and meaning words count.
     public static func check(original: String, fixed: String, protecting corrections: [Correction] = [],
                              taught: [Correction] = [], language: String? = nil) -> Verdict {
@@ -226,11 +230,36 @@ public enum AIFixGuard {
             != SpokenWords.meaningWords(in: after, language: language) {
             return .reject(.changedMeaning)
         }
-        guard plausibleReply(original: original, before: before, after: after, taught: taught, language: language)
+        guard plausibleReply(original: original, fixed: fixed, before: before, after: after, taught: taught,
+                             language: language)
         else {
-            return .reject(.implausibleSubstitution)
+            // Only a word that says who, how many, whether or which name was changed: the meaning.
+            let spelling = plausibleReply(original: original, fixed: fixed, before: before, after: after,
+                                          taught: taught, language: language, protecting: false)
+            return .reject(spelling ? .changedMeaning : .implausibleSubstitution)
         }
         return .accept
+    }
+
+    /// For each word of `text` (`words`), whether it is a name: a word with a capital past its first letter
+    /// ("GitHub", "QC", "macOS"), or a capitalized word other than "I" that does not start a sentence ("Windows"
+    /// in "use Windows"). `midSentence`: the first word does not start a sentence either (a taught meant phrase).
+    static func names(in text: String, midSentence: Bool = false) -> [Bool] {
+        var result: [Bool] = []
+        var cursor = text.startIndex
+        for match in text.matches(of: wordPattern) {
+            let gap = text[cursor..<match.range.lowerBound]
+            let startsSentence = result.isEmpty
+                ? !midSentence : gap.contains { $0.isNewline || ".!?…\"“”«»".contains($0) }
+            let word = match.output
+            let isName: Bool =
+                if word.dropFirst().contains(where: \.isUppercase) { true }
+                else if startsSentence || word.first?.isUppercase != true { false }
+                else { !(word == "I" || word.hasPrefix("I'") || word.hasPrefix("I’")) }
+            result.append(isName)
+            cursor = match.range.upperBound
+        }
+        return result
     }
 
     /// Most places where learned pairs are tried on one reply; past them the reply is judged without them.
@@ -242,52 +271,61 @@ public enum AIFixGuard {
     /// its spelling exactly where its heard phrase was said, whatever changed next to it: with "food requests ->
     /// pool requests", "their food requests" may become "there pool requests", while "a Bundo" may not become
     /// "Ubuntu Bundo" nor "use Bundo" "Ubuntu Bundo". A change right at the edge of such a place counts as touching
-    /// it ("server -> production server"). Numbers (words with a digit) must be the same, but for those a pair
-    /// brings: "Ship 10 units" is not "Ship 100 units". Each try compares only what lies between the first and the
-    /// last word that differ, and a cancelled task (the fixer's time limit) stops trying.
-    static func plausibleReply(original: String, before: [String], after: [String], taught: [Correction],
-                               language: String? = nil) -> Bool {
-        func numbers(_ words: [String]) -> [String] { words.filter { $0.contains(where: \.isNumber) }.sorted() }
-        let numbersAfter = numbers(after)
-        func allPlausible(from start: [String]) -> Bool {
-            guard numbers(start) == numbersAfter else { return false }
+    /// it ("server -> production server"). The words of a pair applied are names (`names`) when its meant phrase
+    /// spells them so. Each try compares only what lies between the first and the last word that differ, and a
+    /// cancelled task (the fixer's time limit) stops trying. `fixed` is the reply, for its names; `protecting`
+    /// false judges spelling alone (`plausible`), to tell a change of meaning from an unrelated word.
+    static func plausibleReply(original: String, fixed: String? = nil, before: [String], after: [String],
+                               taught: [Correction], language: String? = nil, protecting: Bool = true) -> Bool {
+        func flags(_ found: [Bool]?, _ count: Int) -> [Bool] {
+            found.flatMap { $0.count == count ? $0 : nil } ?? Array(repeating: false, count: count)
+        }
+        let beforeNames = flags(names(in: original), before.count)
+        let afterNames = flags(fixed.map { names(in: $0) }, after.count)
+        func allPlausible(from start: [String], names startNames: [Bool]) -> Bool {
             let head = zip(start, after).prefix { $0 == $1 }.count
             let tail = zip(start.dropFirst(head).reversed(), after.dropFirst(head).reversed()).prefix { $0 == $1 }.count
-            let old = Array(start[head..<(start.count - tail)]), new = Array(after[head..<(after.count - tail)])
+            let oldRange = head..<(start.count - tail), newRange = head..<(after.count - tail)
+            let old = Array(start[oldRange]), new = Array(after[newRange])
+            let oldNames = Array(startNames[oldRange]), newNames = Array(afterNames[newRange])
             return hunks(old, new).allSatisfy { hunk in
                 let left = head + hunk.old.lowerBound - 1, right = head + hunk.old.upperBound
-                return plausible(Array(old[hunk.old]), Array(new[hunk.new]), left: left >= 0 ? start[left] : nil,
-                                 right: right < start.count ? start[right] : nil, language: language)
+                return plausible(Array(old[hunk.old]), Array(new[hunk.new]),
+                                 names: protecting ? (Array(oldNames[hunk.old]), Array(newNames[hunk.new])) : nil,
+                                 left: left >= 0 ? start[left] : nil, right: right < start.count ? start[right] : nil,
+                                 language: language, protecting: protecting)
             }
         }
-        if allPlausible(from: before) { return true }
+        if allPlausible(from: before, names: beforeNames) { return true }
         let changed = hunks(before, after).map(\.old)
         func touched(_ span: Range<Int>) -> Bool {
             changed.contains { $0.overlaps(span) || ($0.isEmpty && span.lowerBound <= $0.lowerBound
                                                      && $0.lowerBound <= span.upperBound) }
         }
-        var places: [(span: Range<Int>, meant: [String])] = []
+        var places: [(span: Range<Int>, meant: [String], names: [Bool])] = []
         for correction in taught {
             let meant = words(in: correction.meant)
+            let meantNames = flags(names(in: correction.meant, midSentence: true), meant.count)
             for span in AIFixReference.matches(of: correction.heard, in: original, language: language)
             where touched(span) && !places.contains(where: { $0.span == span && $0.meant == meant }) {
-                places.append((span, meant))
+                places.append((span, meant, meantNames))
             }
         }
         guard !places.isEmpty, places.count <= maximumTaughtPlaces else { return false }
         places.sort { $0.span.lowerBound < $1.span.lowerBound }
         // Each set of places that do not overlap, applied from the first to the last.
-        func search(_ index: Int, _ applied: [(span: Range<Int>, meant: [String])]) -> Bool {
+        func search(_ index: Int, _ applied: [(span: Range<Int>, meant: [String], names: [Bool])]) -> Bool {
             if Task.isCancelled { return false }
             guard index < places.count else {
                 guard !applied.isEmpty else { return false }
-                var start: [String] = []
+                var start: [String] = [], startNames: [Bool] = []
                 var cursor = 0
                 for place in applied {
                     start += before[cursor..<place.span.lowerBound] + place.meant
+                    startNames += beforeNames[cursor..<place.span.lowerBound] + place.names
                     cursor = place.span.upperBound
                 }
-                return allPlausible(from: start + before[cursor...])
+                return allPlausible(from: start + before[cursor...], names: startNames + beforeNames[cursor...])
             }
             if search(index + 1, applied) { return true }
             guard !applied.contains(where: { $0.span.overlaps(places[index].span) }) else { return false }
@@ -297,40 +335,63 @@ public enum AIFixGuard {
     }
 
     /// Whether `new` could replace `old`, between the words `left` and `right` of the original, as a fix of a
-    /// mishearing: `old` dropped when it is glue words (`SpokenWords.isGlue`: "the", "to", "de"), hesitations
-    /// (`SpokenWords.fillers`) or a repeat of `left` or `right` ("the the"); glue words added; as many words, each
-    /// close to what replaces it (`SpokenWords.isClose`); one word split or joined (`SpokenWords.isCloseSplit`); or
-    /// glue words come and gone around content words, each close to what replaces it. Anything else is a word the
-    /// model swapped in, a spelling from the taught list ("windows" became "Ubuntu") or one of its own, which only
-    /// `plausibleReply` may allow, or a word that says something added, dropped or moved ("should", "not").
-    /// Negations, words of quantity and modals swapped for close words are checked apart
-    /// (`SpokenWords.meaningWords`).
-    static func plausible(_ old: [String], _ new: [String], left: String? = nil, right: String? = nil,
-                          language: String? = nil) -> Bool {
-        let isContent = { SpokenWords.isContent($0, language: language) }
-        let isClose = { SpokenWords.isClose($0, $1, language: language) }
+    /// mishearing. Nothing is allowed but what is listed, each at its place: `old` and `new` must line up, in
+    /// order, as words kept but for their case; one word replaced by one (`SpokenWords.mayReplace`: close words, and
+    /// a negation, modal, quantity, pronoun or number only by the same one or a listed homophone); one word split in
+    /// two or three or joined from them (`SpokenWords.isCloseSplit`), saying together what they said
+    /// (`SpokenWords.Meaning.all`); glue words added (`SpokenWords.isGlue`: "the", "to", "de"); and glue words,
+    /// hesitations (`SpokenWords.fillers`) or a stutter ("I I", "build build", not "no no" nor "10 10",
+    /// `SpokenWords.keepsRepeats`) dropped. `names` flags the words of each side that are names (`names(in:)`): a
+    /// name changes only in case, or joined or split with the same letters ("Git Hub", "GitHub"); a taught pair
+    /// alone may spell one otherwise (`plausibleReply`). So "he" does not become "she", "10 and 20" not "20 and
+    /// 10", "not" does not move, and "Windows" does not become "Ubuntu". `protecting` false judges spelling alone:
+    /// close words, splits and joins, glue and repeats, without meanings or names.
+    static func plausible(_ old: [String], _ new: [String], names: (old: [Bool], new: [Bool])? = nil,
+                          left: String? = nil, right: String? = nil, language: String? = nil,
+                          protecting: Bool = true) -> Bool {
+        let none = (old: Array(repeating: false, count: old.count), new: Array(repeating: false, count: new.count))
+        let names = protecting ? names ?? none : none
         let isGlue = { SpokenWords.isGlue($0, language: language) }
-        if new.isEmpty {
-            return old.allSatisfy { isGlue($0) || SpokenWords.fillers.contains($0) || $0 == left || $0 == right }
+        func replaces(_ was: Range<Int>, _ now: Range<Int>) -> Bool {
+            let a = Array(old[was]), b = Array(new[now])
+            let named = names.old[was].contains(true) || names.new[now].contains(true)
+            if a.count == 1 && b.count == 1 {
+                if a == b { return true }
+                guard protecting else { return SpokenWords.isClose(a[0], b[0], language: language) }
+                return !named && SpokenWords.mayReplace(a[0], with: b[0], language: language)
+            }
+            guard SpokenWords.isCloseSplit(a.joined(), b.joined()) else { return false }
+            guard protecting else { return true }
+            if named && SpokenWords.letters(a.joined()) != SpokenWords.letters(b.joined()) { return false }
+            return a.flatMap { SpokenWords.meaning(of: $0, language: language).all }.sorted()
+                == b.flatMap { SpokenWords.meaning(of: $0, language: language).all }.sorted()
         }
-        if old.isEmpty { return new.allSatisfy(isGlue) }
-        // As many words: each replaced by one it could have been misheard for, never judged run together, where a
-        // long word close to its fix would carry an unrelated one ("internationalisation windows").
-        if old.count == new.count { return zip(old, new).allSatisfy(isClose) }
-        // A word split in two or more, or joined from them.
-        if min(old.count, new.count) == 1, SpokenWords.isCloseSplit(old.joined(), new.joined()) { return true }
-        // Glue words come and gone around content words, each close to what replaces it.
-        let oldContent = old.filter(isContent)
-        let newContent = new.filter(isContent)
-        var oldOther = old.filter { !isContent($0) }
-        let added = new.filter { !isContent($0) }.filter { word in
-            guard let index = oldOther.firstIndex(of: word) else { return true }
-            oldOther.remove(at: index)
-            return false
+        func drops(_ index: Int) -> Bool {
+            let word = old[index]
+            if names.old[index] { return false }
+            if isGlue(word) || SpokenWords.fillers.contains(word) { return true }
+            let previous = index > 0 ? old[index - 1] : left, next = index + 1 < old.count ? old[index + 1] : right
+            guard word == previous || word == next else { return false }
+            return !protecting || !SpokenWords.keepsRepeats(word, language: language)
         }
-        return !newContent.isEmpty && oldContent.count == newContent.count
-            && zip(oldContent, newContent).allSatisfy(isClose) && added.allSatisfy(isGlue)
-            && oldOther.allSatisfy { isGlue($0) || SpokenWords.fillers.contains($0) }
+        func adds(_ index: Int) -> Bool { !names.new[index] && isGlue(new[index]) }
+        // reach[i][j]: the first i words of `old` line up with the first j of `new`.
+        var reach = Array(repeating: Array(repeating: false, count: new.count + 1), count: old.count + 1)
+        reach[0][0] = true
+        for i in 0...old.count {
+            if Task.isCancelled { return false }
+            for j in 0...new.count where reach[i][j] {
+                if i < old.count, drops(i) { reach[i + 1][j] = true }
+                if j < new.count, adds(j) { reach[i][j + 1] = true }
+                guard i < old.count, j < new.count else { continue }
+                if replaces(i..<(i + 1), j..<(j + 1)) { reach[i + 1][j + 1] = true }
+                for parts in 2...3 {
+                    if j + parts <= new.count, replaces(i..<(i + 1), j..<(j + parts)) { reach[i + 1][j + parts] = true }
+                    if i + parts <= old.count, replaces(i..<(i + parts), j..<(j + 1)) { reach[i + parts][j + 1] = true }
+                }
+            }
+        }
+        return reach[old.count][new.count]
     }
 
     /// The stretches where `a` and `b` differ, as ranges of each, from a word-level alignment with the edits of

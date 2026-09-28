@@ -90,31 +90,136 @@ public enum SpokenWords {
     ]
 
     /// How many times each meaning word (see `englishNegations`) is in `words` (from `AIFixGuard.words`), for
-    /// `language` (both English and French when nil or another one): negations all count as "not", "I'll" as
-    /// "will" and "I'd" as "would", French modals as their verb. A negative modal counts as both: "couldn't" is
-    /// "not" and "could", so it is not "wouldn't".
+    /// `language` (both English and French when nil or another one), by `meaningKinds`.
     static func meaningWords(in words: [String], language: String?) -> [String: Int] {
-        let code = language.map(DictationLanguage.languageCode)
-        let english = code != "fr", french = code != "en"
         var counts: [String: Int] = [:]
         for word in words {
-            if english, let modal = negativeModal(word) {
-                counts["not", default: 0] += 1
-                counts[modal, default: 0] += 1
-                continue
-            }
-            let kind: String? =
-                if (english && (englishNegations.contains(word) || word.hasSuffix("n't")))
-                    || (french && frenchNegations.contains(word)) { "not" }
-                else if english && word.hasSuffix("'ll") { "will" }
-                else if english && word.hasSuffix("'d") { "would" }
-                else if (english && (englishQuantities.contains(word) || englishModals.contains(word)))
-                    || (french && frenchQuantities.contains(word)) { word }
-                else if french { frenchModals[word] }
-                else { nil }
-            if let kind { counts[kind, default: 0] += 1 }
+            for kind in meaningKinds(of: word, language: language) { counts[kind, default: 0] += 1 }
         }
         return counts
+    }
+
+    /// The negation, modal and word of quantity `word` says (see `englishNegations`): negations all are "not", "I'll"
+    /// is "will" and "I'd" "would", French modals are their verb. A negative modal is both: "couldn't" is "not" and
+    /// "could", so it is not "wouldn't".
+    static func meaningKinds(of word: String, language: String?) -> [String] {
+        let code = language.map(DictationLanguage.languageCode)
+        let english = code != "fr", french = code != "en"
+        if english, let modal = negativeModal(word) { return ["not", modal] }
+        if (english && (englishNegations.contains(word) || word.hasSuffix("n't")))
+            || (french && frenchNegations.contains(word)) { return ["not"] }
+        if english && word.hasSuffix("'ll") { return ["will"] }
+        if english && word.hasSuffix("'d") { return ["would"] }
+        if (english && (englishQuantities.contains(word) || englishModals.contains(word)))
+            || (french && frenchQuantities.contains(word)) { return [word] }
+        if french, let verb = frenchModals[word] { return [verb] }
+        return []
+    }
+
+    /// The person each pronoun, possessive and pronoun contraction names, by language: "he", "him", "his" and "he's"
+    /// are one person, "she" another. French words are looked up by the parts between their apostrophes ("j'ai" is
+    /// "j"); "on", "se" and the pronouns that are also articles ("le", "la", "les") are left out.
+    static let englishPersons: [String: String] = persons([
+        "I": ["i", "me", "my", "mine", "myself", "i'm", "i'll", "i'd", "i've"],
+        "we": ["we", "us", "our", "ours", "ourselves", "we're", "we'll", "we'd", "we've"],
+        "you": ["you", "your", "yours", "yourself", "yourselves", "you're", "you'll", "you'd", "you've"],
+        "he": ["he", "him", "his", "himself", "he's", "he'll", "he'd"],
+        "she": ["she", "her", "hers", "herself", "she's", "she'll", "she'd"],
+        "it": ["it", "its", "itself", "it's", "it'll", "it'd"],
+        "they": ["they", "them", "their", "theirs", "themselves", "they're", "they'll", "they'd", "they've"],
+    ])
+    static let frenchPersons: [String: String] = persons([
+        "je": ["je", "j", "me", "m", "moi", "mon", "ma", "mes", "mien", "mienne", "miens", "miennes"],
+        "tu": ["tu", "t", "te", "toi", "ton", "ta", "tes", "tien", "tienne", "tiens", "tiennes"],
+        "il": ["il"], "ils": ["ils"], "elle": ["elle"], "elles": ["elles"],
+        "lui": ["lui", "son", "sa", "ses", "sien", "sienne", "siens", "siennes"],
+        "nous": ["nous", "notre", "nos", "nôtre", "nôtres"], "vous": ["vous", "votre", "vos", "vôtre", "vôtres"],
+        "eux": ["eux", "leur", "leurs"],
+    ])
+
+    /// The person a French word names (`frenchPersons`): the word itself, an elided pronoun before its apostrophe
+    /// ("j'ai", "m'envoyer", "t'as"), or a whole pronoun after it ("qu'il", "lorsqu'elle"). The single letter after
+    /// an English contraction's apostrophe is not a pronoun: "don't" is not "t".
+    static func frenchPerson(_ word: String) -> String? {
+        if let person = frenchPersons[word] { return person }
+        let parts = word.split(separator: "'", omittingEmptySubsequences: false)
+        guard parts.count == 2 else { return nil }
+        if ["j", "m", "t"].contains(parts[0]), let person = frenchPersons[String(parts[0])] { return person }
+        return parts[1].count > 1 ? frenchPersons[String(parts[1])] : nil
+    }
+
+    private static func persons(_ byPerson: [String: [String]]) -> [String: String] {
+        var result: [String: String] = [:]
+        for (person, words) in byPerson { for word in words { result[word] = person } }
+        return result
+    }
+
+    /// Number words by language, as `letters`, with their value in digits. "un" and "une" are left out: they are
+    /// articles far more often.
+    static let englishNumbers: [String: String] = [
+        "zero": "0", "one": "1", "two": "2", "three": "3", "four": "4", "five": "5", "six": "6", "seven": "7",
+        "eight": "8", "nine": "9", "ten": "10", "eleven": "11", "twelve": "12", "thirteen": "13", "fourteen": "14",
+        "fifteen": "15", "sixteen": "16", "seventeen": "17", "eighteen": "18", "nineteen": "19", "twenty": "20",
+        "thirty": "30", "forty": "40", "fifty": "50", "sixty": "60", "seventy": "70", "eighty": "80", "ninety": "90",
+        "hundred": "100", "thousand": "1000", "million": "1000000", "billion": "1000000000",
+    ]
+    static let frenchNumbers: [String: String] = [
+        "zero": "0", "deux": "2", "trois": "3", "quatre": "4", "cinq": "5", "six": "6", "sept": "7", "huit": "8",
+        "neuf": "9", "dix": "10", "onze": "11", "douze": "12", "treize": "13", "quatorze": "14", "quinze": "15",
+        "seize": "16", "vingt": "20", "trente": "30", "quarante": "40", "cinquante": "50", "soixante": "60",
+        "cent": "100", "mille": "1000", "million": "1000000", "milliard": "1000000000",
+    ]
+
+    /// What a word says that a fix must keep where it is (`AIFixGuard.plausible`). `strict`: its negation, modal
+    /// and word of quantity (`meaningKinds`). `person`: the person a pronoun names (`englishPersons`). `number`: the
+    /// value of a number, the word itself when it has a digit ("10", "3pm"), in digits for a number word ("ten").
+    struct Meaning: Equatable {
+        var strict: [String] = []
+        var person: String?
+        var number: String?
+
+        var isEmpty: Bool { strict.isEmpty && person == nil && number == nil }
+        /// Everything it says, sorted: what the words a split or join replaces must say together.
+        var all: [String] {
+            (strict + [person.map { "person " + $0 }, number.map { "number " + $0 }].compactMap(\.self)).sorted()
+        }
+    }
+
+    static func meaning(of word: String, language: String?) -> Meaning {
+        let code = language.map(DictationLanguage.languageCode)
+        let english = code != "fr", french = code != "en"
+        var meaning = Meaning(strict: meaningKinds(of: word, language: language))
+        if english { meaning.person = englishPersons[word] }
+        if french, meaning.person == nil { meaning.person = frenchPerson(word) }
+        if word.contains(where: \.isNumber) {
+            meaning.number = word
+        } else {
+            let letters = letters(word)
+            meaning.number = (english ? englishNumbers[letters] : nil) ?? (french ? frenchNumbers[letters] : nil)
+        }
+        return meaning
+    }
+
+    /// Whether a fix may put `new` where `word` was, one word for one (`AIFixGuard.plausible`). A word that says
+    /// nothing `meaning` tracks, replaced by another such word, needs only be `isClose`. A negation, modal or word of
+    /// quantity may only be spelled another way (`isClose`) as the same one ("dont" and "don't", "can't" and
+    /// "cannot", "peut" and "peux"), never another ("not" and "never", "could" and "would"), nor come or go. A
+    /// pronoun or number may be the same person or value ("its" and "it's", "me" and "my", "10" and "ten") or a
+    /// listed homophone (`areHomophones`: "their" and "there", "won" and "one", "our" and "hour"), never a close
+    /// spelling alone: "he" is not "she", "your" not "our", "10" not "100".
+    static func mayReplace(_ word: String, with new: String, language: String?) -> Bool {
+        let was = meaning(of: word, language: language), now = meaning(of: new, language: language)
+        if was.isEmpty && now.isEmpty { return isClose(word, new, language: language) }
+        if !was.strict.isEmpty || !now.strict.isEmpty { return was == now && isClose(word, new, language: language) }
+        if was == now && (was.number != nil || isClose(word, new, language: language)) { return true }
+        return areHomophones(spelling(word), spelling(new), language: language)
+    }
+
+    /// Whether `word` repeated may not be dropped as a stutter: a negation, modal, word of quantity or number said
+    /// twice may be meant ("no no", "10 10").
+    static func keepsRepeats(_ word: String, language: String?) -> Bool {
+        let meaning = meaning(of: word, language: language)
+        return !meaning.strict.isEmpty || meaning.number != nil
     }
 
     /// The modal of a negative contraction, with or without its apostrophe: "can" for "can't", "cant" and "cannot",
@@ -238,10 +343,14 @@ public enum SpokenWords {
     /// Homophones whose spellings `sound` does not bring together, as `spelling`, by language: in English a vowel
     /// said with a glide the spelling does not show ("one" and "won", "you" and "ewe") or a silent "h" before a vowel
     /// ("our" and "hour"); in French, words whose silent endings differ ("vert" and "verre", "sans" and "cent"),
-    /// which English says apart ("sang" and "sent").
+    /// which English says apart ("sang" and "sent"). Pronouns and numbers are listed even where `sound` joins
+    /// them, since only a listed homophone may replace one (`mayReplace`): "their" and "there", "sa" and "ça". An
+    /// unstressed "I" is heard as "a".
     static let englishHomophones: [Set<String>] = [
         ["one", "won"], ["two", "to", "too"], ["you", "ewe", "yew", "u"], ["eight", "ate"], ["our", "hour"],
-        ["air", "heir"], ["wood", "would"], ["i'll", "isle", "aisle"],
+        ["air", "heir"], ["wood", "would"], ["i'll", "isle", "aisle"], ["their", "there", "they're"],
+        ["your", "you're", "yore"], ["its", "it's"], ["a", "i"], ["i", "eye", "aye"], ["four", "for", "fore"],
+        ["we", "wee"], ["him", "hymn"],
     ]
 
     static let frenchHomophones: [Set<String>] = [
@@ -249,7 +358,10 @@ public enum SpokenWords {
         ["cour", "cours", "court"], ["temps", "tant", "tend", "tends"], ["vin", "vingt", "vain"],
         ["eau", "haut", "au", "aux", "o"], ["sept", "set", "cet", "cette"], ["pain", "pin", "peint"],
         ["point", "poing"], ["cou", "coup", "cout"], ["sot", "seau", "saut", "sceau"], ["mot", "maux"],
-        ["pere", "paire", "pair", "perd"],
+        ["pere", "paire", "pair", "perd"], ["sa", "ca"], ["ces", "ses", "c'est", "s'est", "sais", "sait"],
+        ["son", "sont"], ["ma", "m'a"], ["ta", "t'a"], ["mes", "mais", "met", "mets"], ["tes", "t'es"],
+        ["leur", "leurs"], ["il", "ils"], ["elle", "elles"], ["mon", "m'ont"], ["ton", "t'ont", "thon"],
+        ["dix", "dis", "dit"],
     ]
 
     /// Whether `a` and `b` (as `spelling`) are listed homophones of `language`: English, French, or either when the
