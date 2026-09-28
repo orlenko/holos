@@ -259,7 +259,7 @@ stopped when the window closes), **Share…** (`NSSharingServicePicker`, ⇧⌘S
 Finder**, **Delete…**; failed (the error, **Try Again**); stopped (where, **Resume**). A
 made reading whose file is no longer there, or was replaced by another file (its file
 identity, saved when it was made, differs), says so and offers only Delete; Play, Share…,
-and Show in Finder use only that same file (one whose identity could not be read when it was
+and Show in Finder use only that same file (Play reads the file opened and checked, through /dev/fd; Share… hands over a clone or copy made from it; one whose identity could not be read when it was
 made gets it once the file at its path is shown to be its own by checksum, off the main actor;
 until then it shows as missing). One whose folder cannot be reached says
 "Unavailable — the drive or share “<name>” is not connected" (`ReadingOutput.unreachableReason`:

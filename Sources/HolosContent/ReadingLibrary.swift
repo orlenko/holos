@@ -420,6 +420,40 @@ public enum ReadingLibrary {
         return before
     }
 
+    /// The file at `output` opened for reading when the object opened is the one `identity` names (checked on the
+    /// open descriptor, not the path): an action that reads through it (Play, Share…) uses that very file, whatever
+    /// is put at the path at any moment. Nil when it is not there, not a regular file, or another file.
+    public static func openVerified(_ output: URL, identity: ReadingFileIdentity) -> FileHandle? {
+        let descriptor = open(RawFilePath.system(output), O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
+        guard descriptor >= 0 else { return nil }
+        var metadata = stat()
+        guard fstat(descriptor, &metadata) == 0, (metadata.st_mode & S_IFMT) == S_IFREG,
+              ExclusivePublisher.FileIdentity(metadata) == identity else {
+            close(descriptor)
+            return nil
+        }
+        return FileHandle(fileDescriptor: descriptor, closeOnDealloc: true)
+    }
+
+    /// A copy of the open file `file`, named `name`, in a new folder inside `folder`: a clone (instant, no space)
+    /// where the volume can, else its bytes. What Share… hands to the services, which read it later.
+    public static func copyForSharing(_ file: FileHandle, name: String, into folder: URL) throws -> URL {
+        let holder = folder.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: holder, withIntermediateDirectories: true,
+                                                attributes: [.posixPermissions: 0o700])
+        let copy = RawFilePath.appending(name, to: holder)
+        if fclonefileat(file.fileDescriptor, AT_FDCWD, RawFilePath.system(copy), 0) == 0 { return copy }
+        let output = open(RawFilePath.system(copy), O_CREAT | O_EXCL | O_WRONLY | O_CLOEXEC | O_NOFOLLOW, 0o600)
+        guard output >= 0 else { throw HolosError.io("Could not copy \(name): \(String(cString: strerror(errno)))") }
+        let writer = FileHandle(fileDescriptor: output, closeOnDealloc: true)
+        try file.seek(toOffset: 0)
+        while let chunk = try file.read(upToCount: 1 << 20), !chunk.isEmpty {
+            try writer.write(contentsOf: chunk)
+        }
+        try writer.close()
+        return copy
+    }
+
     /// Whether `path` (a manifest's output) names the file `output` names: spelled the same, or, through links in
     /// its folder or another spelling the volume takes for the same name, the same file (`ReadingPathIdentity`,
     /// by exact identity: two names the volume may tell apart are two files).
@@ -585,20 +619,27 @@ public enum ReadingLibrary {
                 }
             }
             if aside == nil {
-                // The entry's own place aside, unless something it could not remove (another file) is still there:
-                // then a new one, recorded in `outputAside` should the file stay there.
-                func token(partial: Bool) -> String? {
-                    let place = RawFilePath.appending(asideToken(entry.id, partial: partial),
-                                                      to: output.deletingLastPathComponent())
-                    return (try? ReadingOutput.exists(place)) == false ? asideToken(entry.id, partial: partial) : nil
+                // Only ever the entry's own place aside, which the next Delete looks in (a quit or a crash may come
+                // before anything records where the file went); something still there (that could not be removed)
+                // stops the Delete rather than send the file somewhere no later Delete would find it.
+                func blocked(partial: Bool) -> String? {
+                    let token = asideToken(entry.id, partial: partial)
+                    let place = RawFilePath.appending(token, to: output.deletingLastPathComponent())
+                    guard (try? ReadingOutput.exists(place)) != false else { return nil }
+                    return "\(output.lastPathComponent) was not moved: \(place.path), left by an earlier Delete, is in "
+                        + "the way. Remove it in Finder, then Delete again."
                 }
                 let report: RemovalReport
                 switch owned {
+                case .finished? where blocked(partial: false) != nil:
+                    report = RemovalReport(problem: blocked(partial: false))
+                case .partial? where blocked(partial: true) != nil:
+                    report = RemovalReport(problem: blocked(partial: true))
                 case .finished?:
-                    report = trashVerified(output, checksums: evidence.checksums, token: token(partial: false),
-                                           trash: trash)
+                    report = trashVerified(output, checksums: evidence.checksums,
+                                           token: asideToken(entry.id, partial: false), trash: trash)
                 case .partial(let identity)?:
-                    report = removePartial(output, identity: identity, token: token(partial: true))
+                    report = removePartial(output, identity: identity, token: asideToken(entry.id, partial: true))
                 case nil:
                     report = RemovalReport()
                     // A made reading's file that is there but no longer matches (edited in place, or replaced) is

@@ -53,6 +53,7 @@ final class ReadingPane: NSViewController, MainSectionContent, NSTableViewDataSo
 
     func sectionDidShow() {
         refreshVoices()
+        controller.recheckMissingIdentities()
         reload()
         if windowObserver == nil, let window = view.window {
             // Nothing keeps playing once the window is closed: its controls are gone with it.
@@ -72,6 +73,8 @@ final class ReadingPane: NSViewController, MainSectionContent, NSTableViewDataSo
 
     /// Back from Finder: a file moved or deleted there shows.
     func sectionWindowDidBecomeKey() {
+        // A drive reconnected or a file put back meanwhile: a reading whose identity is still unknown is checked again.
+        controller.recheckMissingIdentities()
         reload()
     }
 
@@ -499,15 +502,17 @@ final class ReadingPane: NSViewController, MainSectionContent, NSTableViewDataSo
     }
 
     private func play(_ id: UUID) {
-        guard let url = controller.entry(id).flatMap(controller.finishedFile) else {
+        preview.stop()
+        if player.toggleLoaded(id) { return }
+        // Played from the file opened and checked, never the path (see `ReadingController.openFinishedFile`).
+        guard let entry = controller.entry(id), let file = controller.openFinishedFile(entry) else {
             NSSound.beep()
             return
         }
-        preview.stop()
         do {
-            try player.toggle(id, url: url)
+            try player.play(id, file: file)
         } catch {
-            showMessage("\(url.lastPathComponent) could not be played: \(error.localizedDescription)", problem: true)
+            showMessage("“\(entry.title)” could not be played: \(error.localizedDescription)", problem: true)
         }
     }
 
@@ -520,13 +525,24 @@ final class ReadingPane: NSViewController, MainSectionContent, NSTableViewDataSo
 
     @discardableResult
     private func share(_ id: UUID, from anchor: NSView) -> Bool {
-        guard let url = controller.entry(id).flatMap(controller.finishedFile) else {
+        guard let entry = controller.entry(id), controller.finishedFile(entry) != nil else {
             NSSound.beep()
             return false
         }
-        let picker = NSSharingServicePicker(items: [url])
-        let rect = anchor === table ? table.rect(ofRow: max(0, table.selectedRow)) : anchor.bounds
-        picker.show(relativeTo: rect, of: anchor, preferredEdge: .minY)
+        // The services read a copy made from the file opened and checked (off the main actor: a clone where the
+        // volume can, else its bytes), so a file put at its path meanwhile is never the one sent.
+        Task { @MainActor [weak self, weak anchor] in
+            guard let self else { return }
+            do {
+                let copy = try await self.controller.shareableCopy(entry)
+                guard let anchor, anchor.window != nil else { return }
+                let picker = NSSharingServicePicker(items: [copy])
+                let rect = anchor === self.table ? self.table.rect(ofRow: max(0, self.table.selectedRow)) : anchor.bounds
+                picker.show(relativeTo: rect, of: anchor, preferredEdge: .minY)
+            } catch {
+                self.showMessage("“\(entry.title)” could not be shared: \(error.localizedDescription)", problem: true)
+            }
+        }
         return true
     }
 

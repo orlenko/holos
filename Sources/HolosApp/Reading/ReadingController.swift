@@ -125,6 +125,8 @@ final class ReadingController {
     func start() {
         guard !started else { return }
         started = true
+        // Copies an earlier session made for Share… (their services are done with them by now).
+        try? FileManager.default.removeItem(at: Self.shareFolder)
         let loaded = store.load()
         notice = loaded.notice
         writable = loaded.writable
@@ -188,8 +190,39 @@ final class ReadingController {
         return output
     }
 
+    /// The reading's finished file opened, when the object opened is still the one it made (checked on the open file,
+    /// see `ReadingLibrary.openVerified`): what Play reads, so a file put at its path meanwhile is never played.
+    func openFinishedFile(_ entry: ReadingEntry) -> FileHandle? {
+        guard entry.state == .done, let output = entry.outputURL, let made = entry.outputIdentity else { return nil }
+        return ReadingLibrary.openVerified(output, identity: made)
+    }
+
+    /// A copy of the reading's finished file for Share…, made off the main actor from the file opened and checked
+    /// (a clone where the volume can), so what the services read later is that very file.
+    func shareableCopy(_ entry: ReadingEntry) async throws -> URL {
+        guard let file = openFinishedFile(entry), let name = entry.outputURL?.lastPathComponent else {
+            throw HolosError.unavailable("Its file is no longer the one it made.")
+        }
+        let folder = Self.shareFolder
+        return try await Task.detached(priority: .userInitiated) {
+            try ReadingLibrary.copyForSharing(file, name: name, into: folder)
+        }.value
+    }
+
+    /// Where Share…'s copies go (the temporary folder); emptied at each launch.
+    static var shareFolder: URL {
+        FileManager.default.temporaryDirectory.appendingPathComponent("Voice is Local Share", isDirectory: true)
+    }
+
+    /// `recordMissingIdentities` when the Reading section shows or its window comes back (a drive reconnected, a file
+    /// put back): a check that found nothing earlier is tried again.
+    func recheckMissingIdentities() {
+        recordMissingIdentities()
+    }
+
     /// Made readings whose file identity is unknown get it once the file at their path is shown to be theirs by its
-    /// checksum (read off the main actor); until then they show as missing. Tried at launch and after each make.
+    /// checksum (read off the main actor); until then they show as missing. Tried at launch, after each make, and
+    /// when the section shows or its window comes back.
     private func recordMissingIdentities() {
         let pending = all.filter {
             $0.state == .done && $0.outputIdentity == nil && $0.outputSHA256 != nil && $0.output != nil

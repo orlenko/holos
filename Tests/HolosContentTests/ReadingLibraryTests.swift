@@ -539,6 +539,45 @@ import Testing
         #expect(FileManager.default.fileExists(atPath: cache.path))
     }
 
+    /// Play and Share… read the object opened and checked: a file put at the path afterwards is not the one read,
+    /// and one put there before is refused.
+    @Test func actionsReadTheFileThatWasChecked() throws {
+        let root = try folder()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let output = root.appendingPathComponent("Story.m4a")
+        try Data("audio".utf8).write(to: output)
+        let identity = try #require(ExclusivePublisher.FileIdentity.of(output))
+        let file = try #require(ReadingLibrary.openVerified(output, identity: identity))
+        // Replaced after the check: the copy still holds the reading's bytes, under its name.
+        try FileManager.default.removeItem(at: output)
+        try Data("someone else's".utf8).write(to: output)
+        let copy = try ReadingLibrary.copyForSharing(file, name: "Story.m4a", into: root.appendingPathComponent("Share"))
+        #expect(copy.lastPathComponent == "Story.m4a")
+        #expect(try Data(contentsOf: copy) == Data("audio".utf8))
+        #expect(ReadingLibrary.openVerified(output, identity: identity) == nil)
+    }
+
+    /// A Delete never moves the file anywhere but the entry's own place aside: when something is in the way there,
+    /// it stops and says so, rather than use a place no later Delete would look in.
+    @Test func aDeleteWhosePlaceAsideIsTakenStops() throws {
+        let root = try folder()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = ReadingLibraryStore(folder: root.appendingPathComponent("ReadingLibrary"))
+        let output = root.appendingPathComponent("Story.m4a")
+        try Data("audio".utf8).write(to: output)
+        var reading = entry(.done)
+        reading.output = output.path
+        reading.outputSHA256 = try fileSHA256(output)
+        let holding = root.appendingPathComponent(ReadingLibrary.asideToken(reading.id, partial: false))
+        try FileManager.default.createDirectory(at: holding, withIntermediateDirectories: false)
+        try Data("other".utf8).write(to: holding.appendingPathComponent("Other.m4a"))
+        let result = ReadingLibrary.deleteFiles(of: reading, readingsRoot: nil, store: store) { _ in
+            Issue.record("Trashed through a place no later Delete looks in")
+        }
+        #expect(result.problem?.contains("is in the way") == true)
+        #expect(try Data(contentsOf: output) == Data("audio".utf8))
+    }
+
     /// While another process renders the same cache (it holds its lock), Delete removes nothing and keeps the entry.
     @Test func aCacheBeingRenderedElsewhereIsNotDeleted() throws {
         let root = try folder()

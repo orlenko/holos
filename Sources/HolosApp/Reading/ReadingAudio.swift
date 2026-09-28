@@ -21,18 +21,28 @@ final class ReadingPlayer: NSObject, AVAudioPlayerDelegate {
         return (player.currentTime, player.duration)
     }
 
-    /// Plays `url` for reading `id`, or pauses or continues it when it is the one loaded.
-    func toggle(_ id: UUID, url: URL) throws {
-        if entryID == id, let player {
-            if player.isPlaying { player.pause() } else { player.play() }
-        } else {
-            stop()
-            let player = try AVAudioPlayer(contentsOf: url)
-            player.delegate = self
-            guard player.play() else { throw HolosError.unavailable("The audio could not start playing.") }
-            self.player = player
-            entryID = id
-        }
+    /// Pauses or continues reading `id` when it is the one loaded; false when it is not.
+    func toggleLoaded(_ id: UUID) -> Bool {
+        guard entryID == id, let player else { return false }
+        if player.isPlaying { player.pause() } else { player.play() }
+        tick()
+        onChange?()
+        return true
+    }
+
+    /// Plays reading `id` from `file`, a descriptor open on the very file checked (see
+    /// `ReadingController.openFinishedFile`): the player reads that object through `/dev/fd`, never the path, so a
+    /// file put at the path meanwhile is not the one played.
+    func play(_ id: UUID, file: FileHandle) throws {
+        if toggleLoaded(id) { return }
+        stop()
+        // Opening /dev/fd/N gives the player its own descriptor on that object: `file` can be closed after.
+        let url = URL(fileURLWithPath: "/dev/fd/\(file.fileDescriptor)")
+        let player = try AVAudioPlayer(contentsOf: url, fileTypeHint: AVFileType.m4a.rawValue)
+        player.delegate = self
+        guard player.play() else { throw HolosError.unavailable("The audio could not start playing.") }
+        self.player = player
+        entryID = id
         tick()
         onChange?()
     }
