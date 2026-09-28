@@ -1162,6 +1162,110 @@ private func isPrintable(_ text: String) -> Bool {
                                                     .paragraph(Fixture.closing)])
     }
 
+    @Test func thePageAndTheAssemblyAgreeOnWhatIsSpoken() async throws {
+        let long = String(repeating: "x", count: 22)
+        let samples = [
+            "", " ", "\t\n", "\u{200B}", "\u{FEFF}", "\u{00A0}\u{2028}", "Hello", "  Hello  world ",
+            "#", " # ", "\u{200B}#", "#\u{00A0}", "\u{0085}#", "\u{202E}#\u{2066}", "##", "# 1",
+            "¶", "§", "§ 3", "🔗", "🔗\u{FE0F}", "Permalink", "PERMALINK", " permalink\u{200D} ",
+            "* * *", "*  *  *", "\t* * *\n", "* * * *", "***", "⁂", "~", "~/bin", "—", "— … —", "---", "· · ·", "❧",
+            "[1]", "[edit]", "[ Edit ]", "[1][2]", "[1], [2]", " [1], [2]; [3]–[4] ", "[edit] [a][note 3]",
+            "[1] and [2]", "[\(long)]", "[\(long)x]", "[" + String(repeating: "👍🏽", count: 11) + "]",
+            "[" + String(repeating: "👍🏽", count: 12) + "]", "[e\u{301}]", "[\u{200B}1]",
+            "🔥", "∞ ≠ ∅", "π", "→", "…", "İ", "\u{FFFE}", "a\u{FFFF}b",
+        ]
+        let json = String(decoding: try JSONEncoder().encode(samples), as: UTF8.self)
+        let webView = WKWebView(frame: .zero)
+        let answer = try await WebArticleExtractor.run(
+            WebArticleExtractor.spokenPredicate + "\nreturn JSON.stringify(\(json).map(holosSpoken));",
+            in: webView, timeout: .seconds(20))
+        let page = try JSONDecoder().decode([Bool].self, from: Data(answer.utf8))
+        let swift = samples.map(WebArticle.isSpoken)
+        for (index, sample) in samples.enumerated() {
+            #expect(page[index] == swift[index], "\(sample.unicodeScalars.map { String($0.value, radix: 16) })")
+        }
+        // The table covers both answers.
+        #expect(swift.contains(true) && swift.contains(false))
+        #expect(WebArticle.isSpoken("🔥") && WebArticle.isSpoken("∞ ≠ ∅") && !WebArticle.isSpoken("[edit]"))
+    }
+
+    @Test func aSectionOfOnlySymbolsKeepsItsHeading() async throws {
+        let backMatter = """
+            <section><div class="mw-heading mw-heading2"><h2>Reaction</h2><a href="#Reaction">#</a></div>
+            <p>🔥</p></section>
+            """
+        let article = try await WebArticleExtractor(options: fast).extract(
+            html: Fixture.article(backMatter: backMatter), baseURL: Fixture.base)
+        #expect(headings(article) == ["h2 A daily climb", "h2 Reaction"])
+        #expect(Array(article.blocks.suffix(2)) == [.heading(level: 2, text: "Reaction"), .paragraph("🔥")])
+    }
+
+    @Test(arguments: ["#", "[1]", "¶", "[edit]", "* * *"])
+    func aSectionOfOnlyNoiseGetsNoHeading(noise: String) async throws {
+        let backMatter = wrappedHeading("Links") + "<p>\(noise)</p>" + wrappedHeading("After the storm")
+            + "<p>\(Fixture.closing)</p>"
+        let article = try await WebArticleExtractor(options: fast).extract(
+            html: Fixture.article(backMatter: backMatter), baseURL: Fixture.base)
+        #expect(!article.spokenText.contains("Links"))
+        #expect(headings(article) == ["h2 A daily climb", "h2 After the storm"])
+        #expect(Array(article.blocks.suffix(2)) == [.heading(level: 2, text: "After the storm"),
+                                                    .paragraph(Fixture.closing)])
+    }
+
+    @Test(arguments: ["🔥", "∞ ≠ ∅"])
+    func aHeadingStaysAfterASymbolBlockBeforeIt(symbols: String) async throws {
+        // The symbol paragraph shares the heading's container; nothing else of it comes before the heading.
+        let backMatter = #"<div class="post-body"><p>\#(symbols)</p>"# + wrappedHeading("After the storm")
+            + "<p>\(Fixture.closing)</p><p>\(Fixture.paragraphs[0])</p></div>"
+        let article = try await WebArticleExtractor(options: fast).extract(
+            html: Fixture.article(backMatter: backMatter), baseURL: Fixture.base)
+        let texts = article.blocks.map(\.text)
+        let start = try #require(texts.firstIndex(of: symbols))
+        #expect(Array(texts[start...]) == [symbols, "After the storm", Fixture.closing, Fixture.paragraphs[0]])
+    }
+
+    @Test(arguments: ["section", "div"])
+    func looseTextBeforeARestoredHeadingStaysBeforeIt(container: String) async throws {
+        let p = Fixture.paragraphs
+        let backMatter = "<\(container) class=\"body\">\(p[0])\(wrappedHeading("Details"))\(Fixture.closing)"
+            + "</\(container)>"
+        let article = try await WebArticleExtractor(options: fast).extract(
+            html: Fixture.article(backMatter: backMatter), baseURL: Fixture.base)
+        #expect(headings(article) == ["h2 A daily climb", "h2 Details"])
+        #expect(Array(article.blocks.suffix(3)) == [.paragraph(p[0]), .heading(level: 2, text: "Details"),
+                                                    .paragraph(Fixture.closing)])
+    }
+
+    @Test(arguments: [
+        // Readability takes the heading itself for the byline.
+        #"<h3 class="byline">Ada Harbour</h3>"#,
+        // A heading inside a short wrapper named for the author.
+        #"<div class="author"><h4>Ada Harbour</h4></div>"#,
+        #"<div class="post-byline"><h3>Ada Harbour</h3><span>Staff writer</span></div>"#,
+    ])
+    func aHeadingTakenAsTheBylineIsNotRestored(byline: String) async throws {
+        let page = Fixture.article(backMatter: "<p>\(Fixture.closing)</p>")
+            .replacingOccurrences(of: #"<p class="byline">By Ada Harbour</p>"#, with: byline)
+        let article = try await WebArticleExtractor(options: fast).extract(html: page, baseURL: Fixture.base)
+        #expect(article.byline?.hasPrefix("Ada Harbour") == true)
+        #expect(article.spokenText.components(separatedBy: "Ada Harbour").count == 2)
+        #expect(headings(article) == ["h2 A daily climb"])
+        #expect(article.blocks.first == .paragraph(Fixture.paragraphs[0]))
+    }
+
+    @Test func aDroppedHeadingThatRepeatsTheBylineIsNotRestored() async throws {
+        // The byline comes from the page's metadata; a heading with the same name sits where the byline would.
+        let page = Fixture.article(backMatter: "<p>\(Fixture.closing)</p>")
+            .replacingOccurrences(of: #"<p class="byline">By Ada Harbour</p>"#,
+                                  with: wrappedHeading("By Ada Harbour", level: 3))
+            .replacingOccurrences(of: "<meta charset=\"utf-8\">",
+                                  with: "<meta charset=\"utf-8\"><meta name=\"author\" content=\"Ada Harbour\">")
+        let article = try await WebArticleExtractor(options: fast).extract(html: page, baseURL: Fixture.base)
+        #expect(article.byline == "Ada Harbour")
+        #expect(article.spokenText.components(separatedBy: "Ada Harbour").count == 2)
+        #expect(headings(article) == ["h2 A daily climb"])
+    }
+
     @Test func readabilityIsTheVendoredRelease() {
         // THIRD_PARTY_NOTICES.md records this SHA-256 for Readability.js at tag 0.6.0.
         let digest = SHA256.hash(data: Data(WebArticleExtractor.readabilitySource.utf8))
