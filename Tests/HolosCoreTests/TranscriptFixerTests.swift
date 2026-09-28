@@ -520,6 +520,10 @@ let unrelatedWords = [
     // Quantifiers.
     ("Delete all files", "Delete some files"), ("We only need tea", "We all need tea"),
     ("Some tests passed", "Most tests passed"), ("Run each test", "Run every test"),
+    ("We saw few errors", "We saw new errors"), ("It rarely works", "It barely works"),
+    ("It often fails", "It soften fails"), ("Il vient souvent", "Il vient suivant"),
+    // A leading zero counts: a code is not a number said.
+    ("Use code 021 now", "Use code twenty one now"),
     // Names, but for their case.
     ("Ask Mary about it", "Ask Marie about it"), ("Send it to Bob and Alice", "Send it to Alice and Bob"),
     ("Deploy to Windows now", "Deploy to Ubuntu now"), ("Ping John today", "Ping Joan today"),
@@ -707,6 +711,16 @@ func aMishearingIsFixed(original: String, fixed: String) {
     #expect(AIFixReference.matches(of: "bull. request", in: "the bull; request").isEmpty)
     #expect(AIFixReference.matches(of: "bull. request", in: "the bull. request") == [1..<3])
     #expect(AIFixReference.matches(of: "say \"hi", in: "we say “hi") == [1..<3])
+    // Marks at the edges of a heard phrase must be there too.
+    #expect(AIFixReference.matches(of: "bull.", in: "a bull request").isEmpty)
+    #expect(AIFixReference.matches(of: "bull.", in: "a bull. Request") == [1..<2])
+    #expect(AIFixReference.matches(of: "(bull", in: "a bull request").isEmpty)
+    #expect(AIFixReference.matches(of: "(bull", in: "a (bull request") == [1..<2])
+    let food = Correction(heard: "food.", meant: "pool.")
+    #expect(AIFixGuard.check(original: "a food request", fixed: "a pool request", taught: [food])
+        == .reject(.implausibleSubstitution))
+    #expect(AIFixGuard.check(original: "Get the food. Then go", fixed: "Get the pool. Then go", taught: [food])
+        == .accept)
     let period = Correction(heard: "food. requests", meant: "pool. requests")
     #expect(AIFixGuard.check(original: "Get some food; requests later.", fixed: "Get some pool; requests later.",
                              taught: [period]) == .reject(.implausibleSubstitution))

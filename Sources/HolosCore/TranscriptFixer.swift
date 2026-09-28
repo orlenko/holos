@@ -660,7 +660,8 @@ public enum AIFixReference {
     /// Where `heard` was said in `text`, as ranges of its words (`AIFixGuard.words`): every word of the phrase, in
     /// order and next to each other, its content words (`SpokenWords.isContent`) as they are or misheard again a
     /// little differently (`SpokenWords.isVariant`: "a bundu" for "a Bundo") and its other words exactly, with the
-    /// same marks that end a phrase between them as the heard phrase has, usually none (`Spoken`). Part of a phrase
+    /// same marks that end a phrase between them as the heard phrase has, usually none, and those it has at its
+    /// edges ("bull." is not said in "a bull request") (`Spoken`). Part of a phrase
     /// is not the phrase: "the basement" is not "this basement", "slash help" not "slash QC", "use bundu" not "a
     /// Bundo", and "the bull. Request access" does not say "bull request".
     public static func matches(of heard: String, in text: String, language: String? = nil) -> [Range<Int>] {
@@ -668,21 +669,26 @@ public enum AIFixReference {
     }
 
     /// A text's words (`AIFixGuard.words`) and, for each, the marks that end a phrase just before it ("" for none):
-    /// sentence and clause marks (. ! ? … : ;), line breaks, brackets and double quotes. Commas, hyphens, slashes
-    /// and apostrophes do not end a phrase: recognizers put commas anywhere, and "T-Mux" is one phrase.
+    /// sentence and clause marks (. ! ? … : ;), line breaks, brackets and double quotes; `trailing`, those after the
+    /// last word. Commas, hyphens, slashes and apostrophes do not end a phrase: recognizers put commas anywhere, and
+    /// "T-Mux" is one phrase.
     struct Spoken {
         var words: [String] = []
         var breaks: [String] = []
+        var trailing = ""
 
         init(_ text: String) {
             var cursor = text.startIndex
             for match in text.matches(of: AIFixGuard.wordPattern) {
-                let gap = words.isEmpty ? "" : text[cursor..<match.range.lowerBound]
-                breaks.append(String(gap.compactMap(Self.breakMark)))
+                breaks.append(String(text[cursor..<match.range.lowerBound].compactMap(Self.breakMark)))
                 words.append(AIFixGuard.normalized(match.output))
                 cursor = match.range.upperBound
             }
+            trailing = String(text[cursor...].compactMap(Self.breakMark))
         }
+
+        /// The marks just after the word at `index`.
+        func marks(after index: Int) -> String { index + 1 < breaks.count ? breaks[index + 1] : trailing }
 
         /// The mark `character` is when it ends a phrase: a line break as "\n", a typographic double quote as a
         /// plain one.
@@ -731,6 +737,9 @@ public enum AIFixReference {
             return positions(of: first).sorted().compactMap { start in
                 let end = start + phrase.words.count
                 guard end <= text.words.count else { return nil }
+                // A heard phrase saved with marks at its edges ("bull.") is said with them.
+                guard text.breaks[start].hasSuffix(phrase.breaks[0]),
+                      text.marks(after: end - 1).hasPrefix(phrase.trailing) else { return nil }
                 for index in phrase.words.indices.dropFirst() {
                     guard text.breaks[start + index] == phrase.breaks[index],
                           positions(of: phrase.words[index]).contains(start + index) else { return nil }

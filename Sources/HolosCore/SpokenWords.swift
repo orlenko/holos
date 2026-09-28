@@ -74,10 +74,22 @@ public enum SpokenWords {
     ]
     static let frenchNegations: Set<String> = ["pas", "jamais", "rien", "personne", "aucun", "aucune", "ni", "sans",
                                                "non", "nul", "nulle", "guère"]
-    static let englishQuantities: Set<String> = ["only", "all", "always", "every", "any", "some", "both", "more",
-                                                 "less", "most", "least"]
-    static let frenchQuantities: Set<String> = ["tout", "tous", "toute", "toutes", "seulement", "toujours", "chaque",
-                                                "quelques", "plusieurs", "plus", "moins"]
+    /// Words of quantity, frequency and degree of completion: how many, how often, how nearly ("few" is not "new",
+    /// "rarely" not "barely").
+    static let englishQuantities: Set<String> = [
+        "only", "just", "all", "every", "each", "any", "some", "both", "either", "more", "less", "most", "least",
+        "few", "fewer", "fewest", "many", "much", "several", "enough", "lots", "plenty", "half", "whole", "entire",
+        "everyone", "everybody", "everything", "anyone", "anybody", "anything", "someone", "somebody", "something",
+        "always", "often", "usually", "sometimes", "occasionally", "frequently", "rarely", "seldom", "once", "twice",
+        "again", "ever", "almost", "nearly", "barely", "hardly", "scarcely", "mostly", "partly", "fully", "completely",
+        "entirely", "totally", "too", "also", "even", "still", "already", "yet",
+    ]
+    static let frenchQuantities: Set<String> = [
+        "tout", "tous", "toute", "toutes", "seulement", "chaque", "quelques", "quelque", "plusieurs", "plus",
+        "moins", "peu", "beaucoup", "trop", "assez", "certains", "certaines", "davantage", "moitié", "entier",
+        "entière", "toujours", "souvent", "parfois", "rarement", "quelquefois", "presque", "encore", "déjà",
+        "aussi", "même", "tellement", "autant",
+    ]
     static let englishModals: Set<String> = ["can", "could", "should", "would", "will", "shall", "may", "might",
                                              "must", "ought"]
     /// Forms of the French modal verbs, by verb.
@@ -235,9 +247,12 @@ public enum SpokenWords {
 
     /// The value of a number said in `words`: one word of digits ("21"), or number words said as one number
     /// ("twenty one", "one hundred and five", "two thousand twenty six", "quatre vingt dix", "vingt et un"). Nil for
-    /// anything else, including numbers said one after another ("one two", "ten twenty"), which are not one.
+    /// anything else, including numbers said one after another ("one two", "ten twenty"), which are not one, and
+    /// digits with a leading zero ("021", a code whose zero counts).
     static func numberValue(_ words: [String], language: String?) -> Int? {
-        if words.count == 1, words[0].allSatisfy(\.isNumber) { return Int(words[0]) }
+        if words.count == 1, words[0].allSatisfy(\.isNumber) {
+            return words[0].count > 1 && words[0].hasPrefix("0") ? nil : Int(words[0])
+        }
         enum Last { case none, unit, teen, tens, hundred }
         var total = 0, group = 0, last = Last.none, counted = 0
         for (index, word) in words.enumerated() {
