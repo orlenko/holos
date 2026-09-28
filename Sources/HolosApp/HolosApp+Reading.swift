@@ -28,7 +28,14 @@ extension HolosAppDelegate {
         let response = alert.runModal()
         switch (keep, response) {
         case (true, .alertFirstButtonReturn):
-            readings.prepareForQuit(keep: true)
+            if !readings.prepareForQuit(keep: true) {
+                // The save failed just now: say so rather than promise what the next launch cannot do.
+                let failed = NSAlert()
+                failed.messageText = "The reading cannot continue next time."
+                failed.informativeText = "The Reading list could not be saved, so the next launch shows it as "
+                    + "stopped, with Resume.\n\n\(readings.notice ?? "")"
+                failed.runModal()
+            }
         case (true, .alertSecondButtonReturn), (false, .alertFirstButtonReturn):
             readings.prepareForQuit(keep: false)
         default:

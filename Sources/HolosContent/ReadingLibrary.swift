@@ -52,6 +52,9 @@ public struct ReadingEntry: Codable, Sendable, Equatable, Identifiable {
     public var deletePending: Bool?
     /// The finished file's SHA-256, so Delete moves to the Trash only that file, never one put at its path since.
     public var outputSHA256: String?
+    /// The finished file's identity (volume, inode, creation time), so Play, Share…, and Show in Finder use only that
+    /// file: one put at its path since shows as missing.
+    public var outputIdentity: ReadingFileIdentity?
 
     public init(id: UUID = UUID(), created: Date = Date(), source: ReadingSource, requestedVoice: String?,
                 speed: Double) {

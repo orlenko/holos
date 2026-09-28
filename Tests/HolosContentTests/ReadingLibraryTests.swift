@@ -31,6 +31,8 @@ import Testing
         done.duration = 1_234.5
         done.chapters = 3
         done.voiceIdentifier = "com.apple.voice.premium.en-US.Ava"
+        done.outputSHA256 = String(repeating: "a", count: 64)
+        done.outputIdentity = ExclusivePublisher.FileIdentity.of(root)
         var file = ReadingEntry(source: .file(URL(fileURLWithPath: "/tmp/Paper.pdf")), requestedVoice: "v", speed: 1.2)
         file.state = .failed
         file.message = "No readable text found in Paper.pdf."

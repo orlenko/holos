@@ -107,8 +107,11 @@ final class ReadingController {
 
     /// Whether the list is saved (it is not when its index could not be read or a newer build wrote it): only then
     /// can a reading continue at the next launch.
-    var canPersist: Bool { writable }
+    var canPersist: Bool { writable && !lastSaveFailed }
+    /// The last save of the index failed (a full disk, a permission changed); the next one that works clears it.
+    private var lastSaveFailed = false
 
+    static let saveFailure = "The Reading list could not be saved:"
     static let readOnlyMessage = "This reading belongs to a list a newer Voice is Local saved; it is shown here but not changed."
 
     /// Reads the list, finishes the deletions a quit interrupted, and continues the readings kept over the last quit.
@@ -157,8 +160,20 @@ final class ReadingController {
     }
 
     /// Stop: a waiting reading leaves the queue, a running one is cancelled; either keeps what it rendered for Resume.
-    func stop(_ id: UUID) {
+    /// Returns a problem to show when it cannot (a newer build's reading, which is not made here).
+    func stop(_ id: UUID) -> String? {
+        guard !readOnly.contains(id) else { return Self.readOnlyMessage }
         queue.stop(id)
+        return nil
+    }
+
+    /// The reading's finished file when it is still the one it made (the same file identity as when it was made):
+    /// what Play, Share…, and Show in Finder use. Nil when it was moved, deleted, or replaced by another file.
+    func finishedFile(_ entry: ReadingEntry) -> URL? {
+        guard entry.state == .done, let output = entry.outputURL,
+              let current = ExclusivePublisher.FileIdentity.of(output) else { return nil }
+        if let made = entry.outputIdentity { return current == made ? output : nil }
+        return output
     }
 
     /// Try Again or Resume: queues a failed or stopped reading again; its rendered parts are reused. Returns a
@@ -197,13 +212,16 @@ final class ReadingController {
     }
 
     /// Voice is Local quits with readings waiting or being made: `keep` (Keep Rendering) continues them at the next
-    /// launch; otherwise (Stop) they are stopped, with Resume. The render in progress is cancelled either way.
-    func prepareForQuit(keep: Bool) {
+    /// launch; otherwise (Stop) they are stopped, with Resume. The render in progress is cancelled either way. Returns
+    /// whether the list was saved (when it was not, nothing continues at the next launch).
+    @discardableResult
+    func prepareForQuit(keep: Bool) -> Bool {
         all = ReadingLibrary.forQuit(all, keep: keep)
-        save()
+        let saved = save()
         queue.shutDown()
         activity.removeAll()
         preparedForQuit = true
+        return saved
     }
 
     /// The quit was cancelled, at once or later (a meeting that could not be stopped): after `prepareForQuit`, the
@@ -332,6 +350,7 @@ final class ReadingController {
             $0.duration = result.manifest.duration
             $0.chapters = result.manifest.chapters.count
             $0.outputSHA256 = result.manifest.outputSHA256
+            $0.outputIdentity = ExclusivePublisher.FileIdentity.of(result.output)
             $0.part = nil
             $0.parts = result.manifest.parts.count
             // Bookkeeping that failed after the file was saved (see `ReadingResult.warnings`).
@@ -456,6 +475,10 @@ final class ReadingController {
                 }
             case .partial(let identity)?:
                 ExclusivePublisher.removeIfIdentical(output, to: identity)
+                // It reports nothing: whether the partial copy is gone is checked here.
+                if ExclusivePublisher.FileIdentity.of(output) == identity {
+                    problems.append("The partly written \(output.lastPathComponent) could not be removed.")
+                }
             case nil:
                 break
             }
@@ -484,12 +507,21 @@ final class ReadingController {
         change(&all[index])
     }
 
-    private func save() {
-        guard writable else { return }
+    /// Saves the index; false when it was not saved (a newer build's list, or the write failed).
+    @discardableResult
+    private func save() -> Bool {
+        guard writable else { return false }
         do {
             try store.save(all)
+            if lastSaveFailed {
+                lastSaveFailed = false
+                if notice?.hasPrefix(Self.saveFailure) == true { notice = nil }
+            }
+            return true
         } catch {
-            notice = "The Reading list could not be saved: \(error.localizedDescription)"
+            lastSaveFailed = true
+            notice = "\(Self.saveFailure) \(error.localizedDescription)"
+            return false
         }
     }
 }

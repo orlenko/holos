@@ -243,7 +243,10 @@ waiting (Stop); loading or "Rendering part N of M" with a bar (Stop); joining; m
 `AVAudioPlayer` in the app, Space or double-click, one reading at a time, position shown;
 stopped when the window closes), **Share…** (`NSSharingServicePicker`, ⇧⌘S), **Show in
 Finder**, **Delete…**; failed (the error, **Try Again**); stopped (where, **Resume**). A
-made reading whose file is no longer there says so and offers only Delete. Delete (⌫, with a
+made reading whose file is no longer there, or was replaced by another file (its file
+identity, saved when it was made, differs), says so and offers only Delete; Play, Share…,
+and Show in Finder use only that same file. A drop of things that cannot be read is taken
+so its reason shows under the card. Delete (⌫, with a
 confirmation) first saves the entry marked for deletion (`deletePending`, hidden from the
 list), stops it if it is being made, then moves the reading's finished file to the Trash
 (only when its SHA-256 matches the one saved at completion or in the cache's manifest: a
@@ -266,7 +269,8 @@ Nothing is uploaded; the only network access is loading the page the user pasted
 Quitting while a reading is made or waits asks: **Keep Rendering** (quit now; the index
 marks those readings, and the next launch queues them again, the one being made first),
 **Stop** (they are saved as stopped, with Resume), or Cancel; while the index cannot be
-saved (unreadable, or a newer build's) only Stop and Cancel are offered. A deletion waiting
+saved (unreadable, a newer build's, or its last save failed) only Stop and Cancel are
+offered, and a Keep Rendering whose save fails says the reading will show as stopped. A deletion waiting
 for a render the quit stopped finishes once that render ends if the quit is cancelled
 (`ReadingWorkQueue.onAbandonedEnd`). The render in progress is
 cancelled either way; the pipeline's next run removes what that leaves. A reading found

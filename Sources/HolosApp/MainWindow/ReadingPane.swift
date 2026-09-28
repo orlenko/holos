@@ -204,7 +204,11 @@ final class ReadingPane: NSViewController, MainSectionContent, NSTableViewDataSo
             emptyLabel.centerYAnchor.constraint(equalTo: scroll.centerYAnchor),
             emptyLabel.widthAnchor.constraint(lessThanOrEqualTo: scroll.widthAnchor, constant: -40),
         ])
-        dropView.accepts = { [weak self] pasteboard in !(self?.sources(in: pasteboard).sources.isEmpty ?? true) }
+        // A drop of things that cannot be read is taken too, so the reason shows under the card.
+        dropView.accepts = { [weak self] pasteboard in
+            guard let found = self?.sources(in: pasteboard) else { return false }
+            return !found.sources.isEmpty || !found.problems.isEmpty
+        }
         dropView.onDrop = { [weak self] pasteboard in self?.take(pasteboard) ?? false }
         dropView.onShareKey = { [weak self] in self?.shareSelected() ?? false }
         return dropView
@@ -395,8 +399,9 @@ final class ReadingPane: NSViewController, MainSectionContent, NSTableViewDataSo
     }
 
     private func configure(_ cell: ReadingRowView, _ entry: ReadingEntry) {
-        let file = entry.outputURL
-        let missing = entry.state == .done && !(file.map { FileManager.default.fileExists(atPath: $0.path) } ?? false)
+        // A made reading whose file was moved, deleted, or replaced by another file shows as missing.
+        let file = controller.finishedFile(entry)
+        let missing = entry.state == .done && file == nil
         var playback: ReadingRowView.Playback?
         if player.entryID == entry.id {
             playback = ReadingRowView.Playback(playing: player.isPlaying, current: player.position?.current,
@@ -428,7 +433,8 @@ final class ReadingPane: NSViewController, MainSectionContent, NSTableViewDataSo
         }
         switch action {
         case .play: play(id)
-        case .stop: controller.stop(id)
+        case .stop:
+            if let problem = controller.stop(id) { showMessage(problem, problem: true) }
         case .retry:
             if let problem = controller.retry(id) { showMessage(problem, problem: true) }
         case .share: share(id, from: cell.shareAnchor)
@@ -444,8 +450,7 @@ final class ReadingPane: NSViewController, MainSectionContent, NSTableViewDataSo
     }
 
     private func play(_ id: UUID) {
-        guard let entry = controller.entry(id), entry.state == .done, let url = entry.outputURL,
-              FileManager.default.fileExists(atPath: url.path) else {
+        guard let url = controller.entry(id).flatMap(controller.finishedFile) else {
             NSSound.beep()
             return
         }
@@ -466,8 +471,7 @@ final class ReadingPane: NSViewController, MainSectionContent, NSTableViewDataSo
 
     @discardableResult
     private func share(_ id: UUID, from anchor: NSView) -> Bool {
-        guard let entry = controller.entry(id), entry.state == .done, let url = entry.outputURL,
-              FileManager.default.fileExists(atPath: url.path) else {
+        guard let url = controller.entry(id).flatMap(controller.finishedFile) else {
             NSSound.beep()
             return false
         }
@@ -478,7 +482,7 @@ final class ReadingPane: NSViewController, MainSectionContent, NSTableViewDataSo
     }
 
     private func reveal(_ id: UUID) {
-        guard let url = controller.entry(id)?.outputURL, FileManager.default.fileExists(atPath: url.path) else {
+        guard let url = controller.entry(id).flatMap(controller.finishedFile) else {
             NSSound.beep()
             return
         }
@@ -743,7 +747,8 @@ final class ReadingRowView: NSTableCellView {
             setPrimary("Stop", .stop, help: "Stop making this reading; Resume continues where it stopped")
             buttons = [primary]
         case .done where missing:
-            status.stringValue = "The file is no longer at \(entry.output.map { ($0 as NSString).abbreviatingWithTildeInPath } ?? "its place")."
+            status.stringValue = "The file made for it is no longer at "
+                + "\(entry.output.map { ($0 as NSString).abbreviatingWithTildeInPath } ?? "its place")."
             status.textColor = .systemOrange
             buttons = [deleteButton]
         case .done:
