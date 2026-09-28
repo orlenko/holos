@@ -71,7 +71,8 @@ public struct ReadingEntry: Codable, Sendable, Equatable, Identifiable {
     /// Whether the reading is waiting or being made.
     public var isActive: Bool { state == .queued || state == .rendering }
 
-    public var outputURL: URL? { output.map { URL(fileURLWithPath: $0) } }
+    /// The output, its path spelled as saved (see `ReadingOutput.fileURL(keepingSpelling:)`).
+    public var outputURL: URL? { output.map { ReadingOutput.fileURL(keepingSpelling: $0) } }
 }
 
 /// What the index file holds.
@@ -181,6 +182,11 @@ public final class ReadingLibraryStore: @unchecked Sendable {
             return nil
         }
         return try JSONDecoder.reading.decode(ReadableDocument.self, from: data)
+    }
+
+    /// Whether a text is saved for `id`.
+    public func hasDocument(for id: UUID) -> Bool {
+        FileManager.default.fileExists(atPath: documentURL(id).path)
     }
 
     /// Removes the text saved for `id`; one that is not there is not an error.
@@ -294,7 +300,8 @@ public enum ReadingLibrary {
 
     /// A new file in `folder` named after the title (see `ReadingOutput.fileName`): "Title.m4a", else "Title 2.m4a",
     /// "Title 3.m4a", …, skipping names another reading of the list will write (`taken`, compared without case, as
-    /// the Mac's volumes compare them) and names already on disk (`exists`).
+    /// the Mac's volumes compare them) and names already on disk (`exists`). The folder and the name (in NFC, as
+    /// `ReadingOutput.fileName` makes it) keep their spelling (see `RawFilePath`).
     public static func outputURL(in folder: URL, title: String?, fallback: String?, taken: Set<String>,
                                  exists: (URL) -> Bool) -> URL {
         // Room for " 999" in the volume's 255-unit name limit.
@@ -302,11 +309,12 @@ public enum ReadingLibrary {
         let stem = String(name.dropLast(ReadingAudioFormat.fileExtension.count + 1))
         let takenKeys = Set(taken.map(Self.key))
         for number in 1...999 {
-            let candidate = folder.appendingPathComponent(number == 1 ? name
-                : "\(stem) \(number).\(ReadingAudioFormat.fileExtension)")
+            let candidate = RawFilePath.appending(number == 1 ? name
+                : "\(stem) \(number).\(ReadingAudioFormat.fileExtension)", to: folder)
             if !takenKeys.contains(key(candidate.path)) && !exists(candidate) { return candidate }
         }
-        return folder.appendingPathComponent("\(stem) \(UUID().uuidString.prefix(8)).\(ReadingAudioFormat.fileExtension)")
+        return RawFilePath.appending("\(stem) \(UUID().uuidString.prefix(8)).\(ReadingAudioFormat.fileExtension)",
+                                     to: folder)
     }
 
     private static func key(_ path: String) -> String {

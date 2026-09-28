@@ -121,6 +121,17 @@ public enum ReadingOutput {
         return name.isEmpty ? nil : name.precomposedStringWithCanonicalMapping
     }
 
+    /// `path` as a file URL whose path keeps its bytes as given (see `RawFilePath`): for paths the app saves and reads
+    /// back (the output folder, a reading's file), so a name in NFC stays NFC on volumes that tell the spellings apart.
+    public static func fileURL(keepingSpelling path: String, isDirectory: Bool = false) -> URL {
+        RawFilePath.url(path, isDirectory: isDirectory)
+    }
+
+    /// `name` inside `folder`, both spelled as given (see `RawFilePath`).
+    public static func fileURL(_ name: String, keepingSpellingIn folder: URL) -> URL {
+        RawFilePath.appending(name, to: folder)
+    }
+
     /// Resolves `--output`:
     /// - nil: a new `<readings>/<UUID>/` holding both the cache and `<name>`;
     /// - a directory holding a reading's manifest (a reading made without `--output`): that

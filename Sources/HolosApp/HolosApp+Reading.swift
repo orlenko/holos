@@ -7,7 +7,19 @@ extension HolosAppDelegate {
     /// Returns false to cancel the quit. `ReadingController.quitCancelled` undoes the preparation when the quit is
     /// cancelled later.
     func readingShouldTerminate() -> Bool {
-        guard readings.isBusy else { return true }
+        guard readings.isBusy else {
+            // Nothing is being made, but a change since the last save that worked (a Stop, a Delete) may not be
+            // saved: the next launch would then find the list as it was.
+            guard !readings.saveBeforeQuit() else { return true }
+            let alert = NSAlert()
+            alert.messageText = "The Reading list could not be saved."
+            alert.informativeText = "The next launch may continue a reading you stopped or show one you deleted. "
+                + "Free some space or fix the folder's permissions, then quit again.\n\n\(readings.notice ?? "")"
+            alert.addButton(withTitle: "Cancel")
+            alert.addButton(withTitle: "Quit Anyway")
+            NSApplication.shared.activate()
+            return alert.runModal() == .alertSecondButtonReturn
+        }
         let alert = NSAlert()
         let title = readings.runningTitle.map { "“\($0)”" } ?? "A reading"
         let waiting = readings.waitingCount

@@ -34,7 +34,9 @@ enum ReadingPreferences {
     static var folder: URL {
         get {
             if let path = UserDefaults.standard.string(forKey: folderKey), !path.isEmpty {
-                return URL(fileURLWithPath: path, isDirectory: true)
+                // Spelled as saved: `URL(fileURLWithPath:)` would decompose an NFC name, which a volume that keeps
+                // the spellings apart takes for another folder.
+                return ReadingOutput.fileURL(keepingSpelling: path, isDirectory: true)
             }
             return defaultFolder
         }
@@ -134,6 +136,8 @@ final class ReadingController {
         }
         all = entries.sorted { $0.created > $1.created }
         if all != loaded.entries { save() }  // never for a newer build's list (`save` checks `writable`)
+        // Saved text a made reading still has (its removal failed, or the save before it did) goes now.
+        if writable { removeFinishedSnapshots() }
         plan.resume.forEach(queue.enqueue)
         onChange?()
     }
@@ -315,7 +319,7 @@ final class ReadingController {
 
         // The file: the one chosen when the reading first started, else a new name in the output folder. A name that
         // something else took since (no render cache of this reading, but a file there) is replaced by a new one.
-        var output = entry.output.map { URL(fileURLWithPath: $0) }
+        var output = entry.outputURL
         var location: ReadingLocation?
         if let chosen = output {
             let found = try ReadingOutput.locate(output: chosen.path, name: name, identity: identity,
@@ -365,9 +369,10 @@ final class ReadingController {
             // Bookkeeping that failed after the file was saved (see `ReadingResult.warnings`).
             $0.message = result.warnings.isEmpty ? nil : result.warnings.joined(separator: " ")
         }
-        // The saved text goes only once the index says the reading is made (or keeps nothing of it): a reading the
-        // index still calls unfinished always has its text to resume from. One that stays is removed with the reading.
-        if save() || !writable { try? store.removeDocument(for: id) }
+        // The saved text goes only once the index says the reading is made (a successful save removes it), or when
+        // the index keeps nothing: a reading the index still calls unfinished always has its text to resume from.
+        // One kept because the save failed goes after the next save that works (`removeFinishedSnapshots`).
+        if !save() && !writable { removeFinishedSnapshots() }
     }
 
     /// The folder new files go to. The default one is made when missing; a folder chosen in Settings that is missing
@@ -377,8 +382,9 @@ final class ReadingController {
         if ReadingPreferences.isDefaultFolder {
             try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         } else {
-            var isDirectory: ObjCBool = false
-            guard FileManager.default.fileExists(atPath: folder.path, isDirectory: &isDirectory), isDirectory.boolValue else {
+            // `stat` on the path as spelled (`FileManager` would decompose it).
+            var metadata = stat()
+            guard stat(folder.path, &metadata) == 0, (metadata.st_mode & S_IFMT) == S_IFDIR else {
                 throw HolosError.unavailable("The folder \(ReadingPreferences.folderText) chosen in Settings › Reading is "
                     + "not available. Connect its disk, or choose another folder there, then Try Again.")
             }
@@ -495,11 +501,32 @@ final class ReadingController {
                 lastSaveFailed = false
                 if notice?.hasPrefix(Self.saveFailure) == true { notice = nil }
             }
+            removeFinishedSnapshots()
             return true
         } catch {
             lastSaveFailed = true
             notice = "\(Self.saveFailure) \(error.localizedDescription)"
             return false
+        }
+    }
+
+    /// Saves the index again if the last save failed (a quit with nothing rendering), so what the user did since
+    /// (a Stop, a Delete) is what the next launch finds. False when it still cannot be saved.
+    func saveBeforeQuit() -> Bool {
+        guard writable, lastSaveFailed else { return true }
+        return save()
+    }
+
+    /// Removes the saved text of every reading the index (as just saved, or as never saved at all) records as made:
+    /// retried after each save, so one kept because a save or a removal failed goes once they work. A removal that
+    /// fails is shown and tried again after the next save.
+    private func removeFinishedSnapshots() {
+        for entry in all where entry.state == .done && !readOnly.contains(entry.id) && store.hasDocument(for: entry.id) {
+            do {
+                try store.removeDocument(for: entry.id)
+            } catch {
+                notice = "The saved text of “\(entry.title)” could not be removed: \(error.localizedDescription)"
+            }
         }
     }
 }

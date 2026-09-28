@@ -275,7 +275,13 @@ marks those readings, and the next launch queues them again, the one being made 
 saved (unreadable, a newer build's, or its last save failed) only Stop and Cancel are
 offered, and a Keep Rendering whose save fails says the reading will show as stopped. A
 Stop whose save fails cancels the quit (the saved list may still ask the next launch to
-continue the reading) and says why. A deletion waiting
+continue the reading) and says why; with nothing rendering, a quit first saves again a list
+whose last save failed, and asks Quit Anyway or Cancel when it still cannot. The saved text
+of a made reading is removed after each save that works (and at launch), so one kept by a
+failed save or removal goes later. The output folder and each file's path are kept spelled
+as chosen (`ReadingOutput.fileURL(keepingSpelling:)`), so an NFC name on a share that keeps
+NFC and NFD apart is the folder the user picked. Playback stops when the playing reading's
+file is moved, deleted, or replaced. A deletion waiting
 for a render the quit stopped finishes once that render ends if the quit is cancelled
 (`ReadingWorkQueue.onAbandonedEnd`). The render in progress is
 cancelled either way; the pipeline's next run removes what that leaves. A reading found

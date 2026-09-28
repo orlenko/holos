@@ -86,7 +86,9 @@ import Testing
         #expect(try store.document(for: id) == nil)
         let document = ReadableDocument(title: "Title", author: "Jane", language: "fr",
                                         sections: [.init(heading: "One", level: 2, paragraphs: ["Texte."])])
+        #expect(!store.hasDocument(for: id))
         try store.saveDocument(document, for: id)
+        #expect(store.hasDocument(for: id))
         #expect(try store.document(for: id) == document)
         try store.removeDocument(for: id)
         #expect(try store.document(for: id) == nil)
@@ -164,6 +166,13 @@ import Testing
         #expect(plain.path == "/Readings/My Story 4.m4a")
         let untitled = ReadingLibrary.outputURL(in: folder, title: nil, fallback: "example.com", taken: []) { _ in false }
         #expect(untitled.lastPathComponent == "example.com.m4a")
+        // Folder and name keep their spelling (NFC here), as the pipeline and the saved index use them.
+        let composed = "Caf\u{E9}"
+        let nfcFolder = ReadingOutput.fileURL(keepingSpelling: "/Volumes/Share/\(composed)", isDirectory: true)
+        let accented = ReadingLibrary.outputURL(in: nfcFolder, title: composed, fallback: nil, taken: []) { _ in false }
+        #expect(Array(accented.path.utf8) == Array("/Volumes/Share/\(composed)/\(composed).m4a".utf8))
+        let saved = ReadingOutput.fileURL(keepingSpelling: accented.path)
+        #expect(Array(saved.path.utf8) == Array(accented.path.utf8))
     }
 
     @Test func onlyThePipelinesCachesInTheReadingsFolderCountAsCaches() {

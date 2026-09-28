@@ -372,7 +372,12 @@ final class ReadingPane: NSViewController, MainSectionContent, NSTableViewDataSo
         emptyLabel.isHidden = !rows.isEmpty
         footer.stringValue = footerText
         footer.textColor = controller.notice == nil ? .secondaryLabelColor : .systemOrange
-        if let playing = player.entryID, !rows.contains(where: { $0.id == playing }) { player.stop() }
+        // The reading being played left the list, or its file was moved, deleted, or replaced (its row now offers no
+        // Pause): playback stops rather than go on with no control to stop it.
+        if let playing = player.entryID,
+           rows.first(where: { $0.id == playing }).flatMap(controller.finishedFile) == nil {
+            player.stop()
+        }
     }
 
     private func reloadRow(_ id: UUID) {
