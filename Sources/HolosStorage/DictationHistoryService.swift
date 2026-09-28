@@ -160,6 +160,10 @@ public final class DictationHistoryService {
             newerLines = newer.contains(.clear) ? 0 : contents.newerLines
             readProblem = nil
             onChange?()
+        case .failed where newer.contains(.clear):
+            // A Clear History asked for after this read replaces the file; its own result decides (a failed clear
+            // reads the file again).
+            break
         case .failed(let error):
             // Not an empty history: what the file keeps is unknown, and the History section and status say so.
             let wasReadable = readProblem == nil
@@ -216,7 +220,7 @@ public final class DictationHistoryService {
         queue.async { [weak self] in
             do {
                 try write(store)
-                Task { @MainActor in self?.writeSucceeded(generation: generation) }
+                Task { @MainActor in self?.writeSucceeded(generation: generation, change) }
             } catch {
                 Self.log.error("History write failed: \(error.localizedDescription, privacy: .public)")
                 state.noteFailure()
@@ -237,13 +241,21 @@ public final class DictationHistoryService {
         reload()
     }
 
-    /// A write asked for after the one that failed has succeeded: the history works again, so the write problem
-    /// clears.
-    private func writeSucceeded(generation: Int) {
-        guard let failed = problemGeneration, generation > failed else { return }
-        writeProblem = nil
-        problemGeneration = nil
-        onChange?()
+    /// A write succeeded. One asked for after a write that failed means the history works again, so the write problem
+    /// clears; a Clear History replaced the file with an empty one, so an unreadable history is readable (and empty)
+    /// again.
+    private func writeSucceeded(generation: Int, _ change: DictationHistoryChange) {
+        var changed = false
+        if let failed = problemGeneration, generation > failed {
+            writeProblem = nil
+            problemGeneration = nil
+            changed = true
+        }
+        if change == .clear, readProblem != nil {
+            readProblem = nil
+            changed = true
+        }
+        if changed { onChange?() }
     }
 }
 

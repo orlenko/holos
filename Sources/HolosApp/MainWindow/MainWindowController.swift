@@ -86,6 +86,9 @@ final class MainWindowController: NSObject, NSWindowDelegate {
     /// Called when a section comes on screen, and with nil when the window closes.
     var onSectionChange: ((MainSection?) -> Void)?
     var onVisibilityChange: ((Bool) -> Void)?
+    /// Called when the window becomes key (the user came back to it, from Terminal for example), with the section
+    /// it shows.
+    var onBecomeKey: ((MainSection?) -> Void)?
 
     var isVisible: Bool { window.isVisible }
     var isKey: Bool { window.isKeyWindow }
@@ -206,6 +209,7 @@ final class MainWindowController: NSObject, NSWindowDelegate {
 
     func windowDidBecomeKey(_ notification: Notification) {
         if let current { sectionContent(current)?.sectionWindowDidBecomeKey() }
+        onBecomeKey?(current)
     }
 }
 

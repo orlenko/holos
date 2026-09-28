@@ -184,9 +184,16 @@ private func settle(_ done: () -> Bool) async {
     await service.reload().value
     #expect(failures.count == 1, "A failure already reported is not reported again on every reload.")
 
-    // Clear History still works on the unreadable file, and the history reads again afterwards.
+    // Clear History still works on the unreadable file; once it succeeds the history is readable (and empty) again,
+    // without waiting for another read.
+    var changes = 0
+    service.onChange = { changes += 1 }
     service.clear()
     await service.flushed()
+    await settle { !service.unreadable }
+    #expect(!service.unreadable)
+    #expect(service.problem == nil)
+    #expect(changes >= 1)
     await service.reload().value
     #expect(!service.unreadable)
     #expect(service.problem == nil)

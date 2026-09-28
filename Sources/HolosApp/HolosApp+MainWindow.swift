@@ -18,6 +18,10 @@ extension HolosAppDelegate {
             if visible { self?.updateSettings() }
         }
         window.onSectionChange = { [weak self] section in self?.mainSectionChanged(section) }
+        // Back from Terminal (`voiceislocal history clear --yes`) with History or Settings on screen: read it again.
+        window.onBecomeKey = { [weak self] section in
+            if section.map(Self.showsHistory) == true { self?.history.reload() }
+        }
         mainWindow = window
         return window
     }
@@ -62,8 +66,13 @@ extension HolosAppDelegate {
         } else {
             stopSettingsRefresh()
         }
-        if section == .history { history.reload() }
+        if section.map(Self.showsHistory) == true { history.reload() }
         updateSettings()
+    }
+
+    /// The sections that show what the history keeps: History, and Settings' count and Clear History….
+    private static func showsHistory(_ section: MainSection) -> Bool {
+        section == .history || section == .settings
     }
 
     // MARK: - Menu actions (status menu and main menu)
