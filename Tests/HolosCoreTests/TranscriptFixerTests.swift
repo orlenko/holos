@@ -524,6 +524,14 @@ let unrelatedWords = [
     ("Ask Mary about it", "Ask Marie about it"), ("Send it to Bob and Alice", "Send it to Alice and Bob"),
     ("Deploy to Windows now", "Deploy to Ubuntu now"), ("Ping John today", "Ping Joan today"),
     ("GitHub is down.", "GitLab is down."), ("then open the get hub page", "then open the GitHub page"),
+    // Names that start a sentence or the chunk.
+    ("Mary called.", "Marie called."), ("John left early", "Joan left early"), ("Wait. Mary called", "Wait. Marie called"),
+    // Units and abbreviations are not hesitations.
+    ("Set the width to 10 mm", "Set the width to 10"), ("Take her to the ER now", "Take her to the now"),
+    // Compound numbers keep their value; numbers said one after another are not one.
+    ("Set it to twenty one", "Set it to 22"), ("Dial one two", "Dial 12"), ("Pick one hundred five", "Pick 150"),
+    // An apostrophe put back does not bring a modal.
+    ("Well go now", "We'll go now"),
 ])
 func aFixThatChangesMeaningIsRefused(original: String, fixed: String) {
     let verdict = AIFixGuard.check(original: original, fixed: fixed, protecting: taughtList, taught: taughtList)
@@ -551,16 +559,45 @@ func aFixThatChangesMeaningIsRefused(original: String, fixed: String) {
     ("I I think so", "I think so"), ("use windows now", "use Windows now"), ("meet me there", "Meet me there."),
     ("Merci pour ton aide je te revaudrai sa", "Merci pour ton aide, je te revaudrai ça."),
     ("je peut venir", "je peux venir"), ("Je pense que ces une bonne idée", "Je pense que c'est une bonne idée"),
+    ("go to um the store", "go to the store"), ("Set it to twenty one", "Set it to 21"),
+    ("Pick one hundred and five", "Pick 105"), ("Room 21 please", "Room twenty one please"),
+    ("Jai fini", "J'ai fini"), ("Quil arrive demain", "Qu'il arrive demain"), ("were going home", "we're going home"),
 ])
 func aMishearingIsFixed(original: String, fixed: String) {
     #expect(AIFixGuard.check(original: original, fixed: fixed, protecting: taughtList, taught: taughtList) == .accept,
             "\(original) -> \(fixed)")
 }
 
+@Test func taughtPairsApplyBeforeTheLimitsAndMeaningCounts() {
+    // A pair whose heard phrase holds a word of quantity: the reply is judged with the pair applied.
+    let allstate = Correction(heard: "all state", meant: "Allstate")
+    #expect(AIFixGuard.check(original: "I called all stat today", fixed: "I called Allstate today",
+                             taught: [allstate]) == .accept)
+    #expect(AIFixGuard.check(original: "I called all stat today", fixed: "I called Allstate today")
+        == .reject(.changedMeaning))
+    // A pair may add more words than the limit lets a reply add by itself.
+    let server = Correction(heard: "server", meant: "production web server")
+    #expect(AIFixGuard.check(original: "open server now", fixed: "open production web server now", taught: [server])
+        == .accept)
+    #expect(AIFixGuard.check(original: "open server now", fixed: "open production web server now")
+        == .reject(.wordCountChanged))
+    #expect(AIFixGuard.check(original: "open server now", fixed: "open staging web server now", taught: [server])
+        == .reject(.wordCountChanged))
+    // French numbers said in several words.
+    #expect(SpokenWords.numberValue(["quatre", "vingt", "dix"], language: "fr-FR") == 90)
+    #expect(SpokenWords.numberValue(["vingt", "et", "un"], language: "fr-FR") == 21)
+    #expect(SpokenWords.numberValue(["two", "thousand", "twenty", "six"], language: "en-US") == 2026)
+    #expect(SpokenWords.numberValue(["ten", "twenty"], language: "en-US") == nil)
+    #expect(AIFixGuard.check(original: "chambre vingt et un", fixed: "chambre 21", language: "fr-FR") == .accept)
+}
+
 @Test func namesAndMeaningsAreFoundWordByWord() {
-    #expect(AIFixGuard.names(in: "Ask Mary. Then use GitHub, I think")
+    #expect(AIFixGuard.names(in: "ask Mary. Then use GitHub, I think")
         == [false, true, false, false, true, false, false])
     #expect(AIFixGuard.names(in: "Ubuntu machine", midSentence: true) == [true, false])
+    // At a sentence start, any capitalized word may be a name but function words, short words and guarded ones.
+    #expect(AIFixGuard.names(in: "Mary called. The end. So. Dont go. Ten") == [true, false, false, false, false, false,
+                                                                              false, false])
     #expect(SpokenWords.meaning(of: "his", language: "en-US").person == "he"
         && SpokenWords.meaning(of: "he's", language: nil).person == "he")
     #expect(SpokenWords.meaning(of: "ten", language: "en-US").number == "10")

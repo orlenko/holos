@@ -166,7 +166,7 @@ public enum SpokenWords {
     static let frenchNumbers: [String: String] = [
         "zero": "0", "deux": "2", "trois": "3", "quatre": "4", "cinq": "5", "six": "6", "sept": "7", "huit": "8",
         "neuf": "9", "dix": "10", "onze": "11", "douze": "12", "treize": "13", "quatorze": "14", "quinze": "15",
-        "seize": "16", "vingt": "20", "trente": "30", "quarante": "40", "cinquante": "50", "soixante": "60",
+        "seize": "16", "vingt": "20", "vingts": "20", "cents": "100", "trente": "30", "quarante": "40", "cinquante": "50", "soixante": "60",
         "cent": "100", "mille": "1000", "million": "1000000", "milliard": "1000000000",
     ]
 
@@ -207,12 +207,100 @@ public enum SpokenWords {
     /// pronoun or number may be the same person or value ("its" and "it's", "me" and "my", "10" and "ten") or a
     /// listed homophone (`areHomophones`: "their" and "there", "won" and "one", "our" and "hour"), never a close
     /// spelling alone: "he" is not "she", "your" not "our", "10" not "100".
+    /// The same letters with an apostrophe put back or taken out pass when they keep any negation, modal and
+    /// quantity: "Jai" and "J'ai", "Quil" and "Qu'il", "were" and "we're"; not "well" and "we'll".
     static func mayReplace(_ word: String, with new: String, language: String?) -> Bool {
         let was = meaning(of: word, language: language), now = meaning(of: new, language: language)
+        if was.strict == now.strict && letters(word) == letters(new) { return true }
         if was.isEmpty && now.isEmpty { return isClose(word, new, language: language) }
         if !was.strict.isEmpty || !now.strict.isEmpty { return was == now && isClose(word, new, language: language) }
         if was == now && (was.number != nil || isClose(word, new, language: language)) { return true }
         return areHomophones(spelling(word), spelling(new), language: language)
+    }
+
+    /// Whether `word` may be part of a number said in several words (`numberValue`): digits, a number word, or the
+    /// "and", "et", "un" and "une" said inside one ("one hundred and five", "vingt et un").
+    static func mayBeInNumber(_ word: String, language: String?) -> Bool {
+        if word.allSatisfy(\.isNumber) { return true }
+        return numberWord(word, language: language) != nil || ["and", "et", "un", "une"].contains(word)
+    }
+
+    /// The value of a number word of `language` ("twenty", "vingt"), nil for any other word.
+    static func numberWord(_ word: String, language: String?) -> Int? {
+        let code = language.map(DictationLanguage.languageCode)
+        let letters = letters(word)
+        let value = (code != "fr" ? englishNumbers[letters] : nil) ?? (code != "en" ? frenchNumbers[letters] : nil)
+        return value.flatMap { Int($0) }
+    }
+
+    /// The value of a number said in `words`: one word of digits ("21"), or number words said as one number
+    /// ("twenty one", "one hundred and five", "two thousand twenty six", "quatre vingt dix", "vingt et un"). Nil for
+    /// anything else, including numbers said one after another ("one two", "ten twenty"), which are not one.
+    static func numberValue(_ words: [String], language: String?) -> Int? {
+        if words.count == 1, words[0].allSatisfy(\.isNumber) { return Int(words[0]) }
+        enum Last { case none, unit, teen, tens, hundred }
+        var total = 0, group = 0, last = Last.none, counted = 0
+        for (index, word) in words.enumerated() {
+            let isLast = index == words.count - 1
+            // "one hundred and five", "vingt et un": a joining word only inside the number.
+            if word == "and", last == .hundred, !isLast { continue }
+            if word == "et", last == .tens, !isLast { continue }
+            var found = numberWord(word, language: language)
+            if found == nil, word == "un" || word == "une", index > 0 { found = 1 }
+            guard let value = found else { return nil }
+            counted += 1
+            switch value {
+            case 0:
+                guard words.count == 1 else { return nil }
+            case 1...9:
+                guard last == .none || last == .tens || last == .hundred else { return nil }
+                group += value
+                last = .unit
+            case 10...19:
+                // French "soixante dix", "quatre vingt dix": 70 and 90.
+                let frenchTens = last == .tens && [60, 80].contains(group % 100)
+                guard last == .none || last == .hundred || frenchTens else { return nil }
+                group += value
+                last = .teen
+            case 20...90:
+                if value == 20, last == .unit, group % 100 == 4 {
+                    group += 76  // "quatre vingt": 80
+                } else {
+                    guard last == .none || last == .hundred else { return nil }
+                    group += value
+                }
+                last = .tens
+            case 100:
+                guard group < 10 else { return nil }
+                group = max(group, 1) * 100
+                last = .hundred
+            default:
+                total += max(group, 1) * value
+                group = 0
+                last = .none
+            }
+        }
+        return counted > 0 ? total + group : nil
+    }
+
+    /// `words` with each number said in several words (`numberValue`, the longest from each place) written as one
+    /// word in digits: "one hundred and five" is "105".
+    static func numbersAsDigits(_ words: [String], language: String?) -> [String] {
+        var result: [String] = []
+        var index = 0
+        while index < words.count {
+            let run = words[index...].prefix(8).prefix { mayBeInNumber($0, language: language) }.count
+            if let length = stride(from: run, to: 1, by: -1).first(where: {
+                numberValue(Array(words[index..<(index + $0)]), language: language) != nil
+            }) {
+                result.append(String(numberValue(Array(words[index..<(index + length)]), language: language)!))
+                index += length
+            } else {
+                result.append(words[index])
+                index += 1
+            }
+        }
+        return result
     }
 
     /// Whether `word` repeated may not be dropped as a stutter: a negation, modal, word of quantity or number said
@@ -249,9 +337,6 @@ public enum SpokenWords {
         default: englishGlue.contains(word) || frenchGlue.contains(word)
         }
     }
-
-    /// Hesitations a fix may drop.
-    static let fillers: Set<String> = ["um", "umm", "uh", "uhh", "er", "erm", "hmm", "mm", "euh", "heu"]
 
     /// Whether `heard` could be a mishearing of `meant` (or the reverse), for the guard on a model's reply. Compared
     /// as `letters`: the same letters; homophones of `language` the rules miss (`homophones`: "one" and "won", "you"

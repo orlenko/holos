@@ -219,20 +219,22 @@ public enum AIFixGuard {
         let was = shape(of: original)
         let now = shape(of: fixed)
         guard was.marks == now.marks else { return .reject(.changedStructure) }
-        if abs(after.count - before.count) > max(1, before.count / 10) { return .reject(.wordCountChanged) }
         let edits = editDistance(before, after)
         // The same marks, but moved to other words: matching the words between each pair of marks separately then
         // costs more than matching all of them at once.
         let segmented = zip(was.segments, now.segments).reduce(0) { $0 + editDistance($1.0, $1.1) }
         if segmented > edits { return .reject(.changedStructure) }
-        if edits > max(2, before.count / 5) { return .reject(.tooManyEdits) }
-        if SpokenWords.meaningWords(in: before, language: language)
-            != SpokenWords.meaningWords(in: after, language: language) {
-            return .reject(.changedMeaning)
-        }
+        // The limits on words added or dropped and on edits count from the chunk with the taught pairs applied
+        // (`plausibleReply`): a pair may expand its heard phrase by more than they allow.
         guard plausibleReply(original: original, fixed: fixed, before: before, after: after, taught: taught,
                              language: language)
         else {
+            if abs(after.count - before.count) > wordCountLimit(before.count) { return .reject(.wordCountChanged) }
+            if edits > editLimit(before.count) { return .reject(.tooManyEdits) }
+            if SpokenWords.meaningWords(in: before, language: language)
+                != SpokenWords.meaningWords(in: after, language: language) {
+                return .reject(.changedMeaning)
+            }
             // Only a word that says who, how many, whether or which name was changed: the meaning.
             let spelling = plausibleReply(original: original, fixed: fixed, before: before, after: after,
                                           taught: taught, language: language, protecting: false)
@@ -241,10 +243,21 @@ public enum AIFixGuard {
         return .accept
     }
 
-    /// For each word of `text` (`words`), whether it is a name: a word with a capital past its first letter
-    /// ("GitHub", "QC", "macOS"), or a capitalized word other than "I" that does not start a sentence ("Windows"
-    /// in "use Windows"). `midSentence`: the first word does not start a sentence either (a taught meant phrase).
-    static func names(in text: String, midSentence: Bool = false) -> [Bool] {
+    /// Most words a fix may add or drop in a chunk of `count` words: 1, or 10 %.
+    static func wordCountLimit(_ count: Int) -> Int { max(1, count / 10) }
+
+    /// Most word edits a fix may make in a chunk of `count` words: 2, or 20 %.
+    static func editLimit(_ count: Int) -> Int { max(2, count / 5) }
+
+    /// For each word of `text` (`words`), whether it may be a name: a word with a capital past its first letter
+    /// ("GitHub", "QC", "macOS"), or a capitalized word other than "I" ("Windows" in "use Windows"). At the start of
+    /// a sentence or of the chunk a capital does not tell a name from another word, so there every capitalized
+    /// word counts ("Mary called"), but for the words a name cannot be: function and glue words of `language`
+    /// ("The", "When", "Je"), words of fewer than three letters ("So", "If"), and words whose meaning is guarded
+    /// on its own (`SpokenWords.meaning`: "Dont", "Your", "Ten"). A misheard word that starts a sentence then stays
+    /// as recognized unless a taught pair covers it. `midSentence`: the first word does not start a sentence (a
+    /// taught meant phrase).
+    static func names(in text: String, language: String? = nil, midSentence: Bool = false) -> [Bool] {
         var result: [Bool] = []
         var cursor = text.startIndex
         for match in text.matches(of: wordPattern) {
@@ -252,10 +265,16 @@ public enum AIFixGuard {
             let startsSentence = result.isEmpty
                 ? !midSentence : gap.contains { $0.isNewline || ".!?…\"“”«»".contains($0) }
             let word = match.output
+            let lower = normalized(word)
             let isName: Bool =
                 if word.dropFirst().contains(where: \.isUppercase) { true }
-                else if startsSentence || word.first?.isUppercase != true { false }
-                else { !(word == "I" || word.hasPrefix("I'") || word.hasPrefix("I’")) }
+                else if word.first?.isUppercase != true || lower == "i" || lower.hasPrefix("i'") { false }
+                else if !startsSentence { true }
+                else {
+                    SpokenWords.letters(lower).count >= 3 && !SpokenWords.stopWords(for: language).contains(lower)
+                        && !SpokenWords.isGlue(lower, language: language)
+                        && SpokenWords.meaning(of: lower, language: language).isEmpty
+                }
             result.append(isName)
             cursor = match.range.upperBound
         }
@@ -280,13 +299,20 @@ public enum AIFixGuard {
         func flags(_ found: [Bool]?, _ count: Int) -> [Bool] {
             found.flatMap { $0.count == count ? $0 : nil } ?? Array(repeating: false, count: count)
         }
-        let beforeNames = flags(names(in: original), before.count)
-        let afterNames = flags(fixed.map { names(in: $0) }, after.count)
+        let beforeNames = flags(names(in: original, language: language), before.count)
+        let afterNames = flags(fixed.map { names(in: $0, language: language) }, after.count)
+        let afterCount = SpokenWords.numbersAsDigits(after, language: language).count
         func allPlausible(from start: [String], names startNames: [Bool]) -> Bool {
+            // A number said in several words counts as one word ("one hundred and five" and "105").
+            let startCount = SpokenWords.numbersAsDigits(start, language: language).count
+            guard abs(afterCount - startCount) <= wordCountLimit(before.count) else { return false }
             let head = zip(start, after).prefix { $0 == $1 }.count
             let tail = zip(start.dropFirst(head).reversed(), after.dropFirst(head).reversed()).prefix { $0 == $1 }.count
             let oldRange = head..<(start.count - tail), newRange = head..<(after.count - tail)
             let old = Array(start[oldRange]), new = Array(after[newRange])
+            guard editDistance(SpokenWords.numbersAsDigits(old, language: language),
+                               SpokenWords.numbersAsDigits(new, language: language)) <= editLimit(before.count)
+            else { return false }
             let oldNames = Array(startNames[oldRange]), newNames = Array(afterNames[newRange])
             return hunks(old, new).allSatisfy { hunk in
                 let left = head + hunk.old.lowerBound - 1, right = head + hunk.old.upperBound
@@ -305,7 +331,7 @@ public enum AIFixGuard {
         var places: [(span: Range<Int>, meant: [String], names: [Bool])] = []
         for correction in taught {
             let meant = words(in: correction.meant)
-            let meantNames = flags(names(in: correction.meant, midSentence: true), meant.count)
+            let meantNames = flags(names(in: correction.meant, language: language, midSentence: true), meant.count)
             for span in AIFixReference.matches(of: correction.heard, in: original, language: language)
             where touched(span) && !places.contains(where: { $0.span == span && $0.meant == meant }) {
                 places.append((span, meant, meantNames))
@@ -339,11 +365,12 @@ public enum AIFixGuard {
     /// order, as words kept but for their case; one word replaced by one (`SpokenWords.mayReplace`: close words, and
     /// a negation, modal, quantity, pronoun or number only by the same one or a listed homophone); one word split in
     /// two or three or joined from them (`SpokenWords.isCloseSplit`), saying together what they said
-    /// (`SpokenWords.Meaning.all`); glue words added (`SpokenWords.isGlue`: "the", "to", "de"); and glue words,
-    /// hesitations (`SpokenWords.fillers`) or a stutter ("I I", "build build", not "no no" nor "10 10",
-    /// `SpokenWords.keepsRepeats`) dropped. `names` flags the words of each side that are names (`names(in:)`): a
-    /// name changes only in case, or joined or split with the same letters ("Git Hub", "GitHub"); a taught pair
-    /// alone may spell one otherwise (`plausibleReply`). So "he" does not become "she", "10 and 20" not "20 and
+    /// (`SpokenWords.Meaning.all`); a number said in words written in digits or the reverse, with the same value
+    /// (`SpokenWords.numberValue`: "twenty one" and "21"); glue words added (`SpokenWords.isGlue`: "the", "to",
+    /// "de"); and glue words, hesitations (`FillerWords.isFiller`: "um", not the "mm" of "10 mm") or a stutter ("I
+    /// I", "build build", not "no no" nor "10 10", `SpokenWords.keepsRepeats`) dropped. `names` flags the words of
+    /// each side that may be names (`names(in:)`): a name changes only in case or with the same letters ("Jai" and
+    /// "J'ai", "Git Hub" and "GitHub"); a taught pair alone may spell one otherwise (`plausibleReply`). So "he" does not become "she", "10 and 20" not "20 and
     /// 10", "not" does not move, and "Windows" does not become "Ubuntu". `protecting` false judges spelling alone:
     /// close words, splits and joins, glue and repeats, without meanings or names.
     static func plausible(_ old: [String], _ new: [String], names: (old: [Bool], new: [Bool])? = nil,
@@ -358,7 +385,8 @@ public enum AIFixGuard {
             if a.count == 1 && b.count == 1 {
                 if a == b { return true }
                 guard protecting else { return SpokenWords.isClose(a[0], b[0], language: language) }
-                return !named && SpokenWords.mayReplace(a[0], with: b[0], language: language)
+                if named && SpokenWords.letters(a[0]) != SpokenWords.letters(b[0]) { return false }
+                return SpokenWords.mayReplace(a[0], with: b[0], language: language)
             }
             guard SpokenWords.isCloseSplit(a.joined(), b.joined()) else { return false }
             guard protecting else { return true }
@@ -369,12 +397,16 @@ public enum AIFixGuard {
         func drops(_ index: Int) -> Bool {
             let word = old[index]
             if names.old[index] { return false }
-            if isGlue(word) || SpokenWords.fillers.contains(word) { return true }
+            if isGlue(word) || FillerWords.isFiller(word, language: language) { return true }
             let previous = index > 0 ? old[index - 1] : left, next = index + 1 < old.count ? old[index + 1] : right
             guard word == previous || word == next else { return false }
             return !protecting || !SpokenWords.keepsRepeats(word, language: language)
         }
         func adds(_ index: Int) -> Bool { !names.new[index] && isGlue(new[index]) }
+        /// How many words from `index` on may be part of one number (`SpokenWords.numberValue`), at most 8.
+        func numberRun(_ words: [String], from index: Int) -> Int {
+            words[index...].prefix(8).prefix { SpokenWords.mayBeInNumber($0, language: language) }.count
+        }
         // reach[i][j]: the first i words of `old` line up with the first j of `new`.
         var reach = Array(repeating: Array(repeating: false, count: new.count + 1), count: old.count + 1)
         reach[0][0] = true
@@ -388,6 +420,16 @@ public enum AIFixGuard {
                 for parts in 2...3 {
                     if j + parts <= new.count, replaces(i..<(i + 1), j..<(j + parts)) { reach[i + 1][j + parts] = true }
                     if i + parts <= old.count, replaces(i..<(i + parts), j..<(j + 1)) { reach[i + parts][j + 1] = true }
+                }
+                // A number said in words written in digits, or the reverse: "twenty one" and "21".
+                let oldRun = numberRun(old, from: i), newRun = numberRun(new, from: j)
+                for k in stride(from: 1, through: oldRun, by: 1) {
+                    for m in stride(from: 1, through: newRun, by: 1) where k > 1 || m > 1 {
+                        if let value = SpokenWords.numberValue(Array(old[i..<(i + k)]), language: language),
+                           value == SpokenWords.numberValue(Array(new[j..<(j + m)]), language: language) {
+                            reach[i + k][j + m] = true
+                        }
+                    }
                 }
             }
         }

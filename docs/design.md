@@ -404,16 +404,21 @@ invented spelling lands on unrelated words, or next to the heard phrase. The gua
 denies by default and judges each word at its place, lining the chunk's words up with
 the reply's in order: a word may keep its spelling but for case, be replaced by a close
 word, be split or joined, or come and go only as a glue word (articles, prepositions,
-conjunctions); hesitations and stutters may go ("You should go" is not "You go"). A
+conjunctions); hesitations (the fillers filler removal takes out, so not the "mm" of
+"10 mm") and stutters may go ("You should go" is not "You go"); a number said in words
+may be written in digits with the same value ("twenty one" and "21"). A
 negation, modal or word of quantity may only be spelled another way as the same one
 ("don't" and "dont"; "I do agree" is not "I do not agree", "should" not "could",
 "couldn't" not "wouldn't", and a "not" may not move). A pronoun or number keeps its
 person or value, or becomes a listed homophone ("their" and "there", "won" and "one"),
 never a close spelling alone: "He" is not "She", "Your" not "Our", "Set width 10 height
 20" not "Set width 20 height 10", "Ship 10 units" not "Ship 100 units". A name (a word
-capitalized mid-sentence or with a capital inside, such as "Windows" or "GitHub")
-changes only in case. A listed pair said there is the one way past these rules. Negations,
-modals and quantities are also counted over the whole chunk. Function words, glue words
+with a capital inside, such as "GitHub", or any capitalized word, sentence starts
+included, but "I", function words, words under three letters and the guarded words
+above) changes only in case or apostrophes: "Mary called" is not "Marie called", and a
+misheard word that starts a sentence stays as recognized. A listed pair said there is the
+one way past these rules, and the limits on edits and on words added count from the
+chunk with its pairs applied. Function words, glue words
 and homophones are those of the language dictated (English or French). The model
 runs with the `permissiveContentTransformations` guardrails: with the defaults about
 half the fixes in a day's log failed in about 200 ms, ordinary sentences refused as
