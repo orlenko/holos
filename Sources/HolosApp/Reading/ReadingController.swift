@@ -473,8 +473,12 @@ final class ReadingController {
                 throw HolosError.invalidInput("\(url.lastPathComponent) is no longer at \((url.path as NSString).abbreviatingWithTildeInPath).")
             }
             // Off the main actor: a long PDF or Word file takes a while to read, and the window must stay responsive.
-            document = try await Task.detached(priority: .userInitiated) { try DocumentLoader.load(url) }.value
+            // A Stop cancels it too (a PDF stops between pages).
+            let load = Task.detached(priority: .userInitiated) { try DocumentLoader.load(url) }
+            document = try await withTaskCancellationHandler { try await load.value } onCancel: { load.cancel() }
         }
+        // Stopped while it loaded: nothing is saved for it.
+        try Task.checkCancellation()
         do {
             try store.saveDocument(document, for: entry.id)
         } catch {
@@ -528,27 +532,41 @@ final class ReadingController {
         guard let entry = entry(id), deleting.insert(id).inserted else { return nil }
         defer { deleting.remove(id) }
         activity[id] = nil
-        if let problem = await cleanUp(entry) {
-            update(id) { $0 = ReadingLibrary.afterFailedDelete($0, problem: problem) }
+        let result = await cleanUp(entry)
+        if let problem = result.problem {
+            update(id) { $0 = ReadingLibrary.afterFailedDelete($0, problem: problem, aside: result.aside) }
             save()
             return problem
         }
         all.removeAll { $0.id == id }
         save()
+        clearDeleteNotice(id)
         return nil
     }
 
     /// `finishDelete` for a deletion nobody waits for (a launch, a render that ended): a problem becomes the notice.
     private func finishDeleteLater(_ id: UUID) {
         Task {
-            if let problem = await finishDelete(id) { notice = problem }
+            if let problem = await finishDelete(id) {
+                notice = problem
+                deleteNotices[id] = problem
+            }
             onChange?()
         }
     }
 
+    /// The notice each reading's failed deletion left, so the one that later succeeds clears it.
+    private var deleteNotices: [UUID: String] = [:]
+
+    /// A deletion of `id` succeeded: the notice an earlier failed one left goes, unless something else replaced it.
+    private func clearDeleteNotice(_ id: UUID) {
+        guard let left = deleteNotices.removeValue(forKey: id), notice == left else { return }
+        notice = nil
+    }
+
     /// Removes a reading's files (see `ReadingLibrary.deleteFiles`), off the main actor: its finished file goes to the
-    /// Trash. Nil when all are gone.
-    private func cleanUp(_ entry: ReadingEntry) async -> String? {
+    /// Trash.
+    private func cleanUp(_ entry: ReadingEntry) async -> ReadingLibrary.DeleteResult {
         let store = store
         return await Task.detached(priority: .userInitiated) {
             let readings = try? ReadingOutput.readingsRoot(

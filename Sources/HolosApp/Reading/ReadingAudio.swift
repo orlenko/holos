@@ -69,11 +69,20 @@ final class ReadingPlayer: NSObject, AVAudioPlayerDelegate {
     }
 
     nonisolated func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) {
-        Task { @MainActor in self.stop() }
+        let ended = ObjectIdentifier(player)
+        Task { @MainActor in self.ended(ended) }
     }
 
     nonisolated func audioPlayerDecodeErrorDidOccur(_ player: AVAudioPlayer, error: (any Error)?) {
-        Task { @MainActor in self.stop() }
+        let ended = ObjectIdentifier(player)
+        Task { @MainActor in self.ended(ended) }
+    }
+
+    /// A player finished or failed: stopped only when it is still the one loaded (a callback from one replaced since
+    /// arrives late and leaves the new reading alone).
+    private func ended(_ ended: ObjectIdentifier) {
+        guard let player, ObjectIdentifier(player) == ended else { return }
+        stop()
     }
 }
 

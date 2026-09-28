@@ -10,7 +10,8 @@ public enum DocumentLoader {
     ]
 
     /// Unknown extensions are read as UTF-8 plain text. Callable from any thread: none of the readers is AppKit's
-    /// HTML importer (the one that must run on the main thread), so the app loads files off the main actor.
+    /// HTML importer (the one that must run on the main thread), so the app loads files off the main actor. In a
+    /// cancelled task a PDF stops between pages with `CancellationError`.
     public static func load(_ url: URL) throws -> ReadableDocument {
         let document: ReadableDocument
         switch url.pathExtension.lowercased() {
@@ -1459,6 +1460,8 @@ public enum PDFReader {
         }
         var pages: [String] = []
         for index in 0..<pdf.pageCount {
+            // A long PDF read for a reading that was stopped ends here (outside a task, never).
+            try Task.checkCancellation()
             pages.append(pdf.page(at: index)?.string ?? "")
         }
         let paragraphs = reflow(pages: pages)

@@ -236,7 +236,7 @@ import Testing
             return reading
         }()
         let store = ReadingLibraryStore(folder: root.appendingPathComponent("ReadingLibrary"))
-        #expect(ReadingLibrary.deleteFiles(of: reading, readingsRoot: root, store: store) { _ in }?
+        #expect(ReadingLibrary.deleteFiles(of: reading, readingsRoot: root, store: store) { _ in }.problem?
             .contains("could not be checked") == true)
         #expect(FileManager.default.fileExists(atPath: cache.path))
     }
@@ -264,7 +264,7 @@ import Testing
         let failed = ReadingLibrary.deleteFiles(of: reading, readingsRoot: readings, store: store) { _ in
             throw TrashFailed()
         }
-        #expect(failed?.contains("could not be moved to the Trash") == true)
+        #expect(failed.problem?.contains("could not be moved to the Trash") == true)
         #expect(FileManager.default.fileExists(atPath: cache.path))
         #expect(try store.document(for: reading.id) != nil)
         // The file went back where it was, and the private folder it was checked in is gone.
@@ -280,7 +280,7 @@ import Testing
             trashed.append(url)
             try FileManager.default.removeItem(at: url)
         }
-        #expect(done == nil)
+        #expect(done.problem == nil)
         #expect(trashed.map(\.lastPathComponent) == ["Story.m4a"])
         #expect(trashed.first?.deletingLastPathComponent().lastPathComponent.hasPrefix(".holos-delete-") == true)
         #expect(!FileManager.default.fileExists(atPath: output.path))
@@ -294,7 +294,7 @@ import Testing
         stray.cache = root.path
         #expect(ReadingLibrary.deleteFiles(of: stray, readingsRoot: readings, store: store) { _ in
             Issue.record("Trashed a file that is not the reading's")
-        } == nil)
+        }.problem == nil)
         #expect(FileManager.default.fileExists(atPath: output.path))
         #expect(FileManager.default.fileExists(atPath: root.path))
     }
@@ -324,7 +324,7 @@ import Testing
         #expect(throws: (any Error).self) { try ReadingLibrary.ownership(of: output, sha256: reading.outputSHA256, cache: cache) }
         let problem = ReadingLibrary.deleteFiles(of: reading, readingsRoot: readings, store: store) { _ in
             Issue.record("Trashed a file whose checksum could not be read")
-        }
+        }.problem
         #expect(problem?.contains("could not be checked") == true)
         #expect(FileManager.default.fileExists(atPath: cache.path))
         #expect(try store.document(for: reading.id) != nil)
@@ -338,7 +338,7 @@ import Testing
         try Data("someone else's".utf8).write(to: output)
         let problem = ReadingLibrary.trashVerified(output, checksums: [String(repeating: "0", count: 64)]) { _ in
             Issue.record("Trashed a file that did not match")
-        }
+        }.problem
         #expect(problem?.contains("changed before") == true)
         #expect(try Data(contentsOf: output) == Data("someone else's".utf8))
         #expect(try FileManager.default.contentsOfDirectory(atPath: root.path) == ["Story.m4a"])
@@ -353,12 +353,12 @@ import Testing
         let identity = try #require(ExclusivePublisher.FileIdentity.of(output))
         try FileManager.default.removeItem(at: output)
         try Data("the user's".utf8).write(to: output)
-        #expect(ReadingLibrary.removePartial(output, identity: identity) == nil)
+        #expect(ReadingLibrary.removePartial(output, identity: identity).problem == nil)
         #expect(try Data(contentsOf: output) == Data("the user's".utf8))
         #expect(try FileManager.default.contentsOfDirectory(atPath: root.path) == ["Story.m4a"])
 
         let own = try #require(ExclusivePublisher.FileIdentity.of(output))
-        #expect(ReadingLibrary.removePartial(output, identity: own) == nil)
+        #expect(ReadingLibrary.removePartial(output, identity: own).problem == nil)
         #expect(try FileManager.default.contentsOfDirectory(atPath: root.path).isEmpty)
     }
 
@@ -387,7 +387,7 @@ import Testing
             }
             let problem = ReadingLibrary.deleteFiles(of: reading, readingsRoot: readings, store: store) { _ in
                 Issue.record("Trashed a file that is not there")
-            }
+            }.problem
             #expect(problem?.contains("unavailable") == true)
             #expect(FileManager.default.fileExists(atPath: cache.path))
             #expect(try store.document(for: reading.id) != nil)
@@ -401,7 +401,7 @@ import Testing
             var stopped = entry(.stopped)
             stopped.output = output.path
             #expect(try ReadingLibrary.ownership(of: output, sha256: nil, cache: nil) == nil)
-            #expect(ReadingLibrary.deleteFiles(of: stopped, readingsRoot: readings, store: store) { _ in } == nil)
+            #expect(ReadingLibrary.deleteFiles(of: stopped, readingsRoot: readings, store: store) { _ in }.problem == nil)
 
             // A volume mounted there (another device than the Volumes folder), whose folder is gone: the file is gone.
             let mounted = volumes.appendingPathComponent("Root")
@@ -413,7 +413,7 @@ import Testing
         #expect(ReadingOutput.unreachableReason(for: root.appendingPathComponent("Story.m4a")) == nil)
         var gone = reading
         gone.output = root.appendingPathComponent("Story.m4a").path
-        #expect(ReadingLibrary.deleteFiles(of: gone, readingsRoot: readings, store: store) { _ in } == nil)
+        #expect(ReadingLibrary.deleteFiles(of: gone, readingsRoot: readings, store: store) { _ in }.problem == nil)
         #expect(!FileManager.default.fileExists(atPath: cache.path))
     }
 
@@ -439,6 +439,68 @@ import Testing
         let throughLink = linked.appendingPathComponent("Story.m4a")
         #expect(try ReadingLibrary.ownership(of: throughLink, sha256: nil, cache: cache) == .finished)
         #expect(!ReadingLibrary.sameFile(root.appendingPathComponent("Other.m4a").path, throughLink))
+    }
+
+    /// A file the Trash refused that could not be put back (another file took its path) is kept aside; the result
+    /// says where, and the next Delete, given that place, moves it to the Trash and removes its private folder.
+    @Test func aFileLeftAsideIsDeletedByTheNextTry() throws {
+        let root = try folder()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let readings = root.appendingPathComponent("Readings", isDirectory: true)
+        let cache = readings.appendingPathComponent("Output-0123456789abcdef", isDirectory: true)
+        try FileManager.default.createDirectory(at: cache, withIntermediateDirectories: true)
+        let store = ReadingLibraryStore(folder: root.appendingPathComponent("ReadingLibrary"))
+        let output = root.appendingPathComponent("Story.m4a")
+        try Data("audio".utf8).write(to: output)
+        var reading = entry(.done)
+        reading.output = output.path
+        reading.cache = cache.path
+        reading.outputSHA256 = try fileSHA256(output)
+
+        struct TrashFailed: Error {}
+        let failed = ReadingLibrary.deleteFiles(of: reading, readingsRoot: readings, store: store) { _ in
+            // Another file takes the path while the reading's is aside, and the Trash refuses it.
+            try Data("someone else's".utf8).write(to: output)
+            throw TrashFailed()
+        }
+        let aside = try #require(failed.aside)
+        #expect(failed.problem?.contains("It is kept at") == true)
+        #expect(try Data(contentsOf: URL(fileURLWithPath: aside)) == Data("audio".utf8))
+        #expect(FileManager.default.fileExists(atPath: cache.path))
+
+        reading = ReadingLibrary.afterFailedDelete(reading, problem: failed.problem ?? "", aside: failed.aside)
+        var trashed: [String] = []
+        let done = ReadingLibrary.deleteFiles(of: reading, readingsRoot: readings, store: store) { url in
+            trashed.append(url.lastPathComponent)
+            try FileManager.default.removeItem(at: url)
+        }
+        #expect(done == .init())
+        #expect(trashed == ["Story.m4a"])
+        #expect(try Data(contentsOf: output) == Data("someone else's".utf8))
+        #expect(try FileManager.default.contentsOfDirectory(atPath: root.path).filter { $0.hasPrefix(".holos-delete-") }
+            .isEmpty)
+        #expect(!FileManager.default.fileExists(atPath: cache.path))
+    }
+
+    /// A render cache that cannot be looked up is not "gone": Delete keeps the entry for another try.
+    @Test func aCacheThatCannotBeCheckedKeepsTheEntry() throws {
+        let root = try folder()
+        let readings = root.appendingPathComponent("Readings", isDirectory: true)
+        defer {
+            _ = chmod(readings.path, 0o755)
+            try? FileManager.default.removeItem(at: root)
+        }
+        let cache = readings.appendingPathComponent("Output-0123456789abcdef", isDirectory: true)
+        try FileManager.default.createDirectory(at: cache, withIntermediateDirectories: true)
+        let store = ReadingLibraryStore(folder: root.appendingPathComponent("ReadingLibrary"))
+        var reading = entry(.stopped)
+        reading.cache = cache.path
+        #expect(chmod(readings.path, 0) == 0)
+        guard getuid() != 0 else { return }
+        #expect(ReadingLibrary.deleteFiles(of: reading, readingsRoot: readings, store: store) { _ in }.problem?
+            .contains("could not be removed") == true)
+        #expect(chmod(readings.path, 0o755) == 0)
+        #expect(FileManager.default.fileExists(atPath: cache.path))
     }
 
     /// A made reading whose identity was not recorded gets it only from the file whose checksum is the reading's.

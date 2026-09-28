@@ -333,7 +333,7 @@ public struct AudioBookJoiner: ReadingAudioJoiner {
         // A copy into the destination that a crash cut off is this reading's own file: it goes,
         // and the reading is joined and published again. Anything else there is kept.
         if let claimed = manifest.publishing {
-            if let problem = ReadingLibrary.removePartial(output, identity: claimed) {
+            if let problem = ReadingLibrary.removePartial(output, identity: claimed).problem {
                 throw HolosError.io(problem)
             }
             manifest.publishing = nil

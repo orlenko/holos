@@ -382,12 +382,18 @@ final class ReadingPane: NSViewController, MainSectionContent, NSTableViewDataSo
         emptyLabel.isHidden = !rows.isEmpty
         footer.stringValue = footerText
         footer.textColor = controller.notice == nil ? .secondaryLabelColor : .systemOrange
-        // The reading being played left the list, or its file was moved, deleted, or replaced (its row now offers no
-        // Pause): playback stops rather than go on with no control to stop it.
-        if let playing = player.entryID,
-           rows.first(where: { $0.id == playing }).flatMap(controller.finishedFile) == nil {
-            player.stop()
-        }
+        stopPlaybackOfGoneFile()
+    }
+
+    /// The reading being played left the list, or its file was moved, deleted, or replaced (its row now offers no
+    /// Pause): playback stops rather than go on with no control to stop it. Returns whether it stopped (the player
+    /// then reports the change itself).
+    @discardableResult
+    private func stopPlaybackOfGoneFile() -> Bool {
+        guard let playing = player.entryID,
+              rows.first(where: { $0.id == playing }).flatMap(controller.finishedFile) == nil else { return false }
+        player.stop()
+        return true
     }
 
     private func reloadRow(_ id: UUID) {
@@ -445,6 +451,8 @@ final class ReadingPane: NSViewController, MainSectionContent, NSTableViewDataSo
     }
 
     private func playerChanged() {
+        // Each tick checks too: a file moved or replaced while it plays stops it before its row loses Pause.
+        if stopPlaybackOfGoneFile() { return }
         for (index, entry) in rows.enumerated() {
             guard let cell = table.view(atColumn: 0, row: index, makeIfNecessary: false) as? ReadingRowView else {
                 continue

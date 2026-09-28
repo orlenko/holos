@@ -278,7 +278,9 @@ trashed is the file checked, and one that no longer matches goes back;
 `publishing` identity; `ReadingLibrary.ownership`) the same way (moved aside to a
 `.holos-delete-<UUID>` name, its identity checked there, then removed; every removal that
 depends on which file is at a path, the pipeline's and `ExclusivePublisher`'s included,
-goes through `ExclusivePublisher.removeVerified`), removes the render cache only when it is
+goes through `ExclusivePublisher.removeVerified`; a file goes back only by an exclusive rename
+or a hard link, never over a file put there meanwhile, and one that cannot go back stays
+aside, its place saved with the entry, `outputAside`, for the next Delete), removes the render cache only when it is
 an `Output-<16 hex>` folder directly in the Readings cache folder, and removes the saved
 text; only then does the entry leave the index. A made reading is saved as made before its
 saved text is removed. A file that cannot be
