@@ -83,13 +83,14 @@ public struct WebArticle: Sendable, Equatable {
         return clean.isEmpty ? nil : clean
     }
 
-    /// Builds an article from raw extracted pieces: sanitizes every text, drops empty blocks, and drops a leading
-    /// heading that repeats the title. `level` 0 marks a paragraph, 1 through 6 a heading.
+    /// Builds an article from raw extracted pieces: sanitizes every text, keeps only the blocks that are spoken (see
+    /// `isSpoken(_:)`), and drops a leading heading that repeats the title. `level` 0 marks a paragraph, 1 through 6
+    /// a heading.
     static func assemble(url: URL, title: String?, byline: String?, siteName: String?, language: String?,
                          raw: [(level: Int, text: String)]) -> WebArticle {
         var blocks: [Block] = raw.compactMap { item in
+            guard isSpoken(item.text) else { return nil }
             let text = sanitized(item.text)
-            guard !text.isEmpty, !isBracketMark(text) else { return nil }
             return (1...6).contains(item.level) ? .heading(level: item.level, text: text) : .paragraph(text)
         }
         let cleanTitle = sanitized(title ?? "")
@@ -126,11 +127,33 @@ public struct WebArticle: Sendable, Equatable {
         return String(result)
     }
 
-    /// A block that is only short bracketed marks, one or several with optional separators: Wikipedia's "[edit]"
-    /// links, a stray "[1]", or a group such as "[1][2]", "[1], [2]", or "[edit] [a][note 3]".
-    private static func isBracketMark(_ text: String) -> Bool {
-        text.wholeMatch(of: /\[[^\[\]]{0,22}\](?:\s*[,;–—-]?\s*\[[^\[\]]{0,22}\])*/) != nil
+    /// Whether a block with this text is spoken: once sanitized, it is not empty, not only bracketed marks (see
+    /// `bracketMarkPattern`), and not a noise mark (see `noiseMarks`). Every other block is, symbols only or not (an
+    /// emoji, "∞ ≠ ∅").
+    ///
+    /// The page script decides the same with `holosSpoken` (`WebArticleExtractor.spokenPredicate`), built from these
+    /// same constants, when it restores headings Readability dropped.
+    static func isSpoken(_ text: String) -> Bool {
+        let clean = sanitized(text)
+        return !clean.isEmpty && clean.wholeMatch(of: bracketMark) == nil && !noiseMarks.contains(clean.lowercased())
     }
+
+    /// A block that is only short bracketed marks, one or several with optional separators: Wikipedia's "[edit]"
+    /// links, a stray "[1]", or a group such as "[1][2]", "[1], [2]", or "[edit] [a][note 3]". Matched against the
+    /// whole sanitized text, counting Unicode scalars (as JavaScript's `u` flag counts code points).
+    static let bracketMarkPattern = #"\[[^\[\]]{0,22}\](?:\s*[,;–—-]?\s*\[[^\[\]]{0,22}\])*"#
+
+    /// Made for each use: `Regex` is not `Sendable`, so no one instance is shared across threads.
+    private static var bracketMark: Regex<AnyRegexOutput> {
+        try! Regex(bracketMarkPattern).matchingSemantics(.unicodeScalar)
+    }
+
+    /// Whole blocks (sanitized, lowercased) that are page marks, not text: a lone permalink or anchor mark beside a
+    /// heading, and ornamental section breaks.
+    static let noiseMarks: Set<String> = [
+        "#", "¶", "§", "🔗", "🔗\u{FE0F}", "permalink",
+        "* * *", "***", "⁂", "~", "—", "---", "· · ·", "❧",
+    ]
 
     private static func nonEmpty(_ text: String?) -> String? {
         guard let text else { return nil }
