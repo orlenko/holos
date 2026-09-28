@@ -488,13 +488,17 @@ final class ReadingController {
     /// anything is rendered, so Resume and Try Again read exactly this text. A copy that cannot be saved fails the
     /// reading: without it a resume would load the source again and could read different text.
     private func loadDocument(_ entry: ReadingEntry) async throws -> ReadableDocument {
+        // The saved text is read and written off the main actor too: a book's snapshot is megabytes of JSON.
+        let store = store
+        let id = entry.id
         let saved: ReadableDocument?
         do {
-            saved = try store.document(for: entry.id)
+            saved = try await Task.detached(priority: .userInitiated) { try store.document(for: id) }.value
         } catch {
             // Never loaded again in its place: the source may have changed since.
             throw HolosError.io("The text saved for this reading could not be read: \(error.localizedDescription)")
         }
+        try Task.checkCancellation()
         if let saved { return saved }
         let document: ReadableDocument
         switch entry.source {
@@ -513,7 +517,7 @@ final class ReadingController {
         // Stopped while it loaded: nothing is saved for it.
         try Task.checkCancellation()
         do {
-            try store.saveDocument(document, for: entry.id)
+            try await Task.detached(priority: .userInitiated) { try store.saveDocument(document, for: id) }.value
         } catch {
             throw HolosError.io("The text to read could not be saved for Resume in \(store.folder.path): "
                 + error.localizedDescription)
@@ -620,6 +624,12 @@ final class ReadingController {
                 readings = try ReadingOutput.readingsRoot(
                     support: HolosPaths.supportRoot, configured: ProcessInfo.processInfo.environment["HOLOS_SUPPORT_DIR"],
                     create: false)
+                // The support folder must be there (its volume connected): otherwise the cache and saved text would
+                // read as gone while they are only out of reach.
+                let support = readings.deletingLastPathComponent()
+                guard try ReadingOutput.exists(support) else {
+                    throw HolosError.unavailable("\(support.path) is not available.")
+                }
             } catch {
                 // Without it the cache cannot be told or locked: the entry stays for another try.
                 return ReadingLibrary.DeleteResult(

@@ -443,15 +443,21 @@ public enum ReadingLibrary {
                                                 attributes: [.posixPermissions: 0o700])
         let copy = RawFilePath.appending(name, to: holder)
         if fclonefileat(file.fileDescriptor, AT_FDCWD, RawFilePath.system(copy), 0) == 0 { return copy }
-        let output = open(RawFilePath.system(copy), O_CREAT | O_EXCL | O_WRONLY | O_CLOEXEC | O_NOFOLLOW, 0o600)
-        guard output >= 0 else { throw HolosError.io("Could not copy \(name): \(String(cString: strerror(errno)))") }
-        let writer = FileHandle(fileDescriptor: output, closeOnDealloc: true)
-        try file.seek(toOffset: 0)
-        while let chunk = try file.read(upToCount: 1 << 20), !chunk.isEmpty {
-            try writer.write(contentsOf: chunk)
+        do {
+            let output = open(RawFilePath.system(copy), O_CREAT | O_EXCL | O_WRONLY | O_CLOEXEC | O_NOFOLLOW, 0o600)
+            guard output >= 0 else { throw HolosError.io("Could not copy \(name): \(String(cString: strerror(errno)))") }
+            let writer = FileHandle(fileDescriptor: output, closeOnDealloc: true)
+            try file.seek(toOffset: 0)
+            while let chunk = try file.read(upToCount: 1 << 20), !chunk.isEmpty {
+                try writer.write(contentsOf: chunk)
+            }
+            try writer.close()
+            return copy
+        } catch {
+            // A copy cut off (a full disk) is not left taking space until the next launch.
+            try? FileManager.default.removeItem(at: holder)
+            throw error
         }
-        try writer.close()
-        return copy
     }
 
     /// Whether `path` (a manifest's output) names the file `output` names: spelled the same, or, through links in
@@ -641,12 +647,22 @@ public enum ReadingLibrary {
                 case .partial(let identity)?:
                     report = removePartial(output, identity: identity, token: asideToken(entry.id, partial: true))
                 case nil:
-                    report = RemovalReport()
-                    // A made reading's file that is there but no longer matches (edited in place, or replaced) is
-                    // left alone, and said so: Delete promised to move it to the Trash.
-                    if entry.state == .done, (try? ReadingOutput.exists(output)) == true {
-                        note = "\(output.lastPathComponent) changed since it was made, so it was left in place at "
-                            + "\((output.deletingLastPathComponent().path as NSString).abbreviatingWithTildeInPath)."
+                    let present = (try? ReadingOutput.exists(output)) == true
+                    if present, entry.state != .done, !evidence.checksums.isEmpty {
+                        // An unfinished reading whose manifest holds the finished file's checksum was being saved
+                        // when it stopped: the file there may be the one it began (created before its identity was
+                        // saved). It cannot be told, so the reading stays until the user decides.
+                        report = RemovalReport(problem: "A file is at \(output.path), where this reading was being "
+                            + "saved when it stopped, and it cannot be told whether it is this reading's. Remove it in "
+                            + "Finder if it is, then Delete again.")
+                    } else {
+                        report = RemovalReport()
+                        // A made reading's file that is there but no longer matches (edited in place, or replaced)
+                        // is left alone, and said so: Delete promised to move it to the Trash.
+                        if present, entry.state == .done {
+                            note = "\(output.lastPathComponent) changed since it was made, so it was left in place at "
+                                + "\((output.deletingLastPathComponent().path as NSString).abbreviatingWithTildeInPath)."
+                        }
                     }
                 }
                 if let problem = report.problem {
