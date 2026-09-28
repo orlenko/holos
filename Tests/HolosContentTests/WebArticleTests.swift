@@ -1088,6 +1088,80 @@ private func isPrintable(_ text: String) -> Bool {
         #expect(article.blocks.last == .paragraph(Fixture.closing))
     }
 
+    @Test(arguments: [
+        // Wikipedia-style: the section's text is loose in the `section` beside the heading's wrapper.
+        "<section>{HEADING}{TEXT}</section>",
+        // The same after a paragraph of the same `section`, which comes before the heading.
+        "<section><p>{BEFORE}</p>{HEADING}{TEXT}</section>",
+        // Loose text in a `div` around the wrapper.
+        "<div class=\"body\">{HEADING}{TEXT}</div>",
+    ])
+    func looseTextAfterAHeadingWrapperIsItsSection(layout: String) async throws {
+        let p = Fixture.paragraphs
+        let backMatter = layout.replacingOccurrences(of: "{HEADING}", with: wrappedHeading("After the storm"))
+            .replacingOccurrences(of: "{BEFORE}", with: p[1])
+            .replacingOccurrences(of: "{TEXT}", with: Fixture.closing)
+        let article = try await WebArticleExtractor(options: fast).extract(
+            html: Fixture.article(backMatter: backMatter), baseURL: Fixture.base)
+        #expect(headings(article) == ["h2 A daily climb", "h2 After the storm"])
+        #expect(Array(article.blocks.suffix(2)) == [.heading(level: 2, text: "After the storm"),
+                                                    .paragraph(Fixture.closing)])
+        #expect(!article.spokenText.contains("edit"))
+    }
+
+    @Test func onlyTheFirstTitleLikeHeadingIsTheTitle() async throws {
+        let p = Fixture.paragraphs
+        // The title heading, then a later `h1` like it that Readability drops for its class name, with its own
+        // section.
+        let page = """
+            <!doctype html><html lang="en"><head><meta charset="utf-8">
+            <title>The Last Keeper of the Northern Cape | Coastal News</title></head>
+            <body><main><article>
+            <h1>The Last Keeper of the Northern Cape</h1><p>\(p[0])</p><p>\(p[2])</p>
+            <h1 class="header-anchor-post">The last keeper of the northern cape, again</h1><p>\(p[1])</p>
+            <p>\(Fixture.closing)</p>
+            </article></main></body></html>
+            """
+        let article = try await WebArticleExtractor(options: fast).extract(html: page, baseURL: Fixture.base)
+        #expect(article.blocks == [.paragraph(p[0]), .paragraph(p[2]),
+                                   .heading(level: 2, text: "The last keeper of the northern cape, again"),
+                                   .paragraph(p[1]), .paragraph(Fixture.closing)])
+    }
+
+    @Test func aTitleLikeHeadingAfterTheArticleBeginsIsASectionHeading() async throws {
+        let p = Fixture.paragraphs
+        // The first title-like heading comes after the article's first paragraph.
+        let page = """
+            <!doctype html><html lang="en"><head><meta charset="utf-8">
+            <title>The Last Keeper of the Northern Cape | Coastal News</title></head>
+            <body><main><article>
+            <p>\(p[0])</p>
+            \(wrappedHeading("The last keeper of the northern cape"))<p>\(p[1])</p>
+            </article></main></body></html>
+            """
+        let article = try await WebArticleExtractor(options: fast).extract(html: page, baseURL: Fixture.base)
+        #expect(article.blocks == [.paragraph(p[0]),
+                                   .heading(level: 2, text: "The last keeper of the northern cape"),
+                                   .paragraph(p[1])])
+    }
+
+    @Test(arguments: [
+        ##"<nav role="navigation"><h2>On this page</h2><ul><li><a href="#top">Top</a></li></ul></nav>"##,
+        ##"<aside><h2>On this page</h2><a href="#top">Top</a></aside>"##,
+        #"<div role="complementary"><h3>On this page</h3></div>"#,
+        ##"<div role="menu"><h1>On this page</h1><a href="#top">Top</a></div>"##,
+    ])
+    func aFurnitureHeadingNeitherEndsNorStartsASection(furniture: String) async throws {
+        // The widget sits between a dropped article heading and its section's text.
+        let backMatter = wrappedHeading("After the storm") + furniture + "<p>\(Fixture.closing)</p>"
+        let article = try await WebArticleExtractor(options: fast).extract(
+            html: Fixture.article(backMatter: backMatter), baseURL: Fixture.base)
+        #expect(!article.spokenText.contains("On this page"))
+        #expect(headings(article) == ["h2 A daily climb", "h2 After the storm"])
+        #expect(Array(article.blocks.suffix(2)) == [.heading(level: 2, text: "After the storm"),
+                                                    .paragraph(Fixture.closing)])
+    }
+
     @Test func readabilityIsTheVendoredRelease() {
         // THIRD_PARTY_NOTICES.md records this SHA-256 for Readability.js at tag 0.6.0.
         let digest = SHA256.hash(data: Data(WebArticleExtractor.readabilitySource.utf8))

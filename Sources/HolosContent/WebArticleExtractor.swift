@@ -471,24 +471,33 @@ import WebKit
     ///    dialogs). Each block's owner element gets `data-holos-b="<n>"` and each heading `data-holos-h="<n>"`.
     ///    Readability 0.6.0 keeps `data-*` attributes on the nodes it keeps (it strips only `class`, `style`, and
     ///    presentational attributes) and copies them when it retags a node, and its retries re-parse the page from
-    ///    serialized HTML, so the attributes survive where node identity would not. A heading's section is the
-    ///    blocks and headings after it in document order up to the next heading of the same or a higher level,
-    ///    leaving out blocks whose owner holds the heading (the edit link in Wikipedia's heading wrapper). A block
-    ///    counts for the heading only when no furniture container holds the heading but not the block: `nav`,
-    ///    `aside`, `footer`, `form`, `dialog`, `menu`, a page-level `header` (one outside `article`, `aside`, `main`,
-    ///    `nav`, and `section`), or an element whose role is in Readability's `UNLIKELY_ROLES`. So a widget's
-    ///    heading ("Share", "Related") never takes the article after the widget as its section, whatever the
-    ///    widget's controls hold.
+    ///    serialized HTML, so the attributes survive where node identity would not.
+    ///
+    ///    Furniture containers are `nav`, `aside`, `footer`, `form`, `dialog`, `menu`, a page-level `header` (one
+    ///    outside `article`, `aside`, `main`, `nav`, and `section`), and elements whose role is in Readability's
+    ///    `UNLIKELY_ROLES` (invisible elements are not walked at all). A heading inside one (a widget's "Share" or
+    ///    "Related") is never restored and is not a section boundary: it neither starts nor ends a section. A
+    ///    block inside one does not count as section content.
+    ///
+    ///    A heading's section is decided by document order alone: the blocks and headings after it up to the next
+    ///    boundary heading (one of the same or a higher level, outside furniture), leaving out only the blocks in
+    ///    the heading's own wrapper: its outermost ancestor that holds nothing else of substance (letters or
+    ///    digits outside bracketed marks) than the heading, such as Wikipedia's `<div class="mw-heading">` with its
+    ///    `[edit]` link. Loose text of an element that also holds the heading's wrapper (`<section><div
+    ///    class="mw-heading">…</div>Section text…</section>`) is section content like any other block.
     /// 2. `holosKeepBlockMarks` covers the one place Readability replaces a node without copying its attributes: a
     ///    `div` holding only text, which it wraps in a new `<p>` and then replaces with that `<p>`. The mark moves
     ///    to the new `<p>` just before.
     /// 3. `holosRestoreHeadings`, on Readability's output, finds blocks and headings by their marks. A heading
     ///    Readability dropped comes back when at least one of its section's counted blocks is in the output, right
     ///    before the first block or heading of its section that the output has (a subsection heading Readability
-    ///    kept, or one restored), outside every element that begins there. Headings Readability kept are not added
-    ///    twice. The page's title heading is not added: an `h1`, or the first `h1` or `h2`, that Readability's own
-    ///    test finds similar to the article title. A restored `h1` becomes an `h2`, as Readability does with the
-    ///    `h1`s it keeps.
+    ///    kept, or one restored), outside every element that begins there. When that block is loose text of an
+    ///    element that held the heading, the heading goes inside that element, after the parts of it that came
+    ///    before the heading. Headings Readability kept are not added twice. The page's title heading is not
+    ///    added. As in Readability's `_grabArticle`, that is only the first `h1` or `h2` (in document order,
+    ///    furniture included) that Readability's own test finds similar to the article title, and only when no
+    ///    content block of the output comes before it; any later such heading is an ordinary one. A restored `h1`
+    ///    becomes an `h2`, as Readability does with the `h1`s it keeps.
     ///
     /// `holosClearMarks` then removes every mark before the article is read.
     private static let headingRestorer = #"""
@@ -502,6 +511,7 @@ import WebKit
       }
     }
 
+    // Returns `{ headings, content }`: a record per heading, and the ids of the blocks outside furniture.
     function holosRecordHeadings(doc, visible, unlikelyRoles) {
       const root = doc.body || doc.documentElement;
       // The page's own marks, if it has any, mean nothing.
@@ -513,22 +523,46 @@ import WebKit
         || (element.localName === "header"
           && !(element.parentElement && element.parentElement.closest("article, aside, main, nav, section")))
         || unlikelyRoles.includes(element.getAttribute("role"));
+      // Whether a furniture container (the element itself or one around it, below the root) holds the element.
+      const furnitureCache = new Map();
+      const inFurniture = (element) => {
+        if (!element || element === root) return false;
+        let known = furnitureCache.get(element);
+        if (known === undefined) {
+          known = isFurniture(element) || inFurniture(element.parentElement);
+          furnitureCache.set(element, known);
+        }
+        return known;
+      };
+      // Letters and digits outside bracketed marks, summed over the walked text each element holds (headings and
+      // blocks alike), so an element's substance is what would be spoken from it.
+      const substance = (text) => text.replace(/\[[^\]]*\]/g, "").replace(/[^\p{L}\p{N}]+/gu, "").length;
+      const weight = new Map();
+      const weigh = (element, text) => {
+        const amount = substance(text);
+        if (!amount) return;
+        for (let at = element; at && at !== root; at = at.parentElement) {
+          weight.set(at, (weight.get(at) || 0) + amount);
+        }
+      };
       const blockIds = new Map();
       const byElement = new Map();
       const headings = [];
+      const content = new Set();
       // Headings and blocks in document order.
       const entries = [];
       for (const item of holosArticleBlocks(root, { skip: skip })) {
         if (item.level) {
           const element = item.owner.closest(holosHeadingNames);
           if (!element) continue;
+          weigh(element, item.text);
           const known = byElement.get(element);
           if (known) {
             known.text += " " + item.text;
             continue;
           }
           const heading = { id: String(headings.length), element: element, level: Number(element.localName[1]),
-            text: item.text };
+            text: item.text, furniture: inFurniture(element), blocksBefore: blockIds.size };
           element.setAttribute("data-holos-h", heading.id);
           byElement.set(element, heading);
           headings.push(heading);
@@ -536,11 +570,13 @@ import WebKit
           continue;
         }
         if (item.owner === root) continue;
+        weigh(item.owner, item.text);
         let id = blockIds.get(item.owner);
         if (id === undefined) {
           id = String(blockIds.size);
           blockIds.set(item.owner, id);
           item.owner.setAttribute("data-holos-b", id);
+          if (!inFurniture(item.owner)) content.add(id);
         }
         entries.push({ block: id, owner: item.owner });
       }
@@ -548,26 +584,30 @@ import WebKit
       entries.forEach((entry, index) => {
         const heading = entry.heading;
         if (!heading) return;
-        let furniture = null;
-        for (let element = heading.element; element && element !== root; element = element.parentElement) {
-          if (isFurniture(element)) {
-            furniture = element;
-            break;
-          }
+        const record = { id: heading.id, level: heading.level, text: heading.text, furniture: heading.furniture,
+          blocksBefore: heading.blocksBefore, section: [] };
+        records.push(record);
+        if (heading.furniture) return;
+        // The heading's own wrapper: its outermost ancestor holding nothing else of substance.
+        const own = weight.get(heading.element) || 0;
+        let wrapper = heading.element;
+        while (wrapper.parentElement && wrapper.parentElement !== root
+          && (weight.get(wrapper.parentElement) || 0) === own) {
+          wrapper = wrapper.parentElement;
         }
-        const section = [];
         for (let later = index + 1; later < entries.length; later++) {
           const next = entries[later];
           if (next.heading) {
+            if (next.heading.furniture) continue;
             if (next.heading.level <= heading.level) break;
-            section.push({ heading: next.heading.id });
-          } else if (!next.owner.contains(heading.element)) {
-            section.push({ block: next.block, counts: !furniture || furniture.contains(next.owner) });
+            record.section.push({ heading: next.heading.id });
+          } else if (!wrapper.contains(next.owner)) {
+            record.section.push({ block: next.block, counts: content.has(next.block),
+              around: next.owner.contains(heading.element) });
           }
         }
-        records.push({ id: heading.id, level: heading.level, text: heading.text, section: section });
       });
-      return records;
+      return { headings: records, content: Array.from(content) };
     }
 
     function holosKeepBlockMarks(reader) {
@@ -582,8 +622,10 @@ import WebKit
       };
     }
 
-    function holosRestoreHeadings(root, headings, similarToTitle) {
+    function holosRestoreHeadings(root, recorded, similarToTitle) {
       const doc = root.ownerDocument;
+      const headings = recorded.headings;
+      const content = new Set(recorded.content);
       // The first element in the output with each mark.
       const marked = (name) => {
         const found = new Map();
@@ -595,13 +637,15 @@ import WebKit
       };
       const blocks = marked("data-holos-b");
       const kept = marked("data-holos-h");
-      let titleSeen = false;
-      const isTitle = headings.map((heading) => {
-        if (heading.level > 2 || !similarToTitle(heading.text)) return false;
-        const first = !titleSeen;
-        titleSeen = true;
-        return heading.level === 1 || first;
-      });
+      // The first content block of the output, by document order on the page (block ids follow it).
+      let firstContent = Infinity;
+      for (const id of blocks.keys()) {
+        if (content.has(id)) firstContent = Math.min(firstContent, Number(id));
+      }
+      // As in Readability, only the first title-like h1 or h2 is the title (furniture included: the title often
+      // sits in a page-level header).
+      const title = headings.find((heading) => heading.level <= 2 && similarToTitle(heading.text));
+      const titleId = title && !(firstContent < title.blocksBefore) ? title.id : null;
       const hasTextBefore = (node) => {
         for (let sibling = node.previousSibling; sibling; sibling = sibling.previousSibling) {
           if (/[\p{L}\p{N}]/u.test(sibling.textContent)) return true;
@@ -611,17 +655,38 @@ import WebKit
       // Later headings first, so a heading restored for a subsection is there when its parent heading looks.
       for (let index = headings.length - 1; index >= 0; index--) {
         const heading = headings[index];
-        if (kept.has(heading.id) || isTitle[index]) continue;
+        if (heading.furniture || kept.has(heading.id) || heading.id === titleId) continue;
         if (!heading.section.some((entry) => entry.counts && blocks.has(entry.block))) continue;
         let target = null;
+        let around = false;
         for (const entry of heading.section) {
           target = entry.heading !== undefined ? kept.get(entry.heading) : blocks.get(entry.block);
+          around = entry.around === true;
           if (target) break;
         }
-        while (target.parentNode !== root && !hasTextBefore(target)) target = target.parentNode;
         const element = doc.createElement("h" + Math.max(heading.level, 2));
         element.textContent = heading.text;
-        target.parentNode.insertBefore(element, target);
+        if (around) {
+          // Loose text of an element that held the heading: the heading goes inside it, after its parts that
+          // came before the heading on the page (by their marks).
+          const earlier = (node) => {
+            const b = node.getAttribute("data-holos-b");
+            const h = node.getAttribute("data-holos-h");
+            return (b !== null && Number(b) < heading.blocksBefore)
+              || (h !== null && Number(h) < Number(heading.id));
+          };
+          let last = null;
+          for (const child of target.childNodes) {
+            if (child.nodeType === Node.ELEMENT_NODE
+              && (earlier(child) || Array.from(child.querySelectorAll(holosMarks)).some(earlier))) {
+              last = child;
+            }
+          }
+          target.insertBefore(element, last ? last.nextSibling : target.firstChild);
+        } else {
+          while (target.parentNode !== root && !hasTextBefore(target)) target = target.parentNode;
+          target.parentNode.insertBefore(element, target);
+        }
         kept.set(heading.id, element);
       }
     }
@@ -660,14 +725,15 @@ import WebKit
       const page = document.cloneNode(true);
       holosDropBackMatter(page);
       const reader = new Readability(page);
-      let headings = [];
+      const none = { headings: [], content: [] };
+      let headings = none;
       try {
         headings = holosRecordHeadings(page, (element) => reader._isProbablyVisible(element),
           Readability.prototype.UNLIKELY_ROLES);
         holosKeepBlockMarks(reader);
       } catch (error) {
         // Readability's article as it is, without restored headings.
-        headings = [];
+        headings = none;
       }
       const article = reader.parse();
       if (!article) {
