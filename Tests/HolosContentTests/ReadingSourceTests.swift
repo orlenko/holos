@@ -33,6 +33,12 @@ import Testing
         #expect(message(parse("me@example.com")) != nil)
         // A bare file name is not a site.
         #expect(message(parse("notes.md")) != nil)
+        // An explicit https:// address needs only a host: an intranet name or an IP address is one; a bare one is not.
+        #expect(try parse("https://wiki/article").get() == .web(URL(string: "https://wiki/article")!))
+        #expect(try parse("https://[::1]/article").get() == .web(URL(string: "https://[::1]/article")!))
+        #expect(try parse("https://192.168.1.10:8443/page").get() == .web(URL(string: "https://192.168.1.10:8443/page")!))
+        #expect(message(parse("wiki/article")) != nil)
+        #expect(message(parse("https:///article")) != nil)
     }
 
     @Test func filesArePathsOrFileURLsOfDocumentsThatExist() throws {

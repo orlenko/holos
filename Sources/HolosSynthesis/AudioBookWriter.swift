@@ -293,8 +293,10 @@ public enum AudioBookWriter {
             throw HolosError.io("Could not write the reading audio: \(writer.error?.localizedDescription ?? "unknown error")")
         }
         // Moves the temporary to `output` (or copies it, then removes it); on failure it is left
-        // for the `defer` above.
-        try ExclusivePublisher.publish(temporary, to: output, existing: "Reading output already exists")
+        // for the `defer` above. A copy cut off is removed through a place aside named after `output`
+        // (`cleanupToken(for:)`), which a sweep of `output`'s own leftovers can find after a crash.
+        try ExclusivePublisher.publish(temporary, to: output, existing: "Reading output already exists",
+                                       cleanupToken: Self.cleanupToken(for: output.lastPathComponent))
         finished = true
         return AudioBookSummary(url: output, duration: Double(total) / rate,
                                 chapters: chapterMarks.map { AudioBookChapter(title: $0.title, start: Double($0.frame) / rate) })
@@ -310,6 +312,13 @@ public enum AudioBookWriter {
         let stem = ext.isEmpty ? name : String(name.dropLast(ext.count + 1))
         let derived = (stem.hasPrefix(".") ? "" : ".") + stem + suffix
         return derived.utf8.count <= Int(NAME_MAX) ? derived : ".holos-book" + suffix
+    }
+
+    /// The place aside `write` removes a partly copied `name` through (see `ExclusivePublisher.publish`):
+    /// `.holos-delete-<name>`, or nil (a new place each time) when that is too long for a name.
+    public static func cleanupToken(for name: String) -> String? {
+        let token = ExclusivePublisher.removalPrefix + name
+        return token.utf8.count <= Int(NAME_MAX) ? token : nil
     }
 
     /// `temporaryName(for:)` beside `output`, the folder spelled as `output` spells it.

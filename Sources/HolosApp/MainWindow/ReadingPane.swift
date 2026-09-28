@@ -37,6 +37,7 @@ final class ReadingPane: NSViewController, MainSectionContent, NSTableViewDataSo
         controller.onChange = { [weak self] in self?.reload() }
         controller.onProgress = { [weak self] id in self?.reloadRow(id) }
         player.onChange = { [weak self] in self?.playerChanged() }
+        player.onError = { [weak self] problem in self?.showMessage(problem, problem: true) }
         preview.onChange = { [weak self] in self?.updatePreviewButton() }
         preferencesObserver = NotificationCenter.default.addObserver(
             forName: ReadingPreferences.changed, object: nil, queue: .main) { [weak self] _ in
@@ -53,7 +54,7 @@ final class ReadingPane: NSViewController, MainSectionContent, NSTableViewDataSo
 
     func sectionDidShow() {
         refreshVoices()
-        controller.recheckMissingIdentities()
+        controller.recheck()
         reload()
         if windowObserver == nil, let window = view.window {
             // Nothing keeps playing once the window is closed: its controls are gone with it.
@@ -74,7 +75,7 @@ final class ReadingPane: NSViewController, MainSectionContent, NSTableViewDataSo
     /// Back from Finder: a file moved or deleted there shows.
     func sectionWindowDidBecomeKey() {
         // A drive reconnected or a file put back meanwhile: a reading whose identity is still unknown is checked again.
-        controller.recheckMissingIdentities()
+        controller.recheck()
         reload()
     }
 
@@ -224,8 +225,8 @@ final class ReadingPane: NSViewController, MainSectionContent, NSTableViewDataSo
         ])
         // A drop of things that cannot be read is taken too, so the reason shows under the card.
         dropView.accepts = { [weak self] pasteboard in
-            guard let found = self?.sources(in: pasteboard) else { return false }
-            return !found.sources.isEmpty || !found.problems.isEmpty
+            // Told from what the pasteboard offers alone: nothing is looked up while a drag passes over.
+            self?.offered(pasteboard).isEmpty == false
         }
         dropView.onDrop = { [weak self] pasteboard in self?.takeDrop(pasteboard) ?? false }
         dropView.onShareKey = { [weak self] in self?.shareSelected() ?? false }
@@ -256,28 +257,43 @@ final class ReadingPane: NSViewController, MainSectionContent, NSTableViewDataSo
     }
 
     func controlTextDidChange(_ notification: Notification) {
+        inputGeneration += 1
         makeButton.isEnabled = !field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         showMessage(nil)
     }
 
     @objc private func makeAudio() {
-        switch ReadingSourceParser.parse(field.stringValue) {
-        case .success(let source):
-            guard add([source]) else { return }
-            field.stringValue = ""
-            makeButton.isEnabled = false
-        case .failure(let problem):
-            showMessage(problem.message, problem: true)
+        let text = field.stringValue
+        makeButton.isEnabled = false
+        inputGeneration += 1
+        let asked = inputGeneration
+        Task { @MainActor [weak self] in
+            // A path is looked up off the main actor (it may be on a share that stopped answering).
+            let parsed = try? await offMain { ReadingSourceParser.parse(text) }
+            // Another source was typed, dropped, or chosen meanwhile: this one is not added.
+            guard let self, asked == self.inputGeneration else { return }
+            defer { self.makeButton.isEnabled = !self.field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+            switch parsed {
+            case .success(let source)?:
+                // The field is emptied once the reading is added (unless it was changed meanwhile).
+                guard await self.add([source]), self.field.stringValue == text else { return }
+                self.field.stringValue = ""
+            case .failure(let problem)?:
+                self.showMessage(problem.message, problem: true)
+            case nil:
+                break
+            }
         }
     }
 
     /// Adds the readings; false (with the reason shown) when the list takes none.
     @discardableResult
-    private func add(_ sources: [ReadingSource]) -> Bool {
+    private func add(_ sources: [ReadingSource]) async -> Bool {
+        let (voice, speed) = (selectedVoice, speedSlider.doubleValue)
         var last: UUID?
         for source in sources {
             do {
-                last = try controller.add(source, voice: selectedVoice, speed: speedSlider.doubleValue)
+                last = try await controller.add(source, voice: voice, speed: speed)
             } catch {
                 showMessage((error as? LocalizedError)?.errorDescription ?? error.localizedDescription, problem: true)
                 return false
@@ -302,15 +318,14 @@ final class ReadingPane: NSViewController, MainSectionContent, NSTableViewDataSo
         panel.beginSheetModal(for: window) { [weak self] response in
             guard response == .OK else { return }
             MainActor.assumeIsolated {
-                _ = self?.take(ReadingSourceParser.sources(fileURLs: panel.urls, urls: [], strings: []))
+                _ = self?.take(Offered(files: panel.urls, urls: [], strings: []))
             }
         }
     }
 
     /// A drop, a paste, or files chosen: one source goes in the field, for a voice and Make Audio; several are added
     /// at once with the card's voice and speed.
-    @discardableResult
-    private func take(_ found: (sources: [ReadingSource], problems: [ReadingSourceProblem])) -> Bool {
+    private func take(_ found: (sources: [ReadingSource], problems: [ReadingSourceProblem])) async {
         if found.sources.count == 1, let source = found.sources.first {
             field.stringValue = source.fieldText
             makeButton.isEnabled = true
@@ -318,35 +333,69 @@ final class ReadingPane: NSViewController, MainSectionContent, NSTableViewDataSo
             showMessage(found.problems.first?.message ?? "Choose a voice and speed, then Make Audio (Return).",
                         problem: !found.problems.isEmpty)
         } else if found.sources.count > 1 {
-            if add(found.sources), let problem = found.problems.first { showMessage(problem.message, problem: true) }
+            if await add(found.sources), let problem = found.problems.first {
+                showMessage(problem.message, problem: true)
+            }
         } else if let problem = found.problems.first {
             showMessage(problem.message, problem: true)
         }
-        return !found.sources.isEmpty
     }
 
-    private func take(_ pasteboard: NSPasteboard) -> Bool {
-        take(sources(in: pasteboard))
+    /// Takes what `offered` holds (see `take(_:)`), its paths looked up off the main actor (they may be on a share
+    /// that stopped answering). Returns whether it offers anything, told from what is offered alone (what cannot be
+    /// read is explained under the card): only then is a drop taken or a paste not refused. A result that comes after
+    /// the field was typed in, or after another drop, paste, or choice, is dropped.
+    @discardableResult
+    private func take(_ offered: Offered) -> Bool {
+        guard !offered.isEmpty else { return false }
+        inputGeneration += 1
+        let asked = inputGeneration
+        Task { @MainActor [weak self] in
+            guard let found = try? await offMain({ offered.parsed }), let self, asked == self.inputGeneration else {
+                return
+            }
+            await self.take(found)
+        }
+        return true
     }
 
-    /// A drop is taken when anything in it was used or explained under the card (a folder or an unreadable file
+    /// Counts what the user did with the card's source (typed, dropped, pasted, chose), so a look-up that ends after
+    /// another does not overwrite it.
+    private var inputGeneration = 0
+
+    /// A drop is taken when anything in it can be used or explained under the card (a folder or an unreadable file
     /// says why): only a drop of nothing at all is refused, so AppKit shows failure only then.
     private func takeDrop(_ pasteboard: NSPasteboard) -> Bool {
-        let found = sources(in: pasteboard)
-        return take(found) || !found.problems.isEmpty
+        take(offered(pasteboard))
     }
 
-    private func sources(in pasteboard: NSPasteboard) -> (sources: [ReadingSource], problems: [ReadingSourceProblem]) {
-        let files = pasteboard.readObjects(forClasses: [NSURL.self],
-                                           options: [.urlReadingFileURLsOnly: true]) as? [URL] ?? []
-        let urls = pasteboard.readObjects(forClasses: [NSURL.self], options: nil) as? [URL] ?? []
-        let strings = pasteboard.readObjects(forClasses: [NSString.self], options: nil) as? [String] ?? []
-        return ReadingSourceParser.sources(fileURLs: files, urls: urls, strings: strings)
+    /// What a pasteboard offers: file URLs, web URLs, and text.
+    private struct Offered: Sendable {
+        var files: [URL]
+        var urls: [URL]
+        var strings: [String]
+
+        /// The sources, each path looked up (not on the main actor).
+        var parsed: (sources: [ReadingSource], problems: [ReadingSourceProblem]) {
+            ReadingSourceParser.sources(fileURLs: files, urls: urls, strings: strings)
+        }
+
+        /// Nothing is offered (no file, link, or text other than spaces).
+        var isEmpty: Bool {
+            files.isEmpty && urls.isEmpty && strings.allSatisfy { $0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+        }
+    }
+
+    private func offered(_ pasteboard: NSPasteboard) -> Offered {
+        Offered(files: pasteboard.readObjects(forClasses: [NSURL.self],
+                                              options: [.urlReadingFileURLsOnly: true]) as? [URL] ?? [],
+                urls: pasteboard.readObjects(forClasses: [NSURL.self], options: nil) as? [URL] ?? [],
+                strings: pasteboard.readObjects(forClasses: [NSString.self], options: nil) as? [String] ?? [])
     }
 
     /// ⌘V outside the field: the link or files on the clipboard go in as a drop would.
     @objc func paste(_ sender: Any?) {
-        if !take(NSPasteboard.general) { NSSound.beep() }
+        if !take(offered(NSPasteboard.general)) { NSSound.beep() }
     }
 
     @objc private func speedChanged() {
@@ -373,14 +422,20 @@ final class ReadingPane: NSViewController, MainSectionContent, NSTableViewDataSo
 
     @objc private func openFolder() {
         let folder = ReadingPreferences.folder
-        if FileManager.default.fileExists(atPath: folder.path) {
-            NSWorkspace.shared.activateFileViewerSelecting([folder])
-        } else if ReadingPreferences.isDefaultFolder {
-            showMessage("\(ReadingPreferences.folderText) does not exist yet; it is made with the first reading.")
-        } else {
-            // A folder chosen in Settings is never made in its place (see `ReadingController.outputFolder`).
-            showMessage("\(ReadingPreferences.folderText), chosen in Settings › Reading, is not available. Connect "
-                + "its disk, or choose another folder there.", problem: true)
+        let (isDefault, shown) = (ReadingPreferences.isDefaultFolder, ReadingPreferences.folderText)
+        // Looked up off the main actor: the folder may be on a share that stopped answering.
+        Task { @MainActor [weak self] in
+            let exists = (try? await offMain { FileManager.default.fileExists(atPath: folder.path) }) ?? false
+            guard let self else { return }
+            if exists {
+                NSWorkspace.shared.activateFileViewerSelecting([folder])
+            } else if isDefault {
+                self.showMessage("\(shown) does not exist yet; it is made with the first reading.")
+            } else {
+                // A folder chosen in Settings is never made in its place (see `ReadingLibrary.outputFolder`).
+                self.showMessage("\(shown), chosen in Settings › Reading, is not available. Connect its disk, or "
+                    + "choose another folder there.", problem: true)
+            }
         }
     }
 
@@ -399,14 +454,15 @@ final class ReadingPane: NSViewController, MainSectionContent, NSTableViewDataSo
         stopPlaybackOfGoneFile()
     }
 
-    /// The reading being played left the list, or its file was moved, deleted, or replaced (its row now offers no
-    /// Pause): playback stops rather than go on with no control to stop it. Returns whether it stopped (the player
-    /// then reports the change itself).
+    /// The reading being played left the list, or the last check of its file found it moved, deleted, or replaced
+    /// (its row now offers no Pause): playback stops rather than go on with no control to stop it. Looks nothing up
+    /// (see `ReadingController.refreshFiles`). Returns whether it stopped (the player then reports the change itself).
     @discardableResult
     private func stopPlaybackOfGoneFile() -> Bool {
-        guard let playing = player.entryID,
-              rows.first(where: { $0.id == playing }).flatMap(controller.finishedFile) == nil else { return false }
-        player.stop()
+        guard let playing = player.entryID else { return false }
+        if let entry = rows.first(where: { $0.id == playing }), entry.state == .done,
+           controller.fileProblem(entry) == nil { return false }
+        player.unload()
         return true
     }
 
@@ -447,21 +503,16 @@ final class ReadingPane: NSViewController, MainSectionContent, NSTableViewDataSo
 
     private func configure(_ cell: ReadingRowView, _ entry: ReadingEntry) {
         // A made reading whose file was moved, deleted, or replaced by another file shows as missing; one whose drive
-        // or share is not connected, as unavailable.
-        let file = controller.finishedFile(entry)
+        // or share is not connected, as unavailable. From the controller's last check of the files: nothing is
+        // looked up here (a share that stopped answering would hold the window).
         let problem = controller.fileProblem(entry)
         var playback: ReadingRowView.Playback?
         if player.entryID == entry.id {
             playback = ReadingRowView.Playback(playing: player.isPlaying, current: player.position?.current,
                                                duration: player.position?.duration)
         }
-        let size: Int64? = problem != nil ? nil : file.flatMap { Self.fileSize($0) }
+        let size = problem != nil ? nil : controller.finishedFile(entry)?.size
         cell.show(entry, activity: controller.activity[entry.id], fileProblem: problem, size: size, playback: playback)
-    }
-
-    private static func fileSize(_ url: URL) -> Int64? {
-        guard let size = (try? url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize else { return nil }
-        return Int64(size)
     }
 
     /// The player's state or position changed (twice a second while it plays): only the rows it concerns, the one
@@ -504,15 +555,22 @@ final class ReadingPane: NSViewController, MainSectionContent, NSTableViewDataSo
     private func play(_ id: UUID) {
         preview.stop()
         if player.toggleLoaded(id) { return }
-        // Played from the file opened and checked, never the path (see `ReadingController.openFinishedFile`).
-        guard let entry = controller.entry(id), let file = controller.openFinishedFile(entry) else {
+        guard let entry = controller.entry(id), entry.state == .done, controller.fileProblem(entry) == nil else {
             NSSound.beep()
             return
         }
-        do {
-            try player.play(id, file: file)
-        } catch {
-            showMessage("“\(entry.title)” could not be played: \(error.localizedDescription)", problem: true)
+        // Played from the file opened and checked off the main actor, never the path (see
+        // `ReadingController.openFinishedFile`). The player counts the request from now, so a later Play, Stop, or
+        // Pause wins over this one while its file is opened.
+        let controller = controller
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            do {
+                let played = try await self.player.play(id) { await controller.openFinishedFile(entry) }
+                if !played { NSSound.beep() }
+            } catch {
+                self.showMessage("“\(entry.title)” could not be played: \(error.localizedDescription)", problem: true)
+            }
         }
     }
 
@@ -525,7 +583,7 @@ final class ReadingPane: NSViewController, MainSectionContent, NSTableViewDataSo
 
     @discardableResult
     private func share(_ id: UUID, from anchor: NSView) -> Bool {
-        guard let entry = controller.entry(id), controller.finishedFile(entry) != nil else {
+        guard let entry = controller.entry(id), entry.state == .done, controller.fileProblem(entry) == nil else {
             NSSound.beep()
             return false
         }
@@ -547,11 +605,19 @@ final class ReadingPane: NSViewController, MainSectionContent, NSTableViewDataSo
     }
 
     private func reveal(_ id: UUID) {
-        guard let url = controller.entry(id).flatMap(controller.finishedFile) else {
+        guard let entry = controller.entry(id), entry.state == .done, controller.fileProblem(entry) == nil,
+              let url = entry.outputURL else {
             NSSound.beep()
             return
         }
-        NSWorkspace.shared.activateFileViewerSelecting([url])
+        // Shown only while it is the file the reading made (checked off the main actor).
+        Task { @MainActor [weak self] in
+            guard let self, await self.controller.openFinishedFile(entry) != nil else {
+                NSSound.beep()
+                return
+            }
+            NSWorkspace.shared.activateFileViewerSelecting([url])
+        }
     }
 
     private func deleteSelected() {
@@ -574,7 +640,7 @@ final class ReadingPane: NSViewController, MainSectionContent, NSTableViewDataSo
         let delete = { [weak self] in
             guard let self else { return }
             let index = self.table.selectedRow
-            if self.player.entryID == id { self.player.stop() }
+            if self.player.entryID == id { self.player.unload() }
             Task { @MainActor [weak self] in
                 // The row leaves the list at once; its files are removed off the main actor.
                 guard let outcome = await self?.controller.delete(id), let self else { return }
@@ -822,6 +888,9 @@ final class ReadingRowView: NSTableCellView {
             }
             setPrimary("Stop", .stop, help: "Stop making this reading; Resume continues where it stopped")
             buttons = [primary]
+        case .done where fileProblem == .checking:
+            status.stringValue = "Checking its file…"
+            buttons = [deleteButton]
         case .done where fileProblem == .missing:
             status.stringValue = "The file made for it is no longer at "
                 + "\(entry.output.map { ($0 as NSString).abbreviatingWithTildeInPath } ?? "its place")."

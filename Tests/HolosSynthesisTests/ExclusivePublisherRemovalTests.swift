@@ -164,4 +164,77 @@ import Testing
         #expect(handed?.deletingLastPathComponent().lastPathComponent.hasPrefix(ExclusivePublisher.removalPrefix) == true)
         #expect(try names(root).isEmpty)
     }
+
+    /// A file's identity names its volume by UUID where it has one, so it is the same file on another mount of that
+    /// volume (a new device number); without a UUID on both sides, the device number decides.
+    @Test func identitiesCompareByVolumeUUIDAcrossMounts() throws {
+        let root = try folder()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let file = root.appendingPathComponent("Story.m4a")
+        try Data("audio".utf8).write(to: file)
+        let identity = try #require(ExclusivePublisher.FileIdentity.of(file))
+        // The startup disk (APFS) has a volume UUID.
+        #expect(identity.volume != nil)
+        let handle = try FileHandle(forReadingFrom: file)
+        #expect(ExclusivePublisher.FileIdentity.of(descriptor: handle.fileDescriptor) == identity)
+        try handle.close()
+
+        var metadata = stat()
+        #expect(lstat(file.path, &metadata) == 0)
+        let (device, other) = (metadata.st_dev, metadata.st_dev &+ 1)
+        metadata.st_dev = other
+        #expect(ExclusivePublisher.FileIdentity(metadata, volume: "A") == ExclusivePublisher.FileIdentity(metadata, volume: "A"))
+        let remounted = ExclusivePublisher.FileIdentity(metadata, volume: "A")
+        metadata.st_dev = device
+        #expect(ExclusivePublisher.FileIdentity(metadata, volume: "A") == remounted)
+        #expect(ExclusivePublisher.FileIdentity(metadata, volume: "B") != remounted)
+        #expect(ExclusivePublisher.FileIdentity(metadata) != remounted)
+        #expect(ExclusivePublisher.FileIdentity(metadata) == ExclusivePublisher.FileIdentity(metadata, volume: "A"))
+        // Saved by an earlier build (no volume): it still decodes.
+        let old = Data(#"{"device":1,"inode":2,"birthSeconds":3,"birthNanoseconds":4}"#.utf8)
+        let decoded = try JSONDecoder().decode(ExclusivePublisher.FileIdentity.self, from: old)
+        #expect(decoded.volume == nil)
+        #expect(decoded.inode == 2)
+    }
+
+    /// A failed copy whose partly written file cannot be confirmed removed says so, naming the file's identity, so the
+    /// caller keeps it; a confirmed removal is the plain failure.
+    @Test func aPartialCopyThatCouldNotBeRemovedIsReported() throws {
+        let root = try folder()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let source = root.appendingPathComponent(".source.m4a")
+        let destination = root.appendingPathComponent("Story.m4a")
+        let unsupported: ExclusivePublisher.ExclusiveRename = { _, _ in errno = ENOTSUP; return -1 }
+        struct Refused: Error {}
+        try Data("audio".utf8).write(to: source)
+        do {
+            try ExclusivePublisher.publish(source, to: destination, exclusiveRename: unsupported, existing: "exists",
+                                           isCancelled: { false }, pacing: .init(),
+                                           remove: { _, _, _ in .failed(reason: "No space left on device.", keptAt: nil) },
+                                           claimed: { _ in throw Refused() })
+            Issue.record("The publication should fail")
+        } catch let failure as ExclusivePublisher.CleanupFailed {
+            #expect(failure.underlying is Refused)
+            #expect(ExclusivePublisher.FileIdentity.of(destination) == failure.identity)
+            #expect(failure.localizedDescription.contains("No space left"))
+        }
+        try FileManager.default.removeItem(at: destination)
+
+        // With a token, the partial file goes through that place aside; a place already taken keeps the file.
+        let token = ExclusivePublisher.removalPrefix + "test.publish"
+        let holding = root.appendingPathComponent(token)
+        try FileManager.default.createDirectory(at: holding, withIntermediateDirectories: false)
+        #expect(throws: ExclusivePublisher.CleanupFailed.self) {
+            try ExclusivePublisher.publish(source, to: destination, exclusiveRename: unsupported, cleanupToken: token,
+                                           claimed: { _ in throw Refused() })
+        }
+        #expect(FileManager.default.fileExists(atPath: destination.path))
+        try FileManager.default.removeItem(at: destination)
+        try FileManager.default.removeItem(at: holding)
+        #expect(throws: Refused.self) {
+            try ExclusivePublisher.publish(source, to: destination, exclusiveRename: unsupported, cleanupToken: token,
+                                           claimed: { _ in throw Refused() })
+        }
+        #expect(try names(root) == [".source.m4a"])
+    }
 }

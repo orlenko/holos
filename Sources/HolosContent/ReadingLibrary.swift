@@ -99,16 +99,40 @@ public final class ReadingLibraryStore: @unchecked Sendable {
         public var notice: String?
         /// False when the index was written by a newer Voice is Local: it is shown but never rewritten.
         public var writable: Bool
+        /// The folder that holds the index cannot be reached (its drive or share is not connected): the list is not
+        /// known to be empty, so it is never written; `load` again once the folder is back.
+        public var unavailable: Bool = false
+
+        public init(entries: [ReadingEntry], notice: String?, writable: Bool, unavailable: Bool = false) {
+            self.entries = entries
+            self.notice = notice
+            self.writable = writable
+            self.unavailable = unavailable
+        }
     }
 
     public let folder: URL
     public var indexURL: URL { folder.appendingPathComponent("library.json") }
     var documentsFolder: URL { folder.appendingPathComponent("Documents", isDirectory: true) }
-    /// Larger index files are not read.
-    static let maximumBytes = 32 << 20
+    /// The largest index a save that adds readings writes. The largest read is twice that (`readLimit`), so a list at
+    /// this size can still be changed (a Delete marks its reading first, which makes the index larger).
+    let maximumBytes: Int
+    static let defaultMaximumBytes = 32 << 20
+    /// The largest index read, and so the largest written (a larger one would be set aside at the next launch).
+    var readLimit: Int { maximumBytes * 2 }
+    /// The index file this store last read or wrote: its identity (nil when there was none); unset before the
+    /// first. A save finds that file there, or refuses: an index put there since (another disk mounted at the
+    /// support folder's path, another copy of the app) is never written over with this list.
+    private var expected: ReadingFileIdentity??
+    private let lock = NSLock()
 
-    public init(folder: URL) {
+    public convenience init(folder: URL) {
+        self.init(folder: folder, maximumBytes: Self.defaultMaximumBytes)
+    }
+
+    init(folder: URL, maximumBytes: Int) {
         self.folder = folder
+        self.maximumBytes = maximumBytes
     }
 
     /// `<support>/ReadingLibrary`.
@@ -119,21 +143,38 @@ public final class ReadingLibraryStore: @unchecked Sendable {
     /// The saved entries. A missing index is an empty list; one that cannot be read is renamed aside
     /// (`library.json.unreadable-<date>`), so it is kept, and the list starts empty with a notice; one a newer build
     /// wrote is shown (entries this build cannot read are left out) but never rewritten. Only "no such file" is a
-    /// missing index: one that cannot be looked up (an I/O error, a permission) is kept and never written over.
+    /// missing index: one that cannot be looked up (an I/O error, a permission) is kept and never written over. Nor is
+    /// one not found in a folder that cannot be reached (a support folder on a drive or share that is not connected,
+    /// see `ReadingOutput.unreachableReason`): the list is `unavailable`, shown empty and never written, until a
+    /// `load` finds the folder back.
     public func load() -> Loaded {
+        lock.lock()
+        defer { lock.unlock() }
         let data: Data
         do {
-            guard try ReadingOutput.exists(indexURL) else { return Loaded(entries: [], notice: nil, writable: true) }
-            let handle = try FileHandle(forReadingFrom: indexURL)
+            guard try ReadingOutput.exists(indexURL) else {
+                if let reason = ReadingOutput.unreachableReason(for: indexURL) {
+                    return Loaded(entries: [], notice: "The Reading list is unavailable: \(reason). Connect it; the "
+                                    + "list shows again when Voice is Local finds it.", writable: false,
+                                  unavailable: true)
+                }
+                expected = .some(nil)
+                return Loaded(entries: [], notice: nil, writable: true)
+            }
+            // Not blocked by a special file put in its place (see `openRegularFile`).
+            let handle = try openRegularFile(indexURL)
             defer { try? handle.close() }
-            data = try handle.read(upToCount: Self.maximumBytes + 1) ?? Data()
+            data = try handle.read(upToCount: readLimit + 1) ?? Data()
+            expected = .some(ExclusivePublisher.FileIdentity.of(descriptor: handle.fileDescriptor))
         } catch {
-            // Not rewritten: what it keeps may still be readable later (a permission fixed, a disk remounted).
+            // Not rewritten: what it keeps may still be readable later (a permission fixed, a disk remounted), so it
+            // is read again then (`unavailable`).
             return Loaded(entries: [], notice: "The Reading list could not be read (\(error.localizedDescription)); "
-                            + "readings made now are not kept in it after Voice is Local quits.", writable: false)
+                            + "it is read again when you come back to this window.", writable: false,
+                          unavailable: true)
         }
         struct Marker: Decodable { let kind: String?; let schemaVersion: Int? }
-        if data.count <= Self.maximumBytes, let marker = try? JSONDecoder.reading.decode(Marker.self, from: data),
+        if data.count <= readLimit, let marker = try? JSONDecoder.reading.decode(Marker.self, from: data),
            marker.kind == ReadingIndex.kind, let version = marker.schemaVersion {
             if version > ReadingIndex.currentSchemaVersion {
                 return Loaded(entries: Self.lenientEntries(data),
@@ -148,22 +189,47 @@ public final class ReadingLibraryStore: @unchecked Sendable {
         do {
             try FileManager.default.moveItem(at: indexURL, to: aside)
         } catch {
+            expected = nil
             return Loaded(entries: [], notice: "The Reading list could not be read and could not be set aside "
                             + "(\(error.localizedDescription)); readings made now are not kept in it after Voice is "
                             + "Local quits.", writable: false)
         }
+        expected = .some(nil)
         return Loaded(entries: [], notice: "The Reading list could not be read; it was kept as \(aside.lastPathComponent) "
                         + "and a new list was started. The audio files are still in their folder.", writable: true)
     }
 
-    /// Writes `entries` atomically, readable by this user only.
-    public func save(_ entries: [ReadingEntry]) throws {
-        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true,
-                                                attributes: [.posixPermissions: 0o700])
+    /// Writes `entries` atomically, readable by this user only. Refused when the folder cannot be reached (its drive
+    /// or share is not connected: nothing is written in its place); when the index there is not the one this store
+    /// last read or wrote (see `expected`); and when the index would be larger than `load` reads (it would be set
+    /// aside at the next launch), or, for a save that adds readings (`growing`), than `maximumBytes`, which leaves room
+    /// to delete them. The index there is then kept as it was.
+    public func save(_ entries: [ReadingEntry], growing: Bool = false) throws {
+        lock.lock()
+        defer { lock.unlock() }
+        if let reason = ReadingOutput.unreachableReason(for: indexURL) {
+            throw HolosError.unavailable("The Reading list's folder is unavailable: \(reason).")
+        }
         let encoder = JSONEncoder.reading
         let data = try encoder.encode(ReadingIndex(kind: ReadingIndex.kind,
                                                    schemaVersion: ReadingIndex.currentSchemaVersion, entries: entries))
-        try Self.write(data, to: indexURL)
+        let limit = growing ? maximumBytes : readLimit
+        guard data.count <= limit else {
+            throw HolosError.io("The Reading list is too large to save (\(data.count) bytes; at most \(limit)). "
+                + "Delete some readings.")
+        }
+        if case .some(let known) = expected {
+            let found = try ExclusivePublisher.FileIdentity.lookup(indexURL)
+            guard found == known else {
+                throw HolosError.unavailable("The Reading list at \(indexURL.path) is not the one Voice is Local read "
+                    + "(another disk may be connected at that place); it is not written over. Quit and open Voice is "
+                    + "Local again to read it.")
+            }
+        }
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true,
+                                                attributes: [.posixPermissions: 0o700])
+        // The file written is the one renamed into place (a rename keeps its identity), known before it is.
+        expected = .some(try Self.write(data, to: indexURL))
     }
 
     /// Keeps `document`, the text reading `id` reads, until the reading is finished or deleted.
@@ -179,8 +245,11 @@ public final class ReadingLibraryStore: @unchecked Sendable {
         let url = documentURL(id)
         let data: Data
         do {
-            data = try Data(contentsOf: url)
-        } catch let error as CocoaError where error.code == .fileReadNoSuchFile {
+            // Not blocked by a special file put in its place (see `openRegularFile`).
+            let handle = try openRegularFile(url)
+            defer { try? handle.close() }
+            data = try handle.readToEnd() ?? Data()
+        } catch let error as ReadingFileError where error.code == ENOENT {
             return nil
         }
         return try JSONDecoder.reading.decode(ReadableDocument.self, from: data)
@@ -191,30 +260,91 @@ public final class ReadingLibraryStore: @unchecked Sendable {
         FileManager.default.fileExists(atPath: documentURL(id).path)
     }
 
-    /// Removes the text saved for `id`; one that is not there is not an error.
+    /// Removes the text saved for `id`, and any copy of it a save that a quit or a crash cut off left (see
+    /// `write`); one that is not there is not an error.
     public func removeDocument(for id: UUID) throws {
         do {
             try FileManager.default.removeItem(at: documentURL(id))
         } catch let error as CocoaError where error.code == .fileNoSuchFile {
-            return
         }
+        try removeTemporaries(in: documentsFolder) { $0 == documentURL(id).lastPathComponent }
     }
 
     func documentURL(_ id: UUID) -> URL {
         documentsFolder.appendingPathComponent("\(id.uuidString).json")
     }
 
-    private static func write(_ data: Data, to url: URL) throws {
+    /// Removes what saves that a quit or a crash cut off left (the index's and the saved texts' temporaries, see
+    /// `write`). For the launch, before anything is saved: a save under way would lose its temporary.
+    public func sweepTemporaries() {
+        try? removeTemporaries(in: folder) { $0 == indexURL.lastPathComponent }
+        try? removeTemporaries(in: documentsFolder) { name in
+            name.hasSuffix(".json") && UUID(uuidString: String(name.dropLast(5))) != nil
+        }
+    }
+
+    /// Removes the temporaries `write` makes in `folder` for the files whose names `target` accepts:
+    /// `.<name>.<UUID>.tmp`, regular files owned by this user. A folder that is not there has none.
+    func removeTemporaries(in folder: URL, target: (String) -> Bool) throws {
+        let names: [String]
+        do {
+            names = try FileManager.default.contentsOfDirectory(atPath: folder.path)
+        } catch let error as CocoaError where error.code == .fileReadNoSuchFile || error.code == .fileNoSuchFile {
+            return
+        }
+        for name in names {
+            guard let file = Self.temporaryTarget(name), target(file) else { continue }
+            let path = folder.appendingPathComponent(name).path
+            var metadata = stat()
+            guard lstat(path, &metadata) == 0, (metadata.st_mode & S_IFMT) == S_IFREG,
+                  metadata.st_uid == getuid() else { continue }
+            guard unlink(path) == 0 || errno == ENOENT else {
+                throw HolosError.io("Could not remove \(path): \(String(cString: strerror(errno)))")
+            }
+        }
+    }
+
+    /// The file a temporary named `.<name>.<UUID>.tmp` (see `write`) was for, or nil for any other name.
+    static func temporaryTarget(_ name: String) -> String? {
+        guard name.hasPrefix("."), name.hasSuffix(".tmp") else { return nil }
+        let middle = name.dropFirst().dropLast(4)
+        guard let dot = middle.lastIndex(of: "."), UUID(uuidString: String(middle[middle.index(after: dot)...])) != nil
+        else { return nil }
+        let target = middle[..<dot]
+        return target.isEmpty ? nil : String(target)
+    }
+
+    /// Writes `data` to a new temporary beside `url` (0600), then renames it over `url`; returns the identity of the
+    /// file written, read from it before the rename. A temporary that is not renamed is removed.
+    @discardableResult
+    private static func write(_ data: Data, to url: URL) throws -> ReadingFileIdentity {
         let temporary = url.deletingLastPathComponent().appendingPathComponent(".\(url.lastPathComponent).\(UUID().uuidString).tmp")
-        guard FileManager.default.createFile(atPath: temporary.path, contents: data,
-                                             attributes: [.posixPermissions: 0o600]) else {
-            throw HolosError.io("Could not save \(url.lastPathComponent) in \(url.deletingLastPathComponent().path).")
+        let failure = { (reason: String) in
+            HolosError.io("Could not save \(url.lastPathComponent) in \(url.deletingLastPathComponent().path): \(reason)")
+        }
+        let descriptor = open(temporary.path, O_CREAT | O_EXCL | O_WRONLY | O_CLOEXEC | O_NOFOLLOW, 0o600)
+        guard descriptor >= 0 else { throw failure(String(cString: strerror(errno))) }
+        let written = FileHandle(fileDescriptor: descriptor, closeOnDealloc: true)
+        let identity: ReadingFileIdentity
+        do {
+            try written.write(contentsOf: data)
+            guard let known = ExclusivePublisher.FileIdentity.of(descriptor: descriptor) else {
+                throw failure(String(cString: strerror(errno)))
+            }
+            identity = known
+            try written.close()
+        } catch {
+            // A copy cut off (a full disk) is not left.
+            try? written.close()
+            _ = unlink(temporary.path)
+            throw error
         }
         guard rename(temporary.path, url.path) == 0 else {
             let reason = String(cString: strerror(errno))
-            try? FileManager.default.removeItem(at: temporary)
+            _ = unlink(temporary.path)
             throw HolosError.io("Could not save \(url.lastPathComponent): \(reason)")
         }
+        return identity
     }
 
     /// The entries of a newer build's index that this build can read.
@@ -303,26 +433,42 @@ public enum ReadingLibrary {
     }
 
     /// A new file in `folder` named after the title (see `ReadingOutput.fileName`): "Title.m4a", else "Title 2.m4a",
-    /// "Title 3.m4a", …, skipping names another reading of the list will write (`taken`, compared without case, as
-    /// the Mac's volumes compare them) and names already on disk (`exists`). The folder and the name (in NFC, as
-    /// `ReadingOutput.fileName` makes it) keep their spelling (see `RawFilePath`).
+    /// "Title 3.m4a", …, skipping names another reading of the list will write (`taken`) and names already on disk
+    /// (`exists`). A name is taken when it names the same file as one in `taken` through any path: the folders are
+    /// compared with their links resolved (an output folder reached through a link, as the list saves the resolved
+    /// path), and names without case, as the Mac's volumes compare them. The folder and the name (in NFC, as
+    /// `ReadingOutput.fileName` makes it) keep their spelling (see `RawFilePath`). When every numbered name is taken,
+    /// "Title 1a2b3c4d.m4a", its stem shortened so that it fits the volume's 255-unit name limit too.
     public static func outputURL(in folder: URL, title: String?, fallback: String?, taken: Set<String>,
                                  exists: (URL) -> Bool) -> URL {
-        // Room for " 999" in the volume's 255-unit name limit.
-        let name = ReadingOutput.fileName(title: title, fallback: fallback, limit: ReadingOutput.defaultNameLimit - 4)
-        let stem = String(name.dropLast(ReadingAudioFormat.fileExtension.count + 1))
-        let takenKeys = Set(taken.map(Self.key))
-        for number in 1...999 {
-            let candidate = RawFilePath.appending(number == 1 ? name
-                : "\(stem) \(number).\(ReadingAudioFormat.fileExtension)", to: folder)
-            if !takenKeys.contains(key(candidate.path)) && !exists(candidate) { return candidate }
+        let suffix = { (text: String) in " \(text).\(ReadingAudioFormat.fileExtension)" }
+        func stem(room: Int) -> String {
+            let name = ReadingOutput.fileName(title: title, fallback: fallback, limit: ReadingOutput.defaultNameLimit - room)
+            return String(name.dropLast(ReadingAudioFormat.fileExtension.count + 1))
         }
-        return RawFilePath.appending("\(stem) \(UUID().uuidString.prefix(8)).\(ReadingAudioFormat.fileExtension)",
-                                     to: folder)
+        // Room for " 999" in the volume's 255-unit name limit.
+        let numbered = stem(room: " 999".utf8.count)
+        let takenKeys = Set(taken.map(outputKey))
+        func free(_ candidate: URL) -> Bool { !takenKeys.contains(outputKey(candidate.path)) && !exists(candidate) }
+        for number in 1...999 {
+            let candidate = RawFilePath.appending(number == 1 ? numbered + "." + ReadingAudioFormat.fileExtension
+                : numbered + suffix(String(number)), to: folder)
+            if free(candidate) { return candidate }
+        }
+        // Room for " " and eight hex digits.
+        let short = stem(room: suffix(String(repeating: "0", count: 8)).utf8.count - ReadingAudioFormat.fileExtension.count - 1)
+        var candidate = RawFilePath.appending(short + suffix(String(UUID().uuidString.prefix(8))), to: folder)
+        for _ in 0..<8 where !free(candidate) {
+            candidate = RawFilePath.appending(short + suffix(String(UUID().uuidString.prefix(8))), to: folder)
+        }
+        return candidate
     }
 
-    private static func key(_ path: String) -> String {
-        path.precomposedStringWithCanonicalMapping.folding(options: [.caseInsensitive], locale: nil)
+    /// One key for every path that names the same output: its folder's links resolved (`ReadingPathIdentity`), then
+    /// case and Unicode normalization folded (the conservative rule: two names that may be one file count as one).
+    static func outputKey(_ path: String) -> String {
+        ReadingPathIdentity.key(path: path, .lock).precomposedStringWithCanonicalMapping
+            .folding(options: [.caseInsensitive], locale: nil)
     }
 
     /// Whether `path` is a render cache the pipeline made in `readingsRoot` for a reading with an explicit output
@@ -363,20 +509,21 @@ public enum ReadingLibrary {
     /// when that cannot be told (the file or the manifest cannot be read), so nothing that identifies it is removed;
     /// `OutputUnreachable` when nothing is found but the folder that holds it cannot be reached (its drive or share
     /// is not connected), and something of the reading's may be there.
-    public static func ownership(of output: URL, sha256: String?, cache: URL?) throws -> OutputOwnership? {
+    public static func ownership(of output: URL, sha256: String?, cache: URL?, made: Bool = false) throws
+        -> OutputOwnership? {
         guard try ReadingOutput.exists(output) else {
             // Not found is "gone" only where the folder can be looked into: a drive that is not connected brings the
             // file back when it is, and the reading must still be there to delete it then. Unless nothing of the
             // reading's can be there (no finished file, no copy begun); a manifest that cannot be read may name one.
             if let reason = ReadingOutput.unreachableReason(for: output) {
-                let evidence = try? ownershipEvidence(of: output, sha256: sha256, cache: cache)
+                let evidence = try? ownershipEvidence(of: output, sha256: sha256, cache: cache, made: made)
                 if evidence.map({ !$0.checksums.isEmpty || $0.publishing != nil }) ?? true {
                     throw OutputUnreachable(file: output.lastPathComponent, reason: reason)
                 }
             }
             return nil
         }
-        let evidence = try ownershipEvidence(of: output, sha256: sha256, cache: cache)
+        let evidence = try ownershipEvidence(of: output, sha256: sha256, cache: cache, made: made)
         if !evidence.checksums.isEmpty, evidence.checksums.contains(try fileSHA256(output)) { return .finished }
         // A lookup that fails (not "nothing there") throws: it says nothing about which file is there.
         if let claimed = evidence.publishing, try ExclusivePublisher.FileIdentity.lookup(output) == claimed {
@@ -386,8 +533,10 @@ public enum ReadingLibrary {
     }
 
     /// What identifies the reading's file at `output`: the checksums of its finished file (`sha256`, and the one
-    /// the cache's manifest saved for that output) and the identity of a copy a crash cut off.
-    static func ownershipEvidence(of output: URL, sha256: String?, cache: URL?) throws
+    /// the cache's manifest saved for that output) and the identity of a copy a crash cut off. For a made reading
+    /// (`made`) there is no such copy: the copy was finished, so the file with that identity is its finished file,
+    /// edited in place when its checksum no longer matches, never a partial one to remove.
+    static func ownershipEvidence(of output: URL, sha256: String?, cache: URL?, made: Bool = false) throws
         -> (checksums: [String], publishing: ReadingFileIdentity?) {
         var manifest: ReadingManifest?
         if let cache {
@@ -395,11 +544,9 @@ public enum ReadingLibrary {
             if try ReadingOutput.exists(url) {  // only "no such file" is no manifest
                 // A manifest that is there but cannot be read, is too large, or is not a reading's may hold the
                 // only identity of a partly copied file: that is an error, never "not the reading's".
-                let size = try url.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? .max
-                guard size <= ReadingManifest.maximumBytes else {
-                    throw HolosError.io("The reading's manifest \(url.path) is larger than \(ReadingManifest.maximumBytes) bytes.")
-                }
-                let saved = try JSONDecoder().decode(ReadingManifest.self, from: try Data(contentsOf: url))
+                // Opened without waiting, and read only up to its limit (see `readSmallFile`).
+                let saved = try JSONDecoder().decode(
+                    ReadingManifest.self, from: try readSmallFile(url, maximumBytes: ReadingManifest.maximumBytes))
                 guard saved.kind == ReadingManifest.readingKind else {
                     throw HolosError.io("\(url.path) is not a Voice is Local reading's manifest.")
                 }
@@ -407,7 +554,7 @@ public enum ReadingLibrary {
                 if sameFile(saved.output, output) { manifest = saved }
             }
         }
-        return ([sha256, manifest?.outputSHA256].compactMap { $0 }, manifest?.publishing)
+        return ([sha256, manifest?.outputSHA256].compactMap { $0 }, made ? nil : manifest?.publishing)
     }
 
     /// The identity of the file at `output` when it is the finished file whose checksum is `sha256`, and the file read
@@ -420,19 +567,149 @@ public enum ReadingLibrary {
         return before
     }
 
+    /// What a made reading's file is now, as its row shows it (see `fileStatus`).
+    public enum FileStatus: Sendable, Equatable {
+        /// Its file is there, the one it made (by identity); `size` in bytes.
+        case available(size: Int64?)
+        /// A regular file is at its path, but its identity is not the one recorded (or none was): it may still be the
+        /// reading's file (a share mounted again gets a new device number; see `ExclusivePublisher.FileIdentity`),
+        /// which only its checksum tells (`revalidate`). `found` is the file there, as it was then.
+        case changed(found: FileVersion)
+        /// Nothing (or no regular file) is at its path: it was moved or deleted.
+        case missing
+        /// The folder that holds it cannot be reached (its drive or share is not connected, or it answers with an
+        /// error): the file may come back.
+        case unavailable(String)
+    }
+
+    /// A file as it was at one moment: which file (its identity), and its size and last change, so a checksum read
+    /// while it was being written (a file copied back into place) is known for what it is.
+    public struct FileVersion: Sendable, Equatable {
+        public let identity: ReadingFileIdentity
+        public let size: Int64
+        public let modifiedSeconds: Int64
+        public let modifiedNanoseconds: Int64
+
+        /// The regular file at `url` now (a link is not followed); nil when nothing is there or it is not a regular
+        /// file. Any other failure throws.
+        static func of(_ url: URL) throws -> FileVersion? {
+            guard let identity = try ExclusivePublisher.FileIdentity.lookup(url) else { return nil }
+            var metadata = stat()
+            guard lstat(RawFilePath.system(url), &metadata) == 0 else {
+                let error = errno
+                if error == ENOENT { return nil }
+                throw HolosError.io("Could not check \(url.path): \(String(cString: strerror(error)))")
+            }
+            return FileVersion(identity: identity, size: Int64(metadata.st_size),
+                               modifiedSeconds: Int64(metadata.st_mtimespec.tv_sec),
+                               modifiedNanoseconds: Int64(metadata.st_mtimespec.tv_nsec))
+        }
+    }
+
+    /// The status of a made reading's file, from its metadata alone (the file is not read). Not on the main actor: a
+    /// look-up on a share whose server stopped answering waits for its timeout.
+    public static func fileStatus(of entry: ReadingEntry) -> FileStatus {
+        guard let output = entry.outputURL else { return .missing }
+        let found: FileVersion?
+        do {
+            found = try FileVersion.of(output)
+        } catch {
+            return .unavailable("\((output.deletingLastPathComponent().path as NSString).abbreviatingWithTildeInPath) "
+                + "cannot be reached (\(error.localizedDescription))")
+        }
+        guard let found else { return ReadingOutput.unreachableReason(for: output).map { .unavailable($0) } ?? .missing }
+        guard let made = entry.outputIdentity, made == found.identity else { return .changed(found: found) }
+        return .available(size: found.size)
+    }
+
+    /// What reading a changed file's checksum found (see `revalidate`).
+    public enum Revalidation: Sendable, Equatable {
+        /// It is the reading's file: the identity to record.
+        case same(ReadingFileIdentity)
+        /// Another file (its checksum is not the reading's).
+        case different
+        /// It could not be told (the file could not be read, or it changed during the check): try again later.
+        case unknown
+    }
+
+    /// Whether the file whose status is `.changed(found)` is the made reading's: `.same` with its identity when its
+    /// checksum is the reading's. Either answer holds only when the file is still `found` (the same file, size, and
+    /// last change) after the check: one written meanwhile is `.unknown`. Reads the whole file: not on the main
+    /// actor; a cancelled task stops between chunks (`.unknown`).
+    public static func revalidate(_ entry: ReadingEntry, found: FileVersion) -> Revalidation {
+        guard let output = entry.outputURL, let sha256 = entry.outputSHA256 else { return .different }
+        let checksum: String
+        do {
+            checksum = try fileSHA256(output)
+        } catch {
+            return .unknown
+        }
+        guard (try? FileVersion.of(output)) == found else { return .unknown }
+        return checksum == sha256 ? .same(found.identity) : .different
+    }
+
+    /// The folder new readings' files go to, checked (see `location`): the default one is made when missing; one
+    /// chosen in Settings that is missing (its disk is not connected) is not, so nothing is written on the startup
+    /// disk in its place. `shown` is how the folder is named in the message.
+    public static func outputFolder(_ folder: URL, isDefault: Bool, shown: String) throws -> URL {
+        if isDefault {
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        } else {
+            // `stat` on the path as spelled (`FileManager` would decompose it).
+            var metadata = stat()
+            guard stat(RawFilePath.system(folder), &metadata) == 0, (metadata.st_mode & S_IFMT) == S_IFDIR else {
+                throw HolosError.unavailable("The folder \(shown) chosen in Settings › Reading is not available. "
+                    + "Connect its disk, or choose another folder there, then Try Again.")
+            }
+        }
+        return folder
+    }
+
+    /// Where a reading's file and render cache go when it starts: the file chosen when it first started (`chosen`),
+    /// unless something else took that name since (no render cache of this reading, but a file there) or its cache is
+    /// another reading's (`otherCaches`); else a new name (see `outputURL`) in `folder()`, never one another reading
+    /// of the list writes (`taken`) nor one whose cache is another reading's (the same text, voice, and settings
+    /// reach the same cache through the same file: two entries would share, and delete, one another's file).
+    /// Checks and creates what `ReadingOutput.locate` does: not on the main actor.
+    public static func location(chosen: URL?, folder: () throws -> URL, title: String?, fallback: String?,
+                                name: String, identity: String, readingsRoot: URL, taken: [String],
+                                otherCaches: [String]) throws -> ReadingLocation {
+        let claimedCaches = Set(otherCaches.map(cacheKey))
+        func claimed(_ location: ReadingLocation) -> Bool { claimedCaches.contains(cacheKey(location.workDirectory.path)) }
+        if let chosen {
+            let found = try ReadingOutput.locate(output: chosen.path, name: name, identity: identity,
+                                                 readingsRoot: readingsRoot, resume: true)
+            if !claimed(found), try ReadingOutput.exists(found.workDirectory) || !ReadingOutput.exists(found.output) {
+                return found
+            }
+        }
+        let folder = try folder()
+        var taken = Set(taken)
+        for _ in 0..<8 {
+            let url = outputURL(in: folder, title: title, fallback: fallback, taken: taken) { url in
+                (try? ReadingOutput.exists(url)) ?? true
+            }
+            let location = try ReadingOutput.locate(output: url.path, name: name, identity: identity,
+                                                    readingsRoot: readingsRoot, resume: false)
+            if !claimed(location) { return location }
+            taken.insert(url.path)
+        }
+        throw HolosError.unavailable("No free name was found for the reading's file in \(folder.path).")
+    }
+
+    private static func cacheKey(_ path: String) -> String {
+        URL(fileURLWithPath: path, isDirectory: true).standardizedFileURL.path
+    }
+
     /// The file at `output` opened for reading when the object opened is the one `identity` names (checked on the
     /// open descriptor, not the path): an action that reads through it (Play, Share…) uses that very file, whatever
-    /// is put at the path at any moment. Nil when it is not there, not a regular file, or another file.
+    /// is put at the path at any moment. Nil when it is not there, not a regular file, or another file. Opened without
+    /// waiting (see `openRegularFile`): a FIFO or a device put at the path is refused at once. Not on the main actor:
+    /// an open on a share whose server stopped answering waits for its timeout.
     public static func openVerified(_ output: URL, identity: ReadingFileIdentity) -> FileHandle? {
-        let descriptor = open(RawFilePath.system(output), O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
-        guard descriptor >= 0 else { return nil }
-        var metadata = stat()
-        guard fstat(descriptor, &metadata) == 0, (metadata.st_mode & S_IFMT) == S_IFREG,
-              ExclusivePublisher.FileIdentity(metadata) == identity else {
-            close(descriptor)
-            return nil
-        }
-        return FileHandle(fileDescriptor: descriptor, closeOnDealloc: true)
+        guard let handle = try? openRegularFile(output, followLinks: false),
+              ExclusivePublisher.FileIdentity.of(descriptor: handle.fileDescriptor) == identity else { return nil }
+        return handle
     }
 
     /// A copy of the open file `file`, named `name`, in a new folder inside `folder`: a clone (instant, no space)
@@ -526,7 +803,8 @@ public enum ReadingLibrary {
         ExclusivePublisher.removalPrefix + id.uuidString + (partial ? ".partial" : "")
     }
 
-    /// Where a Delete of `entry` may have left its file aside: the places `asideToken` names beside its output, and
+    /// Where a Delete of `entry` may have left its file aside: the places `asideToken` names beside its output, the
+    /// one its render moves a partly written file into to remove it (`ReadingTemporaries.publicationAside`), and
     /// `outputAside`.
     static func asideCandidates(of entry: ReadingEntry) -> [URL] {
         guard let output = entry.outputURL else { return [] }
@@ -534,6 +812,10 @@ public enum ReadingLibrary {
         var candidates = [false, true].map { partial in
             RawFilePath.appending(output.lastPathComponent,
                                   to: RawFilePath.appending(asideToken(entry.id, partial: partial), to: folder))
+        }
+        if let cache = entry.cache {
+            candidates.append(ReadingTemporaries.publicationAside(
+                output: output, key: ReadingTemporaries.key(for: URL(fileURLWithPath: cache, isDirectory: true))))
         }
         if let recorded = entry.outputAside,
            !candidates.contains(where: { $0.path.utf8.elementsEqual(recorded.utf8) }) {
@@ -607,8 +889,9 @@ public enum ReadingLibrary {
             let owned: OutputOwnership?
             let evidence: (checksums: [String], publishing: ReadingFileIdentity?)
             do {
-                owned = try ownership(of: output, sha256: entry.outputSHA256, cache: cache)
-                evidence = try ownershipEvidence(of: output, sha256: entry.outputSHA256, cache: cache)
+                let made = entry.state == .done
+                owned = try ownership(of: output, sha256: entry.outputSHA256, cache: cache, made: made)
+                evidence = try ownershipEvidence(of: output, sha256: entry.outputSHA256, cache: cache, made: made)
             } catch let unreachable as OutputUnreachable {
                 // Kept whole (row, cache, text) until the file can be looked for again.
                 return DeleteResult(problem: "\(unreachable.file) is unavailable: \(unreachable.reason). "
@@ -672,6 +955,26 @@ public enum ReadingLibrary {
             }
         }
         if problems.isEmpty, let cache = entry.cache, let readingsRoot, isRenderCache(cache, in: readingsRoot) {
+            // The joined files a render a quit or a crash cut off left beside the output (hidden, named after this
+            // cache, whose lock is held: no run of it is under way). The cache (whose key names them) stays until
+            // they are gone, or while the folder that holds them cannot be reached.
+            if let output = entry.outputURL {
+                let directory = URL(fileURLWithPath: cache, isDirectory: true)
+                if let reason = ReadingOutput.unreachableReason(for: output) {
+                    // Only a render that got to joining leaves something there: every part rendered.
+                    if mayHaveJoined(cache: directory) {
+                        problems.append("\(output.deletingLastPathComponent().lastPathComponent) is unavailable: "
+                            + "\(reason), and what its render left there cannot be removed. Connect it, then Delete "
+                            + "again.")
+                    }
+                } else if let problem = ReadingTemporaries.sweepJoins(outputFolder: output.deletingLastPathComponent(),
+                                                                      key: ReadingTemporaries.key(for: directory),
+                                                                      currentRun: UUID()) {
+                    problems.append(problem)
+                }
+            }
+        }
+        if problems.isEmpty, let cache = entry.cache, let readingsRoot, isRenderCache(cache, in: readingsRoot) {
             do {
                 if try ReadingOutput.exists(URL(fileURLWithPath: cache, isDirectory: true)) {
                     try FileManager.default.removeItem(atPath: cache)
@@ -691,6 +994,16 @@ public enum ReadingLibrary {
         }
         return problems.isEmpty ? DeleteResult(note: note)
             : DeleteResult(problem: problems.joined(separator: " ") + " Try Delete again.", aside: aside)
+    }
+
+    /// Whether a render of the cache may have got to joining its parts (and left a joined file beside the output):
+    /// its manifest says every part is rendered, or it cannot be read. A cache that is not there made nothing.
+    static func mayHaveJoined(cache: URL) -> Bool {
+        let url = cache.appendingPathComponent(ReadingManifest.fileName)
+        guard (try? ReadingOutput.exists(cache)) != false else { return false }
+        guard let data = try? readSmallFile(url, maximumBytes: ReadingManifest.maximumBytes),
+              let manifest = try? JSONDecoder().decode(ReadingManifest.self, from: data) else { return true }
+        return manifest.parts.allSatisfy { $0.status == "complete" }
     }
 
     /// A file an earlier Delete may have moved aside and left at `url`: moved to the Trash when it is the finished

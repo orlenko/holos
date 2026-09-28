@@ -12,26 +12,49 @@ public enum ExclusivePublisher {
 
     public static let systemExclusiveRename: ExclusiveRename = { renamex_np($0, $1, UInt32(RENAME_EXCL)) }
 
-    /// Which file a path named at one moment: its volume, inode, and creation time. A file
+    /// Which file a path named at one moment: its volume, file ID (inode), and creation time. A file
     /// removed and another created at the same path (even reusing the inode number) compare unequal.
+    ///
+    /// The volume is its UUID where it has one (`volume`): unlike `device` (`st_dev`), which a network share gets
+    /// anew each time it is mounted, it stays the same across mounts, so a file on a drive or share ejected and
+    /// mounted again is still the same file. Two identities are compared by `volume` when both have one, else by
+    /// `device` (an identity saved by an earlier build, or a volume without a UUID): a caller that must recognize a
+    /// file across mounts then checks it another way (its checksum) and records its identity again.
     public struct FileIdentity: Codable, Sendable, Equatable {
         public let device: Int64
         public let inode: UInt64
         public let birthSeconds: Int64
         public let birthNanoseconds: Int64
+        /// The volume's UUID (`URLResourceValues.volumeUUIDString`); nil when it has none or it could not be read.
+        public let volume: String?
 
-        public init(_ metadata: stat) {
+        public init(_ metadata: stat, volume: String? = nil) {
             device = Int64(metadata.st_dev)
             inode = UInt64(metadata.st_ino)
             birthSeconds = Int64(metadata.st_birthtimespec.tv_sec)
             birthNanoseconds = Int64(metadata.st_birthtimespec.tv_nsec)
+            self.volume = volume
+        }
+
+        public static func == (lhs: FileIdentity, rhs: FileIdentity) -> Bool {
+            guard lhs.inode == rhs.inode, lhs.birthSeconds == rhs.birthSeconds,
+                  lhs.birthNanoseconds == rhs.birthNanoseconds else { return false }
+            if let left = lhs.volume, let right = rhs.volume { return left == right }
+            return lhs.device == rhs.device
+        }
+
+        /// The identity of the file open at `descriptor` (its volume's UUID included); nil when `fstat` fails.
+        public static func of(descriptor: Int32) -> FileIdentity? {
+            var metadata = stat()
+            guard fstat(descriptor, &metadata) == 0 else { return nil }
+            var info = statfs()
+            let volume = fstatfs(descriptor, &info) == 0 ? volumeUUID(mountedOn: info) : nil
+            return FileIdentity(metadata, volume: volume)
         }
 
         /// The regular file at `url` (a link is not followed), or nil.
         public static func of(_ url: URL) -> FileIdentity? {
-            var metadata = stat()
-            guard lstat(url.path, &metadata) == 0, (metadata.st_mode & S_IFMT) == S_IFREG else { return nil }
-            return FileIdentity(metadata)
+            try? lookup(url)
         }
 
         /// The regular file at `url` (a link is not followed); nil when nothing is there or it is not a regular
@@ -44,7 +67,37 @@ public enum ExclusivePublisher {
                 if error == ENOENT { return nil }
                 throw HolosError.io("Could not check \(url.path): \(String(cString: strerror(error)))")
             }
-            return (metadata.st_mode & S_IFMT) == S_IFREG ? FileIdentity(metadata) : nil
+            guard (metadata.st_mode & S_IFMT) == S_IFREG else { return nil }
+            var info = statfs()
+            let volume = statfs(url.path, &info) == 0 && Int64(info.f_fsid.val.0) == Int64(metadata.st_dev)
+                ? volumeUUID(mountedOn: info) : nil
+            return FileIdentity(metadata, volume: volume)
+        }
+
+        /// The UUID of the volume `info` describes, read from its mount point; nil when it has none.
+        static func volumeUUID(mountedOn info: statfs) -> String? {
+            var info = info
+            let mountPoint = withUnsafeBytes(of: &info.f_mntonname) { bytes in
+                String(decoding: bytes.prefix { $0 != 0 }, as: UTF8.self)
+            }
+            guard !mountPoint.isEmpty else { return nil }
+            let values = try? URL(fileURLWithPath: mountPoint, isDirectory: true)
+                .resourceValues(forKeys: [.volumeUUIDStringKey])
+            return values?.volumeUUIDString
+        }
+    }
+
+    /// A publication failed, and the file it had created at the destination (`identity`) could not be confirmed
+    /// removed (`reason`): it may still be there, or in the place aside the removal uses (`cleanupToken`), and the
+    /// caller must keep what identifies it (a reading's manifest keeps `publishing`) until it is.
+    public struct CleanupFailed: LocalizedError {
+        public let underlying: any Error
+        public let identity: FileIdentity
+        public let reason: String
+
+        public var errorDescription: String? {
+            let first = (underlying as? LocalizedError)?.errorDescription ?? underlying.localizedDescription
+            return first + " The partly written file could not be removed: \(reason)"
         }
     }
 
@@ -70,26 +123,33 @@ public enum ExclusivePublisher {
     /// `CancellationError` and the partial file is removed (as on any failure). It must report the
     /// cancellation of whoever asked for the file: the default, the current task's, is right only
     /// when the caller is that task (a render finished from a delegate callback passes its own).
+    ///
+    /// The partial file is removed through `removeIfIdentical`, in the place aside `cleanupToken` names (default: a
+    /// new one); a caller that must find it after a crash gives one it can derive again. When that removal cannot be
+    /// confirmed (the volume full, the place aside taken), the failure is `CleanupFailed`, naming the file's
+    /// identity: the caller keeps it until the file is gone.
     public static func publish(_ source: URL, to destination: URL,
                                exclusiveRename: ExclusiveRename = systemExclusiveRename,
                                existing: String = "Output already exists",
+                               cleanupToken: String? = nil,
                                isCancelled: () -> Bool = { Task.isCancelled },
                                claimed: (FileIdentity) throws -> Void = { _ in }) throws {
         try publish(source, to: destination, exclusiveRename: exclusiveRename, existing: existing,
-                    isCancelled: isCancelled, pacing: CopyPacing(), claimed: claimed)
+                    cleanupToken: cleanupToken, isCancelled: isCancelled, pacing: CopyPacing(), claimed: claimed)
     }
 
     static func publish(_ source: URL, to destination: URL,
-                        exclusiveRename: ExclusiveRename, existing: String,
+                        exclusiveRename: ExclusiveRename, existing: String, cleanupToken: String? = nil,
                         isCancelled: () -> Bool, pacing: CopyPacing,
+                        remove: (URL, FileIdentity, String?) -> Removal = { removeIfIdentical($0, to: $1, token: $2) },
                         claimed: (FileIdentity) throws -> Void = { _ in }) throws {
         if exclusiveRename(source.path, destination.path) == 0 { return }
         let error = errno
         guard error == ENOTSUP || error == EINVAL || error == ENOSYS else {
             throw failure(destination, error, existing: existing)
         }
-        try copyExclusively(source, to: destination, existing: existing, isCancelled: isCancelled,
-                            pacing: pacing, claimed: claimed)
+        try copyExclusively(source, to: destination, existing: existing, cleanupToken: cleanupToken,
+                            isCancelled: isCancelled, pacing: pacing, remove: remove, claimed: claimed)
         _ = unlink(source.path)
     }
 
@@ -205,23 +265,28 @@ public enum ExclusivePublisher {
         path.withCString { URL(fileURLWithFileSystemRepresentation: $0, isDirectory: isDirectory, relativeTo: nil) }
     }
 
-    private static func copyExclusively(_ source: URL, to destination: URL, existing: String,
+    private static func copyExclusively(_ source: URL, to destination: URL, existing: String, cleanupToken: String?,
                                         isCancelled: () -> Bool, pacing: CopyPacing,
+                                        remove: (URL, FileIdentity, String?) -> Removal,
                                         claimed: (FileIdentity) throws -> Void) throws {
-        let input = open(source.path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW)
+        // Not blocked by a special file put in the source's place: it is refused.
+        let input = open(source.path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK)
         guard input >= 0 else { throw failure(source, errno, existing: existing) }
         defer { close(input) }
+        var sourceMetadata = stat()
+        guard fstat(input, &sourceMetadata) == 0, (sourceMetadata.st_mode & S_IFMT) == S_IFREG else {
+            throw HolosError.io("Could not save \(destination.path): \(source.path) is not a regular file.")
+        }
+        _ = fcntl(input, F_SETFL, fcntl(input, F_GETFL) & ~O_NONBLOCK)
         let output = open(destination.path, O_CREAT | O_EXCL | O_WRONLY | O_CLOEXEC | O_NOFOLLOW, 0o666)
         guard output >= 0 else { throw failure(destination, errno, existing: existing) }
-        var metadata = stat()
-        guard fstat(output, &metadata) == 0 else {
+        guard let identity = FileIdentity.of(descriptor: output) else {
             // Without its identity, this empty file cannot be told apart from one put in its
             // place, so it is left alone.
             let error = errno
             close(output)
             throw failure(destination, error, existing: existing)
         }
-        let identity = FileIdentity(metadata)
         var isOpen = true
         do {
             try claimed(identity)
@@ -237,8 +302,17 @@ public enum ExclusivePublisher {
             }
         } catch {
             if isOpen { close(output) }
-            removeIfIdentical(destination, to: identity)
-            throw error
+            // Only a removal that is confirmed lets the caller forget the file: one still there (or aside) is
+            // reported with its identity.
+            switch remove(destination, identity, cleanupToken) {
+            case .removed, .absent, .notMatching(keptAt: nil):
+                throw error
+            case .notMatching(let keptAt?):
+                throw CleanupFailed(underlying: error, identity: identity, reason: "it is kept at \(keptAt).")
+            case .failed(let reason, let keptAt):
+                throw CleanupFailed(underlying: error, identity: identity,
+                                    reason: reason + (keptAt.map { " It is kept at \($0)." } ?? ""))
+            }
         }
     }
 

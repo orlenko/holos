@@ -20,7 +20,8 @@ import Foundation
     public var onStart: ((UUID) -> Void)?
     /// Called once for every reading that was queued, however it ended (never after `shutDown`).
     public var onEnd: ((UUID, Outcome) -> Void)?
-    /// Called when the reading that was running at `shutDown` has ended (its end is not reported to `onEnd`).
+    /// Called when the reading that was running at `shutDown` has ended (its end is not reported to `onEnd`, unless
+    /// it finished and was queued again meanwhile: that queued run is dropped and `onEnd` reports it finished).
     public var onAbandonedEnd: ((UUID) -> Void)?
 
     private let work: Work
@@ -121,7 +122,15 @@ import Foundation
         if wasAbandoned { abandoned = nil }
         if wasAbandoned {
             onAbandonedEnd?(id)
-            if stoppedWhileAbandoned.remove(id) != nil, !shutting { onEnd?(id, .stopped) }
+            // Stopped while it waited behind this run: stopped, unless this run made the file after all.
+            if stoppedWhileAbandoned.remove(id) != nil, !shutting { onEnd?(id, failure == nil ? .finished : .stopped) }
+            // The run a quit stopped finished anyway (its file is made) after the quit was cancelled and the reading
+            // queued again: that queued run is not started (it would make the reading again, from text its success
+            // has removed); the reading ends as finished.
+            if failure == nil, let index = pending.firstIndex(of: id) {
+                pending.remove(at: index)
+                if !shutting { onEnd?(id, .finished) }
+            }
         } else if !shutting {
             onEnd?(id, outcome)
         }

@@ -13,6 +13,15 @@ public enum DocumentLoader {
     /// HTML importer (the one that must run on the main thread), so the app loads files off the main actor. In a
     /// cancelled task a PDF stops between pages with `CancellationError`.
     public static func load(_ url: URL) throws -> ReadableDocument {
+        // A FIFO or a device would block the read until a writer comes (a Stop could not end it): refused. A package
+        // (an RTFD document) is a folder.
+        var metadata = stat()
+        if stat(RawFilePath.system(url), &metadata) == 0 {
+            let type = metadata.st_mode & S_IFMT
+            guard type == S_IFREG || type == S_IFDIR else {
+                throw HolosError.invalidInput("\(url.lastPathComponent) is not a document file.")
+            }
+        }
         let document: ReadableDocument
         switch url.pathExtension.lowercased() {
         case "md", "markdown":

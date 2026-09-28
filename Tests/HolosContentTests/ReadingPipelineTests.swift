@@ -1954,4 +1954,182 @@ import Testing
         #expect(resumed.manifest.status == "complete")
         #expect(renderer.calls.count == calls)
     }
+
+    /// The finished file is published off the main actor (a copy into place is written and flushed there, the copy's
+    /// identity saved there first). When a failed copy's partly written file cannot be removed (its place aside is
+    /// taken), the manifest keeps its identity; a resume removes it once the place is free, and publishes again.
+    @Test func publicationRunsOffTheMainActorAndKeepsAPartialItCouldNotRemove() async throws {
+        let parent = try root()
+        defer { try? FileManager.default.removeItem(at: parent) }
+        let place = location(parent)
+        let unsupported: ReadingPublisher.ExclusiveRename = { _, _ in errno = ENOTSUP; return -1 }
+        let aside = ReadingTemporaries.publicationAside(output: place.output,
+                                                        key: ReadingTemporaries.key(for: place.workDirectory))
+        let blocker = aside.deletingLastPathComponent().appendingPathComponent("blocker")
+        let claims = Mutex<[Bool]>([])
+        let pipeline = ReadingPipeline(renderer: FakeRenderer(), joiner: FakeJoiner(), exclusiveRename: unsupported,
+                                       saveFault: { manifest in
+            guard manifest.publishing != nil, manifest.status != "complete" else { return }
+            let first = claims.withLock { claims in
+                claims.append(Thread.isMainThread)
+                return claims.count == 1
+            }
+            guard first else { return }
+            // The claim cannot be saved, and the place aside the copy would be moved into to be removed is taken.
+            try FileManager.default.createDirectory(at: blocker.deletingLastPathComponent(),
+                                                    withIntermediateDirectories: false)
+            try Data("x".utf8).write(to: blocker)
+            throw HolosError.io("Simulated full volume.")
+        })
+        await #expect(throws: ExclusivePublisher.CleanupFailed.self) {
+            try await pipeline.render(script: script(3), voiceIdentifier: voice, metadata: metadata, location: place)
+        }
+        // The copy's identity was saved off the main actor (the later save of it, after the failure, is the render's).
+        #expect(claims.withLock { $0.first } == false)
+        let partial = try #require(ReadingFileIdentity.of(place.output))
+        #expect(try manifest(place).publishing == partial)
+        #expect(try manifest(place).outputSHA256 == nil)
+
+        // The place aside is still taken: the partial file stays, and so does its identity.
+        await #expect(throws: HolosError.self) {
+            try await ReadingPipeline(renderer: FakeRenderer(), joiner: FakeJoiner(), exclusiveRename: unsupported)
+                .render(script: script(3), voiceIdentifier: voice, metadata: metadata, location: place, resume: true)
+        }
+        #expect(ReadingFileIdentity.of(place.output) == partial)
+        #expect(try manifest(place).publishing == partial)
+
+        try FileManager.default.removeItem(at: blocker)
+        let resumed = try await ReadingPipeline(renderer: FakeRenderer(), joiner: FakeJoiner(), exclusiveRename: unsupported)
+            .render(script: script(3), voiceIdentifier: voice, metadata: metadata, location: place, resume: true)
+        #expect(resumed.manifest.status == "complete")
+        #expect(resumed.manifest.publishing == nil)
+        #expect(try Data(contentsOf: place.output).count > 0)
+        #expect(!FileManager.default.fileExists(atPath: aside.deletingLastPathComponent().path))
+    }
+
+    /// The destination's drive goes away while the finished file is copied into it: the removal of the partly
+    /// written file finds nothing, which proves nothing, so its identity stays saved; once the drive is back, the
+    /// resume removes it and publishes.
+    @Test func aCopyCutOffByADisconnectedDriveKeepsItsIdentity() async throws {
+        let parent = try root()
+        defer { try? FileManager.default.removeItem(at: parent) }
+        let volumes = parent.appendingPathComponent("Volumes", isDirectory: true)
+        try FileManager.default.createDirectory(at: volumes, withIntermediateDirectories: false)
+        // A "drive" mounted at Volumes/Root: a link to the startup disk.
+        let drive = volumes.appendingPathComponent("Root")
+        try FileManager.default.createSymbolicLink(atPath: drive.path, withDestinationPath: "/")
+        let real = try #require(realpath(parent.path, nil).map { pointer in
+            defer { free(pointer) }
+            return String(cString: pointer)
+        })
+        let place = ReadingLocation(workDirectory: parent.appendingPathComponent("work"),
+                                    output: URL(fileURLWithPath: drive.path + real + "/Book.m4a"))
+        let onDisk = URL(fileURLWithPath: real + "/Book.m4a")
+        let unsupported: ReadingPublisher.ExclusiveRename = { _, _ in errno = ENOTSUP; return -1 }
+        let claims = Mutex(0)
+        let pipeline = ReadingPipeline(renderer: FakeRenderer(), joiner: FakeJoiner(), exclusiveRename: unsupported,
+                                       saveFault: { manifest in
+            guard manifest.publishing != nil, manifest.status != "complete",
+                  claims.withLock({ claims in claims += 1; return claims }) == 1 else { return }
+            // The drive goes away while the copy is written.
+            try FileManager.default.removeItem(atPath: drive.path)
+            throw HolosError.io("Simulated disconnection.")
+        })
+        let script = script(3)
+        try await ReadingOutput.$volumesFolder.withValue(volumes.path) {
+            await #expect(throws: HolosError.self) {
+                try await pipeline.render(script: script, voiceIdentifier: voice, metadata: metadata, location: place)
+            }
+            let partial = try #require(ReadingFileIdentity.of(onDisk))
+            #expect(try manifest(place).publishing == partial)
+
+            try FileManager.default.createSymbolicLink(atPath: drive.path, withDestinationPath: "/")
+            let resumed = try await ReadingPipeline(renderer: FakeRenderer(), joiner: FakeJoiner(),
+                                                    exclusiveRename: unsupported)
+                .render(script: script, voiceIdentifier: voice, metadata: metadata, location: place, resume: true)
+            #expect(resumed.manifest.status == "complete")
+            #expect(resumed.manifest.publishing == nil)
+            #expect(try Data(contentsOf: onDisk).count > 0)
+        }
+    }
+
+    /// A removal of the reading's partly written file that a crash cut off after it was moved aside leaves it in the
+    /// place derived from the reading: the next resume removes it there before it forgets its identity. A file there
+    /// that is not that one is left, and the resume stops.
+    @Test func resumeFinishesARemovalACrashCutOff() async throws {
+        let parent = try root()
+        defer { try? FileManager.default.removeItem(at: parent) }
+        let place = location(parent)
+        let unsupported: ReadingPublisher.ExclusiveRename = { _, _ in errno = ENOTSUP; return -1 }
+        let pipeline = ReadingPipeline(renderer: FakeRenderer(), joiner: FakeJoiner(), exclusiveRename: unsupported)
+        let script = script(3)
+        _ = try await pipeline.render(script: script, voiceIdentifier: voice, metadata: metadata, location: place)
+        let full = try Data(contentsOf: place.output)
+        let aside = ReadingTemporaries.publicationAside(output: place.output,
+                                                        key: ReadingTemporaries.key(for: place.workDirectory))
+
+        // A copy cut off by a crash, then moved aside by a removal that a second crash cut off.
+        var crashed = try manifest(place)
+        crashed.status = "incomplete"
+        crashed.publishing = try #require(ReadingFileIdentity.of(place.output))
+        try write(crashed, place)
+        try FileManager.default.createDirectory(at: aside.deletingLastPathComponent(), withIntermediateDirectories: false)
+        try FileManager.default.moveItem(at: place.output, to: aside)
+        let resumed = try await pipeline.render(script: script, voiceIdentifier: voice, metadata: metadata,
+                                                location: place, resume: true)
+        #expect(resumed.manifest.status == "complete")
+        #expect(try Data(contentsOf: place.output) == full)
+        #expect(!FileManager.default.fileExists(atPath: aside.deletingLastPathComponent().path))
+
+        // Something else in that place is not removed.
+        var stale = try manifest(place)
+        stale.status = "incomplete"
+        stale.publishing = try #require(ReadingFileIdentity.of(place.output))
+        try write(stale, place)
+        try FileManager.default.removeItem(at: place.output)
+        try FileManager.default.createDirectory(at: aside.deletingLastPathComponent(), withIntermediateDirectories: false)
+        try Data("theirs".utf8).write(to: aside)
+        await #expect(throws: HolosError.self) {
+            try await pipeline.render(script: script, voiceIdentifier: voice, metadata: metadata,
+                                      location: place, resume: true)
+        }
+        #expect(try Data(contentsOf: aside) == Data("theirs".utf8))
+        #expect(try manifest(place).publishing != nil)
+    }
+
+    /// A Stop while a resume checks whether the reading was made already (the whole file is read) ends the run
+    /// stopped, never reported made; and a checksum stops between its chunks once cancelled.
+    @Test func checksumsStopWhenTheirTaskIsCancelled() async throws {
+        let parent = try root()
+        defer { try? FileManager.default.removeItem(at: parent) }
+        let file = parent.appendingPathComponent("large.bin")
+        try Data(count: (3 << 20) + 1).write(to: file)
+        var chunks = 0
+        #expect(throws: CancellationError.self) {
+            try fileSHA256(file, isCancelled: {
+                chunks += 1
+                return chunks > 1
+            })
+        }
+        // A task cancelled before its checksum starts.
+        let hashing = Task {
+            withUnsafeCurrentTask { $0?.cancel() }
+            return try await fileSHA256OffMain(file)
+        }
+        await #expect(throws: CancellationError.self) { try await hashing.value }
+
+        let place = location(parent)
+        let pipeline = ReadingPipeline(renderer: FakeRenderer(), joiner: FakeJoiner())
+        let script = script(3)
+        _ = try await pipeline.render(script: script, voiceIdentifier: voice, metadata: metadata, location: place)
+        let metadata = self.metadata
+        let resuming = Task { @MainActor in
+            withUnsafeCurrentTask { $0?.cancel() }
+            return try await pipeline.render(script: script, voiceIdentifier: "test.voice", metadata: metadata,
+                                             location: place, resume: true)
+        }
+        await #expect(throws: CancellationError.self) { try await resuming.value }
+        #expect(FileManager.default.fileExists(atPath: place.output.path))
+        #expect(try manifest(place).outputSHA256 != nil)
+    }
 }

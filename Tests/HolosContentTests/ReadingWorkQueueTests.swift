@@ -218,4 +218,37 @@ import Testing
         // The first run's end went to `onAbandonedEnd` (the controller finishes a deletion that waited for it).
         #expect(abandonedEnds == [a])
     }
+
+    /// The run a quit stopped finishes anyway (its file is made) after the quit was cancelled and the reading queued
+    /// again: the queued run never starts (it would make the reading again, from text its success removed), and the
+    /// reading ends finished. Stopped while it waited behind that run, it ends finished too.
+    @Test func aReadingWhoseAbandonedRunFinishesIsNotMadeAgain() async {
+        for stopWhileWaiting in [false, true] {
+            let gates = Gates()
+            let queue = ReadingWorkQueue { try await gates.work($0) }
+            var ended: [(UUID, String)] = []
+            var startedIDs: [UUID] = []
+            var abandonedEnds: [UUID] = []
+            queue.onEnd = { ended.append(($0, outcomeName($1))) }
+            queue.onStart = { startedIDs.append($0) }
+            queue.onAbandonedEnd = { abandonedEnds.append($0) }
+            let (a, b) = (UUID(), UUID())
+            gates.stubborn = [a]
+            queue.enqueue(a)
+            await gates.waitUntilStarted(a)
+            queue.shutDown()
+            queue.reopen()
+            queue.enqueue(a)
+            queue.enqueue(b)
+            if stopWhileWaiting { #expect(queue.stop(a)) }
+            await gates.release(a)
+            await gates.release(b)
+            await queue.waitUntilIdle()
+            #expect(startedIDs == [a, b])
+            #expect(gates.started == [a, b])
+            #expect(abandonedEnds == [a])
+            #expect(ended.map(\.0) == [a, b])
+            #expect(ended.map(\.1) == ["finished", "finished"])
+        }
+    }
 }

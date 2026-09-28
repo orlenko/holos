@@ -107,9 +107,12 @@ public enum ReadingSourceParser {
         return (metadata.st_mode & S_IFMT) == S_IFDIR
     }
 
+    /// An `https` URL with a host: any host (an intranet name such as "wiki", an IP address such as "[::1]"), as the
+    /// page loader takes it. Only a bare address, typed without "https://", must look like a site
+    /// (`looksLikeAddress`), and is checked before it gets here.
     private static func web(_ text: String) -> Result<ReadingSource, ReadingSourceProblem> {
-        guard let url = URL(string: text), url.scheme?.lowercased() == "https", let host = url.host(), !host.isEmpty,
-              host.contains(".") || host == "localhost" else {
+        guard let url = URL(string: text), url.scheme?.lowercased() == "https", let host = url.host(), !host.isEmpty
+        else {
             return .failure(ReadingSourceProblem("Not a valid web address: \(text)"))
         }
         return .success(.web(url))

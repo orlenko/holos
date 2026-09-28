@@ -91,7 +91,10 @@ final class ReadingController {
     /// their files are gone finishes the deletion at the next launch).
     private var all: [ReadingEntry] = []
     private let store = ReadingLibraryStore.standard()
-    private var writable = true
+    /// Whether the list is saved; false until it is read (see `start`).
+    private var writable = false
+    /// The list has been read (see `start`).
+    private var listLoaded = false
     /// Readings of an index a newer Voice is Local wrote: shown, never changed here.
     private var readOnly: Set<UUID> = []
     private var started = false
@@ -101,8 +104,22 @@ final class ReadingController {
     private var deleteWhenStopped: Set<UUID> = []
     /// Readings whose files are being removed (off the main actor), so one is never removed twice at once.
     private var deleting: Set<UUID> = []
-    /// Made readings whose file identity is being checked (see `recordMissingIdentities`).
-    private var identityChecks: Set<UUID> = []
+    /// What is known of each made reading's file (see `refreshFiles`): the rows and playback use only this, so no
+    /// file is looked up on the main actor. None yet for one not checked.
+    private var files: [UUID: ReadingLibrary.FileStatus] = [:]
+    /// The check of the files running (`refreshFiles`), and whether another was asked for meanwhile.
+    private var filesCheck: Task<Void, Never>?
+    private var filesCheckAgain = false
+    /// For a made reading whose file's identity did not match (see `ReadingLibrary.FileStatus.changed`): the file
+    /// whose checksum was read, so the same file is not read again at each check.
+    private var checksummed: [UUID: ReadingLibrary.FileVersion] = [:]
+    /// The made readings whose file's checksum is being read.
+    private var checksumming: Set<UUID> = []
+    /// The file whose checksum could not be read (tried again at the next check).
+    private var unreadable: [UUID: ReadingLibrary.FileVersion] = [:]
+    /// The index's folder could not be reached at launch (see `ReadingLibraryStore.Loaded.unavailable`): it is read
+    /// again when the section shows or its window comes back, and nothing is saved until it is.
+    private var indexUnavailable = false
     private lazy var queue: ReadingWorkQueue = {
         let queue = ReadingWorkQueue { [weak self] id in try await self?.make(id) }
         queue.onStart = { [weak self] id in self?.started(id) }
@@ -125,12 +142,35 @@ final class ReadingController {
     func start() {
         guard !started else { return }
         started = true
-        // Copies an earlier session made for Share… (their services are done with them by now).
-        try? FileManager.default.removeItem(at: Self.shareFolder)
+        let (store, share) = (store, Self.shareFolder)
+        // Read off the main actor (the support folder may be on a slow share); nothing is saved or added until then
+        // (`writable` is false).
+        Task {
+            let loaded = try? await offMain {
+                // Copies an earlier session made for Share… (their services are done with them by now).
+                try? FileManager.default.removeItem(at: share)
+                return Self.load(store)
+            }
+            adopt(loaded ?? .init(entries: [], notice: "The Reading list could not be read.", writable: false,
+                                  unavailable: true))
+        }
+    }
+
+    /// The list as saved, and, when it can be written, the saves a quit or a crash cut off removed (nothing is being
+    /// saved yet). Not on the main actor.
+    nonisolated private static func load(_ store: ReadingLibraryStore) -> ReadingLibraryStore.Loaded {
         let loaded = store.load()
+        if loaded.writable { store.sweepTemporaries() }
+        return loaded
+    }
+
+    /// Takes the list as loaded: finishes the deletions a quit interrupted and continues the readings kept over it.
+    private func adopt(_ loaded: ReadingLibraryStore.Loaded) {
+        listLoaded = true
         notice = loaded.notice
         writable = loaded.writable
-        if !writable { readOnly = Set(loaded.entries.map(\.id)) }
+        indexUnavailable = loaded.unavailable
+        readOnly = writable ? [] : Set(loaded.entries.map(\.id))
         let plan = ReadingLibrary.launchPlan(loaded)
         // The deletions a quit interrupted stay in the index, marked (hidden), while they finish off the main actor;
         // one whose files cannot be removed comes back, with the reason.
@@ -140,9 +180,27 @@ final class ReadingController {
         if writable { removeFinishedSnapshots() }
         plan.resume.forEach(queue.enqueue)
         plan.delete.forEach { finishDeleteLater($0.id) }
-        recordMissingIdentities()
+        refreshFiles()
         onChange?()
     }
+
+    /// The index's folder could not be reached at launch: it is read again (off the main actor), and taken once it is
+    /// there (a drive or share connected since). Nothing was added meanwhile (nothing is added to a list that is not
+    /// saved), so the list found there is the whole list.
+    private func reloadIfUnavailable() {
+        guard listLoaded, indexUnavailable, !reloading, all.isEmpty else { return }
+        reloading = true
+        let store = store
+        Task {
+            let loaded = try? await offMain { Self.load(store) }
+            reloading = false
+            guard let loaded, !loaded.unavailable, indexUnavailable, all.isEmpty else { return }
+            adopt(loaded)
+        }
+    }
+
+    /// `reloadIfUnavailable` is reading the index.
+    private var reloading = false
 
     func entry(_ id: UUID) -> ReadingEntry? { all.first { $0.id == id } }
 
@@ -155,8 +213,13 @@ final class ReadingController {
     @discardableResult
     /// Refused while the list is not saved (its index could not be read, or a newer build wrote it): a reading made
     /// then would leave the list at the next launch while its cache stayed, with no row to delete it from.
-    func add(_ source: ReadingSource, voice: String?, speed: Double) throws -> UUID {
+    func add(_ source: ReadingSource, voice: String?, speed: Double) async throws -> UUID {
+        guard listLoaded else {
+            throw HolosError.unavailable("The Reading list is still being read; try again in a moment.")
+        }
         guard writable else {
+            // Its folder may be back: the list there is read (never written over), for the next try.
+            reloadIfUnavailable()
             throw HolosError.unavailable("New readings are not made while the Reading list cannot be saved"
                 + (notice.map { ": \($0)" } ?? "."))
         }
@@ -164,8 +227,9 @@ final class ReadingController {
         all.insert(entry, at: 0)
         // Nothing is made for a reading the index does not keep: its saved text and cache would have no entry to be
         // found or deleted through after a quit.
-        guard save() else {
+        guard await saved(growing: true) else {
             all.removeAll { $0.id == entry.id }
+            onChange?()
             throw HolosError.io("The reading was not added: " + (notice ?? "the Reading list could not be saved."))
         }
         onChange?()
@@ -181,32 +245,33 @@ final class ReadingController {
         return nil
     }
 
-    /// The reading's finished file when it is still the one it made (the same file identity as when it was made):
-    /// what Play, Share…, and Show in Finder use. Nil when it was moved, deleted, or replaced by another file, and
-    /// while its identity is unknown (it could not be read when the reading was made; see `recordMissingIdentities`).
-    func finishedFile(_ entry: ReadingEntry) -> URL? {
-        guard entry.state == .done, let output = entry.outputURL, let made = entry.outputIdentity,
-              ExclusivePublisher.FileIdentity.of(output) == made else { return nil }
-        return output
+    /// The reading's finished file when the last check found it still the one it made (the same file identity as
+    /// when it was made, see `refreshFiles`), with its size; nil otherwise, and until it is checked. Looks nothing
+    /// up: what a row shows.
+    func finishedFile(_ entry: ReadingEntry) -> (url: URL, size: Int64?)? {
+        guard entry.state == .done, let output = entry.outputURL,
+              case .available(let size)? = files[entry.id] else { return nil }
+        return (output, size)
     }
 
     /// The reading's finished file opened, when the object opened is still the one it made (checked on the open file,
-    /// see `ReadingLibrary.openVerified`): what Play reads, so a file put at its path meanwhile is never played.
-    func openFinishedFile(_ entry: ReadingEntry) -> FileHandle? {
+    /// see `ReadingLibrary.openVerified`), opened off the main actor: what Play, Share…, and Show in Finder use, so a
+    /// file put at its path meanwhile is never the one used. Nil (and the files checked again) when it is not.
+    func openFinishedFile(_ entry: ReadingEntry) async -> FileHandle? {
         guard entry.state == .done, let output = entry.outputURL, let made = entry.outputIdentity else { return nil }
-        return ReadingLibrary.openVerified(output, identity: made)
+        let file = try? await offMain { ReadingLibrary.openVerified(output, identity: made) }
+        if file == nil { refreshFiles() }
+        return file ?? nil
     }
 
     /// A copy of the reading's finished file for Share…, made off the main actor from the file opened and checked
     /// (a clone where the volume can), so what the services read later is that very file.
     func shareableCopy(_ entry: ReadingEntry) async throws -> URL {
-        guard let file = openFinishedFile(entry), let name = entry.outputURL?.lastPathComponent else {
+        guard let file = await openFinishedFile(entry), let name = entry.outputURL?.lastPathComponent else {
             throw HolosError.unavailable("Its file is no longer the one it made.")
         }
         let folder = Self.shareFolder
-        return try await Task.detached(priority: .userInitiated) {
-            try ReadingLibrary.copyForSharing(file, name: name, into: folder)
-        }.value
+        return try await offMain { try ReadingLibrary.copyForSharing(file, name: name, into: folder) }
     }
 
     /// Where Share…'s copies go (the temporary folder); emptied at each launch.
@@ -214,36 +279,71 @@ final class ReadingController {
         FileManager.default.temporaryDirectory.appendingPathComponent("Voice is Local Share", isDirectory: true)
     }
 
-    /// `recordMissingIdentities` when the Reading section shows or its window comes back (a drive reconnected, a file
-    /// put back): a check that found nothing earlier is tried again.
-    func recheckMissingIdentities() {
-        recordMissingIdentities()
+    /// When the Reading section shows or its window comes back (a drive reconnected, a file moved in Finder): the
+    /// index is read again when its folder could not be reached, and the files are checked again.
+    func recheck() {
+        reloadIfUnavailable()
+        refreshFiles()
     }
 
-    /// Made readings whose file identity is unknown get it once the file at their path is shown to be theirs by its
-    /// checksum (read off the main actor); until then they show as missing. Tried at launch, after each make, and
-    /// when the section shows or its window comes back.
-    private func recordMissingIdentities() {
-        let pending = all.filter {
-            $0.state == .done && $0.outputIdentity == nil && $0.outputSHA256 != nil && $0.output != nil
-                && $0.deletePending != true && !readOnly.contains($0.id) && !identityChecks.contains($0.id)
-        }
-        guard !pending.isEmpty else { return }
-        identityChecks.formUnion(pending.map(\.id))
-        Task {
-            for entry in pending {
-                defer { identityChecks.remove(entry.id) }
-                guard let output = entry.outputURL, let sha256 = entry.outputSHA256 else { continue }
-                let identity = await Task.detached(priority: .utility) {
-                    ReadingLibrary.verifiedIdentity(of: output, sha256: sha256)
-                }.value
-                guard let identity, let current = self.entry(entry.id), current.state == .done,
-                      current.output == entry.output, current.outputIdentity == nil else { continue }
-                update(entry.id) { $0.outputIdentity = identity }
-                save()
-                onChange?()
+    /// Checks the made readings' files off the main actor (`ReadingLibrary.fileStatus`: their metadata only) and
+    /// keeps what it finds for the rows (`finishedFile`, `fileProblem`), then says so (`onChange`). A file whose
+    /// identity is not the recorded one (or none was recorded: a network volume) is read, once per file found, to
+    /// compare its checksum with the reading's: when it is the reading's file (a share mounted again gets a new
+    /// device number) its identity is recorded anew. One check runs at a time; one asked for meanwhile follows it.
+    /// Run at launch, after a reading is made or deleted, and when the section shows or its window comes back.
+    func refreshFiles() {
+        filesCheckAgain = true
+        guard filesCheck == nil else { return }
+        filesCheck = Task {
+            while filesCheckAgain {
+                filesCheckAgain = false
+                await checkFiles()
             }
+            filesCheck = nil
         }
+    }
+
+    private func checkFiles() async {
+        let made = all.filter { $0.state == .done && $0.deletePending != true }
+        let statuses = (try? await offMain { made.map(ReadingLibrary.fileStatus(of:)) }) ?? []
+        // Only for entries unchanged meanwhile (a Delete, a new identity recorded).
+        func current(_ entry: ReadingEntry) -> Bool {
+            guard let now = self.entry(entry.id) else { return false }
+            return now.state == .done && now.output == entry.output && now.outputIdentity == entry.outputIdentity
+        }
+        var found: [UUID: ReadingLibrary.FileStatus] = [:]
+        for (entry, status) in zip(made, statuses) where current(entry) { found[entry.id] = status }
+        if found != files {
+            files = found
+            onChange?()
+        }
+        for (entry, status) in zip(made, statuses) {
+            guard case .changed(let version) = status, entry.outputSHA256 != nil, !readOnly.contains(entry.id),
+                  checksummed[entry.id] != version, current(entry) else { continue }
+            checksumming.insert(entry.id)
+            let result = try? await offMain(priority: .utility) { ReadingLibrary.revalidate(entry, found: version) }
+            checksumming.remove(entry.id)
+            // A file that could not be read (a share that stopped answering), or that changed while it was read (one
+            // being copied back), is read again at the next check; a file whose size or last change differs later is
+            // another version, read again too.
+            if let result, result != .unknown {
+                checksummed[entry.id] = version
+                unreadable[entry.id] = nil
+            } else {
+                unreadable[entry.id] = version
+            }
+            guard case .same(let verified)? = result, current(entry) else {
+                onChange?()
+                continue
+            }
+            update(entry.id) { $0.outputIdentity = verified }
+            save()
+            // Shown with its size by the next check.
+            filesCheckAgain = true
+        }
+        checksummed = checksummed.filter { id, _ in all.contains { $0.id == id } }
+        unreadable = unreadable.filter { id, _ in all.contains { $0.id == id } }
     }
 
     /// Why a made reading's file cannot be used (`finishedFile` is nil).
@@ -252,15 +352,31 @@ final class ReadingController {
         case missing
         /// The folder that holds it cannot be reached (its drive or share is not connected): it may come back.
         case unavailable(String)
+        /// A file is at its path whose identity is not the one recorded: its checksum is being read to tell whether
+        /// it is the reading's.
+        case checking
     }
 
-    /// Nil when the reading is not made, or its file is there (see `finishedFile`).
+    /// Nil when the reading is not made, its file is there (see `finishedFile`), or it has not been checked yet.
     func fileProblem(_ entry: ReadingEntry) -> FileProblem? {
-        guard entry.state == .done, finishedFile(entry) == nil else { return nil }
-        if let output = entry.outputURL, let reason = ReadingOutput.unreachableReason(for: output) {
+        guard entry.state == .done else { return nil }
+        switch files[entry.id] {
+        case nil, .available?:
+            return nil
+        case .missing?:
+            return .missing
+        case .unavailable(let reason)?:
             return .unavailable(reason)
+        case .changed(let found)?:
+            if checksumming.contains(entry.id) { return .checking }
+            if unreadable[entry.id] == found {
+                return .unavailable("its file could not be read to check it; it is checked again when you come back "
+                    + "to this window")
+            }
+            // Its checksum will be read.
+            let pending = entry.outputSHA256 != nil && !readOnly.contains(entry.id) && checksummed[entry.id] != found
+            return pending ? .checking : .missing
         }
-        return .missing
     }
 
     /// Try Again or Resume: queues a failed or stopped reading again; its rendered parts are reused. Returns a
@@ -285,12 +401,23 @@ final class ReadingController {
     /// checksum takes a while on a slow drive), so this returns when they are.
     func delete(_ id: UUID) async -> DeleteOutcome {
         guard !readOnly.contains(id) else { return .kept(Self.readOnlyMessage) }
-        guard entry(id) != nil, !deleting.contains(id) else { return .deleted(note: nil) }
+        // One mark at a time: a save of another Delete's mark must not carry this one before it is known.
+        while holdingWrites > 0 { await withCheckedContinuation { heldWaiters.append($0) } }
+        guard let current = entry(id), current.deletePending != true, !deleting.contains(id) else {
+            return .deleted(note: nil)
+        }
         update(id) { $0.deletePending = true }
+        onChange?()
         // Nothing is stopped or removed unless the mark is saved: otherwise the reading would come back at the next
-        // launch with its files gone. (A list that is not saved at all keeps nothing to come back.)
-        if writable && !save() {
-            update(id) { $0.deletePending = nil }
+        // launch with its files gone. (A list that is not saved at all keeps nothing to come back.) Other saves wait
+        // until it is known: one that wrote the mark while its own save failed would delete the reading at the next
+        // launch although the user was told it stays.
+        holdingWrites += 1
+        let marked = writable ? await saved(holding: true) : true
+        if !marked { update(id) { $0.deletePending = nil } }
+        releaseWrites()
+        if !marked {
+            onChange?()
             return .kept("“\(entry(id)?.title ?? "The reading")” was not deleted: "
                 + (notice ?? "the Reading list could not be saved."))
         }
@@ -313,8 +440,9 @@ final class ReadingController {
     @discardableResult
     func prepareForQuit(keep: Bool) -> Bool {
         all = ReadingLibrary.forQuit(all, keep: keep)
-        // A list that is never saved (a newer build's) keeps no request to continue anything: nothing to save.
-        let saved = save() || !writable
+        // A list that is never saved (a newer build's) keeps no request to continue anything: nothing to save. Saved
+        // now, on the main actor, after the writes queued before: the app quits next.
+        let saved = saveNow() || !writable
         queue.shutDown()
         activity.removeAll()
         preparedForQuit = true
@@ -344,6 +472,8 @@ final class ReadingController {
     /// a cancelled quit, a deletion that waited for it finishes.
     private func abandonedEnded(_ id: UUID) {
         activity[id] = nil
+        // It may have made its file after all.
+        refreshFiles()
         guard !preparedForQuit, deleteWhenStopped.remove(id) != nil else { return }
         finishDeleteLater(id)
     }
@@ -364,8 +494,9 @@ final class ReadingController {
         activity[id] = nil
         switch outcome {
         case .finished:
-            // Its work returned without making the file (it cannot, but a row must never stay "rendering").
-            if entry(id)?.state == .rendering {
+            // Its work returned without making the file (it cannot, but a row must never stay "rendering" or
+            // "waiting": a run a quit stopped may end so after the reading was queued again).
+            if entry(id)?.isActive == true {
                 update(id) { $0.state = .stopped }
             }
         case .failed(let error):
@@ -381,6 +512,7 @@ final class ReadingController {
         }
         save()
         onChange?()
+        refreshFiles()
         if deleteWhenStopped.remove(id) != nil { finishDeleteLater(id) }
     }
 
@@ -398,33 +530,30 @@ final class ReadingController {
         let metadata = AudioBookMetadata(
             title: [document.title, entry.source.fallbackName].lazy.compactMap(AudioBookMetadata.usableTitle).first,
             author: document.author, language: language)
-        let readings = try ReadingOutput.readingsRoot(support: HolosPaths.supportRoot,
-                                                      configured: ProcessInfo.processInfo.environment["HOLOS_SUPPORT_DIR"],
-                                                      create: true)
-        try FileManager.default.createDirectory(at: readings, withIntermediateDirectories: true)
         let identity = ReadingPipeline.identity(script: script, voiceIdentifier: voice.id, rate: rate, metadata: metadata)
         let name = ReadingOutput.fileName(title: metadata.title, fallback: entry.source.fallbackName)
 
         // The file: the one chosen when the reading first started, else a new name in the output folder. A name that
-        // something else took since (no render cache of this reading, but a file there) is replaced by a new one.
-        var output = entry.outputURL
-        var location: ReadingLocation?
-        if let chosen = output {
-            let found = try ReadingOutput.locate(output: chosen.path, name: name, identity: identity,
-                                                 readingsRoot: readings, resume: true)
-            if try ReadingOutput.exists(found.workDirectory) || !ReadingOutput.exists(found.output) { location = found }
+        // something else took since (no render cache of this reading, but a file there), or whose cache another
+        // reading of the list holds, is replaced by a new one (see `ReadingLibrary.location`). Chosen off the main
+        // actor: it looks into the output folder, which may be on a slow share.
+        let others = all.filter { $0.id != id }
+        let (taken, otherCaches) = (others.compactMap(\.output), others.compactMap(\.cache))
+        let (chosen, title, fallback) = (entry.outputURL, metadata.title, entry.source.fallbackName)
+        let (folder, isDefault, shown) = (ReadingPreferences.folder, ReadingPreferences.isDefaultFolder,
+                                          ReadingPreferences.folderText)
+        let support = HolosPaths.supportRoot
+        let configured = ProcessInfo.processInfo.environment["HOLOS_SUPPORT_DIR"]
+        let (location, resume) = try await offMain { () -> (ReadingLocation, Bool) in
+            let readings = try ReadingOutput.readingsRoot(support: support, configured: configured, create: true)
+            try FileManager.default.createDirectory(at: readings, withIntermediateDirectories: true)
+            let location = try ReadingLibrary.location(
+                chosen: chosen, folder: { try ReadingLibrary.outputFolder(folder, isDefault: isDefault, shown: shown) },
+                title: title, fallback: fallback, name: name, identity: identity, readingsRoot: readings, taken: taken,
+                otherCaches: otherCaches)
+            return (location, try ReadingOutput.exists(location.workDirectory))
         }
-        if location == nil {
-            let folder = try Self.outputFolder()
-            let taken = Set(all.filter { $0.id != id }.compactMap(\.output))
-            let chosen = ReadingLibrary.outputURL(in: folder, title: metadata.title, fallback: entry.source.fallbackName,
-                                                  taken: taken) { url in (try? ReadingOutput.exists(url)) ?? true }
-            output = chosen
-            location = try ReadingOutput.locate(output: chosen.path, name: name, identity: identity,
-                                                readingsRoot: readings, resume: false)
-        }
-        guard let location, output != nil else { return }
-        let resume = try ReadingOutput.exists(location.workDirectory)
+        try Task.checkCancellation()
         let voiceName = ReadingVoiceMenu.items(NativeSpeechRenderer.voices(), preferredLanguages: [])
             .first { $0.id == voice.id }?.name ?? voice.name
         update(id) {
@@ -438,7 +567,7 @@ final class ReadingController {
         }
         // Nothing is rendered until the index knows where: otherwise a resume after an exit would pick another name
         // and cache, render the reading twice, and leave the first file and cache unknown.
-        if writable && !save() {
+        if writable, !(await saved()) {
             throw HolosError.io("The Reading list could not be saved, so the reading was not started: "
                 + (notice ?? "unknown error"))
         }
@@ -461,27 +590,11 @@ final class ReadingController {
         }
         // The saved text goes only once the index says the reading is made (a successful save removes it), or when
         // the index keeps nothing: a reading the index still calls unfinished always has its text to resume from.
-        // One kept because the save failed goes after the next save that works (`removeFinishedSnapshots`).
-        if !save() && !writable { removeFinishedSnapshots() }
-        // Its identity could not be read just now (a network volume): it is checked by checksum instead.
-        recordMissingIdentities()
-    }
-
-    /// The folder new files go to. The default one is made when missing; a folder chosen in Settings that is missing
-    /// (its disk is not connected) is not, so nothing is written on the startup disk in its place.
-    static func outputFolder() throws -> URL {
-        let folder = ReadingPreferences.folder
-        if ReadingPreferences.isDefaultFolder {
-            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-        } else {
-            // `stat` on the path as spelled (`FileManager` would decompose it).
-            var metadata = stat()
-            guard stat(folder.path, &metadata) == 0, (metadata.st_mode & S_IFMT) == S_IFDIR else {
-                throw HolosError.unavailable("The folder \(ReadingPreferences.folderText) chosen in Settings › Reading is "
-                    + "not available. Connect its disk, or choose another folder there, then Try Again.")
-            }
-        }
-        return folder
+        // One kept because the save failed goes after the next save that works (`writeWork`).
+        if writable { save() } else { removeFinishedSnapshots() }
+        // Its file is checked (off the main actor) for its row; one whose identity could not be read just now (a
+        // network volume) is checked by checksum.
+        refreshFiles()
     }
 
     /// The reading's text: the copy saved when it was first loaded, else its source, loaded now and saved before
@@ -505,13 +618,17 @@ final class ReadingController {
         case .web(let url):
             document = try await WebArticleExtractor().extract(from: url).document
         case .file(let url):
-            // Looked up as spelled (`FileManager` would decompose the path).
-            guard (try? ReadingOutput.exists(url)) == true else {
-                throw HolosError.invalidInput("\(url.lastPathComponent) is no longer at \((url.path as NSString).abbreviatingWithTildeInPath).")
+            // Off the main actor, the look-up included (the file may be on a share that stopped answering): a long PDF
+            // or Word file takes a while to read, and the window must stay responsive. A Stop cancels it too (a PDF
+            // stops between pages).
+            let load = Task.detached(priority: .userInitiated) {
+                // Looked up as spelled (`FileManager` would decompose the path).
+                guard (try? ReadingOutput.exists(url)) == true else {
+                    throw HolosError.invalidInput("\(url.lastPathComponent) is no longer at "
+                        + "\((url.path as NSString).abbreviatingWithTildeInPath).")
+                }
+                return try DocumentLoader.load(url)
             }
-            // Off the main actor: a long PDF or Word file takes a while to read, and the window must stay responsive.
-            // A Stop cancels it too (a PDF stops between pages).
-            let load = Task.detached(priority: .userInitiated) { try DocumentLoader.load(url) }
             document = try await withTaskCancellationHandler { try await load.value } onCancel: { load.cancel() }
         }
         // Stopped while it loaded: nothing is saved for it.
@@ -584,6 +701,9 @@ final class ReadingController {
             return .kept(problem)
         }
         all.removeAll { $0.id == id }
+        files[id] = nil
+        checksummed[id] = nil
+        unreadable[id] = nil
         save()
         clearDeleteNotice(id)
         return .deleted(note: result.note)
@@ -647,48 +767,182 @@ final class ReadingController {
         change(&all[index])
     }
 
-    /// Saves the index; false when it was not saved (a newer build's list, or the write failed).
-    @discardableResult
-    private func save() -> Bool {
-        guard writable else { return false }
-        do {
-            try store.save(all)
+    // MARK: Writing the index
+
+    /// What one write of the index did: why it failed (nil: saved, or nothing to save), and what removing the saved
+    /// texts of made readings after it left to tell.
+    private struct WriteResult: Sendable {
+        var failure: String?
+        var snapshotProblem: String?
+    }
+
+    /// Writes of the index and removals of saved texts, off the main actor (the support folder may be on a slow
+    /// share), one at a time in the order they were asked for: each writes the list as it was when asked, so the
+    /// last one leaves the list as it is.
+    private let writes = DispatchQueue(label: "VoiceIsLocal.ReadingIndex", qos: .userInitiated)
+    private var writeSequence = 0
+    private var appliedSequence = 0
+
+    /// The work of one save of the list as it is now (nil `saving`: only the saved texts are removed). After a save
+    /// that works (or with a list that is not saved at all), the saved text of every reading the list records as made
+    /// is removed: retried after each save, so one kept because a save or a removal failed goes once they work.
+    private func writeWork(saving: Bool, growing: Bool) -> @Sendable () -> WriteResult {
+        let (store, entries, readOnly) = (store, all, readOnly)
+        return {
+            if saving {
+                do {
+                    try store.save(entries, growing: growing)
+                } catch {
+                    return WriteResult(failure: error.localizedDescription)
+                }
+            }
+            var problem: String?
+            for entry in entries where entry.state == .done && !readOnly.contains(entry.id)
+                && store.hasDocument(for: entry.id) {
+                do {
+                    try store.removeDocument(for: entry.id)
+                } catch {
+                    problem = "\(Self.snapshotFailure) “\(entry.title)” could not be removed: \(error.localizedDescription)"
+                }
+            }
+            return WriteResult(snapshotProblem: problem)
+        }
+    }
+
+    /// Queues a write (see `writeWork`); `done` gets whether the list was saved, once it is known, on the main actor.
+    private func enqueueWrite(saving: Bool = true, growing: Bool = false,
+                              done: (@MainActor @Sendable (Bool) -> Void)? = nil) {
+        let saving = saving && writable
+        let work = writeWork(saving: saving, growing: growing)
+        writeSequence += 1
+        let sequence = writeSequence
+        writes.async {
+            let result = work()
+            Task { @MainActor in
+                self.apply(result, sequence: sequence)
+                done?(saving && result.failure == nil)
+            }
+        }
+    }
+
+    /// What a write that ended says: only the latest one to end counts (an earlier one ending later says nothing).
+    private func apply(_ result: WriteResult, sequence: Int) {
+        guard sequence > appliedSequence else { return }
+        appliedSequence = sequence
+        let before = notice
+        if let failure = result.failure {
+            lastSaveFailed = true
+            notice = "\(Self.saveFailure) \(failure)"
+        } else {
             if lastSaveFailed {
                 lastSaveFailed = false
                 if notice?.hasPrefix(Self.saveFailure) == true { notice = nil }
             }
-            removeFinishedSnapshots()
-            return true
-        } catch {
-            lastSaveFailed = true
-            notice = "\(Self.saveFailure) \(error.localizedDescription)"
-            return false
-        }
-    }
-
-    /// Saves the index again if the last save failed (a quit with nothing rendering), so what the user did since
-    /// (a Stop, a Delete) is what the next launch finds. False when it still cannot be saved.
-    func saveBeforeQuit() -> Bool {
-        guard writable, lastSaveFailed else { return true }
-        return save()
-    }
-
-    /// Removes the saved text of every reading the index (as just saved, or as never saved at all) records as made:
-    /// retried after each save, so one kept because a save or a removal failed goes once they work. A removal that
-    /// fails is shown and tried again after the next save.
-    private func removeFinishedSnapshots() {
-        var failed = false
-        for entry in all where entry.state == .done && !readOnly.contains(entry.id) && store.hasDocument(for: entry.id) {
-            do {
-                try store.removeDocument(for: entry.id)
-            } catch {
-                failed = true
-                notice = "\(Self.snapshotFailure) “\(entry.title)” could not be removed: \(error.localizedDescription)"
+            if let problem = result.snapshotProblem {
+                notice = problem
+            } else if notice?.hasPrefix(Self.snapshotFailure) == true {
+                // All gone now: a warning from an earlier try no longer holds.
+                notice = nil
             }
         }
-        // All gone now: a warning from an earlier try no longer holds.
-        if !failed, notice?.hasPrefix(Self.snapshotFailure) == true { notice = nil }
+        if notice != before { onChange?() }
     }
 
-    static let snapshotFailure = "The saved text of"
+    /// Saves the index, off the main actor, without waiting (a list that is not saved is left alone). While a
+    /// Delete's mark is being saved (`holdingWrites`), it is saved once that is known instead.
+    private func save() {
+        guard holdingWrites == 0 else {
+            heldSave = true
+            return
+        }
+        enqueueWrite()
+    }
+
+    /// Saves the index and waits: false when it was not saved (a list that is not saved, or the write failed).
+    /// `growing`: the save adds a reading (see `ReadingLibraryStore.save`). While a Delete's mark is being saved, it
+    /// waits until that is known; `holding`: it is that save.
+    private func saved(growing: Bool = false, holding: Bool = false) async -> Bool {
+        while !holding && holdingWrites > 0 {
+            await withCheckedContinuation { heldWaiters.append($0) }
+        }
+        return await withCheckedContinuation { continuation in
+            enqueueWrite(growing: growing) { continuation.resume(returning: $0) }
+        }
+    }
+
+    /// Saves under way that change a Delete's mark: other saves wait for them (see `save`, `saved`).
+    private var holdingWrites = 0
+    private var heldSave = false
+    private var heldWaiters: [CheckedContinuation<Void, Never>] = []
+
+    /// A Delete's mark is saved (or taken back): the saves that waited go now, with the list as it is.
+    private func releaseWrites() {
+        holdingWrites -= 1
+        guard holdingWrites == 0 else { return }
+        if heldSave {
+            heldSave = false
+            enqueueWrite()
+        }
+        let waiters = heldWaiters
+        heldWaiters.removeAll()
+        waiters.forEach { $0.resume() }
+    }
+
+    /// Saves the index now, after the writes queued before, and waits for it on the main actor (for a quit, which
+    /// cannot wait), at most `quitSaveLimit`: a support folder that does not answer (a share whose server stopped)
+    /// makes it a failure, which the quit says, rather than freeze the app.
+    private func saveNow() -> Bool {
+        guard writable else { return false }
+        let work = writeWork(saving: true, growing: false)
+        writeSequence += 1
+        let sequence = writeSequence
+        let outcome = SaveOutcome()
+        writes.async { outcome.finish(work()) }
+        guard let result = outcome.wait(upTo: Self.quitSaveLimit) else {
+            let failure = WriteResult(failure: "its folder did not answer in time.")
+            apply(failure, sequence: sequence)
+            return false
+        }
+        apply(result, sequence: sequence)
+        return result.failure == nil
+    }
+
+    /// How long a quit waits for the index to be saved.
+    static let quitSaveLimit: DispatchTimeInterval = .seconds(10)
+
+    /// The result of a write the main actor waits for (see `saveNow`).
+    private final class SaveOutcome: @unchecked Sendable {
+        private let done = DispatchSemaphore(value: 0)
+        private let lock = NSLock()
+        private var result: WriteResult?
+
+        func finish(_ result: WriteResult) {
+            lock.lock()
+            self.result = result
+            lock.unlock()
+            done.signal()
+        }
+
+        func wait(upTo limit: DispatchTimeInterval) -> WriteResult? {
+            guard done.wait(timeout: .now() + limit) == .success else { return nil }
+            lock.lock()
+            defer { lock.unlock() }
+            return result
+        }
+    }
+
+    /// Removes the saved text of the readings the list records as made (see `writeWork`), off the main actor.
+    private func removeFinishedSnapshots() {
+        enqueueWrite(saving: false)
+    }
+
+    /// Saves the index again when a quit with nothing rendering comes (a write may have failed meanwhile), so what
+    /// the user did since (a Stop, a Delete) is what the next launch finds. False when it cannot be saved.
+    func saveBeforeQuit() -> Bool {
+        // Nothing to do when the last write worked and none is under way.
+        guard writable, lastSaveFailed || writeSequence > appliedSequence else { return true }
+        return saveNow()
+    }
+
+    nonisolated static let snapshotFailure = "The saved text of"
 }

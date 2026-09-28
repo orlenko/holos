@@ -194,8 +194,9 @@ Reading (⌘5, `ReadingPane`) makes the same file as `voiceislocal read` from in
 app. A **New reading** card holds one field ("Paste a link, or drop a PDF, Word, HTML,
 Markdown or text file here") with **Choose File…**, a row with the Voice pop-up and
 **▶ Preview**, and a row with the Speed slider and **Make Audio** (Return), so it fits
-the section's narrowest width. The field takes an `https://` link (a bare
-"example.com/page" gets `https://`; `http://` is refused with a hint, as in the CLI), a
+the section's narrowest width. The field takes an `https://` link with any host (an intranet
+name or an IP address included; a bare "example.com/page", which must look like a site, gets
+`https://`; `http://` is refused with a hint, as in the CLI), a
 `file://` URL, or a path; files are the extensions `DocumentLoader` reads
 (`ReadingSourceParser`, HolosContent). Files and links dropped anywhere on the section, or
 pasted with ⌘V outside a field, go through the same parser: file URLs first, then web URLs,
@@ -224,7 +225,23 @@ schema version) is shown exactly as saved: nothing in it is continued, changed, 
 deleted, and its rows refuse Try Again, Resume, and Delete (`ReadingLibrary.launchPlan`).
 While the list cannot be saved (that case, or an index that could not be read) no new
 reading is made: it would leave the list at the next launch and keep its cache with no row
-to delete it from. Document paths, typed or dropped, keep their spelling too.
+to delete it from. An index not found in a folder that cannot be reached (a support folder,
+`HOLOS_SUPPORT_DIR`, on a drive or share that is not connected) is not an empty list: the list
+is unavailable, never written, and read again when the section shows or its window comes back
+(so is one that could not be read, an I/O error or a permission); nothing is written in its
+place. A save writes over only the index the store read or last wrote (by its file identity):
+one put there since (another disk mounted at that path) is kept and the save fails. The index
+is read at launch, and every save of it (and the removal of made readings' saved texts after
+it) runs off the main actor, one at a time in the order asked; a save a reading must wait for
+(Add, Delete's mark, the output chosen before rendering) is awaited, other saves wait while a
+Delete's mark is being saved (so none writes a mark whose own save failed), and the quit saves
+synchronously, waiting at most 10 s (a folder that does not answer is a failed save, which the
+quit says). An index larger than the 64 MiB `load` reads is not saved (the one there
+stays), and a save that adds a reading stops at 32 MiB, so a full list can still be changed
+and deleted from. A save a quit or crash cut off leaves a `.<name>.<UUID>.tmp`
+temporary: the launch removes the index's and the saved texts', and Delete removes its
+reading's. Document paths, typed or dropped, keep their spelling too; they are looked up off
+the main actor (a drag passing over is judged from what the pasteboard offers alone).
 The loaded document is saved beside it (`Documents/<id>.json`) before anything is
 rendered, and kept until the reading is made, so Resume and Try Again read the same text
 without fetching the page again; a document that cannot be saved, or a saved one that
@@ -245,11 +262,24 @@ main-actor isolated, so it runs as a task on the main actor: speech synthesis an
 encoding happen on AVFoundation's threads, and a document file is loaded and every part and
 finished file is hashed on a detached task (`DocumentLoader` uses none of AppKit's
 main-thread-only HTML importer), so the window stays responsive; a web page is extracted on
-the main thread, which `WKWebView` requires. Delete's checks and removals run on a detached
+the main thread, which `WKWebView` requires. The output and cache are chosen off the main
+actor too (`ReadingLibrary.location`); the render's start (locations checked, lock and
+reservation taken, cache made or its manifest read: `ReadingPipeline.prepare`), its manifest
+saves, and its part-file moves run there; and the finished file is published there (on a volume
+without an exclusive rename, the copy into place is written and flushed there, its identity
+saved in the manifest first; a copy whose removal cannot be confirmed, because the place it is
+moved aside to is taken or its drive went away, keeps that identity) and the part files
+removed. What is left on the main actor is releasing the lock and the reservation and removing
+the run's joined file when it ends. A Stop reaches every checksum
+between its 1 MiB chunks, and a resume stopped while it checks a finished file ends stopped,
+never made. Delete's checks and removals run on a detached
 task too, while the entry stays saved marked for deletion (hidden). A new reading is queued
 only once the index saving it succeeds, and its output is recorded as the path the pipeline
 writes (links in the folder resolved); a manifest that names the file through another path
-still counts when both name the same file (`ReadingPathIdentity`).
+still counts when both name the same file (`ReadingPathIdentity`). A new name is compared with
+the other readings' outputs through their folders' links resolved, and a name whose render
+cache another reading holds (the same text and settings reach the same cache through the
+same file) is never used, so two readings never share, or delete, one file.
 
 Rows show the title and the source (the site without "www.", or the file's name), then:
 waiting (Stop); loading or "Rendering part N of M" with a bar (Stop); joining; made
@@ -259,9 +289,22 @@ stopped when the window closes), **Share…** (`NSSharingServicePicker`, ⇧⌘S
 Finder**, **Delete…**; failed (the error, **Try Again**); stopped (where, **Resume**). A
 made reading whose file is no longer there, or was replaced by another file (its file
 identity, saved when it was made, differs), says so and offers only Delete; Play, Share…,
-and Show in Finder use only that same file (Play reads the file opened and checked, through /dev/fd; Share… hands over a clone or copy made from it; one whose identity could not be read when it was
-made gets it once the file at its path is shown to be its own by checksum, off the main actor;
-until then it shows as missing). One whose folder cannot be reached says
+and Show in Finder use only that same file (Play reads the file opened and checked, through /dev/fd; Share… hands over a clone or copy made from it). A file's identity is its
+volume's UUID where it has one (else its device number), its file ID, and its creation time:
+a file whose identity is not the recorded one (a share mounted again gets a new device
+number), or one made where its identity could not be read, is read once, off the main actor,
+and when its checksum is the reading's its identity is recorded anew; meanwhile the row says
+"Checking its file…". Rows show only what the last check of the files found
+(`ReadingController.refreshFiles`, `ReadingLibrary.fileStatus`, off the main actor, at
+launch, after a reading is made, and when the section shows or its window comes back):
+nothing is looked up while a row is drawn or the player's position ticks, and Play and
+Share… open the file off the main actor; a FIFO or device put at a reading's path (or at its
+index, saved text, manifest, or a document to read) is refused at once, never waited on.
+Playback that fails (a file that cannot be decoded, or that does not continue after a pause)
+says so; a Play whose file opens slowly is dropped when another Play, a Pause, or a Stop comes
+first. A file whose checksum cannot be read, or that changed while it was read, is shown
+unavailable and read again at the next check (a file is read once per version: its identity,
+size, and last change). One whose folder cannot be reached says
 "Unavailable — the drive or share “<name>” is not connected" (`ReadingOutput.unreachableReason`:
 a path in `/Volumes/<name>` with no volume mounted there, an empty leftover mount folder
 included, or an automounted share not mounted), and Delete keeps its row, cache, and saved
@@ -275,14 +318,20 @@ file put at that path since, or the file edited in place, is left alone, and Del
 `.holos-delete-<UUID>` folder beside it under its own name and checked there, so the file
 trashed is the file checked, and one that no longer matches goes back;
 `ReadingLibrary.trashVerified`), removes a copy a crash cut off (the manifest's
-`publishing` identity; `ReadingLibrary.ownership`) the same way (moved into a private
+`publishing` identity, never for a made reading, whose copy was finished: its file edited in
+place keeps that identity; `ReadingLibrary.ownership`) the same way (moved into a private
 `.holos-delete-…` folder, its identity checked there, then removed; every removal that
 depends on which file is at a path, the pipeline's and `ExclusivePublisher`'s included,
 goes through `ExclusivePublisher.removeVerified`; a file goes back only by an exclusive rename
 or a hard link, never over a file put there meanwhile, and one that cannot go back stays
 aside, its place saved with the entry, `outputAside`, for the next Delete; a reading's
 Delete moves its file to `.holos-delete-<entry ID>`, so one a quit or crash cut off after
-the move finds it there next time; all of it holds the cache's render lock, so a
+the move finds it there next time; a render removes its own partly written file through
+`.holos-delete-<cache key>.publish`, and keeps that file's identity in the manifest until the
+removal is confirmed, so the next resume or Delete finishes one a crash cut off (a joined
+file's copy goes through `.holos-delete-<join name>`, which the same sweeps find); Delete also
+removes the joined files a cut-off render left beside the output, and keeps the reading while
+that folder cannot be reached and its render got to joining; all of it holds the cache's render lock, so a
 `voiceislocal read --resume` of the same cache keeps the reading until it ends), removes the render cache only when it is
 an `Output-<16 hex>` folder directly in the Readings cache folder, and removes the saved
 text; only then does the entry leave the index. A made reading is saved as made before its

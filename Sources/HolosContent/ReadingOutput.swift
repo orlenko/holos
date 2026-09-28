@@ -336,7 +336,13 @@ public enum ReadingOutput {
 
     static func checkPathLength(_ output: URL) throws {
         let folder = output.deletingLastPathComponent().path
-        let longest = max(output.lastPathComponent.utf8.count, outputFolderNameLength)
+        let name = output.lastPathComponent.utf8.count
+        // A file removed goes through a folder beside it first (`ExclusivePublisher.removeVerified`): the output
+        // (a reading's Delete, a partly written copy) and a joined file (see `AudioBookWriter.cleanupToken`).
+        let join = ReadingTemporaries.joinName(key: String(repeating: "0", count: 16), run: UUID()).utf8.count
+        let nested = max(ExclusivePublisher.removalNameLength + 1 + name,
+                         ExclusivePublisher.removalPrefix.utf8.count + join + 1 + join)
+        let longest = max(name, outputFolderNameLength, nested)
         // The path plus "/" and the name, and a terminating NUL, within PATH_MAX bytes.
         guard folder.utf8.count + 1 + longest < Int(PATH_MAX) else {
             throw HolosError.invalidInput("Output path is too long (the limit is \(PATH_MAX - 1) bytes): \(output.path)")
@@ -489,7 +495,14 @@ enum RawFilePath {
         guard let stream = opendir(system(folder)) else { return nil }
         defer { closedir(stream) }
         var names: [String] = []
-        while let entry = readdir(stream) {
+        while true {
+            // `readdir` ends with nil both at the end and on an error, which only `errno` tells apart: a listing cut
+            // short by an error is not the folder's names.
+            errno = 0
+            guard let entry = readdir(stream) else {
+                if errno != 0 { return nil }
+                break
+            }
             let length = Int(entry.pointee.d_namlen)
             let name = withUnsafeBytes(of: &entry.pointee.d_name) { bytes in
                 String(validating: bytes.prefix(length), as: UTF8.self)
