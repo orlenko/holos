@@ -538,10 +538,17 @@ final class ReadingPane: NSViewController, MainSectionContent, NSTableViewDataSo
             guard let self else { return }
             let index = self.table.selectedRow
             if self.player.entryID == id { self.player.stop() }
-            if let problem = self.controller.delete(id) { self.showMessage(problem, problem: true) }
-            // The row that takes its place is selected, so ⌫ can go on down the list.
-            if index >= 0, !self.rows.isEmpty {
-                self.table.selectRowIndexes(IndexSet(integer: min(index, self.rows.count - 1)), byExtendingSelection: false)
+            Task { @MainActor [weak self] in
+                // The row leaves the list at once; its files are removed off the main actor.
+                guard let problem = await self?.controller.delete(id), let self else {
+                    // The row that takes its place is selected, so ⌫ can go on down the list.
+                    if let self, index >= 0, !self.rows.isEmpty, self.table.selectedRow < 0 {
+                        self.table.selectRowIndexes(IndexSet(integer: min(index, self.rows.count - 1)),
+                                                    byExtendingSelection: false)
+                    }
+                    return
+                }
+                self.showMessage(problem, problem: true)
             }
         }
         if let window = view.window {

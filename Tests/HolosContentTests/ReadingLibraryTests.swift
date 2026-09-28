@@ -417,6 +417,42 @@ import Testing
         #expect(!FileManager.default.fileExists(atPath: cache.path))
     }
 
+    /// The manifest names the file through the folder's links resolved; the entry may name it through a link. Both
+    /// are the same file, so the manifest's checksum still identifies it.
+    @Test func aManifestNamingTheFileThroughAnotherPathStillCounts() throws {
+        let root = try folder()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let real = root.appendingPathComponent("Real", isDirectory: true)
+        try FileManager.default.createDirectory(at: real, withIntermediateDirectories: false)
+        let linked = root.appendingPathComponent("Linked", isDirectory: true)
+        try FileManager.default.createSymbolicLink(at: linked, withDestinationURL: real)
+        let cache = root.appendingPathComponent("Output-0123456789abcdef", isDirectory: true)
+        try FileManager.default.createDirectory(at: cache, withIntermediateDirectories: false)
+        let output = real.appendingPathComponent("Story.m4a")
+        try Data("finished audio".utf8).write(to: output)
+        let manifest = ReadingManifest(
+            kind: ReadingManifest.readingKind, schemaVersion: ReadingManifest.currentSchemaVersion,
+            sourceSHA256: "s", voiceIdentifier: "v", rate: nil, title: "Story", author: nil, language: nil,
+            comment: "c", format: .current, output: output.path, outputSHA256: try fileSHA256(output), duration: nil,
+            chapters: [], status: "incomplete", parts: [])
+        try JSONEncoder().encode(manifest).write(to: cache.appendingPathComponent(ReadingManifest.fileName))
+        let throughLink = linked.appendingPathComponent("Story.m4a")
+        #expect(try ReadingLibrary.ownership(of: throughLink, sha256: nil, cache: cache) == .finished)
+        #expect(!ReadingLibrary.sameFile(root.appendingPathComponent("Other.m4a").path, throughLink))
+    }
+
+    /// A made reading whose identity was not recorded gets it only from the file whose checksum is the reading's.
+    @Test func aMissingIdentityIsTakenOnlyFromTheReadingsOwnFile() throws {
+        let root = try folder()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let output = root.appendingPathComponent("Story.m4a")
+        try Data("finished audio".utf8).write(to: output)
+        let checksum = try fileSHA256(output)
+        #expect(ReadingLibrary.verifiedIdentity(of: output, sha256: checksum) == ExclusivePublisher.FileIdentity.of(output))
+        #expect(ReadingLibrary.verifiedIdentity(of: output, sha256: String(repeating: "0", count: 64)) == nil)
+        #expect(ReadingLibrary.verifiedIdentity(of: root.appendingPathComponent("None.m4a"), sha256: checksum) == nil)
+    }
+
     @Test func aReadingWhoseDeleteFailedComesBackStopped() {
         var running = entry(.rendering, resume: true)
         running.deletePending = true

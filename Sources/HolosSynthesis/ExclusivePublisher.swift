@@ -33,6 +33,19 @@ public enum ExclusivePublisher {
             guard lstat(url.path, &metadata) == 0, (metadata.st_mode & S_IFMT) == S_IFREG else { return nil }
             return FileIdentity(metadata)
         }
+
+        /// The regular file at `url` (a link is not followed); nil when nothing is there or it is not a regular
+        /// file. Any other failure (an I/O error, a stale handle on a network volume, a permission) throws: it says
+        /// nothing about which file is there.
+        public static func lookup(_ url: URL) throws -> FileIdentity? {
+            var metadata = stat()
+            guard lstat(url.path, &metadata) == 0 else {
+                let error = errno
+                if error == ENOENT { return nil }
+                throw HolosError.io("Could not check \(url.path): \(String(cString: strerror(error)))")
+            }
+            return (metadata.st_mode & S_IFMT) == S_IFREG ? FileIdentity(metadata) : nil
+        }
     }
 
     /// How the fallback copy runs: its chunk size, and a hook called with each chunk's number
@@ -111,10 +124,11 @@ public enum ExclusivePublisher {
     /// there, so the file is first moved aside, and checked where nothing else can take its place: renamed within its
     /// folder (same volume, so the file itself moves, not a copy) to a new name only this call knows, or, with
     /// `keepingName` (for the Trash, which shows the name), into a new private folder beside it under its own name.
-    /// A file that does not match, or that `dispose` refuses, goes back to `url`, never over a file put there
-    /// meanwhile. `dispose` defaults to removing it. Every removal of a reading's file that depends on which file is
-    /// there goes through here.
-    public static func removeVerified(_ url: URL, keepingName: Bool = false, matches: (URL) -> Bool,
+    /// A file that does not match, that cannot be checked (`matches` throws), or that `dispose` refuses, goes back to
+    /// `url` only with an operation that cannot replace a file put there meanwhile (see `restore`); where the volume
+    /// has none, it stays aside and the result says where. `dispose` defaults to removing it. Every removal of a
+    /// reading's file that depends on which file is there goes through here.
+    public static func removeVerified(_ url: URL, keepingName: Bool = false, matches: (URL) throws -> Bool,
                                       dispose: (URL) throws -> Void = removeFile) -> Removal {
         let folder = url.deletingLastPathComponent()
         let token = removalPrefix + UUID().uuidString
@@ -136,21 +150,32 @@ public enum ExclusivePublisher {
             let error = errno
             return error == ENOENT ? .absent : .failed(reason: String(cString: strerror(error)), keptAt: nil)
         }
-        func restore() -> String? {
-            var result = systemExclusiveRename(staged.path, url.path)
-            if result != 0, errno == ENOTSUP || errno == EINVAL || errno == ENOSYS {
-                var metadata = stat()
-                if lstat(url.path, &metadata) != 0, errno == ENOENT { result = rename(staged.path, url.path) }
-            }
-            return result == 0 ? nil : staged.path
+        let isOwn: Bool
+        do {
+            isOwn = try matches(staged)
+        } catch {
+            return .failed(reason: error.localizedDescription, keptAt: restore(staged, to: url))
         }
-        guard matches(staged) else { return .notMatching(keptAt: restore()) }
+        guard isOwn else { return .notMatching(keptAt: restore(staged, to: url)) }
         do {
             try dispose(staged)
         } catch {
-            return .failed(reason: error.localizedDescription, keptAt: restore())
+            return .failed(reason: error.localizedDescription, keptAt: restore(staged, to: url))
         }
         return .removed
+    }
+
+    /// Moves `staged` back to `url` without ever replacing a file there: an exclusive rename, else (a volume without
+    /// one) a hard link to `url`, which fails when anything is there, and then the staged name removed. Nil when it
+    /// is back; else where it is kept (a file took its place, or the volume has neither). The calls are parameters
+    /// for tests (a volume without them).
+    static func restore(_ staged: URL, to url: URL, exclusiveRename: ExclusiveRename = systemExclusiveRename,
+                        hardLink: (String, String) -> Int32 = { link($0, $1) }) -> String? {
+        if exclusiveRename(staged.path, url.path) == 0 { return nil }
+        guard errno == ENOTSUP || errno == EINVAL || errno == ENOSYS else { return staged.path }
+        guard hardLink(staged.path, url.path) == 0 else { return staged.path }
+        _ = unlink(staged.path)
+        return nil
     }
 
     /// `unlink`, for `removeVerified`; a file already gone is not an error.
@@ -161,9 +186,20 @@ public enum ExclusivePublisher {
     }
 
     /// Removes `url` when it is still the file `identity` describes (see `removeVerified`); anything else is kept.
+    /// Checked before it is moved too, so another file at the path is never moved at all (on a volume that can
+    /// neither rename exclusively nor link, it could not be put back); one that cannot be checked is a failure.
     @discardableResult
     public static func removeIfIdentical(_ url: URL, to identity: FileIdentity) -> Removal {
-        removeVerified(url) { FileIdentity.of($0) == identity }
+        do {
+            guard let current = try FileIdentity.lookup(url) else {
+                var metadata = stat()
+                return lstat(url.path, &metadata) == 0 ? .notMatching(keptAt: nil) : .absent
+            }
+            guard current == identity else { return .notMatching(keptAt: nil) }
+        } catch {
+            return .failed(reason: error.localizedDescription, keptAt: nil)
+        }
+        return removeVerified(url) { staged in try FileIdentity.lookup(staged) == identity }
     }
 
     /// A file URL whose path keeps `path`'s bytes as given (`URL(fileURLWithPath:)` would decompose its names).

@@ -245,7 +245,11 @@ main-actor isolated, so it runs as a task on the main actor: speech synthesis an
 encoding happen on AVFoundation's threads, and a document file is loaded and every part and
 finished file is hashed on a detached task (`DocumentLoader` uses none of AppKit's
 main-thread-only HTML importer), so the window stays responsive; a web page is extracted on
-the main thread, which `WKWebView` requires.
+the main thread, which `WKWebView` requires. Delete's checks and removals run on a detached
+task too, while the entry stays saved marked for deletion (hidden). A new reading is queued
+only once the index saving it succeeds, and its output is recorded as the path the pipeline
+writes (links in the folder resolved); a manifest that names the file through another path
+still counts when both name the same file (`ReadingPathIdentity`).
 
 Rows show the title and the source (the site without "www.", or the file's name), then:
 waiting (Stop); loading or "Rendering part N of M" with a bar (Stop); joining; made
@@ -255,7 +259,9 @@ stopped when the window closes), **Share…** (`NSSharingServicePicker`, ⇧⌘S
 Finder**, **Delete…**; failed (the error, **Try Again**); stopped (where, **Resume**). A
 made reading whose file is no longer there, or was replaced by another file (its file
 identity, saved when it was made, differs), says so and offers only Delete; Play, Share…,
-and Show in Finder use only that same file. One whose folder cannot be reached says
+and Show in Finder use only that same file (one whose identity could not be read when it was
+made gets it once the file at its path is shown to be its own by checksum, off the main actor;
+until then it shows as missing). One whose folder cannot be reached says
 "Unavailable — the drive or share “<name>” is not connected" (`ReadingOutput.unreachableReason`:
 a path in `/Volumes/<name>` with no volume mounted there, an empty leftover mount folder
 included, or an automounted share not mounted), and Delete keeps its row, cache, and saved

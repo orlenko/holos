@@ -351,6 +351,8 @@ public struct AudioBookJoiner: ReadingAudioJoiner {
 
         // Only parts whose files still match their checksums are reused.
         for index in manifest.parts.indices {
+            // Each check reads a part off the main actor; a Stop meanwhile ends the resume here.
+            try Task.checkCancellation()
             let part = manifest.parts[index]
             let audio = directory.appendingPathComponent(part.relativeAudioPath)
             var valid = false

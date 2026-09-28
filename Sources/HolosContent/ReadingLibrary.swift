@@ -374,7 +374,8 @@ public enum ReadingLibrary {
         }
         let evidence = try ownershipEvidence(of: output, sha256: sha256, cache: cache)
         if !evidence.checksums.isEmpty, evidence.checksums.contains(try fileSHA256(output)) { return .finished }
-        if let claimed = evidence.publishing, ExclusivePublisher.FileIdentity.of(output) == claimed {
+        // A lookup that fails (not "nothing there") throws: it says nothing about which file is there.
+        if let claimed = evidence.publishing, try ExclusivePublisher.FileIdentity.lookup(output) == claimed {
             return .partial(claimed)
         }
         return nil
@@ -399,12 +400,29 @@ public enum ReadingLibrary {
                     throw HolosError.io("\(url.path) is not a Voice is Local reading's manifest.")
                 }
                 // One made for another output says nothing about this file.
-                if URL(fileURLWithPath: saved.output).standardizedFileURL.path == output.standardizedFileURL.path {
-                    manifest = saved
-                }
+                if sameFile(saved.output, output) { manifest = saved }
             }
         }
         return ([sha256, manifest?.outputSHA256].compactMap { $0 }, manifest?.publishing)
+    }
+
+    /// The identity of the file at `output` when it is the finished file whose checksum is `sha256`, and the file read
+    /// is the file named (the same identity before and after); nil otherwise or when it cannot be read. For a made
+    /// reading whose identity could not be recorded when it was made. Reads the whole file: not on the main actor.
+    public static func verifiedIdentity(of output: URL, sha256: String) -> ReadingFileIdentity? {
+        guard let before = try? ExclusivePublisher.FileIdentity.lookup(output),
+              (try? fileSHA256(output)) == sha256,
+              (try? ExclusivePublisher.FileIdentity.lookup(output)) == before else { return nil }
+        return before
+    }
+
+    /// Whether `path` (a manifest's output) names the file `output` names: spelled the same, or, through links in
+    /// its folder or another spelling the volume takes for the same name, the same file (`ReadingPathIdentity`,
+    /// by exact identity: two names the volume may tell apart are two files).
+    static func sameFile(_ path: String, _ output: URL) -> Bool {
+        if path.utf8.elementsEqual(output.path.utf8) { return true }
+        if URL(fileURLWithPath: path).standardizedFileURL.path == output.standardizedFileURL.path { return true }
+        return ReadingPathIdentity.key(path: path, .exact).utf8.elementsEqual(ReadingPathIdentity.key(output, .exact).utf8)
     }
 
     /// Moves the reading's finished file at `output` to the Trash only once it is the very file that was checked:
@@ -413,8 +431,9 @@ public enum ReadingLibrary {
     /// refuses, goes back to `output` (never over something put there meanwhile). Nil when it is in the Trash.
     static func trashVerified(_ output: URL, checksums: [String], trash: (URL) throws -> Void) -> String? {
         let name = output.lastPathComponent
+        // A file that cannot be read is a failure (it goes back), never "not the reading's".
         let removal = ExclusivePublisher.removeVerified(output, keepingName: true, matches: { staged in
-            (try? fileSHA256(staged)).map(checksums.contains) ?? false
+            checksums.contains(try fileSHA256(staged))
         }, dispose: trash)
         return problem(removal, name: name, action: "moved to the Trash", reportChanged: true)
     }

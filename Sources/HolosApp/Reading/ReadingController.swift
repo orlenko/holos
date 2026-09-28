@@ -99,6 +99,10 @@ final class ReadingController {
     private var preparedForQuit = false
     /// Readings to delete once their render has stopped.
     private var deleteWhenStopped: Set<UUID> = []
+    /// Readings whose files are being removed (off the main actor), so one is never removed twice at once.
+    private var deleting: Set<UUID> = []
+    /// Made readings whose file identity is being checked (see `recordMissingIdentities`).
+    private var identityChecks: Set<UUID> = []
     private lazy var queue: ReadingWorkQueue = {
         let queue = ReadingWorkQueue { [weak self] id in try await self?.make(id) }
         queue.onStart = { [weak self] id in self?.started(id) }
@@ -126,19 +130,15 @@ final class ReadingController {
         writable = loaded.writable
         if !writable { readOnly = Set(loaded.entries.map(\.id)) }
         let plan = ReadingLibrary.launchPlan(loaded)
-        var entries = plan.entries
-        for entry in plan.delete {
-            // One whose files cannot be removed comes back, with the reason.
-            if let problem = cleanUp(entry) {
-                notice = problem
-                entries.append(ReadingLibrary.afterFailedDelete(entry, problem: problem))
-            }
-        }
-        all = entries.sorted { $0.created > $1.created }
+        // The deletions a quit interrupted stay in the index, marked (hidden), while they finish off the main actor;
+        // one whose files cannot be removed comes back, with the reason.
+        all = (plan.entries + plan.delete).sorted { $0.created > $1.created }
         if all != loaded.entries { save() }  // never for a newer build's list (`save` checks `writable`)
         // Saved text a made reading still has (its removal failed, or the save before it did) goes now.
         if writable { removeFinishedSnapshots() }
         plan.resume.forEach(queue.enqueue)
+        plan.delete.forEach { finishDeleteLater($0.id) }
+        recordMissingIdentities()
         onChange?()
     }
 
@@ -160,7 +160,12 @@ final class ReadingController {
         }
         let entry = ReadingEntry(source: source, requestedVoice: voice, speed: ReadingSpeed.clamped(speed))
         all.insert(entry, at: 0)
-        save()
+        // Nothing is made for a reading the index does not keep: its saved text and cache would have no entry to be
+        // found or deleted through after a quit.
+        guard save() else {
+            all.removeAll { $0.id == entry.id }
+            throw HolosError.io("The reading was not added: " + (notice ?? "the Reading list could not be saved."))
+        }
         onChange?()
         queue.enqueue(entry.id)
         return entry.id
@@ -175,12 +180,37 @@ final class ReadingController {
     }
 
     /// The reading's finished file when it is still the one it made (the same file identity as when it was made):
-    /// what Play, Share…, and Show in Finder use. Nil when it was moved, deleted, or replaced by another file.
+    /// what Play, Share…, and Show in Finder use. Nil when it was moved, deleted, or replaced by another file, and
+    /// while its identity is unknown (it could not be read when the reading was made; see `recordMissingIdentities`).
     func finishedFile(_ entry: ReadingEntry) -> URL? {
-        guard entry.state == .done, let output = entry.outputURL,
-              let current = ExclusivePublisher.FileIdentity.of(output) else { return nil }
-        if let made = entry.outputIdentity { return current == made ? output : nil }
+        guard entry.state == .done, let output = entry.outputURL, let made = entry.outputIdentity,
+              ExclusivePublisher.FileIdentity.of(output) == made else { return nil }
         return output
+    }
+
+    /// Made readings whose file identity is unknown get it once the file at their path is shown to be theirs by its
+    /// checksum (read off the main actor); until then they show as missing. Tried at launch and after each make.
+    private func recordMissingIdentities() {
+        let pending = all.filter {
+            $0.state == .done && $0.outputIdentity == nil && $0.outputSHA256 != nil && $0.output != nil
+                && $0.deletePending != true && !readOnly.contains($0.id) && !identityChecks.contains($0.id)
+        }
+        guard !pending.isEmpty else { return }
+        identityChecks.formUnion(pending.map(\.id))
+        Task {
+            for entry in pending {
+                defer { identityChecks.remove(entry.id) }
+                guard let output = entry.outputURL, let sha256 = entry.outputSHA256 else { continue }
+                let identity = await Task.detached(priority: .utility) {
+                    ReadingLibrary.verifiedIdentity(of: output, sha256: sha256)
+                }.value
+                guard let identity, let current = self.entry(entry.id), current.state == .done,
+                      current.output == entry.output, current.outputIdentity == nil else { continue }
+                update(entry.id) { $0.outputIdentity = identity }
+                save()
+                onChange?()
+            }
+        }
     }
 
     /// Why a made reading's file cannot be used (`finishedFile` is nil).
@@ -218,9 +248,11 @@ final class ReadingController {
     /// Deletes a reading: its `.m4a` goes to the Trash, and its render cache and saved text are removed. The entry is
     /// saved marked first, so it never comes back; a reading being made is stopped, then deleted. When a file cannot
     /// be removed the reading stays in the list, and the problem is returned (or, after a stop, shown as the notice).
-    func delete(_ id: UUID) -> String? {
+    /// The row leaves the list at once; its files are checked and removed off the main actor (a long reading's
+    /// checksum takes a while on a slow drive), so this returns when they are.
+    func delete(_ id: UUID) async -> String? {
         guard !readOnly.contains(id) else { return Self.readOnlyMessage }
-        guard entry(id) != nil else { return nil }
+        guard entry(id) != nil, !deleting.contains(id) else { return nil }
         update(id) { $0.deletePending = true }
         // Nothing is stopped or removed unless the mark is saved: otherwise the reading would come back at the next
         // launch with its files gone. (A list that is not saved at all keeps nothing to come back.)
@@ -236,7 +268,8 @@ final class ReadingController {
             return nil
         }
         queue.stop(id)
-        let problem = finishDelete(id)
+        onChange?()
+        let problem = await finishDelete(id)
         onChange?()
         return problem
     }
@@ -267,7 +300,7 @@ final class ReadingController {
         // it ends (`abandonedEnded`).
         for id in deleteWhenStopped where queue.running != id {
             deleteWhenStopped.remove(id)
-            if let problem = finishDelete(id) { notice = problem }
+            finishDeleteLater(id)
         }
         save()
         resume.forEach(queue.enqueue)
@@ -279,8 +312,7 @@ final class ReadingController {
     private func abandonedEnded(_ id: UUID) {
         activity[id] = nil
         guard !preparedForQuit, deleteWhenStopped.remove(id) != nil else { return }
-        if let problem = finishDelete(id) { notice = problem }
-        onChange?()
+        finishDeleteLater(id)
     }
 
     // MARK: - Making a reading
@@ -314,9 +346,9 @@ final class ReadingController {
                 $0.message = nil
             }
         }
-        if deleteWhenStopped.remove(id) != nil, let problem = finishDelete(id) { notice = problem }
         save()
         onChange?()
+        if deleteWhenStopped.remove(id) != nil { finishDeleteLater(id) }
     }
 
     /// Loads the reading's text (the saved copy, when an earlier run loaded it), fixes its voice and file, and
@@ -358,7 +390,7 @@ final class ReadingController {
             location = try ReadingOutput.locate(output: chosen.path, name: name, identity: identity,
                                                 readingsRoot: readings, resume: false)
         }
-        guard let location, let output else { return }
+        guard let location, output != nil else { return }
         let resume = try ReadingOutput.exists(location.workDirectory)
         let voiceName = ReadingVoiceMenu.items(NativeSpeechRenderer.voices(), preferredLanguages: [])
             .first { $0.id == voice.id }?.name ?? voice.name
@@ -366,7 +398,9 @@ final class ReadingController {
             $0.title = metadata.title ?? entry.source.label
             $0.voiceIdentifier = voice.id
             $0.voiceName = voiceName
-            $0.output = output.path
+            // The path the pipeline writes and its manifest names (links in the folder resolved), so the entry and
+            // the manifest name the file alike even before it is made.
+            $0.output = location.output.path
             $0.cache = location.workDirectory.path
         }
         // Nothing is rendered until the index knows where: otherwise a resume after an exit would pick another name
@@ -396,6 +430,8 @@ final class ReadingController {
         // the index keeps nothing: a reading the index still calls unfinished always has its text to resume from.
         // One kept because the save failed goes after the next save that works (`removeFinishedSnapshots`).
         if !save() && !writable { removeFinishedSnapshots() }
+        // Its identity could not be read just now (a network volume): it is checked by checksum instead.
+        recordMissingIdentities()
     }
 
     /// The folder new files go to. The default one is made when missing; a folder chosen in Settings that is missing
@@ -486,11 +522,13 @@ final class ReadingController {
     // MARK: - Storage
 
     /// Removes a reading marked for deletion once its files are gone; when one cannot be removed, the reading comes
-    /// back to the list (unmarked) and the problem is returned.
-    private func finishDelete(_ id: UUID) -> String? {
-        guard let entry = entry(id) else { return nil }
+    /// back to the list (unmarked) and the problem is returned. The entry stays marked (hidden, and saved so) while
+    /// its files are removed off the main actor; a second call for it meanwhile does nothing.
+    private func finishDelete(_ id: UUID) async -> String? {
+        guard let entry = entry(id), deleting.insert(id).inserted else { return nil }
+        defer { deleting.remove(id) }
         activity[id] = nil
-        if let problem = cleanUp(entry) {
+        if let problem = await cleanUp(entry) {
             update(id) { $0 = ReadingLibrary.afterFailedDelete($0, problem: problem) }
             save()
             return problem
@@ -500,15 +538,26 @@ final class ReadingController {
         return nil
     }
 
-    /// Removes a reading's files (see `ReadingLibrary.deleteFiles`): its finished file goes to the Trash. Nil when
-    /// all are gone.
-    private func cleanUp(_ entry: ReadingEntry) -> String? {
-        let readings = try? ReadingOutput.readingsRoot(support: HolosPaths.supportRoot,
-                                                       configured: ProcessInfo.processInfo.environment["HOLOS_SUPPORT_DIR"],
-                                                       create: false)
-        return ReadingLibrary.deleteFiles(of: entry, readingsRoot: readings, store: store) { url in
-            try FileManager.default.trashItem(at: url, resultingItemURL: nil)
+    /// `finishDelete` for a deletion nobody waits for (a launch, a render that ended): a problem becomes the notice.
+    private func finishDeleteLater(_ id: UUID) {
+        Task {
+            if let problem = await finishDelete(id) { notice = problem }
+            onChange?()
         }
+    }
+
+    /// Removes a reading's files (see `ReadingLibrary.deleteFiles`), off the main actor: its finished file goes to the
+    /// Trash. Nil when all are gone.
+    private func cleanUp(_ entry: ReadingEntry) async -> String? {
+        let store = store
+        return await Task.detached(priority: .userInitiated) {
+            let readings = try? ReadingOutput.readingsRoot(
+                support: HolosPaths.supportRoot, configured: ProcessInfo.processInfo.environment["HOLOS_SUPPORT_DIR"],
+                create: false)
+            return ReadingLibrary.deleteFiles(of: entry, readingsRoot: readings, store: store) { url in
+                try FileManager.default.trashItem(at: url, resultingItemURL: nil)
+            }
+        }.value
     }
 
     private func update(_ id: UUID, _ change: (inout ReadingEntry) -> Void) {
