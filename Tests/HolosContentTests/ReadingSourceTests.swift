@@ -49,6 +49,26 @@ import Testing
         #expect(try expanded.get() == .file(URL(fileURLWithPath: home + "/Paper.pdf")))
     }
 
+    /// A document's path keeps its spelling: an NFC name is looked up and kept in NFC, not decomposed.
+    @Test func filePathsKeepTheirSpelling() throws {
+        let composed = "/Users/me/Caf\u{E9}.pdf"
+        var asked: [String] = []
+        let result = ReadingSourceParser.parse(composed) { path in
+            asked.append(path)
+            return path.utf8.elementsEqual(composed.utf8) ? false : nil
+        }
+        guard case .file(let url) = try result.get() else {
+            Issue.record("Not a file")
+            return
+        }
+        #expect(Array(url.path.utf8) == Array(composed.utf8))
+        #expect(asked.allSatisfy { $0.utf8.elementsEqual(composed.utf8) })
+        let dropped = ReadingSourceParser.sources(fileURLs: [url], urls: [], strings: []) { path in
+            path.utf8.elementsEqual(composed.utf8) ? false : nil
+        }
+        #expect(dropped.sources.count == 1)
+    }
+
     @Test func dropsPreferFilesThenLinksThenText() {
         let pdf = URL(fileURLWithPath: "/Users/me/Downloads/Paper.pdf")
         let md = URL(fileURLWithPath: "/Users/me/notes.md")

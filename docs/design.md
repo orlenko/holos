@@ -220,6 +220,9 @@ path, render cache, state, progress, duration, chapters) in an index,
 (`library.json.unreadable-<date>`) and a new list starts; one a newer build wrote (a higher
 schema version) is shown exactly as saved: nothing in it is continued, changed, or
 deleted, and its rows refuse Try Again, Resume, and Delete (`ReadingLibrary.launchPlan`).
+While the list cannot be saved (that case, or an index that could not be read) no new
+reading is made: it would leave the list at the next launch and keep its cache with no row
+to delete it from. Document paths, typed or dropped, keep their spelling too.
 The loaded document is saved beside it (`Documents/<id>.json`) before anything is
 rendered, and kept until the reading is made, so Resume and Try Again read the same text
 without fetching the page again; a document that cannot be saved, or a saved one that
@@ -253,7 +256,10 @@ so its reason shows under the card. Delete (⌫, with a
 confirmation) first saves the entry marked for deletion (`deletePending`, hidden from the
 list), stops it if it is being made, then moves the reading's finished file to the Trash
 (only when its SHA-256 matches the one saved at completion or in the cache's manifest: a
-file put at that path since is left alone), removes a copy a crash cut off (the manifest's
+file put at that path since is left alone; the file is first moved into a private
+`.holos-delete-<UUID>` folder beside it under its own name and checked there, so the file
+trashed is the file checked, and one that no longer matches goes back;
+`ReadingLibrary.trashVerified`), removes a copy a crash cut off (the manifest's
 `publishing` identity; `ReadingLibrary.ownership`), removes the render cache only when it is
 an `Output-<16 hex>` folder directly in the Readings cache folder, and removes the saved
 text; only then does the entry leave the index. A made reading is saved as made before its

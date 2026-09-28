@@ -348,6 +348,18 @@ public enum ReadingLibrary {
     /// when that cannot be told (the file or the manifest cannot be read), so nothing that identifies it is removed.
     public static func ownership(of output: URL, sha256: String?, cache: URL?) throws -> OutputOwnership? {
         guard try ReadingOutput.exists(output) else { return nil }
+        let evidence = try ownershipEvidence(of: output, sha256: sha256, cache: cache)
+        if !evidence.checksums.isEmpty, evidence.checksums.contains(try fileSHA256(output)) { return .finished }
+        if let claimed = evidence.publishing, ExclusivePublisher.FileIdentity.of(output) == claimed {
+            return .partial(claimed)
+        }
+        return nil
+    }
+
+    /// What identifies the reading's file at `output`: the checksums of its finished file (`sha256`, and the one
+    /// the cache's manifest saved for that output) and the identity of a copy a crash cut off.
+    static func ownershipEvidence(of output: URL, sha256: String?, cache: URL?) throws
+        -> (checksums: [String], publishing: ReadingFileIdentity?) {
         var manifest: ReadingManifest?
         if let cache {
             let url = cache.appendingPathComponent(ReadingManifest.fileName)
@@ -368,10 +380,40 @@ public enum ReadingLibrary {
                 }
             }
         }
-        let checksums = [sha256, manifest?.outputSHA256].compactMap { $0 }
-        if !checksums.isEmpty, checksums.contains(try fileSHA256(output)) { return .finished }
-        if let claimed = manifest?.publishing, ExclusivePublisher.FileIdentity.of(output) == claimed {
-            return .partial(claimed)
+        return ([sha256, manifest?.outputSHA256].compactMap { $0 }, manifest?.publishing)
+    }
+
+    /// Moves the reading's finished file at `output` to the Trash only once it is the very file that was checked:
+    /// it is first moved into a private folder beside it (same volume, same name), where nothing else can take its
+    /// place, then checked against `checksums`, then given to `trash`. A file that no longer matches, or that `trash`
+    /// refuses, goes back to `output` (never over something put there meanwhile). Nil when it is in the Trash.
+    static func trashVerified(_ output: URL, checksums: [String], trash: (URL) throws -> Void) -> String? {
+        let name = output.lastPathComponent
+        let holding = RawFilePath.appending(".holos-delete-\(UUID().uuidString)", to: output.deletingLastPathComponent())
+        guard mkdir(RawFilePath.system(holding), 0o700) == 0 else {
+            return "\(name) could not be moved to the Trash: \(String(cString: strerror(errno)))"
+        }
+        // Removed when empty: a file that could not go back stays in it, named in the message.
+        defer { _ = rmdir(RawFilePath.system(holding)) }
+        let staged = RawFilePath.appending(name, to: holding)
+        guard rename(RawFilePath.system(output), RawFilePath.system(staged)) == 0 else {
+            return "\(name) could not be moved to the Trash: \(String(cString: strerror(errno)))"
+        }
+        func restore(_ problem: String) -> String {
+            var result = ExclusivePublisher.systemExclusiveRename(RawFilePath.system(staged), RawFilePath.system(output))
+            if result != 0, errno == ENOTSUP || errno == EINVAL || errno == ENOSYS,
+               (try? ReadingOutput.exists(output)) == false {
+                result = rename(RawFilePath.system(staged), RawFilePath.system(output))
+            }
+            return result == 0 ? problem : problem + " It is kept in \(holding.path)."
+        }
+        guard let actual = try? fileSHA256(staged), checksums.contains(actual) else {
+            return restore("\(name) changed before it could be moved to the Trash, so it was left in place.")
+        }
+        do {
+            try trash(staged)
+        } catch {
+            return restore("\(name) could not be moved to the Trash: \(error.localizedDescription)")
         }
         return nil
     }
@@ -385,20 +427,18 @@ public enum ReadingLibrary {
                                    trash: (URL) throws -> Void) -> String? {
         var problems: [String] = []
         if let output = entry.outputURL {
+            let cache = entry.cache.map { URL(fileURLWithPath: $0, isDirectory: true) }
             let owned: OutputOwnership?
+            let checksums: [String]
             do {
-                owned = try ownership(of: output, sha256: entry.outputSHA256,
-                                      cache: entry.cache.map { URL(fileURLWithPath: $0, isDirectory: true) })
+                owned = try ownership(of: output, sha256: entry.outputSHA256, cache: cache)
+                checksums = try ownershipEvidence(of: output, sha256: entry.outputSHA256, cache: cache).checksums
             } catch {
                 return "\(output.lastPathComponent) could not be checked: \(error.localizedDescription) Try Delete again."
             }
             switch owned {
             case .finished?:
-                do {
-                    try trash(output)
-                } catch {
-                    problems.append("\(output.lastPathComponent) could not be moved to the Trash: \(error.localizedDescription)")
-                }
+                if let problem = trashVerified(output, checksums: checksums, trash: trash) { problems.append(problem) }
             case .partial(let identity)?:
                 ExclusivePublisher.removeIfIdentical(output, to: identity)
                 // It reports nothing: whether the partial copy is gone is checked here.

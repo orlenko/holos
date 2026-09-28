@@ -65,8 +65,8 @@ public enum ReadingSourceParser {
             return file(url, isDirectory: isDirectory)
         }
         if trimmed.hasPrefix("/") || trimmed.hasPrefix("~") {
-            let path = (trimmed as NSString).expandingTildeInPath
-            return file(URL(fileURLWithPath: path), isDirectory: isDirectory)
+            // Spelled as typed (see `RawFilePath`, which also expands "~").
+            return file(RawFilePath.url(trimmed), isDirectory: isDirectory)
         }
         if looksLikeAddress(trimmed) { return web("https://" + trimmed) }
         return .failure(ReadingSourceProblem("Not a link or a file: “\(trimmed)”. Paste an https:// link, or choose \(kinds)."))
@@ -99,11 +99,12 @@ public enum ReadingSourceParser {
         return (sources, problems)
     }
 
-    /// Whether `path` is a folder; nil when nothing is there.
+    /// Whether `path` is a folder; nil when nothing is there. Asked with the path as spelled (`FileManager` would
+    /// decompose it; see `RawFilePath`).
     public static func directoryCheck(_ path: String) -> Bool? {
-        var isDirectory: ObjCBool = false
-        guard FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory) else { return nil }
-        return isDirectory.boolValue
+        var metadata = stat()
+        guard stat(RawFilePath.system(path), &metadata) == 0 else { return nil }
+        return (metadata.st_mode & S_IFMT) == S_IFDIR
     }
 
     private static func web(_ text: String) -> Result<ReadingSource, ReadingSourceProblem> {
@@ -115,7 +116,9 @@ public enum ReadingSourceParser {
     }
 
     private static func file(_ url: URL, isDirectory: (String) -> Bool?) -> Result<ReadingSource, ReadingSourceProblem> {
-        let url = url.standardizedFileURL
+        // Its path kept as spelled ("." and ".." resolved as the system would; see `RawFilePath`): on a share that
+        // keeps NFC and NFD names apart, the decomposed spelling `standardizedFileURL` makes may name nothing.
+        let url = RawFilePath.url(url.path)
         switch isDirectory(url.path) {
         case nil:
             return .failure(ReadingSourceProblem("No file at \((url.path as NSString).abbreviatingWithTildeInPath)."))

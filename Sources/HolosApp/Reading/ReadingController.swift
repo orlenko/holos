@@ -151,7 +151,13 @@ final class ReadingController {
 
     /// Adds a reading of `source` at the top of the list and queues it. `voice` nil: the best voice for its language.
     @discardableResult
-    func add(_ source: ReadingSource, voice: String?, speed: Double) -> UUID {
+    /// Refused while the list is not saved (its index could not be read, or a newer build wrote it): a reading made
+    /// then would leave the list at the next launch while its cache stayed, with no row to delete it from.
+    func add(_ source: ReadingSource, voice: String?, speed: Double) throws -> UUID {
+        guard writable else {
+            throw HolosError.unavailable("New readings are not made while the Reading list cannot be saved"
+                + (notice.map { ": \($0)" } ?? "."))
+        }
         let entry = ReadingEntry(source: source, requestedVoice: voice, speed: ReadingSpeed.clamped(speed))
         all.insert(entry, at: 0)
         save()
@@ -409,7 +415,8 @@ final class ReadingController {
         case .web(let url):
             document = try await WebArticleExtractor().extract(from: url).document
         case .file(let url):
-            guard FileManager.default.fileExists(atPath: url.path) else {
+            // Looked up as spelled (`FileManager` would decompose the path).
+            guard (try? ReadingOutput.exists(url)) == true else {
                 throw HolosError.invalidInput("\(url.lastPathComponent) is no longer at \((url.path as NSString).abbreviatingWithTildeInPath).")
             }
             document = try DocumentLoader.load(url)
@@ -521,12 +528,18 @@ final class ReadingController {
     /// retried after each save, so one kept because a save or a removal failed goes once they work. A removal that
     /// fails is shown and tried again after the next save.
     private func removeFinishedSnapshots() {
+        var failed = false
         for entry in all where entry.state == .done && !readOnly.contains(entry.id) && store.hasDocument(for: entry.id) {
             do {
                 try store.removeDocument(for: entry.id)
             } catch {
-                notice = "The saved text of “\(entry.title)” could not be removed: \(error.localizedDescription)"
+                failed = true
+                notice = "\(Self.snapshotFailure) “\(entry.title)” could not be removed: \(error.localizedDescription)"
             }
         }
+        // All gone now: a warning from an earlier try no longer holds.
+        if !failed, notice?.hasPrefix(Self.snapshotFailure) == true { notice = nil }
     }
+
+    static let snapshotFailure = "The saved text of"
 }

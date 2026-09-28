@@ -257,7 +257,7 @@ final class ReadingPane: NSViewController, MainSectionContent, NSTableViewDataSo
     @objc private func makeAudio() {
         switch ReadingSourceParser.parse(field.stringValue) {
         case .success(let source):
-            add([source])
+            guard add([source]) else { return }
             field.stringValue = ""
             makeButton.isEnabled = false
         case .failure(let problem):
@@ -265,15 +265,23 @@ final class ReadingPane: NSViewController, MainSectionContent, NSTableViewDataSo
         }
     }
 
-    private func add(_ sources: [ReadingSource]) {
+    /// Adds the readings; false (with the reason shown) when the list takes none.
+    @discardableResult
+    private func add(_ sources: [ReadingSource]) -> Bool {
         var last: UUID?
         for source in sources {
-            last = controller.add(source, voice: selectedVoice, speed: speedSlider.doubleValue)
+            do {
+                last = try controller.add(source, voice: selectedVoice, speed: speedSlider.doubleValue)
+            } catch {
+                showMessage((error as? LocalizedError)?.errorDescription ?? error.localizedDescription, problem: true)
+                return false
+            }
         }
         if let last { select(last) }
         showMessage(sources.count == 1
             ? "Added. The audio file appears in the list below when it is made."
             : "Added \(sources.count) readings; they are made one after another.")
+        return true
     }
 
     @objc private func chooseFile() {
@@ -304,8 +312,7 @@ final class ReadingPane: NSViewController, MainSectionContent, NSTableViewDataSo
             showMessage(found.problems.first?.message ?? "Choose a voice and speed, then Make Audio (Return).",
                         problem: !found.problems.isEmpty)
         } else if found.sources.count > 1 {
-            add(found.sources)
-            if let problem = found.problems.first { showMessage(problem.message, problem: true) }
+            if add(found.sources), let problem = found.problems.first { showMessage(problem.message, problem: true) }
         } else if let problem = found.problems.first {
             showMessage(problem.message, problem: true)
         }

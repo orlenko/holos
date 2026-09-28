@@ -267,13 +267,24 @@ import Testing
         #expect(failed?.contains("could not be moved to the Trash") == true)
         #expect(FileManager.default.fileExists(atPath: cache.path))
         #expect(try store.document(for: reading.id) != nil)
+        // The file went back where it was, and the private folder it was checked in is gone.
+        #expect(try Data(contentsOf: output) == Data("audio".utf8))
+        func leftovers() throws -> [String] {
+            try FileManager.default.contentsOfDirectory(atPath: root.path).filter { $0.hasPrefix(".holos-delete-") }
+        }
+        #expect(try leftovers().isEmpty)
 
         let done = ReadingLibrary.deleteFiles(of: reading, readingsRoot: readings, store: store) { url in
+            // The very file that was checked, moved aside under its own name (the Trash shows that name).
+            #expect(try Data(contentsOf: url) == Data("audio".utf8))
             trashed.append(url)
             try FileManager.default.removeItem(at: url)
         }
         #expect(done == nil)
-        #expect(trashed == [output])
+        #expect(trashed.map(\.lastPathComponent) == ["Story.m4a"])
+        #expect(trashed.first?.deletingLastPathComponent().lastPathComponent.hasPrefix(".holos-delete-") == true)
+        #expect(!FileManager.default.fileExists(atPath: output.path))
+        #expect(try leftovers().isEmpty)
         #expect(!FileManager.default.fileExists(atPath: cache.path))
         #expect(try store.document(for: reading.id) == nil)
 
@@ -317,6 +328,20 @@ import Testing
         #expect(problem?.contains("could not be checked") == true)
         #expect(FileManager.default.fileExists(atPath: cache.path))
         #expect(try store.document(for: reading.id) != nil)
+    }
+
+    /// Moved aside, a file whose content no longer matches (replaced after it was checked) goes back, untouched.
+    @Test func aFileThatChangedBeforeTrashingGoesBack() throws {
+        let root = try folder()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let output = root.appendingPathComponent("Story.m4a")
+        try Data("someone else's".utf8).write(to: output)
+        let problem = ReadingLibrary.trashVerified(output, checksums: [String(repeating: "0", count: 64)]) { _ in
+            Issue.record("Trashed a file that did not match")
+        }
+        #expect(problem?.contains("changed before") == true)
+        #expect(try Data(contentsOf: output) == Data("someone else's".utf8))
+        #expect(try FileManager.default.contentsOfDirectory(atPath: root.path) == ["Story.m4a"])
     }
 
     @Test func aReadingWhoseDeleteFailedComesBackStopped() {
