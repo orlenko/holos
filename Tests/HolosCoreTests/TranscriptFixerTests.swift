@@ -525,6 +525,10 @@ let unrelatedWords = [
     // Words spelled close but said apart, and a glue word replaced by another by dropping one and adding the other.
     ("We should increase the limit", "We should decrease the limit"), ("Please include the tests", "Please exclude the tests"),
     ("Send it to Alice", "Send it from Alice"), ("Put it in the box", "Put it at the box"),
+    // A prefix that says the opposite.
+    ("This is intended today", "This is unintended today"), ("Please install it", "Please uninstall it"),
+    ("We agree", "We disagree"), ("The car is insured", "The car is uninsured"),
+    ("Ce projet est connu", "Ce projet est inconnu"),
     // A leading zero counts: a code is not a number said.
     ("Use code 021 now", "Use code twenty one now"),
     // Names, but for their case.
@@ -596,6 +600,26 @@ func aMishearingIsFixed(original: String, fixed: String) {
     #expect(SpokenWords.numberValue(["two", "thousand", "twenty", "six"], language: "en-US") == 2026)
     #expect(SpokenWords.numberValue(["ten", "twenty"], language: "en-US") == nil)
     #expect(AIFixGuard.check(original: "chambre vingt et un", fixed: "chambre 21", language: "fr-FR") == .accept)
+}
+
+@Test func aTaughtPairBringsItsMarksWhereItWasSaid() {
+    let commentFree = Correction(heard: "common free", meant: "comment-free")
+    #expect(AIFixGuard.check(original: "type comin free now", fixed: "type comment-free now", taught: [commentFree])
+        == .accept)
+    #expect(AIFixGuard.check(original: "then run slash QC now", fixed: "then run /qc now", taught: [taughtList[14]])
+        == .accept)
+    // Without the pair, or elsewhere than where it was said, the mark is a change of structure.
+    #expect(AIFixGuard.check(original: "type comin free now", fixed: "type comment-free now")
+        == .reject(.changedStructure))
+    #expect(AIFixGuard.check(original: "type comin free now", fixed: "type-comment free now", taught: [commentFree])
+        == .reject(.changedStructure))
+    // A dash between clauses ends a phrase.
+    let pool = Correction(heard: "food requests", meant: "pool requests")
+    #expect(AIFixReference.matches(of: "food requests", in: "I ordered food — requests are pending").isEmpty)
+    #expect(AIFixReference.matches(of: "food requests", in: "I ordered food – requests are pending").isEmpty)
+    #expect(AIFixGuard.check(original: "I ordered food — requests are pending",
+                             fixed: "I ordered pool — requests are pending", taught: [pool])
+        == .reject(.implausibleSubstitution))
 }
 
 @Test func namesAndMeaningsAreFoundWordByWord() {

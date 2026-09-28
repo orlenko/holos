@@ -193,7 +193,8 @@ public enum AIFixGuard {
     /// Accepts `fixed` only when it changes a few words of `original` (at most 2, or 20 % of its words), keeps its
     /// word count within 1 (or 10 %), and keeps every other mark where it was: only commas and apostrophes may be
     /// added or removed, and closing marks (".", "!", "?", "…") changed at the very end. Any other added, removed or
-    /// moved mark (a period, colon, quote, bracket or line break) is a new sentence, label or line, not a fix.
+    /// moved mark (a period, colon, quote, bracket or line break) is a new sentence, label or line, not a fix, but
+    /// for the marks a taught pair spells where its heard phrase was said ("comment-free", "/qc", `withTaughtPairs`).
     /// Case changes are free. Words a learned correction produced (each occurrence in `original` of a
     /// correction's meant phrase, compared as lowercased words) must all still be there: the speaker taught them.
     /// Every replaced word must be a plausible mishearing of what replaces it (`plausible`), or part of a pair of
@@ -216,14 +217,20 @@ public enum AIFixGuard {
                 return .reject(.changedCorrection)
             }
         }
-        let was = shape(of: original)
         let now = shape(of: fixed)
-        guard was.marks == now.marks else { return .reject(.changedStructure) }
+        func sameStructure(_ text: String) -> Bool {
+            let was = shape(of: text)
+            guard was.marks == now.marks else { return false }
+            // The same marks, but moved to other words: matching the words between each pair of marks separately
+            // then costs more than matching all of them at once.
+            let segmented = zip(was.segments, now.segments).reduce(0) { $0 + editDistance($1.0, $1.1) }
+            return segmented <= editDistance(was.segments.flatMap(\.self), after)
+        }
+        // A taught pair may bring its own marks where its heard phrase was said ("comment-free", "/qc").
+        guard sameStructure(original)
+            || withTaughtPairs(original, taught: taught, language: language).contains(where: sameStructure)
+        else { return .reject(.changedStructure) }
         let edits = editDistance(before, after)
-        // The same marks, but moved to other words: matching the words between each pair of marks separately then
-        // costs more than matching all of them at once.
-        let segmented = zip(was.segments, now.segments).reduce(0) { $0 + editDistance($1.0, $1.1) }
-        if segmented > edits { return .reject(.changedStructure) }
         // The limits on words added or dropped and on edits count from the chunk with the taught pairs applied
         // (`plausibleReply`): a pair may expand its heard phrase by more than they allow.
         guard plausibleReply(original: original, fixed: fixed, before: before, after: after, taught: taught,
@@ -283,6 +290,45 @@ public enum AIFixGuard {
 
     /// Most places where learned pairs are tried on one reply; past them the reply is judged without them.
     static let maximumTaughtPlaces = 6
+
+    /// `text` with each set of places where a pair of `taught` was said (`AIFixReference.matches`; at most
+    /// `maximumTaughtPlaces`, none overlapping) spelled as the pair's meant phrase, marks included: with "common free
+    /// -> comment-free", "type comin free now" is "type comment-free now". Empty when no pair was said, and when its
+    /// task is cancelled (the fixer's time limit).
+    static func withTaughtPairs(_ text: String, taught: [Correction], language: String?) -> [String] {
+        let ranges = text.matches(of: wordPattern).map(\.range)
+        var places: [(span: Range<Int>, meant: String)] = []
+        for correction in taught {
+            let meant = correction.meant.trimmingCharacters(in: .whitespacesAndNewlines)
+            for span in AIFixReference.matches(of: correction.heard, in: text, language: language)
+            where !places.contains(where: { $0.span == span && $0.meant == meant }) {
+                places.append((span, meant))
+            }
+        }
+        guard !places.isEmpty, places.count <= maximumTaughtPlaces else { return [] }
+        places.sort { $0.span.lowerBound < $1.span.lowerBound }
+        var results: [String] = []
+        func search(_ index: Int, _ applied: [(span: Range<Int>, meant: String)]) {
+            if Task.isCancelled { return }
+            guard index < places.count else {
+                guard !applied.isEmpty else { return }
+                var result = ""
+                var cursor = text.startIndex
+                for place in applied {
+                    result += text[cursor..<ranges[place.span.lowerBound].lowerBound] + place.meant
+                    cursor = ranges[place.span.upperBound - 1].upperBound
+                }
+                results.append(result + text[cursor...])
+                return
+            }
+            search(index + 1, applied)
+            if !applied.contains(where: { $0.span.overlaps(places[index].span) }) {
+                search(index + 1, applied + [places[index]])
+            }
+        }
+        search(0, [])
+        return results
+    }
 
     /// Whether `after` is `before`, the words of `original`, with some pairs of `taught` applied where their heard
     /// phrase was said (`AIFixReference.matches`: each of those places becomes the meant phrase's words) and every
@@ -690,9 +736,9 @@ public enum AIFixReference {
     }
 
     /// A text's words (`AIFixGuard.words`) and, for each, the marks that end a phrase just before it ("" for none):
-    /// sentence and clause marks (. ! ? … : ;), line breaks, brackets and double quotes; `trailing`, those after the
-    /// last word. Commas, hyphens, slashes and apostrophes do not end a phrase: recognizers put commas anywhere, and
-    /// "T-Mux" is one phrase.
+    /// sentence and clause marks (. ! ? … : ; and dashes), line breaks, brackets and double quotes; `trailing`,
+    /// those after the last word. Commas, hyphens, slashes and apostrophes do not end a phrase: recognizers put
+    /// commas anywhere, and "T-Mux" is one phrase.
     struct Spoken {
         var words: [String] = []
         var breaks: [String] = []
@@ -716,6 +762,8 @@ public enum AIFixReference {
         static func breakMark(_ character: Character) -> Character? {
             if character.isNewline { return "\n" }
             if "“”«»".contains(character) { return "\"" }
+            // A dash between clauses ends a phrase; a hyphen inside a word does not.
+            if "—–".contains(character) { return "—" }
             return ".!?…:;()[]{}\"".contains(character) ? character : nil
         }
     }

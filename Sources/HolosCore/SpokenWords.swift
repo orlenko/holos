@@ -179,7 +179,8 @@ public enum SpokenWords {
         "zero": "0", "deux": "2", "trois": "3", "quatre": "4", "cinq": "5", "six": "6", "sept": "7", "huit": "8",
         "neuf": "9", "dix": "10", "onze": "11", "douze": "12", "treize": "13", "quatorze": "14", "quinze": "15",
         "seize": "16", "vingt": "20", "vingts": "20", "trente": "30", "quarante": "40", "cinquante": "50",
-        "soixante": "60", "cent": "100", "cents": "100", "mille": "1000", "million": "1000000", "milliard": "1000000000",
+        "soixante": "60", "cent": "100", "cents": "100", "mille": "1000", "million": "1000000",
+        "milliard": "1000000000",
     ]
 
     /// What a word says that a fix must keep where it is (`AIFixGuard.plausible`). `strict`: its negation, modal
@@ -357,13 +358,14 @@ public enum SpokenWords {
     /// as `letters`: the same letters; homophones of `language` the rules miss (`homophones`: "one" and "won", "you"
     /// and "ewe"); the same `sound` ("write" and "right", "ate" and "eight", "knight" and "night", "their" and
     /// "there"); a plural ("words" and "word"); in French dictation the same `frenchSound` ("peut" and "peux"); or
-    /// the same `roughSound` with at least half the letters the same ("cold" and "called", "a bundo" and "ubuntu"). Letters
-    /// alone never are: "increase" and "decrease" sound apart. "windows" and "Ubuntu" are none of these, nor
-    /// "opened" and "Ubuntu", nor "point" and "Bundo".
+    /// the same `roughSound` with at least half the letters the same ("cold" and "called", "a bundo" and "ubuntu").
+    /// Letters alone never are: "increase" and "decrease" sound apart; nor a word and its opposite by a prefix
+    /// (`differInPolarity`: "intended" and "unintended"). "windows" and "Ubuntu" are none of these, nor "opened"
+    /// and "Ubuntu", nor "point" and "Bundo".
     public static func isClose(_ heard: String, _ meant: String, language: String? = nil) -> Bool {
         let a = letters(heard), b = letters(meant)
         if a == b || areHomophones(spelling(heard), spelling(meant), language: language) { return true }
-        guard !a.isEmpty, !b.isEmpty else { return false }
+        guard !a.isEmpty, !b.isEmpty, !differInPolarity(a, b) else { return false }
         let soundA = sound(a), soundB = sound(b)
         if soundA == soundB || isPlural(a, of: b) || isPlural(b, of: a) { return true }
         if language.map(DictationLanguage.languageCode) ?? "fr" == "fr", frenchSound(heard) == frenchSound(meant) {
@@ -382,11 +384,23 @@ public enum SpokenWords {
     static func isCloseSplit(_ heard: String, _ meant: String) -> Bool {
         let a = letters(heard), b = letters(meant)
         if a == b { return true }
-        guard !a.isEmpty, !b.isEmpty else { return false }
+        guard !a.isEmpty, !b.isEmpty, !differInPolarity(a, b) else { return false }
         let soundA = sound(a), soundB = sound(b)
         if soundA == soundB { return true }
         let distance = editDistance(Array(a), Array(b))
         return 2 * distance <= min(a.count, b.count) && roughSound(soundA) == roughSound(soundB)
+    }
+
+    /// Prefixes that turn a word into its opposite or undo it, English and French (as `letters`): "unintended",
+    /// "uninstall", "disagree", "nonsense", "misread", "inconnu", "défaire", "mécontent".
+    static let polarityPrefixes = ["un", "in", "im", "il", "ir", "dis", "non", "mis", "anti", "de", "des", "me", "mes"]
+
+    /// Whether one of `a` and `b` (as `letters`) is the other with a prefix of `polarityPrefixes`: said close, but
+    /// saying the opposite ("intended" and "unintended").
+    static func differInPolarity(_ a: String, _ b: String) -> Bool {
+        let (short, long) = a.count < b.count ? (a, b) : (b, a)
+        guard short.count >= 3, long.hasSuffix(short) else { return false }
+        return polarityPrefixes.contains(String(long.dropLast(short.count)))
     }
 
     /// French endings said alike, for `frenchSound`, longest first: the "é" of "mangé", "manger", "mangez", "mangées"
