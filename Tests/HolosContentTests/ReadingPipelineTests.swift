@@ -727,6 +727,47 @@ import Testing
         }
     }
 
+    /// A destination whose lookup fails for any reason but "no such file" (simulated: a path the
+    /// volume denies) is an error before rendering, never taken for a free destination.
+    @Test func anOutputThatCannotBeLookedUpIsAnError() async throws {
+        let parent = try root()
+        let locked = parent.appendingPathComponent("locked")
+        try FileManager.default.createDirectory(at: locked, withIntermediateDirectories: false)
+        #expect(chmod(locked.path, 0o000) == 0)
+        defer {
+            _ = chmod(locked.path, 0o755)
+            try? FileManager.default.removeItem(at: parent)
+        }
+        let output = RawFilePath.appending("Book.m4a", to: RawFilePath.url(parent.path))
+        let denied = locked.path + "/Book.m4a"
+        let outputPath = output.path
+        let volume: @Sendable (String) -> String = { $0 == outputPath ? denied : $0 }
+        #expect(try !ReadingOutput.exists(output))
+        let file = parent.appendingPathComponent("file")
+        try Data().write(to: file)
+        // A folder in the path that is a file: not "no such file" either.
+        #expect(throws: HolosError.self) { _ = try ReadingOutput.exists(file.appendingPathComponent("Book.m4a")) }
+        let place = ReadingLocation(workDirectory: parent.appendingPathComponent("support").appendingPathComponent("Output-a"),
+                                    output: output)
+        try FileManager.default.createDirectory(at: place.workDirectory.deletingLastPathComponent(),
+                                                withIntermediateDirectories: false)
+        let renderer = FakeRenderer()
+        let pipeline = ReadingPipeline(renderer: renderer, joiner: FakeJoiner())
+        let script = script(1)
+        let voice = self.voice
+        let metadata = self.metadata
+        try await RawFilePath.$volume.withValue(volume) {
+            #expect(throws: HolosError.self) { _ = try ReadingOutput.exists(output) }
+            #expect(throws: HolosError.self) { try ReadingOutput.checkDestination(output) }
+            #expect(throws: HolosError.self) { try ReadingOutput.checkDestination(output, allowExisting: true) }
+            await #expect(throws: HolosError.self) {
+                _ = try await pipeline.render(script: script, voiceIdentifier: voice, metadata: metadata, location: place)
+            }
+        }
+        #expect(renderer.calls.isEmpty)
+        #expect(!FileManager.default.fileExists(atPath: place.workDirectory.path))
+    }
+
     /// A folder whose ACL lets files be created but not removed (or renamed) is refused before
     /// anything is rendered, naming the test file it could not remove.
     @Test func aFolderThatKeepsItsFilesIsRefused() throws {

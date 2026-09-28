@@ -170,7 +170,7 @@ struct Read: AsyncParsableCommand {
         try FileManager.default.createDirectory(at: readings, withIntermediateDirectories: true)
         let location = try ReadingOutput.locate(output: request.output, name: name, identity: identity,
                                                 readingsRoot: readings, resume: request.resume)
-        if request.resume && !FileManager.default.fileExists(atPath: location.workDirectory.path) {
+        if try request.resume && !ReadingOutput.exists(location.workDirectory) {
             // With an explicit output the cache is keyed by the text and settings, so a changed
             // source (a web page that was edited since) or setting finds no reading here.
             throw HolosError.invalidInput("No reading to resume for \(location.output.path): none was started with this output, or its source, voice, rate, or title has changed since.")

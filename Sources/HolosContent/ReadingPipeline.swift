@@ -243,7 +243,7 @@ public struct AudioBookJoiner: ReadingAudioJoiner {
         // beside it: when resuming, now; for a new reading, once the cache is in place.
         let outputInCache = output.deletingLastPathComponent().standardizedFileURL.path
             == directory.standardizedFileURL.path
-        var reservation = outputInCache && !(resume && FileManager.default.fileExists(atPath: directory.path))
+        var reservation = try outputInCache && !(resume && ReadingOutput.exists(directory))
             ? nil : try ReadingOutputReservation.acquire(output: output)
         defer { withExtendedLifetime((writerLock, reservation)) {} }
         // Caches that runs killed while creating them left behind (see `ReadingCache.create`).
@@ -261,7 +261,7 @@ public struct AudioBookJoiner: ReadingAudioJoiner {
         var manifest: ReadingManifest
 
         if resume {
-            guard FileManager.default.fileExists(atPath: directory.path) else {
+            guard try ReadingOutput.exists(directory) else {
                 throw HolosError.invalidInput("No reading exists to resume at \(directory.path).")
             }
             guard ReadingManifest.isReading(manifestURL) else {
@@ -288,12 +288,11 @@ public struct AudioBookJoiner: ReadingAudioJoiner {
             if ReadingCache.removeAbandoned(directory) {
                 try Self.checkLocation(directory: directory, output: output, resume: false)
             }
-            guard !FileManager.default.fileExists(atPath: directory.path) else {
+            guard try !ReadingOutput.exists(directory) else {
                 throw HolosError.invalidInput("A reading already exists at \(directory.path). Use --resume to continue it.")
             }
-            // `lstat` on the path as spelled (`FileManager` would decompose it; see `RawFilePath`).
-            var existing = stat()
-            guard lstat(RawFilePath.system(output), &existing) != 0 else {
+            // Looked up as spelled (`FileManager` would decompose it; see `RawFilePath`).
+            guard try !ReadingOutput.exists(output) else {
                 throw HolosError.invalidInput("Reading output already exists: \(output.path)")
             }
             manifest = ReadingManifest(kind: ReadingManifest.readingKind,
@@ -328,8 +327,7 @@ public struct AudioBookJoiner: ReadingAudioJoiner {
             manifest.publishing = nil
             try saveManifest(manifest, to: manifestURL)
         }
-        var existing = stat()
-        guard lstat(RawFilePath.system(output), &existing) != 0 else {
+        guard try !ReadingOutput.exists(output) else {
             throw HolosError.invalidInput("Reading output already exists and is not this reading: \(output.path)")
         }
         manifest.status = "incomplete"
@@ -478,7 +476,7 @@ public struct AudioBookJoiner: ReadingAudioJoiner {
     /// `ReadingOutput.checkDestination`). An output inside a cache that does not exist yet
     /// (a reading without `--output`) is checked through the cache's parent.
     static func checkLocation(directory: URL, output: URL, resume: Bool) throws {
-        let cacheExists = FileManager.default.fileExists(atPath: directory.path)
+        let cacheExists = try ReadingOutput.exists(directory)
         // A new reading over an existing cache, or a resume without one, fails next with a
         // clearer message ("use --resume", "no reading to resume").
         if cacheExists != resume { return }

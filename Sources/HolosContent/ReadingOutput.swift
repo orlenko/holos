@@ -216,10 +216,23 @@ public enum ReadingOutput {
             throw HolosError.invalidInput("Output file name is too long for its volume: \(output.lastPathComponent)")
         }
         try checkPathLength(output)
-        var metadata = stat()
-        if !allowExisting, lstat(RawFilePath.system(output), &metadata) == 0 {
+        if try exists(output), !allowExisting {
             throw HolosError.invalidInput("Reading output already exists: \(output.path)")
         }
+    }
+
+    /// Whether anything (a broken link included) is at `url`, looked up with its spelling as
+    /// given (`lstat`). Only "no such file" means nothing is there: any other failure (denied by
+    /// an ACL, an I/O error or a stale handle on a network volume) is an error, so a destination
+    /// that cannot be checked is never taken for a free one.
+    public static func exists(_ url: URL) throws -> Bool {
+        var metadata = stat()
+        if lstat(RawFilePath.system(url), &metadata) == 0 { return true }
+        let error = errno
+        guard error == ENOENT else {
+            throw HolosError.io("Could not check \(url.path): \(String(cString: strerror(error)))")
+        }
+        return false
     }
 
     /// The longest temporary name written beside the output while it is joined: the join file's
