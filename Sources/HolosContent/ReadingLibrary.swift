@@ -118,13 +118,12 @@ public final class ReadingLibraryStore: @unchecked Sendable {
 
     /// The saved entries. A missing index is an empty list; one that cannot be read is renamed aside
     /// (`library.json.unreadable-<date>`), so it is kept, and the list starts empty with a notice; one a newer build
-    /// wrote is shown (entries this build cannot read are left out) but never rewritten.
+    /// wrote is shown (entries this build cannot read are left out) but never rewritten. Only "no such file" is a
+    /// missing index: one that cannot be looked up (an I/O error, a permission) is kept and never written over.
     public func load() -> Loaded {
-        guard FileManager.default.fileExists(atPath: indexURL.path) else {
-            return Loaded(entries: [], notice: nil, writable: true)
-        }
         let data: Data
         do {
+            guard try ReadingOutput.exists(indexURL) else { return Loaded(entries: [], notice: nil, writable: true) }
             let handle = try FileHandle(forReadingFrom: indexURL)
             defer { try? handle.close() }
             data = try handle.read(upToCount: Self.maximumBytes + 1) ?? Data()
@@ -425,8 +424,9 @@ public enum ReadingLibrary {
     /// its folder or another spelling the volume takes for the same name, the same file (`ReadingPathIdentity`,
     /// by exact identity: two names the volume may tell apart are two files).
     static func sameFile(_ path: String, _ output: URL) -> Bool {
+        // Compared as bytes: Foundation's paths and Swift's `==` take NFC and NFD spellings for one, which a volume
+        // that keeps them apart holds as two files.
         if path.utf8.elementsEqual(output.path.utf8) { return true }
-        if URL(fileURLWithPath: path).standardizedFileURL.path == output.standardizedFileURL.path { return true }
         return ReadingPathIdentity.key(path: path, .exact).utf8.elementsEqual(ReadingPathIdentity.key(output, .exact).utf8)
     }
 
@@ -440,11 +440,13 @@ public enum ReadingLibrary {
     /// Moves the reading's finished file at `output` to the Trash only once it is the very file that was checked:
     /// it is first moved into a private folder beside it (same volume, same name), where nothing else can take its
     /// place, then checked against `checksums`, then given to `trash`. A file that no longer matches, or that `trash`
-    /// refuses, goes back to `output` (never over something put there meanwhile).
-    static func trashVerified(_ output: URL, checksums: [String], trash: (URL) throws -> Void) -> RemovalReport {
+    /// refuses, goes back to `output` (never over something put there meanwhile). `token` names the private folder
+    /// (see `asideToken`).
+    static func trashVerified(_ output: URL, checksums: [String], token: String? = nil,
+                              trash: (URL) throws -> Void) -> RemovalReport {
         let name = output.lastPathComponent
         // A file that cannot be read is a failure (it goes back), never "not the reading's".
-        let removal = ExclusivePublisher.removeVerified(output, keepingName: true, matches: { staged in
+        let removal = ExclusivePublisher.removeVerified(output, keepingName: true, token: token, matches: { staged in
             checksums.contains(try fileSHA256(staged))
         }, dispose: trash)
         return report(removal, name: name, action: "moved to the Trash", reportChanged: true)
@@ -452,9 +454,9 @@ public enum ReadingLibrary {
 
     /// Removes the copy into `output` that a crash cut off, only while it is that very file (`identity`), through
     /// the same move-aside-then-check step as the finished file. No problem when it is gone: one replaced by another
-    /// file since is gone too (the other file is left alone).
-    static func removePartial(_ output: URL, identity: ReadingFileIdentity) -> RemovalReport {
-        report(ExclusivePublisher.removeIfIdentical(output, to: identity),
+    /// file since is gone too (the other file is left alone). `token` names the place aside (see `asideToken`).
+    static func removePartial(_ output: URL, identity: ReadingFileIdentity, token: String? = nil) -> RemovalReport {
+        report(ExclusivePublisher.removeIfIdentical(output, to: identity, token: token),
                name: "The partly written \(output.lastPathComponent)", action: "removed", reportChanged: false)
     }
 
@@ -477,6 +479,28 @@ public enum ReadingLibrary {
         }
     }
 
+    /// The name a reading's Delete moves its file aside to, beside it: `.holos-delete-<entry ID>` (a private folder
+    /// holding the finished file under its own name) or that plus ".partial" (the partly written copy). Derived from
+    /// the entry, so a Delete that a quit or a crash cut off after the move finds the file there next time.
+    static func asideToken(_ id: UUID, partial: Bool) -> String {
+        ExclusivePublisher.removalPrefix + id.uuidString + (partial ? ".partial" : "")
+    }
+
+    /// Where a Delete of `entry` may have left its file aside: the places `asideToken` names beside its output, and
+    /// `outputAside`.
+    static func asideCandidates(of entry: ReadingEntry) -> [URL] {
+        guard let output = entry.outputURL else { return [] }
+        let folder = output.deletingLastPathComponent()
+        let holding = RawFilePath.appending(asideToken(entry.id, partial: false), to: folder)
+        var candidates = [RawFilePath.appending(output.lastPathComponent, to: holding),
+                          RawFilePath.appending(asideToken(entry.id, partial: true), to: folder)]
+        if let recorded = entry.outputAside,
+           !candidates.contains(where: { $0.path.utf8.elementsEqual(recorded.utf8) }) {
+            candidates.append(ReadingOutput.fileURL(keepingSpelling: recorded))
+        }
+        return candidates
+    }
+
     /// What `deleteFiles` did: nil `problem` when every file is gone; otherwise the problems, and `aside`, where a
     /// file of the reading (or one that could not be told) stays after it was moved aside and could not be put back,
     /// for the entry to keep (`ReadingEntry.outputAside`) so the next Delete deals with it.
@@ -487,12 +511,44 @@ public enum ReadingLibrary {
 
     /// Removes a deleted reading's files. Only the reading's own output is touched (see `ownership`): its finished
     /// file goes to `trash`, a copy a crash cut off is removed, and anything else at that path is left alone; the
-    /// same for a file an earlier Delete left aside (`outputAside`). While such a file is still there the render
-    /// cache stays, since its manifest is what identifies the file next time. The cache is removed only when it is
-    /// one the pipeline made directly in `readingsRoot` (`isRenderCache`); then the saved text is removed. A cache or
-    /// text that cannot be looked up (not "not there") is a problem, so the entry stays for another try.
+    /// same, first, for a file an earlier Delete left aside (`asideCandidates`). While such a file is still there the
+    /// render cache stays, since its manifest is what identifies the file next time. The cache is removed only when
+    /// it is one the pipeline made directly in `readingsRoot` (`isRenderCache`); then the saved text is removed. A
+    /// cache or text that cannot be looked up (not "not there") is a problem, so the entry stays for another try.
+    ///
+    /// All of it happens holding the cache's render lock (`ReadingDirectoryLock`), so a render of the same cache in
+    /// another process (`voiceislocal read --resume`) never has its cache removed under it, nor publishes a file
+    /// after it was checked for: while one runs, nothing is removed and the entry stays.
     public static func deleteFiles(of entry: ReadingEntry, readingsRoot: URL?, store: ReadingLibraryStore,
                                    trash: (URL) throws -> Void) -> DeleteResult {
+        let keep = { (problem: String) in DeleteResult(problem: problem, aside: entry.outputAside) }
+        var lock: ReadingDirectoryLock?
+        if let cache = entry.cache, let readingsRoot, isRenderCache(cache, in: readingsRoot) {
+            let directory = URL(fileURLWithPath: cache, isDirectory: true)
+            do {
+                // No Readings folder, no cache and no render to wait for.
+                if try ReadingOutput.exists(directory.deletingLastPathComponent()) {
+                    lock = try ReadingDirectoryLock.acquire(for: directory)
+                }
+            } catch let error as HolosError {
+                if case .unavailable = error {
+                    return keep("It is being made by another process (voiceislocal read); stop that first, then "
+                        + "Delete again.")
+                }
+                return keep("Its rendered parts in \(cache) could not be checked: \(error.localizedDescription) "
+                    + "Try Delete again.")
+            } catch {
+                return keep("Its rendered parts in \(cache) could not be checked: \(error.localizedDescription) "
+                    + "Try Delete again.")
+            }
+        }
+        return withExtendedLifetime(lock) {
+            deleteFilesLocked(of: entry, readingsRoot: readingsRoot, store: store, trash: trash)
+        }
+    }
+
+    private static func deleteFilesLocked(of entry: ReadingEntry, readingsRoot: URL?, store: ReadingLibraryStore,
+                                          trash: (URL) throws -> Void) -> DeleteResult {
         var problems: [String] = []
         var aside: String?
         if let output = entry.outputURL {
@@ -510,19 +566,30 @@ public enum ReadingLibrary {
                 return DeleteResult(problem: "\(output.lastPathComponent) could not be checked: "
                                         + "\(error.localizedDescription) Try Delete again.", aside: entry.outputAside)
             }
-            if let staged = entry.outputAside {
-                let report = removeAside(ReadingOutput.fileURL(keepingSpelling: staged), evidence: evidence, trash: trash)
+            for candidate in asideCandidates(of: entry) where aside == nil {
+                let report = removeAside(candidate, evidence: evidence, trash: trash)
                 if let problem = report.problem {
                     problems.append(problem)
-                    aside = report.keptAt ?? staged
+                    aside = report.keptAt ?? candidate.path
                 }
             }
             if aside == nil {
+                // The entry's own place aside, unless something it could not remove (another file) is still there:
+                // then a new one, recorded in `outputAside` should the file stay there.
+                func token(partial: Bool) -> String? {
+                    let place = RawFilePath.appending(asideToken(entry.id, partial: partial),
+                                                      to: output.deletingLastPathComponent())
+                    return (try? ReadingOutput.exists(place)) == false ? asideToken(entry.id, partial: partial) : nil
+                }
                 let report: RemovalReport
                 switch owned {
-                case .finished?: report = trashVerified(output, checksums: evidence.checksums, trash: trash)
-                case .partial(let identity)?: report = removePartial(output, identity: identity)
-                case nil: report = RemovalReport()
+                case .finished?:
+                    report = trashVerified(output, checksums: evidence.checksums, token: token(partial: false),
+                                           trash: trash)
+                case .partial(let identity)?:
+                    report = removePartial(output, identity: identity, token: token(partial: true))
+                case nil:
+                    report = RemovalReport()
                 }
                 if let problem = report.problem {
                     problems.append(problem)
@@ -552,31 +619,29 @@ public enum ReadingLibrary {
             : DeleteResult(problem: problems.joined(separator: " ") + " Try Delete again.", aside: aside)
     }
 
-    /// The file an earlier Delete moved aside and left at `url`: moved to the Trash when it is the finished file,
-    /// removed when it is the partly written copy, and left alone when it is neither (another file, which that
-    /// Delete's message named) or gone. The private folder it was left in goes once empty.
+    /// A file an earlier Delete may have moved aside and left at `url`: moved to the Trash when it is the finished
+    /// file, removed when it is the partly written copy, and left alone when it is neither (another file, which that
+    /// Delete's message named) or not there. It is in a place only a Delete of this reading uses, so nothing else
+    /// takes its place between the check and the removal. The private folder it was in goes once empty.
     static func removeAside(_ url: URL, evidence: (checksums: [String], publishing: ReadingFileIdentity?),
                             trash: (URL) throws -> Void) -> RemovalReport {
-        let report: RemovalReport
         do {
-            if !(try ReadingOutput.exists(url)) {
-                report = RemovalReport()
-            } else if !evidence.checksums.isEmpty, evidence.checksums.contains(try fileSHA256(url)) {
-                report = trashVerified(url, checksums: evidence.checksums, trash: trash)
-            } else if let claimed = evidence.publishing, try ExclusivePublisher.FileIdentity.lookup(url) == claimed {
-                report = removePartial(url, identity: claimed)
-            } else {
-                report = RemovalReport()
+            if try ReadingOutput.exists(url) {
+                if !evidence.checksums.isEmpty, evidence.checksums.contains(try fileSHA256(url)) {
+                    try trash(url)
+                } else if let claimed = evidence.publishing, try ExclusivePublisher.FileIdentity.lookup(url) == claimed {
+                    try ExclusivePublisher.removeFile(url)
+                }
             }
         } catch {
-            return RemovalReport(problem: "\(url.path) could not be checked: \(error.localizedDescription)",
-                                 keptAt: url.path)
+            return RemovalReport(problem: "\(url.lastPathComponent), left at \(url.path) by an earlier Delete, could "
+                                    + "not be removed: \(error.localizedDescription)", keptAt: url.path)
         }
         let folder = url.deletingLastPathComponent()
-        if report.problem == nil, folder.lastPathComponent.hasPrefix(ExclusivePublisher.removalPrefix) {
+        if folder.lastPathComponent.hasPrefix(ExclusivePublisher.removalPrefix) {
             _ = rmdir(RawFilePath.system(folder))
         }
-        return report
+        return RemovalReport()
     }
 
     /// "25 min", "1 h 5 min", "40 s".

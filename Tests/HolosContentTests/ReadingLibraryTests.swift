@@ -482,6 +482,81 @@ import Testing
         #expect(!FileManager.default.fileExists(atPath: cache.path))
     }
 
+    /// A Delete a quit cut off after it moved the file aside (before anything recorded where) leaves it in the place
+    /// derived from the entry: the next Delete finds it there and moves it to the Trash.
+    @Test func aFileMovedAsideByAnInterruptedDeleteIsFoundByTheEntry() throws {
+        let root = try folder()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let readings = root.appendingPathComponent("Readings", isDirectory: true)
+        let cache = readings.appendingPathComponent("Output-0123456789abcdef", isDirectory: true)
+        try FileManager.default.createDirectory(at: cache, withIntermediateDirectories: true)
+        let store = ReadingLibraryStore(folder: root.appendingPathComponent("ReadingLibrary"))
+        let output = root.appendingPathComponent("Story.m4a")
+        var reading = entry(.done)
+        reading.output = output.path
+        reading.cache = cache.path
+        let holding = root.appendingPathComponent(ReadingLibrary.asideToken(reading.id, partial: false))
+        try FileManager.default.createDirectory(at: holding, withIntermediateDirectories: false)
+        let aside = holding.appendingPathComponent("Story.m4a")
+        try Data("audio".utf8).write(to: aside)
+        reading.outputSHA256 = try fileSHA256(aside)
+        var trashed: [URL] = []
+        let result = ReadingLibrary.deleteFiles(of: reading, readingsRoot: readings, store: store) { url in
+            trashed.append(url)
+            try FileManager.default.removeItem(at: url)
+        }
+        #expect(result == .init())
+        #expect(trashed.map(\.lastPathComponent) == ["Story.m4a"])
+        #expect(!FileManager.default.fileExists(atPath: holding.path))
+        #expect(!FileManager.default.fileExists(atPath: cache.path))
+    }
+
+    /// While another process renders the same cache (it holds its lock), Delete removes nothing and keeps the entry.
+    @Test func aCacheBeingRenderedElsewhereIsNotDeleted() throws {
+        let root = try folder()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let readings = root.appendingPathComponent("Readings", isDirectory: true)
+        let cache = readings.appendingPathComponent("Output-0123456789abcdef", isDirectory: true)
+        try FileManager.default.createDirectory(at: cache, withIntermediateDirectories: true)
+        let store = ReadingLibraryStore(folder: root.appendingPathComponent("ReadingLibrary"))
+        var reading = entry(.stopped)
+        reading.cache = cache.path
+        let held = try ReadingDirectoryLock.acquire(for: cache)
+        let result = withExtendedLifetime(held) {
+            ReadingLibrary.deleteFiles(of: reading, readingsRoot: readings, store: store) { _ in }
+        }
+        #expect(result.problem?.contains("being made by another process") == true)
+        #expect(FileManager.default.fileExists(atPath: cache.path))
+    }
+
+    /// An index that is there but cannot be looked up is never taken for a missing one (a new list would be saved
+    /// over it): the list is shown empty and read-only.
+    @Test func anIndexThatCannotBeLookedUpIsNeverReplaced() throws {
+        let root = try folder()
+        let library = root.appendingPathComponent("ReadingLibrary")
+        defer {
+            _ = chmod(library.path, 0o755)
+            try? FileManager.default.removeItem(at: root)
+        }
+        let store = ReadingLibraryStore(folder: library)
+        try store.save([entry(.done)])
+        #expect(chmod(library.path, 0) == 0)
+        guard getuid() != 0 else { return }
+        let loaded = store.load()
+        #expect(!loaded.writable)
+        #expect(loaded.notice != nil)
+    }
+
+    /// NFC and NFD spellings of one name are two files on a volume whose rules cannot be told (a network share):
+    /// a manifest naming one says nothing about the other.
+    @Test func manifestPathsCompareByTheirExactSpelling() {
+        let folder = "/holos-missing-\(UUID().uuidString)"
+        let composed = "\(folder)/Caf\u{E9}.m4a"
+        let decomposed = "\(folder)/Cafe\u{301}.m4a"
+        #expect(ReadingLibrary.sameFile(composed, ReadingOutput.fileURL(keepingSpelling: composed)))
+        #expect(!ReadingLibrary.sameFile(composed, ReadingOutput.fileURL(keepingSpelling: decomposed)))
+    }
+
     /// A render cache that cannot be looked up is not "gone": Delete keeps the entry for another try.
     @Test func aCacheThatCannotBeCheckedKeepsTheEntry() throws {
         let root = try folder()
@@ -498,7 +573,7 @@ import Testing
         #expect(chmod(readings.path, 0) == 0)
         guard getuid() != 0 else { return }
         #expect(ReadingLibrary.deleteFiles(of: reading, readingsRoot: readings, store: store) { _ in }.problem?
-            .contains("could not be removed") == true)
+            .contains("could not be") == true)
         #expect(chmod(readings.path, 0o755) == 0)
         #expect(FileManager.default.fileExists(atPath: cache.path))
     }

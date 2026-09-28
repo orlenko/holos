@@ -116,8 +116,9 @@ public enum ExclusivePublisher {
 
     /// The prefix of the name a file is moved aside to (see `removeVerified`).
     public static let removalPrefix = ".holos-delete-"
-    /// The longest name `removeVerified` writes beside the file: its private folder, or the file's new name.
-    public static let removalNameLength = (removalPrefix + UUID().uuidString).utf8.count
+    /// The longest name `removeVerified` writes beside the file: its private folder, or the file's new name (a
+    /// caller's `token` is at most `removalPrefix`, a UUID, and a short suffix such as ".partial").
+    public static let removalNameLength = (removalPrefix + UUID().uuidString + ".partial").utf8.count
 
     /// Removes the file at `url` only when it is the very one `matches` accepts. Checking a path and then removing it
     /// are two steps, between which another process (a sync client, a second Mac on a share) could put another file
@@ -128,10 +129,15 @@ public enum ExclusivePublisher {
     /// `url` only with an operation that cannot replace a file put there meanwhile (see `restore`); where the volume
     /// has none, it stays aside and the result says where. `dispose` defaults to removing it. Every removal of a
     /// reading's file that depends on which file is there goes through here.
-    public static func removeVerified(_ url: URL, keepingName: Bool = false, matches: (URL) throws -> Bool,
+    ///
+    /// `token` names the place aside (it starts with `removalPrefix`; default: a new UUID). A caller that must find a
+    /// file left there after a crash (a reading's Delete) gives one it can derive again; nothing is ever moved over
+    /// something already at that place.
+    public static func removeVerified(_ url: URL, keepingName: Bool = false, token: String? = nil,
+                                      matches: (URL) throws -> Bool,
                                       dispose: (URL) throws -> Void = removeFile) -> Removal {
         let folder = url.deletingLastPathComponent()
-        let token = removalPrefix + UUID().uuidString
+        let token = token ?? removalPrefix + UUID().uuidString
         var holding: URL?
         let staged: URL
         if keepingName {
@@ -146,7 +152,17 @@ public enum ExclusivePublisher {
         }
         // Removed when empty: a file that could not go back stays in it, named in the result.
         defer { if let holding { _ = rmdir(holding.path) } }
-        guard rename(url.path, staged.path) == 0 else {
+        // Never over something already at the place aside (a file an interrupted try left there).
+        var moved = systemExclusiveRename(url.path, staged.path)
+        if moved != 0, errno == ENOTSUP || errno == EINVAL || errno == ENOSYS {
+            var metadata = stat()
+            if lstat(staged.path, &metadata) == 0 {
+                errno = EEXIST
+            } else if errno == ENOENT {
+                moved = rename(url.path, staged.path)
+            }
+        }
+        guard moved == 0 else {
             let error = errno
             return error == ENOENT ? .absent : .failed(reason: String(cString: strerror(error)), keptAt: nil)
         }
@@ -174,8 +190,8 @@ public enum ExclusivePublisher {
         if exclusiveRename(staged.path, url.path) == 0 { return nil }
         guard errno == ENOTSUP || errno == EINVAL || errno == ENOSYS else { return staged.path }
         guard hardLink(staged.path, url.path) == 0 else { return staged.path }
-        _ = unlink(staged.path)
-        return nil
+        // A second name left aside keeps the file's data alive: it is reported, for the caller to deal with.
+        return unlink(staged.path) == 0 ? nil : staged.path
     }
 
     /// `unlink`, for `removeVerified`; a file already gone is not an error.
@@ -189,7 +205,7 @@ public enum ExclusivePublisher {
     /// Checked before it is moved too, so another file at the path is never moved at all (on a volume that can
     /// neither rename exclusively nor link, it could not be put back); one that cannot be checked is a failure.
     @discardableResult
-    public static func removeIfIdentical(_ url: URL, to identity: FileIdentity) -> Removal {
+    public static func removeIfIdentical(_ url: URL, to identity: FileIdentity, token: String? = nil) -> Removal {
         do {
             guard let current = try FileIdentity.lookup(url) else {
                 var metadata = stat()
@@ -199,7 +215,7 @@ public enum ExclusivePublisher {
         } catch {
             return .failed(reason: error.localizedDescription, keptAt: nil)
         }
-        return removeVerified(url) { staged in try FileIdentity.lookup(staged) == identity }
+        return removeVerified(url, token: token) { staged in try FileIdentity.lookup(staged) == identity }
     }
 
     /// A file URL whose path keeps `path`'s bytes as given (`URL(fileURLWithPath:)` would decompose its names).

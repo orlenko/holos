@@ -280,7 +280,10 @@ trashed is the file checked, and one that no longer matches goes back;
 depends on which file is at a path, the pipeline's and `ExclusivePublisher`'s included,
 goes through `ExclusivePublisher.removeVerified`; a file goes back only by an exclusive rename
 or a hard link, never over a file put there meanwhile, and one that cannot go back stays
-aside, its place saved with the entry, `outputAside`, for the next Delete), removes the render cache only when it is
+aside, its place saved with the entry, `outputAside`, for the next Delete; a reading's
+Delete moves its file to `.holos-delete-<entry ID>`, so one a quit or crash cut off after
+the move finds it there next time; all of it holds the cache's render lock, so a
+`voiceislocal read --resume` of the same cache keeps the reading until it ends), removes the render cache only when it is
 an `Output-<16 hex>` folder directly in the Readings cache folder, and removes the saved
 text; only then does the entry leave the index. A made reading is saved as made before its
 saved text is removed. A file that cannot be
