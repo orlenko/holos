@@ -179,7 +179,10 @@ Voice › Manage Voices).
 8. **Missing file and Delete**: move a made file away in Finder and come back: its row
    says the file is no longer there and offers only Delete…. ⌫ on a row asks first; Delete
    moves a made file to the Trash, and `ls ~/Library/Application\ Support/Holos/Readings`
-   no longer has its `Output-…` folder.
+   no longer has its `Output-…` folder. With a USB drive chosen as the output folder in
+   Settings › Reading, make a reading, then eject the drive: its row says "Unavailable —
+   the drive or share “<name>” is not connected"; Delete says so and keeps the row. Plug the
+   drive back in and come back to the window: the row plays again, and Delete moves the file to the Trash.
 9. **Failures**: a page behind a sign-in fails with the reason and Try Again; turn Wi-Fi
    off and try a link: it fails, then Try Again after Wi-Fi is back makes it.
 10. **Relaunch and quit**: quit with nothing rendering: no question. Start a long reading

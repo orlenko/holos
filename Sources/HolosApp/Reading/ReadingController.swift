@@ -183,6 +183,23 @@ final class ReadingController {
         return output
     }
 
+    /// Why a made reading's file cannot be used (`finishedFile` is nil).
+    enum FileProblem: Equatable {
+        /// It was moved, deleted, or replaced by another file.
+        case missing
+        /// The folder that holds it cannot be reached (its drive or share is not connected): it may come back.
+        case unavailable(String)
+    }
+
+    /// Nil when the reading is not made, or its file is there (see `finishedFile`).
+    func fileProblem(_ entry: ReadingEntry) -> FileProblem? {
+        guard entry.state == .done, finishedFile(entry) == nil else { return nil }
+        if let output = entry.outputURL, let reason = ReadingOutput.unreachableReason(for: output) {
+            return .unavailable(reason)
+        }
+        return .missing
+    }
+
     /// Try Again or Resume: queues a failed or stopped reading again; its rendered parts are reused. Returns a
     /// problem to show when it cannot.
     func retry(_ id: UUID) -> String? {
@@ -419,7 +436,8 @@ final class ReadingController {
             guard (try? ReadingOutput.exists(url)) == true else {
                 throw HolosError.invalidInput("\(url.lastPathComponent) is no longer at \((url.path as NSString).abbreviatingWithTildeInPath).")
             }
-            document = try DocumentLoader.load(url)
+            // Off the main actor: a long PDF or Word file takes a while to read, and the window must stay responsive.
+            document = try await Task.detached(priority: .userInitiated) { try DocumentLoader.load(url) }.value
         }
         do {
             try store.saveDocument(document, for: entry.id)

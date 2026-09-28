@@ -334,6 +334,17 @@ public enum ReadingLibrary {
         return digest.count == 16 && digest.allSatisfy { $0.isASCII && $0.isHexDigit && !$0.isUppercase }
     }
 
+    /// A reading's file was not found, but the folder that holds it cannot be reached: it may come back.
+    public struct OutputUnreachable: LocalizedError, Equatable {
+        public let file: String
+        /// "the drive or share “Backup” is not connected".
+        public let reason: String
+
+        public var errorDescription: String? {
+            "\(file) is unavailable: \(reason). Connect it, then try again."
+        }
+    }
+
     /// What the file at a reading's output path is to that reading.
     public enum OutputOwnership: Sendable, Equatable {
         /// The finished file it published (its checksum matches the entry's or the cache manifest's).
@@ -345,9 +356,22 @@ public enum ReadingLibrary {
     /// Whether the file at `output` is this reading's: the finished file (`sha256`, else the checksum the render
     /// cache's manifest saved for that output), or its own partly copied file (the manifest's `publishing`
     /// identity). Nil for anything else (a file put there since, or nothing there): Delete leaves it alone. Throws
-    /// when that cannot be told (the file or the manifest cannot be read), so nothing that identifies it is removed.
+    /// when that cannot be told (the file or the manifest cannot be read), so nothing that identifies it is removed;
+    /// `OutputUnreachable` when nothing is found but the folder that holds it cannot be reached (its drive or share
+    /// is not connected), and something of the reading's may be there.
     public static func ownership(of output: URL, sha256: String?, cache: URL?) throws -> OutputOwnership? {
-        guard try ReadingOutput.exists(output) else { return nil }
+        guard try ReadingOutput.exists(output) else {
+            // Not found is "gone" only where the folder can be looked into: a drive that is not connected brings the
+            // file back when it is, and the reading must still be there to delete it then. Unless nothing of the
+            // reading's can be there (no finished file, no copy begun); a manifest that cannot be read may name one.
+            if let reason = ReadingOutput.unreachableReason(for: output) {
+                let evidence = try? ownershipEvidence(of: output, sha256: sha256, cache: cache)
+                if evidence.map({ !$0.checksums.isEmpty || $0.publishing != nil }) ?? true {
+                    throw OutputUnreachable(file: output.lastPathComponent, reason: reason)
+                }
+            }
+            return nil
+        }
         let evidence = try ownershipEvidence(of: output, sha256: sha256, cache: cache)
         if !evidence.checksums.isEmpty, evidence.checksums.contains(try fileSHA256(output)) { return .finished }
         if let claimed = evidence.publishing, ExclusivePublisher.FileIdentity.of(output) == claimed {
@@ -389,33 +413,35 @@ public enum ReadingLibrary {
     /// refuses, goes back to `output` (never over something put there meanwhile). Nil when it is in the Trash.
     static func trashVerified(_ output: URL, checksums: [String], trash: (URL) throws -> Void) -> String? {
         let name = output.lastPathComponent
-        let holding = RawFilePath.appending(".holos-delete-\(UUID().uuidString)", to: output.deletingLastPathComponent())
-        guard mkdir(RawFilePath.system(holding), 0o700) == 0 else {
-            return "\(name) could not be moved to the Trash: \(String(cString: strerror(errno)))"
+        let removal = ExclusivePublisher.removeVerified(output, keepingName: true, matches: { staged in
+            (try? fileSHA256(staged)).map(checksums.contains) ?? false
+        }, dispose: trash)
+        return problem(removal, name: name, action: "moved to the Trash", reportChanged: true)
+    }
+
+    /// Removes the copy into `output` that a crash cut off, only while it is that very file (`identity`), through
+    /// the same move-aside-then-check step as the finished file. Nil when it is gone: one replaced by another file
+    /// since is gone too (the other file is left alone).
+    static func removePartial(_ output: URL, identity: ReadingFileIdentity) -> String? {
+        problem(ExclusivePublisher.removeIfIdentical(output, to: identity),
+                name: "The partly written \(output.lastPathComponent)", action: "removed", reportChanged: false)
+    }
+
+    /// What to tell about a removal of the reading's file `name`; nil when it is gone. One that no longer matches (a
+    /// file put there since) is left alone; it is a problem when `reportChanged` (the Trash: the user expects the
+    /// file gone) or when it could not be put back.
+    private static func problem(_ removal: ExclusivePublisher.Removal, name: String, action: String,
+                                reportChanged: Bool) -> String? {
+        func kept(_ path: String?) -> String { path.map { " It is kept at \($0)." } ?? "" }
+        switch removal {
+        case .removed, .absent:
+            return nil
+        case .notMatching(let keptAt):
+            guard reportChanged || keptAt != nil else { return nil }
+            return "\(name) changed before it could be \(action), so it was left in place." + kept(keptAt)
+        case .failed(let reason, let keptAt):
+            return "\(name) could not be \(action): \(reason)" + (reason.hasSuffix(".") ? "" : ".") + kept(keptAt)
         }
-        // Removed when empty: a file that could not go back stays in it, named in the message.
-        defer { _ = rmdir(RawFilePath.system(holding)) }
-        let staged = RawFilePath.appending(name, to: holding)
-        guard rename(RawFilePath.system(output), RawFilePath.system(staged)) == 0 else {
-            return "\(name) could not be moved to the Trash: \(String(cString: strerror(errno)))"
-        }
-        func restore(_ problem: String) -> String {
-            var result = ExclusivePublisher.systemExclusiveRename(RawFilePath.system(staged), RawFilePath.system(output))
-            if result != 0, errno == ENOTSUP || errno == EINVAL || errno == ENOSYS,
-               (try? ReadingOutput.exists(output)) == false {
-                result = rename(RawFilePath.system(staged), RawFilePath.system(output))
-            }
-            return result == 0 ? problem : problem + " It is kept in \(holding.path)."
-        }
-        guard let actual = try? fileSHA256(staged), checksums.contains(actual) else {
-            return restore("\(name) changed before it could be moved to the Trash, so it was left in place.")
-        }
-        do {
-            try trash(staged)
-        } catch {
-            return restore("\(name) could not be moved to the Trash: \(error.localizedDescription)")
-        }
-        return nil
     }
 
     /// Removes a deleted reading's files, returning nil when all are gone, else the problems (and " Try Delete
@@ -433,6 +459,9 @@ public enum ReadingLibrary {
             do {
                 owned = try ownership(of: output, sha256: entry.outputSHA256, cache: cache)
                 checksums = try ownershipEvidence(of: output, sha256: entry.outputSHA256, cache: cache).checksums
+            } catch let unreachable as OutputUnreachable {
+                // Kept whole (row, cache, text) until the file can be looked for again.
+                return "\(unreachable.file) is unavailable: \(unreachable.reason). Connect it, then Delete again."
             } catch {
                 return "\(output.lastPathComponent) could not be checked: \(error.localizedDescription) Try Delete again."
             }
@@ -440,11 +469,7 @@ public enum ReadingLibrary {
             case .finished?:
                 if let problem = trashVerified(output, checksums: checksums, trash: trash) { problems.append(problem) }
             case .partial(let identity)?:
-                ExclusivePublisher.removeIfIdentical(output, to: identity)
-                // It reports nothing: whether the partial copy is gone is checked here.
-                if ExclusivePublisher.FileIdentity.of(output) == identity {
-                    problems.append("The partly written \(output.lastPathComponent) could not be removed.")
-                }
+                if let problem = removePartial(output, identity: identity) { problems.append(problem) }
             case nil:
                 break
             }

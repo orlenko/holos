@@ -9,8 +9,9 @@ public enum DocumentLoader {
         "txt", "text", "md", "markdown", "html", "htm", "pdf", "rtf", "rtfd", "docx", "doc", "odt",
     ]
 
-    /// Unknown extensions are read as UTF-8 plain text.
-    @MainActor public static func load(_ url: URL) throws -> ReadableDocument {
+    /// Unknown extensions are read as UTF-8 plain text. Callable from any thread: none of the readers is AppKit's
+    /// HTML importer (the one that must run on the main thread), so the app loads files off the main actor.
+    public static func load(_ url: URL) throws -> ReadableDocument {
         let document: ReadableDocument
         switch url.pathExtension.lowercased() {
         case "md", "markdown":
@@ -1449,7 +1450,7 @@ public enum HTMLReader {
 
 /// PDF text through PDFKit, with line breaks reflowed into paragraphs.
 public enum PDFReader {
-    @MainActor static func document(_ url: URL) throws -> ReadableDocument {
+    static func document(_ url: URL) throws -> ReadableDocument {
         guard let pdf = PDFDocument(url: url) else {
             throw HolosError.invalidInput("\(url.lastPathComponent) is not a readable PDF.")
         }
@@ -1657,7 +1658,7 @@ public enum PDFReader {
 /// while the RTF and OpenDocument readers move them into the paragraph's text list, from which
 /// they are put back.
 public enum RichTextReader {
-    @MainActor static func document(_ url: URL, type: NSAttributedString.DocumentType) throws -> ReadableDocument {
+    static func document(_ url: URL, type: NSAttributedString.DocumentType) throws -> ReadableDocument {
         var attributes: NSDictionary?
         let text: NSAttributedString
         do {

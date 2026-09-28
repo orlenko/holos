@@ -344,6 +344,79 @@ import Testing
         #expect(try FileManager.default.contentsOfDirectory(atPath: root.path) == ["Story.m4a"])
     }
 
+    /// A copy a crash cut off is removed only while it is that very file: one put at the path since is left alone.
+    @Test func aPartialCopyIsRemovedOnlyWhileItIsThatFile() throws {
+        let root = try folder()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let output = root.appendingPathComponent("Story.m4a")
+        try Data("partial".utf8).write(to: output)
+        let identity = try #require(ExclusivePublisher.FileIdentity.of(output))
+        try FileManager.default.removeItem(at: output)
+        try Data("the user's".utf8).write(to: output)
+        #expect(ReadingLibrary.removePartial(output, identity: identity) == nil)
+        #expect(try Data(contentsOf: output) == Data("the user's".utf8))
+        #expect(try FileManager.default.contentsOfDirectory(atPath: root.path) == ["Story.m4a"])
+
+        let own = try #require(ExclusivePublisher.FileIdentity.of(output))
+        #expect(ReadingLibrary.removePartial(output, identity: own) == nil)
+        #expect(try FileManager.default.contentsOfDirectory(atPath: root.path).isEmpty)
+    }
+
+    /// A reading on a drive that is not connected is not "gone": Delete keeps its row, cache, and saved text, and
+    /// says why, until the file can be looked for. `/Volumes/<name>` counts only while a volume is mounted there.
+    @Test func aReadingOnADisconnectedDriveIsKeptUntilItsFileCanBeChecked() throws {
+        let root = try folder()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let volumes = root.appendingPathComponent("Volumes", isDirectory: true)
+        try FileManager.default.createDirectory(at: volumes, withIntermediateDirectories: false)
+        let readings = root.appendingPathComponent("Readings", isDirectory: true)
+        let cache = readings.appendingPathComponent("Output-0123456789abcdef", isDirectory: true)
+        try FileManager.default.createDirectory(at: cache, withIntermediateDirectories: true)
+        let store = ReadingLibraryStore(folder: root.appendingPathComponent("ReadingLibrary"))
+        let output = volumes.appendingPathComponent("Backup/Readings/Story.m4a")
+        var reading = entry(.done)
+        reading.output = output.path
+        reading.cache = cache.path
+        reading.outputSHA256 = String(repeating: "a", count: 64)
+        try store.saveDocument(ReadableDocument(sections: [.init(paragraphs: ["Text."])]), for: reading.id)
+
+        try ReadingOutput.$volumesFolder.withValue(volumes.path) {
+            #expect(ReadingOutput.unreachableReason(for: output)?.contains("“Backup” is not connected") == true)
+            #expect(throws: ReadingLibrary.OutputUnreachable.self) {
+                try ReadingLibrary.ownership(of: output, sha256: reading.outputSHA256, cache: cache)
+            }
+            let problem = ReadingLibrary.deleteFiles(of: reading, readingsRoot: readings, store: store) { _ in
+                Issue.record("Trashed a file that is not there")
+            }
+            #expect(problem?.contains("unavailable") == true)
+            #expect(FileManager.default.fileExists(atPath: cache.path))
+            #expect(try store.document(for: reading.id) != nil)
+
+            // An empty folder left in /Volumes by an unclean unmount is not the drive.
+            try FileManager.default.createDirectory(at: volumes.appendingPathComponent("Backup"),
+                                                    withIntermediateDirectories: false)
+            #expect(ReadingOutput.unreachableReason(for: output) != nil)
+
+            // Nothing of the reading's can be there (no finished file, no copy begun): nothing to wait for.
+            var stopped = entry(.stopped)
+            stopped.output = output.path
+            #expect(try ReadingLibrary.ownership(of: output, sha256: nil, cache: nil) == nil)
+            #expect(ReadingLibrary.deleteFiles(of: stopped, readingsRoot: readings, store: store) { _ in } == nil)
+
+            // A volume mounted there (another device than the Volumes folder), whose folder is gone: the file is gone.
+            let mounted = volumes.appendingPathComponent("Root")
+            try FileManager.default.createSymbolicLink(atPath: mounted.path, withDestinationPath: "/")
+            let onMounted = mounted.appendingPathComponent("holos-missing-\(UUID().uuidString)/Story.m4a")
+            #expect(ReadingOutput.unreachableReason(for: onMounted) == nil)
+        }
+        // Outside the Volumes folder, a file whose folder is there but not the file is gone.
+        #expect(ReadingOutput.unreachableReason(for: root.appendingPathComponent("Story.m4a")) == nil)
+        var gone = reading
+        gone.output = root.appendingPathComponent("Story.m4a").path
+        #expect(ReadingLibrary.deleteFiles(of: gone, readingsRoot: readings, store: store) { _ in } == nil)
+        #expect(!FileManager.default.fileExists(atPath: cache.path))
+    }
+
     @Test func aReadingWhoseDeleteFailedComesBackStopped() {
         var running = entry(.rendering, resume: true)
         running.deletePending = true

@@ -242,8 +242,10 @@ and renders with `ReadingPipeline` in this process into the pipeline's cache in
 in the index before rendering starts; a save that fails stops the reading. The pipeline reports progress
 (`ReadingRenderProgress`: each part as it starts, then the join) to the row. The pipeline is
 main-actor isolated, so it runs as a task on the main actor: speech synthesis and AAC
-encoding happen on AVFoundation's threads, while loading a document and hashing the parts
-run on the main thread between them.
+encoding happen on AVFoundation's threads, and a document file is loaded and every part and
+finished file is hashed on a detached task (`DocumentLoader` uses none of AppKit's
+main-thread-only HTML importer), so the window stays responsive; a web page is extracted on
+the main thread, which `WKWebView` requires.
 
 Rows show the title and the source (the site without "www.", or the file's name), then:
 waiting (Stop); loading or "Rendering part N of M" with a bar (Stop); joining; made
@@ -253,7 +255,12 @@ stopped when the window closes), **Share…** (`NSSharingServicePicker`, ⇧⌘S
 Finder**, **Delete…**; failed (the error, **Try Again**); stopped (where, **Resume**). A
 made reading whose file is no longer there, or was replaced by another file (its file
 identity, saved when it was made, differs), says so and offers only Delete; Play, Share…,
-and Show in Finder use only that same file. A drop of things that cannot be read is taken
+and Show in Finder use only that same file. One whose folder cannot be reached says
+"Unavailable — the drive or share “<name>” is not connected" (`ReadingOutput.unreachableReason`:
+a path in `/Volumes/<name>` with no volume mounted there, an empty leftover mount folder
+included, or an automounted share not mounted), and Delete keeps its row, cache, and saved
+text until the drive is back and the file can be looked for: not found is "gone" only where
+its folder can be reached. A drop of things that cannot be read is taken
 so its reason shows under the card. Delete (⌫, with a
 confirmation) first saves the entry marked for deletion (`deletePending`, hidden from the
 list), stops it if it is being made, then moves the reading's finished file to the Trash
@@ -262,7 +269,10 @@ file put at that path since is left alone; the file is first moved into a privat
 `.holos-delete-<UUID>` folder beside it under its own name and checked there, so the file
 trashed is the file checked, and one that no longer matches goes back;
 `ReadingLibrary.trashVerified`), removes a copy a crash cut off (the manifest's
-`publishing` identity; `ReadingLibrary.ownership`), removes the render cache only when it is
+`publishing` identity; `ReadingLibrary.ownership`) the same way (moved aside to a
+`.holos-delete-<UUID>` name, its identity checked there, then removed; every removal that
+depends on which file is at a path, the pipeline's and `ExclusivePublisher`'s included,
+goes through `ExclusivePublisher.removeVerified`), removes the render cache only when it is
 an `Output-<16 hex>` folder directly in the Readings cache folder, and removes the saved
 text; only then does the entry leave the index. A made reading is saved as made before its
 saved text is removed. A file that cannot be

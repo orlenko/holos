@@ -426,16 +426,17 @@ final class ReadingPane: NSViewController, MainSectionContent, NSTableViewDataSo
     }
 
     private func configure(_ cell: ReadingRowView, _ entry: ReadingEntry) {
-        // A made reading whose file was moved, deleted, or replaced by another file shows as missing.
+        // A made reading whose file was moved, deleted, or replaced by another file shows as missing; one whose drive
+        // or share is not connected, as unavailable.
         let file = controller.finishedFile(entry)
-        let missing = entry.state == .done && file == nil
+        let problem = controller.fileProblem(entry)
         var playback: ReadingRowView.Playback?
         if player.entryID == entry.id {
             playback = ReadingRowView.Playback(playing: player.isPlaying, current: player.position?.current,
                                                duration: player.position?.duration)
         }
-        let size: Int64? = missing ? nil : file.flatMap { Self.fileSize($0) }
-        cell.show(entry, activity: controller.activity[entry.id], missing: missing, size: size, playback: playback)
+        let size: Int64? = problem != nil ? nil : file.flatMap { Self.fileSize($0) }
+        cell.show(entry, activity: controller.activity[entry.id], fileProblem: problem, size: size, playback: playback)
     }
 
     private static func fileSize(_ url: URL) -> Int64? {
@@ -743,8 +744,8 @@ final class ReadingRowView: NSTableCellView {
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
 
-    func show(_ entry: ReadingEntry, activity: ReadingController.Activity?, missing: Bool, size: Int64?,
-              playback: Playback?) {
+    func show(_ entry: ReadingEntry, activity: ReadingController.Activity?, fileProblem: ReadingController.FileProblem?,
+              size: Int64?, playback: Playback?) {
         entryID = entry.id
         title.stringValue = entry.title
         source.stringValue = entry.source.label
@@ -773,9 +774,16 @@ final class ReadingRowView: NSTableCellView {
             }
             setPrimary("Stop", .stop, help: "Stop making this reading; Resume continues where it stopped")
             buttons = [primary]
-        case .done where missing:
+        case .done where fileProblem == .missing:
             status.stringValue = "The file made for it is no longer at "
                 + "\(entry.output.map { ($0 as NSString).abbreviatingWithTildeInPath } ?? "its place")."
+            status.textColor = .systemOrange
+            buttons = [deleteButton]
+        case .done where fileProblem != nil:
+            // Delete refuses until the file can be looked for, so it stays offered for when the drive is back.
+            if case .unavailable(let reason)? = fileProblem {
+                status.stringValue = "Unavailable — \(reason)."
+            }
             status.textColor = .systemOrange
             buttons = [deleteButton]
         case .done:

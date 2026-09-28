@@ -80,10 +80,95 @@ public enum ExclusivePublisher {
         _ = unlink(source.path)
     }
 
-    /// Removes `url` when it is still the file `identity` describes; anything else is kept.
-    public static func removeIfIdentical(_ url: URL, to identity: FileIdentity) {
-        guard FileIdentity.of(url) == identity else { return }
-        _ = unlink(url.path)
+    /// What `removeVerified` did.
+    public enum Removal: Sendable, Equatable {
+        /// The file was the one asked for, and it is gone (or `dispose` took it).
+        case removed
+        /// Nothing was at the path.
+        case absent
+        /// The file there was another one: it was put back untouched, or, when that failed, is kept at `keptAt`.
+        case notMatching(keptAt: String?)
+        /// It could not be moved aside, or `dispose` failed (`reason`): it is back in place, or, when that failed,
+        /// kept at `keptAt`.
+        case failed(reason: String, keptAt: String?)
+
+        /// Whether no file of the one asked for is at the path any more.
+        public var isGone: Bool {
+            switch self {
+            case .removed, .absent, .notMatching: true
+            case .failed: false
+            }
+        }
+    }
+
+    /// The prefix of the name a file is moved aside to (see `removeVerified`).
+    public static let removalPrefix = ".holos-delete-"
+    /// The longest name `removeVerified` writes beside the file: its private folder, or the file's new name.
+    public static let removalNameLength = (removalPrefix + UUID().uuidString).utf8.count
+
+    /// Removes the file at `url` only when it is the very one `matches` accepts. Checking a path and then removing it
+    /// are two steps, between which another process (a sync client, a second Mac on a share) could put another file
+    /// there, so the file is first moved aside, and checked where nothing else can take its place: renamed within its
+    /// folder (same volume, so the file itself moves, not a copy) to a new name only this call knows, or, with
+    /// `keepingName` (for the Trash, which shows the name), into a new private folder beside it under its own name.
+    /// A file that does not match, or that `dispose` refuses, goes back to `url`, never over a file put there
+    /// meanwhile. `dispose` defaults to removing it. Every removal of a reading's file that depends on which file is
+    /// there goes through here.
+    public static func removeVerified(_ url: URL, keepingName: Bool = false, matches: (URL) -> Bool,
+                                      dispose: (URL) throws -> Void = removeFile) -> Removal {
+        let folder = url.deletingLastPathComponent()
+        let token = removalPrefix + UUID().uuidString
+        var holding: URL?
+        let staged: URL
+        if keepingName {
+            let made = spelled(folder.path + "/" + token, isDirectory: true)
+            guard mkdir(made.path, 0o700) == 0 else {
+                return .failed(reason: String(cString: strerror(errno)), keptAt: nil)
+            }
+            holding = made
+            staged = spelled(made.path + "/" + url.lastPathComponent)
+        } else {
+            staged = spelled(folder.path + "/" + token)
+        }
+        // Removed when empty: a file that could not go back stays in it, named in the result.
+        defer { if let holding { _ = rmdir(holding.path) } }
+        guard rename(url.path, staged.path) == 0 else {
+            let error = errno
+            return error == ENOENT ? .absent : .failed(reason: String(cString: strerror(error)), keptAt: nil)
+        }
+        func restore() -> String? {
+            var result = systemExclusiveRename(staged.path, url.path)
+            if result != 0, errno == ENOTSUP || errno == EINVAL || errno == ENOSYS {
+                var metadata = stat()
+                if lstat(url.path, &metadata) != 0, errno == ENOENT { result = rename(staged.path, url.path) }
+            }
+            return result == 0 ? nil : staged.path
+        }
+        guard matches(staged) else { return .notMatching(keptAt: restore()) }
+        do {
+            try dispose(staged)
+        } catch {
+            return .failed(reason: error.localizedDescription, keptAt: restore())
+        }
+        return .removed
+    }
+
+    /// `unlink`, for `removeVerified`; a file already gone is not an error.
+    public static func removeFile(_ url: URL) throws {
+        guard unlink(url.path) == 0 || errno == ENOENT else {
+            throw HolosError.io("Could not remove \(url.path): \(String(cString: strerror(errno)))")
+        }
+    }
+
+    /// Removes `url` when it is still the file `identity` describes (see `removeVerified`); anything else is kept.
+    @discardableResult
+    public static func removeIfIdentical(_ url: URL, to identity: FileIdentity) -> Removal {
+        removeVerified(url) { FileIdentity.of($0) == identity }
+    }
+
+    /// A file URL whose path keeps `path`'s bytes as given (`URL(fileURLWithPath:)` would decompose its names).
+    private static func spelled(_ path: String, isDirectory: Bool = false) -> URL {
+        path.withCString { URL(fileURLWithFileSystemRepresentation: $0, isDirectory: isDirectory, relativeTo: nil) }
     }
 
     private static func copyExclusively(_ source: URL, to destination: URL, existing: String,

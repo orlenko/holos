@@ -283,9 +283,10 @@ public struct AudioBookJoiner: ReadingAudioJoiner {
                 throw HolosError.invalidInput("The reading at \(directory.path) was made by another version and cannot be resumed.")
             }
             manifest = saved
+            let savedSource = try? await fileSHA256OffMain(sourceURL)
             guard manifest.sourceSHA256 == sourceHash,
                   manifest.sameSettings(voiceIdentifier: voiceIdentifier, rate: rate, metadata: metadata, output: output),
-                  (try? fileSHA256(sourceURL)) == sourceHash else {
+                  savedSource == sourceHash else {
                 throw HolosError.invalidInput("Reading source, voice, rate, title, author, language, or output differs from the saved reading.")
             }
             guard manifest.parts.count == expected.count,
@@ -326,14 +327,15 @@ public struct AudioBookJoiner: ReadingAudioJoiner {
                                  key: key, currentRun: run)
 
         // Finished before (possibly interrupted right after publishing): nothing to do.
-        if let published = manifest.outputSHA256,
-           (try? fileSHA256(output)) == published {
+        if let published = manifest.outputSHA256, (try? await fileSHA256OffMain(output)) == published {
             return finish(&manifest, manifestURL: manifestURL, directory: directory, output: output)
         }
         // A copy into the destination that a crash cut off is this reading's own file: it goes,
         // and the reading is joined and published again. Anything else there is kept.
         if let claimed = manifest.publishing {
-            ReadingPublisher.removeIfIdentical(output, to: claimed)
+            if let problem = ReadingLibrary.removePartial(output, identity: claimed) {
+                throw HolosError.io(problem)
+            }
             manifest.publishing = nil
             try saveManifest(manifest, to: manifestURL)
         }
@@ -351,8 +353,10 @@ public struct AudioBookJoiner: ReadingAudioJoiner {
         for index in manifest.parts.indices {
             let part = manifest.parts[index]
             let audio = directory.appendingPathComponent(part.relativeAudioPath)
-            let valid = part.status == "complete" && part.audioSHA256 != nil &&
-                (try? fileSHA256(audio)) == part.audioSHA256
+            var valid = false
+            if part.status == "complete", let expected = part.audioSHA256 {
+                valid = (try? await fileSHA256OffMain(audio)) == expected
+            }
             if !valid {
                 manifest.parts[index].status = "pending"
                 manifest.parts[index].audioSHA256 = nil
@@ -378,7 +382,7 @@ public struct AudioBookJoiner: ReadingAudioJoiner {
                     throw HolosError.io("Speech renderer returned an unexpected part path.")
                 }
                 manifest.parts[part.index].status = "complete"
-                manifest.parts[part.index].audioSHA256 = try fileSHA256(result.url)
+                manifest.parts[part.index].audioSHA256 = try await fileSHA256OffMain(result.url)
                 manifest.parts[part.index].duration = result.duration
                 try saveManifest(manifest, to: manifestURL)
             } catch {
@@ -408,7 +412,7 @@ public struct AudioBookJoiner: ReadingAudioJoiner {
             throw HolosError.incomplete("Reading parts are rendered, but joining them failed: \(error.localizedDescription)")
         }
         try Task.checkCancellation()
-        manifest.outputSHA256 = try fileSHA256(temporary)
+        manifest.outputSHA256 = try await fileSHA256OffMain(temporary)
         manifest.duration = summary.duration
         manifest.chapters = summary.chapters
         try saveManifest(manifest, to: manifestURL)
@@ -547,11 +551,6 @@ enum ReadingPublisher {
         try ExclusivePublisher.publish(source, to: destination, exclusiveRename: exclusiveRename,
                                        existing: "Reading output already exists and is not this reading",
                                        claimed: claimed)
-    }
-
-    /// Removes `url` when it is still the file `identity` describes; anything else is kept.
-    static func removeIfIdentical(_ url: URL, to identity: ReadingFileIdentity) {
-        ExclusivePublisher.removeIfIdentical(url, to: identity)
     }
 }
 
@@ -1318,6 +1317,16 @@ func fileSHA256(_ url: URL) throws -> String {
         if done { break }
     }
     return hex(hasher.finalize())
+}
+
+/// `fileSHA256` off the main actor, where `ReadingPipeline` runs: a rendered part or a finished reading is megabytes,
+/// and a resume checks every part, which would stall the app's window. The volume stand-in of tests
+/// (`RawFilePath.volume`, a task-local a detached task does not inherit) is carried over.
+func fileSHA256OffMain(_ url: URL) async throws -> String {
+    let volume = RawFilePath.volume
+    return try await Task.detached(priority: .userInitiated) {
+        try RawFilePath.$volume.withValue(volume) { try fileSHA256(url) }
+    }.value
 }
 
 /// The contents of a file expected to be small; a larger one is an error, not read whole.
