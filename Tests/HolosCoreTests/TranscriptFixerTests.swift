@@ -211,7 +211,7 @@ import Testing
     #expect(AIFixReference.select(from: entries, for: "I opened a bull request", budget: 1_000) == [entries[2]])
     #expect(AIFixReference.select(from: entries, for: "nothing related", budget: 1_000).isEmpty)
     // Case-insensitive; the most recent pair comes first.
-    #expect(AIFixReference.select(from: entries, for: "is Get Hub down on mac", budget: 1_000)
+    #expect(AIFixReference.select(from: entries, for: "is Get Hub down on mac OS", budget: 1_000)
         == [entries[1], entries[0]])
     // The meant side never selects a pair: the text already has the spelling.
     #expect(AIFixReference.select(from: entries, for: "is github down", budget: 1_000).isEmpty)
@@ -253,14 +253,128 @@ let taughtList = [
     // The recognizer mishears the heard phrase again, a little differently.
     #expect(selected("it runs on a bundo") == ["a Bundo"])
     #expect(selected("it runs on a bundu") == ["a Bundo"])
-    #expect(selected("an Ubundo machine") == ["Ubundu machine", "a Bundo"])
+    #expect(selected("an Ubundo machine") == ["Ubundu machine"])
     #expect(selected("attach to my timox session") == ["Timok's sessions", "Timox sessions"])
+    #expect(selected("open a T-Mix session") == ["T-Mox", "T-Max", "T-Mux"])
     // A phrase of function words only must be said as it is.
     #expect(selected("This is fine") == ["This is"])
     #expect(selected("this was fine").isEmpty)
-    // A match covers the heard phrase's function words where the text has them.
+    // Part of a heard phrase is not the phrase.
+    #expect(selected("it runs bundu").isEmpty)
+    #expect(selected("go to the basement").isEmpty)
+    #expect(selected("type slash help").isEmpty)
+    #expect(selected("a quarter of the budget").isEmpty)
+    #expect(selected("I mix colors").isEmpty)
+    // A match is the words that said the whole phrase, and only those.
     #expect(AIFixReference.matches(of: "a Bundo", in: AIFixGuard.words(in: "it runs on a bundu")) == [3..<5])
-    #expect(AIFixReference.matches(of: "a Bundo", in: AIFixGuard.words(in: "bundu")) == [0..<1])
+    #expect(AIFixReference.matches(of: "This is", in: AIFixGuard.words(in: "so this is it")) == [1..<3])
+    #expect(AIFixReference.matches(of: "a Bundo", in: AIFixGuard.words(in: "bundu")).isEmpty)
+    #expect(AIFixReference.matches(of: "a Bundo", in: AIFixGuard.words(in: "use bundu")).isEmpty)
+}
+
+/// Common words that sound nothing like any heard phrase the speaker taught, nor like its taught spellings.
+let unrelatedWords = [
+    "point", "windows", "develop", "opened", "open", "people", "number", "water", "before", "system", "program",
+    "question", "problem", "house", "world", "school", "moment", "business", "money", "story", "family", "night",
+    "place", "update", "button", "bottom", "bundle", "bond", "band", "bounty", "abandon", "butter", "pointer",
+    "counter", "country", "account", "amount", "mountain", "contain", "content", "context", "commit", "branch",
+    "merge", "deploy", "laptop", "server", "client", "build", "test", "runs", "code", "file", "folder", "table",
+    "mobile", "modern", "middle", "results", "lessons", "strokes", "tax", "wax", "fax", "box", "fox", "match",
+    "fund", "roof", "three", "tree", "freeze", "dog", "forget", "forward", "lunch", "punch", "distance", "slack",
+    "flash", "cannon", "mister", "casement", "dead", "unto", "github", "toxic", "nature", "job", "into", "under",
+]
+
+@Test func unrelatedCommonWordsNeverMatchATaughtHeardWord() {
+    for heard in taughtList.map(\.heard) {
+        let phrase = AIFixGuard.words(in: heard)
+        for index in phrase.indices where SpokenWords.isContent(phrase[index]) {
+            for word in unrelatedWords {
+                #expect(!SpokenWords.isVariant(word, of: phrase[index]), "\(word) ~ \(phrase[index])")
+                var said = phrase
+                said[index] = word
+                #expect(AIFixReference.matches(of: heard, in: ["so"] + said + ["now"]).isEmpty, "\(said) ~ \(heard)")
+            }
+        }
+    }
+    // Nor could the model's swap of one of them for a taught spelling be a mishearing.
+    for meant in ["Ubuntu", "tmux", "GitHub", "nudger", "spaceman", "Maestro", "quota"] {
+        for word in unrelatedWords where word.lowercased() != meant.lowercased() {
+            #expect(!SpokenWords.isClose(word, meant), "\(word) ~ \(meant)")
+        }
+    }
+}
+
+@Test func aRoughSoundAloneIsNotAMishearing() {
+    // "point" and "Bundo" are both "pnt" roughly, but share no letter in place and start apart.
+    #expect(SpokenWords.roughSound(SpokenWords.sound("point")) == SpokenWords.roughSound(SpokenWords.sound("bundo")))
+    #expect(!SpokenWords.isVariant("point", of: "bundo") && !SpokenWords.isClose("point", "bundo"))
+    #expect(!SpokenWords.isVariant("tax", of: "max") && SpokenWords.isVariant("mix", of: "max"))
+    #expect(SpokenWords.isVariant("bundu", of: "bundo") && SpokenWords.isVariant("timox", of: "timok's"))
+    let bundo = Correction(heard: "a Bundo", meant: "ubuntu")
+    #expect(AIFixReference.select(from: [bundo], for: "That's the point", budget: 1_000).isEmpty)
+    #expect(AIFixReference.select(from: [bundo], for: "That's a point", budget: 1_000).isEmpty)
+    #expect(AIFixGuard.check(original: "That's the point", fixed: "That's the ubuntu", taught: [bundo])
+        == .reject(.implausibleSubstitution))
+    #expect(AIFixGuard.check(original: "That's a point", fixed: "That's ubuntu", taught: [bundo])
+        == .reject(.implausibleSubstitution))
+}
+
+@Test func aTaughtPairCoversOnlyTheWordsThatSaidItsHeardPhrase() {
+    let bundo = Correction(heard: "a Bundo", meant: "ubuntu")
+    // The neighbouring word is not part of the heard phrase, said or not.
+    #expect(AIFixGuard.check(original: "use Bundo", fixed: "Ubuntu Bundo", taught: [bundo])
+        == .reject(.implausibleSubstitution))
+    #expect(AIFixGuard.check(original: "use a Bundo", fixed: "Ubuntu a Bundo", taught: [bundo])
+        == .reject(.implausibleSubstitution))
+    // The words that said the heard phrase must become the meant phrase, give or take function words.
+    #expect(AIFixGuard.check(original: "use a Bundo", fixed: "use Ubuntu Bundo", taught: [bundo])
+        == .reject(.implausibleSubstitution))
+    #expect(AIFixGuard.check(original: "use a bundu", fixed: "use Ubuntu", taught: [bundo]) == .accept)
+    #expect(AIFixGuard.check(original: "use a bundu", fixed: "use a Ubuntu", taught: [bundo]) == .accept)
+    #expect(AIFixGuard.check(original: "on a bundu machine", fixed: "on an Ubuntu machine", taught: [bundo])
+        == .accept)
+    let pool = Correction(heard: "food requests", meant: "pool requests")
+    #expect(AIFixGuard.check(original: "open food requests", fixed: "open pool requests", taught: [pool]) == .accept)
+    #expect(AIFixGuard.check(original: "open food requests", fixed: "open food pool", taught: [pool])
+        == .reject(.implausibleSubstitution))
+    // A meant phrase without content words must come out as it is.
+    let qc = Correction(heard: "slash QC", meant: "QC")
+    #expect(AIFixGuard.check(original: "then run slash QC now", fixed: "then run QC now", taught: [qc]) == .accept)
+    #expect(AIFixGuard.check(original: "then run slash QC now", fixed: "then run QA now", taught: [qc])
+        == .reject(.implausibleSubstitution))
+    // "the basement" is not "this basement": the pair does not teach "spaceman" there.
+    let spaceman = Correction(heard: "this basement", meant: "the spaceman")
+    #expect(AIFixGuard.check(original: "go to the basement", fixed: "go to the spaceman", taught: [spaceman])
+        == .reject(.implausibleSubstitution))
+    #expect(AIFixGuard.check(original: "ask this basement", fixed: "ask the spaceman", taught: [spaceman])
+        == .accept)
+}
+
+@Test func homophonesSpelledApartAreMishearings() {
+    for (heard, meant) in [("won", "one"), ("you", "ewe"), ("ate", "eight"), ("knight", "night"),
+                           ("write", "right"), ("wright", "right"), ("our", "hour"), ("whole", "hole"),
+                           ("which", "witch"), ("wait", "weight"), ("threw", "through"), ("know", "no"),
+                           ("knew", "new"), ("gnu", "new"), ("flour", "flower"), ("aloud", "allowed"),
+                           ("heir", "air"), ("two", "too"), ("wood", "would"), ("pseudo", "sudo"),
+                           ("eye", "I"), ("bye", "buy"), ("whose", "who's"), ("scene", "seen"), ("rain", "reign"),
+                           ("Najer", "nudger"), ("vert", "verre"), ("sans", "cent")] {
+        #expect(SpokenWords.isClose(heard, meant), "\(heard) -> \(meant)")
+        #expect(SpokenWords.isClose(meant, heard), "\(meant) -> \(heard)")
+    }
+    // The model's repair of one passes the guard.
+    for (original, fixed) in [("Number won is done.", "Number one is done."),
+                              ("I eight lunch early.", "I ate lunch early."),
+                              ("The night rode in.", "The knight rode in."),
+                              ("Please right it down.", "Please write it down."),
+                              ("See you in an our.", "See you in an hour."),
+                              ("I think ewe are right.", "I think you are right.")] {
+        #expect(AIFixGuard.check(original: original, fixed: fixed) == .accept, "\(original) -> \(fixed)")
+    }
+    // While words that only share a rough sound stay apart.
+    for (heard, meant) in [("point", "Bundo"), ("point", "Ubuntu"), ("opened", "Ubuntu"), ("use", "Ubuntu"),
+                           ("windows", "Ubuntu"), ("develop", "Ubuntu"), ("count", "Uguntu"), ("behind", "band")] {
+        #expect(!SpokenWords.isClose(heard, meant), "\(heard) -> \(meant)")
+    }
 }
 
 @Test func mishearingsAreCloseAndUnrelatedWordsAreNot() {
@@ -269,7 +383,7 @@ let taughtList = [
                            ("et", "est"), ("Onobunto", "on Ubuntu"), ("abundo", "ubuntu"), ("GitHub", "github")] {
         #expect(SpokenWords.isClose(heard, meant), "\(heard) -> \(meant)")
     }
-    for (heard, meant) in [("windows", "Ubuntu"), ("develop", "Ubuntu"), ("count", "Uguntu"), ("Najer", "nudger"),
+    for (heard, meant) in [("windows", "Ubuntu"), ("develop", "Ubuntu"), ("count", "Uguntu"), ("food", "pool"),
                            ("laptop", "Ubuntu"), ("fool", "bar")] {
         #expect(!SpokenWords.isClose(heard, meant), "\(heard) -> \(meant)")
     }
@@ -297,8 +411,9 @@ let taughtList = [
     #expect(AIFixGuard.check(original: "I went their. Then we left", fixed: "I went there. Then we left") == .accept)
     #expect(AIFixGuard.check(original: "The build runs Onobunto.", fixed: "The build runs on Ubuntu.",
                              protecting: taughtList, taught: [taughtList[4]]) == .accept)
-    #expect(AIFixGuard.check(original: "go ask the Najer", fixed: "go ask the nudger") == .reject(.implausibleSubstitution))
-    #expect(AIFixGuard.check(original: "go ask the Najer", fixed: "go ask the nudger", taught: [taughtList[13]])
+    #expect(AIFixGuard.check(original: "open food requests", fixed: "open pool requests")
+        == .reject(.implausibleSubstitution))
+    #expect(AIFixGuard.check(original: "open food requests", fixed: "open pool requests", taught: [taughtList[9]])
         == .accept)
     // The taught pair covers only where its heard phrase was said.
     #expect(AIFixGuard.check(original: "go ask the Najer about windows", fixed: "go ask the Najer about nudger",

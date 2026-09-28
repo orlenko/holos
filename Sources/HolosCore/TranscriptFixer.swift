@@ -178,8 +178,8 @@ public enum AIFixGuard {
     /// moved mark (a period, colon, quote, bracket or line break) is a new sentence, label or line, not a fix.
     /// Case changes are free. Words a learned correction produced (each occurrence in `original` of a
     /// correction's meant phrase, compared as lowercased words) must all still be there: the speaker taught them.
-    /// Every replaced word must be a plausible mishearing of what replaces it (`plausible`), `taught` being the
-    /// learned corrections listed for the model.
+    /// Every replaced word must be a plausible mishearing of what replaces it (`plausible`), or part of a pair of
+    /// `taught`, the learned corrections listed for the model, applied where its heard phrase was said (`taughtFix`).
     public static func check(original: String, fixed: String, protecting corrections: [Correction] = [],
                              taught: [Correction] = []) -> Verdict {
         let original = original.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -204,27 +204,52 @@ public enum AIFixGuard {
         let segmented = zip(was.segments, now.segments).reduce(0) { $0 + editDistance($1.0, $1.1) }
         if segmented > edits { return .reject(.changedStructure) }
         if edits > max(2, before.count / 5) { return .reject(.tooManyEdits) }
-        for hunk in hunks(before, after)
-        where !plausible(Array(before[hunk.old]), Array(after[hunk.new]), at: hunk.old, in: before, taught: taught) {
+        let changes = hunks(before, after)
+        for hunk in changes where !plausible(Array(before[hunk.old]), Array(after[hunk.new]))
+            && !taughtFix(hunk, of: changes, before: before, after: after, taught: taught) {
             return .reject(.implausibleSubstitution)
         }
         return .accept
     }
 
-    /// Whether `new` could replace `old`, the words at `range` of `before`, as a fix of a mishearing: `old` dropped;
-    /// function words added (`SpokenWords.isContent` false); `old` close to `new` (`SpokenWords.isClose`) as a
-    /// whole, word by word, or content word by content word; or a correction in `taught` whose heard phrase matches
-    /// around `range` (`AIFixReference.matches`) and whose meant phrase holds `new`. Anything else is a word the
-    /// model swapped in: a spelling from the taught list ("windows" became "Ubuntu") or one of its own.
-    static func plausible(_ old: [String], _ new: [String], at range: Range<Int>, in before: [String],
+    typealias Hunk = (old: Range<Int>, new: Range<Int>)
+
+    /// Whether `hunk` is part of a learned correction in `taught`, applied where its heard phrase was said
+    /// (`AIFixReference.matches`): the hunk lies within the words that said it, no hunk straddles them, and the
+    /// hunks turn them into the meant phrase, give or take function words ("a bundu" may become "an Ubuntu", not
+    /// "Ubuntu bundu"). Nowhere else does the pair vouch for its spelling.
+    static func taughtFix(_ hunk: Hunk, of hunks: [Hunk], before: [String], after: [String],
                           taught: [Correction]) -> Bool {
-        if new.isEmpty { return true }
-        for correction in taught where occurrences(of: new, in: words(in: correction.meant)) > 0 {
-            let windows = AIFixReference.matches(of: correction.heard, in: before)
-            if windows.contains(where: { $0.lowerBound <= range.lowerBound && range.upperBound <= $0.upperBound }) {
-                return true
+        func within(_ hunk: Hunk, _ span: Range<Int>) -> Bool {
+            span.lowerBound <= hunk.old.lowerBound && hunk.old.upperBound <= span.upperBound
+                // An addition at either edge is next to the phrase, not in it.
+                && !(hunk.old.isEmpty && [span.lowerBound, span.upperBound].contains(hunk.old.lowerBound))
+        }
+        for correction in taught {
+            let meant = words(in: correction.meant)
+            let key = meant.filter(SpokenWords.isContent)
+            for span in AIFixReference.matches(of: correction.heard, in: before) where within(hunk, span) {
+                let inside = hunks.filter { within($0, span) }
+                guard !hunks.contains(where: { $0.old.overlaps(span) && !within($0, span) }) else { continue }
+                var fixed: [String] = []
+                var cursor = span.lowerBound
+                for part in inside {
+                    fixed += before[cursor..<part.old.lowerBound] + after[part.new]
+                    cursor = part.old.upperBound
+                }
+                fixed += before[cursor..<span.upperBound]
+                if key.isEmpty ? fixed == meant : fixed.filter(SpokenWords.isContent) == key { return true }
             }
         }
+        return false
+    }
+
+    /// Whether `new` could replace `old` as a fix of a mishearing: `old` dropped; function words added
+    /// (`SpokenWords.isContent` false); or `old` close to `new` (`SpokenWords.isClose`) as a whole, word by word, or
+    /// content word by content word. Anything else is a word the model swapped in: a spelling from the taught list
+    /// ("windows" became "Ubuntu") or one of its own, which only `taughtFix` may allow.
+    static func plausible(_ old: [String], _ new: [String]) -> Bool {
+        if new.isEmpty { return true }
         if old.isEmpty { return !new.contains(where: SpokenWords.isContent) }
         if SpokenWords.isClose(old.joined(), new.joined()) { return true }
         if old.count == new.count, zip(old, new).allSatisfy(SpokenWords.isClose) { return true }
@@ -432,10 +457,10 @@ public enum AIFixOriginal {
 
 /// Picks which learned corrections to list for the model, within a token budget.
 public enum AIFixReference {
-    /// Corrections whose heard phrase is in `text` (`matches`), most recently added first. A pair that does not fit
-    /// the remaining budget is skipped. Any other pair is left out: listed, the model put its spelling into text it
-    /// had nothing to do with ("a new pear of shoes" became "a new Codex of shoes"; with "a Bundo -> ubuntu" listed
-    /// because of the "a", "on a Windows machine" became "on a Ubuntu machine").
+    /// Corrections whose heard phrase was said in `text` (`matches`), most recently added first. A pair that does
+    /// not fit the remaining budget is skipped. Any other pair is left out: listed, the model put its spelling into
+    /// text it had nothing to do with ("a new pear of shoes" became "a new Codex of shoes"; with "a Bundo -> ubuntu"
+    /// listed because of the "a", "on a Windows machine" became "on a Ubuntu machine").
     public static func select(from entries: [Correction], for text: String, budget: Int) -> [Correction] {
         let words = AIFixGuard.words(in: text)
         let relevant = entries.reversed().filter { !matches(of: $0.heard, in: words).isEmpty }
@@ -450,35 +475,22 @@ public enum AIFixReference {
         return chosen
     }
 
-    /// Where `heard` appears in `words` (from `AIFixGuard.words`): the whole phrase as is, or its content words
-    /// (`SpokenWords.isContent`) each close to (`SpokenWords.isClose`) the content word in the same place of a run
-    /// of the text's content words, the recognizer having misheard it again a little differently ("a bundu" for
-    /// "a Bundo"). Function words alone never match: a phrase made only of them must appear exactly. A match's
-    /// range covers the phrase's function words at either end, where the text has room for them.
+    /// Where `heard` was said in `words` (from `AIFixGuard.words`), as the ranges of words that said it: every word
+    /// of the phrase, in order and next to each other, its content words (`SpokenWords.isContent`) as they are or
+    /// misheard again a little differently (`SpokenWords.isVariant`: "a bundu" for "a Bundo") and its other words
+    /// exactly. Part of a phrase is not the phrase: "the basement" is not "this basement", "slash help" not "slash
+    /// QC", "a quarter" not "quarter much", and "use bundu" not "a Bundo".
     public static func matches(of heard: String, in words: [String]) -> [Range<Int>] {
         let phrase = AIFixGuard.words(in: heard)
-        guard !phrase.isEmpty else { return [] }
-        var found: [Range<Int>] = []
-        if phrase.count <= words.count {
-            for start in 0...(words.count - phrase.count)
-            where words[start..<(start + phrase.count)].elementsEqual(phrase) {
-                found.append(start..<(start + phrase.count))
+        guard !phrase.isEmpty, phrase.count <= words.count else { return [] }
+        return (0...(words.count - phrase.count)).compactMap { start in
+            let said = phrase.indices.allSatisfy { index in
+                let word = words[start + index]
+                return word == phrase[index]
+                    || (SpokenWords.isContent(phrase[index]) && SpokenWords.isVariant(word, of: phrase[index]))
             }
+            return said ? start..<(start + phrase.count) : nil
         }
-        let key = phrase.indices.filter { SpokenWords.isContent(phrase[$0]) }
-        let content = words.indices.filter { SpokenWords.isContent(words[$0]) }
-        guard let first = key.first, let last = key.last, key.count <= content.count else { return found }
-        let span = last - first + 1
-        for start in 0...(content.count - key.count) {
-            let window = content[start..<(start + key.count)]
-            // The heard phrase's content words, a stop word or two apart at most.
-            guard window.last! - window.first! + 1 <= span + 2,
-                  zip(window, key).allSatisfy({ SpokenWords.isClose(words[$0], phrase[$1]) }) else { continue }
-            let lower = max(0, window.first! - first)
-            let upper = min(words.count, window.last! + 1 + (phrase.count - 1 - last))
-            if !found.contains(where: { $0.overlaps(lower..<upper) }) { found.append(lower..<upper) }
-        }
-        return found
     }
 
     /// A deliberate overestimate (about 3 characters per token, plus the arrow and line break), so the budget holds

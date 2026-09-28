@@ -159,11 +159,12 @@ dictation language.
 
 **Fix misheard words with Apple Intelligence** is offered for English and French
 dictation; other languages show it as unavailable until they have been tried.
-The model sees a learned pair only when its heard phrase (or something that sounds
-like it) is in the chunk, and a fix that swaps in a word that does not sound like the
-one it replaces is refused. Check with pairs such as "Onobunto" → "on Ubuntu" and
-"a Bundo" → "ubuntu": "The build runs Onobunto" becomes "The build runs on Ubuntu",
-and "Let's develop it on a Windows machine first" stays as said.
+The model sees a learned pair only when its whole heard phrase (or the same words
+misheard a little differently) is in the chunk, and a fix that swaps in a word that
+does not sound like the one it replaces is refused, unless it turns that heard phrase
+into the meant one. Check with pairs such as "Onobunto" → "on Ubuntu" and "a Bundo" →
+"ubuntu": "The build runs Onobunto" becomes "The build runs on Ubuntu", while "Let's
+develop it on a Windows machine first" and "That's the point" stay as said.
 
 Corrections are applied, whole-word and case-insensitively, to the preview and to
 every streamed and final chunk. While streaming, trailing words that could start a

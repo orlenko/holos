@@ -21,6 +21,8 @@ struct AIFixModelTests {
         "Let's develop it on a Windows machine first.",
         "I tested this on Windows and then pushed it to the develop branch.",
         "We should develop a plan for the windows laptop.",
+        "That's the point.",
+        "Use Bundo for the build.",
     ])
     func unrelatedWordsStay(_ text: String) async {
         #expect(SystemLanguageModel.default.availability == .available)

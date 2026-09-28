@@ -200,16 +200,22 @@ suggestions, not permanent rules. Edits may reflect changed intent, not recognit
 mistakes. Do not learn from ordinary typing elsewhere.
 
 The opt-in misheard-word fix (`TranscriptFixer`) shows Apple's on-device model only
-the learned pairs whose heard phrase is in the chunk: said as is, or with its content
-words (not English or French function words, and at least three letters) each close
-to the text's words in the same place (at most one letter apart, 70 % of letters the
-same, or the same rough sound key). Sharing a word like "a" or "on", or a word of the
-meant side, does not count: listed that way, "a Bundo -> ubuntu" and "Onobunto -> on
-Ubuntu" made the model turn "on a Windows machine" into "on a Ubuntu machine". The
-guard then refuses any reply that replaces a word with one it could not have been
-misheard for (the same closeness test, or a listed pair whose heard phrase was said at
-that spot) or adds a word other than a function word, so no taught or invented
-spelling lands on unrelated words. The model runs with the
+the learned pairs whose whole heard phrase is in the chunk, word for word and in
+order: its function words exactly, and each content word (not an English or French
+function word, at least three letters) as is or misheard again a little differently
+(the same first letter or sound, and at most one letter apart, 70 % of letters the
+same, or the same pronunciation key with half the letters the same: "a bundu" says
+"a Bundo", "point" does not). Sharing a word like "a" or "on", part of the phrase, or a
+word of the meant side does not count: listed that way, "a Bundo -> ubuntu" and
+"Onobunto -> on Ubuntu" made the model turn "on a Windows machine" into "on a Ubuntu
+machine". The guard then refuses any reply that replaces a word with one it could not
+have been misheard for, or adds a word other than a function word. A replacement
+passes when the words are close (the letters above; homophones such as "one" and
+"won"; the same pronunciation key, with silent letters dropped, such as "write" and
+"right"; or the same rough consonants with half the letters the same, such as "cold"
+and "called"), or when a listed pair's heard phrase was said there and the words that
+said it become its meant phrase, give or take function words. So no taught or invented
+spelling lands on unrelated words, or next to the heard phrase. The model runs with the
 `permissiveContentTransformations` guardrails: with the defaults about half the fixes
 in a day's log failed in about 200 ms, ordinary sentences refused as "May contain
 unsafe content". A refusal that still happens leaves the chunk as recognized. The
