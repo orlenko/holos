@@ -111,19 +111,33 @@ public enum SpokenWords {
         return counts
     }
 
-    /// The negation, modal and word of quantity `word` says (see `englishNegations`): negations all are "not", "I'll"
-    /// is "will" and "I'd" "would", French modals are their verb. A negative modal is both: "couldn't" is "not" and
-    /// "could", so it is not "wouldn't".
+    /// English auxiliaries, each its own kind: their tense and person are what they say ("I do agree" is not "I did
+    /// agree", "were" not "are").
+    static let englishAuxiliaries: Set<String> = ["do", "does", "did", "is", "am", "are", "was", "were", "be", "been",
+                                                  "has", "have", "had"]
+
+    /// Abbreviated units, each its own kind: "5 km" is not "5 cm", "10 ms" not "10 mm".
+    static let units: Set<String> = [
+        "mm", "cm", "km", "kg", "mg", "ml", "lb", "lbs", "oz", "ft", "mi", "mph", "kph", "kmh", "kb", "mb", "gb", "tb",
+        "kbps", "mbps", "gbps", "ms", "ns", "sec", "secs", "min", "mins", "hr", "hrs", "hz", "khz", "mhz", "ghz", "kw",
+        "kwh", "mw", "mah", "px", "pm",
+    ]
+
+    /// The negation, modal, auxiliary and word of quantity `word` says (see `englishNegations`): negations all are
+    /// "not", "I'll" is "will" and "I'd" "would", French modals are their verb. A negative contraction is both:
+    /// "couldn't" is "not" and "could", so it is not "wouldn't", and "don't" is "not" and "do", so not "didn't".
     static func meaningKinds(of word: String, language: String?) -> [String] {
         let code = language.map(DictationLanguage.languageCode)
         let english = code != "fr", french = code != "en"
-        if english, let modal = negativeModal(word) { return ["not", modal] }
-        if (english && (englishNegations.contains(word) || word.hasSuffix("n't")))
-            || (french && frenchNegations.contains(word)) { return ["not"] }
+        if english, let auxiliary = negativeAuxiliary(word) { return ["not", auxiliary] }
+        if (english && englishNegations.contains(word)) || (french && frenchNegations.contains(word)) {
+            return ["not"]
+        }
         if english && word.hasSuffix("'ll") { return ["will"] }
         if english && word.hasSuffix("'d") { return ["would"] }
-        if (english && (englishQuantities.contains(word) || englishModals.contains(word)))
-            || (french && frenchQuantities.contains(word)) { return [word] }
+        if (english && (englishQuantities.contains(word) || englishModals.contains(word)
+                        || englishAuxiliaries.contains(word)))
+            || (french && frenchQuantities.contains(word)) || units.contains(word) { return [word] }
         if french, let verb = frenchModals[word] { return [verb] }
         return []
     }
@@ -326,16 +340,17 @@ public enum SpokenWords {
         return !meaning.strict.isEmpty || meaning.number != nil
     }
 
-    /// The modal of a negative contraction, with or without its apostrophe: "can" for "can't", "cant" and "cannot",
-    /// "will" for "won't", "could" for "couldn't".
-    static func negativeModal(_ word: String) -> String? {
+    /// The modal or auxiliary of a negative contraction, with or without its apostrophe: "can" for "can't", "cant"
+    /// and "cannot", "will" for "won't", "could" for "couldn't", "do" for "don't", "did" for "didn't", "was" for
+    /// "wasn't". Nil for a word that is not one.
+    static func negativeAuxiliary(_ word: String) -> String? {
         if word == "cannot" { return "can" }
         let stem: Substring =
             if word.hasSuffix("n't") { word.dropLast(3) }
             else if word.hasSuffix("nt"), englishNegations.contains(word) { word.dropLast(2) }
             else { "" }
-        let modal = ["ca": "can", "wo": "will", "sha": "shall"][String(stem)] ?? String(stem)
-        return englishModals.contains(modal) ? modal : nil
+        guard !stem.isEmpty else { return nil }
+        return ["ca": "can", "wo": "will", "sha": "shall"][String(stem)] ?? String(stem)
     }
 
     /// Words a fix may add or drop, by language: articles and the prepositions and conjunctions that tie words
@@ -357,7 +372,7 @@ public enum SpokenWords {
     /// Whether `heard` could be a mishearing of `meant` (or the reverse), for the guard on a model's reply. Compared
     /// as `letters`: the same letters; homophones of `language` the rules miss (`homophones`: "one" and "won", "you"
     /// and "ewe"); the same `sound` ("write" and "right", "ate" and "eight", "knight" and "night", "their" and
-    /// "there"); a plural ("words" and "word"); in French dictation the same `frenchSound` ("peut" and "peux"); or
+    /// "there"); in French dictation the same `frenchSound` ("peut" and "peux"); or
     /// the same `roughSound` with at least half the letters the same ("cold" and "called", "a bundo" and "ubuntu").
     /// Letters alone never are: "increase" and "decrease" sound apart; nor a word and its opposite by a prefix
     /// (`differInPolarity`: "intended" and "unintended"). "windows" and "Ubuntu" are none of these, nor "opened"
@@ -365,10 +380,10 @@ public enum SpokenWords {
     public static func isClose(_ heard: String, _ meant: String, language: String? = nil) -> Bool {
         let a = letters(heard), b = letters(meant)
         if a == b || areHomophones(spelling(heard), spelling(meant), language: language) { return true }
-        guard !a.isEmpty, !b.isEmpty, !differInPolarity(a, b) else { return false }
+        guard !a.isEmpty, !b.isEmpty, !differInPolarity(a, b), !differInVowels(a, b) else { return false }
         let soundA = sound(a), soundB = sound(b)
-        if soundA == soundB || isPlural(a, of: b) || isPlural(b, of: a) { return true }
-        if language.map(DictationLanguage.languageCode) ?? "fr" == "fr", frenchSound(heard) == frenchSound(meant) {
+        if soundA == soundB { return true }
+        if language.map(DictationLanguage.languageCode) == "fr", frenchSound(heard) == frenchSound(meant) {
             return true
         }
         // Spelling alone is no evidence: "increase" and "decrease", "include" and "exclude" are a few letters apart
@@ -395,26 +410,62 @@ public enum SpokenWords {
     /// "uninstall", "disagree", "nonsense", "misread", "inconnu", "défaire", "mécontent".
     static let polarityPrefixes = ["un", "in", "im", "il", "ir", "dis", "non", "mis", "anti", "de", "des", "me", "mes"]
 
-    /// Whether one of `a` and `b` (as `letters`) is the other with a prefix of `polarityPrefixes`: said close, but
-    /// saying the opposite ("intended" and "unintended").
+    /// Prefixes a word of `polarityPrefixes` may be set against: "enable" and "unable", "export" and "import".
+    static let otherPrefixes = ["en", "em", "ex", "re"]
+
+    /// Whether `a` and `b` (as `letters`) are one stem of three letters or more with different prefixes, one of them
+    /// in `polarityPrefixes` (the other may be none): said close, but saying the opposite ("intended" and
+    /// "unintended", "enable" and "unable", "increase" and "decrease").
     static func differInPolarity(_ a: String, _ b: String) -> Bool {
-        let (short, long) = a.count < b.count ? (a, b) : (b, a)
-        guard short.count >= 3, long.hasSuffix(short) else { return false }
-        return polarityPrefixes.contains(String(long.dropLast(short.count)))
+        let prefixes = [""] + polarityPrefixes + otherPrefixes
+        for first in prefixes where a.hasPrefix(first) {
+            for second in prefixes where second != first && b.hasPrefix(second) {
+                guard polarityPrefixes.contains(first) || polarityPrefixes.contains(second) else { continue }
+                let stem = a.dropFirst(first.count)
+                if stem.count >= 3, stem == b.dropFirst(second.count) { return true }
+            }
+        }
+        return false
+    }
+
+    /// Whether `a` and `b` (as `letters`) differ only in the vowel sound of their spelling, which `sound` does not
+    /// keep: single vowel letters swapped where no other vowel is next to them ("left" and "lift", "hit" and "hat",
+    /// "button" and "bitten"), or a silent "e" that makes the vowel before it long ("hat" and "hate", "not" and
+    /// "note"), in words of up to six letters. Spellings of one vowel sound ("pear" and "pair", "made" and "maid") are
+    /// not caught.
+    static func differInVowels(_ a: String, _ b: String) -> Bool {
+        // A silent "e" after a consonant, with a vowel before it: "hate" is "hat" with a long vowel.
+        func withoutSilentE(_ word: [Character]) -> [Character]? {
+            guard word.count >= 3, word.last == "e", !isVowel(word[word.count - 2]),
+                  word.dropLast(2).contains(where: isVowel) else { return nil }
+            return Array(word.dropLast())
+        }
+        let longA = withoutSilentE(Array(a)), longB = withoutSilentE(Array(b))
+        let x = longA ?? Array(a), y = longB ?? Array(b)
+        // Longer words are names and jargon more often, whose vowels the recognizer gets wrong ("Onobunto").
+        guard x.count == y.count, x.count <= 6 else { return false }
+        if x == y { return (longA == nil) != (longB == nil) }
+        for index in x.indices where x[index] != y[index] {
+            guard isVowel(x[index]), isVowel(y[index]) else { return false }
+            for near in [index - 1, index + 1] where x.indices.contains(near) {
+                if isVowel(x[near]) || isVowel(y[near]) || x[near] == "y" || y[near] == "y" { return false }
+            }
+        }
+        return true
     }
 
     /// French endings said alike, for `frenchSound`, longest first: the "é" of "mangé", "manger", "mangez", "mangées"
     /// and of "et", "est", "ai", "ais", "ait", "aient".
     static let frenchEndings = ["aient", "ées", "ais", "ait", "est", "ée", "és", "er", "ez", "ai", "et", "é"]
 
-    /// A French pronunciation key of `word`: an ending of `frenchEndings` as one sound, then one silent final "s",
-    /// "x", "t", "d" or "z" dropped ("peut" and "peux" are "peu"), then the letters without diacritics. Only for
-    /// French dictation or one whose language is not given: English endings are said.
+    /// A French pronunciation key of `word`: an ending of `frenchEndings` as one sound, then one silent final "x",
+    /// "t", "d" or "z" dropped ("peut" and "peux" are "peu"), then the letters without diacritics. A final "s" stays:
+    /// "fichier" is not "fichiers", nor "mange" "manges". Only for French dictation.
     static func frenchSound(_ word: String) -> String {
         var s = word.lowercased().filter { $0.isLetter }
         if let ending = frenchEndings.first(where: { s.count > $0.count && s.hasSuffix($0) }) {
             s = String(s.dropLast(ending.count)) + "É"
-        } else if s.count > 2, let last = s.last, "sxtdz".contains(last) {
+        } else if s.count > 2, let last = s.last, "xtdz".contains(last) {
             s.removeLast()
         }
         return letters(s.replacingOccurrences(of: "É", with: "0"))
@@ -483,7 +534,7 @@ public enum SpokenWords {
         ["one", "won"], ["two", "to", "too"], ["you", "ewe", "yew", "u"], ["eight", "ate"], ["our", "hour"],
         ["air", "heir"], ["wood", "would"], ["i'll", "isle", "aisle"], ["their", "there", "they're"],
         ["your", "you're", "yore"], ["its", "it's"], ["a", "i"], ["i", "eye", "aye"], ["four", "for", "fore"],
-        ["we", "wee"], ["him", "hymn"],
+        ["we", "wee"], ["him", "hymn"], ["then", "than"], ["whose", "who's"],
     ]
 
     static let frenchHomophones: [Set<String>] = [

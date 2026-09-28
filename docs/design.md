@@ -394,10 +394,11 @@ compared once with each distinct heard word, and the choice and the guard run in
 the fix's time limit. The guard then refuses any reply that replaces a word with one it could not
 have been misheard for, or adds a word other than a function word. A replacement
 passes when the words are close (the same letters; homophones such as "one" and "won";
-the same pronunciation key, with silent letters dropped, such as "write" and "right"; a
-plural; in French the same silent endings, such as "peut" and "peux"; or the same rough
+the same pronunciation key, with silent letters dropped, such as "write" and "right";
+in French the same silent endings, such as "peut" and "peux"; or the same rough
 consonants with half the letters the same, such as "cold" and "called"; spelling alone
-never, so "increase" is not "decrease"; words replaced together are judged
+never, so "increase" is not "decrease" nor "file" "files", and never a word and its opposite
+by a prefix, such as "intended" and "unintended"; words replaced together are judged
 one by one, and a word split or joined by its shorter side), or when the reply is the chunk
 with listed pairs applied where their heard phrases were said, plus such close
 changes: "their food requests" may become "there pool requests". So no taught or
@@ -408,9 +409,11 @@ word, be split or joined, or come and go only as a glue word (articles, preposit
 conjunctions); hesitations (the fillers filler removal takes out, so not the "mm" of
 "10 mm") and stutters may go ("You should go" is not "You go"); a number said in words
 may be written in digits with the same value ("twenty one" and "21"). A
-negation, modal or word of quantity may only be spelled another way as the same one
+negation, modal, auxiliary, abbreviated unit or word of quantity, frequency or degree may
+only be spelled another way as the same one
 ("don't" and "dont"; "I do agree" is not "I do not agree", "should" not "could",
-"couldn't" not "wouldn't", and a "not" may not move). A pronoun or number keeps its
+"couldn't" not "wouldn't", "don't" not "didn't", "few" not "new", "km" not "cm", and a "not"
+may not move). A pronoun or number keeps its
 person or value, or becomes a listed homophone ("their" and "there", "won" and "one"),
 never a close spelling alone: "He" is not "She", "Your" not "Our", "Set width 10 height
 20" not "Set width 20 height 10", "Ship 10 units" not "Ship 100 units". A name (a word

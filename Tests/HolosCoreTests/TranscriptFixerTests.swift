@@ -90,15 +90,15 @@ import Testing
 }
 
 @Test func editLimitGrowsWithLength() {
-    // Letters only: a number keeps its value, so "word4" could not become "ward4".
+    // Letters only: a number keeps its value, so "word4" could not become "wort4".
     let alphabet = Array("abcdefghijklmnopqrstuvwxyz")
     let suffixes: [String] = (0..<30).map { index in String([alphabet[index / 26], alphabet[index % 26]]) }
     let words = suffixes.map { "word\($0)" }
     var changed = words
     // Each replacement is one letter off, so it could be a mishearing.
-    for index in [3, 9, 15, 21, 27] { changed[index] = "ward\(suffixes[index])" }  // 5 edits; 20 % of 30 is 6
+    for index in [3, 9, 15, 21, 27] { changed[index] = "wort\(suffixes[index])" }  // 5 edits; 20 % of 30 is 6
     #expect(AIFixGuard.check(original: words.joined(separator: " "), fixed: changed.joined(separator: " ")) == .accept)
-    for index in [1, 5] { changed[index] = "ward\(suffixes[index])" }  // 7 edits
+    for index in [1, 5] { changed[index] = "wort\(suffixes[index])" }  // 7 edits
     #expect(AIFixGuard.check(original: words.joined(separator: " "), fixed: changed.joined(separator: " "))
         == .reject(.tooManyEdits))
     #expect(AIFixGuard.editDistance(["a", "b", "c"], ["a", "x", "c", "d"]) == 2)
@@ -461,8 +461,9 @@ let unrelatedWords = [
         #expect(!AIFixGuard.plausibleReply(original: original, before: AIFixGuard.words(in: original),
                                            after: AIFixGuard.words(in: fixed), taught: []))
     }
-    for (original, fixed) in [("I told him twice", "I told twice"), ("It done", "It was done")] {
-        #expect(AIFixGuard.check(original: original, fixed: fixed) == .reject(.implausibleSubstitution),
+    for (original, fixed, why) in [("I told him twice", "I told twice", AIFixGuard.Rejection.implausibleSubstitution),
+                                   ("It done", "It was done", .changedMeaning)] {
+        #expect(AIFixGuard.check(original: original, fixed: fixed) == .reject(why),
                 "\(original) -> \(fixed)")
     }
     // Nor swapped for a close word.
@@ -470,6 +471,8 @@ let unrelatedWords = [
     #expect(AIFixGuard.check(original: "I'll go", fixed: "I'd go") == .reject(.changedMeaning))
     // A French modal keeps its verb when a homophone fixes its ending.
     #expect(AIFixGuard.check(original: "je peut venir", fixed: "je peux venir", language: "fr-FR") == .accept)
+    // A plural "s" is not a silent ending: one file is not several.
+    #expect(AIFixGuard.check(original: "ouvre le fichier", fixed: "ouvre le fichiers", language: "fr-FR") != .accept)
     // Articles, prepositions and conjunctions may come and go.
     #expect(AIFixGuard.check(original: "we went to store", fixed: "we went to the store") == .accept)
     #expect(AIFixGuard.check(original: "je parle à ami", fixed: "je parle à un ami", language: "fr-FR") == .accept)
@@ -525,6 +528,15 @@ let unrelatedWords = [
     // Words spelled close but said apart, and a glue word replaced by another by dropping one and adding the other.
     ("We should increase the limit", "We should decrease the limit"), ("Please include the tests", "Please exclude the tests"),
     ("Send it to Alice", "Send it from Alice"), ("Put it in the box", "Put it at the box"),
+    // One or many; the tense and person of an auxiliary, in a contraction or not.
+    ("Delete the file now", "Delete the files now"), ("Delete the files now", "Delete the file now"),
+    ("I don't agree", "I didn't agree"), ("It isn't ready", "It wasn't ready"), ("I do agree", "I did agree"),
+    ("It is done", "It was done"), ("They were going home", "They we're going home"),
+    ("He hasn't left", "He hadn't left"),
+    // Another vowel is another word; so is another unit.
+    ("Turn left here", "Turn lift here"), ("I hate it", "I hit it"), ("Take a note", "Take a not"),
+    ("They came late", "They come late"), ("Run 5 km today", "Run 5 cm today"), ("Wait 10 ms", "Wait 10 mm"),
+    ("Please enable it", "Please unable it"),
     // A prefix that says the opposite.
     ("This is intended today", "This is unintended today"), ("Please install it", "Please uninstall it"),
     ("We agree", "We disagree"), ("The car is insured", "The car is uninsured"),
@@ -569,10 +581,10 @@ func aFixThatChangesMeaningIsRefused(original: String, fixed: String) {
     ("Set width ten height 20.", "Set width 10 height 20."), ("we went to store", "we went to the store"),
     ("I I think so", "I think so"), ("use windows now", "use Windows now"), ("meet me there", "Meet me there."),
     ("Merci pour ton aide je te revaudrai sa", "Merci pour ton aide, je te revaudrai ça."),
-    ("je peut venir", "je peux venir"), ("Je pense que ces une bonne idée", "Je pense que c'est une bonne idée"),
+    ("Je pense que ces une bonne idée", "Je pense que c'est une bonne idée"),
     ("go to um the store", "go to the store"), ("Set it to twenty one", "Set it to 21"),
     ("Pick one hundred and five", "Pick 105"), ("Room 21 please", "Room twenty one please"),
-    ("Jai fini", "J'ai fini"), ("Quil arrive demain", "Qu'il arrive demain"), ("were going home", "we're going home"),
+    ("Jai fini", "J'ai fini"), ("Quil arrive demain", "Qu'il arrive demain"),
 ])
 func aMishearingIsFixed(original: String, fixed: String) {
     #expect(AIFixGuard.check(original: original, fixed: fixed, protecting: taughtList, taught: taughtList) == .accept,
@@ -950,7 +962,7 @@ private func fixer(corrections: CorrectionList = CorrectionList(), timeout: Dura
                              protecting: corrections) == .reject(.changedCorrection))
     #expect(AIFixGuard.check(original: "a pull request and a bull", fixed: "a pull request and a pull",
                              protecting: corrections) == .accept)
-    #expect(AIFixGuard.check(original: "no such words here", fixed: "no such word here",
+    #expect(AIFixGuard.check(original: "no such wordz here", fixed: "no such words here",
                              protecting: corrections) == .accept)
     #expect(AIFixGuard.occurrences(of: ["a", "a"], in: ["a", "a", "a"]) == 2)
     #expect(AIFixGuard.occurrences(of: ["a", "b"], in: ["a"]) == 0)
