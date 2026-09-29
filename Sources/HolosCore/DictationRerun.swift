@@ -77,7 +77,9 @@ public struct DictationTextPipeline: Sendable {
                 fix = .init(text: coded, outcome: .timedOut)
             } else {
                 fixer.timeout = remaining
-                let bareEnd = code.map { $0.endsWithToken && coder?.backticks == false } ?? false
+                // A terminal's last word that is a token, this step's or one already there (a learned
+                // correction's `/qc`), gets no closing punctuation.
+                let bareEnd = coder?.backticks == false && (code?.endsWithToken == true || endsWithToken(coded))
                 fix = await fixer.fix(coded, isFinal: isFinal && !bareEnd)
             }
         }
@@ -86,6 +88,14 @@ public struct DictationTextPipeline: Sendable {
         }
         return ChunkResult(text: fix?.text ?? coded, coded: coded, codeSpans: code?.spans ?? 0,
                            codeOutcome: code?.outcome, fixOutcome: fix?.outcome)
+    }
+
+    /// Whether the last word of `text`, without the marks that close a sentence, has a symbol of a code token
+    /// (`SpokenCode.symbols`: `/qc`, `file.txt`).
+    static func endsWithToken(_ text: String) -> Bool {
+        guard let last = text.split(whereSeparator: \.isWhitespace).last else { return false }
+        let word = last.reversed().drop { ".!?…,;:".contains($0) }.reversed()
+        return word.contains { SpokenCode.symbols.contains($0) }
     }
 
     /// Least time left for the fix after spoken code; a fix took 0.35–0.55 s once the model was loaded.

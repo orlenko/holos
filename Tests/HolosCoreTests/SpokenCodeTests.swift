@@ -92,6 +92,12 @@ func aReplyTokenThatWasNotSaidIsRefused(_ token: String, _ spoken: String) {
     #expect(!SpokenCode.accepts(token, for: spoken[...]), "\(token) ← \(spoken)")
 }
 
+@Test func frenchFunctionWordsAloneAreNotCode() {
+    #expect(!SpokenCode.accepts("/à", for: "barre oblique à", language: "fr-CA"))
+    #expect(!SpokenCode.accepts("/été", for: "slash été", language: "fr-CA"))
+    #expect(SpokenCode.accepts("/aide", for: "barre oblique aide", language: "fr-CA"))
+}
+
 // MARK: - The model's reply
 
 private func formatter(backticks: Bool = true, corrections: CorrectionList = CorrectionList(),
@@ -294,6 +300,15 @@ private actor Asked {
     result = await DictationTextPipeline.process("cat slash tmp slash file", isFinal: true, coder: coder,
                                                  fixer: closing)
     #expect(result.text == "cat /tmp/file")
+    // So does a token already there, a learned correction's.
+    result = await DictationTextPipeline.process("run /qc", isFinal: true, coder: coder, fixer: closing)
+    #expect(result.text == "run /qc")
+    // In backticks, the sentence may close.
+    let wrapping = SpokenCodeFormatter(backticks: true, language: "en-US", timeout: .seconds(30),
+                                       model: codeModel(["slash tmp slash file": "/tmp/file"]))
+    result = await DictationTextPipeline.process("cat slash tmp slash file", isFinal: true, coder: wrapping,
+                                                 fixer: closing)
+    #expect(result.text == "cat `/tmp/file`.")
     // What stands next to a token stays: no comma, no join.
     #expect(!DictationTextPipeline.keeps(["/tmp/a", "/tmp/b"], from: "cp /tmp/a /tmp/b", in: "cp /tmp/a, /tmp/b"))
     #expect(!DictationTextPipeline.keeps(["/tmp/a", "/tmp/b"], from: "cp /tmp/a /tmp/b", in: "cp /tmp/a/tmp/b"))

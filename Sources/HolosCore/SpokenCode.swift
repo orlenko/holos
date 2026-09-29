@@ -247,7 +247,7 @@ public enum SpokenCode {
             self.language = language
             self.requireStrong = requireStrong
             words = SpokenCode.symbolWords(for: language)
-            functionWords = SpokenWords.stopWords(for: language).union(SpokenCode.shortFunctionWords)
+            functionWords = SpokenCode.functionWords(for: language)
         }
 
         /// Whether elements from `element` on are said by pieces from `piece` on, to the end; `strong`: a strong
@@ -315,7 +315,7 @@ public enum SpokenCode {
             let word = Array(current.raw.lowercased())
             // The word as it is. A function word is a whole part or none: "slash the price" is not `/theprice`
             // (a spelled capital aside: "S H A").
-            let function = functionWords.contains(String(word))
+            let function = functionWords.contains(current.folded)
                 && !(current.raw.count == 1 && current.raw.first!.isUppercase)
             if word.count > 1 ? joined < maximumJoinedWords : true,
                !function || (offset == 0 && word.count == part.count),
@@ -353,8 +353,8 @@ public enum SpokenCode {
         guard let elements = elements(of: token), elements.contains(where: { if case .symbol = $0 { true } else { false } }),
               token.contains(where: \.isLetter) else { return false }
         let parts = elements.compactMap { element -> String? in if case .part(let part) = element { part } else { nil } }
-        let stop = SpokenWords.stopWords(for: language).union(shortFunctionWords)
-        guard !parts.allSatisfy({ stop.contains($0) }) else { return false }
+        let stop = functionWords(for: language)
+        guard !parts.allSatisfy({ stop.contains(fold($0)) }) else { return false }
         for (index, element) in elements.enumerated() where element == .symbol("@") {
             guard index > 0, index + 1 < elements.count, case .part = elements[index - 1],
                   case .part = elements[index + 1] else { return false }
@@ -366,7 +366,22 @@ public enum SpokenCode {
     static let shortFunctionWords: Set<String> = [
         "a", "an", "i", "in", "on", "to", "of", "is", "it", "at", "as", "or", "if", "so", "be", "by", "he", "me",
         "we", "my", "up", "do", "us", "le", "la", "de", "du", "un", "et", "en", "au", "il", "je", "tu", "ce", "se",
+        "à", "y", "ou", "ne", "ni", "sa", "si",
     ]
+
+    /// The function words of `language` (`SpokenWords.stopWords` and `shortFunctionWords`), folded (`fold`), to
+    /// compare with a folded word: the French "à" is "a".
+    static func functionWords(for language: String?) -> Set<String> {
+        switch language.map(DictationLanguage.languageCode) {
+        case "en": englishFunctionWords
+        case "fr": frenchFunctionWords
+        default: allFunctionWords
+        }
+    }
+
+    static let englishFunctionWords = Set(SpokenWords.stopWords(for: "en").union(shortFunctionWords).map { fold($0) })
+    static let frenchFunctionWords = Set(SpokenWords.stopWords(for: "fr").union(shortFunctionWords).map { fold($0) })
+    static let allFunctionWords = englishFunctionWords.union(frenchFunctionWords)
 
     /// Whether `token` may replace `source`: code (`isCode`), and said by `source` with at least one strong symbol
     /// word (`says`), so a span never only wraps what was already written ("e.g." is not `e.g.`) nor reads prose
@@ -716,11 +731,10 @@ public enum SpokenCode {
     /// far more often.
     static let fallbackDigits = digitWords.filter { !["one", "un", "une"].contains($0.key) }
 
-    /// Whether `item` is a function word of `language` (`SpokenWords.stopWords`, `shortFunctionWords`).
+    /// Whether `item` is a function word of `language` (`functionWords`).
     static func isStopWord(_ item: Item, language: String?) -> Bool {
         guard case .word(let word) = item.kind else { return false }
-        let folded = fold(word)
-        return SpokenWords.stopWords(for: language).contains(folded) || shortFunctionWords.contains(folded)
+        return functionWords(for: language).contains(fold(word))
     }
 
     /// The code spans of `text` found without the model: only runs that can be read one way. A run is words
