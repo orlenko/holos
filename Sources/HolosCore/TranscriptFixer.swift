@@ -384,8 +384,15 @@ public enum AIFixGuard {
         }
         // A word a learned correction produced may be in a place only when the pair spells it again ("slash QC ->
         // /qc" over a "QC" the chunk has); the pair's words are frozen in turn.
+        // It also keeps its place among the words the pair keeps: the words the place and the pair share come in
+        // the same order on both sides, so a chained pair ("foo -> bar", then "bar baz -> baz bar") cannot move it.
         func keepsProtected(_ span: Range<Int>, _ meant: Tokens) -> Bool {
-            span.allSatisfy { chunk.frozen[$0] != .protected || meant.words.contains(chunk.words[$0]) }
+            guard span.allSatisfy({ chunk.frozen[$0] != .protected || meant.words.contains(chunk.words[$0]) })
+            else { return false }
+            guard span.contains(where: { chunk.frozen[$0] == .protected }) else { return true }
+            let placeWords = span.map { chunk.words[$0] }
+            let shared = Set(placeWords).intersection(meant.words)
+            return placeWords.filter(shared.contains) == meant.words.filter(shared.contains)
         }
         var places: [Place] = []
         let finder = AIFixReference.Finder(text, language: language, lexicon: lexicon)

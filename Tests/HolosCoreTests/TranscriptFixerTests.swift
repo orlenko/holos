@@ -381,6 +381,10 @@ let unrelatedWords = [
                              protecting: [sight], language: "en-US") == .reject(.changedCorrection))
     #expect(AIFixGuard.check(original: "keep the sight near the cite", fixed: "keep the sight near the site",
                              protecting: [sight], language: "en-US") == .accept)
+    // A chained pair cannot move a word an earlier correction produced: "foo -> bar" then "bar baz -> baz bar".
+    let chain = [Correction(heard: "foo", meant: "bar"), Correction(heard: "bar baz", meant: "baz bar")]
+    #expect(AIFixGuard.check(original: "say bar baz now", fixed: "say baz bar now", protecting: chain, taught: chain)
+            != .accept)
     // The pair's words and marks come together, from one application: "food requests -> pool. Requests" does not
     // let the reply take the period and fix "fuud" to "food" by itself.
     let period = Correction(heard: "food requests", meant: "pool. Requests")
