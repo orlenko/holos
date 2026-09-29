@@ -905,7 +905,8 @@ public enum AIFixReference {
                 guard (start..<end).allSatisfy({ !symbolic[$0] || heardSymbolic[$0 - start] }) else { return nil }
                 for index in phrase.words.indices.dropFirst() {
                     guard text.breaks[start + index] == phrase.breaks[index],
-                          positions(of: phrase.words[index]).contains(start + index) else { return nil }
+                          positions(of: phrase.words[index], capitalizedVariants: !plainSingle)
+                            .contains(start + index) else { return nil }
                 }
                 return start..<end
             }

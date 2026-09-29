@@ -894,6 +894,9 @@ func aFrenchMishearingIsFixed(original: String, fixed: String) {
     #expect(AIFixReference.matches(of: "Maks's", in: "Ask Maks's tomorrow") == [1..<2])
     // A hyphenated name and a name saved with a mark are names too; a coined token with a one-letter part is not.
     #expect(AIFixReference.matches(of: "Jean-Luc", in: "Ask Jean-Lac tomorrow").isEmpty)
+    // Every part of a hyphenated name is exact, not only the first.
+    #expect(AIFixReference.matches(of: "Mara-Zuk", in: "Ask Mara-Zuc tomorrow").isEmpty)
+    #expect(AIFixReference.matches(of: "Mara-Zuk", in: "Ask Mara-Zuk tomorrow") == [1..<3])
     #expect(AIFixReference.matches(of: "Maks.", in: "Ask Meks. Tomorrow").isEmpty)
     #expect(AIFixReference.Finder.isNameLike("T-Mox") == false)
     #expect(AIFixReference.Finder.isNameLike("Jean-Luc") && AIFixReference.Finder.isNameLike("O'Brien"))
