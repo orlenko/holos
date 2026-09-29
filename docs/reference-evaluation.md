@@ -171,7 +171,8 @@ voiceislocal eval delete <session> (<run> | --all)
    echo mark of the recognizer words it overlaps, and passages, context and the
    gold keep the text's own spacing. Words are compared by their lowercased
    letters and digits, plus the marks that change a number (a separator,
-   colon, slash or dash between digits, a minus sign before one, a percent
+   colon, slash or dash between digits, a leading decimal separator (".5",
+   not after a letter), a minus sign before one, a percent
    sign after one, a currency sign beside one, a minus before an amount; "$ 50"
    is one word, as "$50" is): "1.5" and "15", "-5" and "5", "5%" and "5",
    "$50" and "€50", or "-$50" and "$50" are a word difference in the
@@ -181,7 +182,8 @@ voiceislocal eval delete <session> (<run> | --all)
    echo of the system track in a call (the exports' echo filter) are left out,
    and so are cloud-only words between two echo words or up to 3 of them next
    to one (with `--timestamps`, only those said within 1 s of the echo
-   words' time). Segments without a track count for the first track only. WER is
+   words' time; a timed cloud word aligned with an echo word but said more
+   than 1 s from it is a cloud-only word, not echo). Segments without a track count for the first track only. WER is
    given against both sides, since neither is the truth yet.
    Differing passages are grouped as numbers, names and terms (a capital not
    at a sentence start, an acronym, letters mixed with digits), dropped or

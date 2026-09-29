@@ -24,7 +24,8 @@ public struct EvalToken: Codable, Sendable, Equatable {
 
 public enum EvalText {
     /// Lowercased letters and digits of `text`, plus the marks that change a number: a decimal or group separator,
-    /// colon, or slash between two digits ("1.5", "1,000", "3:30", "1/2"), a dash between two digits ("1-2"), a
+    /// colon, or slash between two digits ("1.5", "1,000", "3:30", "1/2"), a leading decimal separator that follows no
+    /// letter (".5", "-.5"), a dash between two digits ("1-2"), a
     /// minus sign before a digit that follows no letter or digit ("-5", "−5"; "COVID-19" stays "covid19"), a percent
     /// sign after a digit ("5%"), a currency sign next to one, spaces between allowed ("$50", "50 €"), and a minus
     /// sign before an amount ("-$50"). So a
@@ -57,10 +58,20 @@ public enum EvalText {
                 out.append("-")
                 continue
             }
+            let standsAlone = previous.map { !$0.isLetter && !$0.isNumber } ?? true
+            // A minus sign before a leading decimal separator ("-.5").
+            if isMinus(character), standsAlone, let next, next == "." || next == ",", index + 2 < characters.count,
+               isDigit(characters[index + 2]) {
+                out.append("-")
+                continue
+            }
             guard let next, isDigit(next) else { continue }
             let afterDigit = previous.map(isDigit) ?? false
             switch character {
-            case ".", ",", ":", "/":
+            case ".", ",":
+                // Between digits ("1.5"), or a leading decimal separator (".5"; not after a letter: "v.2" is "v2").
+                if afterDigit || standsAlone { out.append(character) }
+            case ":", "/":
                 if afterDigit { out.append(character) }
             case _ where isMinus(character):
                 if afterDigit || previous.map({ !$0.isLetter && !$0.isNumber }) ?? true { out.append("-") }
@@ -433,7 +444,8 @@ public enum WindowComparer {
     /// - Echo: an operation on a local echo word is left out, and so is a run of cloud-only words between two echo
     ///   words, or of at most `echoNeighbourWords` next to one: the cloud transcript hears the echo too, and its
     ///   alignment with the echo words around it is arbitrary. A longer run beside echo is kept, and so is a timed
-    ///   cloud word (timestamp pass) said more than `echoTimeSlack` away from the echo words' time.
+    ///   cloud word (timestamp pass) said more than `echoTimeSlack` away from the echo words' time, even one the
+    ///   alignment paired with an echo word (`separatingDistantEchoPairs`).
     /// - Passages: maximal runs of consecutive edits (substitutions and one-side-only words); a run of matched
     ///   words that differ only in case or punctuation is a `caseOrPunctuation` passage of its own.
     /// - Time: a passage takes the times of its local words (and of its cloud words when they are timed); a
@@ -451,8 +463,9 @@ public enum WindowComparer {
     static let echoTimeSlack = 1.0
 
     /// Scores and passages of an alignment `ops` of `local` with `cloud` (see `compare`).
-    static func evaluate(track: String, ops: [AlignmentOp], local: [EvalToken], cloud: [EvalToken], start: Double,
-                         end: Double, localOffset: Int = 0) -> WindowComparison {
+    static func evaluate(track: String, ops alignment: [AlignmentOp], local: [EvalToken], cloud: [EvalToken],
+                         start: Double, end: Double, localOffset: Int = 0) -> WindowComparison {
+        let ops = separatingDistantEchoPairs(alignment, local: local, cloud: cloud)
         var result = WindowComparison()
         // Per op: excluded as echo?
         var lastLocal: Int?
@@ -540,6 +553,44 @@ public enum WindowComparer {
         }
         flush(&run, caseOnly: false)
         flush(&punctuationRun, caseOnly: true)
+        return result
+    }
+
+    /// A timed cloud word (the timestamp pass) aligned with a timed local echo word but said more than
+    /// `echoTimeSlack` away from it is not the echo: the pair becomes the echo word alone and the cloud word alone
+    /// Within a stretch of such pairs and lone echo words, the cloud words said before their echo word come first,
+    /// then the echo words, then the cloud words said after, so what was said together stays one passage. Without
+    /// times the alignment stands.
+    static func separatingDistantEchoPairs(_ ops: [AlignmentOp], local: [EvalToken],
+                                           cloud: [EvalToken]) -> [AlignmentOp] {
+        var result: [AlignmentOp] = []
+        result.reserveCapacity(ops.count)
+        var earlier: [AlignmentOp] = [], echoes: [AlignmentOp] = [], later: [AlignmentOp] = []
+        func flush() {
+            result += earlier + echoes + later
+            earlier.removeAll(); echoes.removeAll(); later.removeAll()
+        }
+        for op in ops {
+            switch op {
+            case .match(let i, let j, _), .substitute(let i, let j):
+                if local[i].echo, let echoStart = local[i].start, let wordStart = cloud[j].start {
+                    let echoEnd = local[i].end ?? echoStart
+                    let wordEnd = cloud[j].end ?? wordStart
+                    if wordStart > echoEnd + echoTimeSlack || wordEnd < echoStart - echoTimeSlack {
+                        echoes.append(.localOnly(i))
+                        if wordEnd < echoStart { earlier.append(.cloudOnly(j)) } else { later.append(.cloudOnly(j)) }
+                        continue
+                    }
+                }
+            case .localOnly(let i):
+                if local[i].echo { echoes.append(op); continue }
+            case .cloudOnly:
+                break
+            }
+            flush()
+            result.append(op)
+        }
+        flush()
         return result
     }
 

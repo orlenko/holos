@@ -322,6 +322,20 @@ private func cloudTrack(_ windows: [[String]]) -> CloudTrackResult {
     let during = WindowComparer.compare(track: "mic", local: local, cloud: cloud, start: 0, end: 30)
     #expect(during.score.cloudOnly == 0)
     #expect(during.passages.isEmpty)
+    // The cloud did not hear the echo, and aligned what was said later with it: those words are kept all the same.
+    var later = untimed("I disagree next")
+    for (index, time) in [10.0, 11, 20].enumerated() {
+        later[index].start = time
+        later[index].end = time + 0.8
+    }
+    let aligned = WindowComparer.compare(track: "mic", local: local, cloud: later, start: 0, end: 30)
+    #expect(aligned.score.echoLocalWords == 3)
+    #expect(aligned.score.cloudOnly == 2)
+    #expect(aligned.passages.map(\.cloud) == ["I disagree"])
+    // Untimed, the alignment with the echo stands.
+    let untimedLater = WindowComparer.compare(track: "mic", local: local, cloud: untimed("I disagree next"),
+                                              start: 0, end: 30)
+    #expect(untimedLater.passages.isEmpty)
 }
 
 @Test func evalGoldSplicesKeepWordsApart() {
@@ -506,6 +520,11 @@ private func evalReport(passages: [EvalPassage]) -> CompareReport {
     #expect(EvalText.key("3:30") != EvalText.key("330"))
     #expect(EvalText.key("1-2") != EvalText.key("12"))
     #expect(EvalText.key("1.5.") == EvalText.key("1.5"))
+    // A leading decimal separator, with or without a minus sign, is part of the number.
+    #expect(EvalText.key(".5") == ".5" && EvalText.key(".5") != EvalText.key("5"))
+    #expect(EvalText.key("-.5") == "-.5" && EvalText.key("-.5") != EvalText.key(".5"))
+    #expect(EvalText.key("(,5)") == ",5")
+    #expect(EvalText.key("v.2") == "v2")
     #expect(EvalText.key("COVID-19") == "covid19")
     #expect(EvalText.key("well-known,") == "wellknown")
     #expect(EvalText.key("5%") != EvalText.key("5"))
@@ -522,7 +541,8 @@ private func evalReport(passages: [EvalPassage]) -> CompareReport {
     #expect(EvalText.tokens("costs $ 50").map(EvalText.key) != EvalText.tokens("costs € 50").map(EvalText.key))
     #expect(EvalText.tokens("costs $ 50").map(EvalText.key) == EvalText.tokens("costs $50").map(EvalText.key))
     #expect(EvalText.tokens("it costs $") == ["it", "costs $"])
-    for (localWord, cloudWord) in [("1.5", "15"), ("-5", "5"), ("5%", "5"), ("$50", "€50"), ("-$50", "$50")] {
+    for (localWord, cloudWord) in [("1.5", "15"), ("-5", "5"), ("5%", "5"), ("$50", "€50"), ("-$50", "$50"),
+                                   (".5", "5"), ("-.5", "5")] {
         let result = WindowComparer.compare(track: "mic", local: timed(["it", "is", localWord, "degrees"]),
                                             cloud: untimed("it is \(cloudWord) degrees"), start: 0, end: 10)
         #expect(result.score.substitutions == 1)
