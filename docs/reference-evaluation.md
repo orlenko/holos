@@ -137,7 +137,8 @@ voiceislocal eval delete <session> (<run> | --all)
    minutes, each cut at the quietest 0.4 s within the 45 s before the limit.
    When that stretch is not silence, the next segment repeats the last second,
    and stitching drops the words the two segments share at the junction (at
-   most 4, what one second holds, compared by letters and digits). A segment that is silence throughout
+   most what one second holds: 4 words, or 10 characters of an unspaced
+   script; compared by letters and digits). A segment that is silence throughout
    is not sent. Segments are AAC .m4a (32 kbit/s, about 1.2 MB per 5 minutes).
    The cost shown is the audio sent times the list price. Each segment's raw
    answer and parsed text are saved as soon as they arrive; failed requests are

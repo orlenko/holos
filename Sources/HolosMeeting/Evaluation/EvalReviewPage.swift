@@ -209,13 +209,12 @@ kbd { border:1px solid var(--line); border-radius:3px; padding:0 3px; font-size:
         if (!op.removed) state.terms.push(op.text);
       }
     }
+    function keyOf(op) {
+      return op.kind === "decide" ? decisionPrefix + op.id : termPrefix + op.text.toLowerCase();
+    }
     function write(op) {
-      if (op.kind === "decide") {
-        storage.setItem(decisionPrefix + op.id, JSON.stringify(op.value));
-      } else {
-        storage.setItem(termPrefix + op.text.toLowerCase(),
-                        JSON.stringify({ text: op.text, at: op.at, removed: !!op.removed }));
-      }
+      storage.setItem(keyOf(op), JSON.stringify(op.kind === "decide" ? op.value
+                                                : { text: op.text, at: op.at, removed: !!op.removed }));
     }
     function merged() {
       var fresh = read();
@@ -224,6 +223,9 @@ kbd { border:1px solid var(--line); border-radius:3px; padding:0 3px; font-size:
       return fresh;
     }
     function change(op) {
+      // Only the latest change of a key is kept: an older one that could not be stored never comes back.
+      var slot = keyOf(op);
+      store.pending = store.pending.filter(function (pending) { return keyOf(pending) !== slot; });
       store.pending.push(op);
       var left = [];
       store.pending.forEach(function (pending) {

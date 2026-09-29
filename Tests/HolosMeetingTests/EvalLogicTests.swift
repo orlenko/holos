@@ -503,6 +503,9 @@ private func evalReport(passages: [EvalPassage]) -> CompareReport {
     #expect(EvalText.key("$50.") == EvalText.key("$50"))
     #expect(EvalText.tokens("50 € today").map(EvalText.key) == ["50€", "today"])
     #expect(EvalText.key("100%,") == "100%")
+    #expect(EvalText.tokens("5 % more").map(EvalText.key) == ["5%", "more"])
+    #expect(EvalText.tokens("5\u{00A0}% more").map(EvalText.key) == ["5%", "more"])
+    #expect(EvalText.key("5‰") != EvalText.key("5%"))
     for (localWord, cloudWord) in [("1.5", "15"), ("-5", "5"), ("5%", "5"), ("$50", "€50")] {
         let result = WindowComparer.compare(track: "mic", local: timed(["it", "is", localWord, "degrees"]),
                                             cloud: untimed("it is \(cloudWord) degrees"), start: 0, end: 10)
@@ -536,6 +539,9 @@ private func evalReport(passages: [EvalPassage]) -> CompareReport {
     #expect(local.map(\.echo) == [false, false, true, true])
     #expect(EvalText.join(local) == "你好世界")
 
+    // A second of overlap holds about ten characters: the five repeated ones go.
+    #expect(CloudSegmentation.stitch([("开始你好世界啊", 0), ("你好世界啊再见", 1)])
+        == [["开", "始", "你", "好", "世", "界", "啊"], ["再", "见"]])
     let words = CloudSegmentation.stitchPieces([("你好世界", 0)])[0].map(\.text)
     let cloud = CloudTrackResult(run: "r", track: "mic", model: "m", segments: [
         .init(index: 0, sessionStart: 0, sessionEnd: 10, renderStart: 0, renderEnd: 10, overlapSeconds: 0,
@@ -663,5 +669,17 @@ private func evalReport(passages: [EvalPassage]) -> CompareReport {
         """)
     #expect(context.evaluateScript("Object.keys(broken.state.decisions).join(',')").toString() == "x,y")
     #expect(context.evaluateScript("broken.failed").toBool())
+    // A long edit the storage refuses, then a short one of the same passage that fits: the short one stays.
+    context.evaluateScript("""
+        var small = makeStorage();
+        var realSet = small.setItem;
+        small.setItem = function (k, v) { if (String(v).length > 60) throw new Error("QuotaExceededError"); realSet(k, v); };
+        var editing = makeStore(small, "k");
+        editing.decide("z", "edited", new Array(100).join("long "));
+        editing.decide("z", "edited", "short");
+        """)
+    #expect(context.evaluateScript("editing.state.decisions.z.text").toString() == "short")
+    #expect(context.evaluateScript("editing.pending.length").toInt32() == 0)
+    #expect(context.evaluateScript("JSON.parse(small.getItem('k|d|z')).text").toString() == "short")
     #expect(failure == nil)
 }

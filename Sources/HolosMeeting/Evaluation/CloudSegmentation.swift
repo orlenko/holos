@@ -107,10 +107,13 @@ public enum CloudSegmentation {
 
     /// Words a second of overlap can hold (fast speech is about four words a second).
     static let wordsPerOverlapSecond = 4.0
+    /// Characters of an unspaced script (each a word here, `EvalText.pieces`) a second of overlap can hold.
+    static let charactersPerSecond = 10.0
 
     /// The words of each segment's text with the words a segment repeats from the one before removed: with an
     /// overlap, the longest run that ends the previous segment's words and starts this one's, compared by key, is
-    /// dropped from this one — at most as many words as the overlap can hold (`wordsPerOverlapSecond`), so a
+    /// dropped from this one — at most as many words as the overlap can hold (`wordsPerOverlapSecond`, or
+    /// `charactersPerSecond` characters of an unspaced script), so a
     /// phrase said again after the overlap stays. Segments without overlap are kept whole.
     public static func stitch(_ texts: [(text: String, overlapSeconds: Double)]) -> [[String]] {
         stitchPieces(texts).map { $0.map(\.text) }
@@ -123,8 +126,19 @@ public enum CloudSegmentation {
         for (text, overlapSeconds) in texts {
             var words = EvalText.pieces(text)
             if overlapSeconds > 0, let previous = result.last(where: { !$0.isEmpty }) {
-                let maxRepeat = max(1, Int((overlapSeconds * wordsPerOverlapSecond).rounded(.up)))
-                let limit = min(maxRepeat, previous.count, words.count)
+                // The overlap holds so many words' worth of speech; a character of an unspaced script is a
+                // fraction of a word (about ten are said a second).
+                let budget = max(1, (overlapSeconds * wordsPerOverlapSecond).rounded(.up))
+                var spent = 0.0
+                var maxRepeat = 0
+                for word in words {
+                    let weight = word.text.first.map(EvalText.isUnspacedScript) == true
+                        ? wordsPerOverlapSecond / charactersPerSecond : 1
+                    guard spent + weight <= budget + 1e-9 else { break }
+                    spent += weight
+                    maxRepeat += 1
+                }
+                let limit = min(max(1, maxRepeat), previous.count, words.count)
                 var drop = 0
                 if limit > 0 {
                     for length in stride(from: limit, through: 1, by: -1) {

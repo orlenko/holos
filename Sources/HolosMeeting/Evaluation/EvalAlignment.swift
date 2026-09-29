@@ -38,13 +38,13 @@ public enum EvalText {
             }
             let previous = index > 0 ? characters[index - 1] : nil
             let next = index + 1 < characters.count ? characters[index + 1] : nil
-            // A percent sign after a number, and a currency sign before or after one.
-            if (character == "%" || character == "‰") && previous.map(isDigit) == true {
-                out.append(character)
-                continue
-            }
+            // A percent sign after a number, and a currency sign before or after one (spaces between allowed).
             let before = characters[..<index].last { !$0.isWhitespace }
             let after = characters[(index + 1)...].first { !$0.isWhitespace }
+            if ["%", "‰", "٪"].contains(character) && before.map(isDigit) == true {
+                out.append(character == "٪" ? "%" : character)
+                continue
+            }
             if isCurrency(character), before.map(isDigit) == true || after.map(isDigit) == true {
                 out.append(character)
                 continue
