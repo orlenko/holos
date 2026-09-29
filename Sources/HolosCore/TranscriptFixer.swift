@@ -287,9 +287,10 @@ public enum AIFixGuard {
         var count: Int { raw.count }
 
         /// The characters that make a run of characters an address, path, tag, option, call or identifier.
-        /// A colon or semicolon counts only inside a run ("scope:site", "a;b"): one that ends a clause is trimmed.
+        /// A colon, semicolon, "!" or "?" counts only inside or in front of a run ("scope:site", "a;b", "!right"):
+        /// one that ends a clause is trimmed.
         static let symbols: Set<Character> = ["@", "/", "\\", ".", "_", "#", "$", "%", "&", "=", "+", "~", "`", "<", ">",
-                                              "|", "*", "^", "(", ")", "[", "]", "{", "}", ":", ";"]
+                                              "|", "*", "^", "(", ")", "[", "]", "{", "}", ":", ";", "!", "?"]
 
         /// Whether the word at `range` of `text` is in a unit, number, address, path or identifier (`structured`).
         static func isStructured(_ range: Range<String.Index>, in text: String) -> Bool {
@@ -836,8 +837,10 @@ public enum AIFixReference {
                 let opens = beforeWord && !gap[gap.index(after: index)...].contains(where: \.isWhitespace)
                 return opens ? "‘" : "’"
             }
-            // A dash between clauses ends a phrase; a hyphen inside a word does not.
+            // A dash between clauses ends a phrase, as does a hyphen with space around it ("food - requests"); a
+            // hyphen inside a word ("T-Mux") does not.
             if "—–".contains(character) { return "—" }
+            if AIFixGuard.Tokens.hyphens.contains(character) && gap.contains(where: \.isWhitespace) { return "—" }
             return ".!?…:;".contains(character) || AIFixGuard.Tokens.symbols.contains(character) ? character : nil
         }
     }

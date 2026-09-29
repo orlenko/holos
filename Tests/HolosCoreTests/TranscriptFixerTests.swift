@@ -917,6 +917,14 @@ func aFrenchMishearingIsFixed(original: String, fixed: String) {
     // A typographic hyphen makes an identifier as a plain one does.
     #expect(AIFixGuard.check(original: "Use class text\u{2011}right now", fixed: "Use class text\u{2011}write now",
                              language: "en-US") != .accept)
+    // A spaced hyphen ends a phrase; a bang or question mark in front of a word makes it an identifier.
+    let spaced = Correction(heard: "food requests", meant: "pool requests")
+    #expect(AIFixReference.matches(of: "food requests", in: "I ordered food - requests are pending").isEmpty)
+    #expect(AIFixGuard.check(original: "I ordered food - requests are pending",
+                             fixed: "I ordered pool requests are pending", taught: [spaced]) != .accept)
+    #expect(AIFixGuard.check(original: "Run !right now", fixed: "Run !write now", language: "en-US") != .accept)
+    #expect(AIFixGuard.check(original: "Please right it down!", fixed: "Please write it down!", language: "en-US")
+            == .accept)
     // A pair that changes only punctuation is tried where the reply changed the marks.
     let webSite = Correction(heard: "web site", meant: "web-site")
     #expect(AIFixGuard.check(original: "open web, site now", fixed: "open web-site now", taught: [webSite]) == .accept)
