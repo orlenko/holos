@@ -1275,8 +1275,19 @@ extension HolosAppDelegate: NSMenuDelegate {
         if visible { meeting.windowsInDock.insert(window) } else { meeting.windowsInDock.remove(window) }
         let policy: NSApplication.ActivationPolicy = meeting.windowsInDock.isEmpty ? .accessory : .regular
         guard NSApplication.shared.activationPolicy() != policy else { return }
+        // An LSUIElement app that turns regular shows the generic icon in the Dock and Command-Tab unless it sets
+        // its icon itself.
+        if policy == .regular, NSApplication.shared.applicationIconImage?.name() != Self.appIconName,
+           let url = Bundle.main.url(forResource: Self.appIconName, withExtension: "icns"),
+           let icon = NSImage(contentsOf: url) {
+            icon.setName(Self.appIconName)
+            NSApplication.shared.applicationIconImage = icon
+        }
         NSApplication.shared.setActivationPolicy(policy)
     }
+
+    /// The bundle's icon file (CFBundleIconFile), without its extension.
+    private static let appIconName = "VoiceIsLocal"
 
     // MARK: - Helpers
 
