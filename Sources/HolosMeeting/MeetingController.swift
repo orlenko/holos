@@ -90,7 +90,8 @@ struct MeetingControllerTuning: Sendable {
     private let maintenance: MaintenanceLauncher?
     private let freeSpace: any FreeSpaceProvider
     private let findInputDevices: @Sendable () -> InputDevices
-    private let vocabulary: @MainActor () -> [String]
+    /// The recognizer's expected words for a meeting in the given languages (locale identifiers).
+    private let vocabulary: @MainActor (_ languages: [String]) -> [String]
     private let modelsInstalled: @MainActor () -> Bool
     private let now: @MainActor () -> Date
     private let onChange: @MainActor (MeetingState) -> Void
@@ -145,7 +146,7 @@ struct MeetingControllerTuning: Sendable {
 
     public init(root: URL = HolosPaths.sessions, launcher: any RecorderLauncher, maintenance: MaintenanceLauncher?,
                 freeSpace: any FreeSpaceProvider, findInputDevices: @escaping @Sendable () -> InputDevices,
-                vocabulary: @escaping @MainActor () -> [String], modelsInstalled: @escaping @MainActor () -> Bool,
+                vocabulary: @escaping @MainActor (_ languages: [String]) -> [String], modelsInstalled: @escaping @MainActor () -> Bool,
                 now: @escaping @MainActor () -> Date = Date.init,
                 onChange: @escaping @MainActor (MeetingState) -> Void,
                 onEffect: @escaping @MainActor (MeetingEffect) -> Void) {
@@ -219,7 +220,7 @@ struct MeetingControllerTuning: Sendable {
         let settings = settings.normalized(now: now())
         try Self.checkStart(settings, freeSpace: freeSpace, root: root, devices: findInputDevices())
         let sessionID = UUID().uuidString
-        let file = try writeVocabularyFile(sessionID: sessionID, strings: vocabulary())
+        let file = try writeVocabularyFile(sessionID: sessionID, strings: vocabulary(settings.locales))
         let effects = reducer.reduce(.startRequested(settings, sessionID: sessionID, at: now()))
         lastStatus = nil
         var launchError: (any Error)?

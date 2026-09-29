@@ -321,7 +321,10 @@ Hardware-facing and cross-app acceptance remain pending.
   edits and removes them. An opt-in Settings option, off by default, fixes misheard words
   in each chunk with Apple's on-device Foundation Models before it is written; a guard
   keeps the original text when the reply changes more than a few words, undoes a
-  learned correction, or changes punctuation other than commas and apostrophes (the
+  learned correction, adds, drops, splits or joins a word, replaces a real word with
+  anything but a listed homophone or a word the spell checker does not know with one
+  that does not sound like it (unless a learned pair whose heard phrase was said there
+  taught it), or changes punctuation other than commas and apostrophes (the
   last piece of a dictation may also change its closing `.`, `!`, `?` or `…`). **Copy Original** keeps
   the text as heard.
 - Main window (docs/design.md "Main window"): **Open Voice is Local** (⌘0) opens one

@@ -23,10 +23,44 @@ public struct CorrectionList: Codable, Sendable, Equatable {
         HolosPaths.applicationSupport.appendingPathComponent("corrections.json")
     }
 
-    /// Phrases the recognizer should expect.
-    public var vocabulary: [String] {
-        var seen = Set<String>()
-        return entries.map(\.meant).filter { seen.insert(Self.normalized($0)).inserted }
+    /// Words the recognizer should expect: the content words (`SpokenWords.isContent`) of the meant phrases, once
+    /// each ignoring case, spelled with a capital when any meant phrase has one. "on Ubuntu", "ubuntu" and "Ubuntu
+    /// machine" give "Ubuntu" and "machine": listing "on Ubuntu" or "a bunch of windows" as phrases biased the
+    /// recognizer toward words the speaker says everywhere. Function words of both English and French are left out;
+    /// `vocabulary(language:)` leaves out only those of the language dictated.
+    public var vocabulary: [String] { vocabulary(language: nil) }
+
+    /// `vocabulary` for dictation in `language` (a locale identifier): English dictation keeps "son", a French
+    /// function word.
+    public func vocabulary(language: String?) -> [String] {
+        vocabulary { SpokenWords.isContent($0, language: language) }
+    }
+
+    /// `vocabulary` for a meeting in `languages` (locale identifiers, the meeting's languages): a word that carries
+    /// meaning in any of them stays, so an English meeting keeps "son". No languages (the recorder's default) leaves
+    /// out the function words of both English and French.
+    public func vocabulary(languages: [String]) -> [String] {
+        guard !languages.isEmpty else { return vocabulary(language: nil) }
+        return vocabulary { word in languages.contains { SpokenWords.isContent(word, language: $0) } }
+    }
+
+    private func vocabulary(keeping isContent: (String) -> Bool) -> [String] {
+        var order: [String] = []
+        var spelling: [String: String] = [:]
+        for entry in entries {
+            for match in entry.meant.matches(of: /[\p{L}\p{N}]+(?:['’][\p{L}\p{N}]+)*/) {
+                let word = String(match.output)
+                guard isContent(word) else { continue }
+                let key = word.lowercased()
+                if let known = spelling[key] {
+                    if !known.contains(where: \.isUppercase), word.contains(where: \.isUppercase) { spelling[key] = word }
+                } else {
+                    order.append(key)
+                    spelling[key] = word
+                }
+            }
+        }
+        return order.compactMap { spelling[$0] }
     }
 
     /// Adds or replaces the entry for the same heard phrase. Blank or identical pairs are ignored.

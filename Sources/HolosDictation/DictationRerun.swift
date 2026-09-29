@@ -40,18 +40,24 @@ public enum OnDeviceFix {
         return nil
     }
 
+    /// The model the fix runs. The default guardrails refused about half of ordinary dictated sentences ("We should
+    /// develop a plan for the windows laptop." threw "May contain unsafe content"); fixing the speaker's own words is
+    /// a content transformation, which these guardrails are for. A reply that still throws leaves the chunk as
+    /// recognized.
+    static var model: SystemLanguageModel { SystemLanguageModel(guardrails: .permissiveContentTransformations) }
+
     /// Loads the model, so the first chunk does not wait for it.
     public static func prewarm() {
-        LanguageModelSession(model: SystemLanguageModel.default, instructions: TranscriptFixer.instructions(reference: []))
-            .prewarm()
+        LanguageModelSession(model: model, instructions: TranscriptFixer.instructions(reference: [])).prewarm()
     }
 
-    /// The fixer: a quarter of the model's context for learned corrections leaves ample room for the chunk and the
-    /// reply.
-    public static func fixer(corrections: CorrectionList, timeout: Duration = chunkTimeout) -> TranscriptFixer {
-        let model = SystemLanguageModel.default
+    /// The fixer for dictation in `language` (a locale identifier; its function words and homophones count): a
+    /// quarter of the model's context for learned corrections leaves ample room for the chunk and the reply.
+    public static func fixer(corrections: CorrectionList, timeout: Duration = chunkTimeout,
+                             language: String? = nil) -> TranscriptFixer {
+        let model = model
         return TranscriptFixer(corrections: corrections, referenceBudget: model.contextSize / 4,
-                               timeout: timeout) { instructions, prompt in
+                               timeout: timeout, language: language) { instructions, prompt in
             // A fresh session per chunk: earlier chunks must not steer this one, and the context stays small.
             let session = LanguageModelSession(model: model, instructions: instructions)
             return try await session.respond(to: prompt, options: GenerationOptions(samplingMode: .greedy)).content
@@ -103,7 +109,7 @@ public enum DictationRerun {
                 note = "unavailable: \(reason)"
             } else {
                 OnDeviceFix.prewarm()
-                fixer = OnDeviceFix.fixer(corrections: corrections)
+                fixer = OnDeviceFix.fixer(corrections: corrections, language: language)
             }
         }
         return (DictationTextPipeline(language: language, removeFillers: removeFillers, corrections: corrections,
@@ -132,7 +138,8 @@ public enum DictationRerun {
     /// Runs `record`'s audio (`url`) again through the recognizer and `pipeline`, and compares.
     public static func run(_ record: DictationRecord, audio url: URL, pipeline: DictationTextPipeline,
                            aiNote: String? = nil) async throws -> DictationRerunReport {
-        let segments = try await recognize(url, locale: pipeline.language, vocabulary: pipeline.corrections.vocabulary)
+        let segments = try await recognize(url, locale: pipeline.language,
+                                           vocabulary: pipeline.corrections.vocabulary(language: pipeline.language))
         let output = await pipeline.run(segments: segments)
         return DictationRerunReport(record: record, output: output, pipeline: pipeline, aiNote: aiNote)
     }

@@ -22,6 +22,21 @@ public enum FillerWords {
             options: [.caseInsensitive])
     }
 
+    private static let wholeWords = fillers.mapValues { alternatives in
+        try! NSRegularExpression(pattern: "^(?:\(alternatives))$", options: [.caseInsensitive])
+    }
+
+    /// Whether `word` is a filler of `language` (a language code or locale identifier; both English and French ones
+    /// when nil): only the fillers `remove` takes out, so "mm" (a unit) and "er" are not.
+    public static func isFiller(_ word: String, language: String?) -> Bool {
+        let codes = language.map { [DictationLanguage.languageCode(of: $0)] } ?? ["en", "fr"]
+        return codes.contains { code in
+            wholeWords[code].map {
+                $0.firstMatch(in: word, range: NSRange(word.startIndex..., in: word)) != nil
+            } ?? false
+        }
+    }
+
     /// The fillers removed for `language`, for Setup; nil when none are.
     public static func examples(language: String) -> String? {
         switch DictationLanguage.languageCode(of: language) {

@@ -52,8 +52,9 @@ final class DictationFixPipeline {
         guard AIFixSetting.isOn, AIFixSetting.unavailableReason(language: language) == nil else { return nil }
         // Loads the model while the user starts speaking, so the first chunk does not wait for it.
         OnDeviceFix.prewarm()
-        // The same model, sessions, and timeout Run Again uses (`OnDeviceFix`).
-        return DictationFixPipeline(fixer: OnDeviceFix.fixer(corrections: corrections, timeout: chunkTimeout),
+        // The same model, guardrails, sessions, and timeout Run Again uses (`OnDeviceFix`).
+        return DictationFixPipeline(fixer: OnDeviceFix.fixer(corrections: corrections, timeout: chunkTimeout,
+                                                             language: language),
                                     deliver: deliver)
     }
 

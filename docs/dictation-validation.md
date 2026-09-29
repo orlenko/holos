@@ -255,11 +255,21 @@ dictation language.
 
 **Fix misheard words with Apple Intelligence** is offered for English and French
 dictation; other languages show it as unavailable until they have been tried.
+The model sees a learned pair only when its whole heard phrase (or, for words the
+spell checker does not know, the same words misheard a little differently) is in the
+chunk. The fix may only replace words one for one: a word the spell checker does not
+know by one real word said alike, or a real word by a listed homophone; it may add or
+remove commas and change the closing mark at the end, and apply a learned pair where
+its heard phrase was said. Anything else (another real word, an article, a
+contraction, a number in digits, a case change inside a sentence) is refused. Check with pairs such as "Onobunto" → "on Ubuntu" and "a Bundo" →
+"ubuntu": "The build runs Onobunto" becomes "The build runs on Ubuntu", while "Let's
+develop it on a Windows machine first" and "That's the point" stay as said.
 
 Corrections are applied, whole-word and case-insensitively, to the preview and to
 every streamed and final chunk. While streaming, trailing words that could start a
-multi-word phrase are held back until the next words arrive. The corrected phrases
-are also passed to the recognizer as contextual strings, which is best effort.
+multi-word phrase are held back until the next words arrive. The distinctive words
+of the corrected phrases (no function words, once each ignoring case) are also passed
+to the recognizer as contextual strings, which is best effort.
 Learning does not change text already inserted into other apps.
 
 Insertion decisions (target kind, chunk lengths, outcomes, and why streaming

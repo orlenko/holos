@@ -33,22 +33,31 @@ public struct TranscriptFixer: Sendable {
     /// Longer chunks are not sent: the edit limits stop meaning "a few misheard words".
     public static let maximumWords = 600
 
+    /// How long the spell checker may take over a chunk's words, and again over the reply's (`Lexicon.prepare`); the
+    /// words it did not reach count as real, so fewer words may change.
+    public var spellingBudget: Duration = .milliseconds(250)
+
     public var corrections: CorrectionList
     /// Token budget for the learned corrections listed in the instructions.
     public var referenceBudget: Int
     public var timeout: Duration
+    /// The dictation language (a locale identifier), for its function words (`SpokenWords.isContent`); nil counts
+    /// both English and French ones.
+    public var language: String?
     private let model: Model
 
-    public init(corrections: CorrectionList, referenceBudget: Int, timeout: Duration, model: @escaping Model) {
+    public init(corrections: CorrectionList, referenceBudget: Int, timeout: Duration, language: String? = nil,
+                model: @escaping Model) {
         self.corrections = corrections
         self.referenceBudget = referenceBudget
         self.timeout = timeout
+        self.language = language
         self.model = model
     }
 
     /// `isFinal` marks the end of the dictation: only there may the model change the closing punctuation, since a
     /// chunk in the middle of a sentence continues in the next one. Learned corrections are listed for the model as
-    /// a reference, and a reply that changes a word one of them produced is refused.
+    /// a reference. A reply that does more than replace misheard words one for one is refused (`AIFixGuard.check`).
     public func fix(_ chunk: String, isFinal: Bool) async -> Result {
         let leading = String(chunk.prefix { $0.isWhitespace })
         let trailing = String(chunk.reversed().prefix { $0.isWhitespace }.reversed())
@@ -56,17 +65,30 @@ public struct TranscriptFixer: Sendable {
         let words = AIFixGuard.words(in: core).count
         guard words > 0, words <= Self.maximumWords else { return Result(text: chunk, outcome: .skipped) }
 
-        let reference = AIFixReference.select(from: corrections.entries, for: core, budget: referenceBudget)
-        let instructions = Self.instructions(reference: reference)
-        let prompt = Self.prompt(for: core)
-        let reply: String
-        switch await Self.firstOf(timeout, { [model] in try await model(instructions, prompt) }) {
-        case .value(let value): reply = value
+        // The choice of learned pairs and the guard run inside the time limit too: with a long list and a long chunk
+        // they are work the chunk would otherwise wait for with no bound.
+        let fixed: String, verdict: AIFixGuard.Verdict
+        switch await Self.firstOf(timeout, { [model, corrections, referenceBudget, language, spellingBudget] in
+            // One lexicon for the chunk: each distinct word asks the spell checker once, on its own queue and within
+            // `spellingBudget`; a word it did not reach counts as real, which lets nothing more through.
+            let lexicon = Lexicon(language: language, taught: corrections.entries.map(\.meant), blocking: false)
+            await lexicon.prepare(AIFixGuard.words(in: core), within: spellingBudget)
+            let reference = AIFixReference.select(from: corrections.entries, for: core, budget: referenceBudget,
+                                                  language: language, lexicon: lexicon)
+            try Task.checkCancellation()
+            let reply = try await model(Self.instructions(reference: reference), Self.prompt(for: core))
+            let fixed = AIFixGuard.keepingEdges(of: core, in: AIFixGuard.sanitized(reply, for: core), isFinal: isFinal)
+            await lexicon.prepare(AIFixGuard.words(in: fixed), within: spellingBudget)
+            let verdict = AIFixGuard.check(original: core, fixed: fixed, protecting: corrections.entries,
+                                           taught: reference, language: language, lexicon: lexicon)
+            try Task.checkCancellation()
+            return (fixed, verdict)
+        }) {
+        case .value(let value): (fixed, verdict) = value
         case .timedOut: return Result(text: chunk, outcome: .timedOut)
         case .failed: return Result(text: chunk, outcome: .failed)
         }
-        let fixed = AIFixGuard.keepingEdges(of: core, in: AIFixGuard.sanitized(reply, for: core), isFinal: isFinal)
-        switch AIFixGuard.check(original: core, fixed: fixed, protecting: corrections.entries) {
+        switch verdict {
         case .accept: return Result(text: leading + fixed + trailing, outcome: .fixed)
         case .unchanged: return Result(text: chunk, outcome: .unchanged)
         case .reject(let why): return Result(text: chunk, outcome: .rejected, rejection: why)
@@ -154,13 +176,22 @@ private final class RaceGate<Value: Sendable>: Sendable {
     }
 }
 
-/// Decides whether a model's reply is a small fix of the original rather than a rewrite, and tidies the reply.
+/// Decides whether a model's reply only fixes misheard words of the original, and tidies the reply.
 public enum AIFixGuard {
     public enum Rejection: String, Sendable, Equatable {
-        /// `changedStructure`: a mark other than a comma or apostrophe was added, removed or moved (a period, colon,
-        /// quote, bracket or line break), apart from closing marks at the very end. `changedCorrection`: a word a
-        /// learned correction produced was changed.
-        case empty, tooManyEdits, wordCountChanged, changedStructure, changedCorrection
+        /// `wordCountChanged`: the reply has more or fewer words than the chunk with its taught pairs applied: no word
+        /// is added, dropped, split or joined but by a taught pair ("to store" is not "to the store"). `tooManyEdits`:
+        /// more than 2 words, or 20 %, were replaced. `changedStructure`: a mark other than a comma or apostrophe was
+        /// added, removed or moved (a period, colon, quote, bracket, hyphen, slash or line break), apart from closing
+        /// marks at the very end, or a comma between two numbers came or went ("1,5" is not "1 5").
+        /// `changedCorrection`: a word a learned correction produced was changed. `implausibleSubstitution`: a word
+        /// was replaced by one it could not have been misheard for ("windows" by "Ubuntu"). `changedMeaning`: a word
+        /// was replaced by one said or spelled alike that says something else: another real word that is not a
+        /// listed homophone ("bat" and "bit"), another negation, modal, quantity, person or number ("can" and
+        /// "can't", "He" and "She"), the same word in another case inside a sentence ("us" and "US"), a name, or a
+        /// unit, number, address, path or identifier ("mW" and "MW").
+        case empty, tooManyEdits, wordCountChanged, changedStructure, changedCorrection, implausibleSubstitution,
+             changedMeaning
     }
 
     public enum Verdict: Sendable, Equatable {
@@ -170,72 +201,424 @@ public enum AIFixGuard {
         case reject(Rejection)
     }
 
-    /// Accepts `fixed` only when it changes a few words of `original` (at most 2, or 20 % of its words), keeps its
-    /// word count within 1 (or 10 %), and keeps every other mark where it was: only commas and apostrophes may be
-    /// added or removed, and closing marks (".", "!", "?", "…") changed at the very end. Any other added, removed or
-    /// moved mark (a period, colon, quote, bracket or line break) is a new sentence, label or line, not a fix.
-    /// Case changes are free. Words a learned correction produced (each occurrence in `original` of a
-    /// correction's meant phrase, compared as lowercased words) must all still be there: the speaker taught them.
-    public static func check(original: String, fixed: String, protecting corrections: [Correction] = []) -> Verdict {
+    /// Accepts `fixed` only when it is `original` with some misheard words replaced, word for word, and nothing else.
+    /// The words line up one to one, in order, with the same count: no word is added, dropped, split, joined or
+    /// moved, so articles, contractions, repetitions and numbers written in digits stay as said. Each replaced word
+    /// must be (`SpokenWords.mayReplace`) a word the dictation language does not know (`lexicon`: "Onobunto",
+    /// "bundu") replaced by one real word said alike, or a real word replaced by a listed homophone of `language`
+    /// ("right" and "write"); either way keeping its negation, modal, quantity, person and number. A name, and a
+    /// word inside a unit, number, address, path or identifier ("5 mW", "team@right.com", "GitHub"), is kept as
+    /// written; case changes only at the start of a sentence. At most 2 words, or 20 %, may be replaced. Marks stay
+    /// where they were but commas and apostrophes, which may come and go (not a comma between two numbers), and
+    /// closing marks (".", "!", "?", "…") at the very end.
+    ///
+    /// The one way past these rules is a pair of `taught`, the learned corrections listed for the model, where its
+    /// heard phrase was said (`AIFixReference.matches`): the reply may spell that place as the pair's meant phrase,
+    /// words and marks exactly ("Onobunto" becomes "on Ubuntu", "common free" "comment-free"), and nothing may
+    /// change those words further. Words a learned correction of `corrections` produced (each occurrence of a meant
+    /// phrase in `original`) stay, each where it was. `lexicon` defaults to the system spell checker's for
+    /// `language`, with the meant words of `corrections` and `taught`.
+    public static func check(original: String, fixed: String, protecting corrections: [Correction] = [],
+                             taught: [Correction] = [], language: String? = nil, lexicon: Lexicon? = nil) -> Verdict {
+        let lexicon = lexicon ?? Lexicon(language: language, taught: (corrections + taught).map(\.meant))
         let original = original.trimmingCharacters(in: .whitespacesAndNewlines)
         let fixed = fixed.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !fixed.isEmpty else { return .reject(.empty) }
         guard fixed != original else { return .unchanged }
-        let before = words(in: original)
-        let after = words(in: fixed)
-        guard !after.isEmpty else { return .reject(.empty) }
-        for phrase in Set(corrections.map { words(in: $0.meant) }) where !phrase.isEmpty {
-            if occurrences(of: phrase, in: after) < occurrences(of: phrase, in: before) {
+        var chunk = Tokens(original, language: language)
+        let reply = Tokens(fixed, language: language)
+        guard !reply.words.isEmpty else { return .reject(.empty) }
+        let meant = Set(corrections.map { words(in: $0.meant) }).filter { !$0.isEmpty }
+        for phrase in meant {
+            if occurrences(of: phrase, in: reply.words) < occurrences(of: phrase, in: chunk.words) {
                 return .reject(.changedCorrection)
             }
+            for start in chunk.words.indices where chunk.words[start...].starts(with: phrase) {
+                for index in start..<(start + phrase.count) { chunk.frozen[index] = .protected }
+            }
         }
-        let was = shape(of: original)
-        let now = shape(of: fixed)
-        guard was.marks == now.marks else { return .reject(.changedStructure) }
-        if abs(after.count - before.count) > max(1, before.count / 10) { return .reject(.wordCountChanged) }
-        let edits = editDistance(before, after)
-        // The same marks, but moved to other words: matching the words between each pair of marks separately then
-        // costs more than matching all of them at once.
-        let segmented = zip(was.segments, now.segments).reduce(0) { $0 + editDistance($1.0, $1.1) }
-        if segmented > edits { return .reject(.changedStructure) }
-        if edits > max(2, before.count / 5) { return .reject(.tooManyEdits) }
-        return .accept
+        var refusal: (stage: Int, why: Rejection)?
+        for baseline in baselines(chunk, text: original, reply: reply, taught: taught, language: language,
+                                  lexicon: lexicon) {
+            if Task.isCancelled { break }
+            guard let failure = judge(baseline, reply, language: language, lexicon: lexicon) else { return .accept }
+            if refusal.map({ failure.stage > $0.stage }) ?? true { refusal = failure }
+        }
+        return .reject(refusal?.why ?? .implausibleSubstitution)
+    }
+
+    /// A text's words, what lies between them, and what the guard knows of each.
+    struct Tokens {
+        enum Frozen { case taught, protected }
+
+        /// Each word as written.
+        var raw: [String] = []
+        /// Each word as `words` gives it.
+        var words: [String] = []
+        /// `gaps[i]` is the text before word i, `gaps[raw.count]` the text after the last word.
+        var gaps: [String] = []
+        /// Words in a unit, number, address, path, tag, option or identifier: a run of characters without spaces
+        /// that has a digit, a hyphen or a symbol (`symbols`: "@", "/", ".", "_", "#", "$", "=", "(" and the like)
+        /// ("5mW", "team@right.com", "/tmp/site.py", "v1.2", "#right", "--right", "right()", "text-right"), or a
+        /// word with a capital past its first letter ("GitHub", "QC", "mW"). Only a taught pair may change them.
+        var structured: [Bool] = []
+        /// Words that may be names (`AIFixGuard.names`).
+        var names: [Bool] = []
+        /// Words a taught pair put there, or a learned correction produced: they stay as they are.
+        var frozen: [Frozen?] = []
+
+        init(_ text: String, language: String?, midSentence: Bool = false) {
+            var cursor = text.startIndex
+            for match in text.matches(of: AIFixGuard.wordPattern) {
+                let gap = text[cursor..<match.range.lowerBound]
+                gaps.append(String(gap))
+                let word = String(match.output)
+                raw.append(word)
+                words.append(AIFixGuard.normalized(match.output))
+                structured.append(Self.isStructured(match.range, in: text))
+                let startsSentence = names.isEmpty ? !midSentence : AIFixGuard.endsSentence(gap)
+                names.append(AIFixGuard.isName(word, startsSentence: startsSentence, language: language))
+                cursor = match.range.upperBound
+            }
+            gaps.append(String(text[cursor...]))
+            frozen = Array(repeating: nil, count: raw.count)
+        }
+
+        var count: Int { raw.count }
+
+        /// The characters that make a run of characters an address, path, tag, option, call or identifier.
+        /// A colon, semicolon, "!" or "?" counts only inside or in front of a run ("scope:site", "a;b", "!right"):
+        /// one that ends a clause is trimmed.
+        static let symbols: Set<Character> = ["@", "/", "\\", ".", "_", "#", "$", "%", "&", "=", "+", "~", "`", "<", ">",
+                                              "|", "*", "^", "(", ")", "[", "]", "{", "}", ":", ";", "!", "?"]
+
+        /// Whether the word at `range` of `text` is in a unit, number, address, path or identifier (`structured`).
+        static func isStructured(_ range: Range<String.Index>, in text: String) -> Bool {
+            text[range].dropFirst().contains(where: \.isUppercase) || hasSymbols(range, in: text)
+        }
+
+        /// Whether the word at `range` of `text` is in a run of characters without spaces that has a digit or one of
+        /// `symbols` inside, or a hyphen (`structured`, case aside).
+        /// The hyphen and its typographic forms (hyphen, non-breaking hyphen, figure dash).
+        static let hyphens: Set<Character> = ["-", "\u{2010}", "\u{2011}", "\u{2012}"]
+
+        static func hasSymbols(_ range: Range<String.Index>, in text: String) -> Bool {
+            var start = range.lowerBound, end = range.upperBound
+            while start > text.startIndex, !text[text.index(before: start)].isWhitespace {
+                start = text.index(before: start)
+            }
+            while end < text.endIndex, !text[end].isWhitespace { end = text.index(after: end) }
+            var run = text[start..<end]
+            // Quotes, brackets and the marks that end a clause belong to the sentence, not the token.
+            while let first = run.first, "([{\"'“‘«¿¡".contains(first) { run = run.dropFirst() }
+            while let last = run.last, ".,;:!?…)]}\"'”’»".contains(last) { run = run.dropLast() }
+            return run.contains { $0.isNumber || symbols.contains($0) || hyphens.contains($0) }
+        }
+    }
+
+    /// Whether `gap`, the text before a word, ends a sentence: a line break or a closing mark.
+    static func endsSentence(_ gap: Substring) -> Bool {
+        gap.contains { $0.isNewline || ".!?…".contains($0) }
+    }
+
+    /// Whether `word`, as written, may be a name: a word with a capital past its first letter ("GitHub", "QC",
+    /// "macOS"), or a capitalized word other than "I" ("Windows" in "use Windows"). At the start of a sentence a
+    /// capital does not tell a name from another word, so there every capitalized word counts ("Mary called"), but
+    /// for the words a name cannot be: function words of `language` ("The", "When", "Je"), hesitations ("Hmm",
+    /// "Euh"), words of fewer than three letters ("So", "If"), and words whose meaning is guarded on its own
+    /// (`SpokenWords.meaning`: "Dont", "Your", "Ten"). A misheard word that starts a sentence then stays as
+    /// recognized unless a taught pair covers it.
+    static func isName(_ word: String, startsSentence: Bool, language: String?) -> Bool {
+        let lower = normalized(word[...])
+        if word.dropFirst().contains(where: \.isUppercase) { return true }
+        if word.first?.isUppercase != true || lower == "i" || lower.hasPrefix("i'") { return false }
+        if !startsSentence { return true }
+        return SpokenWords.letters(lower).count >= 3 && !SpokenWords.stopWords(for: language).contains(lower)
+            && !FillerWords.isFiller(lower, language: language)
+            && SpokenWords.meaning(of: lower, language: language).isEmpty
+    }
+
+    /// For each word of `text`, whether it may be a name (`isName`); `midSentence`: the first word does not start a
+    /// sentence.
+    static func names(in text: String, language: String? = nil, midSentence: Bool = false) -> [Bool] {
+        Tokens(text, language: language, midSentence: midSentence).names
+    }
+
+    /// Most words a fix may replace in a chunk of `count` words: 2, or 20 %.
+    static func editLimit(_ count: Int) -> Int { max(2, count / 5) }
+
+    /// Most places where learned pairs are tried on one reply; past them the reply is judged without them.
+    static let maximumTaughtPlaces = 6
+
+    /// `chunk` (the words of `text`) as it is, then with each set of places where a pair of `taught` was said
+    /// (`AIFixReference.matches`) spelled as the pair's meant phrase, words and marks, its words frozen: with
+    /// "common free -> comment-free", "type comin free now" is also "type comment-free now". Only places the reply
+    /// changed are tried, none on a word a learned correction produced, at most `maximumTaughtPlaces`, none
+    /// overlapping; a mark the heard phrase has at its edge is taken with it ("food. -> pool!" makes "get fuud. Then"
+    /// "get pool! Then"). A cancelled task (the fixer's time limit) stops trying.
+    static func baselines(_ chunk: Tokens, text: String, reply: Tokens, taught: [Correction], language: String?,
+                          lexicon: Lexicon) -> [Tokens] {
+        guard !taught.isEmpty else { return [chunk] }
+        let wordHunks = hunks(chunk.words, reply.words)
+        var changed = wordHunks.map(\.old)
+        // Marks the reply changed between words it kept count as touched there too, so a pair that changes only
+        // punctuation ("web site -> web-site" over "web, site") is tried.
+        var (old, new) = (0, 0)
+        for hunk in wordHunks + [(chunk.words.count..<chunk.words.count, reply.words.count..<reply.words.count)] {
+            while old < hunk.old.lowerBound, new < hunk.new.lowerBound {
+                if chunk.gaps[old] != reply.gaps[new] { changed.append(old..<old) }
+                old += 1; new += 1
+            }
+            (old, new) = (hunk.old.upperBound, hunk.new.upperBound)
+        }
+        if chunk.gaps[chunk.words.count] != reply.gaps[reply.words.count] {
+            changed.append(chunk.words.count..<chunk.words.count)
+        }
+        func touched(_ span: Range<Int>) -> Bool {
+            changed.contains { $0.overlaps(span) || ($0.isEmpty && span.lowerBound <= $0.lowerBound
+                                                     && $0.lowerBound <= span.upperBound) }
+        }
+        struct Place {
+            var span: Range<Int>
+            var meant: Tokens
+            var heard: AIFixReference.Spoken
+        }
+        // A word a learned correction produced may be in a place only when the pair spells it again ("slash QC ->
+        // /qc" over a "QC" the chunk has); the pair's words are frozen in turn.
+        // It also keeps its place among the words the pair keeps: the words the place and the pair share come in
+        // the same order on both sides, so a chained pair ("foo -> bar", then "bar baz -> baz bar") cannot move it.
+        func keepsProtected(_ span: Range<Int>, _ meant: Tokens) -> Bool {
+            guard span.allSatisfy({ chunk.frozen[$0] != .protected || meant.words.contains(chunk.words[$0]) })
+            else { return false }
+            guard span.contains(where: { chunk.frozen[$0] == .protected }) else { return true }
+            let placeWords = span.map { chunk.words[$0] }
+            let shared = Set(placeWords).intersection(meant.words)
+            guard placeWords.filter(shared.contains) == meant.words.filter(shared.contains) else { return false }
+            // And its offset: it stays at the same place in the pair ("fuud QC -> food QC"), or earlier only by
+            // dropping words before it ("slash QC -> /qc"); nothing is put in front of it ("bar baz -> qux bar").
+            var used = 0
+            for (offset, word) in placeWords.enumerated() where chunk.frozen[span.lowerBound + offset] == .protected {
+                guard let at = meant.words[used...].firstIndex(of: word) else { return false }
+                if at > offset
+                    || (at < offset && !isSubsequence(Array(meant.words[..<at]), of: Array(placeWords[..<offset]))) {
+                    return false
+                }
+                used = at + 1
+            }
+            return true
+        }
+        func isSubsequence(_ small: [String], of large: [String]) -> Bool {
+            var rest = large[...]
+            for word in small {
+                guard let at = rest.firstIndex(of: word) else { return false }
+                rest = rest[(at + 1)...]
+            }
+            return true
+        }
+        var places: [Place] = []
+        let finder = AIFixReference.Finder(text, language: language, lexicon: lexicon)
+        for correction in taught {
+            var meant = Tokens(correction.meant.trimmingCharacters(in: .whitespacesAndNewlines), language: language,
+                               midSentence: true)
+            guard meant.count > 0 else { continue }
+            meant.frozen = Array(repeating: .taught, count: meant.count)
+            for span in finder.matches(of: correction.heard)
+            where touched(span) && keepsProtected(span, meant) && !places.contains(where: {
+                $0.span == span && $0.meant.raw == meant.raw && $0.meant.gaps == meant.gaps
+            }) {
+                places.append(Place(span: span, meant: meant, heard: AIFixReference.Spoken(correction.heard)))
+            }
+        }
+        guard !places.isEmpty, places.count <= maximumTaughtPlaces else { return [chunk] }
+        places.sort { $0.span.lowerBound < $1.span.lowerBound }
+        func applying(_ place: Place, to tokens: Tokens) -> Tokens {
+            let (start, end) = (place.span.lowerBound, place.span.upperBound)
+            let meant = place.meant
+            var result = tokens
+            let before = dropping(suffix: place.heard.breaks[0], of: tokens.gaps[start]) + meant.gaps[0]
+            let after = meant.gaps[meant.count]
+                + dropping(prefix: place.heard.trailing, of: tokens.gaps[end], beforeWord: end < tokens.count)
+            result.raw.replaceSubrange(start..<end, with: meant.raw)
+            result.words.replaceSubrange(start..<end, with: meant.words)
+            result.structured.replaceSubrange(start..<end, with: meant.structured)
+            result.names.replaceSubrange(start..<end, with: meant.names)
+            result.frozen.replaceSubrange(start..<end, with: meant.frozen)
+            result.gaps.replaceSubrange(start...end, with: [before] + meant.gaps[1..<meant.count] + [after])
+            return result
+        }
+        var result = [chunk]
+        // Each set of places that do not overlap, applied from the last to the first so the earlier ones keep
+        // their indices.
+        func search(_ index: Int, _ applied: [Place]) {
+            if Task.isCancelled { return }
+            guard index < places.count else {
+                if !applied.isEmpty { result.append(applied.reversed().reduce(chunk) { applying($1, to: $0) }) }
+                return
+            }
+            search(index + 1, applied)
+            if !applied.contains(where: { $0.span.overlaps(places[index].span) }) {
+                search(index + 1, applied + [places[index]])
+            }
+        }
+        search(0, [])
+        return result
+    }
+
+    /// `gap`, the text before a word, without the shortest end that holds `marks`
+    /// (`AIFixReference.Spoken.breakMark`), or as it is.
+    static func dropping(suffix marks: String, of gap: String) -> String {
+        guard !marks.isEmpty else { return gap }
+        let text = gap[...]
+        var found = ""
+        var index = text.endIndex
+        while index > text.startIndex {
+            index = text.index(before: index)
+            if let mark = AIFixReference.Spoken.breakMark(in: text, at: index, beforeWord: true) {
+                found = String(mark) + found
+            }
+            if found == marks { return String(text[..<index]) }
+        }
+        return gap
+    }
+
+    /// `gap`, the text after a word, without the shortest start that holds `marks`
+    /// (`AIFixReference.Spoken.breakMark`), or as it is. `beforeWord`: a word follows `gap`.
+    static func dropping(prefix marks: String, of gap: String, beforeWord: Bool) -> String {
+        guard !marks.isEmpty else { return gap }
+        let text = gap[...]
+        var found = ""
+        var index = text.startIndex
+        while index < text.endIndex {
+            if let mark = AIFixReference.Spoken.breakMark(in: text, at: index, beforeWord: beforeWord) {
+                found.append(mark)
+            }
+            index = text.index(after: index)
+            if found == marks { return String(text[index...]) }
+        }
+        return gap
+    }
+
+    /// The marks of `gap` that count for structure: all but spaces and commas. Line breaks count, and so do
+    /// apostrophes between words, which quote ("‘go’") or mark a plural possessive ("patients'").
+    static func structural(_ gap: String) -> String {
+        String(gap.filter { $0.isNewline || !($0.isWhitespace || $0 == ",") })
+    }
+
+    /// The marks of `tokens` in order: those before the first word, each non-empty one between two words, and those
+    /// after the last word but for the closing marks at the very end: "“go.”" keeps its period inside the quote.
+    static func marks(_ tokens: Tokens) -> [String] {
+        let inner = tokens.gaps.dropFirst().dropLast().map(structural).filter { !$0.isEmpty }
+        var last = structural(tokens.gaps.last ?? "")
+        while let mark = last.last, closingMarks.contains(mark) { last.removeLast() }
+        return [structural(tokens.gaps.first ?? "")] + inner + [last]
+    }
+
+    /// Why `reply` is not `baseline` with a few misheard words replaced one for one, with the stage it failed at
+    /// (a later stage came closer to passing); nil when it is.
+    static func judge(_ baseline: Tokens, _ reply: Tokens, language: String?,
+                      lexicon: Lexicon) -> (stage: Int, why: Rejection)? {
+        guard marks(baseline) == marks(reply) else { return (1, .changedStructure) }
+        guard baseline.count == reply.count else { return (2, .wordCountChanged) }
+        let count = baseline.count
+        func isNumber(_ index: Int) -> Bool {
+            SpokenWords.meaning(of: baseline.words[index], language: language).number != nil
+        }
+        for index in 1..<max(count, 1) {
+            let was = baseline.gaps[index], now = reply.gaps[index]
+            guard structural(was) == structural(now) else { return (3, .changedStructure) }
+            // "1,5" is not "1 5", nor "twenty, one" "twenty one".
+            if isNumber(index - 1), isNumber(index), was.contains(",") != now.contains(",") {
+                return (3, .changedStructure)
+            }
+        }
+        let edits = (0..<count).count { baseline.frozen[$0] != .taught && baseline.words[$0] != reply.words[$0] }
+        guard edits <= editLimit(count) else { return (4, .tooManyEdits) }
+        for index in 0..<count {
+            if let why = replaced(index, baseline, reply, language: language, lexicon: lexicon) { return (5, why) }
+        }
+        return nil
+    }
+
+    /// Why the word at `index` of `reply` may not stand where the word at `index` of `baseline` was; nil when it may.
+    static func replaced(_ index: Int, _ baseline: Tokens, _ reply: Tokens, language: String?,
+                         lexicon: Lexicon) -> Rejection? {
+        let was = baseline.raw[index], now = reply.raw[index]
+        // The same word with a typographic apostrophe for a plain one, or the reverse.
+        if was.replacingOccurrences(of: "’", with: "'") == now.replacingOccurrences(of: "’", with: "'") { return nil }
+        let startsSentence = index == 0 || endsSentence(baseline.gaps[index][...])
+        let plain = !baseline.structured[index] && !reply.structured[index]
+        // A capital at the start of a sentence, and the pronoun "I" anywhere.
+        if plain && was.dropFirst() == now.dropFirst() && was.prefix(1).lowercased() == now.prefix(1).lowercased()
+            && (startsSentence || isPronounI(now[...])) { return nil }
+        switch baseline.frozen[index] {
+        case .protected: return .changedCorrection
+        case .taught: return .implausibleSubstitution
+        case nil: break
+        }
+        let old = baseline.words[index], new = reply.words[index]
+        // Said alike, or saying another person, number, negation, modal or quantity: another meaning; otherwise a word
+        // it could not have been misheard for.
+        func refusal() -> Rejection {
+            SpokenWords.meaning(of: old, language: language) != SpokenWords.meaning(of: new, language: language)
+                || SpokenWords.isClose(old, new, language: language) ? .changedMeaning : .implausibleSubstitution
+        }
+        guard plain else { return refusal() }
+        // A name changes only in its apostrophes ("Jai" and "J'ai").
+        if baseline.names[index] && old.filter({ $0 != "'" }) != new.filter({ $0 != "'" }) { return refusal() }
+        // The same word in another case inside a sentence ("us" and "US").
+        guard old != new else { return .changedMeaning }
+        // A word in another case than the one it replaces ("bundu" and "Ubuntu").
+        guard startsSentence || isCapitalized(was) == isCapitalized(now) else { return refusal() }
+        if SpokenWords.mayReplace(old, with: new, language: language, isWord: lexicon.isWord(old),
+                                  newIsWord: lexicon.isWord(new)) { return nil }
+        return refusal()
+    }
+
+    /// Whether `word` starts with a capital, the pronoun "I" ("I", "I'm") aside.
+    static func isCapitalized(_ word: String) -> Bool {
+        word.first?.isUppercase == true && !isPronounI(word[...])
+    }
+
+    static func isPronounI(_ word: Substring) -> Bool {
+        word == "I" || word.hasPrefix("I'") || word.hasPrefix("I’")
+    }
+
+    /// The stretches where `a` and `b` differ, as ranges of each, from a word-level alignment with the edits of
+    /// `editDistance` (a substitution costs less than a removal and an addition).
+    static func hunks(_ a: [String], _ b: [String]) -> [(old: Range<Int>, new: Range<Int>)] {
+        let table = editTable(a, b)
+        var matched: [(Int, Int)] = []
+        var i = a.count, j = b.count
+        while i > 0 || j > 0 {
+            let cost = table[i][j]
+            if i > 0, j > 0, a[i - 1] == b[j - 1], cost == table[i - 1][j - 1] {
+                i -= 1; j -= 1
+                matched.append((i, j))
+            } else if i > 0, j > 0, cost == table[i - 1][j - 1] + 1 {
+                i -= 1; j -= 1
+            } else if i > 1, j > 0, a[i - 2] + a[i - 1] == b[j - 1], cost == table[i - 2][j - 1] + 1 {
+                i -= 2; j -= 1
+            } else if i > 0, j > 1, a[i - 1] == b[j - 2] + b[j - 1], cost == table[i - 1][j - 2] + 1 {
+                i -= 1; j -= 2
+            } else if i > 0, cost == table[i - 1][j] + 1 {
+                i -= 1
+            } else {
+                j -= 1
+            }
+        }
+        var result: [(old: Range<Int>, new: Range<Int>)] = []
+        var (lastA, lastB) = (0, 0)
+        for (x, y) in matched.reversed() + [(a.count, b.count)] {
+            if x > lastA || y > lastB { result.append((lastA..<x, lastB..<y)) }
+            (lastA, lastB) = (x + 1, y + 1)
+        }
+        return result
     }
 
     /// How many times `phrase` appears in `words`, overlapping matches included.
     static func occurrences(of phrase: [String], in words: [String]) -> Int {
         guard phrase.count <= words.count else { return 0 }
         return (0...(words.count - phrase.count)).count { words[$0..<($0 + phrase.count)].elementsEqual(phrase) }
-    }
-
-    /// The marks between words, other than whitespace, commas and apostrophes, and the words between them. The
-    /// first mark is the one before the first word and the last the one after the last word, without its closing
-    /// marks (both may be ""). Every other mark is non-empty and separates two segments of words.
-    struct Shape: Equatable {
-        var marks: [String]
-        var segments: [[String]]
-    }
-
-    static func shape(of text: String) -> Shape {
-        func structural(_ gap: Substring) -> String {
-            String(gap.filter { $0.isNewline || !($0.isWhitespace || $0 == "," || $0 == "'" || $0 == "’") })
-        }
-        var marks: [String] = []
-        var segments: [[String]] = [[]]
-        var cursor = text.startIndex
-        for match in text.matches(of: wordPattern) {
-            let mark = structural(text[cursor..<match.range.lowerBound])
-            if marks.isEmpty {
-                marks.append(mark)  // before the first word
-            } else if !mark.isEmpty {
-                marks.append(mark)
-                segments.append([])
-            }
-            segments[segments.count - 1].append(normalized(match.output))
-            cursor = match.range.upperBound
-        }
-        marks.append(structural(text[cursor...]).filter { !closingMarks.contains($0) })
-        return Shape(marks: marks, segments: segments)
     }
 
     /// The reply without the prompt's label or quotes the original did not have. A "Text:" the speaker dictated
@@ -299,9 +682,14 @@ public enum AIFixGuard {
         text.matches(of: wordPattern).map { normalized($0.output) }
     }
 
-    /// Word-level Levenshtein distance, where joining two words into one ("semi colon" → "semicolon") or splitting
+    /// Word-level Levenshtein distance, where joining two words into one ("on ubuntu" → "onubuntu") or splitting
     /// one into two also counts as a single edit.
     static func editDistance(_ a: [String], _ b: [String]) -> Int {
+        editTable(a, b)[a.count][b.count]
+    }
+
+    /// `editDistance`'s table: the distance between the first i words of `a` and the first j of `b`.
+    private static func editTable(_ a: [String], _ b: [String]) -> [[Int]] {
         var table = Array(repeating: Array(repeating: 0, count: b.count + 1), count: a.count + 1)
         for i in 0...a.count { table[i][0] = i }
         for j in 0...b.count { table[0][j] = j }
@@ -314,7 +702,7 @@ public enum AIFixGuard {
                 table[i][j] = best
             }
         }
-        return table[a.count][b.count]
+        return table
     }
 }
 
@@ -363,23 +751,196 @@ public enum AIFixOriginal {
 
 /// Picks which learned corrections to list for the model, within a token budget.
 public enum AIFixReference {
-    /// Corrections sharing a word with `text` (in their heard or meant phrase), most recently added first. A pair
-    /// that does not fit the remaining budget is skipped. Unrelated pairs are left out: listed, the model put their
-    /// spellings into text they had nothing to do with ("a new pear of shoes" became "a new Codex of shoes").
-    public static func select(from entries: [Correction], for text: String, budget: Int) -> [Correction] {
-        let words = Set(AIFixGuard.words(in: text))
-        let relevant = entries.reversed().filter {
-            !words.isDisjoint(with: AIFixGuard.words(in: $0.heard + " " + $0.meant))
-        }
+    /// Corrections whose heard phrase was said in `text` (`matches`), most recently added first. A pair that does
+    /// not fit the remaining budget is skipped. Any other pair is left out: listed, the model put its spelling into
+    /// text it had nothing to do with ("a new pear of shoes" became "a new Codex of shoes"; with "a Bundo -> ubuntu"
+    /// listed because of the "a", "on a Windows machine" became "on a Ubuntu machine").
+    /// Each word of the text is compared once with each distinct heard word (`Finder`), so a long list costs about
+    /// its distinct words, not its entries times the text's words. It stops early when its task is cancelled (the
+    /// fixer's time limit). `language` (a locale identifier) says which function words count
+    /// (`SpokenWords.isContent`).
+    public static func select(from entries: [Correction], for text: String, budget: Int,
+                              language: String? = nil, lexicon: Lexicon? = nil) -> [Correction] {
+        let finder = Finder(text, language: language,
+                            lexicon: lexicon ?? Lexicon(language: language, taught: entries.map(\.meant)))
         var remaining = budget
         var chosen: [Correction] = []
-        for entry in relevant {
+        for entry in entries.reversed() {
+            if Task.isCancelled { break }
             let cost = estimatedTokens(entry)
-            guard cost <= remaining else { continue }
+            guard cost <= remaining, !finder.matches(of: entry.heard).isEmpty else { continue }
             chosen.append(entry)
             remaining -= cost
         }
         return chosen
+    }
+
+    /// Where `heard` was said in `text`, as ranges of its words (`AIFixGuard.words`): every word of the phrase, in
+    /// order and next to each other, its content words (`SpokenWords.isContent`) as they are or, where the text's
+    /// word is not a real word (`lexicon`, by default the spell checker's for `language`), misheard again a little
+    /// differently (`SpokenWords.isVariant`: "a bundu" for "a Bundo", never "bat" for "bit") and its other words
+    /// exactly, with the same marks that end a phrase between them as the heard phrase has, usually none, and those
+    /// it has at its edges ("bull." is not said in "a bull request") (`Spoken`). Part of a phrase
+    /// is not the phrase: "the basement" is not "this basement", "slash help" not "slash QC", "use bundu" not "a
+    /// Bundo", and "the bull. Request access" does not say "bull request".
+    public static func matches(of heard: String, in text: String, language: String? = nil,
+                               lexicon: Lexicon? = nil) -> [Range<Int>] {
+        Finder(text, language: language, lexicon: lexicon ?? Lexicon(language: language)).matches(of: heard)
+    }
+
+    /// A text's words (`AIFixGuard.words`) and, for each, the marks that end a phrase just before it ("" for none):
+    /// sentence and clause marks (. ! ? … : ; and dashes), line breaks, brackets, double quotes, and the symbols of
+    /// paths, addresses and identifiers ("/", "@", "#", "_"...: `AIFixGuard.Tokens.symbols`); `trailing`, those after
+    /// the last word. Commas, hyphens and apostrophes inside a word do not end a phrase: recognizers put commas
+    /// anywhere, and "T-Mux" is one phrase; "right/now" is not "right now". An apostrophe between words quotes, so
+    /// it does ("He said ‘go’ now").
+    struct Spoken {
+        var words: [String] = []
+        var breaks: [String] = []
+        var trailing = ""
+
+        init(_ text: String) {
+            var cursor = text.startIndex
+            for match in text.matches(of: AIFixGuard.wordPattern) {
+                breaks.append(Self.breakMarks(text[cursor..<match.range.lowerBound], beforeWord: true))
+                words.append(AIFixGuard.normalized(match.output))
+                cursor = match.range.upperBound
+            }
+            trailing = Self.breakMarks(text[cursor...], beforeWord: false)
+        }
+
+        /// The marks just after the word at `index`.
+        func marks(after index: Int) -> String { index + 1 < breaks.count ? breaks[index + 1] : trailing }
+
+        /// The marks of `gap` that end a phrase (`breakMark`), in order.
+        static func breakMarks(_ gap: Substring, beforeWord: Bool) -> String {
+            String(gap.indices.compactMap { breakMark(in: gap, at: $0, beforeWord: beforeWord) })
+        }
+
+        /// The mark the character at `index` of `gap`, the text between two words, is when it ends a phrase: a line
+        /// break as "\n", a dash between clauses as "—", a double quote as an opening "“" or a closing "”" (a plain
+        /// one opens when `beforeWord` and nothing but marks lies between it and the word: "we say "hi"), never one
+        /// for the other. `beforeWord`: a word follows `gap`.
+        static func breakMark(in gap: Substring, at index: Substring.Index, beforeWord: Bool) -> Character? {
+            let character = gap[index]
+            if character.isNewline { return "\n" }
+            if "“«".contains(character) { return "“" }
+            if "”»".contains(character) { return "”" }
+            if character == "\"" {
+                let opens = beforeWord && !gap[gap.index(after: index)...].contains(where: \.isWhitespace)
+                return opens ? "“" : "”"
+            }
+            // An apostrophe between words (not inside one, as in "don't") quotes: it ends a phrase like a double
+            // quote, so a taught phrase never spans or drops it ("He said ‘go’ now" does not say "go now").
+            if "‘‛".contains(character) { return "‘" }
+            if character == "’" || character == "'" {
+                let opens = beforeWord && !gap[gap.index(after: index)...].contains(where: \.isWhitespace)
+                return opens ? "‘" : "’"
+            }
+            // A dash between clauses ends a phrase, as does a hyphen with space around it ("food - requests"); a
+            // hyphen inside a word ("T-Mux") does not.
+            if "—–".contains(character) { return "—" }
+            if AIFixGuard.Tokens.hyphens.contains(character) && gap.contains(where: \.isWhitespace) { return "—" }
+            return ".!?…:;".contains(character) || AIFixGuard.Tokens.symbols.contains(character) ? character : nil
+        }
+    }
+
+    /// Finds heard phrases in one text. Where each heard word was said is worked out once, comparing it with each
+    /// distinct word of the text.
+    final class Finder {
+        let text: Spoken
+        let language: String?
+        let lexicon: Lexicon
+        /// For each word of the text, whether it is in an address, path, tag, option or identifier
+        /// (`AIFixGuard.Tokens.hasSymbols`).
+        private let symbolic: [Bool]
+        /// For each word of the text, whether it is written with a capital: a name, or a word the recognizer took
+        /// for one. For a heard phrase of one plain word, most likely a name, only its exact spelling says it there:
+        /// a variant would let a taught pair rename a person ("Meks" is not "Maks"). A longer phrase ("Ubundu
+        /// machine") or a coined token ("T-Mox") carries enough of its own to be matched as a variant.
+        private let capitalized: [Bool]
+        private let positions: [String: [Int]]
+        private let features: [String: SpokenWords.Features]
+        private var said: [String: Set<Int>] = [:]
+        private var saidPlain: [String: Set<Int>] = [:]
+
+        init(_ text: String, language: String?, lexicon: Lexicon) {
+            let spoken = Spoken(text)
+            self.text = spoken
+            self.language = language
+            self.lexicon = lexicon
+            let tokens = text.matches(of: AIFixGuard.wordPattern)
+            symbolic = tokens.map { AIFixGuard.Tokens.hasSymbols($0.range, in: text) }
+            capitalized = tokens.map { text[$0.range].first?.isUppercase ?? false }
+            positions = Dictionary(grouping: spoken.words.indices, by: { spoken.words[$0] })
+            features = Dictionary(uniqueKeysWithValues: positions.keys.map { ($0, SpokenWords.Features($0)) })
+        }
+
+        /// Where `word`, a word of a heard phrase, was said: as it is (as `AIFixGuard.words`), or for a content
+        /// word, as a variant where the text's word is not a real word (`Lexicon`): "a bundu" says "a Bundo", while
+        /// "bat" never says "bit", nor "unable" "enable": a real word says only itself. Nor is a word said by its
+        /// opposite misspelled (`SpokenWords.changesPolarity`: "uneble" for "enable").
+        func positions(of word: String, capitalizedVariants: Bool = true) -> Set<Int> {
+            if !capitalizedVariants {
+                if let known = saidPlain[word] { return known }
+                let variants = positions(of: word).subtracting(positions[word] ?? [])
+                let found = positions(of: word).subtracting(variants.filter { capitalized[$0] })
+                saidPlain[word] = found
+                return found
+            }
+            if let known = said[word] { return known }
+            var found = Set(positions[word] ?? [])
+            if SpokenWords.isContent(word, language: language) {
+                let heard = SpokenWords.Features(word)
+                for (other, at) in positions where other != word
+                    && SpokenWords.isVariant(features[other]!, of: heard, language: language)
+                    && !lexicon.isWord(other) && !SpokenWords.changesPolarity(other, word, language: language) {
+                    found.formUnion(at)
+                }
+            }
+            said[word] = found
+            return found
+        }
+
+        /// Whether the one word of `heard` could be a person's name: letters only, with apostrophes ("Maks's",
+        /// "O'Brien") and hyphens between parts of two letters or more ("Jean-Luc"), whatever marks surround it. A
+        /// digit, a symbol, or a one-letter part ("T-Mox") makes it a coined token instead.
+        static func isNameLike(_ heard: String) -> Bool {
+            // The heard phrase without the marks around it; one word, or hyphenated parts.
+            let token = heard.drop(while: { !$0.isLetter && !$0.isNumber })
+                .reversed().drop(while: { !$0.isLetter && !$0.isNumber && !"'’".contains($0) }).reversed()
+            guard !token.isEmpty, !token.contains(where: \.isWhitespace) else { return false }
+            let parts = token.split(whereSeparator: { AIFixGuard.Tokens.hyphens.contains($0) }).map(String.init)
+            return parts.allSatisfy { part in
+                part.allSatisfy { $0.isLetter || "'’".contains($0) } && part.filter(\.isLetter).count >= (parts.count > 1 ? 2 : 1)
+            }
+        }
+
+        func matches(of heard: String) -> [Range<Int>] {
+            let phrase = Spoken(heard)
+            guard let first = phrase.words.first, phrase.words.count <= text.words.count else { return [] }
+            let heardSymbolic = heard.matches(of: AIFixGuard.wordPattern).map {
+                AIFixGuard.Tokens.hasSymbols($0.range, in: heard)
+            }
+            // One name-like word is most likely a person's name: said only as spelled where the text capitalizes it.
+            let plainSingle = Self.isNameLike(heard)
+            return positions(of: first, capitalizedVariants: !plainSingle).sorted().compactMap { start in
+                let end = start + phrase.words.count
+                guard end <= text.words.count else { return nil }
+                // A heard phrase saved with marks at its edges ("bull.") is said with them.
+                guard text.breaks[start].hasSuffix(phrase.breaks[0]),
+                      text.marks(after: end - 1).hasPrefix(phrase.trailing) else { return nil }
+                // A word of an address, path, tag, option or identifier ("#fuud", "--food") says a heard word only
+                // when the heard phrase has it so too: a prose pair does not rewrite an identifier.
+                guard (start..<end).allSatisfy({ !symbolic[$0] || heardSymbolic[$0 - start] }) else { return nil }
+                for index in phrase.words.indices.dropFirst() {
+                    guard text.breaks[start + index] == phrase.breaks[index],
+                          positions(of: phrase.words[index], capitalizedVariants: !plainSingle)
+                            .contains(start + index) else { return nil }
+                }
+                return start..<end
+            }
+        }
     }
 
     /// A deliberate overestimate (about 3 characters per token, plus the arrow and line break), so the budget holds

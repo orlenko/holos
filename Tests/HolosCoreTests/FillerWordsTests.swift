@@ -94,3 +94,11 @@ import Testing
         }
     }
 }
+
+@Test func aFillerIsAWholeWordOfTheLanguage() {
+    #expect(FillerWords.isFiller("um", language: "en-US") && FillerWords.isFiller("uhh", language: nil))
+    #expect(FillerWords.isFiller("euh", language: "fr-FR") && !FillerWords.isFiller("euh", language: "en-US"))
+    // Units and abbreviations stay.
+    #expect(!FillerWords.isFiller("mm", language: "en-US") && !FillerWords.isFiller("er", language: nil))
+    #expect(!FillerWords.isFiller("umbrella", language: "en-US"))
+}
