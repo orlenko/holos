@@ -83,9 +83,13 @@ import Testing
         == .reject(.changedStructure))
     #expect(AIFixGuard.check(original: "Pick twenty one or ten", fixed: "Pick twenty, one or ten")
         == .reject(.changedStructure))
-    // Closing marks may change at the very end, including before closing quotes.
-    #expect(AIFixGuard.check(original: "he called it “great”", fixed: "he called it “great.”") == .accept)
+    // Closing marks may change at the very end, not inside a closing quote or bracket, nor across one.
     #expect(AIFixGuard.check(original: "Is it done?", fixed: "Is it done?!") == .accept)
+    #expect(AIFixGuard.check(original: "he called it “great”", fixed: "he called it “great”.") == .accept)
+    #expect(AIFixGuard.check(original: "he called it “great”", fixed: "he called it “great.”")
+        == .reject(.changedStructure))
+    #expect(AIFixGuard.check(original: "He said “go.”", fixed: "He said “go”.") == .reject(.changedStructure))
+    #expect(AIFixGuard.check(original: "See (below.)", fixed: "See (below).") == .reject(.changedStructure))
 }
 
 @Test func guardRejectsBigDeletionsAndEmptyReplies() {
@@ -573,7 +577,8 @@ let frenchOriginals: Set<String> = [
     ("Take her to the ER now", "Take her to the now"), ("Send to team@right.com", "Send to team@write.com"),
     ("run /tmp/site.py", "run /tmp/sight.py"), ("send it to us", "send it to US"), ("use windows now", "use Windows now"),
     ("Use #right today", "Use #write today"), ("Run --right now", "Run --write now"), ("Set $right now", "Set $write now"),
-    ("Open right.txt", "Open write.txt"), ("Call right_now()", "Call write_now()"),
+    ("Open right.txt", "Open write.txt"), ("Call right_now()", "Call write_now()"), ("Call right() now", "Call write() now"),
+    ("Use a[right] here", "Use a[write] here"),
     // Names, but for their apostrophes.
     ("Ask Mary about it", "Ask Marie about it"), ("Send it to Bob and Alice", "Send it to Alice and Bob"),
     ("Deploy to Windows now", "Deploy to Ubuntu now"), ("Ping John today", "Ping Joan today"),
@@ -839,9 +844,18 @@ func aFrenchMishearingIsFixed(original: String, fixed: String) {
                              taught: [pool]) == .reject(.implausibleSubstitution))
     #expect(AIFixGuard.check(original: "Get some food requests later.", fixed: "Get some pool requests later.",
                              taught: [pool]) == .accept)
-    // A comma, hyphen or slash does not end a phrase: "T-Mux" is one.
+    // A comma or hyphen does not end a phrase: "T-Mux" is one.
     #expect(AIFixReference.matches(of: "T-Mux", in: "open T-Mux now") == [1..<3])
     #expect(AIFixReference.matches(of: "bull request", in: "a bull, request") == [1..<3])
+    // The symbols of paths, addresses and identifiers do: "right/now" is not "right now", nor "team@right" "team
+    // right", so a prose pair does not rewrite them.
+    let now = Correction(heard: "right now", meant: "write now")
+    #expect(AIFixReference.matches(of: "right now", in: "Use right/now today").isEmpty)
+    #expect(AIFixReference.matches(of: "team right", in: "Send to team@right.com").isEmpty)
+    #expect(AIFixReference.matches(of: "and/or", in: "this and/or that") == [1..<3])
+    #expect(AIFixGuard.check(original: "Use right/now today", fixed: "Use write now today", taught: [now]) != .accept)
+    #expect(AIFixGuard.check(original: "Use right/now today", fixed: "Use write/now today", taught: [now]) != .accept)
+    #expect(AIFixGuard.check(original: "Use right now today", fixed: "Use write now today", taught: [now]) == .accept)
     // A heard phrase with a mark of its own is said with that mark.
     #expect(AIFixReference.matches(of: "node. js", in: "use node. js here") == [1..<3])
     #expect(AIFixReference.matches(of: "node. js", in: "use node js here").isEmpty)

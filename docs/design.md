@@ -382,8 +382,8 @@ mistakes. Do not learn from ordinary typing elsewhere.
 
 The opt-in misheard-word fix (`TranscriptFixer`) shows Apple's on-device model only
 the learned pairs whose whole heard phrase is in the chunk, word for word and in
-order, with no sentence or clause mark, line break, bracket or quote between its
-words: its function words exactly, and each content word (not a function word of the
+order, with no sentence or clause mark, line break, bracket, quote or path symbol
+("/", "@", "#") between its words, and an opening quote never taken for a closing one: its function words exactly, and each content word (not a function word of the
 language dictated, English or French, and at least three letters) as is or, where the
 chunk's word is not a real word, misheard again a little differently (the same
 pronunciation key and half the letters the same: "a bundu" says "a Bundo"; "a point",
@@ -410,8 +410,9 @@ order with the same count, and nothing else:
    "they're", "right" and "write", "one" and "won", "by" and "buy", "pears" and
    "pairs"; "ces" and "ses", "a" and "à", "peut" and "peux", "contes" and "comptes").
    Accents count: "pécher" is not "pêcher".
-4. Commas and apostrophes between words, closing marks at the very end, and the
-   capital that starts a sentence (and the pronoun "I").
+4. Commas and apostrophes between words, closing marks at the very end (not inside a
+   closing quote or bracket: "“go.”" does not become "“go”."), and the capital that
+   starts a sentence (and the pronoun "I").
 
 A word is real when the system spell checker knows it in the dictation language
 (lowercased or capitalized, so names such as "Mary" count), when it has a digit, or

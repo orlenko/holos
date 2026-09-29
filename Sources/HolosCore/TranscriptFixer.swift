@@ -258,9 +258,9 @@ public enum AIFixGuard {
         /// `gaps[i]` is the text before word i, `gaps[raw.count]` the text after the last word.
         var gaps: [String] = []
         /// Words in a unit, number, address, path, tag, option or identifier: a run of characters without spaces
-        /// that has a digit or a symbol ("@", "/", "\", ".", "_", "#", "$", "=" and the like) inside or starts with
-        /// "-" ("5mW", "team@right.com", "/tmp/site.py", "v1.2", "#right", "--right"), or a word with a capital past
-        /// its first letter ("GitHub", "QC", "mW"). Only a taught pair may change them.
+        /// that has a digit or a symbol (`symbols`: "@", "/", ".", "_", "#", "$", "=", "(" and the like) inside or
+        /// starts with "-" ("5mW", "team@right.com", "/tmp/site.py", "v1.2", "#right", "--right", "right()"), or a
+        /// word with a capital past its first letter ("GitHub", "QC", "mW"). Only a taught pair may change them.
         var structured: [Bool] = []
         /// Words that may be names (`AIFixGuard.names`).
         var names: [Bool] = []
@@ -286,6 +286,10 @@ public enum AIFixGuard {
 
         var count: Int { raw.count }
 
+        /// The characters that make a run of characters an address, path, tag, option, call or identifier.
+        static let symbols: Set<Character> = ["@", "/", "\\", ".", "_", "#", "$", "%", "&", "=", "+", "~", "`", "<", ">",
+                                              "|", "*", "^", "(", ")", "[", "]", "{", "}"]
+
         /// Whether the word at `range` of `text` is in a unit, number, address, path or identifier (`structured`).
         static func isStructured(_ range: Range<String.Index>, in text: String) -> Bool {
             if text[range].dropFirst().contains(where: \.isUppercase) { return true }
@@ -298,7 +302,7 @@ public enum AIFixGuard {
             // Quotes, brackets and the marks that end a clause belong to the sentence, not the token.
             while let first = run.first, "([{\"'“‘«¿¡".contains(first) { run = run.dropFirst() }
             while let last = run.last, ".,;:!?…)]}\"'”’»".contains(last) { run = run.dropLast() }
-            return run.first == "-" || run.contains { $0.isNumber || "@/\\._#$%&=+~`<>|*^[]{}".contains($0) }
+            return run.first == "-" || run.contains { $0.isNumber || symbols.contains($0) }
         }
     }
 
@@ -449,10 +453,11 @@ public enum AIFixGuard {
     }
 
     /// The marks of `tokens` in order: those before the first word, each non-empty one between two words, and those
-    /// after the last word but for its closing marks.
+    /// after the last word but for the closing marks at the very end: "“go.”" keeps its period inside the quote.
     static func marks(_ tokens: Tokens) -> [String] {
         let inner = tokens.gaps.dropFirst().dropLast().map(structural).filter { !$0.isEmpty }
-        let last = structural(tokens.gaps.last ?? "").filter { !closingMarks.contains($0) }
+        var last = structural(tokens.gaps.last ?? "")
+        while let mark = last.last, closingMarks.contains(mark) { last.removeLast() }
         return [structural(tokens.gaps.first ?? "")] + inner + [last]
     }
 
@@ -731,9 +736,10 @@ public enum AIFixReference {
     }
 
     /// A text's words (`AIFixGuard.words`) and, for each, the marks that end a phrase just before it ("" for none):
-    /// sentence and clause marks (. ! ? … : ; and dashes), line breaks, brackets and double quotes; `trailing`,
-    /// those after the last word. Commas, hyphens, slashes and apostrophes do not end a phrase: recognizers put
-    /// commas anywhere, and "T-Mux" is one phrase.
+    /// sentence and clause marks (. ! ? … : ; and dashes), line breaks, brackets, double quotes, and the symbols of
+    /// paths, addresses and identifiers ("/", "@", "#", "_"...: `AIFixGuard.Tokens.symbols`); `trailing`, those after
+    /// the last word. Commas, hyphens and apostrophes do not end a phrase: recognizers put commas anywhere, and
+    /// "T-Mux" is one phrase; "right/now" is not "right now".
     struct Spoken {
         var words: [String] = []
         var breaks: [String] = []
@@ -772,7 +778,7 @@ public enum AIFixReference {
             }
             // A dash between clauses ends a phrase; a hyphen inside a word does not.
             if "—–".contains(character) { return "—" }
-            return ".!?…:;()[]{}".contains(character) ? character : nil
+            return ".!?…:;".contains(character) || AIFixGuard.Tokens.symbols.contains(character) ? character : nil
         }
     }
 
