@@ -125,3 +125,23 @@ private func mode(_ url: URL) -> mode_t? {
     #expect(WordListCommand.countLine(1) == "The word list has 1 term.")
     #expect(WordListCommand.countLine(101) == "The word list has 101 terms; the recognizer gets the first 100.")
 }
+
+@Test func aRetryAfterAFailedFolderSyncMakesTheListDurableBeforeSucceeding() throws {
+    let store = try wordsStore()
+    // The save renames, then its folder fsync fails: the term is on disk but not durable, and the add throws.
+    #expect(throws: (any Error).self) {
+        try AtomicFile.$failFolderSync.withValue(true) {
+            try store.update { _ = $0.add("Keycloak", at: wordsDate) }
+        }
+    }
+    #expect(try store.load().entries.map(\.text) == ["Keycloak"])
+    // A retry finds the term already there; it still syncs, so a folder that still fails keeps failing the retry.
+    #expect(throws: (any Error).self) {
+        try AtomicFile.$failFolderSync.withValue(true) {
+            try store.update { _ = $0.add("Keycloak", at: wordsDate) }
+        }
+    }
+    // Once the folder can be synced, the retry succeeds.
+    try store.update { _ = $0.add("Keycloak", at: wordsDate) }
+    #expect(try store.load().entries.map(\.text) == ["Keycloak"])
+}

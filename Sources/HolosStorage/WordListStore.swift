@@ -46,7 +46,14 @@ public struct WordListStore: Sendable {
             var list = try load()
             let before = list
             let result = try change(&list)
-            if list != before { try save(list) }
+            if list != before {
+                try save(list)
+            } else if FileManager.default.fileExists(atPath: url.path) {
+                // Unchanged, but a save that failed after its rename (a folder fsync) may have left the list visible
+                // and not durable: a retry that finds its term already there makes it durable before succeeding.
+                try AtomicFile.sync(url)
+                try AtomicFile.syncDirectory(url.deletingLastPathComponent())
+            }
             return (list, result, stamp())
         }
     }
