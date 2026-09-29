@@ -54,12 +54,77 @@ extension HolosAppDelegate {
                 opacity: { [weak self] value in self?.changePreviewOpacity(value) },
                 language: { [weak self] identifier in self?.changeLanguage(to: identifier) },
                 shortcut: { [weak self] choice in self?.changeShortcut(to: choice) },
-                retention: { [weak self] retention in self?.changeHistoryRetention(to: retention) }))
+                retention: { [weak self] retention in self?.changeHistoryRetention(to: retention) },
+                appearance: { [weak self] choice in self?.changeAppearance(to: choice) }))
+        }
+    }
+
+    /// Settings › General › "Open the Voice is Local window when it starts" (on by default).
+    var openWindowAtLaunch: Bool {
+        get {
+            MainWindowLaunch.opensWindow(
+                saved: UserDefaults.standard.object(forKey: MainWindowLaunch.openAtLaunchKey) as? Bool)
+        }
+        set { UserDefaults.standard.set(newValue, forKey: MainWindowLaunch.openAtLaunchKey) }
+    }
+
+    /// Settings › General › Appearance.
+    var appearance: AppearanceChoice {
+        get { AppearanceChoice(saved: UserDefaults.standard.string(forKey: AppearanceChoice.key)) }
+        set { UserDefaults.standard.set(newValue.rawValue, forKey: AppearanceChoice.key) }
+    }
+
+    /// Sets the appearance of the whole app, so every window follows it (the main window, the dictation preview,
+    /// Review, the Setup Assistant, the meeting panels, alerts): nil follows macOS.
+    func applyAppearance() {
+        NSApplication.shared.appearance = switch appearance {
+        case .system: nil
+        case .light: NSAppearance(named: .aqua)
+        case .dark: NSAppearance(named: .darkAqua)
+        }
+    }
+
+    func changeAppearance(to choice: AppearanceChoice) {
+        appearance = choice
+        applyAppearance()
+        updateSettings()
+    }
+
+    /// The section the window last showed, in this run or an earlier one; History when none was saved.
+    private var lastMainSection: MainSection {
+        if let current = mainWindow?.current { return current }
+        return UserDefaults.standard.string(forKey: MainWindowLaunch.lastSectionKey)
+            .flatMap(MainSection.init(storageName:)) ?? .history
+    }
+
+    /// A launch the Setup Assistant and Settings (dictation off) left alone: the main window opens when the setting
+    /// is on, on Meetings while a meeting records (the app reattached to it), else on the section it last showed.
+    /// A manual launch is the user asking for the app, so the window comes forward like any app's.
+    func openMainWindowAtLaunch() {
+        guard openWindowAtLaunch else { return }
+        let name = MainWindowLaunch.section(
+            lastUsed: UserDefaults.standard.string(forKey: MainWindowLaunch.lastSectionKey),
+            known: Set(MainSection.allCases.map(\.storageName)),
+            meetingRecording: meetingRecordingAtLaunch)
+        showMainWindow(MainSection(storageName: name) ?? .history)
+    }
+
+    /// A recorder is starting, recording, or saving (the app reattached to it at launch): Meetings shows its progress.
+    private var meetingRecordingAtLaunch: Bool {
+        if meeting.dictationPaused { return true }
+        switch meeting.controller?.state {
+        case .starting, .active, .finishing: return true
+        case .idle, .failed, nil: return false
         }
     }
 
     /// A section came on screen (nil: the window closed).
     private func mainSectionChanged(_ section: MainSection?) {
+        // Saved for the next launch, except Settings: it also opens on its own (a launch with dictation off, a refused
+        // enable), and a launch opens where the user works.
+        if let section, section != .settings {
+            UserDefaults.standard.set(section.storageName, forKey: MainWindowLaunch.lastSectionKey)
+        }
         if section == .settings {
             startSettingsRefresh()
         } else {
@@ -82,9 +147,10 @@ extension HolosAppDelegate {
         showMainWindow(section)
     }
 
-    /// "Open Voice is Local" (⌘0): the window on the section it last showed, or History.
+    /// "Open Voice is Local" (⌘0), and a click on the Dock icon with no window on screen: the window on the section
+    /// it last showed (in this run or an earlier one), or History.
     @objc func showMainWindowFromMenu(_ sender: Any?) {
-        showMainWindow(mainWindow?.current ?? .history)
+        showMainWindow(lastMainSection)
     }
 
     @objc func showSettingsFromMenu(_ sender: Any?) { showSetup() }

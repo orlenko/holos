@@ -135,6 +135,30 @@ recording), then:
     Forget…) behave as their windows did. While a meeting records or is processed (by
     the app or `voiceislocal` in Terminal), Delete Meeting… is disabled and ⌫ on it only
     beeps, with no confirmation.
+11. **Open at launch**: with dictation on and no meeting recording, choose Reading in the
+    window, quit (⌘Q), and open `build/VoiceIsLocal.app` from Finder: the window opens on
+    Reading, in front, with the app in the Dock. Go to Settings, quit, and reopen: it opens
+   on Reading again (Settings is not remembered). Settings › General shows **Open the Voice
+    is Local window when it starts** checked (the default). Uncheck it, quit, and open the
+    app again: only the menu bar item appears, and ⌘0 in its menu opens the window on the
+    last section. With dictation off, Settings opens at launch either way. Check it again.
+    Start a meeting recording, quit Voice is Local with **Keep Recording**, and reopen it:
+    the window opens on Meetings.
+12. **Closing never quits**: during a dictation-ready state (and again while a meeting
+    records), close the window with the red button or ⌘W: the menu bar item stays, the
+    Dock icon goes away, the hold-to-talk key still dictates, and the meeting keeps
+    recording (`voiceislocal meeting status`). Only **Quit** in the menu bar menu or ⌘Q
+    quits.
+13. **Dock icon reopens the window**: with the window and the live transcript open, close
+    the window (the transcript keeps the Dock icon), then click the Dock icon: the main
+    window opens on its last section. Minimise the window and click the Dock icon: it
+    comes back from the Dock.
+14. **Appearance**: with macOS in Dark mode, choose Settings › General › Appearance →
+    Light: at once the main window (every section), and then the dictation preview,
+    Review, the Setup Assistant (Run Setup Assistant…), the meeting start panel, the live
+    transcript, and an alert (Clear History…) are light, and text, cards, badges, and the
+    sidebar's status card read well. Choose Dark with macOS in Light mode: the same, dark.
+    Choose System: they follow macOS again when it switches. The choice survives a quit.
 
 ## Reading section
 

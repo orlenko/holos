@@ -16,6 +16,23 @@ enum MainSection: Int, CaseIterable {
         }
     }
 
+    /// A stable name for UserDefaults (`MainWindowLaunch.lastSectionKey`), independent of the sidebar order.
+    var storageName: String {
+        switch self {
+        case .history: "history"
+        case .corrections: "corrections"
+        case .meetings: "meetings"
+        case .people: "people"
+        case .reading: "reading"
+        case .settings: "settings"
+        }
+    }
+
+    init?(storageName: String) {
+        guard let section = Self.allCases.first(where: { $0.storageName == storageName }) else { return nil }
+        self = section
+    }
+
     var symbol: String {
         switch self {
         case .history: "clock.arrow.circlepath"

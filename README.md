@@ -77,7 +77,9 @@ key's event tap runs on Accessibility (still to be confirmed on a real Mac; see 
 validation guide). Only if macOS refuses the tap anyway do Settings (and the
 assistant) show an Input Monitoring row. An install that was already set up never sees
 the assistant; later launches open the main window on Settings (**Settings…** ⌘, in the
-menu) while dictation is off. The default hold-to-talk choice
+menu) while dictation is off, and otherwise on the section it last showed (Meetings
+while a meeting records) unless Settings › General › **Open the Voice is Local window
+when it starts** is off. The default hold-to-talk choice
 is Right Option; Control–Option–Space is available as an alternate. The menu bar
 app shows a live preview, and releasing the shortcut finalizes one utterance.
 See the [dictation validation guide](docs/dictation-validation.md) before relying
@@ -145,7 +147,7 @@ Meeting can also forget the voice samples learned from that meeting. See the
 | Meetings | ⌘3 | The saved meetings (was the Meetings window). Return opens Review, ⌫ is Delete Meeting…. |
 | People | ⌘4 | People you have named and their voice samples (was the People window). |
 | Reading | ⌘5 | Articles and documents made into one audio file each (see below). |
-| Settings | ⌘, | Permissions, Dictation (on/off, shortcut, language, speech model, fillers, spoken paths and commands as code, Apple Intelligence fix, preview), Meetings (system audio, speaker labels), Reading (default voice, speed, output folder), History and privacy (how long, Clear History…, keep the audio and its disk use), and **Run Setup Assistant…** (was the Setup window). |
+| Settings | ⌘, | General (open the window when the app starts; Appearance: System, Light, or Dark), Permissions, Dictation (on/off, shortcut, language, speech model, fillers, spoken paths and commands as code, Apple Intelligence fix, preview), Meetings (system audio, speaker labels), Reading (default voice, speed, output folder), History and privacy (how long, Clear History…, keep the audio and its disk use), and **Run Setup Assistant…** (was the Setup window). |
 
 A card at the bottom of the sidebar shows the dictation status ("Dictation ready", or
 "Dictation paused during meeting recording"). The window remembers its size and place;
@@ -153,6 +155,13 @@ A card at the bottom of the sidebar shows the dictation status ("Dictation ready
 control is a standard one, so Full Keyboard Access and VoiceOver work. The Setup
 Assistant, the meeting start panel, the live transcript, Review (Name Speakers), and the
 dictation preview stay separate windows.
+
+Closing the window never quits: Voice is Local stays in the menu bar, and dictation,
+meeting recordings, and readings keep going; only **Quit** in its menu, or ⌘Q, quits.
+While the window is open the app shows in the Dock and ⌘-Tab, and a click on its Dock
+icon brings the window back. Settings › General › **Appearance** keeps every Voice is
+Local window, the dictation preview included, light or dark whatever macOS uses, or
+follows macOS (System, the default).
 
 The menu bar menu is short: the status line, the dictation toggle, Copy Result / Copy
 Original / Discard Result while a result is kept, Correct Last Dictation…, the meeting
