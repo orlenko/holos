@@ -26,7 +26,8 @@ public enum EvalText {
     /// Lowercased letters and digits of `text`, plus the marks that change a number: a decimal or group separator,
     /// colon, or slash between two digits ("1.5", "1,000", "3:30", "1/2"), a dash between two digits ("1-2"), a
     /// minus sign before a digit that follows no letter or digit ("-5", "−5"; "COVID-19" stays "covid19"), a percent
-    /// sign after a digit ("5%"), and a currency sign next to one, spaces between allowed ("$50", "50 €"). So a
+    /// sign after a digit ("5%"), a currency sign next to one, spaces between allowed ("$50", "50 €"), and a minus
+    /// sign before an amount ("-$50"). So a
     /// difference in a number is a word difference, shown for review, never case or punctuation only.
     public static func key(_ text: String) -> String {
         let characters = Array(text.lowercased())
@@ -49,12 +50,19 @@ public enum EvalText {
                 out.append(character)
                 continue
             }
+            // A minus sign before an amount ("-$50").
+            if isMinus(character), let next, isCurrency(next),
+               characters[(index + 1)...].dropFirst().first(where: { !$0.isWhitespace }).map(isDigit) == true,
+               previous.map({ !$0.isLetter && !$0.isNumber }) ?? true {
+                out.append("-")
+                continue
+            }
             guard let next, isDigit(next) else { continue }
             let afterDigit = previous.map(isDigit) ?? false
             switch character {
             case ".", ",", ":", "/":
                 if afterDigit { out.append(character) }
-            case "-", "\u{2212}", "\u{2013}":
+            case _ where isMinus(character):
                 if afterDigit || previous.map({ !$0.isLetter && !$0.isNumber }) ?? true { out.append("-") }
             default:
                 break
@@ -69,6 +77,8 @@ public enum EvalText {
         character.unicodeScalars.first?.properties.generalCategory == .currencySymbol
     }
 
+    private static func isMinus(_ character: Character) -> Bool { "-\u{2212}\u{2013}".contains(character) }
+
     /// One word of a text: its characters, where they are (UTF-16), and whether whitespace came before it.
     public struct Piece: Sendable, Equatable {
         public var text: String
@@ -81,20 +91,39 @@ public enum EvalText {
     /// split at whitespace, and each character of a script written without spaces (Han, kana, Thai, Lao, Khmer,
     /// Myanmar, Tibetan) a word of its own, so "你好世界" is four words however a recognizer grouped them. A piece
     /// without letters or digits (a lone "—", "?" or "。") joins the word before, with the space it had, so every
-    /// piece has a key; one before any word is dropped.
+    /// piece has a key; one before any word is dropped. A lone currency sign (or minus and currency sign) joins
+    /// the number after it instead, so "$ 50" is one word, as "$50" is.
     public static func pieces(_ text: String) -> [Piece] {
         var pieces: [Piece] = []
         var current: Piece?
+        var prefix: Piece?  // a lone currency sign waiting for the word after it
         var space = false
         var offset = 0
+        func attach(_ piece: Piece) {
+            guard !pieces.isEmpty else { return }
+            let last = pieces.count - 1
+            pieces[last].text += (piece.spaceBefore ? " " : "") + piece.text
+            pieces[last].utf16End = piece.utf16End
+        }
         func finish() {
-            guard let piece = current else { return }
+            guard var piece = current else { return }
             current = nil
+            if let waiting = prefix {
+                prefix = nil
+                if piece.text.first.map(isDigit) == true {
+                    piece = Piece(text: waiting.text + (piece.spaceBefore ? " " : "") + piece.text,
+                                  utf16Start: waiting.utf16Start, utf16End: piece.utf16End,
+                                  spaceBefore: waiting.spaceBefore)
+                } else {
+                    attach(waiting)
+                }
+            }
             if key(piece.text).isEmpty {
-                guard !pieces.isEmpty else { return }
-                let last = pieces.count - 1
-                pieces[last].text += (piece.spaceBefore ? " " : "") + piece.text
-                pieces[last].utf16End = piece.utf16End
+                if piece.text.contains(where: isCurrency), piece.text.allSatisfy({ isCurrency($0) || isMinus($0) }) {
+                    prefix = piece
+                } else {
+                    attach(piece)
+                }
             } else {
                 pieces.append(piece)
             }
@@ -120,6 +149,7 @@ public enum EvalText {
             }
         }
         finish()
+        if let waiting = prefix { attach(waiting) }
         return pieces
     }
 

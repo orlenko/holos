@@ -335,6 +335,33 @@ private func evalAllText(_ folder: URL) -> String {
     #expect(failing.count == 2)
 }
 
+@Test func evalReviewRefusesAudioReplacedSinceTheRun() async throws {
+    let temp = try TemporaryDirectory("eval")
+    defer { temp.remove() }
+    let transcript = SessionFixtures.transcript([SessionFixtures.segment(["hello", "team"], track: "mic", start: 0.5)])
+    let session = try await SessionFixtures.makeSession(in: temp.url.appendingPathComponent("a"),
+                                                        audioSeconds: ["mic": 6], transcript: transcript)
+    let other = try await SessionFixtures.makeSession(in: temp.url.appendingPathComponent("b"),
+                                                      audioSeconds: ["mic": 6], transcript: nil, tone: 0.09)
+    let prepared = try CloudEvaluation.prepare(session: session, options: evalOptions(maxSeconds: 300),
+                                               vocabulary: evalNoVocabulary)
+    _ = try await CloudEvaluation.upload(prepared, client: CloudTranscriptionClient(
+        apiKey: evalKey, transport: EvalFakeTransport { _, _ in evalOK("hello team") }, sleep: EvalSleeps().sleep))
+    let run = try EvalStore.resolveRun(nil, in: session)
+    let report = try EvalCompare.compare(session: session, run: run)
+    let chunks = try SessionArchive.readManifest(at: session).chunks
+    let replacements = try SessionArchive.readManifest(at: other).chunks
+    for (chunk, replacement) in zip(chunks, replacements) {
+        let target = session.appendingPathComponent(chunk.relativePath)
+        try FileManager.default.removeItem(at: target)
+        try FileManager.default.copyItem(at: other.appendingPathComponent(replacement.relativePath), to: target)
+    }
+    let lease = try SessionArchive.acquireProcessingLease(at: session)
+    defer { lease.release() }
+    #expect(throws: HolosError.self) { _ = try EvalReview.build(session: session, run: run, report: report) }
+    #expect(!SessionFixtures.exists(EvalPaths.reviewAudio(run.id, in: session).appendingPathComponent("mic.m4a")))
+}
+
 @Test func evalResumeChecksATrackWhoseAnswersAreAllIn() async throws {
     let temp = try TemporaryDirectory("eval")
     defer { temp.remove() }

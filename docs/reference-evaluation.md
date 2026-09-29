@@ -171,8 +171,9 @@ voiceislocal eval delete <session> (<run> | --all)
    gold keep the text's own spacing. Words are compared by their lowercased
    letters and digits, plus the marks that change a number (a separator,
    colon, slash or dash between digits, a minus sign before one, a percent
-   sign after one, a currency sign beside one): "1.5" and "15", "-5" and
-   "5", "5%" and "5", or "$50" and "€50" are a word difference in the
+   sign after one, a currency sign beside one, a minus before an amount; "$ 50"
+   is one word, as "$50" is): "1.5" and "15", "-5" and "5", "5%" and "5",
+   "$50" and "€50", or "-$50" and "$50" are a word difference in the
    numbers group, never case or punctuation only ("1,000" and "1000" are
    shown too). The alignment
    is minimum-edit. Microphone words that are
@@ -203,7 +204,10 @@ voiceislocal eval delete <session> (<run> | --all)
    browser cannot store them (storage full or blocked) they stay in the page,
    are applied again on top of whatever another tab stores, and a warning
    says to export before closing (closing asks first). Case- and punctuation-only passages are left to
-   report.md. Delete Audio removes the page's audio copy.
+   report.md. Delete Audio removes the page's audio copy. The page's audio is
+   written only when the track still renders to the samples the run sent
+   (the same segment digests), so it never plays other audio than the cloud
+   heard.
 4. **apply** checks that the decisions belong to this session, run, and
    transcript revision, then writes `eval/gold/<run>.json`: each track's local
    words (echo left out) with every decided passage replaced by its final text,

@@ -37,8 +37,14 @@ public enum EvalReview {
                 let render = work.appendingPathComponent("review-\(track.track).caf")
                 let rendered = try EvalAudio.render(session: session, manifest: manifest, track: track.track,
                                                     to: render)
-                guard rendered.frameCount == track.frameCount, rendered.timeMap.map(EvalSpan.init) == track.timeMap
-                else {
+                // The samples too, segment by segment, when the run recorded their digests (every run made by a
+                // build that records them does): other audio of the same length would pass the checks above.
+                let recorded = track.segments.map(\.audioSHA256)
+                let samplesMatch = try recorded.contains(nil) || EvalAudio.segmentDigests(
+                    of: render, ranges: track.segments.map { ($0.startFrame, $0.endFrame) }).map(Optional.some)
+                    == recorded
+                guard rendered.frameCount == track.frameCount, rendered.timeMap.map(EvalSpan.init) == track.timeMap,
+                      samplesMatch else {
                     throw HolosError.invalidInput("The \(track.track) audio changed since run \(run.id); its times "
                         + "no longer match the recording.")
                 }

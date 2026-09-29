@@ -506,7 +506,13 @@ private func evalReport(passages: [EvalPassage]) -> CompareReport {
     #expect(EvalText.tokens("5 % more").map(EvalText.key) == ["5%", "more"])
     #expect(EvalText.tokens("5\u{00A0}% more").map(EvalText.key) == ["5%", "more"])
     #expect(EvalText.key("5‰") != EvalText.key("5%"))
-    for (localWord, cloudWord) in [("1.5", "15"), ("-5", "5"), ("5%", "5"), ("$50", "€50")] {
+    #expect(EvalText.key("-$50") != EvalText.key("$50"))
+    #expect(EvalText.key("−€5") == "-€5")
+    #expect(EvalText.tokens("it costs $ 50 now") == ["it", "costs", "$ 50", "now"])
+    #expect(EvalText.tokens("costs $ 50").map(EvalText.key) != EvalText.tokens("costs € 50").map(EvalText.key))
+    #expect(EvalText.tokens("costs $ 50").map(EvalText.key) == EvalText.tokens("costs $50").map(EvalText.key))
+    #expect(EvalText.tokens("it costs $") == ["it", "costs $"])
+    for (localWord, cloudWord) in [("1.5", "15"), ("-5", "5"), ("5%", "5"), ("$50", "€50"), ("-$50", "$50")] {
         let result = WindowComparer.compare(track: "mic", local: timed(["it", "is", localWord, "degrees"]),
                                             cloud: untimed("it is \(cloudWord) degrees"), start: 0, end: 10)
         #expect(result.score.substitutions == 1)
