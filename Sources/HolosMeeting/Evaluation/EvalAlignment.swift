@@ -444,7 +444,7 @@ public enum WindowComparer {
     /// - Echo: an operation on a local echo word is left out, and so is a run of cloud-only words between two echo
     ///   words, or of at most `echoNeighbourWords` next to one: the cloud transcript hears the echo too, and its
     ///   alignment with the echo words around it is arbitrary. A longer run beside echo is kept, and so is a timed
-    ///   cloud word (timestamp pass) said more than `echoTimeSlack` away from the echo words' time, even one the
+    ///   cloud word (timestamp pass) said more than `echoTimeSlack` away from the echo words beside it, even one the
     ///   alignment paired with an echo word (`separatingDistantEchoPairs`).
     /// - Passages: maximal runs of consecutive edits (substitutions and one-side-only words); a run of matched
     ///   words that differ only in case or punctuation is a `caseOrPunctuation` passage of its own.
@@ -497,13 +497,18 @@ public enum WindowComparer {
             guard (before && after) || ((before || after) && cloudRun[position] <= echoNeighbourWords) else {
                 return false
             }
-            // A timed cloud word (the timestamp pass) is echo only when it was said while the echo was.
+            // A timed cloud word (the timestamp pass) is echo only when it was said while an echo word beside it
+            // was (not merely somewhere in the gap between two echo words).
+            let neighbours = [previousEcho, nextEcho].compactMap { $0 }
             guard let j = cloudIndex(op), let wordStart = cloud[j].start,
-                  let low = (previousEcho ?? nextEcho)?.start, let high = (nextEcho ?? previousEcho)?.end else {
+                  neighbours.allSatisfy({ $0.start != nil }) else {
                 return true
             }
             let wordEnd = cloud[j].end ?? wordStart
-            return wordStart <= high + echoTimeSlack && wordEnd >= low - echoTimeSlack
+            return neighbours.contains { echo in
+                let echoStart = echo.start ?? 0, echoEnd = echo.end ?? echo.start ?? 0
+                return wordStart <= echoEnd + echoTimeSlack && wordEnd >= echoStart - echoTimeSlack
+            }
         }
 
         var run: [Int] = []  // op positions of the current edit run
@@ -558,17 +563,35 @@ public enum WindowComparer {
 
     /// A timed cloud word (the timestamp pass) aligned with a timed local echo word but said more than
     /// `echoTimeSlack` away from it is not the echo: the pair becomes the echo word alone and the cloud word alone
-    /// Within a stretch of such pairs and lone echo words, the cloud words said before their echo word come first,
-    /// then the echo words, then the cloud words said after, so what was said together stays one passage. Without
-    /// times the alignment stands.
+    /// (and a stretch of such pairs, lone echo words, and cloud-only words is laid out again: the echo words in their
+    /// order and the cloud words in theirs, merged by time), so the echo is left out and the cloud words are judged
+    /// as cloud-only words, still in the order they were said. Without times the alignment stands.
     static func separatingDistantEchoPairs(_ ops: [AlignmentOp], local: [EvalToken],
                                            cloud: [EvalToken]) -> [AlignmentOp] {
         var result: [AlignmentOp] = []
         result.reserveCapacity(ops.count)
-        var earlier: [AlignmentOp] = [], echoes: [AlignmentOp] = [], later: [AlignmentOp] = []
+        var stretch: [AlignmentOp] = [], echoes: [Int] = [], clouds: [Int] = []
+        var separated = false
+        /// Each time, or the one before it in the same sequence when missing.
+        func times(_ values: [Double?]) -> [Double] {
+            var last = -Double.infinity
+            return values.map { value in
+                if let value { last = value }
+                return last
+            }
+        }
         func flush() {
-            result += earlier + echoes + later
-            earlier.removeAll(); echoes.removeAll(); later.removeAll()
+            defer { stretch.removeAll(); echoes.removeAll(); clouds.removeAll(); separated = false }
+            guard separated else { result += stretch; return }
+            let echoTimes = times(echoes.map { local[$0].start }), cloudTimes = times(clouds.map { cloud[$0].start })
+            var e = 0, c = 0
+            while e < echoes.count || c < clouds.count {
+                if c == clouds.count || (e < echoes.count && echoTimes[e] <= cloudTimes[c]) {
+                    result.append(.localOnly(echoes[e])); e += 1
+                } else {
+                    result.append(.cloudOnly(clouds[c])); c += 1
+                }
+            }
         }
         for op in ops {
             switch op {
@@ -577,15 +600,16 @@ public enum WindowComparer {
                     let echoEnd = local[i].end ?? echoStart
                     let wordEnd = cloud[j].end ?? wordStart
                     if wordStart > echoEnd + echoTimeSlack || wordEnd < echoStart - echoTimeSlack {
-                        echoes.append(.localOnly(i))
-                        if wordEnd < echoStart { earlier.append(.cloudOnly(j)) } else { later.append(.cloudOnly(j)) }
+                        stretch.append(op); echoes.append(i); clouds.append(j)
+                        separated = true
                         continue
                     }
                 }
             case .localOnly(let i):
-                if local[i].echo { echoes.append(op); continue }
-            case .cloudOnly:
-                break
+                if local[i].echo { stretch.append(op); echoes.append(i); continue }
+            case .cloudOnly(let j):
+                stretch.append(op); clouds.append(j)
+                continue
             }
             flush()
             result.append(op)

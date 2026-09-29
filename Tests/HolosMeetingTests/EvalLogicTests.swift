@@ -332,6 +332,21 @@ private func cloudTrack(_ windows: [[String]]) -> CloudTrackResult {
     #expect(aligned.score.echoLocalWords == 3)
     #expect(aligned.score.cloudOnly == 2)
     #expect(aligned.passages.map(\.cloud) == ["I disagree"])
+    // Speech between two echo stretches stays whole and in order, and the gold keeps that order.
+    let twoEchoes = timed(["thank", "you", "all"], echo: [0, 1, 2]) + timed(["see", "you", "later"], from: 20,
+                                                                            echo: [0, 1, 2])
+    var between = untimed("I cannot agree with that proposal")
+    for index in between.indices {
+        between[index].start = 10 + Double(index)
+        between[index].end = 10.8 + Double(index)
+    }
+    let middle = WindowComparer.compare(track: "mic", local: twoEchoes, cloud: between, start: 0, end: 30)
+    #expect(middle.score.echoLocalWords == 6)
+    #expect(middle.score.cloudOnly == 6)
+    #expect(middle.passages.map(\.cloud) == ["I cannot agree with that proposal"])
+    let accepted = middle.passages.map { ($0, ReviewDecisions.Decision(id: $0.id, choice: .cloud, text: $0.cloud)) }
+    #expect(EvalApply.goldTrack(track: "mic", local: twoEchoes, replacements: accepted).text
+        == "I cannot agree with that proposal")
     // Untimed, the alignment with the echo stands.
     let untimedLater = WindowComparer.compare(track: "mic", local: local, cloud: untimed("I disagree next"),
                                               start: 0, end: 30)

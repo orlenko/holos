@@ -181,9 +181,10 @@ voiceislocal eval delete <session> (<run> | --all)
    is minimum-edit. Microphone words that are
    echo of the system track in a call (the exports' echo filter) are left out,
    and so are cloud-only words between two echo words or up to 3 of them next
-   to one (with `--timestamps`, only those said within 1 s of the echo
-   words' time; a timed cloud word aligned with an echo word but said more
-   than 1 s from it is a cloud-only word, not echo). Segments without a track count for the first track only. WER is
+   to one (with `--timestamps`, only those said within 1 s of an echo word
+   beside them; a timed cloud word aligned with an echo word but said more
+   than 1 s from it is a cloud-only word, not echo, kept in the order the
+   cloud said it). Segments without a track count for the first track only. WER is
    given against both sides, since neither is the truth yet.
    Differing passages are grouped as numbers, names and terms (a capital not
    at a sentence start, an acronym, letters mixed with digits), dropped or
