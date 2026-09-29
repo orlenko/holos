@@ -59,32 +59,70 @@ public struct SpokenCodeFormatter: Sendable {
         guard !core.isEmpty, core.count <= 4_000, SpokenCode.mayContainCode(core, language: language) else {
             return Result(text: chunk, outcome: .skipped, spans: 0)
         }
-        // Text already in backticks (a learned correction's, say) stays as it is, and the model's backticks could
-        // not be told from it: such a chunk gets only the runs found without the model, around it.
-        let quoted = core.ranges(of: /`[^`]*`/)
-        let frozen = frozenRanges(in: core) + quoted
-        let spans: [SpokenCode.Span]
+        // Text already in backticks (a learned correction's, say) stays as it is. The model sees those backticks as
+        // quotes, so its own can be told from them; the quotes and the backticks have the same UTF-8 length, so a
+        // span in one is the same span in the other.
+        let backtickRanges = core.indices.filter { core[$0] == "`" }.map { $0..<core.index(after: $0) }
+        let frozen = Self.merged(frozenRanges(in: core) + core.ranges(of: /`[^`]*`/) + backtickRanges)
+        let masked = backtickRanges.isEmpty ? core : String(core.map { $0 == "`" ? "'" : $0 })
+        let maskedFrozen = frozen.map { Self.convert($0, from: core, to: masked) }
+        var spans: [SpokenCode.Span]
         let outcome: Outcome
-        if let model, !core.contains("`") {
+        if let model {
             // The reply is read within the time limit too.
             switch await TranscriptFixer.firstOf(timeout, { [model, self] in
-                let reply = try await model(Self.instructions, Self.prompt(for: core))
+                let reply = try await model(Self.instructions, Self.prompt(for: masked))
                 try Task.checkCancellation()
-                return read(reply, for: core, frozen: frozen).map { SpanList(spans: $0) }
+                return read(reply, for: masked, frozen: maskedFrozen).map { SpanList(spans: $0) }
             }) {
-            case .value(let read?): (spans, outcome) = (read.spans, .model)
+            case .value(let read?):
+                spans = read.spans.map { .init(range: Self.convert($0.range, from: masked, to: core), token: $0.token) }
+                outcome = .model
             case .value(nil): (spans, outcome) = (fallback(core, frozen: frozen), .rejected)
             case .timedOut: (spans, outcome) = (fallback(core, frozen: frozen), .timedOut)
             case .failed: (spans, outcome) = (fallback(core, frozen: frozen), .failed)
             }
         } else {
-            (spans, outcome) = (fallback(core, frozen: frozen), model == nil ? .noModel : .skipped)
+            (spans, outcome) = (fallback(core, frozen: frozen), .noModel)
         }
         guard !spans.isEmpty else { return Result(text: chunk, outcome: outcome, spans: 0) }
+        // A terminal gets the token itself: a sentence's mark right after it would join it (`cd ~/.config.`).
+        if !backticks { spans = spans.map { Self.takingClosingMark(after: $0, in: core) } }
         let rendered = spans.map { backticks ? "`\($0.token)`" : $0.token }
         return Result(text: leading + SpokenCode.render(core, spans: spans, backticks: backticks) + trailing,
                       outcome: outcome, spans: spans.count, tokens: rendered,
                       endsWithToken: spans.contains { $0.range.upperBound == core.endIndex })
+    }
+
+    /// `span` with the mark that closes a sentence or clause right after it (".", ",", ";", ":", "!", "?", before a
+    /// space or the end), which is dropped with the span's text.
+    static func takingClosingMark(after span: SpokenCode.Span, in text: String) -> SpokenCode.Span {
+        let end = span.range.upperBound
+        guard end < text.endIndex, ".,;:!?".contains(text[end]) else { return span }
+        let after = text.index(after: end)
+        guard after == text.endIndex || text[after].isWhitespace else { return span }
+        return SpokenCode.Span(range: span.range.lowerBound..<after, token: span.token)
+    }
+
+    /// `range` of `text` as the same UTF-8 offsets in `other`, a copy of `text` with some one-byte characters
+    /// replaced by others.
+    static func convert(_ range: Range<String.Index>, from text: String, to other: String) -> Range<String.Index> {
+        let lower = text.utf8.distance(from: text.startIndex, to: range.lowerBound)
+        let upper = text.utf8.distance(from: text.startIndex, to: range.upperBound)
+        return other.utf8.index(other.startIndex, offsetBy: lower)..<other.utf8.index(other.startIndex, offsetBy: upper)
+    }
+
+    /// `ranges` without repeats, overlapping ones joined.
+    static func merged(_ ranges: [Range<String.Index>]) -> [Range<String.Index>] {
+        var result: [Range<String.Index>] = []
+        for range in ranges.sorted(by: { $0.lowerBound < $1.lowerBound }) {
+            if let last = result.last, range.lowerBound < last.upperBound {
+                result[result.count - 1] = last.lowerBound..<max(last.upperBound, range.upperBound)
+            } else {
+                result.append(range)
+            }
+        }
+        return result
     }
 
     /// Spans, sendable across the time limit.
@@ -98,16 +136,21 @@ public struct SpokenCodeFormatter: Sendable {
             .filter { !$0.isEmpty }
     }
 
-    /// Whether `token` keeps every frozen stretch `range` overlaps as it was, letter for letter and in order ("/qc"
-    /// in `/qc-help`); a span may not cut one in part.
+    /// Whether `token` keeps every frozen stretch `range` overlaps as it was, letter for letter and in its place
+    /// ("/qc" in `/qc-help`): the token is what was said before the stretch, the stretch, and what was said after it
+    /// (`SpokenCode.says`). A span may not cut one in part.
     static func keepsFrozen(_ range: Range<String.Index>, token: String, in text: String,
-                            frozen: [Range<String.Index>]) -> Bool {
-        let inside = frozen.filter { $0.overlaps(range) }.sorted { $0.lowerBound < $1.lowerBound }
-        var rest = token[...]
-        for stretch in inside {
-            guard range.contains(stretch.lowerBound), stretch.upperBound <= range.upperBound,
-                  let found = rest.firstRange(of: text[stretch]) else { return false }
-            rest = rest[found.upperBound...]
+                            frozen: [Range<String.Index>], language: String?) -> Bool {
+        func said(_ part: Substring, by source: Substring) -> Bool {
+            part.isEmpty ? source.allSatisfy(\.isWhitespace) : SpokenCode.says(String(part), source, language: language)
+        }
+        for stretch in frozen where stretch.overlaps(range) {
+            guard range.contains(stretch.lowerBound), stretch.upperBound <= range.upperBound else { return false }
+            let before = text[range.lowerBound..<stretch.lowerBound], after = text[stretch.upperBound..<range.upperBound]
+            let kept = token.ranges(of: text[stretch]).contains { found in
+                said(token[..<found.lowerBound], by: before) && said(token[found.upperBound...], by: after)
+            }
+            guard kept else { return false }
         }
         return true
     }
@@ -120,19 +163,19 @@ public struct SpokenCodeFormatter: Sendable {
         let language = language
         guard let proposals = SpokenCode.proposals(original: text, reply: reply, accepted: { range, token in
             SpokenCode.accepts(token, for: text[range], language: language)
-                && Self.keepsFrozen(range, token: token, in: text, frozen: frozen)
+                && Self.keepsFrozen(range, token: token, in: text, frozen: frozen, language: language)
         }) else { return nil }
         return proposals.compactMap { proposal in
             if proposal.accepted { return proposal.span }
             guard let token = SpokenCode.repair(proposal.span.range, in: text, language: language),
-                  Self.keepsFrozen(proposal.span.range, token: token, in: text, frozen: frozen) else { return nil }
+                  Self.keepsFrozen(proposal.span.range, token: token, in: text, frozen: frozen, language: language) else { return nil }
             return SpokenCode.Span(range: proposal.span.range, token: token)
         }
     }
 
     func fallback(_ text: String, frozen: [Range<String.Index>]) -> [SpokenCode.Span] {
         SpokenCode.fallback(text, language: language).filter {
-            Self.keepsFrozen($0.range, token: $0.token, in: text, frozen: frozen)
+            Self.keepsFrozen($0.range, token: $0.token, in: text, frozen: frozen, language: language)
         }
     }
 

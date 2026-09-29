@@ -14,6 +14,8 @@ struct HistoryDraft {
     let date: Date
     let app: String?
     let language: String
+    /// For a terminal (`DictationRecord.terminal`).
+    var terminal = false
     var listeningStarted: Date?
     var listeningEnded: Date?
 

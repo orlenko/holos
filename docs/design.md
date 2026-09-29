@@ -149,8 +149,9 @@ writes "scripts slash restart dash app dot es aytch" as `scripts/restart-app.sh`
 never for a terminal (Terminal, iTerm2, Ghostty, WezTerm, kitty, Alacritty, Warp),
 which gets the token itself. It is its own step (`SpokenCodeFormatter`), after
 learned corrections and before Apple Intelligence's fix, on each committed chunk and
-on the rest at release; Run Again runs it with the current settings, and History's
-Fixes line counts the tokens ("1 spoken path or command as code").
+on the rest at release; Run Again runs it with the current settings (without
+backticks for a dictation History marks as a terminal's), and History's Fixes line
+counts the tokens ("1 spoken path or command as code").
 
 The contract (`SpokenCode`): a code token has no spaces, at least one symbol of
 `/ \ . - _ ~ : @ * = + # $ |` and one letter, and parts that are not all function
@@ -158,7 +159,8 @@ words (`/the` is "slash the"). Its spoken form is its symbols and parts in order
 each symbol said as its word ("slash", "dot", "dash", "underscore", "tilde",
 "backslash", "colon", "at", "star", "equals", "plus", "hash", "dollar", "pipe",
 "double dash"; French "barre oblique", "point", "tiret", "tiret bas", "arobase"…) or
-written as itself, each part said as its words (up to three joined), letters spelled
+written as itself, each part said as its words (up to three joined, accents kept, a
+function word only as a whole part: "slash the price" is never `/theprice`), letters spelled
 ("S. H.", "es aytch", "Q C") or digits said. Only a recognizer's all-capitals run of
 four letters or more may be one letter off ("ZHRC" for `zshrc`). The source must say
 at least one strong symbol word (below), so "e.g." is never wrapped and "back at noon"
@@ -172,13 +174,17 @@ but for runs of spaces, or the whole reply is refused; the output takes only the
 tokens from the reply. A span whose source does not say its token is read again
 without the model with the model's edges (its words and symbol words alternate, no
 function word at its edges), or left as said. Words a learned correction produced
-stay letter for letter inside any token, each in its place; a chunk that already has
-backticks gets only the runs found without the model. Apple Intelligence's fix then
-keeps every token as it is (a fix that changes one is dropped), and a chunk that ends
-with a terminal's token gets no closing punctuation. When the model is unavailable, times out,
+stay letter for letter inside any token, each in its place; text already in
+backticks stays as it is (the model sees those backticks as quotes). A terminal's
+token takes the sentence mark right after it (`cd ~/.config`, not `cd ~/.config.`).
+Apple Intelligence's fix then keeps every token as it is, with the characters next to
+it (a fix that changes one is dropped); a chunk that ends with a terminal's token gets
+no closing punctuation; and the fix gets only what spoken code left of the chunk's
+1.5 s. When the model is unavailable, times out,
 fails, or its reply is refused, runs that can be read one way are converted on their
-own: words joined by strong symbol words within a clause, two symbol characters at
-least, ending with a word; the word before the first symbol belongs to the token
+own: words joined by strong symbol words within a clause and a line, two symbol
+characters at least, standing as in paths and options ("dash dot line" is not
+`-.line`), ending with a word; the word before the first symbol belongs to the token
 after "dash" or "underscore", not before "dot slash", "tilde" or "dash dash" nor when
 it is a function word; a single "slash", "dot" or "backslash" after another word, a
 run next to another run, a number word other than a digit's, or a function word at

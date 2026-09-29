@@ -129,7 +129,7 @@ public enum SpokenCode {
 
     enum Element: Equatable {
         case symbol(Character)
-        /// Letters and digits, folded.
+        /// Letters and digits, lowercased (accents kept: `résumé` is not `resume`).
         case part(String)
     }
 
@@ -142,13 +142,13 @@ public enum SpokenCode {
             if character.isLetter || character.isNumber {
                 part.append(character)
             } else if symbols.contains(character) {
-                if !part.isEmpty { result.append(.part(fold(part))); part = "" }
+                if !part.isEmpty { result.append(.part(part.lowercased())); part = "" }
                 result.append(.symbol(character))
             } else {
                 return nil
             }
         }
-        if !part.isEmpty { result.append(.part(fold(part))) }
+        if !part.isEmpty { result.append(.part(part.lowercased())) }
         return result
     }
 
@@ -197,10 +197,12 @@ public enum SpokenCode {
                 index = end
             } else {
                 // "S." spells a letter when the capital's dot ends the word or comes before another spelled capital
-                // ("S.H."); "a.b" keeps its dot.
-                let next = text.index(after: index)
-                let closes = next == text.endIndex || text[next].isWhitespace
-                    || text[next...].prefixMatch(of: /\p{Lu}\./) != nil
+                // ("S.H."); "a.b" keeps its dot. What follows is read in the whole text, past a span's end: "S.file"
+                // keeps its dot however it is sliced.
+                let base = text.base
+                let next = base.index(after: index)
+                let closes = next == base.endIndex || base[next].isWhitespace
+                    || base[next...].prefixMatch(of: /\p{Lu}\./) != nil
                 let afterLetter = !spaced && character == "." && closes && result.last?.kind == .word
                     && result.last?.raw.count == 1 && result.last?.raw.first?.isUppercase == true
                 result.append(Piece(kind: symbols.contains(character) ? .symbol(character) : .other, folded: "",
@@ -236,6 +238,7 @@ public enum SpokenCode {
         let language: String?
         let words: [SymbolWord]
         let requireStrong: Bool
+        let functionWords: Set<String>
         private var failed = Set<[Int]>()
 
         init(elements: [Element], pieces: [Piece], language: String?, requireStrong: Bool) {
@@ -244,6 +247,7 @@ public enum SpokenCode {
             self.language = language
             self.requireStrong = requireStrong
             words = SpokenCode.symbolWords(for: language)
+            functionWords = SpokenWords.stopWords(for: language).union(SpokenCode.shortFunctionWords)
         }
 
         /// Whether elements from `element` on are said by pieces from `piece` on, to the end; `strong`: a strong
@@ -308,9 +312,13 @@ public enum SpokenCode {
                 return true
             }
             guard current.kind == .word else { return false }
-            let word = Array(current.folded)
-            // The word as it is.
+            let word = Array(current.raw.lowercased())
+            // The word as it is. A function word is a whole part or none: "slash the price" is not `/theprice`
+            // (a spelled capital aside: "S H A").
+            let function = functionWords.contains(String(word))
+                && !(current.raw.count == 1 && current.raw.first!.isUppercase)
             if word.count > 1 ? joined < maximumJoinedWords : true,
+               !function || (offset == 0 && word.count == part.count),
                part[offset...].starts(with: word),
                matchPart(part, element, piece + 1, offset + word.count, joined + (word.count > 1 ? 1 : 0), strong) {
                 found = true
@@ -413,8 +421,9 @@ public enum SpokenCode {
         func search(_ span: Int, _ at: String.Index) -> (score: Int, proposals: [Proposal])? {
             if let known = memo[Key(span: span, at: at)] { return known }
             var best: (score: Int, proposals: [Proposal])?
-            // A span starts at a word's start.
-            guard at == original.startIndex || !isWordCharacter(original.index(before: at)) || !isWordCharacter(at)
+            // A span has text, and starts at a word's start.
+            guard at < original.endIndex,
+                  at == original.startIndex || !isWordCharacter(original.index(before: at)) || !isWordCharacter(at)
             else { return nil }
             let limit = original.index(at, offsetBy: maximumSource, limitedBy: original.endIndex) ?? original.endIndex
             var end = at
@@ -552,6 +561,11 @@ public enum SpokenCode {
                     core = core.lowerBound..<text.index(before: core.upperBound)
                 }
             }
+            // A line break ends a clause too.
+            if position + 1 < matches.count,
+               text[match.range.upperBound..<matches[position + 1].range.lowerBound].contains(where: \.isNewline) {
+                endsClause = true
+            }
             let body = text[core]
             let other = body.isEmpty || !(body.first!.isLetter || body.first!.isNumber)
                 || !(body.last!.isLetter || body.last!.isNumber || body.last == ".")
@@ -642,6 +656,27 @@ public enum SpokenCode {
     /// "dash dash" (`./x`, `../x`, `~/x`, `--x`).
     static func isLeader(_ symbols: String) -> Bool {
         symbols.hasPrefix("./") || symbols.hasPrefix("../") || symbols.hasPrefix("~") || symbols.hasPrefix("--")
+    }
+
+    /// The symbols a token read without the model may start with, and may have between two parts: those of paths
+    /// and options. "dash dot line" is not `-.line`.
+    static let leadingSymbols: Set<String> = ["/", "\\", ".", "./", "../", "~", "~/", "~/.", "-", "--", "/."]
+    static let innerSymbols: Set<String> = ["/", "\\", ".", "-", "_", "--", "/.", "/..", "__"]
+
+    /// Whether the symbols of `run` stand as in paths and options (`leadingSymbols`, `innerSymbols`).
+    static func hasPathSymbols(_ run: ArraySlice<Item>) -> Bool {
+        var group = ""
+        var leading = true
+        for item in run {
+            if case .symbol(let symbols) = item.kind {
+                group += symbols
+                continue
+            }
+            if !group.isEmpty, !(leading ? leadingSymbols : innerSymbols).contains(group) { return false }
+            group = ""
+            leading = false
+        }
+        return group.isEmpty
     }
 
     /// The token `run` spells, symbols joined to parts: spelled letters in lower case unless another part is a word
@@ -749,7 +784,7 @@ public enum SpokenCode {
             let symbolCount = slice.reduce(0) { count, item in
                 if case .symbol(let s) = item.kind { count + s.count } else { count }
             }
-            guard symbolCount >= 2, let first = slice.first(where: \.isPart), let last = slice.last,
+            guard symbolCount >= 2, hasPathSymbols(slice), let first = slice.first(where: \.isPart), let last = slice.last,
                   !isStopWord(first, language: language), !isStopWord(last, language: language),
                   let token = token(of: slice, in: text, language: language, digitWords: fallbackDigits)
             else { continue }
@@ -774,7 +809,7 @@ public enum SpokenCode {
             if index > 0, items[index - 1].isPart, item.isPart { return nil }
         }
         guard items.contains(where: { if case .symbol = $0.kind { true } else { false } }),
-              let firstPart = items.first(where: \.isPart),
+              hasPathSymbols(items[...]), let firstPart = items.first(where: \.isPart),
               !isStopWord(firstPart, language: language), !isStopWord(last, language: language),
               let token = token(of: items[...], in: text, language: language, digitWords: fallbackDigits),
               accepts(token, for: text[range], language: language) else { return nil }
@@ -814,8 +849,11 @@ public enum SpokenCode {
             guard let last = word.last, ",;:!?.…".contains(last) else { return false }
             return word.wholeMatch(of: /(?:\p{Lu}\.)+/) == nil
         }
-        /// A spelled letter ("S", "H."): a run of them counts as one word.
-        func isLetter(_ index: Int) -> Bool { text[words[index]].wholeMatch(of: /\p{Lu}\.?/) != nil }
+        /// A spelled letter ("S", "H.", "es", "aytch"): a run of them counts as one word.
+        func isLetter(_ index: Int) -> Bool {
+            text[words[index]].wholeMatch(of: /\p{Lu}\.?/) != nil
+                || letterName(folded[index], language: language).map { !$0.common } == true
+        }
         /// A content word may be a token's first part ("scripts" before "slash restart").
         func mayStartToken(_ index: Int) -> Bool {
             !endsClause(index) && !isSymbol(index) && SpokenWords.isContent(folded[index], language: language)

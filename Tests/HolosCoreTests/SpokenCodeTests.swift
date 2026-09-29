@@ -44,6 +44,7 @@ func aTokenIsSaidByItsVerbalization(_ token: String) {
     ("src/app.js", "src barre oblique app point js"),
     ("mon_fichier.txt", "mon tiret bas fichier point txt"),
     ("x/y", "x forward slash y"),
+    ("résumé.txt", "résumé dot txt"),
 ])
 func aSpokenFormSaysItsToken(_ token: String, _ spoken: String) {
     #expect(SpokenCode.accepts(token, for: spoken[...]), "\(token) ← \(spoken)")
@@ -83,6 +84,9 @@ func aSpokenFormSaysItsToken(_ token: String, _ spoken: String) {
     // A weak symbol word alone.
     ("back@noon", "back at noon"),
     ("a+b", "a plus b"),
+    // Accents are letters, and a function word is a whole part or none.
+    ("resume.txt", "résumé dot txt"),
+    ("/theprice", "slash the price"),
 ])
 func aReplyTokenThatWasNotSaidIsRefused(_ token: String, _ spoken: String) {
     #expect(!SpokenCode.accepts(token, for: spoken[...]), "\(token) ← \(spoken)")
@@ -136,6 +140,8 @@ private func formatted(_ text: String, reply: String, backticks: Bool = true,
     ("adds dot local slash bin into it", "adds `.local/bin into it"),
     // A span cut out of a word.
     ("Open slash tmpfile.", "Open `/tmp`file."),
+    // Two spans where the chunk has text for one.
+    ("slash tmp", "`/tmp``/other`"),
 ])
 func aReplyThatChangesProseIsRefused(_ text: String, _ reply: String) async {
     let result = await formatted(text, reply: reply)
@@ -161,6 +167,30 @@ func aReplyThatChangesProseIsRefused(_ text: String, _ reply: String) async {
     // A whole command in backticks.
     result = await formatted("Use git push dash U origin main.", reply: "Use `git push --u origin main`.")
     #expect(result.text == "Use git push dash U origin main.")
+}
+
+@Test func aWrittenDotIsNeverASpelledLettersMark() async {
+    // "S.file" keeps its dot however the span is cut.
+    let result = await formatted("Open slash S.file", reply: "Open `/s`file")
+    #expect(result.text == "Open slash S.file")
+}
+
+@Test func textAlreadyInBackticksStaysAndTheModelFormatsAroundIt() async {
+    let result = await formatted("Open `README.md`, then run slash Q C.",
+                                 reply: "Open 'README.md', then run `/qc`.")
+    #expect(result.text == "Open `README.md`, then run `/qc`.")
+    // The model may not wrap the quoted text itself.
+    let wrapped = await formatted("Open `README.md` then slash Q C", reply: "Open `README.md` then `/qc`")
+    #expect(wrapped.text == "Open `README.md` then `/qc`")
+}
+
+@Test func aTerminalTokenTakesTheSentencesMark() async {
+    let result = await formatted("cd tilde slash dot config.", reply: "cd `~/.config`.", backticks: false)
+    #expect(result.text == "cd ~/.config")
+    #expect(result.endsWithToken)
+    let inside = await formatted("cd tilde slash dot config, then look.", reply: "cd `~/.config`, then look.",
+                                 backticks: false)
+    #expect(inside.text == "cd ~/.config then look.")
 }
 
 @Test func slashAsAVerbStays() async {
@@ -210,17 +240,27 @@ private actor Asked {
     // Each occurrence is kept in its own place.
     result = await formatted("run /qc dash /qc now", reply: "run `/QC-/qc` now", corrections: corrections)
     #expect(result.text == "run /qc dash /qc now")
+    result = await formatted("run /qc dash /QC now", reply: "run `/QC-/qc` now", corrections: corrections)
+    #expect(result.text == "run /qc dash /QC now")
+    // Two pairs that produce the same text freeze it once.
+    let twice = CorrectionList(entries: [Correction(heard: "slash QC", meant: "/qc"),
+                                         Correction(heard: "slash cue see", meant: "/qc")])
+    result = await formatted("run /qc dash help now", reply: "run `/qc-help` now", corrections: twice)
+    #expect(result.text == "run `/qc-help` now")
 }
 
-@Test func textAlreadyInBackticksStaysAndTheRestIsReadWithoutTheModel() async {
+@Test func textAlreadyInBackticksReachesTheModelAsQuotes() async {
     let asked = Asked()
     let formatter = SpokenCodeFormatter(backticks: true, language: "en-US", timeout: .seconds(30)) { _, prompt in
         await asked.add(prompt)
         return prompt
     }
-    let result = await formatter.format("Open `README.md`, then run dash dash no dash parallel.")
-    #expect(result.text == "Open `README.md`, then run `--no-parallel`.")
-    #expect(await asked.prompts.isEmpty)
+    _ = await formatter.format("Open `README.md`, then run dash dash no dash parallel.")
+    #expect(await asked.prompts == ["Text: Open 'README.md', then run dash dash no dash parallel."])
+    // Without the model, runs around it are read on their own.
+    let none = SpokenCodeFormatter(backticks: true, language: "en-US", timeout: .seconds(30), model: nil)
+    #expect(await none.format("Open `README.md`, then run dash dash no dash parallel.").text
+        == "Open `README.md`, then run `--no-parallel`.")
 }
 
 @Test func aSymbolPhrasesFirstWordAloneDoesNotAskTheModel() {
@@ -254,6 +294,37 @@ private actor Asked {
     result = await DictationTextPipeline.process("cat slash tmp slash file", isFinal: true, coder: coder,
                                                  fixer: closing)
     #expect(result.text == "cat /tmp/file")
+    // What stands next to a token stays: no comma, no join.
+    #expect(!DictationTextPipeline.keeps(["/tmp/a", "/tmp/b"], from: "cp /tmp/a /tmp/b", in: "cp /tmp/a, /tmp/b"))
+    #expect(!DictationTextPipeline.keeps(["/tmp/a", "/tmp/b"], from: "cp /tmp/a /tmp/b", in: "cp /tmp/a/tmp/b"))
+    #expect(DictationTextPipeline.keeps(["/tmp/a"], from: "Copy /tmp/a now", in: "copy /tmp/a now"))
+    // A closing mark after a token in backticks at the end.
+    #expect(DictationTextPipeline.keeps(["`/qc`"], from: "run `/qc` ", in: "run `/qc`. "))
+}
+
+@Test func theFixGetsWhatSpokenCodeLeftOfTheTimeLimit() async {
+    let coder = SpokenCodeFormatter(backticks: true, language: "en-US", timeout: .seconds(30),
+                                    model: codeModel(["dot local slash bin": ".local/bin"]))
+    let fixer = TranscriptFixer(corrections: CorrectionList(), referenceBudget: 1_000, timeout: .milliseconds(100)) {
+        _, prompt in String(prompt.dropFirst("Text: ".count))
+    }
+    let result = await DictationTextPipeline.process("adds dot local slash bin", isFinal: true, coder: coder,
+                                                     fixer: fixer)
+    #expect(result.text == "adds `.local/bin`")
+    #expect(result.fixOutcome == .timedOut)
+}
+
+@Test func historyKeepsATerminalDictationForRunAgain() throws {
+    let record = DictationRecord(id: UUID(), date: Date(timeIntervalSince1970: 1_790_000_000), app: "ターミナル",
+                                 language: "en-US", text: "cd ~/.config", heard: "cd tilde slash dot config",
+                                 outcome: .init(kind: .typed), seconds: 1, terminal: true)
+    let encoder = JSONEncoder()
+    let decoded = try JSONDecoder().decode(DictationRecord.self, from: encoder.encode(record))
+    #expect(decoded.terminal == true)
+    let other = DictationRecord(id: UUID(), date: Date(), app: "Notes", language: "en-US", text: "x", heard: "x",
+                                outcome: .init(kind: .inserted), seconds: 1, terminal: false)
+    #expect(other.terminal == nil)
+    #expect(!String(decoding: try encoder.encode(other), as: UTF8.self).contains("terminal"))
 }
 
 @Test func aFailedModelFallsBackToRunsReadOneWay() async {
@@ -314,6 +385,9 @@ func runsReadOneWayAreConvertedWithoutTheModel(_ text: String, _ expected: Strin
     "Cut it, dash, and slash it.",
     // A short word before "slash" may be a directory.
     "ab slash cd slash ef",
+    // Symbols that do not stand as in paths or options, or a line break.
+    "Draw a dash dot line.",
+    "Run dash dash\nverbose",
 ])
 func runsReadMoreThanOneWayStayAsSaid(_ text: String) {
     #expect(fallback(text) == text)
@@ -335,6 +409,7 @@ func runsReadMoreThanOneWayStayAsSaid(_ text: String) {
     // A run of spelled letters counts as one word, and may be a token's first part.
     ("Run tilde slash H O L O", ""),
     ("so run tilde slash H O L O", "so"),
+    ("so tilde slash es aytch em el", "so"),
     ("Set H O L O S", "Set"),
     ("Set H O L O S underscore A I F I X", "Set"),
     // A symbol phrase counts whole; its first word alone does not.

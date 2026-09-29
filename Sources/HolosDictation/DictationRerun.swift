@@ -169,12 +169,12 @@ public enum DictationRerun {
     }
 
     /// Runs `record`'s audio (`url`) again through the recognizer and `pipeline`, and compares.
-    /// A dictation typed into a terminal (`SpokenCode.isTerminal`) gets its code tokens without backticks, as live
-    /// dictation types them.
+    /// A dictation for a terminal (`DictationRecord.terminal`, or for older records `SpokenCode.isTerminal`) gets its
+    /// code tokens without backticks, as live dictation types them.
     public static func run(_ record: DictationRecord, audio url: URL, pipeline: DictationTextPipeline,
                            aiNote: String? = nil) async throws -> DictationRerunReport {
         var pipeline = pipeline
-        if SpokenCode.isTerminal(appName: record.app) { pipeline.coder?.backticks = false }
+        if record.terminal == true || SpokenCode.isTerminal(appName: record.app) { pipeline.coder?.backticks = false }
         let segments = try await recognize(url, locale: pipeline.language,
                                            vocabulary: pipeline.corrections.vocabulary(language: pipeline.language))
         let output = await pipeline.run(segments: segments)
@@ -187,7 +187,7 @@ public enum DictationRerun {
         var updated = DictationRecord(
             id: record.id, date: record.date, app: record.app, language: report.languageNow, text: report.written.now,
             heard: report.heard.now.isEmpty ? report.written.now : report.heard.now, fixes: report.fixes,
-            outcome: record.outcome, seconds: record.seconds, audio: record.audio)
+            outcome: record.outcome, seconds: record.seconds, audio: record.audio, terminal: record.terminal)
         updated.schemaVersion = record.schemaVersion
         return updated
     }

@@ -73,6 +73,8 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
     private var insertedText = ""
     /// The app receiving keystrokes, when the target is typed into rather than written directly.
     private var typedAppName: String?
+    /// This dictation is for a terminal: code tokens without backticks, and History says so for Run Again.
+    private var dictationForTerminal = false
     /// A streamed write may have landed without being confirmed; the result must not claim it failed.
     private var streamUnverified = false
     /// The app or field changed during the utterance; pasting Copy Result now would land somewhere else.
@@ -544,6 +546,9 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
                 terminal = nil
                 terminalRefusal = error.localizedDescription
             }
+            // A terminal's code tokens are typed without backticks, also when its focus changed at key-down and the
+            // text waits for Copy Result.
+            dictationForTerminal = terminal?.isTerminal == true || terminalRefusal != nil
             if let terminalRefusal {
                 // Focus moved while it was captured; the text is kept for Copy Result, never typed.
                 target = nil
@@ -594,7 +599,7 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
             historyOutcome = nil
             historyDraft = HistoryDraft(date: Date(),
                                         app: Self.historyAppName(typed: typedAppName, pid: fieldPID ?? originPID),
-                                        language: locale)
+                                        language: locale, terminal: dictationForTerminal)
             if controller.begin() {
                 // A pending opacity sample must not hide this dictation's own preview or result.
                 // A rejected begin leaves the timer running so the sample still hides on time.
@@ -602,11 +607,8 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
                 opacitySampleTask = nil
                 sampleToken = nil
                 fixPipeline?.cancel()
-                // A terminal's code tokens are typed without backticks, also when its focus changed at key-down and
-                // the text waits for Copy Result.
-                let typesIntoTerminal = terminal?.isTerminal == true || terminalRefusal != nil
                 fixPipeline = DictationFixPipeline.make(corrections: corrections, language: locale,
-                                                        terminal: typesIntoTerminal) { [weak self] chunk, text in
+                                                        terminal: dictationForTerminal) { [weak self] chunk, text in
                     self?.writeFixed(chunk, as: text) ?? false
                 }
                 // Its audio, for Run Again, when History keeps it; not for a dictation that already ended (`begin`
@@ -1107,7 +1109,7 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
             heard: heard.isEmpty ? text : heard, unwritten: resultText,
             fixes: .init(fillersRemoved: fillersRemoved, corrections: swaps, aiChangedWords: aiChangedWords,
                          codeSpans: resultOriginal.isEmpty ? 0 : codeSpans),
-            outcome: outcome, seconds: draft.seconds(now: Date())),
+            outcome: outcome, seconds: draft.seconds(now: Date()), terminal: draft.terminal),
             audio: audio.flatMap { $0.id == draft.id ? $0.writer : nil })
         if let audio, audio.id != draft.id { audio.writer.discard() }
     }

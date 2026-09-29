@@ -60,29 +60,56 @@ public struct DictationTextPipeline: Sendable {
         public var fixOutcome: TranscriptFixer.Outcome?
     }
 
-    /// Runs `chunk` through `coder`, then `fixer`; each is skipped when nil. The fix keeps every code token as it
-    /// was: a fix that changed one (a space put inside `foo-bar.txt`) is dropped, and a chunk that ends with a token
-    /// without backticks (a terminal's) gets no closing punctuation, which would join the token (`cat /tmp/file.`).
+    /// Runs `chunk` through `coder`, then `fixer`; each is skipped when nil. Both share the fix's time limit: the fix
+    /// gets what spoken code left of it, and is skipped (`timedOut`) when that is under `minimumFixTime`. The fix
+    /// keeps every code token as it was, with what stands next to it: a fix that changed one (a space put inside
+    /// `foo-bar.txt`, a comma after `/tmp/a`) is dropped, and a chunk that ends with a token without backticks (a
+    /// terminal's) gets no closing punctuation, which would join the token (`cat /tmp/file.`).
     public static func process(_ chunk: String, isFinal: Bool, coder: SpokenCodeFormatter?,
                                fixer: TranscriptFixer?) async -> ChunkResult {
+        let started = ContinuousClock.now
         let code = await coder?.format(chunk)
         let coded = code?.text ?? chunk
-        let bareEnd = code.map { $0.endsWithToken && coder?.backticks == false } ?? false
-        var fix = await fixer?.fix(coded, isFinal: isFinal && !bareEnd)
-        if let result = fix, let tokens = code?.tokens, !keeps(tokens, in: result.text) {
-            fix?.text = coded
-            fix?.outcome = .rejected
+        var fix: TranscriptFixer.Result?
+        if var fixer {
+            let remaining = fixer.timeout - started.duration(to: .now)
+            if remaining < minimumFixTime {
+                fix = .init(text: coded, outcome: .timedOut)
+            } else {
+                fixer.timeout = remaining
+                let bareEnd = code.map { $0.endsWithToken && coder?.backticks == false } ?? false
+                fix = await fixer.fix(coded, isFinal: isFinal && !bareEnd)
+            }
+        }
+        if let result = fix, let tokens = code?.tokens, !keeps(tokens, from: coded, in: result.text) {
+            fix = .init(text: coded, outcome: .rejected)
         }
         return ChunkResult(text: fix?.text ?? coded, coded: coded, codeSpans: code?.spans ?? 0,
                            codeOutcome: code?.outcome, fixOutcome: fix?.outcome)
     }
 
-    /// Whether `text` has each of `tokens`, in order.
-    static func keeps(_ tokens: [String], in text: String) -> Bool {
-        var rest = text[...]
+    /// Least time left for the fix after spoken code; a fix took 0.35–0.55 s once the model was loaded.
+    static let minimumFixTime: Duration = .milliseconds(400)
+
+    /// Whether `text` has each of `tokens`, in order, with the same character before and after each as `coded` has
+    /// (a closing mark may follow a token in backticks that ended `coded`).
+    static func keeps(_ tokens: [String], from coded: String, in text: String) -> Bool {
+        var restCoded = coded[...], restText = text[...]
+        func neighbors(_ range: Range<String.Index>, in string: String) -> (Character?, Character?) {
+            (range.lowerBound > string.startIndex ? string[string.index(before: range.lowerBound)] : nil,
+             range.upperBound < string.endIndex ? string[range.upperBound] : nil)
+        }
         for token in tokens {
-            guard let found = rest.firstRange(of: token) else { return false }
-            rest = rest[found.upperBound...]
+            guard let was = restCoded.firstRange(of: token), let now = restText.firstRange(of: token) else {
+                return false
+            }
+            let (beforeWas, afterWas) = neighbors(was, in: coded), (beforeNow, afterNow) = neighbors(now, in: text)
+            let closing = token.hasPrefix("`") && coded[was.upperBound...].allSatisfy(\.isWhitespace)
+                && afterNow.map { ".!?…".contains($0) } == true
+                && text[text.index(after: now.upperBound)...].allSatisfy(\.isWhitespace)
+            guard beforeWas == beforeNow, afterWas == afterNow || closing else { return false }
+            restCoded = coded[was.upperBound...]
+            restText = text[now.upperBound...]
         }
         return true
     }
