@@ -27,6 +27,10 @@ public struct SpokenCodeFormatter: Sendable {
         public var outcome: Outcome
         /// Code spans written.
         public var spans: Int
+        /// The tokens as written (in backticks when they are), in order.
+        public var tokens: [String] = []
+        /// The chunk ends with a token (its trailing spaces aside).
+        public var endsWithToken = false
     }
 
     /// Wrap tokens in backticks; off for a terminal, where the token itself is typed.
@@ -52,32 +56,40 @@ public struct SpokenCodeFormatter: Sendable {
         let leading = chunk.prefix { $0.isWhitespace }
         let trailing = String(chunk.reversed().prefix { $0.isWhitespace }.reversed())
         let core = chunk.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !core.isEmpty, !core.contains("`"), core.count <= 4_000,
-              SpokenCode.mayContainCode(core, language: language) else {
+        guard !core.isEmpty, core.count <= 4_000, SpokenCode.mayContainCode(core, language: language) else {
             return Result(text: chunk, outcome: .skipped, spans: 0)
         }
-        let frozen = frozenRanges(in: core)
+        // Text already in backticks (a learned correction's, say) stays as it is, and the model's backticks could
+        // not be told from it: such a chunk gets only the runs found without the model, around it.
+        let quoted = core.ranges(of: /`[^`]*`/)
+        let frozen = frozenRanges(in: core) + quoted
         let spans: [SpokenCode.Span]
         let outcome: Outcome
-        if let model {
-            switch await TranscriptFixer.firstOf(timeout, { [model] in
-                try await model(Self.instructions, Self.prompt(for: core))
+        if let model, !core.contains("`") {
+            // The reply is read within the time limit too.
+            switch await TranscriptFixer.firstOf(timeout, { [model, self] in
+                let reply = try await model(Self.instructions, Self.prompt(for: core))
+                try Task.checkCancellation()
+                return read(reply, for: core, frozen: frozen).map { SpanList(spans: $0) }
             }) {
-            case .value(let reply):
-                if let read = read(reply, for: core, frozen: frozen) {
-                    (spans, outcome) = (read, .model)
-                } else {
-                    (spans, outcome) = (fallback(core, frozen: frozen), .rejected)
-                }
+            case .value(let read?): (spans, outcome) = (read.spans, .model)
+            case .value(nil): (spans, outcome) = (fallback(core, frozen: frozen), .rejected)
             case .timedOut: (spans, outcome) = (fallback(core, frozen: frozen), .timedOut)
             case .failed: (spans, outcome) = (fallback(core, frozen: frozen), .failed)
             }
         } else {
-            (spans, outcome) = (fallback(core, frozen: frozen), .noModel)
+            (spans, outcome) = (fallback(core, frozen: frozen), model == nil ? .noModel : .skipped)
         }
         guard !spans.isEmpty else { return Result(text: chunk, outcome: outcome, spans: 0) }
+        let rendered = spans.map { backticks ? "`\($0.token)`" : $0.token }
         return Result(text: leading + SpokenCode.render(core, spans: spans, backticks: backticks) + trailing,
-                      outcome: outcome, spans: spans.count)
+                      outcome: outcome, spans: spans.count, tokens: rendered,
+                      endsWithToken: spans.contains { $0.range.upperBound == core.endIndex })
+    }
+
+    /// Spans, sendable across the time limit.
+    struct SpanList: Sendable {
+        var spans: [SpokenCode.Span]
     }
 
     /// Where the text a learned correction produced lies in `text`: each occurrence of a meant phrase.
@@ -86,15 +98,18 @@ public struct SpokenCodeFormatter: Sendable {
             .filter { !$0.isEmpty }
     }
 
-    /// Whether `token` keeps every frozen stretch `range` overlaps as it was, letter for letter ("/qc" in
-    /// `/qc-help`); a span may not cut one in part.
+    /// Whether `token` keeps every frozen stretch `range` overlaps as it was, letter for letter and in order ("/qc"
+    /// in `/qc-help`); a span may not cut one in part.
     static func keepsFrozen(_ range: Range<String.Index>, token: String, in text: String,
                             frozen: [Range<String.Index>]) -> Bool {
-        frozen.allSatisfy { stretch in
-            !stretch.overlaps(range)
-                || (range.contains(stretch.lowerBound) && stretch.upperBound <= range.upperBound
-                    && token.contains(text[stretch]))
+        let inside = frozen.filter { $0.overlaps(range) }.sorted { $0.lowerBound < $1.lowerBound }
+        var rest = token[...]
+        for stretch in inside {
+            guard range.contains(stretch.lowerBound), stretch.upperBound <= range.upperBound,
+                  let found = rest.firstRange(of: text[stretch]) else { return false }
+            rest = rest[found.upperBound...]
         }
+        return true
     }
 
     /// The spans of the model's `reply` for `text` (`SpokenCode.proposals`): an accepted span as the model wrote it,

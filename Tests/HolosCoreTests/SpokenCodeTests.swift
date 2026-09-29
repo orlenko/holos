@@ -76,6 +76,13 @@ func aSpokenFormSaysItsToken(_ token: String, _ spoken: String) {
     ("/qc", "the slash Q C"),
     (".local/bin", "dot local, slash bin"),
     ("fourwordsjoinedhere.txt", "four words joined here dot txt"),
+    // A spelled letter's mark is not the token's dot, and a written dot is not a spelled letter's mark.
+    ("restart-app.sh.", "restart dash app dot S. H."),
+    ("/q.c.", "slash Q. C."),
+    ("/ab", "slash a.b"),
+    // A weak symbol word alone.
+    ("back@noon", "back at noon"),
+    ("a+b", "a plus b"),
 ])
 func aReplyTokenThatWasNotSaidIsRefused(_ token: String, _ spoken: String) {
     #expect(!SpokenCode.accepts(token, for: spoken[...]), "\(token) ← \(spoken)")
@@ -101,7 +108,7 @@ private func formatted(_ text: String, reply: String, backticks: Bool = true,
         reply: "So in my `.zshrc` file, there's a command that exports the path variable and adds `.local/bin` into it.")
     #expect(result == .init(
         text: "So in my `.zshrc` file, there's a command that exports the path variable and adds `.local/bin` into it.",
-        outcome: .model, spans: 2))
+        outcome: .model, spans: 2, tokens: ["`.zshrc`", "`.local/bin`"]))
     result = await formatted("I ran the script dot slash scripts slash restart dash app dot S. H.",
                              reply: "I ran the script `./scripts/restart-app.sh`")
     #expect(result.text == "I ran the script `./scripts/restart-app.sh`")
@@ -127,6 +134,8 @@ private func formatted(_ text: String, reply: String, backticks: Bool = true,
     ("Set H O L O S underscore X equals one.", "Set HOLOS_X equals one."),
     // Unbalanced backticks.
     ("adds dot local slash bin into it", "adds `.local/bin into it"),
+    // A span cut out of a word.
+    ("Open slash tmpfile.", "Open `/tmp`file."),
 ])
 func aReplyThatChangesProseIsRefused(_ text: String, _ reply: String) async {
     let result = await formatted(text, reply: reply)
@@ -198,6 +207,53 @@ private actor Asked {
     // A span with no symbol word never wraps it.
     result = await formatted("run /qc and dash", reply: "run `/qc` and dash", corrections: corrections)
     #expect(result.text == "run /qc and dash")
+    // Each occurrence is kept in its own place.
+    result = await formatted("run /qc dash /qc now", reply: "run `/QC-/qc` now", corrections: corrections)
+    #expect(result.text == "run /qc dash /qc now")
+}
+
+@Test func textAlreadyInBackticksStaysAndTheRestIsReadWithoutTheModel() async {
+    let asked = Asked()
+    let formatter = SpokenCodeFormatter(backticks: true, language: "en-US", timeout: .seconds(30)) { _, prompt in
+        await asked.add(prompt)
+        return prompt
+    }
+    let result = await formatter.format("Open `README.md`, then run dash dash no dash parallel.")
+    #expect(result.text == "Open `README.md`, then run `--no-parallel`.")
+    #expect(await asked.prompts.isEmpty)
+}
+
+@Test func aSymbolPhrasesFirstWordAloneDoesNotAskTheModel() {
+    #expect(!SpokenCode.mayContainCode("Please come back at noon.", language: "en-US"))
+    #expect(SpokenCode.mayContainCode("Type back slash n.", language: "en-US"))
+    #expect(!SpokenCode.mayContainCode("Keep score under ten.", language: "en-US"))
+}
+
+@Test func aReplyTooCostlyToReadIsRefused() {
+    let original = Array(repeating: "slash yyyyyyyyyyyyyyyyyyyy", count: 120).joined(separator: " ")
+    let reply = String(repeating: "`/x`", count: 20)
+    #expect(SpokenCode.proposals(original: original, reply: reply, accepted: { _, _ in false }) == nil)
+}
+
+@Test func theFixKeepsEveryCodeToken() async {
+    let coder = SpokenCodeFormatter(backticks: false, language: "en-US", timeout: .seconds(30), model: codeModel([
+        "foo dash bar dot txt": "foo-bar.txt", "slash tmp slash file": "/tmp/file",
+    ]))
+    // A fix that puts spaces inside a token is dropped.
+    let spacing = TranscriptFixer(corrections: CorrectionList(), referenceBudget: 1_000, timeout: .seconds(30)) {
+        _, prompt in String(prompt.dropFirst("Text: ".count)).replacingOccurrences(of: "foo-bar", with: "foo - bar")
+    }
+    var result = await DictationTextPipeline.process("open foo dash bar dot txt now", isFinal: false, coder: coder,
+                                                     fixer: spacing)
+    #expect(result.text == "open foo-bar.txt now")
+    #expect(result.fixOutcome == .rejected)
+    // A terminal's last token gets no closing punctuation.
+    let closing = TranscriptFixer(corrections: CorrectionList(), referenceBudget: 1_000, timeout: .seconds(30)) {
+        _, prompt in String(prompt.dropFirst("Text: ".count)) + "."
+    }
+    result = await DictationTextPipeline.process("cat slash tmp slash file", isFinal: true, coder: coder,
+                                                 fixer: closing)
+    #expect(result.text == "cat /tmp/file")
 }
 
 @Test func aFailedModelFallsBackToRunsReadOneWay() async {
@@ -205,7 +261,8 @@ private actor Asked {
         throw CancellationError()
     }
     let result = await failing.format("Run the tests with dash dash no dash parallel so they finish.")
-    #expect(result == .init(text: "Run the tests with `--no-parallel` so they finish.", outcome: .failed, spans: 1))
+    #expect(result == .init(text: "Run the tests with `--no-parallel` so they finish.", outcome: .failed, spans: 1,
+                            tokens: ["`--no-parallel`"]))
     let none = SpokenCodeFormatter(backticks: true, language: "en-US", timeout: .seconds(30), model: nil)
     #expect(await none.format("Run the tests with dash dash no dash parallel.").outcome == .noModel)
 }
@@ -231,6 +288,9 @@ private func fallback(_ text: String) -> String {
     // The last spelled letter's dot ends the sentence at the end, or before a capitalized word.
     ("Run dot slash scripts slash restart dash app dot S. H.", "Run `./scripts/restart-app.sh`."),
     ("Run dot slash scripts slash restart dash app dot S. H. Then wait.", "Run `./scripts/restart-app.sh`. Then wait."),
+    // Digits are not capitals, and a letter's name alone is a word.
+    ("Run archive underscore 2026 dot S H", "Run `archive_2026.sh`"),
+    ("Name it Jay dash Smith dot txt.", "Name it `Jay-Smith.txt`."),
 ])
 func runsReadOneWayAreConvertedWithoutTheModel(_ text: String, _ expected: String) {
     #expect(fallback(text) == expected)
@@ -252,6 +312,8 @@ func runsReadOneWayAreConvertedWithoutTheModel(_ text: String, _ expected: Strin
     "two plus two equals four",
     // A clause's end inside.
     "Cut it, dash, and slash it.",
+    // A short word before "slash" may be a directory.
+    "ab slash cd slash ef",
 ])
 func runsReadMoreThanOneWayStayAsSaid(_ text: String) {
     #expect(fallback(text) == text)
@@ -270,14 +332,27 @@ func runsReadMoreThanOneWayStayAsSaid(_ text: String) {
     ("run dash dash verbose.", "run dash dash verbose."),
     ("no symbols at all", "no symbols at all"),
     ("I ran scripts", "I ran"),
+    // A run of spelled letters counts as one word, and may be a token's first part.
+    ("Run tilde slash H O L O", ""),
+    ("so run tilde slash H O L O", "so"),
+    ("Set H O L O S", "Set"),
+    ("Set H O L O S underscore A I F I X", "Set"),
+    // A symbol phrase counts whole; its first word alone does not.
+    ("open src forward slash", "open"),
+    ("Please come back at noon", "Please come back at"),
 ])
 func aTrailingRunIsWithheld(_ text: String, _ expected: String) {
     #expect(SpokenCode.withholdingTrailingRun(text, language: "en-US") == expected)
 }
 
-@Test func whatWasHandedOnStaysAPrefix() {
-    let words = "I ran scripts slash restart dash app dot S H and it worked fine at last , then dot local slash bin"
-        .split(separator: " ")
+@Test(arguments: [
+    "I ran scripts slash restart dash app dot S H and it worked fine at last , then dot local slash bin",
+    "Set H O L O S underscore A I F I X underscore MODEL equals one and then come back at noon",
+    "open src forward slash app double dash verbose a b c d e f slash g H I J K L M N O P dash q",
+    "x slash b c d double check the list back slash y",
+])
+func whatWasHandedOnStaysAPrefix(_ sentence: String) {
+    let words = sentence.split(separator: " ")
     var handed = ""
     for count in 1...words.count {
         let text = words.prefix(count).joined(separator: " ")
@@ -353,6 +428,7 @@ private func codeModel(_ spans: [String: String], asked: Asked? = nil) -> Spoken
     for name in ["Terminal", "iTerm2", "Ghostty", "WezTerm", "kitty", "Alacritty", "Warp"] {
         #expect(SpokenCode.isTerminal(appName: name))
     }
+    #expect(SpokenCode.isTerminal(appName: "com.apple.Terminal"))
     #expect(!SpokenCode.isTerminal(appName: "Notes"))
     #expect(!SpokenCode.isTerminal(appName: nil))
 }

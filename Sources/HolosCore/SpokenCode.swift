@@ -9,7 +9,8 @@ import Foundation
 /// "underscore"…, `symbolWords`) or written as the symbol itself, each part said as its words (up to three joined:
 /// "transcript fixer" for `transcriptfixer`, case aside), its letters spelled ("S. H.", "es aytch", "Q C" for
 /// `sh`, `qc`), or its digits said ("one" for `1`). A recognizer's all-capitals run of four letters or more may be
-/// one letter off (`ZHRC` for `zshrc`); no other word may. "@" stands only between two parts.
+/// one letter off (`ZHRC` for `zshrc`); no other word may. "@" stands only between two parts, and a span the model
+/// proposes must say one symbol at least with a strong symbol word (`accepts`).
 ///
 /// This is the grammar both steps follow: the model proposes code spans (`SpokenCodeFormatter`), and a span is kept
 /// only when its source is a spoken form of its token (`says`); without the model, `fallback` finds unambiguous runs
@@ -101,16 +102,23 @@ public enum SpokenCode {
         text.folding(options: [.diacriticInsensitive, .caseInsensitive], locale: nil).lowercased()
     }
 
-    /// Whether `text` has a strong symbol word (`SymbolWord.strong`): only then is the model asked.
+    /// Whether `text` has a strong symbol word or phrase (`SymbolWord.strong`, all its words in a row): only then is
+    /// the model asked. "come back" is not "back slash".
     public static func mayContainCode(_ text: String, language: String? = nil) -> Bool {
-        let strong = Set(symbolWords(for: language).filter(\.strong).flatMap(\.words))
-        return text.matches(of: /[\p{L}]+/).contains { strong.contains(fold($0.output)) }
+        let words = text.matches(of: /[\p{L}]+/).map { fold($0.output) }
+        let strong = symbolWords(for: language).filter(\.strong)
+        return words.indices.contains { index in
+            strong.contains { $0.words.elementsEqual(words[index...].prefix($0.words.count)) }
+        }
     }
 
-    /// Localized names of the terminals `KeystrokeTarget` types into, for Run Again, which knows a dictation's app
-    /// only by name: a code token typed into a terminal is never wrapped in backticks.
+    /// Names of the terminals `KeystrokeTarget` types into, as History keeps a dictation's app (its display name, or
+    /// its bundle identifier when it has none), for Run Again: a code token typed into a terminal is never wrapped in
+    /// backticks.
     public static let terminalAppNames: Set<String> = [
         "terminal", "iterm", "iterm2", "ghostty", "wezterm", "kitty", "alacritty", "warp",
+        "com.apple.terminal", "com.googlecode.iterm2", "com.mitchellh.ghostty", "com.github.wez.wezterm",
+        "net.kovidgoyal.kitty", "org.alacritty", "dev.warp.warp-stable",
     ]
 
     public static func isTerminal(appName: String?) -> Bool {
@@ -188,8 +196,13 @@ public enum SpokenCode {
                 result.append(Piece(kind: .word, folded: fold(text[index..<end]), raw: text[index..<end]))
                 index = end
             } else {
-                let afterLetter = !spaced && character == "." && result.last?.kind == .word
-                    && result.last?.raw.count == 1 && result.last?.raw.first?.isLetter == true
+                // "S." spells a letter when the capital's dot ends the word or comes before another spelled capital
+                // ("S.H."); "a.b" keeps its dot.
+                let next = text.index(after: index)
+                let closes = next == text.endIndex || text[next].isWhitespace
+                    || text[next...].prefixMatch(of: /\p{Lu}\./) != nil
+                let afterLetter = !spaced && character == "." && closes && result.last?.kind == .word
+                    && result.last?.raw.count == 1 && result.last?.raw.first?.isUppercase == true
                 result.append(Piece(kind: symbols.contains(character) ? .symbol(character) : .other, folded: "",
                                     raw: text[index...index], afterLetter: afterLetter))
                 index = text.index(after: index)
@@ -205,11 +218,15 @@ public enum SpokenCode {
     /// Whether `source`, what the speaker said, is a spoken form of `token` (see `SpokenCode`): every symbol said as
     /// its word or written as itself, in order, and every part said as its words, letters or digits. Nothing else
     /// may be in `source`: no word, mark or symbol the token does not have.
-    public static func says(_ token: String, _ source: Substring, language: String? = nil) -> Bool {
+    /// `strong`: at least one symbol must be said by a strong symbol word (`SymbolWord.strong`), as a span the model
+    /// proposes must (`accepts`): "back at noon" does not say `back@noon`.
+    public static func says(_ token: String, _ source: Substring, language: String? = nil,
+                            strong: Bool = false) -> Bool {
         guard token.count <= 200, let elements = elements(of: token) else { return false }
         let pieces = pieces(of: source)
         guard pieces.count <= 120 else { return false }
-        return Matcher(elements: elements, pieces: pieces, language: language).match(0, 0)
+        return Matcher(elements: elements, pieces: pieces, language: language, requireStrong: strong)
+            .match(0, 0, false)
     }
 
     /// The search behind `says`, remembering the states that failed.
@@ -218,24 +235,27 @@ public enum SpokenCode {
         let pieces: [Piece]
         let language: String?
         let words: [SymbolWord]
+        let requireStrong: Bool
         private var failed = Set<[Int]>()
 
-        init(elements: [Element], pieces: [Piece], language: String?) {
+        init(elements: [Element], pieces: [Piece], language: String?, requireStrong: Bool) {
             self.elements = elements
             self.pieces = pieces
             self.language = language
+            self.requireStrong = requireStrong
             words = SpokenCode.symbolWords(for: language)
         }
 
-        /// Whether elements from `element` on are said by pieces from `piece` on, to the end.
-        func match(_ element: Int, _ piece: Int) -> Bool {
-            guard element < elements.count else { return piece == pieces.count }
-            let key = [element, piece, -1, 0]
+        /// Whether elements from `element` on are said by pieces from `piece` on, to the end; `strong`: a strong
+        /// symbol word said an earlier symbol.
+        func match(_ element: Int, _ piece: Int, _ strong: Bool) -> Bool {
+            guard element < elements.count else { return piece == pieces.count && (strong || !requireStrong) }
+            let key = [element, piece, -1, 0, strong ? 1 : 0]
             if failed.contains(key) { return false }
             let found: Bool
             switch elements[element] {
-            case .symbol(let symbol): found = matchSymbol(symbol, element, piece)
-            case .part(let part): found = matchPart(Array(part), element, piece, 0, 0)
+            case .symbol(let symbol): found = matchSymbol(symbol, element, piece, strong)
+            case .part(let part): found = matchPart(Array(part), element, piece, 0, 0, strong)
             }
             if !found { failed.insert(key) }
             return found
@@ -247,8 +267,10 @@ public enum SpokenCode {
             return phrase.indices.allSatisfy { pieces[piece + $0].kind == .word && pieces[piece + $0].folded == phrase[$0] }
         }
 
-        private func matchSymbol(_ symbol: Character, _ element: Int, _ piece: Int) -> Bool {
-            if piece < pieces.count, pieces[piece].kind == .symbol(symbol), match(element + 1, piece + 1) {
+        private func matchSymbol(_ symbol: Character, _ element: Int, _ piece: Int, _ strong: Bool) -> Bool {
+            // A spelled letter's mark ("S.") is never the token's dot: `sh.` is not "S. H.".
+            if piece < pieces.count, pieces[piece].kind == .symbol(symbol), !pieces[piece].afterLetter,
+               match(element + 1, piece + 1, strong) {
                 return true
             }
             for word in words where word.symbols.first == symbol && says(word.words, at: piece) {
@@ -256,7 +278,7 @@ public enum SpokenCode {
                 let count = word.symbols.count
                 guard element + count <= elements.count,
                       (0..<count).allSatisfy({ elements[element + $0] == .symbol(symbol) }) else { continue }
-                if match(element + count, piece + word.words.count) { return true }
+                if match(element + count, piece + word.words.count, strong || word.strong) { return true }
             }
             return false
         }
@@ -264,24 +286,24 @@ public enum SpokenCode {
         /// Whether `part` from `offset` on, and the elements after it, are said by pieces from `piece` on;
         /// `joined` counts the words of more than one letter the part has taken so far.
         private func matchPart(_ part: [Character], _ element: Int, _ piece: Int, _ offset: Int,
-                               _ joined: Int) -> Bool {
-            let key = [element, piece, offset, joined]
+                               _ joined: Int, _ strong: Bool) -> Bool {
+            let key = [element, piece, offset, joined, strong ? 1 : 0]
             if failed.contains(key) { return false }
             var found = false
             defer { if !found { failed.insert(key) } }
             if offset == part.count {
                 // The mark of a spelled letter may close the part ("S. H." for `sh`).
                 if piece < pieces.count, pieces[piece].afterLetter,
-                   matchPart(part, element, piece + 1, offset, joined) {
+                   matchPart(part, element, piece + 1, offset, joined, strong) {
                     found = true
                     return true
                 }
-                found = match(element + 1, piece)
+                found = match(element + 1, piece, strong)
                 return found
             }
             guard piece < pieces.count else { return false }
             let current = pieces[piece]
-            if current.afterLetter, offset > 0, matchPart(part, element, piece + 1, offset, joined) {
+            if current.afterLetter, offset > 0, matchPart(part, element, piece + 1, offset, joined, strong) {
                 found = true
                 return true
             }
@@ -290,26 +312,26 @@ public enum SpokenCode {
             // The word as it is.
             if word.count > 1 ? joined < maximumJoinedWords : true,
                part[offset...].starts(with: word),
-               matchPart(part, element, piece + 1, offset + word.count, joined + (word.count > 1 ? 1 : 0)) {
+               matchPart(part, element, piece + 1, offset + word.count, joined + (word.count > 1 ? 1 : 0), strong) {
                 found = true
                 return true
             }
             // A letter's name or a digit's word.
             let spoken = SpokenCode.letterName(current.folded, language: language)?.letter
                 ?? SpokenCode.digitWords[current.folded]
-            if let spoken, part[offset] == spoken, matchPart(part, element, piece + 1, offset + 1, joined) {
+            if let spoken, part[offset] == spoken, matchPart(part, element, piece + 1, offset + 1, joined, strong) {
                 found = true
                 return true
             }
             // "double you" for "w".
             if current.folded == "double", piece + 1 < pieces.count, ["you", "u"].contains(pieces[piece + 1].folded),
-               part[offset] == "w", matchPart(part, element, piece + 2, offset + 1, joined) {
+               part[offset] == "w", matchPart(part, element, piece + 2, offset + 1, joined, strong) {
                 found = true
                 return true
             }
             // A recognizer's all-capitals run for the whole part, one letter off ("ZHRC" for `zshrc`).
             if offset == 0, word.count >= 4, current.raw.allSatisfy({ $0.isUppercase }),
-               SpokenWords.editDistance(word, part) <= 1, match(element + 1, piece + 1) {
+               SpokenWords.editDistance(word, part) <= 1, match(element + 1, piece + 1, strong) {
                 found = true
                 return true
             }
@@ -317,10 +339,9 @@ public enum SpokenCode {
         }
     }
 
-    /// Why a token said by `source` is still not code: nil when it is. It needs a symbol and a letter, a symbol word
-    /// in `source` (a span with none only wraps what was already written: "e.g." is not `e.g.`), parts that are
-    /// not all function words of `language` (`/the`), and "@" only between two parts.
-    static func isCode(_ token: String, source: Substring, language: String?) -> Bool {
+    /// Whether a token is code: it needs a symbol and a letter, parts that are not all function words of `language`
+    /// (`/the`), and "@" only between two parts.
+    static func isCode(_ token: String, language: String?) -> Bool {
         guard let elements = elements(of: token), elements.contains(where: { if case .symbol = $0 { true } else { false } }),
               token.contains(where: \.isLetter) else { return false }
         let parts = elements.compactMap { element -> String? in if case .part(let part) = element { part } else { nil } }
@@ -330,8 +351,7 @@ public enum SpokenCode {
             guard index > 0, index + 1 < elements.count, case .part = elements[index - 1],
                   case .part = elements[index + 1] else { return false }
         }
-        let symbolFirstWords = Set(symbolWords(for: language).compactMap(\.words.first))
-        return pieces(of: source).contains { $0.kind == .word && symbolFirstWords.contains($0.folded) }
+        return true
     }
 
     /// Function words of fewer than three letters, which `SpokenWords.stopWords` leaves out.
@@ -340,9 +360,11 @@ public enum SpokenCode {
         "we", "my", "up", "do", "us", "le", "la", "de", "du", "un", "et", "en", "au", "il", "je", "tu", "ce", "se",
     ]
 
-    /// Whether `token` may replace `source`: said by it (`says`) and code (`isCode`).
+    /// Whether `token` may replace `source`: code (`isCode`), and said by `source` with at least one strong symbol
+    /// word (`says`), so a span never only wraps what was already written ("e.g." is not `e.g.`) nor reads prose
+    /// through a weak word alone ("back at noon" is not `back@noon`).
     public static func accepts(_ token: String, for source: Substring, language: String? = nil) -> Bool {
-        isCode(token, source: source, language: language) && says(token, source, language: language)
+        isCode(token, language: language) && says(token, source, language: language, strong: true)
     }
 
     // MARK: - A model's reply
@@ -367,8 +389,9 @@ public enum SpokenCode {
     /// The spans of `reply`, the model's copy of `original` with code tokens between backticks, each with the text of
     /// `original` it replaces. Nil when the reply is anything else: the text outside the backticks must be
     /// `original`'s, character for character but for the length of runs of spaces; each span replaces a stretch of
-    /// `original` that starts and ends with a non-space. Of several ways to read the spans, the one with the most
-    /// spans passing `accepted` wins.
+    /// `original` that starts and ends with a non-space, at word boundaries (never "slash tmp" out of "slash
+    /// tmpfile"). Of several ways to read the spans, the one with the most spans passing `accepted` wins. The search
+    /// gives up (nil) past `maximumSteps` candidate stretches, or when its task is cancelled.
     static func proposals(original: String, reply: String,
                           accepted: (Range<String.Index>, String) -> Bool) -> [Proposal]? {
         let parts = reply.split(separator: "`", omittingEmptySubsequences: false)
@@ -377,18 +400,37 @@ public enum SpokenCode {
         let codes = stride(from: 1, to: parts.count, by: 2).map { String(parts[$0]) }
         guard let start = consume(texts[0], in: original, from: original.startIndex) else { return nil }
         if codes.isEmpty { return start == original.endIndex ? [] : nil }
+        func isWordCharacter(_ index: String.Index) -> Bool {
+            original[index].isLetter || original[index].isNumber
+        }
         struct Key: Hashable { let span: Int; let at: String.Index }
         var memo: [Key: (score: Int, proposals: [Proposal])?] = [:]
+        final class Budget {
+            var steps = 0
+            var gaveUp = false
+        }
+        let budget = Budget()
         func search(_ span: Int, _ at: String.Index) -> (score: Int, proposals: [Proposal])? {
             if let known = memo[Key(span: span, at: at)] { return known }
             var best: (score: Int, proposals: [Proposal])?
+            // A span starts at a word's start.
+            guard at == original.startIndex || !isWordCharacter(original.index(before: at)) || !isWordCharacter(at)
+            else { return nil }
             let limit = original.index(at, offsetBy: maximumSource, limitedBy: original.endIndex) ?? original.endIndex
             var end = at
-            while end < limit {
+            while end < limit, !budget.gaveUp {
                 end = original.index(after: end)
+                budget.steps += 1
+                if budget.steps > maximumSteps || (budget.steps % 256 == 0 && Task.isCancelled) {
+                    budget.gaveUp = true
+                    break
+                }
                 let source = original[at..<end]
                 guard let first = source.first, let last = source.last, !first.isWhitespace, !last.isWhitespace,
                       !source.contains(where: \.isNewline) else { continue }
+                // And ends at a word's end.
+                guard end == original.endIndex || !isWordCharacter(end)
+                        || !isWordCharacter(original.index(before: end)) else { continue }
                 guard let next = consume(texts[span + 1], in: original, from: end) else { continue }
                 let rest: (score: Int, proposals: [Proposal])?
                 if span + 1 == codes.count {
@@ -407,8 +449,12 @@ public enum SpokenCode {
             memo[Key(span: span, at: at)] = best
             return best
         }
-        return search(0, start)?.proposals
+        let found = search(0, start)?.proposals
+        return budget.gaveUp ? nil : found
     }
+
+    /// Most candidate stretches `proposals` tries for one reply: far more than any dictated chunk needs.
+    static let maximumSteps = 50_000
 
     /// Where `text` ends when it is found in `original` at `start`, a run of spaces matching any run of spaces; nil
     /// when it is not there.
@@ -553,13 +599,13 @@ public enum SpokenCode {
     /// "S.H."), and letter names that are not common words ("es aytch"), two letters or more; a capital alone
     /// counts too, but for "I" and "A".
     static func mergingLetters(_ items: [Item], in text: String, language: String?) -> [Item] {
-        func letters(of item: Item) -> String? {
+        /// An item's letters, and whether they come from a letter's name ("es", "Jay").
+        func letters(of item: Item) -> (letters: String, named: Bool)? {
             guard case .word(let word) = item.kind else { return nil }
             if word.wholeMatch(of: /(?:\p{Lu}\.?)+/) != nil, word.filter(\.isLetter).count == 1 || word.contains(".") {
-                return word.filter(\.isLetter).lowercased()
+                return (word.filter(\.isLetter).lowercased(), false)
             }
-            if word.count == 1, word.first!.isUppercase { return word.lowercased() }
-            if let name = letterName(fold(word), language: language), !name.common { return String(name.letter) }
+            if let name = letterName(fold(word), language: language), !name.common { return (String(name.letter), true) }
             return nil
         }
         var result: [Item] = []
@@ -568,13 +614,14 @@ public enum SpokenCode {
             var end = index
             var spelled = ""
             var named = 0
-            while end < items.count, let letters = letters(of: items[end]) {
-                spelled += letters
-                if case .word(let word) = items[end].kind, !word.first!.isUppercase { named += 1 }
+            while end < items.count, let found = letters(of: items[end]) {
+                spelled += found.letters
+                if found.named { named += 1 }
                 end += 1
                 if items[end - 1].endsClause { break }
             }
             let count = end - index
+            // A capital alone may be a letter ("dash U"); a letter's name alone ("Jay") is a word.
             let alone = count == 1 && named == 0 && !["i", "a"].contains(spelled)
             if count >= 2 || alone {
                 var item = items[index]
@@ -603,8 +650,9 @@ public enum SpokenCode {
     static func token(of run: ArraySlice<Item>, in text: String, language: String?,
                       digitWords allowed: [String: Character]) -> String? {
         let capitals = run.contains { item in
-            if case .word(let word) = item.kind { word.count > 1 && word.allSatisfy { !$0.isLetter || $0.isUppercase } }
-            else { false }
+            if case .word(let word) = item.kind {
+                word.filter(\.isLetter).count > 1 && word.allSatisfy { !$0.isLetter || $0.isUppercase }
+            } else { false }
         }
         var token = ""
         for item in run {
@@ -633,12 +681,7 @@ public enum SpokenCode {
     /// far more often.
     static let fallbackDigits = digitWords.filter { !["one", "un", "une"].contains($0.key) }
 
-    /// Whether `word` is a function word of `language`, or has fewer than three letters (`SpokenWords.isContent`).
-    static func isFunctionWord(_ item: Item, language: String?) -> Bool {
-        guard case .word(let word) = item.kind else { return false }
-        return !SpokenWords.isContent(fold(word), language: language)
-    }
-
+    /// Whether `item` is a function word of `language` (`SpokenWords.stopWords`, `shortFunctionWords`).
     static func isStopWord(_ item: Item, language: String?) -> Bool {
         guard case .word(let word) = item.kind else { return false }
         let folded = fold(word)
@@ -696,7 +739,7 @@ public enum SpokenCode {
             if items[lower].isPart, lower + 1 < upper, case .symbol = items[lower + 1].kind {
                 let leading = items[(lower + 1)...].prefix { if case .symbol = $0.kind { true } else { false } }
                     .map { item -> String in if case .symbol(let s) = item.kind { s } else { "" } }.joined()
-                if isLeader(leading) || isFunctionWord(items[lower], language: language) {
+                if isLeader(leading) || isStopWord(items[lower], language: language) {
                     lower += 1
                 } else if !(leading.hasPrefix("-") || leading.hasPrefix("_")) {
                     continue
@@ -751,50 +794,80 @@ public enum SpokenCode {
         let words = text.ranges(of: /\S+/)
         guard !words.isEmpty else { return text }
         let strong = symbolWords(for: language).filter(\.strong)
-        let single = Set(strong.filter { $0.words.count == 1 }.map { $0.words[0] })
-        let starts = Set(strong.filter { $0.words.count > 1 }.map { $0.words[0] })
+        let folded = words.map { fold(text[$0].trimmingCharacters(in: CharacterSet(charactersIn: ",;:!?.…"))) }
+        let last = words.count - 1
+        /// A strong symbol word, a word of a strong symbol phrase said in full ("forward" in "forward slash"), or a
+        /// last word that may start one ("double", "barre").
         func isSymbol(_ index: Int) -> Bool {
-            let word = text[words[index]]
-            return single.contains(fold(word.trimmingCharacters(in: CharacterSet(charactersIn: ",;:!?.…"))))
+            strong.contains { phrase in
+                phrase.words.indices.contains { offset in
+                    let start = index - offset
+                    guard start >= 0 else { return false }
+                    let said = folded[start...].prefix(phrase.words.count)
+                    return said.elementsEqual(phrase.words)
+                        || (start + said.count == words.count && said.elementsEqual(phrase.words.prefix(said.count)))
+                }
+            }
         }
         func endsClause(_ index: Int) -> Bool {
             let word = text[words[index]]
             guard let last = word.last, ",;:!?.…".contains(last) else { return false }
             return word.wholeMatch(of: /(?:\p{Lu}\.)+/) == nil
         }
-        let last = words.count - 1
+        /// A spelled letter ("S", "H."): a run of them counts as one word.
+        func isLetter(_ index: Int) -> Bool { text[words[index]].wholeMatch(of: /\p{Lu}\.?/) != nil }
+        /// A content word may be a token's first part ("scripts" before "slash restart").
+        func mayStartToken(_ index: Int) -> Bool {
+            !endsClause(index) && !isSymbol(index) && SpokenWords.isContent(folded[index], language: language)
+        }
+        /// Where a token that ends just before `index` may start: at the run of spelled letters before it, else at
+        /// a content word before it, else at `index`.
+        func start(before index: Int) -> Int {
+            var start = index
+            while start > 0, isLetter(start - 1), !endsClause(start - 1) { start -= 1 }
+            if start == index, index > 0, mayStartToken(index - 1) { start -= 1 }
+            return start
+        }
+        func prefix(before index: Int) -> String {
+            String(text[..<words[index].lowerBound]).trimmingCharacters(in: .whitespaces)
+        }
         // A run that ended with its clause is complete.
         if endsClause(last) { return text }
-        // The last strong symbol word among the last four words, with no clause's end after it; else a last word
-        // that may start a symbol phrase.
+        // The last strong symbol word with at most three words after it (a run of spelled letters counting as one),
+        // and no clause's end.
         var found: Int?
-        for index in stride(from: last, through: max(0, last - 3), by: -1) {
+        var seen = 0
+        var index = last
+        while index >= 0 {
             if index < last, endsClause(index) { break }
-            if isSymbol(index) { found = index; break }
-        }
-        if found == nil, starts.contains(fold(text[words[last]])) { found = last }
-        // A content word may be a token's first part ("scripts" before "slash restart").
-        func mayStartToken(_ index: Int) -> Bool {
-            !endsClause(index) && !isSymbol(index) && SpokenWords.isContent(fold(text[words[index]]), language: language)
+            if isSymbol(index) {
+                found = index
+                break
+            }
+            if !isLetter(index) {
+                seen += 1
+                if seen >= 4 { break }
+            }
+            index -= 1
         }
         guard var cut = found else {
-            // No symbol word yet: a last content word may still be followed by one.
-            return mayStartToken(last) ? String(text[..<words[last].lowerBound]).trimmingCharacters(in: .whitespaces)
-                                       : text
+            // No symbol word yet: trailing spelled letters or a last content word may still be followed by one.
+            let cut = start(before: last + 1)
+            return cut <= last ? prefix(before: cut) : text
         }
         // Earlier symbol words chained to it, at most three words apart, within the clause.
         var probe = cut - 1
         var between = 0
-        while probe >= 0, between <= 3, !endsClause(probe) {
+        while probe >= 0, !endsClause(probe) {
             if isSymbol(probe) {
                 cut = probe
                 between = 0
-            } else {
+            } else if !isLetter(probe) {
                 between += 1
+                if between > 3 { break }
             }
             probe -= 1
         }
-        if cut > 0, mayStartToken(cut - 1) { cut -= 1 }
-        return String(text[..<words[cut].lowerBound]).trimmingCharacters(in: .whitespaces)
+        return prefix(before: start(before: cut))
     }
 }

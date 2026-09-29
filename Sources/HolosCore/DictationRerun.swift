@@ -60,14 +60,31 @@ public struct DictationTextPipeline: Sendable {
         public var fixOutcome: TranscriptFixer.Outcome?
     }
 
-    /// Runs `chunk` through `coder`, then `fixer`; each is skipped when nil.
+    /// Runs `chunk` through `coder`, then `fixer`; each is skipped when nil. The fix keeps every code token as it
+    /// was: a fix that changed one (a space put inside `foo-bar.txt`) is dropped, and a chunk that ends with a token
+    /// without backticks (a terminal's) gets no closing punctuation, which would join the token (`cat /tmp/file.`).
     public static func process(_ chunk: String, isFinal: Bool, coder: SpokenCodeFormatter?,
                                fixer: TranscriptFixer?) async -> ChunkResult {
         let code = await coder?.format(chunk)
         let coded = code?.text ?? chunk
-        let fix = await fixer?.fix(coded, isFinal: isFinal)
+        let bareEnd = code.map { $0.endsWithToken && coder?.backticks == false } ?? false
+        var fix = await fixer?.fix(coded, isFinal: isFinal && !bareEnd)
+        if let result = fix, let tokens = code?.tokens, !keeps(tokens, in: result.text) {
+            fix?.text = coded
+            fix?.outcome = .rejected
+        }
         return ChunkResult(text: fix?.text ?? coded, coded: coded, codeSpans: code?.spans ?? 0,
                            codeOutcome: code?.outcome, fixOutcome: fix?.outcome)
+    }
+
+    /// Whether `text` has each of `tokens`, in order.
+    static func keeps(_ tokens: [String], in text: String) -> Bool {
+        var rest = text[...]
+        for token in tokens {
+            guard let found = rest.firstRange(of: token) else { return false }
+            rest = rest[found.upperBound...]
+        }
+        return true
     }
 
     /// What each step produced.
