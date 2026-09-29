@@ -74,7 +74,8 @@ struct Session: AsyncParsableCommand {
             "Transcribe missed audio with today's word list, names and corrections, not the saved vocabulary.",
             discussion: "Only audio transcribed again uses it; saved phrases stay as heard. For this run only: "
                 + "vocabulary.json keeps the vocabulary the meeting was recorded with, so a rebuild without this flag "
-                + "replays as the recording heard."))
+                + "replays as the recording heard. Speakers are then labelled on the rebuilt transcript as it is: a "
+                + "meeting in several languages is not transcribed again in each."))
         var currentVocabulary = false
         @Flag(help: "Print the result as JSON.") var json = false
 

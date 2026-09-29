@@ -37,32 +37,35 @@ public struct WordListStore: Sendable {
     }
 
     /// Applies `change` to the list as it is on disk, holding the lock, and saves the result when it differs.
-    /// Returns the list after the change and what `change` returned.
+    /// Returns the list after the change, what `change` returned, and the file's stamp taken under the lock, so it is
+    /// the stamp of that list (another writer waits for the lock).
     @discardableResult
-    public func update<T>(_ change: (inout WordList) throws -> T) throws -> (list: WordList, result: T) {
+    public func update<T>(_ change: (inout WordList) throws -> T) throws
+        -> (list: WordList, result: T, stamp: Stamp?) {
         try withLock {
             var list = try load()
             let before = list
             let result = try change(&list)
             if list != before { try save(list) }
-            return (list, result)
+            return (list, result, stamp())
         }
     }
 
-    /// What tells a changed file from the one read before: its inode, size, and modification time (an atomic write
-    /// replaces the inode). Nil when there is no file.
+    /// What tells a changed file from the one read before: its inode, size, and modification and status-change
+    /// times (an atomic write replaces the inode; `chmod` changes the status-change time). Nil when there is no file.
     public struct Stamp: Sendable, Equatable {
         var inode: UInt64
         var size: Int64
-        var seconds: Int
-        var nanoseconds: Int
+        var modified: [Int]
+        var changed: [Int]
     }
 
     public func stamp() -> Stamp? {
         var info = stat()
         guard lstat(url.path, &info) == 0 else { return nil }
-        return Stamp(inode: info.st_ino, size: info.st_size, seconds: info.st_mtimespec.tv_sec,
-                     nanoseconds: info.st_mtimespec.tv_nsec)
+        return Stamp(inode: info.st_ino, size: info.st_size,
+                     modified: [info.st_mtimespec.tv_sec, info.st_mtimespec.tv_nsec],
+                     changed: [info.st_ctimespec.tv_sec, info.st_ctimespec.tv_nsec])
     }
 
     private func save(_ list: WordList) throws {

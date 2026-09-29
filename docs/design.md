@@ -746,6 +746,7 @@ that place: terms the recognizer should expect (names, products, jargon), kept i
   first, crowds out the rest; `voiceislocal words` says so. Names come before
   correction words so a long correction list never pushes the meeting's people out.
 - Dictation: the app reads `words.json` at launch and again whenever the file changed
+  (its inode, size, modification or status-change time), or could not be read last time
   (checked at each dictation, meeting start, Run Again, and when the Corrections section
   shows or the window comes back from Terminal), and sets the next dictation's
   contextual strings, as a correction does. A dictation already listening keeps the
@@ -757,6 +758,9 @@ that place: terms the recognizer should expect (names, products, jargon), kept i
   --current-vocabulary` is the one way to ask for today's list (with names and
   corrections) instead, for the audio that run transcribes again; `vocabulary.json` is
   not rewritten, so a later rebuild without the flag replays as the recording heard.
+  Speakers are then labelled on that rebuilt transcript as it is: the languages stage,
+  which would transcribe a meeting in several languages again with `vocabulary.json`,
+  does not run.
   `session languages` has no such flag: its transcriptions are reused across runs,
   and a different vocabulary would make a reused one and a fresh one disagree.
 - Apple Intelligence's fix: the words of each term count as real words for the guard
@@ -768,7 +772,8 @@ that place: terms the recognizer should expect (names, products, jargon), kept i
   way to teach those.
 - The Corrections section's "Word list" card lists the terms with a search field and a
   count; the field below adds (Return adds; a paste of several lines adds one term per
-  line), Remove or ⌫ removes the selected terms. `voiceislocal words list|add <term>…|
+  line; a term that could not be added, too long or with the list full or unsaved, stays
+  in the field), Remove or ⌫ removes the selected terms. `voiceislocal words list|add <term>…|
   remove <term>…|import <file>` does the same from Terminal (import: one term per line,
   `-` for standard input). Nothing is added automatically.
 

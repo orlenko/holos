@@ -30,8 +30,9 @@ private func mode(_ url: URL) -> mode_t? {
 
 @Test func theWordListIsSavedPrivatelyAndVersioned() throws {
     let store = try wordsStore()
-    let (list, outcome) = try store.update { $0.add("Keycloak", at: wordsDate) }
+    let (list, outcome, stamp) = try store.update { $0.add("Keycloak", at: wordsDate) }
     #expect(outcome == .added("Keycloak") && list.terms == ["Keycloak"])
+    #expect(stamp != nil && stamp == store.stamp())
     #expect(mode(store.url) == 0o600)
     let text = try String(contentsOf: store.url, encoding: .utf8)
     #expect(text.contains("\"schemaVersion\" : 1") && text.contains("\"source\" : \"user\"")
@@ -47,7 +48,7 @@ private func mode(_ url: URL) -> mode_t? {
     try store.update { $0.add("Apex", at: wordsDate) }
     let before = store.stamp()
     #expect(before != nil)
-    let (_, outcome) = try store.update { $0.add("apex") }
+    let (_, outcome, _) = try store.update { $0.add("apex") }
     #expect(outcome == .duplicate(existing: "Apex"))
     #expect(store.stamp() == before)
 }
@@ -58,7 +59,7 @@ private func mode(_ url: URL) -> mode_t? {
     try store.update { $0.add("Davin", at: wordsDate) }
     // Another process (the CLI) adds a term; this one's next change keeps it.
     try other.update { $0.add("Geofence", at: wordsDate) }
-    let (list, _) = try store.update { $0.add("Fab", at: wordsDate) }
+    let (list, _, _) = try store.update { $0.add("Fab", at: wordsDate) }
     #expect(list.terms == ["Davin", "Geofence", "Fab"])
     #expect(try other.load().terms == ["Davin", "Geofence", "Fab"])
 }
@@ -78,7 +79,11 @@ private func mode(_ url: URL) -> mode_t? {
     try store.update { $0.add("ops", at: wordsDate) }
     let first = store.stamp()
     try store.update { $0.add("AtmoSys", at: wordsDate) }
-    #expect(store.stamp() != first)
+    let second = store.stamp()
+    #expect(second != first)
+    // Permissions fixed by hand change no content, but a list that could not be read is read again.
+    #expect(chmod(store.url.path, 0o644) == 0)
+    #expect(store.stamp() != second)
 }
 
 @Test func theWordsCommandAddsRemovesAndImports() throws {

@@ -20,7 +20,9 @@ public enum SessionRecoveryCommand {
         public var postProcess: Bool
         /// Rebuild the transcript even when it was already rebuilt, or the meeting was not interrupted.
         public var force: Bool
-        /// Recognition vocabulary for the replay; nil reads vocabulary.json.
+        /// Recognition vocabulary for the replay; nil reads vocabulary.json. Given, post-processing keeps the rebuilt
+        /// transcript (`PostProcessingOptions.keepTranscript`): the languages stage would transcribe the meeting
+        /// again with vocabulary.json and replace it.
         public var vocabulary: [String]?
 
         public init(session: URL, transcribe: Bool = true, postProcess: Bool = true, force: Bool = false,
@@ -244,7 +246,8 @@ public enum SessionRecoveryCommand {
                 unreadable = error
             }
             // Asked only of labels that are otherwise up to date: it can check speech models.
-            let languageWork = unreadable == nil && unchanged && labels != nil
+            let keepTranscript = request.vocabulary != nil
+            let languageWork = unreadable == nil && unchanged && labels != nil && !keepTranscript
                 ? await languageWorkPending(session, transcriptID: transcriptID, dependencies: languages) : false
             if let unreadable {
                 warnings.append("Speaker labels were not updated: \(unreadable.localizedDescription)")
@@ -255,7 +258,8 @@ public enum SessionRecoveryCommand {
                     : "Speaker labels are up to date.")
             } else {
                 do {
-                    let processor = MeetingPostProcessor(diarizer: diarizer, options: PostProcessingOptions(),
+                    let processor = MeetingPostProcessor(diarizer: diarizer,
+                                                         options: PostProcessingOptions(keepTranscript: keepTranscript),
                                                          freeSpace: freeSpace, profiles: profiles,
                                                          languages: languages)
                     let result = try await processor.run(session: session, lease: lease) { progress($0.message) }

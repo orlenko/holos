@@ -6,8 +6,15 @@ import HolosCore
 /// the search field. The app keeps the list (`words.json`); this view shows it and reports what each change did.
 @MainActor
 final class WordListView: NSView, NSTableViewDataSource, NSTableViewDelegate {
-    /// Adds the terms; returns the line to show (what was added, what the list had already).
-    private let onAdd: ([String]) -> String
+    struct AddResult {
+        /// The line to show: what was added, what the list had already, what could not be added.
+        var message: String
+        /// Terms neither added nor listed already: they stay in the field to fix or try again.
+        var unadded: [String]
+    }
+
+    /// Adds the terms.
+    private let onAdd: ([String]) -> AddResult
     /// Removes the terms; returns the line to show.
     private let onRemove: ([String]) -> String
 
@@ -24,7 +31,7 @@ final class WordListView: NSView, NSTableViewDataSource, NSTableViewDelegate {
     /// The problem last shown, cleared once the list can be read again.
     private var shownProblem: String?
 
-    init(onAdd: @escaping ([String]) -> String, onRemove: @escaping ([String]) -> String) {
+    init(onAdd: @escaping ([String]) -> AddResult, onRemove: @escaping ([String]) -> String) {
         self.onAdd = onAdd
         self.onRemove = onRemove
         super.init(frame: .zero)
@@ -149,8 +156,9 @@ final class WordListView: NSView, NSTableViewDataSource, NSTableViewDelegate {
             feedbackLabel.stringValue = "Type a term to add, or paste several, one per line."
             return
         }
-        feedbackLabel.stringValue = onAdd(lines)
-        addField.stringValue = ""
+        let result = onAdd(lines)
+        feedbackLabel.stringValue = result.message
+        addField.stringValue = result.unadded.joined(separator: "\n")
     }
 
     @objc private func removeSelected() {

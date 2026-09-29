@@ -22,9 +22,10 @@ extension HolosAppDelegate {
         wordListStamp = stamp
     }
 
-    /// Reads `words.json` again when it changed since it was last read, and passes the change on.
+    /// Reads `words.json` again when it changed since it was last read, or could not be read then, and passes the
+    /// change on.
     func refreshWordList() {
-        guard wordListStore.stamp() != wordListStamp else { return }
+        guard wordListProblem != nil || wordListStore.stamp() != wordListStamp else { return }
         loadWordList()
         wordListChanged()
     }
@@ -45,19 +46,26 @@ extension HolosAppDelegate {
 
     func makeWordListView() -> WordListView {
         WordListView(
-            onAdd: { [weak self] terms in self?.addWords(terms) ?? "" },
+            onAdd: { [weak self] terms in self?.addWords(terms) ?? .init(message: "", unadded: terms) },
             onRemove: { [weak self] terms in self?.removeWords(terms) ?? "" })
     }
 
-    /// Adds `terms`; returns what happened, for the Corrections section.
-    func addWords(_ terms: [String]) -> String {
+    /// Adds `terms`; returns what happened, for the Corrections section, and the terms that were not added and are not
+    /// listed (too long, the list full, or all of them when the list could not be saved), to leave in the field.
+    func addWords(_ terms: [String]) -> WordListView.AddResult {
         let outcomes: [WordList.AddOutcome]
         do {
             outcomes = try changeWordList { list in terms.map { list.add($0, source: .user) } }
         } catch {
-            return "Could not save the word list: \(error.localizedDescription)"
+            return .init(message: "Could not save the word list: \(error.localizedDescription)", unadded: terms)
         }
-        return Self.describe(outcomes)
+        let unadded = zip(terms, outcomes).compactMap { term, outcome -> String? in
+            switch outcome {
+            case .tooLong, .full: term
+            case .added, .duplicate, .empty: nil
+            }
+        }
+        return .init(message: Self.describe(outcomes), unadded: unadded)
     }
 
     /// Removes `terms`; returns what happened, for the Corrections section.
@@ -76,10 +84,10 @@ extension HolosAppDelegate {
     /// section. Throws, changing nothing, when `words.json` cannot be read or saved.
     private func changeWordList<T>(_ change: (inout WordList) -> T) throws -> T {
         do {
-            let (list, result) = try wordListStore.update(change)
+            let (list, result, stamp) = try wordListStore.update(change)
             wordList = list
             wordListProblem = nil
-            wordListStamp = wordListStore.stamp()
+            wordListStamp = stamp
             wordListChanged()
             return result
         } catch {

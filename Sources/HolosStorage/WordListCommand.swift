@@ -23,13 +23,13 @@ public enum WordListCommand {
     /// noted and left as it is.
     public static func add(_ terms: [String], store: WordListStore, source: WordListSource = .user,
                            at date: Date = Date()) throws -> Report {
-        let (list, outcomes) = try store.update { list in terms.map { list.add($0, source: source, at: date) } }
+        let (list, outcomes, _) = try store.update { list in terms.map { list.add($0, source: source, at: date) } }
         return report(outcomes, count: list.count)
     }
 
     /// Removes each of `terms`, matched in any case or spacing. A term the list does not have makes the exit code 1.
     public static func remove(_ terms: [String], store: WordListStore) throws -> Report {
-        let (list, removed) = try store.update { list in terms.map { list.remove($0) } }
+        let (list, removed, _) = try store.update { list in terms.map { list.remove($0) } }
         var report = Report()
         let gone = removed.compactMap { $0 }
         if !gone.isEmpty { report.output.append("Removed: \(gone.joined(separator: ", ")).") }
