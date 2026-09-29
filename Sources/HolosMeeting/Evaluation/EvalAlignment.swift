@@ -32,57 +32,32 @@ public enum EvalText {
     /// sign before an amount ("-$50"). So a
     /// difference in a number is a word difference, shown for review, never case or punctuation only.
     public static func key(_ text: String) -> String {
-        let characters = Array(text.lowercased())
-        var out = ""
-        for (index, character) in characters.enumerated() {
-            if character.isLetter || character.isNumber {
-                out.append(character)
-                continue
-            }
-            let previous = index > 0 ? characters[index - 1] : nil
-            let next = index + 1 < characters.count ? characters[index + 1] : nil
-            // A percent sign after a number, and a currency sign before or after one (spaces between allowed).
-            let before = characters[..<index].last { !$0.isWhitespace }
-            let after = characters[(index + 1)...].first { !$0.isWhitespace }
-            if ["%", "‰", "٪"].contains(character) && before.map(isDigit) == true {
-                out.append(character == "٪" ? "%" : character)
-                continue
-            }
-            if isCurrency(character), before.map(isDigit) == true || after.map(isDigit) == true {
-                out.append(character)
-                continue
-            }
-            // A minus sign before an amount ("-$50").
-            if isMinus(character), let next, isCurrency(next),
-               characters[(index + 1)...].dropFirst().first(where: { !$0.isWhitespace }).map(isDigit) == true,
-               previous.map({ !$0.isLetter && !$0.isNumber }) ?? true {
-                out.append("-")
-                continue
-            }
-            let standsAlone = previous.map { !$0.isLetter && !$0.isNumber } ?? true
-            // A minus sign before a leading decimal separator ("-.5").
-            if isMinus(character), standsAlone, let next, next == "." || next == ",", index + 2 < characters.count,
-               isDigit(characters[index + 2]) {
-                out.append("-")
-                continue
-            }
-            guard let next, isDigit(next) else { continue }
-            let afterDigit = previous.map(isDigit) ?? false
-            switch character {
-            case ".", ",":
-                // Between digits ("1.5"), or a leading decimal separator (".5"; not after a letter: "v.2" is "v2").
-                if afterDigit || standsAlone { out.append(character) }
-            case ":", "/":
-                if afterDigit { out.append(character) }
-            case _ where isMinus(character):
-                // An exponent's sign ("1e-5") counts too.
-                let exponent = previous == "e" && index >= 2 && isDigit(characters[index - 2])
-                if afterDigit || exponent || previous.map({ !$0.isLetter && !$0.isNumber }) ?? true { out.append("-") }
-            default:
-                break
-            }
+        let lowered = text.lowercased()
+        // A word with a digit is a number, an amount, a time, a version or a code: every mark inside it counts
+        // ("$-50" is not "-50", ".5" is not "5", "1e-5" is not "1e5", "50 %" is "50%"), only the sentence's
+        // punctuation around it does not. Any other word is compared by its letters and digits alone.
+        guard lowered.contains(where: isDigit) else {
+            return String(lowered.filter { $0.isLetter || $0.isNumber })
         }
-        return out
+        var characters = Array(lowered.filter { !$0.isWhitespace })
+        let opening: Set<Character> = ["\"", "'", "“", "‘", "«", "(", "[", "{", "¿", "¡"]
+        let closing: Set<Character> = ["\"", "'", "”", "’", "»", ")", "]", "}", ".", ",", ";", ":", "!", "?", "…"]
+        while let first = characters.first, opening.contains(first) { characters.removeFirst() }
+        while let last = characters.last, closing.contains(last) { characters.removeLast() }
+        // A mark between a letter and a digit only joins a name to its number ("COVID-19", "v.2", "type-2").
+        characters = characters.indices.compactMap { index in
+            let character = characters[index]
+            guard !character.isLetter, !character.isNumber, index > 0, index + 1 < characters.count else {
+                return character
+            }
+            let (before, after) = (characters[index - 1], characters[index + 1])
+            // Not an exponent's sign ("1e-5").
+            let exponent = before == "e" && index >= 2 && isDigit(characters[index - 2])
+            let joinsNameAndNumber = !exponent
+                && ((before.isLetter && isDigit(after)) || (isDigit(before) && after.isLetter))
+            return joinsNameAndNumber ? nil : character
+        }
+        return String(characters.map { $0 == "٪" ? "%" : ($0 == "\u{2212}" || $0 == "\u{2013}" ? "-" : $0) })
     }
 
     private static func isDigit(_ character: Character) -> Bool { character.isNumber && character.isWholeNumber }
@@ -468,7 +443,8 @@ public enum WindowComparer {
     /// Scores and passages of an alignment `ops` of `local` with `cloud` (see `compare`).
     static func evaluate(track: String, ops alignment: [AlignmentOp], local: [EvalToken], cloud: [EvalToken],
                          start: Double, end: Double, localOffset: Int = 0) -> WindowComparison {
-        let ops = separatingDistantEchoPairs(alignment, local: local, cloud: cloud)
+        let ops = realigningAroundEcho(separatingDistantEchoPairs(alignment, local: local, cloud: cloud),
+                                       local: local, cloud: cloud)
         var result = WindowComparison()
         // Per op: excluded as echo?
         var lastLocal: Int?
@@ -569,6 +545,59 @@ public enum WindowComparer {
     /// (and a stretch of such pairs, lone echo words, and cloud-only words is laid out again: the echo words in their
     /// order and the cloud words in theirs, merged by time), so the echo is left out and the cloud words are judged
     /// as cloud-only words, still in the order they were said. Without times the alignment stands.
+    /// Between two matches, the words left on both sides once echo is set aside are aligned again with each other:
+    /// a cloud word freed from a distant echo pair (`separatingDistantEchoPairs`) then pairs with the local word it
+    /// stands for (one substitution) instead of counting as a deletion and an insertion. Echo words keep their place
+    /// among the local words.
+    static func realigningAroundEcho(_ ops: [AlignmentOp], local: [EvalToken], cloud: [EvalToken]) -> [AlignmentOp] {
+        var result: [AlignmentOp] = []
+        result.reserveCapacity(ops.count)
+        var segment: [AlignmentOp] = []
+        func flush() {
+            defer { segment.removeAll() }
+            // Ops on echo words stay as they are (with any cloud word the alignment paired them with).
+            let isEchoOp = { (op: AlignmentOp) in localIndex(op).map { local[$0].echo } ?? false }
+            let spoken = segment.compactMap(localIndex).filter { !local[$0].echo }
+            let heard = segment.filter { !isEchoOp($0) }.compactMap(cloudIndex)
+            let freeLocal = segment.contains { if case .localOnly(let i) = $0 { !local[i].echo } else { false } }
+            let freeCloud = segment.contains { if case .cloudOnly = $0 { true } else { false } }
+            guard freeLocal, freeCloud, segment.contains(where: isEchoOp) else {
+                result += segment
+                return
+            }
+            let realigned: [AlignmentOp] = EvalAlignment.align(spoken.map { local[$0].text },
+                                                               heard.map { cloud[$0].text }).map {
+                switch $0 {
+                case .match(let i, let j, let exact): .match(spoken[i], heard[j], exact: exact)
+                case .substitute(let i, let j): .substitute(spoken[i], heard[j])
+                case .localOnly(let i): .localOnly(spoken[i])
+                case .cloudOnly(let j): .cloudOnly(heard[j])
+                }
+            }
+            // Echo ops go back before the first realigned op on a later local word.
+            var echoes = segment.filter(isEchoOp)
+            for op in realigned {
+                if let i = localIndex(op) {
+                    while let first = echoes.first, let e = localIndex(first), e < i {
+                        result.append(first); echoes.removeFirst()
+                    }
+                }
+                result.append(op)
+            }
+            result += echoes
+        }
+        for op in ops {
+            if case .match(let i, _, _) = op, !local[i].echo {
+                flush()
+                result.append(op)
+            } else {
+                segment.append(op)
+            }
+        }
+        flush()
+        return result
+    }
+
     static func separatingDistantEchoPairs(_ ops: [AlignmentOp], local: [EvalToken],
                                            cloud: [EvalToken]) -> [AlignmentOp] {
         var result: [AlignmentOp] = []

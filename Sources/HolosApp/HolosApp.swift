@@ -230,6 +230,10 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
                 self?.refreshWordList()
             }
         }
+        // Read both again now the watch is on: a change made between the first read and the watch (an `eval apply`
+        // finishing then) would otherwise wait for the next change in the folder.
+        reloadCorrectionsIfChanged()
+        refreshWordList()
         controller.frameTap = { [weak self] id, frame in
             guard let audio = self?.historyAudio, audio.id == id else { return }
             audio.writer.append(frame)

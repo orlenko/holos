@@ -740,3 +740,22 @@ private func evalReport(passages: [EvalPassage]) -> CompareReport {
     #expect(context.evaluateScript("JSON.parse(small.getItem('k|d|z')).text").toString() == "short")
     #expect(failure == nil)
 }
+
+@Test func evalCloudWordFreedFromDistantEchoPairsWithTheLocalWordItStandsFor() {
+    // Local "yes" at 0 s is echo; local "no" at 10 s; the cloud heard "yes" at 10 s. Without the echo the two
+    // transcripts differ by one substitution, not a deletion and an insertion.
+    let local = [EvalToken(text: "yes", start: 0, end: 0.5, echo: true), EvalToken(text: "no", start: 10, end: 10.5)]
+    let cloud = [EvalToken(text: "yes", start: 10, end: 10.5)]
+    let result = WindowComparer.compare(track: "mic", local: local, cloud: cloud, start: 0, end: 20)
+    #expect(result.score.substitutions == 1)
+    #expect(result.score.localOnly == 0 && result.score.cloudOnly == 0)
+    #expect(abs((result.score.werAgainstLocal ?? 0) - 1) < 1e-9)
+}
+
+@Test func evalCurrencyStaysPartOfSignedAndFractionalAmounts() {
+    #expect(EvalText.key("$-50") != EvalText.key("-50"))
+    #expect(EvalText.key("€-50") != EvalText.key("$-50"))
+    #expect(EvalText.key("$.5") != EvalText.key(".5"))
+    #expect(EvalText.key("$50,") == EvalText.key("$50"))
+    #expect(EvalText.key("(50%)") == EvalText.key("50 %"))
+}
