@@ -746,8 +746,9 @@ public enum AIFixReference {
     /// A text's words (`AIFixGuard.words`) and, for each, the marks that end a phrase just before it ("" for none):
     /// sentence and clause marks (. ! ? … : ; and dashes), line breaks, brackets, double quotes, and the symbols of
     /// paths, addresses and identifiers ("/", "@", "#", "_"...: `AIFixGuard.Tokens.symbols`); `trailing`, those after
-    /// the last word. Commas, hyphens and apostrophes do not end a phrase: recognizers put commas anywhere, and
-    /// "T-Mux" is one phrase; "right/now" is not "right now".
+    /// the last word. Commas, hyphens and apostrophes inside a word do not end a phrase: recognizers put commas
+    /// anywhere, and "T-Mux" is one phrase; "right/now" is not "right now". An apostrophe between words quotes, so
+    /// it does ("He said ‘go’ now").
     struct Spoken {
         var words: [String] = []
         var breaks: [String] = []
@@ -783,6 +784,13 @@ public enum AIFixReference {
             if character == "\"" {
                 let opens = beforeWord && !gap[gap.index(after: index)...].contains(where: \.isWhitespace)
                 return opens ? "“" : "”"
+            }
+            // An apostrophe between words (not inside one, as in "don't") quotes: it ends a phrase like a double
+            // quote, so a taught phrase never spans or drops it ("He said ‘go’ now" does not say "go now").
+            if "‘‛".contains(character) { return "‘" }
+            if character == "’" || character == "'" {
+                let opens = beforeWord && !gap[gap.index(after: index)...].contains(where: \.isWhitespace)
+                return opens ? "‘" : "’"
             }
             // A dash between clauses ends a phrase; a hyphen inside a word does not.
             if "—–".contains(character) { return "—" }

@@ -880,6 +880,14 @@ func aFrenchMishearingIsFixed(original: String, fixed: String) {
     #expect(AIFixReference.matches(of: "“bull", in: "He said “bull request”") == [2..<3])
     #expect(AIFixReference.matches(of: "bull”", in: "He said “cow bull” request") == [3..<4])
     #expect(AIFixReference.matches(of: "bull”", in: "He said “cow bull “request") .isEmpty)
+    // Quoting apostrophes end a phrase too; an apostrophe inside a word does not.
+    let goNow = Correction(heard: "go now", meant: "leave")
+    #expect(AIFixReference.matches(of: "go now", in: "He said ‘go’ now").isEmpty)
+    #expect(AIFixReference.matches(of: "go now", in: "He said 'go' now").isEmpty)
+    #expect(AIFixGuard.check(original: "He said ‘go’ now", fixed: "He said ‘leave", taught: [goNow]) != .accept)
+    #expect(AIFixGuard.check(original: "He said 'go' now", fixed: "He said 'leave", taught: [goNow]) != .accept)
+    #expect(AIFixReference.matches(of: "go now", in: "He said go now") == [2..<4])
+    #expect(AIFixReference.matches(of: "don't go", in: "I don't go there") == [1..<3])
     // Marks at the edges of a heard phrase must be there too.
     #expect(AIFixReference.matches(of: "bull.", in: "a bull request").isEmpty)
     #expect(AIFixReference.matches(of: "bull.", in: "a bull. Request") == [1..<2])
