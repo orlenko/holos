@@ -183,6 +183,27 @@ import Testing
         }
     }
 
+    /// Removing a saved text waits for a save of it by another process (which holds the index's lock from its
+    /// temporary to its publication), then removes what it published.
+    @Test func removingASavedTextWaitsForItsSave() async throws {
+        let root = try folder()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = ReadingLibraryStore(folder: root)
+        let id = UUID()
+        try store.saveDocument(ReadableDocument(sections: [.init(paragraphs: ["Other."])]), for: UUID())
+        let held = open(root.appendingPathComponent(".library.lock").path, O_RDWR | O_CLOEXEC)
+        #expect(held >= 0)
+        #expect(flock(held, LOCK_EX) == 0)
+        let removing = Task.detached { try store.removeDocument(for: id) }
+        // The other process publishes its text, then lets go.
+        let published = store.documentURL(id)
+        try Data("{}".utf8).write(to: published)
+        _ = flock(held, LOCK_UN)
+        close(held)
+        try await removing.value
+        #expect(!FileManager.default.fileExists(atPath: published.path))
+    }
+
     /// A saved text is never replaced by another one (one `document(for:)` did not see): the save fails.
     @Test func aSavedTextIsNeverReplaced() throws {
         let root = try folder()

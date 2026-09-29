@@ -331,13 +331,18 @@ public final class ReadingLibraryStore: @unchecked Sendable {
     /// Removes the text saved for `id`, and any copy of it a save that a quit or a crash cut off left (see
     /// `write`); one that is not there is not an error.
     public func removeDocument(for id: UUID) throws {
-        do {
-            try FileManager.default.removeItem(at: documentURL(id))
-        } catch let error as CocoaError where error.code == .fileNoSuchFile {
-        }
-        // Under the index's lock, when there is a folder to lock in: a save under way keeps its temporary.
+        // No saved-texts folder: nothing saved, nor being saved (a save makes the folder first; a folder made
+        // after this look-up holds a text saved after this removal was asked).
         guard try ReadingOutput.exists(documentsFolder) else { return }
-        try withIndexLock { try removeTemporaries(in: documentsFolder) { $0 == documentURL(id).lastPathComponent } }
+        // The text and its temporaries under the index's lock, which a save holds from its temporary to its
+        // publication: a save by another process is either done (and its text removed here) or not begun.
+        try withIndexLock {
+            do {
+                try FileManager.default.removeItem(at: documentURL(id))
+            } catch let error as CocoaError where error.code == .fileNoSuchFile {
+            }
+            try removeTemporaries(in: documentsFolder) { $0 == documentURL(id).lastPathComponent }
+        }
     }
 
     func documentURL(_ id: UUID) -> URL {
