@@ -65,6 +65,10 @@ struct SetupState {
     /// Keep the audio of dictations (for Run Again), and what the kept audio takes (nil until measured).
     var historyKeepsAudio = true
     var historyAudioBytes: Int64?
+    /// General: open the main window when the app starts (UserDefaults "openWindowAtLaunch", on by default), and the
+    /// app's appearance (UserDefaults "appearance").
+    var openWindowAtLaunch = true
+    var appearance = AppearanceChoice.system
 }
 
 enum SetupAction: Int, CaseIterable {
@@ -78,10 +82,12 @@ enum SetupAction: Int, CaseIterable {
     case toggleHistoryAudio
     /// Settings › Dictation › Write spoken paths and commands as code, and Wrap them in backticks.
     case toggleSpokenCode, toggleSpokenCodeBackticks
+    /// Settings › General › Open the Voice is Local window when it starts.
+    case toggleOpenWindowAtLaunch
 }
 
-/// The main window's Settings section (it replaces the Setup window): cards for Permissions, Dictation, Meetings, and
-/// History and privacy, and a way back to the Setup Assistant. It shows `SetupState`, which the app delegate refreshes
+/// The main window's Settings section (it replaces the Setup window): cards for General, Permissions, Dictation,
+/// Meetings, Reading, and History and privacy, and a way back to the Setup Assistant. It shows `SetupState`, which the app delegate refreshes
 /// every second while the section is on screen (TCC has no change notification), and reports each change through its
 /// callbacks.
 @MainActor
@@ -101,9 +107,14 @@ final class SettingsPane: NSViewController, MainSectionContent {
         var language: (String) -> Void
         var shortcut: (HotkeyChoice) -> Void
         var retention: (HistoryRetention) -> Void
+        var appearance: (AppearanceChoice) -> Void
     }
 
     private let callbacks: Callbacks
+    private let openAtLaunchToggle = NSButton(checkboxWithTitle: "Open the Voice is Local window when it starts",
+                                              target: nil, action: nil)
+    private let appearanceControl = NSSegmentedControl(labels: AppearanceChoice.allCases.map(\.title),
+                                                       trackingMode: .selectOne, target: nil, action: nil)
     private let fillerToggle = NSButton(checkboxWithTitle: "Remove filler words", target: nil, action: nil)
     private let languagePopup = NSPopUpButton(frame: .zero, pullsDown: false)
     private let shortcutPopup = NSPopUpButton(frame: .zero, pullsDown: false)
@@ -145,7 +156,7 @@ final class SettingsPane: NSViewController, MainSectionContent {
 
     private func makeContent() -> NSView {
         let stack = NSStackView(views: [
-            permissionsCard(), dictationCard(), meetingsCard(), readingCard(), historyCard(), assistantFooter(),
+            generalCard(), permissionsCard(), dictationCard(), meetingsCard(), readingCard(), historyCard(), assistantFooter(),
         ])
         stack.orientation = .vertical
         stack.alignment = .leading
@@ -176,6 +187,32 @@ final class SettingsPane: NSViewController, MainSectionContent {
             stack.bottomAnchor.constraint(equalTo: document.bottomAnchor, constant: -28),
         ])
         return scroll
+    }
+
+    /// Settings › General: whether the window opens at launch, and the appearance of every window.
+    private func generalCard() -> NSView {
+        openAtLaunchToggle.target = self
+        openAtLaunchToggle.action = #selector(buttonPressed(_:))
+        openAtLaunchToggle.tag = SetupAction.toggleOpenWindowAtLaunch.rawValue
+        let launchNote = Self.note("""
+            Closing the window keeps Voice is Local running in the menu bar; Quit in its menu, or ⌘Q, quits it. \
+            When this is off, the app starts in the menu bar only (Open Voice is Local, ⌘0, opens the window), and \
+            Settings still opens while dictation is off.
+            """)
+        let launch = NSStackView(views: [openAtLaunchToggle, launchNote])
+        launch.orientation = .vertical
+        launch.alignment = .leading
+        launch.spacing = 4
+
+        let grid = makeGrid()
+        appearanceControl.target = self
+        appearanceControl.action = #selector(appearanceChosen(_:))
+        appearanceControl.segmentDistribution = .fillEqually
+        appearanceControl.setAccessibilityLabel("Appearance")
+        addControlRow("circle.lefthalf.filled", "Appearance",
+                      "Every Voice is Local window and the dictation preview; System follows macOS",
+                      control: appearanceControl, to: grid)
+        return card("General", [launch, grid], widths: [launch, launchNote, grid])
     }
 
     private func permissionsCard() -> NSView {
@@ -486,6 +523,8 @@ final class SettingsPane: NSViewController, MainSectionContent {
         select(shortcutPopup, state.shortcut.rawValue)
         shortcutPopup.isEnabled = state.shortcutChangeable
         select(retentionPopup, state.historyRetention.rawValue)
+        openAtLaunchToggle.state = state.openWindowAtLaunch ? .on : .off
+        appearanceControl.selectedSegment = AppearanceChoice.allCases.firstIndex(of: state.appearance) ?? 0
         fillerToggle.isEnabled = state.fillerExamples != nil
         fillerToggle.state = state.removeFillers && state.fillerExamples != nil ? .on : .off
         fillerToggle.title = state.fillerExamples.map { "Remove filler words (\($0))" }
@@ -668,6 +707,11 @@ final class SettingsPane: NSViewController, MainSectionContent {
     @objc private func languageChosen(_ sender: NSPopUpButton) {
         guard let locale = sender.selectedItem?.representedObject as? String else { return }
         callbacks.language(locale)
+    }
+
+    @objc private func appearanceChosen(_ sender: NSSegmentedControl) {
+        guard AppearanceChoice.allCases.indices.contains(sender.selectedSegment) else { return }
+        callbacks.appearance(AppearanceChoice.allCases[sender.selectedSegment])
     }
 
     @objc private func shortcutChosen(_ sender: NSPopUpButton) {

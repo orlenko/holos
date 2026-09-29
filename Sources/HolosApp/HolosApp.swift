@@ -200,6 +200,7 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
     var languageName: String { DictationLanguage.name(of: locale) }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        applyAppearance()  // before any window opens
         if let raw = UserDefaults.standard.string(forKey: "shortcut"), let saved = HotkeyChoice(rawValue: raw) {
             shortcut = saved
         }
@@ -252,14 +253,33 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
         // Before the assistant's window opens, so it shows the downloads it started before a quit or its reopen.
         resumeSetupAssistantWork(dictationEnabled: dictationEnabled)
         // First launch opens the Setup Assistant; later launches open Settings in the main window while dictation is
-        // off.
+        // off, else the main window when Settings › General says so (on Meetings while one records).
         // The window opens first, so an enable that fails leaves it in front instead of opening Setup over it.
         switch setupAssistantLaunch(dictationEnabled: dictationEnabled) {
         case .assistant: showSetupAssistant(verify: false)
         case .verify: showSetupAssistant(verify: true)
-        case .markDone, .normal: if !dictationEnabled { showSetup() }
+        case .markDone, .normal: if dictationEnabled { openMainWindowAtLaunch() } else { showSetup() }
         }
         if dictationEnabled, !meeting.dictationPaused { enable() }
+    }
+
+    /// Closing the last window never quits: Voice is Local lives in the menu bar, and dictation, meeting recordings,
+    /// and readings keep running. Only the menu's Quit and ⌘Q quit (`applicationShouldTerminate`).
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
+        false
+    }
+
+    /// A click on the Dock icon (the app is regular while one of its windows is open, the live transcript or Review
+    /// included) brings back the main window: restored from the Dock when minimised, else opened on the section it
+    /// last showed. With the main window on screen, AppKit's own handling brings the app forward.
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        if let mainWindow, mainWindow.isMiniaturized {
+            mainWindow.restoreFromDock()
+            return false
+        }
+        guard mainWindow?.isVisible != true else { return true }
+        showMainWindowFromMenu(nil)
+        return false
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
@@ -1397,7 +1417,8 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
             fillerExamples: FillerWords.examples(language: locale),
             historyRetention: history.retention, historyCount: history.keptCount,
             historyUnreadable: history.unreadable, historyKeepsAudio: history.keepsAudio,
-            historyAudioBytes: history.audioBytes))
+            historyAudioBytes: history.audioBytes,
+            openWindowAtLaunch: openWindowAtLaunch, appearance: appearance))
     }
 
     /// The sidebar's status card: "Dictation ready" and the current message; during a meeting, the pause.
@@ -1456,6 +1477,9 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
             updateSettings()
         case .toggleSpokenCodeBackticks:
             SpokenCodeSetting.backticks.toggle()
+            updateSettings()
+        case .toggleOpenWindowAtLaunch:
+            openWindowAtLaunch.toggle()  // takes effect from the next launch
             updateSettings()
         case .toggleRecordSystemAudio:
             MeetingAppState.recordSystemAudio.toggle()  // takes effect from the next meeting

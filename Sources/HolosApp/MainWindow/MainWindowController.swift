@@ -16,6 +16,23 @@ enum MainSection: Int, CaseIterable {
         }
     }
 
+    /// A stable name for UserDefaults (`MainWindowLaunch.lastSectionKey`), independent of the sidebar order.
+    var storageName: String {
+        switch self {
+        case .history: "history"
+        case .corrections: "corrections"
+        case .meetings: "meetings"
+        case .people: "people"
+        case .reading: "reading"
+        case .settings: "settings"
+        }
+    }
+
+    init?(storageName: String) {
+        guard let section = Self.allCases.first(where: { $0.storageName == storageName }) else { return nil }
+        self = section
+    }
+
     var symbol: String {
         switch self {
         case .history: "clock.arrow.circlepath"
@@ -92,6 +109,14 @@ final class MainWindowController: NSObject, NSWindowDelegate {
 
     var isVisible: Bool { window.isVisible }
     var isKey: Bool { window.isKeyWindow }
+    /// Minimised to the Dock (then `isVisible` is false, but the window is still open).
+    var isMiniaturized: Bool { window.isMiniaturized }
+
+    /// Brings a minimised window back from the Dock; its section still counts as shown.
+    func restoreFromDock() {
+        window.deminiaturize(nil)
+        window.makeKeyAndOrderFront(nil)
+    }
 
     init(makeSection: @escaping (MainSection) -> NSViewController) {
         self.makeSection = makeSection

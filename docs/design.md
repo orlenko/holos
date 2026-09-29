@@ -210,7 +210,8 @@ Each section is a view controller created on first use and kept: Corrections, Me
 and People are the former windows' view hierarchies unchanged in behaviour (Meetings
 still drives Quick Look through the main window, `PreviewingWindow`; its 2 s refresh and
 People's reread run while the section is on screen). Settings is the former Setup window
-in cards: Permissions (Microphone, Accessibility, System audio, Input Monitoring only
+in cards: General (Open the Voice is Local window when it starts, Appearance),
+Permissions (Microphone, Accessibility, System audio, Input Monitoring only
 after macOS refused the hotkey tap), Dictation (on/off, hold-to-talk shortcut, language,
 speech model, fillers, Apple Intelligence fix, preview and its opacity), Meetings (record
 system audio, speaker labels, a link to People for remembered voices), Reading (default
@@ -219,6 +220,29 @@ History…, Keep the audio of dictations and its disk use), and Run Setup Assist
 the permissions every second while on screen. The Setup Assistant, the meeting start
 panel, the live transcript, Review (Name Speakers), and the dictation preview stay
 separate windows.
+
+Launch and closing (`MainWindowLaunch`): the first launch opens the Setup Assistant (and
+the check after its reopen), and a launch with dictation off opens Settings, as before.
+Any other launch opens the main window when Settings › General › **Open the Voice is
+Local window when it starts** is on (UserDefaults `openWindowAtLaunch`, on by default):
+on Meetings while a meeting records or saves (the app reattached to it), else on the section the
+window last showed (`mainWindowLastSection`, saved each time a section other than
+Settings comes on screen, since Settings also opens on its own; History when none was
+saved or this build does not know it). The window comes forward
+like any app's on a manual launch. Closing it never quits
+(`applicationShouldTerminateAfterLastWindowClosed` returns false): the menu bar item,
+dictation, meeting recordings, and readings keep running, and only Quit in the menu bar
+menu or ⌘Q quits. While any of its windows is open the app is a regular one (Dock,
+⌘-Tab); a click on the Dock icon brings the main window back, also when another window
+(the live transcript, Review) keeps the icon there: restored when minimised, else opened
+on its last section.
+
+Appearance (`AppearanceChoice`, UserDefaults `appearance`: `system`, `light`, `dark`;
+System by default): Settings › General › Appearance sets `NSApp.appearance` at launch
+and at once on a change (nil, `.aqua`, `.darkAqua`), so every window follows it: the
+main window, the dictation preview, Review, the Setup Assistant, the meeting start panel,
+the live transcript, and alerts. Views draw with semantic colours only (layer colours
+are set in `updateLayer`, custom drawing in `draw(_:)`), so they redraw for either.
 
 Keyboard: ⌘1–⌘5 and ⌘, switch sections; ⌘F focuses the section's search field; ↑↓ move
 in lists, Return opens (History: the text; Meetings: Review or the transcript), ⌫ deletes
