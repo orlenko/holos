@@ -807,16 +807,24 @@ public enum AIFixReference {
         /// For each word of the text, whether it is in an address, path, tag, option or identifier
         /// (`AIFixGuard.Tokens.hasSymbols`).
         private let symbolic: [Bool]
+        /// For each word of the text, whether it is written with a capital: a name, or a word the recognizer took
+        /// for one. For a heard phrase of one plain word, most likely a name, only its exact spelling says it there:
+        /// a variant would let a taught pair rename a person ("Meks" is not "Maks"). A longer phrase ("Ubundu
+        /// machine") or a coined token ("T-Mox") carries enough of its own to be matched as a variant.
+        private let capitalized: [Bool]
         private let positions: [String: [Int]]
         private let features: [String: SpokenWords.Features]
         private var said: [String: Set<Int>] = [:]
+        private var saidPlain: [String: Set<Int>] = [:]
 
         init(_ text: String, language: String?, lexicon: Lexicon) {
             let spoken = Spoken(text)
             self.text = spoken
             self.language = language
             self.lexicon = lexicon
-            symbolic = text.matches(of: AIFixGuard.wordPattern).map { AIFixGuard.Tokens.hasSymbols($0.range, in: text) }
+            let tokens = text.matches(of: AIFixGuard.wordPattern)
+            symbolic = tokens.map { AIFixGuard.Tokens.hasSymbols($0.range, in: text) }
+            capitalized = tokens.map { text[$0.range].first?.isUppercase ?? false }
             positions = Dictionary(grouping: spoken.words.indices, by: { spoken.words[$0] })
             features = Dictionary(uniqueKeysWithValues: positions.keys.map { ($0, SpokenWords.Features($0)) })
         }
@@ -825,7 +833,14 @@ public enum AIFixReference {
         /// word, as a variant where the text's word is not a real word (`Lexicon`): "a bundu" says "a Bundo", while
         /// "bat" never says "bit", nor "unable" "enable": a real word says only itself. Nor is a word said by its
         /// opposite misspelled (`SpokenWords.changesPolarity`: "uneble" for "enable").
-        func positions(of word: String) -> Set<Int> {
+        func positions(of word: String, capitalizedVariants: Bool = true) -> Set<Int> {
+            if !capitalizedVariants {
+                if let known = saidPlain[word] { return known }
+                let variants = positions(of: word).subtracting(positions[word] ?? [])
+                let found = positions(of: word).subtracting(variants.filter { capitalized[$0] })
+                saidPlain[word] = found
+                return found
+            }
             if let known = said[word] { return known }
             var found = Set(positions[word] ?? [])
             if SpokenWords.isContent(word, language: language) {
@@ -846,7 +861,10 @@ public enum AIFixReference {
             let heardSymbolic = heard.matches(of: AIFixGuard.wordPattern).map {
                 AIFixGuard.Tokens.hasSymbols($0.range, in: heard)
             }
-            return positions(of: first).sorted().compactMap { start in
+            // One plain word (no hyphen, digit or symbol) is most likely a name: said only as spelled where the text
+            // capitalizes it.
+            let plainSingle = phrase.words.count == 1 && heard.allSatisfy { $0.isLetter || $0.isWhitespace }
+            return positions(of: first, capitalizedVariants: !plainSingle).sorted().compactMap { start in
                 let end = start + phrase.words.count
                 guard end <= text.words.count else { return nil }
                 // A heard phrase saved with marks at its edges ("bull.") is said with them.

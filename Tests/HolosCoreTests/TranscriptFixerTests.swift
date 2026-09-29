@@ -880,6 +880,15 @@ func aFrenchMishearingIsFixed(original: String, fixed: String) {
     #expect(AIFixReference.matches(of: "“bull", in: "He said “bull request”") == [2..<3])
     #expect(AIFixReference.matches(of: "bull”", in: "He said “cow bull” request") == [3..<4])
     #expect(AIFixReference.matches(of: "bull”", in: "He said “cow bull “request") .isEmpty)
+    // A lone capitalized word is a name: only its exact spelling says a one-word heard phrase, so a taught pair never renames a
+    // person.
+    let maks = Correction(heard: "Maks", meant: "Max")
+    #expect(AIFixReference.matches(of: "Maks", in: "Ask Meks tomorrow").isEmpty)
+    #expect(AIFixGuard.check(original: "Ask Meks tomorrow", fixed: "Ask Max tomorrow", taught: [maks]) != .accept)
+    #expect(AIFixReference.matches(of: "Maks", in: "Ask Maks tomorrow") == [1..<2])
+    #expect(AIFixReference.matches(of: "a Bundo", in: "it runs on a bundu machine") == [3..<5])
+    // A longer phrase or a coined token carries context of its own and may still match a capitalized variant.
+    #expect(AIFixReference.matches(of: "a Bundo", in: "it runs on a Bundu machine") == [3..<5])
     // Quoting apostrophes end a phrase too; an apostrophe inside a word does not.
     let goNow = Correction(heard: "go now", meant: "leave")
     #expect(AIFixReference.matches(of: "go now", in: "He said ‘go’ now").isEmpty)
