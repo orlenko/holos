@@ -241,6 +241,9 @@ final class ReadingController {
         pendingAdditions.remove(entry.id)
         if !added { all.removeAll { $0.id == entry.id } }
         releaseWrites()
+        // A save that failed after its file was placed (its folder not flushed) may have written the reading: the
+        // list without it is saved over it.
+        if !added { save() }
         guard added else {
             onChange?()
             throw HolosError.io("The reading was not added: " + (notice ?? "the Reading list could not be saved."))
@@ -433,6 +436,8 @@ final class ReadingController {
         let marked = writable ? await saved(holding: true) : true
         if !marked { update(id) { $0.deletePending = nil } }
         releaseWrites()
+        // Its save may have placed the mark before it failed (its folder not flushed): the list without it is saved.
+        if !marked { save() }
         if !marked {
             onChange?()
             return .kept("“\(entry(id)?.title ?? "The reading")” was not deleted: "

@@ -248,7 +248,14 @@ public final class ReadingLibraryStore: @unchecked Sendable {
                 }
             }
             // The file written is the one renamed into place (a rename keeps its identity), known before it is.
-            expected = .some(try Self.write(data, to: indexURL))
+            do {
+                expected = .some(try Self.write(data, to: indexURL))
+            } catch let placed as PlacedButNotFlushed {
+                // The index there is this store's own now (its list, not flushed): the next save writes over it, so
+                // the list the app goes on with (a failed addition taken back, a Delete mark cleared) replaces it.
+                expected = .some(placed.identity)
+                throw placed
+            }
         }
     }
 
@@ -440,7 +447,7 @@ public final class ReadingLibraryStore: @unchecked Sendable {
                 _ = unlink(temporary.path)
                 throw HolosError.io("Could not save \(url.lastPathComponent): \(error.localizedDescription)")
             }
-            try syncFolder(of: url)
+            try syncFolder(of: url, placed: saved)
             return saved
         }
         guard rename(temporary.path, url.path) == 0 else {
@@ -448,22 +455,33 @@ public final class ReadingLibraryStore: @unchecked Sendable {
             _ = unlink(temporary.path)
             throw HolosError.io("Could not save \(url.lastPathComponent): \(reason)")
         }
-        try syncFolder(of: url)
+        try syncFolder(of: url, placed: identity)
         return identity
     }
 
     /// Flushes the folder holding `url` (its new name). Only a volume that cannot flush a folder is let off; any
     /// other failure (an I/O error) fails the save, which then does not count: nothing is removed on its word.
-    private static func syncFolder(of url: URL) throws {
+    /// The failure is `PlacedButNotFlushed`, naming the file now at `url` (`placed`).
+    private static func syncFolder(of url: URL, placed: ReadingFileIdentity) throws {
         let path = url.deletingLastPathComponent().path
+        let failed = { PlacedButNotFlushed(identity: placed, message: "Could not save \(url.lastPathComponent): \(path): "
+                                               + String(cString: strerror(errno))) }
         let folder = open(path, O_RDONLY | O_CLOEXEC | O_DIRECTORY)
-        guard folder >= 0 else {
-            throw HolosError.io("Could not save \(url.lastPathComponent): \(path): \(String(cString: strerror(errno)))")
-        }
+        guard folder >= 0 else { throw failed() }
         defer { close(folder) }
-        guard fsync(folder) == 0 || errno == ENOTSUP || errno == EINVAL || errno == EOPNOTSUPP else {
-            throw HolosError.io("Could not save \(url.lastPathComponent): \(path): \(String(cString: strerror(errno)))")
-        }
+        let synced = (folderSync?(folder) ?? fsync(folder)) == 0
+        guard synced || errno == ENOTSUP || errno == EINVAL || errno == EOPNOTSUPP else { throw failed() }
+    }
+
+    /// Takes the place of `fsync` on a saved file's folder (tests: a flush that fails).
+    @TaskLocal static var folderSync: (@Sendable (Int32) -> Int32)? = nil
+
+    /// A save put its file in place, but its folder could not be flushed: the save failed (it may not last), and the
+    /// file at its place is `identity`, this store's own, which the next save may write over.
+    struct PlacedButNotFlushed: LocalizedError {
+        let identity: ReadingFileIdentity
+        let message: String
+        var errorDescription: String? { message }
     }
 
     /// The entries of a newer build's index that this build can read.

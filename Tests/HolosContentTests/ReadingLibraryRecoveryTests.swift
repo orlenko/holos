@@ -250,6 +250,22 @@ import Testing
         }
     }
 
+    /// A save whose file was placed but whose folder could not be flushed fails, and the file placed is still the
+    /// store's own: the next save writes over it (the list the app goes on with replaces it).
+    @Test func aSaveWhoseFolderFlushFailedIsWrittenOverByTheNext() throws {
+        let root = try folder()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = ReadingLibraryStore(folder: root)
+        let kept = [entry(.done)]
+        try store.save(kept)
+        let rejected = kept + [entry(.queued)]
+        ReadingLibraryStore.$folderSync.withValue({ _ in errno = EIO; return -1 }) {
+            #expect(throws: (any Error).self) { try store.save(rejected) }
+        }
+        try store.save(kept)
+        #expect(store.load().entries == kept)
+    }
+
     /// A saved text is never replaced by another one (one `document(for:)` did not see): the save fails.
     @Test func aSavedTextIsNeverReplaced() throws {
         let root = try folder()
