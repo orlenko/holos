@@ -158,14 +158,15 @@ kbd { border:1px solid var(--line); border-radius:3px; padding:0 3px; font-size:
   // Decisions a page kept before (everything under the key itself) are read too, under the newer ones.
   function makeStore(storage, key) {
     var decisionPrefix = key + "|d|", termPrefix = key + "|t|";
-    var store = { state: { decisions: {}, terms: [] }, failed: false, pending: [] };
+    var store = { state: { decisions: Object.create(null), terms: [] }, failed: false, pending: [] };
     var sequence = 0;
     function parse(text) {
       try { return JSON.parse(text); } catch (e) { return null; }
     }
     function read() {
       try {
-        var decisions = {}, marks = {};
+        // Keyed by passage IDs and terms, arbitrary text: no prototype, so "__proto__" or "constructor" is a key too.
+        var decisions = Object.create(null), marks = Object.create(null);
         var legacy = parse(storage.getItem(key));
         if (legacy && typeof legacy === "object") {
           if (legacy.decisions && typeof legacy.decisions === "object") {

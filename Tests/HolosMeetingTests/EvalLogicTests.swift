@@ -308,6 +308,36 @@ private func cloudTrack(_ windows: [[String]]) -> CloudTrackResult {
     #expect(compared.passages.isEmpty)
 }
 
+@Test func evalBoundaryRepairRealignsAWholeRunAcrossTheCut() {
+    // Coarse local timing put the whole sentence before the cut; the cloud heard all of it in the next segment.
+    let local = timed(["we", "need", "to", "ship", "this", "change", "today"], from: 1) + timed(["okay"], from: 11)
+    let compared = EvalCompare.compareTrack(
+        track: "mic", local: local,
+        cloud: cloudTrack([[], ["we", "need", "to", "ship", "this", "change", "today", "okay"]]))
+    #expect(compared.report.score.edits == 0)
+    #expect(compared.report.score.matches == 8)
+    #expect(compared.passages.isEmpty)
+}
+
+@Test func evalBoundaryRepairReachesToThreeMatchesInARow() {
+    // Twelve words moved across the cut, with matched words before and after them.
+    let moved = ["one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten", "eleven", "twelve"]
+    let first = ["alpha", "beta", "gamma"] + moved
+    let local = first.enumerated().map { index, word in
+        EvalToken(text: word, start: Double(index) * 0.5, end: Double(index) * 0.5 + 0.4)
+    } + timed(["delta", "epsilon", "zeta"], from: 11)
+    let compared = EvalCompare.compareTrack(
+        track: "mic", local: local,
+        cloud: cloudTrack([["alpha", "beta", "gamma"], moved + ["delta", "epsilon", "zeta"]]))
+    #expect(compared.report.score.edits == 0)
+    #expect(compared.report.score.matches == 18)
+    // A real difference past the moved words is still one.
+    let changed = EvalCompare.compareTrack(
+        track: "mic", local: local,
+        cloud: cloudTrack([["alpha", "beta", "gamma"], moved + ["delta", "epsilons", "zeta"]]))
+    #expect(changed.report.score.edits == 1)
+}
+
 @Test func evalTimedCloudWordsAwayFromEchoAreKept() {
     // Echo "thanks for joining" at 0–3 s; the cloud also has "I disagree" at 10–12 s, which the microphone missed.
     let local = timed(["thanks", "for", "joining"], echo: [0, 1, 2]) + timed(["next"], from: 20)
@@ -738,6 +768,22 @@ private func evalReport(passages: [EvalPassage]) -> CompareReport {
     #expect(context.evaluateScript("editing.state.decisions.z.text").toString() == "short")
     #expect(context.evaluateScript("editing.pending.length").toInt32() == 0)
     #expect(context.evaluateScript("JSON.parse(small.getItem('k|d|z')).text").toString() == "short")
+    // Terms and IDs are arbitrary text: ones named like Object's own properties are kept, stored, and read back.
+    context.evaluateScript("""
+        var names = makeStorage();
+        names.setItem("k", JSON.stringify({ terms: ["hasOwnProperty"] }));
+        var naming = makeStore(names, "k");
+        naming.addTerm("__proto__");
+        naming.addTerm("constructor");
+        naming.decide("__proto__", "local", "x");
+        var reread = makeStore(names, "k");
+        """)
+    #expect(context.evaluateScript("naming.state.terms.join(',')").toString()
+        == "hasOwnProperty,__proto__,constructor")
+    #expect(context.evaluateScript("reread.state.terms.join(',')").toString()
+        == "hasOwnProperty,__proto__,constructor")
+    #expect(context.evaluateScript("Object.keys(reread.state.decisions).join(',')").toString() == "__proto__")
+    #expect(context.evaluateScript("reread.state.decisions['__proto__'].text").toString() == "x")
     #expect(failure == nil)
 }
 
@@ -767,4 +813,28 @@ private func evalReport(passages: [EvalPassage]) -> CompareReport {
     #expect(EvalText.tokens("€ .5") == ["€ .5"])
     // A currency sign before a word is not part of it.
     #expect(!EvalText.tokens("$ and more").contains("$ and"))
+}
+
+@Test func evalStandaloneSignsJoinTheAmountAfterThem() {
+    #expect(EvalText.tokens("it was - 5 degrees") == ["it", "was", "- 5", "degrees"])
+    #expect(EvalText.tokens("- 5 degrees") == ["- 5", "degrees"])
+    #expect(EvalText.tokens("up + 3 points") == ["up", "+ 3", "points"])
+    #expect(EvalText.tokens("a \u{2212} 2 drop") == ["a", "\u{2212} 2", "drop"])
+    #expect(EvalText.tokens("owes - $ 50") == ["owes", "- $ 50"])
+    #expect(EvalText.tokens("owes - $50") == ["owes", "- $50"])
+    #expect(EvalText.tokens("down - .5 today") == ["down", "- .5", "today"])
+    #expect(EvalText.key("- 5") == EvalText.key("-5"))
+    #expect(EvalText.key("- 5") != EvalText.key("5"))
+    #expect(EvalText.key("+ 3") != EvalText.key("3"))
+    // Before anything but an amount, a sign is punctuation of the word before.
+    #expect(EvalText.tokens("well - I think") == ["well -", "I", "think"])
+    #expect(EvalText.tokens("it ends -") == ["it", "ends -"])
+    // So a dropped sign is a word difference, shown for review.
+    let result = WindowComparer.compare(track: "mic", local: timed(EvalText.tokens("- 5 degrees")),
+                                        cloud: untimed("5 degrees"), start: 0, end: 10)
+    #expect(result.score.substitutions == 1)
+    #expect(result.passages.count == 1)
+    // The gold transcript keeps it.
+    let local = timed(EvalText.tokens("it was - 5 degrees"))
+    #expect(EvalApply.goldTrack(track: "mic", local: local, replacements: []).text == "it was - 5 degrees")
 }

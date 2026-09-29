@@ -140,7 +140,7 @@ public enum EvalCompare {
                              createdAt: now, total: total, tracks: tracks, passages: passages)
     }
 
-    /// Edits on each side of a segment boundary that are aligned again together (`repairBoundaries`).
+    /// Operations on each side of a segment boundary that are always aligned again together (`repairBoundaries`).
     static let boundaryEdits = 6
 
     /// One track: each cloud segment is aligned with the local words that start in its window, from where its
@@ -196,20 +196,44 @@ public enum EvalCompare {
         }
     }
 
-    /// Around each boundary (an index into `ops`), the `boundaryEdits` operations on each side, matches included,
-    /// are aligned again as one stretch, so "word" missing at the end of one window and extra at the start of the
-    /// next becomes a match, even with matched words between them ("that that | works" against "that | that
-    /// works"). Stretches that touch are aligned together; a stretch without an edit is left alone. Realigning
-    /// never adds edits (the alignment is minimum-edit).
+    /// Consecutive matched words that bound a boundary repair: the alignment is taken as right beyond them.
+    static let boundaryAnchor = 3
+
+    /// Most operations a boundary repair reaches on each side of the cut, and most it aligns at once, so the
+    /// alignment's memory stays small (`EvalAlignment.align`).
+    static let boundaryReach = 500
+    static let boundaryRegionLimit = 2000
+
+    /// Around each boundary (an index into `ops`), at least `boundaryEdits` operations on each side, matches included,
+    /// and then more until the stretch is bounded on each side by `boundaryAnchor` matched words in a row (or the
+    /// track's edge, or `boundaryReach`), are aligned again as one stretch. So a word, or a whole run of words
+    /// (coarse local timing), that one side put before the cut and the other after it becomes matches ("that that |
+    /// works" against "that | that works"; "we need to ship this change today | okay" against "| we need to ship this
+    /// change today okay"). Stretches that touch are aligned together (a merged stretch stops at
+    /// `boundaryRegionLimit`); a stretch without an edit is left alone. Realigning never adds edits (the alignment is
+    /// minimum-edit).
     static func repairBoundaries(_ ops: [AlignmentOp], at boundaries: [Int], local: [EvalToken],
                                  cloud: [EvalToken]) -> [AlignmentOp] {
+        func anchored(_ range: Range<Int>) -> Bool {
+            range.lowerBound >= 0 && range.upperBound <= ops.count && ops[range].allSatisfy(isMatch)
+        }
         var regions: [Range<Int>] = []
         for boundary in Set(boundaries).sorted() where boundary > 0 && boundary < ops.count {
-            let region = max(0, boundary - boundaryEdits)..<min(ops.count, boundary + boundaryEdits)
-            if let last = regions.last, last.upperBound >= region.lowerBound {
-                regions[regions.count - 1] = last.lowerBound..<max(last.upperBound, region.upperBound)
+            var low = max(0, boundary - boundaryEdits)
+            while low > 0, boundary - low < boundaryReach, !anchored((low - boundaryAnchor)..<low) { low -= 1 }
+            var high = min(ops.count, boundary + boundaryEdits)
+            while high < ops.count, high - boundary < boundaryReach, !anchored(high..<(high + boundaryAnchor)) {
+                high += 1
+            }
+            if let last = regions.last, last.upperBound >= low {
+                // Merged with the stretch before, up to the limit; past it, this one starts where that one ends.
+                if max(last.upperBound, high) - last.lowerBound <= boundaryRegionLimit {
+                    regions[regions.count - 1] = last.lowerBound..<max(last.upperBound, high)
+                } else if high > last.upperBound {
+                    regions.append(last.upperBound..<high)
+                }
             } else {
-                regions.append(region)
+                regions.append(low..<high)
             }
         }
         var result = ops

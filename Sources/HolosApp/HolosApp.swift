@@ -113,6 +113,12 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
     /// press that produces nothing (cancelled, released before listening, nothing recognized) leaves it.
     private var retention = ResultRetention()
     var corrections = CorrectionList()
+    /// The corrections the dictation in progress (or the last one) started with, used for all of its text until it
+    /// ends. `corrections` can change while it runs (corrections.json reloaded after `voiceislocal eval apply`, or a
+    /// change in Corrections); taking that mid-dictation would change text already streamed, fail the prefix check and
+    /// stop insertion, so a change counts from the next dictation. Its word list and vocabulary are fixed at the start
+    /// the same way (`DictationFixPipeline.make` takes the terms; `DictationController.begin` the contextual strings).
+    private var dictationCorrections = CorrectionList()
     /// False when an existing corrections file could not be read, so it is never overwritten.
     private var correctionsWritable = true
     /// Loads corrections.json again when it changes on disk (`voiceislocal eval apply --add-corrections`).
@@ -644,6 +650,9 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
                                         language: locale, terminal: dictationForTerminal)
             // Terms added with `voiceislocal words` since the last dictation count for this one.
             refreshWordList()
+            // This dictation's corrections, fixed now; a refused begin leaves the one still stopping with its own.
+            let previousCorrections = dictationCorrections
+            dictationCorrections = corrections
             if controller.begin() {
                 // A pending opacity sample must not hide this dictation's own preview or result.
                 // A rejected begin leaves the timer running so the sample still hides on time.
@@ -651,7 +660,7 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
                 opacitySampleTask = nil
                 sampleToken = nil
                 fixPipeline?.cancel()
-                fixPipeline = DictationFixPipeline.make(corrections: corrections, wordList: wordList.terms,
+                fixPipeline = DictationFixPipeline.make(corrections: dictationCorrections, wordList: wordList.terms,
                                                         language: locale,
                                                         terminal: dictationForTerminal) { [weak self] chunk, text in
                     self?.writeFixed(chunk, as: text) ?? false
@@ -663,6 +672,7 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
                     historyAudio = (id, DictationAudioWriter(store: history.store, id: id))
                 }
             } else {
+                dictationCorrections = previousCorrections
                 target = nil
                 historyDraft = nil
                 _ = retention.conclude(DictationResult())  // nothing started, so the previous result stays
@@ -718,7 +728,7 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
             stream(cleanedForStreaming(update.committedText))
         case .result:
             let recognized = withoutFillers(update.text).trimmingCharacters(in: .whitespacesAndNewlines)
-            let text = corrections.apply(to: recognized)
+            let text = dictationCorrections.apply(to: recognized)
             if !text.isEmpty {
                 lastTranscript = text
                 lastRecognized = recognized
@@ -941,16 +951,16 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
         removeFillers ? FillerWords.remove(from: text, language: locale) : text
     }
 
-    /// Filler removal, then learned corrections: the text Holos shows and writes.
+    /// Filler removal, then learned corrections (this dictation's): the text Holos shows and writes.
     private func cleaned(_ text: String) -> String {
-        corrections.apply(to: withoutFillers(text))
+        dictationCorrections.apply(to: withoutFillers(text))
     }
 
     /// Like `cleaned`, but holds back a trailing comma or phrase start that later words may still change, and with
     /// spoken code, a trailing spoken path that later words may continue.
     private func cleanedForStreaming(_ text: String) -> String {
         DictationTextPipeline.cleanedForStreaming(text, language: locale, removeFillers: removeFillers,
-                                                  corrections: corrections,
+                                                  corrections: dictationCorrections,
                                                   spokenCode: fixPipeline?.formatsCode == true)
     }
 
@@ -1148,7 +1158,8 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
         if heard.isEmpty { heard = latestCommitted.trimmingCharacters(in: .whitespacesAndNewlines) }
         let withoutFill = withoutFillers(heard)
         let fillersRemoved = removeFillers && WordDiff.normalized(withoutFill) != WordDiff.normalized(heard)
-        let swaps = corrections.applyCounting(to: withoutFill.trimmingCharacters(in: .whitespacesAndNewlines)).count
+        let swaps = dictationCorrections
+            .applyCounting(to: withoutFill.trimmingCharacters(in: .whitespacesAndNewlines)).count
         history.add(DictationRecord(
             id: draft.id ?? UUID(), date: draft.date, app: draft.app, language: draft.language, text: text,
             heard: heard.isEmpty ? text : heard, unwritten: resultText,

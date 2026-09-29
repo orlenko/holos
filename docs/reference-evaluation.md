@@ -162,9 +162,11 @@ voiceislocal eval delete <session> (<run> | --all)
 2. **compare** takes the current transcript revision and, per track, compares
    each cloud segment with the local words that start inside it (from where
    the segment's own audio begins to where the next one's does), then aligns
-   the 6 alignment steps on each side of each cut again together (matched
-   words included; stretches that touch are aligned as one), so a word said
-   across a cut is not counted twice. Both transcripts are cut into words the
+   the alignment around each cut again as one stretch: at least 6 steps on
+   each side, matched words included, and on until 3 matched words in a row
+   (or the track's edge, at most 500 steps a side) bound it; stretches that
+   touch are aligned as one. So a word, or a whole run of words that coarse
+   local timing put on the other side of the cut, is not counted twice. Both transcripts are cut into words the
    same way, from their full text: at whitespace, and each character of a
    script written without spaces (Han, kana, Thai, Lao, Khmer, Myanmar,
    Tibetan) is a word of its own, so "你好世界" compares as four words however
@@ -175,8 +177,10 @@ voiceislocal eval delete <session> (<run> | --all)
    colon, slash or dash between digits, a leading decimal separator (".5",
    not after a letter), a minus sign before one or in an exponent ("1e-5"),
    a percent
-   sign after one, a currency sign beside one, a minus before an amount; "$ 50"
-   is one word, as "$50" is): "1.5" and "15", "-5" and "5", "5%" and "5",
+   sign after one, a currency sign beside one, a minus before an amount; a
+   run of lone signs and currency signs joins the amount after it, so "$ 50"
+   is one word, as "$50" is, and "- 5" keeps its sign): "1.5" and "15", "-5"
+   and "5", "- 5" and "5", "5%" and "5",
    "$50" and "€50", or "-$50" and "$50" are a word difference in the
    numbers group, never case or punctuation only ("1,000" and "1000" are
    shown too). The alignment
@@ -234,8 +238,11 @@ voiceislocal eval delete <session> (<run> | --all)
    and the app lose an entry: the app makes each change to the list as saved
    at that moment, and reads both files again when they change on disk (a
    watch on their folder; the word list is also checked at each dictation), so
-   a running Voice is Local uses the additions at once and never saves over
-   them. Nothing is added without a flag.
+   a running Voice is Local uses the additions from its next dictation,
+   meeting or Run Again and never saves over them. A dictation keeps the
+   corrections, word list and vocabulary it started with until it ends, so
+   text it already wrote never changes under it. Nothing is added without a
+   flag.
 
 With `--vocabulary`, the request carries what the recognizer's own meeting
 vocabulary holds, in its order: your word list, then people's names, then the

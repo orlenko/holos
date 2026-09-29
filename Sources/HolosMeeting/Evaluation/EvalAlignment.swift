@@ -66,7 +66,22 @@ public enum EvalText {
         character.unicodeScalars.first?.properties.generalCategory == .currencySymbol
     }
 
-    private static func isMinus(_ character: Character) -> Bool { "-\u{2212}\u{2013}".contains(character) }
+    /// A sign a number can carry: a minus (hyphen, minus sign, en dash) or a plus.
+    private static func isSign(_ character: Character) -> Bool { "-+\u{2212}\u{2013}".contains(character) }
+
+    /// A word of signs and currency signs only ("-", "$", "-$", "+ €"): it belongs to an amount after it.
+    static func isAmountPrefix(_ text: String) -> Bool {
+        !text.isEmpty && text.allSatisfy { isCurrency($0) || isSign($0) || $0.isWhitespace }
+    }
+
+    /// Whether `text` starts an amount: after any signs and currency signs, a digit, or a decimal or group separator
+    /// then a digit ("50", "-50", "$50", ".5", "-,5").
+    static func startsAmount(_ text: String) -> Bool {
+        var rest = Substring(text)
+        while let first = rest.first, isCurrency(first) || isSign(first) { rest.removeFirst() }
+        if let first = rest.first, ".,".contains(first) { rest.removeFirst() }
+        return rest.first.map(isDigit) == true
+    }
 
     /// One word of a text: its characters, where they are (UTF-16), and whether whitespace came before it.
     public struct Piece: Sendable, Equatable {
@@ -80,12 +95,13 @@ public enum EvalText {
     /// split at whitespace, and each character of a script written without spaces (Han, kana, Thai, Lao, Khmer,
     /// Myanmar, Tibetan) a word of its own, so "你好世界" is four words however a recognizer grouped them. A piece
     /// without letters or digits (a lone "—", "?" or "。") joins the word before, with the space it had, so every
-    /// piece has a key; one before any word is dropped. A lone currency sign (or minus and currency sign) joins
-    /// the number after it instead, so "$ 50" is one word, as "$50" is.
+    /// piece has a key; one before any word is dropped. A run of lone signs and currency signs ("-", "+", "$",
+    /// "- $") joins the amount after it instead (`startsAmount`), so "$ 50" is one word, as "$50" is, and "- 5" keeps
+    /// its sign; before any other word, the run joins the word before as punctuation does.
     public static func pieces(_ text: String) -> [Piece] {
         var pieces: [Piece] = []
         var current: Piece?
-        var prefix: Piece?  // a lone currency sign waiting for the word after it
+        var prefix: Piece?  // a run of lone signs and currency signs waiting for the word after it
         var space = false
         var offset = 0
         func attach(_ piece: Piece) {
@@ -94,27 +110,24 @@ public enum EvalText {
             pieces[last].text += (piece.spaceBefore ? " " : "") + piece.text
             pieces[last].utf16End = piece.utf16End
         }
+        /// `first`, then `second` after the space it had.
+        func joined(_ first: Piece, _ second: Piece) -> Piece {
+            Piece(text: first.text + (second.spaceBefore ? " " : "") + second.text, utf16Start: first.utf16Start,
+                  utf16End: second.utf16End, spaceBefore: first.spaceBefore)
+        }
         func finish() {
             guard var piece = current else { return }
             current = nil
+            if isAmountPrefix(piece.text) {
+                prefix = prefix.map { joined($0, piece) } ?? piece
+                return
+            }
             if let waiting = prefix {
                 prefix = nil
-                // An amount: a digit first, or a sign or decimal separator before one ("$ -50", "€ .5").
-                let startsAmount = piece.text.first.map { isDigit($0) || "-+.,\u{2212}\u{2013}".contains($0) } == true
-                if startsAmount, piece.text.contains(where: isDigit) {
-                    piece = Piece(text: waiting.text + (piece.spaceBefore ? " " : "") + piece.text,
-                                  utf16Start: waiting.utf16Start, utf16End: piece.utf16End,
-                                  spaceBefore: waiting.spaceBefore)
-                } else {
-                    attach(waiting)
-                }
+                if startsAmount(piece.text) { piece = joined(waiting, piece) } else { attach(waiting) }
             }
             if key(piece.text).isEmpty {
-                if piece.text.contains(where: isCurrency), piece.text.allSatisfy({ isCurrency($0) || isMinus($0) }) {
-                    prefix = piece
-                } else {
-                    attach(piece)
-                }
+                attach(piece)
             } else {
                 pieces.append(piece)
             }

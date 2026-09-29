@@ -80,11 +80,14 @@ private final class Harness {
     var update: (@Sendable (TranscriptUpdate) -> Void)?
     /// The locale of each recognizer made, in order.
     var locales: [String] = []
+    /// The contextual strings of each recognizer made, in order.
+    var vocabularies: [[String]] = []
 
     var dependencies: DictationDependencies {
         DictationDependencies(permission: { "authorized" }, makeCapture: { self.capture },
-            makeSpeech: { locale, _, _, onUpdate in
+            makeSpeech: { locale, _, vocabulary, onUpdate in
                 self.locales.append(locale)
+                self.vocabularies.append(vocabulary)
                 self.update = onUpdate
                 if self.delaySpeech {
                     return try await withCheckedThrowingContinuation { self.speechWaiter = $0 }
@@ -132,6 +135,24 @@ private func eventually(_ condition: () -> Bool) async -> Bool {
     #expect(await eventually { controller.begin() })
     #expect(await eventually { harness.speechWaiter != nil })
     #expect(harness.locales == ["en-CA", "fr-CA"])
+    controller.cancel()
+    harness.releaseSpeech()
+}
+
+/// A reload of words.json or corrections.json sets new contextual strings while an utterance starts; it keeps the
+/// ones it began with.
+@Test @MainActor func aVocabularyChangeAppliesFromTheNextUtterance() async {
+    let harness = Harness(); harness.delaySpeech = true
+    let controller = DictationController(dependencies: harness.dependencies) { _ in }
+    controller.contextualStrings = ["Keycloak"]
+    #expect(controller.begin())
+    controller.contextualStrings = ["Keycloak", "kubectl"]  // before the recognizer is made
+    #expect(await eventually { harness.speechWaiter != nil })
+    controller.cancel()
+    harness.releaseSpeech()
+    #expect(await eventually { controller.begin() })
+    #expect(await eventually { harness.speechWaiter != nil })
+    #expect(harness.vocabularies == [["Keycloak"], ["Keycloak", "kubectl"]])
     controller.cancel()
     harness.releaseSpeech()
 }
