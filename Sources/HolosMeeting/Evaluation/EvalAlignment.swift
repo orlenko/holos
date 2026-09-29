@@ -26,7 +26,8 @@ public enum EvalText {
     /// Lowercased letters and digits of `text`, plus the marks that change a number: a decimal or group separator,
     /// colon, or slash between two digits ("1.5", "1,000", "3:30", "1/2"), a leading decimal separator that follows no
     /// letter (".5", "-.5"), a dash between two digits ("1-2"), a
-    /// minus sign before a digit that follows no letter or digit ("-5", "−5"; "COVID-19" stays "covid19"), a percent
+    /// minus sign before a digit that follows no letter or digit ("-5", "−5"; "COVID-19" stays "covid19") or is an
+    /// exponent's ("1e-5"), a percent
     /// sign after a digit ("5%"), a currency sign next to one, spaces between allowed ("$50", "50 €"), and a minus
     /// sign before an amount ("-$50"). So a
     /// difference in a number is a word difference, shown for review, never case or punctuation only.
@@ -74,7 +75,9 @@ public enum EvalText {
             case ":", "/":
                 if afterDigit { out.append(character) }
             case _ where isMinus(character):
-                if afterDigit || previous.map({ !$0.isLetter && !$0.isNumber }) ?? true { out.append("-") }
+                // An exponent's sign ("1e-5") counts too.
+                let exponent = previous == "e" && index >= 2 && isDigit(characters[index - 2])
+                if afterDigit || exponent || previous.map({ !$0.isLetter && !$0.isNumber }) ?? true { out.append("-") }
             default:
                 break
             }

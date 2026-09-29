@@ -111,7 +111,8 @@ public enum CloudSegmentation {
     static let charactersPerSecond = 10.0
 
     /// The words of each segment's text with the words a segment repeats from the one before removed: with an
-    /// overlap, the longest run that ends the previous segment's words and starts this one's, compared by key, is
+    /// overlap, the longest run that ends the previous segment's answer (the one just before, even when empty) and
+    /// starts this one's, compared by key, is
     /// dropped from this one — at most as many words as the overlap can hold (`wordsPerOverlapSecond`, or
     /// `charactersPerSecond` characters of an unspaced script), so a
     /// phrase said again after the overlap stays. Segments without overlap are kept whole.
@@ -123,9 +124,15 @@ public enum CloudSegmentation {
     /// `EvalText.pieces(text)`.
     public static func stitchPieces(_ texts: [(text: String, overlapSeconds: Double)]) -> [[EvalText.Piece]] {
         var result: [[EvalText.Piece]] = []
+        // The segment just before, as the model answered it: the overlap repeats its audio's end, so only its own
+        // last words can be repeated (an empty answer repeats nothing, and an earlier segment is never compared).
+        var previousAnswer: [EvalText.Piece] = []
         for (text, overlapSeconds) in texts {
             var words = EvalText.pieces(text)
-            if overlapSeconds > 0, let previous = result.last(where: { !$0.isEmpty }) {
+            let answer = words
+            defer { previousAnswer = answer }
+            if overlapSeconds > 0, !previousAnswer.isEmpty {
+                let previous = previousAnswer
                 // The overlap holds so many words' worth of speech; a character of an unspaced script is a
                 // fraction of a word (about ten are said a second).
                 let budget = max(1, (overlapSeconds * wordsPerOverlapSecond).rounded(.up))

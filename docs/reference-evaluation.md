@@ -139,7 +139,8 @@ voiceislocal eval delete <session> (<run> | --all)
    When that stretch is not silence, the next segment repeats the last second,
    and stitching drops the words the two segments share at the junction (at
    most what one second holds: 4 words, or 10 characters of an unspaced
-   script; compared by letters and digits). A segment that is silence throughout
+   script; compared by letters and digits; only with the segment just before,
+   so after an empty answer nothing is dropped). A segment that is silence throughout
    is not sent. Segments are AAC .m4a (32 kbit/s, about 1.2 MB per 5 minutes).
    The cost shown is the audio sent times the list price. Each segment's raw
    answer and parsed text are saved as soon as they arrive; failed requests are
@@ -172,7 +173,8 @@ voiceislocal eval delete <session> (<run> | --all)
    gold keep the text's own spacing. Words are compared by their lowercased
    letters and digits, plus the marks that change a number (a separator,
    colon, slash or dash between digits, a leading decimal separator (".5",
-   not after a letter), a minus sign before one, a percent
+   not after a letter), a minus sign before one or in an exponent ("1e-5"),
+   a percent
    sign after one, a currency sign beside one, a minus before an amount; "$ 50"
    is one word, as "$50" is): "1.5" and "15", "-5" and "5", "5%" and "5",
    "$50" and "€50", or "-$50" and "$50" are a word difference in the

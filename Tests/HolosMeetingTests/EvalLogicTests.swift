@@ -73,6 +73,9 @@ private func evalSettings(max: Double = 10, search: Double = 4) -> CloudSegmenta
         ("thank you thank you thank you", 1.0),
     ])
     #expect(repeated[1] == ["thank", "you"])
+    // The overlap repeats only the segment just before: after an empty answer nothing is dropped.
+    let afterEmpty = CloudSegmentation.stitch([("Ready.", 0), ("", 1.0), ("Ready for the next item.", 1.0)])
+    #expect(afterEmpty[2] == ["Ready", "for", "the", "next", "item."])
 }
 
 // MARK: - Cost and consent
@@ -538,6 +541,9 @@ private func evalReport(passages: [EvalPassage]) -> CompareReport {
     // A leading decimal separator, with or without a minus sign, is part of the number.
     #expect(EvalText.key(".5") == ".5" && EvalText.key(".5") != EvalText.key("5"))
     #expect(EvalText.key("-.5") == "-.5" && EvalText.key("-.5") != EvalText.key(".5"))
+    // An exponent's sign too.
+    #expect(EvalText.key("1e-5") == "1e-5" && EvalText.key("1E-5") != EvalText.key("1e5"))
+    #expect(EvalText.key("type-2") == "type2")
     #expect(EvalText.key("(,5)") == ",5")
     #expect(EvalText.key("v.2") == "v2")
     #expect(EvalText.key("COVID-19") == "covid19")
@@ -557,7 +563,7 @@ private func evalReport(passages: [EvalPassage]) -> CompareReport {
     #expect(EvalText.tokens("costs $ 50").map(EvalText.key) == EvalText.tokens("costs $50").map(EvalText.key))
     #expect(EvalText.tokens("it costs $") == ["it", "costs $"])
     for (localWord, cloudWord) in [("1.5", "15"), ("-5", "5"), ("5%", "5"), ("$50", "€50"), ("-$50", "$50"),
-                                   (".5", "5"), ("-.5", "5")] {
+                                   (".5", "5"), ("-.5", "5"), ("1e-5", "1e5")] {
         let result = WindowComparer.compare(track: "mic", local: timed(["it", "is", localWord, "degrees"]),
                                             cloud: untimed("it is \(cloudWord) degrees"), start: 0, end: 10)
         #expect(result.score.substitutions == 1)
