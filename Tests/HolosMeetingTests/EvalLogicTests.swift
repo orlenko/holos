@@ -1,6 +1,8 @@
 import Foundation
+import JavaScriptCore
 import Testing
 import HolosCore
+import HolosSpeakers
 @testable import HolosMeeting
 
 // `voiceislocal eval` pure logic (docs/reference-evaluation.md, "Cloud reference"): segmenting and stitching, cost,
@@ -407,4 +409,142 @@ private func evalReport(passages: [EvalPassage]) -> CompareReport {
                                                   status: 401).contains("401"))
     #expect(!CloudTranscriptionClient.errorMessage(Data(#"{"error":{"message":"key sk-abcdefgh"}}"#.utf8),
                                                    status: 401).contains("sk-"))
+}
+
+// MARK: - Numbers, unspaced scripts, and the review page's storage
+
+@Test func evalNumberPunctuationIsAWordDifference() {
+    #expect(EvalText.key("1.5") != EvalText.key("15"))
+    #expect(EvalText.key("-5") != EvalText.key("5"))
+    #expect(EvalText.key("−5") == EvalText.key("-5"))
+    #expect(EvalText.key("(-5)") == "-5")
+    #expect(EvalText.key("3:30") != EvalText.key("330"))
+    #expect(EvalText.key("1-2") != EvalText.key("12"))
+    #expect(EvalText.key("1.5.") == EvalText.key("1.5"))
+    #expect(EvalText.key("COVID-19") == "covid19")
+    #expect(EvalText.key("well-known,") == "wellknown")
+    for (localWord, cloudWord) in [("1.5", "15"), ("-5", "5")] {
+        let result = WindowComparer.compare(track: "mic", local: timed(["it", "is", localWord, "degrees"]),
+                                            cloud: untimed("it is \(cloudWord) degrees"), start: 0, end: 10)
+        #expect(result.score.substitutions == 1)
+        #expect(result.passages.map(\.group) == [.numbers])
+        #expect(result.passages.map(\.local) == [localWord])
+        let data = EvalReviewPage.pageData(
+            report: evalReport(passages: result.passages.map { var p = $0; p.id = "mic-1"; return p }),
+            run: CloudRunRecord(id: "r", sessionID: "SESSION", createdAt: Date(), request: .init(model: "m"),
+                                timestampRequest: nil, vocabulary: false, maxSegmentSeconds: 300, tracks: []),
+            sessionName: "S")
+        #expect(data.items.map(\.local) == [localWord])
+    }
+}
+
+@Test func evalUnspacedScriptsAreCutTheSameWayOnBothSides() {
+    #expect(EvalText.tokens("你好世界") == ["你", "好", "世", "界"])
+    #expect(EvalText.tokens("我用iPhone手机。") == ["我", "用", "iPhone", "手", "机。"])
+    #expect(EvalText.tokens("hello — there") == ["hello —", "there"])
+    #expect(EvalText.pieces("你好 世界").map(\.spaceBefore) == [true, false, true, false])
+
+    // The recognizer timed "你好" and "世界" as two words; the text has no space.
+    let segment = TranscriptSegment(start: 1, end: 3, text: "你好世界", words: [
+        TimedWord(text: "你好", start: 1, end: 2, utf16Offset: 0, utf16Length: 2),
+        TimedWord(text: "世界", start: 2, end: 3, utf16Offset: 2, utf16Length: 2),
+    ], track: "mic")
+    let local = EvalCompare.segmentTokens(words: WordTiming.effectiveWords(of: segment), text: segment.text,
+                                          isEcho: [false, true])
+    #expect(local.map(\.text) == ["你", "好", "世", "界"])
+    #expect(local.map(\.start) == [1, 1, 2, 2])
+    #expect(local.map(\.echo) == [false, false, true, true])
+    #expect(EvalText.join(local) == "你好世界")
+
+    let words = CloudSegmentation.stitchPieces([("你好世界", 0)])[0].map(\.text)
+    let cloud = CloudTrackResult(run: "r", track: "mic", model: "m", segments: [
+        .init(index: 0, sessionStart: 0, sessionEnd: 10, renderStart: 0, renderEnd: 10, overlapSeconds: 0,
+              silent: false, text: "你好世界", words: words, timedWords: nil),
+    ], text: "")
+    let plain = local.map { var token = $0; token.echo = false; return token }
+    let compared = EvalCompare.compareTrack(track: "mic", local: plain, cloud: cloud)
+    #expect(compared.report.score.edits == 0)
+    #expect(compared.passages.isEmpty)
+    // An older run's words, stitched at whitespace, are cut again.
+    let older = CloudTrackResult.Segment(index: 0, sessionStart: 0, sessionEnd: 10, renderStart: 0, renderEnd: 10,
+                                         overlapSeconds: 0, silent: false, text: "", words: ["你好世界"],
+                                         timedWords: nil)
+    #expect(EvalCompare.cloudTokens(older).map(\.text) == ["你", "好", "世", "界"])
+
+    // The gold keeps the text as written; a reviewed character goes back without spaces.
+    #expect(EvalApply.goldTrack(track: "mic", local: plain, replacements: []).text == "你好世界")
+    let passage = EvalPassage(id: "mic-1", track: "mic", start: 2, end: 2.5, local: "世", cloud: "视",
+                              group: .otherWords, before: "你好", after: "界", localFirst: 2, localEnd: 3)
+    #expect(EvalApply.goldTrack(track: "mic", local: plain, replacements: [
+        (passage, .init(id: "mic-1", choice: .cloud, text: "视")),
+    ]).text == "你好视界")
+    let mixed = TranscriptSegment(start: 0, end: 2, text: "hello 世界 again",
+                                  words: [TimedWord(text: "hello", start: 0, end: 1, utf16Offset: 0, utf16Length: 5)])
+    let mixedTokens = EvalCompare.segmentTokens(words: WordTiming.effectiveWords(of: mixed), text: mixed.text,
+                                                isEcho: [false])
+    #expect(EvalText.join(mixedTokens) == "hello 世界 again")
+    // Words that do not lie in the text (an edited segment) are written out and cut instead.
+    let edited = TranscriptSegment(start: 0, end: 2, text: "totally different", words: [
+        TimedWord(text: "你好", start: 0, end: 1, utf16Offset: 0, utf16Length: 2),
+        TimedWord(text: "世界", start: 1, end: 2, utf16Offset: 2, utf16Length: 2),
+    ])
+    let editedTokens = EvalCompare.segmentTokens(words: WordTiming.effectiveWords(of: edited), text: edited.text,
+                                                 isEcho: [false, false])
+    #expect(EvalText.join(editedTokens) == "你好世界")
+    #expect(editedTokens.map(\.start) == [0, 0, 1, 1])
+}
+
+/// The review page's storage code (between its BEGIN/END review-store marks) in JavaScriptCore, with a storage
+/// whose writes can be made to fail.
+@Test func evalReviewPageKeepsDecisionsItCouldNotStore() throws {
+    let template = EvalReviewPage.template
+    let begin = try #require(template.range(of: "// BEGIN review-store"))
+    let end = try #require(template.range(of: "// END review-store"))
+    let code = String(template[begin.upperBound..<end.lowerBound])
+    let context = try #require(JSContext())
+    var failure: String?
+    context.exceptionHandler = { _, value in failure = value?.toString() }
+    context.evaluateScript(code)
+    context.evaluateScript("""
+        var box = { value: null, failWrites: false };
+        var storage = {
+          getItem: function () { return box.value; },
+          setItem: function (k, v) { if (box.failWrites) throw new Error("QuotaExceededError"); box.value = v; }
+        };
+        var store = makeStore(storage, "k");
+        function decide(id, text) { store.update(function (s) { s.decisions[id] = { choice: "edited", text: text }; }); }
+        function ids() { return Object.keys(store.state.decisions).sort().join(","); }
+        function stored() { return Object.keys(JSON.parse(box.value).decisions).sort().join(","); }
+        decide("a", "1");
+        box.failWrites = true;
+        decide("b", "2");
+        decide("c", "3");
+        """)
+    #expect(failure == nil)
+    #expect(context.evaluateScript("ids()").toString() == "a,b,c")
+    #expect(context.evaluateScript("store.failed").toBool())
+    #expect(context.evaluateScript("store.pending.length").toInt32() == 2)
+    #expect(context.evaluateScript("stored()").toString() == "a")
+    // Another tab stores "d": this page takes it and keeps its own unsaved decisions on top.
+    context.evaluateScript("""
+        box.value = JSON.stringify({ decisions: { a: { choice: "local", text: "1" }, d: { choice: "cloud", text: "4" } },
+                                     terms: [] });
+        store.reload();
+        """)
+    #expect(context.evaluateScript("ids()").toString() == "a,b,c,d")
+    // Once storage works again, the next change stores everything.
+    context.evaluateScript("box.failWrites = false; decide(\"e\", \"5\");")
+    #expect(context.evaluateScript("stored()").toString() == "a,b,c,d,e")
+    #expect(!context.evaluateScript("store.failed").toBool())
+    #expect(context.evaluateScript("store.pending.length").toInt32() == 0)
+    // Storage that cannot even be read keeps every decision in the page.
+    context.evaluateScript("""
+        var broken = makeStore({ getItem: function () { throw new Error("blocked"); },
+                                 setItem: function () { throw new Error("blocked"); } }, "k");
+        broken.update(function (s) { s.decisions.x = { choice: "local", text: "" }; });
+        broken.update(function (s) { s.decisions.y = { choice: "cloud", text: "" }; });
+        """)
+    #expect(context.evaluateScript("Object.keys(broken.state.decisions).join(',')").toString() == "x,y")
+    #expect(context.evaluateScript("broken.failed").toBool())
+    #expect(failure == nil)
 }

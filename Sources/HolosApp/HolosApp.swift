@@ -115,6 +115,8 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
     var corrections = CorrectionList()
     /// False when an existing corrections file could not be read, so it is never overwritten.
     private var correctionsWritable = true
+    /// Loads corrections.json again when it changes on disk (`voiceislocal eval apply --add-corrections`).
+    private var correctionsWatcher: FolderWatcher?
     /// The main window (HolosApp+MainWindow.swift), made on first use.
     var mainWindow: MainWindowController?
     /// The dictation history (HolosApp+History.swift).
@@ -212,6 +214,10 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
             message = "Could not read corrections.json; corrections are off until it is fixed or removed."
         }
         controller.contextualStrings = corrections.vocabulary(language: locale)
+        let folder = CorrectionList.defaultURL.deletingLastPathComponent()
+        correctionsWatcher = FolderWatcher(folder: folder) { [weak self] in
+            MainActor.assumeIsolated { self?.reloadCorrectionsIfChanged() }
+        }
         controller.frameTap = { [weak self] id, frame in
             guard let audio = self?.historyAudio, audio.id == id else { return }
             audio.writer.append(frame)
@@ -1231,21 +1237,35 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
 
     /// Returns false when the change was rejected or could not be saved.
     @discardableResult
+    /// The change is made to the list as saved now, under its lock (`CorrectionList.update`), so corrections another
+    /// process added since it was loaded (`voiceislocal eval apply`) are kept, never saved over.
     private func changeCorrections(_ change: (inout CorrectionList) -> Void) -> Bool {
         guard correctionsWritable else {
             show("Could not read corrections.json; fix or remove it, then relaunch Voice is Local.")
             return false
         }
-        change(&corrections)
-        controller.contextualStrings = corrections.vocabulary(language: locale)
-        (mainWindow?.existingController(for: .corrections) as? CorrectionsPane)?.update(corrections: corrections.entries)
         do {
-            try corrections.save(to: CorrectionList.defaultURL)
+            adoptCorrections(try CorrectionList.update(at: CorrectionList.defaultURL) { change(&$0) }.list)
             return true
         } catch {
             show("Could not save corrections: \(error.localizedDescription)")
             return false
         }
+    }
+
+    private func adoptCorrections(_ list: CorrectionList) {
+        corrections = list
+        controller.contextualStrings = corrections.vocabulary(language: locale)
+        (mainWindow?.existingController(for: .corrections) as? CorrectionsPane)?.update(corrections: corrections.entries)
+    }
+
+    /// corrections.json changed on disk (or its folder did): takes the saved list when it differs. An unreadable
+    /// file changes nothing; one that became readable again makes corrections writable again.
+    private func reloadCorrectionsIfChanged() {
+        guard let list = try? CorrectionList.load(from: CorrectionList.defaultURL) else { return }
+        guard list != corrections || !correctionsWritable else { return }
+        correctionsWritable = true
+        adoptCorrections(list)
     }
 
     private func write(_ text: String, to destination: Destination) -> InsertionOutcome {

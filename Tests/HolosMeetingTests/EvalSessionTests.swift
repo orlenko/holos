@@ -301,3 +301,68 @@ private func evalAllText(_ folder: URL) -> String {
     #expect(try !EvalStore.deleteRun(run.id, in: session))
     #expect(throws: HolosError.self) { try EvalStore.deleteRun("../x", in: session) }
 }
+
+@Test func evalResumeRefusesAudioReplacedWithTheSameShape() async throws {
+    let temp = try TemporaryDirectory("eval")
+    defer { temp.remove() }
+    let session = try await SessionFixtures.makeSession(in: temp.url.appendingPathComponent("a"),
+                                                        audioSeconds: ["mic": 12], transcript: nil)
+    let other = try await SessionFixtures.makeSession(in: temp.url.appendingPathComponent("b"),
+                                                      audioSeconds: ["mic": 12], transcript: nil, tone: 0.09)
+    let first = try CloudEvaluation.prepare(session: session, options: evalOptions(), vocabulary: evalNoVocabulary)
+    #expect(first.record.tracks[0].segments.allSatisfy { $0.audioSHA256?.count == 64 })
+    let failing = EvalFakeTransport { index, _ in
+        index == 0 ? evalOK("one two three") : .init(status: 400, body: #"{"error":{"message":"bad"}}"#)
+    }
+    await #expect(throws: CloudTranscriptionError.self) {
+        _ = try await CloudEvaluation.upload(first, client: CloudTranscriptionClient(
+            apiKey: evalKey, transport: failing, sleep: EvalSleeps().sleep))
+    }
+    // Other audio of the same format and length in the same chunk files: the manifest (and its fingerprint) and
+    // the render's shape are unchanged, the samples are not.
+    let chunks = try SessionArchive.readManifest(at: session).chunks
+    let replacements = try SessionArchive.readManifest(at: other).chunks
+    #expect(chunks.count == replacements.count)
+    for (chunk, replacement) in zip(chunks, replacements) {
+        let target = session.appendingPathComponent(chunk.relativePath)
+        try FileManager.default.removeItem(at: target)
+        try FileManager.default.copyItem(at: other.appendingPathComponent(replacement.relativePath), to: target)
+    }
+    let error = #expect(throws: HolosError.self) {
+        _ = try CloudEvaluation.prepare(session: session, options: evalOptions(), vocabulary: evalNoVocabulary)
+    }
+    #expect(error?.localizedDescription.contains("renders differently") == true)
+    #expect(failing.count == 2)
+}
+
+@Test func evalConcurrentAppliesKeepEveryCorrection() async throws {
+    let temp = try TemporaryDirectory("eval")
+    defer { temp.remove() }
+    let url = temp.url.appendingPathComponent("corrections.json")
+    try CorrectionList(entries: [Correction(heard: "seed", meant: "Seed")]).save(to: url)
+    DispatchQueue.concurrentPerform(iterations: 24) { index in
+        _ = try? EvalApply.addToCorrections([Correction(heard: "heard \(index)", meant: "meant \(index)")], at: url)
+    }
+    let entries = try CorrectionList.load(from: url).entries
+    #expect(entries.count == 25)
+    #expect(Set(entries.map(\.heard)) == Set(["seed"] + (0..<24).map { "heard \($0)" }))
+    // A writer holding a list loaded before another's addition (the app) changes the saved list, not its copy.
+    let (list, _) = try CorrectionList.update(at: url) { $0.remove(Correction(heard: "seed", meant: "Seed")) }
+    #expect(list.entries.count == 24)
+    #expect(try CorrectionList.load(from: url) == list)
+}
+
+@MainActor
+@Test func evalCorrectionsFolderWatcherSeesAnAtomicSave() async throws {
+    let temp = try TemporaryDirectory("eval")
+    defer { temp.remove() }
+    let url = temp.url.appendingPathComponent("corrections.json")
+    final class Seen: Sendable { let count = Mutex(0) }
+    let seen = Seen()
+    let watcher = try #require(FolderWatcher(folder: temp.url, queue: DispatchQueue(label: "eval-watch")) {
+        seen.count.withLock { $0 += 1 }
+    })
+    _ = try EvalApply.addToCorrections([Correction(heard: "cube control", meant: "kubectl")], at: url)
+    #expect(await eventually { seen.count.withLock { $0 } > 0 })
+    withExtendedLifetime(watcher) {}
+}

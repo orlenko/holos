@@ -400,7 +400,8 @@ Hardware-facing and cross-app acceptance remain pending.
   differing passages by kind (echo filtered as in the exports); `eval review` writes an
   offline HTML page with the audio to decide each passage and mark terms; `eval apply`
   makes a reference transcript and proposes heard → meant corrections, added only with
-  `--add-corrections`/`--add-vocabulary` and only while the app is not running. Results
+  `--add-corrections`/`--add-vocabulary`, under the corrections file's lock (the app
+  takes it too and reloads the file when it changes). Results
   stay in the session's `eval/` folder; Delete Audio removes the page's audio copy. The
   segmenting, stitching, cost, consent gate, HTTP layer (faked: request shape, retries,
   resume), alignment, WER, grouping, review page, decisions, and apply are unit-tested;

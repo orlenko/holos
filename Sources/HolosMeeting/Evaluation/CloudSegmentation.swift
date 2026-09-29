@@ -9,10 +9,14 @@ public struct CloudSegmentPlan: Codable, Sendable, Equatable {
     public var overlapSeconds: Double
     /// Every energy window is below the silence level: nothing is uploaded and the text is empty.
     public var silent: Bool
+    /// SHA-256 of the segment's samples in the render (`EvalAudio.segmentDigests`): a resumed run keeps a saved
+    /// answer only when the audio it answered is byte for byte what the new render holds.
+    public var audioSHA256: String?
 
-    public init(index: Int, startFrame: Int, endFrame: Int, overlapSeconds: Double = 0, silent: Bool = false) {
+    public init(index: Int, startFrame: Int, endFrame: Int, overlapSeconds: Double = 0, silent: Bool = false,
+                audioSHA256: String? = nil) {
         self.index = index; self.startFrame = startFrame; self.endFrame = endFrame
-        self.overlapSeconds = overlapSeconds; self.silent = silent
+        self.overlapSeconds = overlapSeconds; self.silent = silent; self.audioSHA256 = audioSHA256
     }
 
     public func seconds(sampleRate: Double) -> Double { Double(endFrame - startFrame) / sampleRate }
@@ -109,17 +113,23 @@ public enum CloudSegmentation {
     /// dropped from this one — at most as many words as the overlap can hold (`wordsPerOverlapSecond`), so a
     /// phrase said again after the overlap stays. Segments without overlap are kept whole.
     public static func stitch(_ texts: [(text: String, overlapSeconds: Double)]) -> [[String]] {
-        var result: [[String]] = []
+        stitchPieces(texts).map { $0.map(\.text) }
+    }
+
+    /// `stitch`, keeping each word's place and spacing (`EvalText.pieces`). Each segment's words are the last ones of
+    /// `EvalText.pieces(text)`.
+    public static func stitchPieces(_ texts: [(text: String, overlapSeconds: Double)]) -> [[EvalText.Piece]] {
+        var result: [[EvalText.Piece]] = []
         for (text, overlapSeconds) in texts {
-            var words = EvalText.tokens(text)
+            var words = EvalText.pieces(text)
             if overlapSeconds > 0, let previous = result.last(where: { !$0.isEmpty }) {
                 let maxRepeat = max(1, Int((overlapSeconds * wordsPerOverlapSecond).rounded(.up)))
                 let limit = min(maxRepeat, previous.count, words.count)
                 var drop = 0
                 if limit > 0 {
                     for length in stride(from: limit, through: 1, by: -1) {
-                        let tail = previous.suffix(length).map(EvalText.key)
-                        let head = words.prefix(length).map(EvalText.key)
+                        let tail = previous.suffix(length).map { EvalText.key($0.text) }
+                        let head = words.prefix(length).map { EvalText.key($0.text) }
                         if tail == head { drop = length; break }
                     }
                 }
@@ -128,5 +138,23 @@ public enum CloudSegmentation {
             result.append(words)
         }
         return result
+    }
+
+    /// A stitched segment's words with their spacing: `words` are the last words of `EvalText.pieces(text)` when it
+    /// was stitched by this build; otherwise (an older run, stitched at whitespace) each saved word is cut again.
+    static func spacedWords(text: String, words: [String]) -> [EvalText.Piece] {
+        let all = EvalText.pieces(text)
+        if all.count >= words.count, all.suffix(words.count).map(\.text) == words {
+            return Array(all.suffix(words.count))
+        }
+        var pieces: [EvalText.Piece] = []
+        for word in words {
+            for (position, piece) in EvalText.pieces(word).enumerated() {
+                var spaced = piece
+                spaced.spaceBefore = position == 0 || piece.spaceBefore
+                pieces.append(spaced)
+            }
+        }
+        return pieces
     }
 }

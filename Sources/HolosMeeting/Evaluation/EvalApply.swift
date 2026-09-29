@@ -201,10 +201,13 @@ public enum EvalApply {
         return false
     }
 
-    /// The local words of a track (echo left out) with each reviewed passage's words replaced by its final text.
+    /// The local words of a track (echo left out) with each reviewed passage's words replaced by its final text. The
+    /// words keep the spacing they had in the transcript (none between the characters of a script written without
+    /// spaces), and so does a reviewed passage with the words around it.
     static func goldTrack(track: String, local: [EvalToken],
                           replacements: [(EvalPassage, ReviewDecisions.Decision)]) -> GoldTranscript.Track {
         var pieces: [GoldTranscript.Piece] = []
+        var spaced: [Bool] = []
         var run: [EvalToken] = []
         func flushRun() {
             let kept = run.filter { !$0.echo }
@@ -212,6 +215,7 @@ public enum EvalApply {
             guard let first = kept.first, let last = kept.last else { return }
             pieces.append(GoldTranscript.Piece(start: first.start ?? 0, end: last.end ?? last.start ?? 0,
                                                text: EvalText.join(kept), passage: nil))
+            spaced.append(first.spaceBefore)
         }
         var position = 0
         for (passage, decision) in replacements {
@@ -223,12 +227,14 @@ public enum EvalApply {
             if !text.isEmpty {
                 pieces.append(GoldTranscript.Piece(start: passage.start, end: passage.end, text: text,
                                                    passage: passage.id))
+                spaced.append(first < local.count ? local[first].spaceBefore : true)
             }
             position = end
         }
         run += local[min(position, local.count)...]
         flushRun()
-        return GoldTranscript.Track(track: track, text: pieces.map(\.text).joined(separator: " "), pieces: pieces)
+        return GoldTranscript.Track(track: track, text: EvalText.join(pieces.map(\.text), spaceBefore: spaced),
+                                    pieces: pieces)
     }
 
     /// Word-level substitutions between the passage's local text and its final text, with the passage's context
@@ -252,16 +258,18 @@ public enum EvalApply {
     }
 
     /// Adds `corrections` to the correction list at `url` (the app's corrections.json) as the app adds one: an entry
-    /// for the same heard phrase is replaced. Returns the pairs that changed the list; the file is written only then.
+    /// for the same heard phrase is replaced. The whole read, change, and save holds the list's lock
+    /// (`CorrectionList.update`), which the app takes too, so neither another apply nor the app loses an entry.
+    /// Returns the pairs that changed the list; the file is written only then.
     public static func addToCorrections(_ corrections: [Correction], at url: URL) throws -> [Correction] {
-        var list = try CorrectionList.load(from: url)
-        var added: [Correction] = []
-        for pair in corrections {
-            let before = list.entries
-            list.add(pair)
-            if list.entries != before { added.append(pair) }
-        }
-        if !added.isEmpty { try list.save(to: url) }
-        return added
+        try CorrectionList.update(at: url) { list in
+            var added: [Correction] = []
+            for pair in corrections {
+                let before = list.entries
+                list.add(pair)
+                if list.entries != before { added.append(pair) }
+            }
+            return added
+        }.result
     }
 }

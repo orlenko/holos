@@ -146,7 +146,10 @@ voiceislocal eval delete <session> (<run> | --all)
    running the same command again resumes the newest unfinished run with the
    same settings (or `--run <id>`) and sends only the missing segments. It
    refuses a session that is recording, whose audio was deleted, or whose audio
-   changed since the run started, and holds the session's processing lock
+   changed since the run started: the chunk list must be the same, and every
+   segment's samples in the new render must have the SHA-256 recorded when the
+   run was planned (so a chunk replaced by other audio of the same length is
+   caught before any saved answer is reused). It holds the session's processing lock
    while it works (every `eval` command that writes does). `--run` resumes
    only with the options the run was started with. The meeting's languages are always sent (`languages[]`, or
    `language` for older models when there is one).
@@ -157,8 +160,18 @@ voiceislocal eval delete <session> (<run> | --all)
    each cloud segment with the local words that start inside it (from where
    the segment's own audio begins to where the next one's does), then aligns
    the differences on both sides of each cut again together, so a word said
-   across a cut is not counted twice. Words are compared by their lowercased
-   letters and digits, with a minimum-edit alignment. Microphone words that are
+   across a cut is not counted twice. Both transcripts are cut into words the
+   same way, from their full text: at whitespace, and each character of a
+   script written without spaces (Han, kana, Thai, Lao, Khmer, Myanmar,
+   Tibetan) is a word of its own, so "你好世界" compares as four words however
+   the recognizer grouped its timed words; each local word takes the time and
+   echo mark of the recognizer words it overlaps, and passages, context and the
+   gold keep the text's own spacing. Words are compared by their lowercased
+   letters and digits, plus the marks that change a number (a separator,
+   colon, slash or dash between digits, a minus sign before one): "1.5" and
+   "15", or "-5" and "5", are a word difference in the numbers group, never
+   case or punctuation only ("1,000" and "1000" are shown too). The alignment
+   is minimum-edit. Microphone words that are
    echo of the system track in a call (the exports' echo filter) are left out,
    and so are cloud-only words between two echo words or up to 3 of them next
    to one. Segments without a track count for the first track only. WER is
@@ -179,7 +192,10 @@ voiceislocal eval delete <session> (<run> | --all)
    cloud, `e` edit (`Esc` leaves the field), space play/pause, `t` add the
    selected text to Terms. Decisions and terms are kept in the browser's
    localStorage per run and transcript; **Export decisions** downloads
-   `decisions.json`. Case- and punctuation-only passages are left to
+   `decisions.json`. The page's own decisions are what counts: when the
+   browser cannot store them (storage full or blocked) they stay in the page,
+   are applied again on top of whatever another tab stores, and a warning
+   says to export before closing (closing asks first). Case- and punctuation-only passages are left to
    report.md. Delete Audio removes the page's audio copy.
 4. **apply** checks that the decisions belong to this session, run, and
    transcript revision, then writes `eval/gold/<run>.json`: each track's local
@@ -192,8 +208,13 @@ voiceislocal eval delete <session> (<run> | --all)
    `--add-corrections` adds the pairs and `--add-vocabulary` the term pairs to
    the app's `corrections.json` (the correction list holds heard → meant pairs
    only, so a term with no soundalike in the review is listed, not added).
-   Both refuse while Voice is Local runs: the app keeps the list in memory and
-   would save over the additions. Nothing is added without a flag.
+   The read, change, and save hold the list's lock (`flock` on
+   `corrections.json.lock`), which the app takes for its own changes too, so
+   neither two applies nor an apply and the app lose an entry: the app makes
+   each change to the list as saved at that moment, and loads the file again
+   when it changes on disk (a watch on its folder), so a running Voice is Local
+   uses the additions at once and never saves over them. Nothing is added
+   without a flag.
 
 With `--vocabulary`, the request carries `keywords[]` (gpt-transcribe only):
 people's names, then the words of your corrections' meant phrases for the

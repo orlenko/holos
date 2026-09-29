@@ -9,38 +9,142 @@ public struct EvalToken: Codable, Sendable, Equatable {
     public var end: Double?
     /// A microphone word that is echo of the system track (`EchoFilter`): left out of scores and passages.
     public var echo: Bool
+    /// Whether the word was written after whitespace in its transcript. False for the second and later characters
+    /// of a run of a script written without spaces (Chinese, Japanese, Thai…), which are compared one by one.
+    public var spaceBefore: Bool
 
-    public init(text: String, start: Double? = nil, end: Double? = nil, echo: Bool = false) {
-        self.text = text; self.start = start; self.end = end; self.echo = echo
+    public init(text: String, start: Double? = nil, end: Double? = nil, echo: Bool = false, spaceBefore: Bool = true) {
+        self.text = text; self.start = start; self.end = end; self.echo = echo; self.spaceBefore = spaceBefore
     }
 
-    /// Lowercased letters and digits: what is compared. "Vote," and "vote" match; "don't" is "dont".
+    /// Lowercased letters and digits, with the punctuation that changes a number's value: what is compared.
+    /// "Vote," and "vote" match; "don't" is "dont"; "1.5" and "15", or "-5" and "5", do not.
     public var key: String { EvalText.key(text) }
 }
 
 public enum EvalText {
-    /// Lowercased letters and digits of `text`.
+    /// Lowercased letters and digits of `text`, plus the marks that change a number: a decimal or group separator,
+    /// colon, or slash between two digits ("1.5", "1,000", "3:30", "1/2"), a dash between two digits ("1-2"), and a
+    /// minus sign before a digit that follows no letter or digit ("-5", "−5"; "COVID-19" stays "covid19"). So a
+    /// difference in a number is a word difference, shown for review, never case or punctuation only.
     public static func key(_ text: String) -> String {
-        String(text.lowercased().filter { $0.isLetter || $0.isNumber })
-    }
-
-    /// `text` split at whitespace; a token without letters or digits (a lone "—" or "?") is joined to the one before,
-    /// so every token has a key.
-    public static func tokens(_ text: String) -> [String] {
-        var tokens: [String] = []
-        for piece in text.split(whereSeparator: \.isWhitespace).map(String.init) {
-            if key(piece).isEmpty {
-                if tokens.isEmpty { continue }
-                tokens[tokens.count - 1] += piece
-            } else {
-                tokens.append(piece)
+        let characters = Array(text.lowercased())
+        var out = ""
+        for (index, character) in characters.enumerated() {
+            if character.isLetter || character.isNumber {
+                out.append(character)
+                continue
+            }
+            let previous = index > 0 ? characters[index - 1] : nil
+            let next = index + 1 < characters.count ? characters[index + 1] : nil
+            guard let next, isDigit(next) else { continue }
+            let afterDigit = previous.map(isDigit) ?? false
+            switch character {
+            case ".", ",", ":", "/":
+                if afterDigit { out.append(character) }
+            case "-", "\u{2212}", "\u{2013}":
+                if afterDigit || previous.map({ !$0.isLetter && !$0.isNumber }) ?? true { out.append("-") }
+            default:
+                break
             }
         }
-        return tokens
+        return out
     }
 
-    /// Words of `tokens` joined with single spaces.
-    public static func join(_ tokens: [EvalToken]) -> String { tokens.map(\.text).joined(separator: " ") }
+    private static func isDigit(_ character: Character) -> Bool { character.isNumber && character.isWholeNumber }
+
+    /// One word of a text: its characters, where they are (UTF-16), and whether whitespace came before it.
+    public struct Piece: Sendable, Equatable {
+        public var text: String
+        public var utf16Start: Int
+        public var utf16End: Int
+        public var spaceBefore: Bool
+    }
+
+    /// The words of `text` as the evaluation compares them, the same way for the local and the cloud transcript:
+    /// split at whitespace, and each character of a script written without spaces (Han, kana, Thai, Lao, Khmer,
+    /// Myanmar, Tibetan) a word of its own, so "你好世界" is four words however a recognizer grouped them. A piece
+    /// without letters or digits (a lone "—", "?" or "。") joins the word before, with the space it had, so every
+    /// piece has a key; one before any word is dropped.
+    public static func pieces(_ text: String) -> [Piece] {
+        var pieces: [Piece] = []
+        var current: Piece?
+        var space = false
+        var offset = 0
+        func finish() {
+            guard let piece = current else { return }
+            current = nil
+            if key(piece.text).isEmpty {
+                guard !pieces.isEmpty else { return }
+                let last = pieces.count - 1
+                pieces[last].text += (piece.spaceBefore ? " " : "") + piece.text
+                pieces[last].utf16End = piece.utf16End
+            } else {
+                pieces.append(piece)
+            }
+        }
+        for character in text {
+            let length = character.utf16.count
+            defer { offset += length }
+            if character.isWhitespace {
+                finish()
+                space = true
+                continue
+            }
+            let standalone = isUnspacedScript(character) && !key(String(character)).isEmpty
+            if standalone || current == nil {
+                finish()
+                current = Piece(text: String(character), utf16Start: offset, utf16End: offset + length,
+                                spaceBefore: space || pieces.isEmpty)
+                space = false
+                if standalone { finish() }
+            } else {
+                current?.text.append(character)
+                current?.utf16End = offset + length
+            }
+        }
+        finish()
+        return pieces
+    }
+
+    /// The words of `text` (`pieces`).
+    public static func tokens(_ text: String) -> [String] { pieces(text).map(\.text) }
+
+    /// Whether `character` belongs to a script written without spaces between words.
+    static func isUnspacedScript(_ character: Character) -> Bool {
+        guard let scalar = character.unicodeScalars.first?.value else { return false }
+        switch scalar {
+        case 0x0E00...0x0EFF,  // Thai, Lao
+             0x0F00...0x0FFF,  // Tibetan
+             0x1000...0x109F,  // Myanmar
+             0x1780...0x17FF,  // Khmer
+             0x2E80...0x2FDF,  // CJK radicals
+             0x3005, 0x3007, 0x3021...0x3029, 0x3038...0x303B,
+             0x3040...0x30FF,  // Hiragana, Katakana
+             0x31F0...0x31FF,
+             0x3400...0x4DBF, 0x4E00...0x9FFF, 0xF900...0xFAFF,  // Han
+             0xFF66...0xFF9F,  // halfwidth Katakana
+             0x20000...0x3134F:
+            return true
+        default:
+            return false
+        }
+    }
+
+    /// `tokens` written back as text: a space before each one that had whitespace before it (none before the first).
+    public static func join(_ tokens: [EvalToken]) -> String {
+        join(tokens.map(\.text), spaceBefore: tokens.map(\.spaceBefore))
+    }
+
+    /// `words` with a space before each whose flag is set (none before the first; all spaced when the counts differ).
+    public static func join(_ words: [String], spaceBefore: [Bool]) -> String {
+        var out = ""
+        for (index, word) in words.enumerated() {
+            if index > 0, spaceBefore.count != words.count || spaceBefore[index] { out += " " }
+            out += word
+        }
+        return out
+    }
 }
 
 /// One step of an alignment between local words (`a`) and cloud words (`b`), by index.
@@ -436,10 +540,11 @@ public enum WindowComparer {
         let cloudPoint = cloudIndices.first
             ?? (ops[..<firstPosition].last(where: { cloudIndex($0) != nil }).flatMap(cloudIndex).map { $0 + 1 } ?? 0)
         let cloudEndPoint = cloudIndices.last.map { $0 + 1 } ?? cloudPoint
-        let localContext = local.map { $0.echo ? nil : $0.text }
-        let cloudContext = cloud.map { Optional($0.text) }
-        return EvalPassage(id: "", track: track, start: start, end: end, local: localWords.joined(separator: " "),
-                           cloud: cloudWords.joined(separator: " "), group: group,
+        let localContext = local.map { $0.echo ? nil : $0 }
+        let cloudContext = cloud.map { Optional($0) }
+        return EvalPassage(id: "", track: track, start: start, end: end,
+                           local: EvalText.join(localIndices.map { local[$0] }),
+                           cloud: EvalText.join(cloudIndices.map { cloud[$0] }), group: group,
                            before: context(localContext, before: localPoint),
                            after: context(localContext, after: localEndPoint),
                            cloudBefore: context(cloudContext, before: cloudPoint),
@@ -448,12 +553,12 @@ public enum WindowComparer {
     }
 
     /// Up to `contextWords` words of `words` (nil: left out) before position `point`.
-    private static func context(_ words: [String?], before point: Int) -> String {
-        words[..<min(point, words.count)].compactMap { $0 }.suffix(contextWords).joined(separator: " ")
+    private static func context(_ words: [EvalToken?], before point: Int) -> String {
+        EvalText.join(Array(words[..<min(point, words.count)].compactMap { $0 }.suffix(contextWords)))
     }
 
     /// Up to `contextWords` words of `words` from position `point` on.
-    private static func context(_ words: [String?], after point: Int) -> String {
-        words[min(point, words.count)...].compactMap { $0 }.prefix(contextWords).joined(separator: " ")
+    private static func context(_ words: [EvalToken?], after point: Int) -> String {
+        EvalText.join(Array(words[min(point, words.count)...].compactMap { $0 }.prefix(contextWords)))
     }
 }

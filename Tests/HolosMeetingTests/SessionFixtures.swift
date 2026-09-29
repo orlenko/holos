@@ -57,13 +57,14 @@ enum SessionFixtures {
 
     // MARK: - Sessions
 
-    /// A finished (`complete`) session in `root`: `audioSeconds` of quiet 16 kHz mono audio per track (written by
+    /// A finished (`complete`) session in `root`: `audioSeconds` of a quiet 16 kHz mono tone (`tone` radians per
+    /// sample) per track (written by
     /// `AudioChunkWriter`), meeting.json when `mode` is given, and `transcript` saved as current (with the legacy
     /// speaker-less exports only when `legacyExports`).
     static func makeSession(in root: URL, name: String = "Fixture meeting", source: AudioSource = .microphone,
                             audioSeconds: [String: Double] = ["mic": 20], mode: MeetingMode? = nil,
                             othersInRoom: Bool = false, expectedSpeakers: Int? = nil, transcript: Transcript?,
-                            legacyExports: Bool = false) async throws -> URL {
+                            legacyExports: Bool = false, tone: Double = 0.05) async throws -> URL {
         let archive = try SessionArchive.create(root: root, name: name, source: source, locale: "en-CA",
                                                 backend: .speech)
         if let mode {
@@ -74,7 +75,7 @@ enum SessionFixtures {
         let writer = AudioChunkWriter(archive: archive)
         for (track, seconds) in audioSeconds.sorted(by: { $0.key < $1.key }) {
             let count = Int(seconds * 16_000)
-            let samples = (0..<count).map { Float(sin(Double($0) * 0.05)) * 0.01 }
+            let samples = (0..<count).map { Float(sin(Double($0) * tone)) * 0.01 }
             let frame = try PCMFrame(samples: samples, sampleRate: 16_000, channels: 1, startTime: 0)
             try await writer.append(CapturedAudio(track: track, frame: frame))
         }

@@ -82,9 +82,10 @@ public enum EvalReviewPage {
 <title>Transcript review</title>
 <style>
 :root { --bg:#fbfbfa; --fg:#1d1d1f; --muted:#6e6e73; --line:#e3e3e0; --card:#fff; --accent:#0a66d8;
-  --local:#8a4b00; --cloud:#00655c; --chosen:#e8f1fd; }
+  --local:#8a4b00; --cloud:#00655c; --chosen:#e8f1fd; --warn:#8a1c12; --warn-bg:#fde8e6; }
 @media (prefers-color-scheme: dark) { :root { --bg:#161617; --fg:#f2f2f2; --muted:#a1a1a6; --line:#343436;
-  --card:#1f1f21; --accent:#5aa2ff; --local:#f0b36a; --cloud:#6fd6c8; --chosen:#1d3450; } }
+  --card:#1f1f21; --accent:#5aa2ff; --local:#f0b36a; --cloud:#6fd6c8; --chosen:#1d3450; --warn:#ffb4a9;
+  --warn-bg:#4a1d18; } }
 * { box-sizing: border-box; }
 body { margin:0; background:var(--bg); color:var(--fg); font:15px/1.45 -apple-system, system-ui, sans-serif; }
 header { position:sticky; top:0; z-index:2; background:var(--bg); border-bottom:1px solid var(--line); padding:10px 16px; }
@@ -115,6 +116,8 @@ aside ul { list-style:none; padding:0; margin:6px 0; }
 aside li { display:flex; justify-content:space-between; gap:6px; padding:2px 0; }
 .help { font-size:12px; color:var(--muted); margin-top:10px; }
 kbd { border:1px solid var(--line); border-radius:3px; padding:0 3px; font-size:11px; }
+.warning { margin-top:6px; padding:4px 8px; border-radius:6px; background:var(--warn-bg); color:var(--warn);
+  font-size:13px; font-weight:600; }
 </style>
 </head>
 <body>
@@ -125,6 +128,7 @@ kbd { border:1px solid var(--line); border-radius:3px; padding:0 3px; font-size:
     <span id="player"></span>
     <button id="export">Export decisions</button>
   </div>
+  <div id="warning" class="warning" role="alert" hidden></div>
 </header>
 <main>
   <section id="list"></section>
@@ -144,39 +148,77 @@ kbd { border:1px solid var(--line); border-radius:3px; padding:0 3px; font-size:
   "use strict";
   var data = JSON.parse(document.getElementById("review-data").textContent);
   var storageKey = "voiceislocal-review:" + data.run + ":" + data.transcriptID;
+  // BEGIN review-store
   // Decisions live in localStorage. Every change is merged into what is stored now, so two tabs of this page
-  // keep each other's work; a tab follows the other's changes through the storage event.
-  var storageFailed = false;
-  function load() {
-    try {
-      var saved = JSON.parse(window.localStorage.getItem(storageKey) || "null");
-      if (saved && typeof saved === "object") {
-        return { decisions: saved.decisions && typeof saved.decisions === "object" ? saved.decisions : {},
-                 terms: Array.isArray(saved.terms) ? saved.terms : [] };
+  // keep each other's work. The page's own state is what counts: a change that could not be stored (storage full
+  // or blocked) stays pending and is applied again on top of whatever is read later, so no later edit or other
+  // tab's save can drop it; the page warns until it is stored, and Export writes it out either way.
+  function makeStore(storage, key) {
+    var store = { state: { decisions: {}, terms: [] }, failed: false, pending: [] };
+    function read() {
+      try {
+        var saved = JSON.parse(storage.getItem(key) || "null");
+        if (saved && typeof saved === "object") {
+          return { decisions: saved.decisions && typeof saved.decisions === "object" ? saved.decisions : {},
+                   terms: Array.isArray(saved.terms) ? saved.terms : [] };
+        }
+        return { decisions: {}, terms: [] };
+      } catch (e) {
+        return null;
       }
-      return { decisions: {}, terms: [] };
-    } catch (e) {
-      storageFailed = true;
-      return null;
     }
+    function merged() {
+      var fresh = read();
+      if (!fresh) return null;
+      store.pending.forEach(function (change) { change(fresh); });
+      return fresh;
+    }
+    store.update = function (change) {
+      store.pending.push(change);
+      var fresh = merged();
+      if (fresh) { store.state = fresh; } else { change(store.state); }
+      try {
+        storage.setItem(key, JSON.stringify(store.state));
+        store.pending = [];
+        store.failed = false;
+      } catch (e) {
+        store.failed = true;
+      }
+    };
+    // Another tab saved: take what it stored, with this page's unsaved changes on top.
+    store.reload = function () {
+      var fresh = merged();
+      if (fresh) store.state = fresh;
+    };
+    var initial = read();
+    if (initial) { store.state = initial; } else { store.failed = true; }
+    return store;
   }
-  var state = load() || { decisions: {}, terms: [] };
+  // END review-store
+  var storage;
+  try { storage = window.localStorage; } catch (e) { storage = null; }
+  if (!storage) {
+    storage = { getItem: function () { throw new Error("no storage"); },
+                setItem: function () { throw new Error("no storage"); } };
+  }
+  var store = makeStore(storage, storageKey);
+  var state = store.state;
+  var changes = 0, exported = 0;
+  function unsaved() { return store.failed || store.pending.length > 0; }
   function update(change) {
-    var fresh = load() || state;
-    change(fresh);
-    state = fresh;
-    try {
-      window.localStorage.setItem(storageKey, JSON.stringify(state));
-      storageFailed = false;
-    } catch (e) {
-      storageFailed = true;
-    }
+    store.update(change);
+    state = store.state;
+    changes += 1;
     refreshAll();
   }
   window.addEventListener("storage", function (e) {
     if (e.key !== storageKey) return;
-    state = load() || state;
+    store.reload();
+    state = store.state;
     refreshAll();
+  });
+  window.addEventListener("beforeunload", function (e) {
+    if (store.pending.length > 0 && changes !== exported) { e.preventDefault(); e.returnValue = ""; }
   });
   function refreshAll() {
     cards.forEach(function (c) { c.show(); });
@@ -302,8 +344,11 @@ kbd { border:1px solid var(--line); border-radius:3px; padding:0 3px; font-size:
   }
   function progress() {
     var done = cards.filter(function (c) { return state.decisions[c.item.id]; }).length;
-    document.getElementById("progress").textContent = done + " of " + cards.length + " passages decided · run " + data.run
-      + (storageFailed ? " · NOT SAVED in this browser: export your decisions before closing" : "");
+    document.getElementById("progress").textContent = done + " of " + cards.length + " passages decided · run " + data.run;
+    var warning = document.getElementById("warning");
+    warning.textContent = unsaved() ? "Not saved in this browser (storage is full or blocked): your decisions are "
+      + "kept while this page stays open. Export them before closing it." : "";
+    warning.hidden = !unsaved();
   }
 
   var termList = document.getElementById("terms");
@@ -351,6 +396,7 @@ kbd { border:1px solid var(--line); border-radius:3px; padding:0 3px; font-size:
     document.body.appendChild(link);
     link.click();
     setTimeout(function () { URL.revokeObjectURL(link.href); link.remove(); }, 1000);
+    exported = changes;
   });
 
   document.addEventListener("keydown", function (e) {

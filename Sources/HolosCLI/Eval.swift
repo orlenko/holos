@@ -1,4 +1,3 @@
-import AppKit
 import ArgumentParser
 import Foundation
 import HolosCore
@@ -193,8 +192,9 @@ struct Eval: AsyncParsableCommand {
                 Writes eval/gold/<run>.json: the local transcript with each reviewed passage replaced by its \
                 decided text. Prints the heard → meant pairs (word substitutions of at most 3 words) and the \
                 terms you marked. Nothing is added to your corrections unless you pass --add-corrections (those \
-                pairs) or --add-vocabulary (for each marked term, what the local recognizer wrote instead). Quit \
-                Voice is Local first: it keeps the corrections in memory and saves them over the file.
+                pairs) or --add-vocabulary (for each marked term, what the local recognizer wrote instead). The \
+                additions are made under the corrections file's lock; a running Voice is Local loads them when \
+                the file changes and never saves over them.
                 """)
 
         @Argument(help: "Path to a .holos folder, or a session ID.") var session: String
@@ -215,13 +215,6 @@ struct Eval: AsyncParsableCommand {
             guard let report = try EvalCompare.readReport(run: parsed.run, session: directory) else {
                 throw HolosError.invalidInput("This session has no comparison for run \(parsed.run).")
             }
-            if addCorrections || addVocabulary {
-                guard NSRunningApplication.runningApplications(withBundleIdentifier: "ca.orlenko.holos.app").isEmpty
-                else {
-                    throw HolosError.unavailable("Quit Voice is Local first: it keeps your corrections in memory and would "
-                        + "save over these additions. Nothing was changed.")
-                }
-            }
             let lexicon = Lexicon(language: nil)
             let result = try EvalApply.build(session: directory, report: report, decisions: parsed,
                                              isDictionaryWord: { lexicon.isWord($0.lowercased()) })
@@ -240,12 +233,11 @@ struct Eval: AsyncParsableCommand {
                         + result.termsWithoutSoundalike.joined(separator: ", "))
                 }
             }
-            var added: [Correction] = []
-            if addCorrections { added += try EvalApply.addToCorrections(result.corrections, at: CorrectionList.defaultURL) }
-            if addVocabulary { added += try EvalApply.addToCorrections(result.termPairs, at: CorrectionList.defaultURL) }
             if addCorrections || addVocabulary {
-                Console.error("Added \(added.count) corrections to \(CorrectionList.defaultURL.path). Open Voice is "
-                    + "Local and its Corrections pane to see them.")
+                let wanted = (addCorrections ? result.corrections : []) + (addVocabulary ? result.termPairs : [])
+                let added = try EvalApply.addToCorrections(wanted, at: CorrectionList.defaultURL)
+                Console.error("Added \(added.count) corrections to \(CorrectionList.defaultURL.path); Voice is Local's "
+                    + "Corrections pane shows them.")
             }
         }
     }

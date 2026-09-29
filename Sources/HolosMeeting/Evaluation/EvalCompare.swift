@@ -46,25 +46,72 @@ public enum EvalCompare {
             .map(\.element)
         var tokens: [EvalToken] = []
         for segment in segments {
-            var segmentTokens = 0
-            for (index, word) in WordTiming.effectiveWords(of: segment).enumerated() {
-                let isEcho = echo.contains(WordRef(segmentID: segment.id, word: index))
-                let pieces = EvalText.tokens(word.text)
-                if pieces.isEmpty {
-                    let mark = word.text.filter { !$0.isWhitespace }
-                    if !mark.isEmpty, segmentTokens > 0 { tokens[tokens.count - 1].text += mark }
-                    continue
-                }
-                for piece in pieces {
-                    tokens.append(EvalToken(text: piece, start: word.start, end: word.end, echo: isEcho))
-                    segmentTokens += 1
-                }
-            }
+            let words = WordTiming.effectiveWords(of: segment)
+            let isEcho = words.indices.map { echo.contains(WordRef(segmentID: segment.id, word: $0)) }
+            tokens += segmentTokens(words: words, text: segment.text, isEcho: isEcho)
         }
         // Stable, by start: overlapping segments interleave their words.
         return tokens.enumerated()
             .sorted { (($0.element.start ?? 0), $0.offset) < (($1.element.start ?? 0), $1.offset) }
             .map(\.element)
+    }
+
+    /// The words of one transcript segment, cut from its full text by `EvalText.pieces` (as the cloud text is), each
+    /// with the time of the recognizer's words it overlaps and marked as echo when they all are. A word that
+    /// overlaps none (text the recognizer gave no timing for) takes the time of the word before it (or after).
+    /// When the words do not lie in order in the text (an edited segment), the words themselves are written out
+    /// and cut instead.
+    static func segmentTokens(words: [EffectiveWord], text: String, isEcho: [Bool]) -> [EvalToken] {
+        guard !words.isEmpty else { return [] }
+        var source = text
+        var spans = words.map { (start: $0.utf16Offset, end: $0.utf16Offset + $0.utf16Length) }
+        if !wordsLieInText(words, text) {
+            source = ""
+            spans = []
+            for word in words {
+                if let last = source.last, let first = word.text.first,
+                   !(EvalText.isUnspacedScript(last) && EvalText.isUnspacedScript(first)) {
+                    source += " "
+                }
+                let start = source.utf16.count
+                source += word.text
+                spans.append((start, source.utf16.count))
+            }
+        }
+        var tokens: [EvalToken] = []
+        var first = 0
+        for (position, piece) in EvalText.pieces(source).enumerated() {
+            while first < spans.count, spans[first].end <= piece.utf16Start { first += 1 }
+            var chosen: [Int] = []
+            var index = first
+            while index < spans.count, spans[index].start < piece.utf16End {
+                if spans[index].end > piece.utf16Start { chosen.append(index) }
+                index += 1
+            }
+            if chosen.isEmpty { chosen = [first > 0 ? first - 1 : min(first, words.count - 1)] }
+            let echo = chosen.allSatisfy { $0 < isEcho.count && isEcho[$0] }
+            tokens.append(EvalToken(text: piece.text, start: words[chosen[0]].start,
+                                    end: words[chosen[chosen.count - 1]].end, echo: echo,
+                                    spaceBefore: position == 0 || piece.spaceBefore))
+        }
+        return tokens
+    }
+
+    /// Whether each word's UTF-16 range lies in `text`, after the one before, and holds the word.
+    static func wordsLieInText(_ words: [EffectiveWord], _ text: String) -> Bool {
+        let units = text.utf16
+        var previousEnd = 0
+        for word in words {
+            guard word.utf16Offset >= previousEnd, word.utf16Length >= 0,
+                  word.utf16Offset + word.utf16Length <= units.count else { return false }
+            let lower = units.index(units.startIndex, offsetBy: word.utf16Offset)
+            let upper = units.index(lower, offsetBy: word.utf16Length)
+            guard let inText = String(units[lower..<upper]),
+                  inText.trimmingCharacters(in: .whitespacesAndNewlines)
+                    == word.text.trimmingCharacters(in: .whitespacesAndNewlines) else { return false }
+            previousEnd = word.utf16Offset + word.utf16Length
+        }
+        return true
     }
 
     /// Compares the current transcript with the run's cloud tracks, segment by segment.
@@ -184,17 +231,20 @@ public enum EvalCompare {
     }
 
     /// A segment's stitched words; with the timestamp pass, each takes the time of the whisper-1 word it aligns with.
+    /// Words are cut as the local ones are (`EvalText.pieces`), and each whisper-1 word is cut the same way (its
+    /// pieces share its time).
     static func cloudTokens(_ segment: CloudTrackResult.Segment) -> [EvalToken] {
-        var tokens = segment.words.map { EvalToken(text: $0) }
+        var tokens = CloudSegmentation.spacedWords(text: segment.text, words: segment.words).enumerated()
+            .map { EvalToken(text: $0.element.text, spaceBefore: $0.offset == 0 || $0.element.spaceBefore) }
         guard let timed = segment.timedWords, !timed.isEmpty, !tokens.isEmpty else { return tokens }
-        let timedTexts = timed.map(\.word)
-        for op in EvalAlignment.align(tokens.map(\.text), timedTexts) {
+        let timedPieces = timed.flatMap { word in EvalText.tokens(word.word).map { ($0, word.start, word.end) } }
+        for op in EvalAlignment.align(tokens.map(\.text), timedPieces.map(\.0)) {
             if case .match(let i, let j, _) = op {
-                tokens[i].start = timed[j].start
-                tokens[i].end = timed[j].end
+                tokens[i].start = timedPieces[j].1
+                tokens[i].end = timedPieces[j].2
             } else if case .substitute(let i, let j) = op {
-                tokens[i].start = timed[j].start
-                tokens[i].end = timed[j].end
+                tokens[i].start = timedPieces[j].1
+                tokens[i].end = timedPieces[j].2
             }
         }
         return tokens

@@ -1,4 +1,5 @@
 import AVFoundation
+import CryptoKit
 import Foundation
 import HolosAudio
 import HolosCore
@@ -47,6 +48,34 @@ public enum EvalAudio {
         }
         if count > 0 { levels.append((sum / Float(count)).squareRoot()) }
         return levels
+    }
+
+    /// SHA-256 (hex) of the float samples of each frame range of `url`, in order.
+    public static func segmentDigests(of url: URL, ranges: [(start: Int, end: Int)]) throws -> [String] {
+        try requireRegularFile(url)
+        let file = try AVAudioFile(forReading: url)
+        let format = file.processingFormat
+        guard let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 16_384) else {
+            throw HolosError.io("Could not allocate an audio buffer.")
+        }
+        var digests: [String] = []
+        for range in ranges {
+            try Task.checkCancellation()
+            var hasher = SHA256()
+            file.framePosition = AVAudioFramePosition(max(0, range.start))
+            let last = AVAudioFramePosition(min(Int(file.length), max(range.start, range.end)))
+            while file.framePosition < last {
+                let wanted = AVAudioFrameCount(min(AVAudioFramePosition(16_384), last - file.framePosition))
+                try file.read(into: buffer, frameCount: wanted)
+                guard buffer.frameLength > 0, let channels = buffer.floatChannelData else { break }
+                for channel in 0..<Int(format.channelCount) {
+                    hasher.update(bufferPointer: UnsafeRawBufferPointer(
+                        start: channels[channel], count: Int(buffer.frameLength) * MemoryLayout<Float>.size))
+                }
+            }
+            digests.append(hasher.finalize().map { String(format: "%02x", $0) }.joined())
+        }
+        return digests
     }
 
     /// Refuses anything but a regular file at `url` (a symbolic link put in place of a render is never followed).

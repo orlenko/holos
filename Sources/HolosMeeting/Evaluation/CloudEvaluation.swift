@@ -207,17 +207,24 @@ public enum CloudEvaluation {
             let rendered = try EvalAudio.render(session: session, manifest: manifest, track: track, to: url)
             renders[track] = url
             if let existing {
+                // The saved answers are kept only for the very audio they answered: the same shape, and the same
+                // samples in every segment (a chunk replaced by other audio of the same length changes a digest).
+                let digests = try EvalAudio.segmentDigests(
+                    of: url, ranges: existing.segments.map { ($0.startFrame, $0.endFrame) })
                 guard rendered.frameCount == existing.frameCount,
-                      rendered.timeMap.map(EvalSpan.init) == existing.timeMap else {
+                      rendered.timeMap.map(EvalSpan.init) == existing.timeMap,
+                      existing.segments.map(\.audioSHA256) == digests.map(Optional.some) else {
                     throw HolosError.invalidInput("The \(track) audio renders differently than when run \(record.id) "
-                        + "started; start a new run.")
+                        + "started; start a new run (delete this one with voiceislocal eval delete).")
                 }
                 plans.append(existing)
                 pending[track] = missing
             } else {
                 let rms = try EvalAudio.rms(of: url, windowSeconds: options.segmentation.windowSeconds)
-                let segments = CloudSegmentation.plan(frameCount: rendered.frameCount, sampleRate: rendered.sampleRate,
+                var segments = CloudSegmentation.plan(frameCount: rendered.frameCount, sampleRate: rendered.sampleRate,
                                                       rms: rms, settings: options.segmentation)
+                let digests = try EvalAudio.segmentDigests(of: url, ranges: segments.map { ($0.startFrame, $0.endFrame) })
+                for index in segments.indices { segments[index].audioSHA256 = digests[index] }
                 let plan = CloudTrackPlan(track: track, sampleRate: rendered.sampleRate,
                                           frameCount: rendered.frameCount, timeMap: rendered.timeMap.map(EvalSpan.init),
                                           audioFingerprint: EvalStore.audioFingerprint(manifest: manifest, track: track),
@@ -335,16 +342,17 @@ public enum CloudEvaluation {
                 timed.append(nil)
             }
         }
-        let words = CloudSegmentation.stitch(texts)
+        let words = CloudSegmentation.stitchPieces(texts)
         let segments = track.segments.enumerated().map { position, segment in
             CloudTrackResult.Segment(index: segment.index, sessionStart: track.sessionStart(segment),
                                      sessionEnd: track.sessionEnd(segment), renderStart: track.renderStart(segment),
                                      renderEnd: track.renderEnd(segment), overlapSeconds: segment.overlapSeconds,
-                                     silent: segment.silent, text: texts[position].text, words: words[position],
-                                     timedWords: timed[position])
+                                     silent: segment.silent, text: texts[position].text,
+                                     words: words[position].map(\.text), timedWords: timed[position])
         }
+        let all = words.flatMap { segment in segment.enumerated().map { $0.offset == 0 ? true : $0.element.spaceBefore } }
         return CloudTrackResult(run: record.id, track: track.track, model: record.model, segments: segments,
-                                text: words.flatMap { $0 }.joined(separator: " "))
+                                text: EvalText.join(words.flatMap { $0.map(\.text) }, spaceBefore: all))
     }
 
     /// The request fields for `model`: the meeting's languages, and the vocabulary when there is one.

@@ -444,7 +444,7 @@ export OPENAI_API_KEY=…                          # your key; never saved
 ```
 
 `eval apply` adds nothing to your corrections unless given `--add-corrections` or
-`--add-vocabulary`, and refuses those while Voice is Local runs. See
+`--add-vocabulary`; a running Voice is Local picks the additions up and never saves over them. See
 [Cloud reference](docs/reference-evaluation.md#cloud-reference).
 
 `reference-data/` is reserved for private, user-provided reference recordings and
