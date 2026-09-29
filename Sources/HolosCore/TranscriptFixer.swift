@@ -292,7 +292,12 @@ public enum AIFixGuard {
 
         /// Whether the word at `range` of `text` is in a unit, number, address, path or identifier (`structured`).
         static func isStructured(_ range: Range<String.Index>, in text: String) -> Bool {
-            if text[range].dropFirst().contains(where: \.isUppercase) { return true }
+            text[range].dropFirst().contains(where: \.isUppercase) || hasSymbols(range, in: text)
+        }
+
+        /// Whether the word at `range` of `text` is in a run of characters without spaces that has a digit or one of
+        /// `symbols` inside, or starts with "-" (`structured`, case aside).
+        static func hasSymbols(_ range: Range<String.Index>, in text: String) -> Bool {
             var start = range.lowerBound, end = range.upperBound
             while start > text.startIndex, !text[text.index(before: start)].isWhitespace {
                 start = text.index(before: start)
@@ -491,7 +496,8 @@ public enum AIFixGuard {
     static func replaced(_ index: Int, _ baseline: Tokens, _ reply: Tokens, language: String?,
                          lexicon: Lexicon) -> Rejection? {
         let was = baseline.raw[index], now = reply.raw[index]
-        if was == now { return nil }
+        // The same word with a typographic apostrophe for a plain one, or the reverse.
+        if was.replacingOccurrences(of: "’", with: "'") == now.replacingOccurrences(of: "’", with: "'") { return nil }
         let startsSentence = index == 0 || endsSentence(baseline.gaps[index][...])
         let plain = !baseline.structured[index] && !reply.structured[index]
         // A capital at the start of a sentence, and the pronoun "I" anywhere.
@@ -788,6 +794,9 @@ public enum AIFixReference {
         let text: Spoken
         let language: String?
         let lexicon: Lexicon
+        /// For each word of the text, whether it is in an address, path, tag, option or identifier
+        /// (`AIFixGuard.Tokens.hasSymbols`).
+        private let symbolic: [Bool]
         private let positions: [String: [Int]]
         private let features: [String: SpokenWords.Features]
         private var said: [String: Set<Int>] = [:]
@@ -797,6 +806,7 @@ public enum AIFixReference {
             self.text = spoken
             self.language = language
             self.lexicon = lexicon
+            symbolic = text.matches(of: AIFixGuard.wordPattern).map { AIFixGuard.Tokens.hasSymbols($0.range, in: text) }
             positions = Dictionary(grouping: spoken.words.indices, by: { spoken.words[$0] })
             features = Dictionary(uniqueKeysWithValues: positions.keys.map { ($0, SpokenWords.Features($0)) })
         }
@@ -823,12 +833,18 @@ public enum AIFixReference {
         func matches(of heard: String) -> [Range<Int>] {
             let phrase = Spoken(heard)
             guard let first = phrase.words.first, phrase.words.count <= text.words.count else { return [] }
+            let heardSymbolic = heard.matches(of: AIFixGuard.wordPattern).map {
+                AIFixGuard.Tokens.hasSymbols($0.range, in: heard)
+            }
             return positions(of: first).sorted().compactMap { start in
                 let end = start + phrase.words.count
                 guard end <= text.words.count else { return nil }
                 // A heard phrase saved with marks at its edges ("bull.") is said with them.
                 guard text.breaks[start].hasSuffix(phrase.breaks[0]),
                       text.marks(after: end - 1).hasPrefix(phrase.trailing) else { return nil }
+                // A word of an address, path, tag, option or identifier ("#fuud", "--food") says a heard word only
+                // when the heard phrase has it so too: a prose pair does not rewrite an identifier.
+                guard (start..<end).allSatisfy({ !symbolic[$0] || heardSymbolic[$0 - start] }) else { return nil }
                 for index in phrase.words.indices.dropFirst() {
                     guard text.breaks[start + index] == phrase.breaks[index],
                           positions(of: phrase.words[index]).contains(start + index) else { return nil }

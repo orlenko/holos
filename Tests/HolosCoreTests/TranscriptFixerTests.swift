@@ -608,7 +608,7 @@ func aFixThatChangesMeaningIsRefused(original: String, fixed: String) {
     ("I think ewe are right.", "I think you are right."), ("I eight lunch early.", "I ate lunch early."),
     ("The night rode in.", "The knight rode in."), ("We bought two pears of shoes", "We bought two pairs of shoes"),
     ("Wait here. Dont leave", "Wait here. Don't leave"), ("You cant go", "You can't go"),
-    ("meet me there", "Meet me there."), ("i think so", "I think so"), ("so i think", "so I think"),
+    ("meet me there", "Meet me there."), ("i think so", "I think so"), ("so i think", "so I think"), ("we don’t know", "we don't know"),
     // Words the language does not know.
     ("open a timux session", "open a tmux session"), ("fix the wordz", "fix the words"),
     ("add a semicolen here", "add a semicolon here"), ("I opened a bul request", "I opened a pull request"),
@@ -853,6 +853,14 @@ func aFrenchMishearingIsFixed(original: String, fixed: String) {
     #expect(AIFixReference.matches(of: "right now", in: "Use right/now today").isEmpty)
     #expect(AIFixReference.matches(of: "team right", in: "Send to team@right.com").isEmpty)
     #expect(AIFixReference.matches(of: "and/or", in: "this and/or that") == [1..<3])
+    // Nor is a word of an identifier said by a prose heard phrase, whatever lies at its edge.
+    #expect(AIFixReference.matches(of: "food requests", in: "Open #fuud requests").isEmpty)
+    #expect(AIFixReference.matches(of: "food requests", in: "Run --food requests").isEmpty)
+    #expect(AIFixReference.matches(of: "food requests", in: "Open /tmp/food requests").isEmpty)
+    #expect(AIFixReference.matches(of: "food requests", in: "Open fuud requests.") == [1..<3])
+    #expect(AIFixReference.matches(of: "node.js", in: "use node.js now") == [1..<3])
+    #expect(AIFixGuard.check(original: "Open #fuud requests", fixed: "Open #pool requests", taught: [taughtList[9]])
+        != .accept)
     #expect(AIFixGuard.check(original: "Use right/now today", fixed: "Use write now today", taught: [now]) != .accept)
     #expect(AIFixGuard.check(original: "Use right/now today", fixed: "Use write/now today", taught: [now]) != .accept)
     #expect(AIFixGuard.check(original: "Use right now today", fixed: "Use write now today", taught: [now]) == .accept)
