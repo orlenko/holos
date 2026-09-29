@@ -287,8 +287,9 @@ public enum AIFixGuard {
         var count: Int { raw.count }
 
         /// The characters that make a run of characters an address, path, tag, option, call or identifier.
+        /// A colon or semicolon counts only inside a run ("scope:site", "a;b"): one that ends a clause is trimmed.
         static let symbols: Set<Character> = ["@", "/", "\\", ".", "_", "#", "$", "%", "&", "=", "+", "~", "`", "<", ">",
-                                              "|", "*", "^", "(", ")", "[", "]", "{", "}"]
+                                              "|", "*", "^", "(", ")", "[", "]", "{", "}", ":", ";"]
 
         /// Whether the word at `range` of `text` is in a unit, number, address, path or identifier (`structured`).
         static func isStructured(_ range: Range<String.Index>, in text: String) -> Bool {

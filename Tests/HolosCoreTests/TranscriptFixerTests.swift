@@ -578,7 +578,7 @@ let frenchOriginals: Set<String> = [
     ("run /tmp/site.py", "run /tmp/sight.py"), ("send it to us", "send it to US"), ("use windows now", "use Windows now"),
     ("Use #right today", "Use #write today"), ("Run --right now", "Run --write now"), ("Set $right now", "Set $write now"),
     ("Open right.txt", "Open write.txt"), ("Call right_now()", "Call write_now()"), ("Call right() now", "Call write() now"),
-    ("Use a[right] here", "Use a[write] here"),
+    ("Use a[right] here", "Use a[write] here"), ("Use scope:site now", "Use scope:sight now"), ("Set a;right now", "Set a;write now"),
     // Names, but for their apostrophes.
     ("Ask Mary about it", "Ask Marie about it"), ("Send it to Bob and Alice", "Send it to Alice and Bob"),
     ("Deploy to Windows now", "Deploy to Ubuntu now"), ("Ping John today", "Ping Joan today"),
@@ -608,7 +608,7 @@ func aFixThatChangesMeaningIsRefused(original: String, fixed: String) {
     ("I think ewe are right.", "I think you are right."), ("I eight lunch early.", "I ate lunch early."),
     ("The night rode in.", "The knight rode in."), ("We bought two pears of shoes", "We bought two pairs of shoes"),
     ("Wait here. Dont leave", "Wait here. Don't leave"), ("You cant go", "You can't go"),
-    ("meet me there", "Meet me there."), ("i think so", "I think so"), ("so i think", "so I think"), ("we don’t know", "we don't know"),
+    ("meet me there", "Meet me there."), ("Note: right it down", "Note: write it down"), ("i think so", "I think so"), ("so i think", "so I think"), ("we don’t know", "we don't know"),
     // Words the language does not know.
     ("open a timux session", "open a tmux session"), ("fix the wordz", "fix the words"),
     ("add a semicolen here", "add a semicolon here"), ("I opened a bul request", "I opened a pull request"),
