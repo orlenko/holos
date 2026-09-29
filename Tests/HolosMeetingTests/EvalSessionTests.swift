@@ -166,6 +166,14 @@ private func evalAllText(_ folder: URL) -> String {
     }
 }
 
+@Test func evalCorrectionsAndTheWordListShareTheSupportFolder() {
+    // HOLOS_SUPPORT_DIR (the test run's scratch folder) moves both, so eval never touches the user's real lists.
+    #expect(CorrectionList.defaultURL.deletingLastPathComponent().standardizedFileURL
+        == HolosPaths.supportRoot.standardizedFileURL)
+    #expect(CorrectionList.defaultURL.deletingLastPathComponent().standardizedFileURL
+        == WordListStore.defaultURL.deletingLastPathComponent().standardizedFileURL)
+}
+
 @Test func evalVocabularyTakesTheWordListFirstAndRefusesAnUnreadableSource() async throws {
     let temp = try TemporaryDirectory("eval")
     defer { temp.remove() }

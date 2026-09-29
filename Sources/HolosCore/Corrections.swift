@@ -39,8 +39,10 @@ public struct CorrectionList: Codable, Sendable, Equatable {
         for entry in entries { add(entry) }
     }
 
+    /// `<supportRoot>/corrections.json`, beside `words.json`: Application Support/Holos, or `HOLOS_SUPPORT_DIR` when
+    /// set, so a scratch or test support folder never reads or changes the user's real corrections.
     public static var defaultURL: URL {
-        HolosPaths.applicationSupport.appendingPathComponent("corrections.json")
+        HolosPaths.supportRoot.appendingPathComponent("corrections.json")
     }
 
     /// Words the recognizer should expect: the content words (`SpokenWords.isContent`) of the meant phrases, once
@@ -281,8 +283,8 @@ public struct CorrectionList: Codable, Sendable, Equatable {
         }
         defer { close(descriptor) }
         while flock(descriptor, LOCK_EX) != 0 {
-            // A volume without flock (some network shares) has no lock to take.
-            if errno == ENOTSUP || errno == EOPNOTSUPP { return try body() }
+            // A volume without flock (some network shares) fails too: changing the list unlocked could lose what
+            // another writer added in between.
             guard errno == EINTR else {
                 throw CocoaError(.fileLocking, userInfo: [NSFilePathErrorKey: lockPath])
             }
