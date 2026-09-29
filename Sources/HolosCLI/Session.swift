@@ -70,6 +70,13 @@ struct Session: AsyncParsableCommand {
         @Flag(help: "Do not label speakers or rewrite the transcript files afterwards.") var noPostprocess = false
         @Flag(help: "Rebuild the transcript even if it was rebuilt already or the session was not interrupted.")
         var force = false
+        @Flag(help: ArgumentHelp(
+            "Transcribe missed audio with today's word list, names and corrections, not the saved vocabulary.",
+            discussion: "Only audio transcribed again uses it; saved phrases stay as heard. For this run only: "
+                + "vocabulary.json keeps the vocabulary the meeting was recorded with, so a rebuild without this flag "
+                + "replays as the recording heard. Speakers are then labelled on the rebuilt transcript as it is: a "
+                + "meeting in several languages is not transcribed again in each."))
+        var currentVocabulary = false
         @Flag(help: "Print the result as JSON.") var json = false
 
         struct Result: Encodable {
@@ -98,8 +105,23 @@ struct Session: AsyncParsableCommand {
 
         mutating func run() async throws {
             let session = try SessionLocator.resolve(path)
+            var vocabulary: [String]?
+            if currentVocabulary {
+                let corrections: CorrectionList
+                let wordList: WordList
+                do {
+                    corrections = try CorrectionList.load(from: CorrectionList.defaultURL)
+                    wordList = try WordListStore().load()
+                } catch {
+                    throw ValidationError("--current-vocabulary: \(error.localizedDescription)")
+                }
+                vocabulary = SessionRecoveryCommand.currentVocabulary(
+                    session: session, wordList: wordList.terms,
+                    names: VoiceProfileService.profileNames().values.sorted(), corrections: corrections)
+            }
             let request = SessionRecoveryCommand.Request(session: session, transcribe: !noTranscribe,
-                                                         postProcess: !noPostprocess, force: force)
+                                                         postProcess: !noPostprocess, force: force,
+                                                         vocabulary: vocabulary)
             let outcome = try await SessionRecoveryCommand.run(
                 request, diarizer: noPostprocess ? nil : makeDiarizer(engineOverrides: [:]),
                 profiles: SpeakerProfileStore(), progress: Self.progressPrinter())

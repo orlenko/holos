@@ -35,18 +35,27 @@ public struct DictationTextPipeline: Sendable {
     public var language: String
     public var removeFillers: Bool
     public var corrections: CorrectionList
+    /// The word list's terms (`WordList`), for the recognizer's vocabulary.
+    public var wordList: [String]
     /// Spoken paths and commands written as code; nil when it is off.
     public var coder: SpokenCodeFormatter?
     /// Apple Intelligence's fix; nil when it is off or cannot be used.
     public var fixer: TranscriptFixer?
 
-    public init(language: String, removeFillers: Bool, corrections: CorrectionList, fixer: TranscriptFixer? = nil,
-                coder: SpokenCodeFormatter? = nil) {
+    public init(language: String, removeFillers: Bool, corrections: CorrectionList, wordList: [String] = [],
+                fixer: TranscriptFixer? = nil, coder: SpokenCodeFormatter? = nil) {
         self.language = language
         self.removeFillers = removeFillers
         self.corrections = corrections
+        self.wordList = wordList
         self.fixer = fixer
         self.coder = coder
+    }
+
+    /// The recognizer's contextual strings, as live dictation gives them: the word list, then the words of learned
+    /// corrections (`RecognizerVocabulary.dictation`).
+    public var vocabulary: [String] {
+        RecognizerVocabulary.dictation(wordList: wordList, corrections: corrections, language: language)
     }
 
     /// One chunk through spoken code, then Apple Intelligence's fix, as live dictation runs them.

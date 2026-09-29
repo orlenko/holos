@@ -353,8 +353,45 @@ Corrections are applied, whole-word and case-insensitively, to the preview and t
 every streamed and final chunk. While streaming, trailing words that could start a
 multi-word phrase are held back until the next words arrive. The distinctive words
 of the corrected phrases (no function words, once each ignoring case) are also passed
-to the recognizer as contextual strings, which is best effort.
+to the recognizer as contextual strings, after the word list's terms, which is best effort.
 Learning does not change text already inserted into other apps.
+
+## Word list
+
+Not run yet. The Corrections section's **Word list** card holds terms the recognizer
+should expect (names, products, jargon); `voiceislocal words` edits the same list
+(`~/Library/Application Support/Holos/words.json`).
+
+1. **Baseline**: with an empty list, dictate into TextEdit a sentence with each term
+   below, a few times, and note how each is written ("We moved the Keycloak realm to
+   AtmoSys", "The Husky bus crossed the Geofence", "Ask Davin about the Urban Sky ops
+   review", "Volpe lite ships on Apex", "Fab is down").
+2. **Add in Terminal**: `voiceislocal words add "Volpe lite" "Husky bus" Davin Geofence
+   Apex "Urban Sky" ops AtmoSys Fab Keycloak` prints "Added: …" and "The word list has 10
+   terms." Run it again: each is "Already in the word list" on stderr, and the count
+   stays 10. `ls -l` shows `words.json` as `-rw-------`.
+3. **The app picks it up**: without relaunching, open Corrections: the card lists the ten
+   terms in that order with "10 terms". Dictate the sentences of step 1 again: the terms
+   should come out as written more often (record which improved; it is best effort).
+4. **The card**: type "keycloak" in the add field and press Return: "Already listed:
+   Keycloak." Paste three lines ("Jira", blank, "Confluence") into the field and press
+   Return: two terms added. Type "sky" in the search field: "1 of 12 terms" and only Urban
+   Sky. Clear the search, select Jira and Confluence (⌘-click) and press ⌫: both removed.
+   ⌘F from the section focuses the search field. The section scrolls when the window is
+   at its smallest height.
+5. **Terminal and app together**: with the section open, `voiceislocal words remove Fab`
+   in Terminal; switch back to the window: Fab is gone. Add a term in the card, then
+   `voiceislocal words list` prints it.
+6. **Apple Intelligence**: with the fix on, a non-word the recognizer writes for a term
+   (for example "keycloack") may become the term in lowercase; "key cloak" stays two words
+   and "Daven" (a capitalized name) stays as written: teach a correction for those.
+7. **Meetings**: start a meeting: its `vocabulary.json` (in the session folder) starts
+   with the word list's terms, then people's names. Remove a term and run `voiceislocal
+   session recover <id> --force`: the replay uses the saved vocabulary; with
+   `--current-vocabulary` it uses today's list.
+8. **A damaged file**: put `{` in `words.json` and open Corrections: the card says it could
+   not read words.json and the list is off; adding a term there says it could not be saved,
+   and the file still holds `{`. Remove the file: the card shows an empty list.
 
 Insertion decisions (target kind, chunk lengths, outcomes, and why streaming
 stopped) are logged without transcript text:
