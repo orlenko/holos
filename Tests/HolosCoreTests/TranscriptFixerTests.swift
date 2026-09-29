@@ -385,6 +385,12 @@ let unrelatedWords = [
     let chain = [Correction(heard: "foo", meant: "bar"), Correction(heard: "bar baz", meant: "baz bar")]
     #expect(AIFixGuard.check(original: "say bar baz now", fixed: "say baz bar now", protecting: chain, taught: chain)
             != .accept)
+    let same = [Correction(heard: "foo", meant: "bar"), Correction(heard: "fuud bar", meant: "food bar")]
+    #expect(AIFixGuard.check(original: "say fuud bar now", fixed: "say food bar now", protecting: same, taught: same)
+            == .accept)
+    let front = [Correction(heard: "foo", meant: "bar"), Correction(heard: "bar baz", meant: "qux bar")]
+    #expect(AIFixGuard.check(original: "say bar baz now", fixed: "say qux bar now", protecting: front, taught: front)
+            != .accept)
     // The pair's words and marks come together, from one application: "food requests -> pool. Requests" does not
     // let the reply take the period and fix "fuud" to "food" by itself.
     let period = Correction(heard: "food requests", meant: "pool. Requests")

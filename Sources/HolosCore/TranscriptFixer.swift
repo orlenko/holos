@@ -392,7 +392,27 @@ public enum AIFixGuard {
             guard span.contains(where: { chunk.frozen[$0] == .protected }) else { return true }
             let placeWords = span.map { chunk.words[$0] }
             let shared = Set(placeWords).intersection(meant.words)
-            return placeWords.filter(shared.contains) == meant.words.filter(shared.contains)
+            guard placeWords.filter(shared.contains) == meant.words.filter(shared.contains) else { return false }
+            // And its offset: it stays at the same place in the pair ("fuud QC -> food QC"), or earlier only by
+            // dropping words before it ("slash QC -> /qc"); nothing is put in front of it ("bar baz -> qux bar").
+            var used = 0
+            for (offset, word) in placeWords.enumerated() where chunk.frozen[span.lowerBound + offset] == .protected {
+                guard let at = meant.words[used...].firstIndex(of: word) else { return false }
+                if at > offset
+                    || (at < offset && !isSubsequence(Array(meant.words[..<at]), of: Array(placeWords[..<offset]))) {
+                    return false
+                }
+                used = at + 1
+            }
+            return true
+        }
+        func isSubsequence(_ small: [String], of large: [String]) -> Bool {
+            var rest = large[...]
+            for word in small {
+                guard let at = rest.firstIndex(of: word) else { return false }
+                rest = rest[(at + 1)...]
+            }
+            return true
         }
         var places: [Place] = []
         let finder = AIFixReference.Finder(text, language: language, lexicon: lexicon)
