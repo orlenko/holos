@@ -136,6 +136,66 @@ recording), then:
     the app or `voiceislocal` in Terminal), Delete Meeting… is disabled and ⌫ on it only
     beeps, with no confirmation.
 
+## Reading section
+
+None of these checks has been run yet. Rebuild and relaunch with
+`./scripts/restart-app.sh` (only when no meeting is recording), open the main window,
+and press ⌘5. Keep a short PDF, a .docx, a .md, and a folder at hand, and have at least
+one Premium voice installed (System Settings › Accessibility › Spoken Content › System
+Voice › Manage Voices).
+
+1. **Layout**: the New reading card (field with its placeholder, Choose File…, Voice,
+   ▶ Preview, Speed with 1.0×, Make Audio) over "Readings" and its empty text, and a
+   footer naming `~/Music/Voice is Local/Readings`. Make Audio is off while the field is
+   empty. Check light and dark mode and a narrow window (900 pt).
+2. **Voices**: the Voice pop-up starts with Automatic, then the voices of your languages
+   (Premium first, marked "(Premium)"), a separator, then the others; no novelty voices
+   (Bubbles, Zarvox). ▶ Preview speaks one sentence in the chosen voice's language at the
+   chosen speed and turns into ■ Stop; pressing it again stops at once; moving the Speed
+   slider while it speaks restarts it at the new speed. 0.8× and 1.4× should sound
+   clearly slower and faster than 1.0× without sounding broken (the mapping is an estimate:
+   note if 1.4× is far off).
+3. **A link**: copy an article's `https://` address, click in the list, press ⌘V: the
+   address fills the field. Press Return: the row appears at the top with the site
+   ("nytimes.com"), "Loading the page…", then "Rendering part N of M" with the bar moving,
+   then "Joining…", then length · chapters · size · voice. The file is in
+   `~/Music/Voice is Local/Readings/<Title>.m4a`. `http://…` and "just words" are refused
+   under the card with a hint.
+4. **Files**: drop a PDF onto the list area (the section shows a dashed outline while it is
+   over it): the field shows its path; Make Audio. Drop the .docx, the .md, and the folder
+   together: the two documents are added at once and the folder is named as unreadable.
+   Choose File… with several files does the same. A second reading of the same title is
+   named "<Title> 2.m4a".
+5. **Queue and Stop**: add three readings quickly: only the first renders, the others say
+   "Waiting". Stop on a waiting one: it becomes "Stopped." with Resume. Stop on the running
+   one: it becomes "Stopped at part N of M." and the next starts. Resume: it continues from
+   part N, not from the start (watch the part numbers).
+6. **Play and keys**: ▶ Play plays in the app, the button turns ❚❚ Pause and the position
+   counts up; Space on the selected row pauses and continues; ↑↓ move between rows; playing
+   another row stops the first. Closing the window stops playback.
+7. **Share and Finder**: Share… (and ⇧⌘S on the selected row) shows AirDrop, Messages,
+   Mail…; send one to an iPhone and play it there (Files or Books), with its chapters.
+   Show in Finder selects the file.
+8. **Missing file and Delete**: move a made file away in Finder and come back: its row
+   says the file is no longer there and offers only Delete…. ⌫ on a row asks first; Delete
+   moves a made file to the Trash, and `ls ~/Library/Application\ Support/Holos/Readings`
+   no longer has its `Output-…` folder. With a USB drive chosen as the output folder in
+   Settings › Reading, make a reading, then eject the drive: its row says "Unavailable —
+   the drive or share “<name>” is not connected"; Delete says so and keeps the row. Plug the
+   drive back in and come back to the window: the row plays again, and Delete moves the file to the Trash.
+9. **Failures**: a page behind a sign-in fails with the reason and Try Again; turn Wi-Fi
+   off and try a link: it fails, then Try Again after Wi-Fi is back makes it.
+10. **Relaunch and quit**: quit with nothing rendering: no question. Start a long reading
+    and quit (⌘Q): the question offers Keep Rendering, Stop, Cancel. Keep Rendering: after
+    reopening, the reading continues by itself from where it stopped. Stop: after
+    reopening, its row says Stopped with Resume. Made readings are still listed after a
+    relaunch.
+11. **Settings › Reading**: change the default voice and speed: the Reading card follows.
+    Choose… another output folder: the next reading goes there, earlier ones keep playing
+    from where they are. The folder shows abbreviated with "~".
+12. **Privacy**: with Little Snitch or `nettop`, a reading of a local file makes no network
+    connection; a link fetches only that page (and what it loads).
+
 ## Dictation audio and Run Again
 
 Not run yet. With History on (30 days) and Settings › History and privacy › **Keep the

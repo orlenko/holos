@@ -144,8 +144,8 @@ Meeting can also forget the voice samples learned from that meeting. See the
 | Corrections | ⌘2 | Fix a dictation and learn the word swaps, and edit the learned list (was the Corrections window). **Correct Last Dictation…** in the menu opens it with the last dictation, History's Correct… with the chosen one. |
 | Meetings | ⌘3 | The saved meetings (was the Meetings window). Return opens Review, ⌫ is Delete Meeting…. |
 | People | ⌘4 | People you have named and their voice samples (was the People window). |
-| Reading | ⌘5 | Coming soon; use `voiceislocal read` meanwhile. |
-| Settings | ⌘, | Permissions, Dictation (on/off, shortcut, language, speech model, fillers, Apple Intelligence fix, preview), Meetings (system audio, speaker labels), History and privacy (how long, Clear History…, keep the audio and its disk use), and **Run Setup Assistant…** (was the Setup window). |
+| Reading | ⌘5 | Articles and documents made into one audio file each (see below). |
+| Settings | ⌘, | Permissions, Dictation (on/off, shortcut, language, speech model, fillers, Apple Intelligence fix, preview), Meetings (system audio, speaker labels), Reading (default voice, speed, output folder), History and privacy (how long, Clear History…, keep the audio and its disk use), and **Run Setup Assistant…** (was the Setup window). |
 
 A card at the bottom of the sidebar shows the dictation status ("Dictation ready", or
 "Dictation paused during meeting recording"). The window remembers its size and place;
@@ -158,6 +158,33 @@ The menu bar menu is short: the status line, the dictation toggle, Copy Result /
 Original / Discard Result while a result is kept, Correct Last Dictation…, the meeting
 lines, then Open Voice is Local, History, Meetings, Settings…, About, and Quit. The
 dictation language and shortcut are chosen in Settings.
+
+### Reading
+
+**Reading** (⌘5) turns a web article or a document into one `.m4a` you can play here or
+send to your phone, the same file `voiceislocal read` makes (AAC, mono, about 14 MB per
+hour, title and author tags, a chapter at each heading). Paste an `https://` link into the
+**New reading** field (⌘V also works with the list focused), or drop a PDF, Word, HTML,
+Markdown, RTF, OpenDocument or text file anywhere on the section, or use **Choose File…**
+(several files at once are all added). Pick a voice (Automatic is the best installed voice
+for the text's language; Premium voices are marked), hear it with **▶ Preview** (press again
+to stop), set **Speed** (0.8×–1.4×), and press **Make Audio** (Return).
+
+Readings are made one at a time, in this process; the list shows each one's title and
+source, then "Rendering part N of M" with a progress bar and **Stop**, or, once made, its
+length, chapters, size and voice with **▶ Play** (Space; shows the position), **Share…**
+(⇧⌘S: AirDrop, Messages, Mail…), **Show in Finder**, and **Delete…** (⌫, asks first; the
+file goes to the Trash). A stopped or failed reading keeps what it rendered and offers
+**Resume** or **Try Again**. The list survives relaunching (an index in Application
+Support/Holos/ReadingLibrary); a file moved or deleted in Finder shows as such. Quitting
+while a reading is made asks: **Keep Rendering** quits and continues it at the next launch,
+**Stop** stops it (Resume later).
+
+Files go to `~/Music/Voice is Local/Readings/<Title>.m4a` ("Title 2.m4a" when the name is
+taken), a folder Settings › Reading can change, along with the default voice and speed.
+It is not in Documents because iCloud Drive's "Desktop & Documents Folders" would upload
+it; nothing is uploaded, and the only network access is fetching the page you paste. The
+render cache stays in Application Support/Holos/Readings, as for `voiceislocal read`.
 
 **History** keeps each finished dictation that produced text: the text as written (or as
 offered for Copy), the text as heard, the app it was for, the language, what happened to

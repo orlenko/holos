@@ -147,7 +147,7 @@ The app's windows other than the transient ones are one main window, "Voice is L
 (`MainWindowController`, Sources/HolosApp/MainWindow): an `NSSplitViewController` with a
 native source-list sidebar and the selected section's content. Sections: Dictation ›
 History (⌘1), Corrections (⌘2); Meetings › Meetings (⌘3), People (⌘4); Listen › Reading
-(⌘5, a placeholder that points to `voiceislocal read`); Settings (⌘,). A status card at
+(⌘5, see "Reading section"); Settings (⌘,). A status card at
 the sidebar's bottom shows the dictation state and message ("Dictation paused during
 meeting recording" while a meeting records). The window is 1280 × 800 by default
 (900 × 560 at least), remembers its frame and sidebar width, and opens from the menu's
@@ -161,9 +161,9 @@ People's reread run while the section is on screen). Settings is the former Setu
 in cards: Permissions (Microphone, Accessibility, System audio, Input Monitoring only
 after macOS refused the hotkey tap), Dictation (on/off, hold-to-talk shortcut, language,
 speech model, fillers, Apple Intelligence fix, preview and its opacity), Meetings (record
-system audio, speaker labels, a link to People for remembered voices), History and
-privacy (Keep dictations, the count, Clear History…, Keep the audio of dictations and its
-disk use), and Run Setup Assistant…; it polls
+system audio, speaker labels, a link to People for remembered voices), Reading (default
+voice, speed, output folder), History and privacy (Keep dictations, the count, Clear
+History…, Keep the audio of dictations and its disk use), and Run Setup Assistant…; it polls
 the permissions every second while on screen. The Setup Assistant, the meeting start
 panel, the live transcript, Review (Name Speakers), and the dictation preview stay
 separate windows.
@@ -187,6 +187,198 @@ dictation toggle (and Cancel Dictation while one runs), Copy Result / Copy Origi
 Discard Result while a result is kept, Correct Last Dictation…, the meeting block, then
 Open Voice is Local, History, Meetings, Settings…, About, and Quit. The language and
 shortcut submenus moved to Settings.
+
+### Reading section
+
+Reading (⌘5, `ReadingPane`) makes the same file as `voiceislocal read` from inside the
+app. A **New reading** card holds one field ("Paste a link, or drop a PDF, Word, HTML,
+Markdown or text file here") with **Choose File…**, a row with the Voice pop-up and
+**▶ Preview**, and a row with the Speed slider and **Make Audio** (Return), so it fits
+the section's narrowest width. The field takes an `https://` link with any host (an intranet
+name or an IP address included; a bare "example.com/page", which must look like a site, gets
+`https://`; `http://` is refused with a hint, as in the CLI), a
+`file://` URL, or a path; files are the extensions `DocumentLoader` reads
+(`ReadingSourceParser`, HolosContent). Files and links dropped anywhere on the section, or
+pasted with ⌘V outside a field, go through the same parser: file URLs first, then web URLs,
+then each line of text; one source fills the field, several are all added at once, and the
+ones that cannot be read are named under the card.
+
+The Voice pop-up lists "Automatic — best voice for the text's language" and then the
+installed voices without the novelty ones (`ReadingVoiceMenu`, HolosSynthesis): those that
+speak one of the user's languages first, each group Premium, Enhanced, then default, then
+by the user's language order, language, and name; Premium and Enhanced are marked in the
+title. Automatic resolves once the text is loaded, as `voiceislocal read` does (the
+declared or detected language, `NativeSpeechRenderer.bestVoice`). Preview speaks a
+sentence in the voice's language (English for languages without one) with
+`AVSpeechSynthesizer.speak`; a second press stops it. Speed is 0.8×–1.4× in steps of 0.1
+(`ReadingSpeed`): 1× passes no rate (the renderer's default, as the CLI without
+`--rate`), 0.8× is rate 0.42 and 1.4× is 0.6, linear in between. `AVSpeechUtterance`'s
+rate scale is not documented as a multiplier, so these anchors are an estimate, not
+measured.
+
+Each reading is a `ReadingEntry` (source, title, requested and actual voice, speed, output
+path, render cache, state, progress, duration, chapters) in an index,
+`Application Support/Holos/ReadingLibrary/library.json` (0600, written atomically;
+`ReadingLibraryStore`). An index that cannot be decoded is renamed aside
+(`library.json.unreadable-<date>`) and a new list starts; one a newer build wrote (a higher
+schema version) is shown exactly as saved: nothing in it is continued, changed, or
+deleted, and its rows refuse Try Again, Resume, and Delete (`ReadingLibrary.launchPlan`).
+While the list cannot be saved (that case, or an index that could not be read) no new
+reading is made: it would leave the list at the next launch and keep its cache with no row
+to delete it from. An index not found in a folder that cannot be reached (a support folder,
+`HOLOS_SUPPORT_DIR`, on a drive or share that is not connected) is not an empty list: the list
+is unavailable, never written, and read again when the section shows or its window comes back
+(so is one that could not be read, an I/O error or a permission); nothing is written in its
+place. A save writes over only the index the store read or last wrote (by its file identity),
+checked and replaced under a lock across processes (`flock` on `.library.lock`; on a volume
+without `flock`, a reservation file made exclusively, `.library.reservation`, taken over when
+its process ended; saved texts and the launch's sweep take the same lock): one put there since
+(another disk mounted at that path, another copy of the app) is kept and the save fails. A
+support folder reached through a link counts where the link leads. A saved text is never replaced (an exclusive
+rename), and one not found in a folder that cannot be reached is not "none saved". Each
+reading keeps the output folder Settings › Reading named when it was added. The index
+is read at launch, and every save of it (and the removal of made readings' saved texts after
+it) runs off the main actor, one at a time in the order asked; a save a reading must wait for
+(Add, Delete's mark, the output chosen before rendering) is awaited, other saves wait while a
+Delete's mark is being saved (so none writes a mark whose own save failed), and the quit saves
+synchronously, waiting at most 10 s (a folder that does not answer is a failed save, which the
+quit says), leaving out an addition whose own save is not known yet. Every save is flushed
+(`fsync` of the file, then of its folder) before it counts, and a saved text is placed without
+ever replacing one (an exclusive rename, else `ExclusivePublisher`'s exclusive copy). A Delete
+whose support drive goes away meanwhile keeps the reading. An index larger than the 64 MiB `load` reads is not saved (the one there
+stays), and a save that adds a reading stops at 32 MiB, so a full list can still be changed
+and deleted from. A save a quit or crash cut off leaves a `.<name>.<UUID>.tmp`
+temporary: the launch removes the index's and the saved texts', and Delete removes its
+reading's. Document paths, typed or dropped, keep their spelling too; they are looked up off
+the main actor (a drag passing over is judged from what the pasteboard offers alone).
+The loaded document is saved beside it (`Documents/<id>.json`) before anything is
+rendered, and kept until the reading is made, so Resume and Try Again read the same text
+without fetching the page again; a document that cannot be saved, or a saved one that
+cannot be read back, fails the reading rather than loading the source again.
+
+`ReadingController` (HolosApp) runs the readings one at a time through
+`ReadingWorkQueue` (HolosContent): first come, first made; Stop takes a waiting one out at
+once and cancels a running one, which ends as stopped unless it finished anyway. The work
+loads the source (`DocumentLoader`, or `WebArticleExtractor`'s offscreen web view on the
+main thread), fixes the voice, picks the output (`<folder>/<Title>.m4a`, "Title 2.m4a"…
+when the name is on disk or taken by another reading in the list; `ReadingLibrary.outputURL`),
+and renders with `ReadingPipeline` in this process into the pipeline's cache in
+`Application Support/Holos/Readings/Output-<hash>` (the explicit-output cache of
+`voiceislocal read -o`), resuming it when it exists. The chosen output and cache are saved
+in the index before rendering starts; a save that fails stops the reading. The pipeline reports progress
+(`ReadingRenderProgress`: each part as it starts, then the join) to the row. The pipeline is
+main-actor isolated, so it runs as a task on the main actor: speech synthesis and AAC
+encoding happen on AVFoundation's threads, and a document file is loaded and every part and
+finished file is hashed on a detached task (`DocumentLoader` uses none of AppKit's
+main-thread-only HTML importer), so the window stays responsive; a web page is extracted on
+the main thread, which `WKWebView` requires. The output and cache are chosen off the main
+actor too (`ReadingLibrary.location`); the render's start (locations checked, lock and
+reservation taken, cache made or its manifest read: `ReadingPipeline.prepare`), its manifest
+saves, and its part-file moves run there; and the finished file is published there (on a volume
+without an exclusive rename, the copy into place is written and flushed there, its identity
+saved in the manifest first; a copy whose removal cannot be confirmed, because the place it is
+moved aside to is taken or its drive went away, keeps that identity) and the part files
+removed. What is left on the main actor is releasing the lock and the reservation and removing
+the run's joined file when it ends. A Stop reaches every checksum
+between its 1 MiB chunks, and a resume stopped while it checks a finished file ends stopped,
+never made. Delete's checks and removals run on a detached
+task too, while the entry stays saved marked for deletion (hidden). A new reading is queued
+only once the index saving it succeeds, and its output is recorded as the path the pipeline
+writes (links in the folder resolved); a manifest that names the file through another path
+still counts when both name the same file (`ReadingPathIdentity`). A new name is compared with
+the other readings' outputs through their folders' links resolved, and a name whose render
+cache another reading holds (the same text and settings reach the same cache through the
+same file) is never used, so two readings never share, or delete, one file.
+
+Rows show the title and the source (the site without "www.", or the file's name), then:
+waiting (Stop); loading or "Rendering part N of M" with a bar (Stop); joining; made
+(length · chapters · size · voice, and the speed when not 1×) with **▶ Play** (an
+`AVAudioPlayer` in the app, Space or double-click, one reading at a time, position shown;
+stopped when the window closes), **Share…** (`NSSharingServicePicker`, ⇧⌘S), **Show in
+Finder**, **Delete…**; failed (the error, **Try Again**); stopped (where, **Resume**). A
+made reading whose file is no longer there, or was replaced by another file (its file
+identity, saved when it was made, differs), says so and offers only Delete; Play, Share…,
+and Show in Finder use only that same file (Play reads the file opened and checked, through /dev/fd; Share… hands over a clone or copy made from it). A file's identity is its
+volume's UUID where it has one (else its device number), its file ID, and its creation time:
+a file whose identity is not the recorded one (a share mounted again gets a new device
+number), or one made where its identity could not be read, is read once, off the main actor,
+and when its checksum is the reading's its identity is recorded anew; meanwhile the row says
+"Checking its file…". Rows show only what the last check of the files found
+(`ReadingController.refreshFiles`, `ReadingLibrary.fileStatus`, off the main actor, at
+launch, after a reading is made, and when the section shows or its window comes back):
+nothing is looked up while a row is drawn or the player's position ticks, and Play and
+Share… open the file off the main actor; a FIFO or device put at a reading's path (or at its
+index, saved text, manifest, or a document to read) is refused at once, never waited on.
+Playback that fails (a file that cannot be decoded, or that does not continue after a pause)
+says so; a Play whose file opens slowly is dropped when another Play, a Pause, or a Stop comes
+first. A file whose checksum cannot be read, or that changed while it was read, is shown
+unavailable and read again at the next check (a file is read once per version: its identity,
+size, and last change). One whose folder cannot be reached says
+"Unavailable — the drive or share “<name>” is not connected" (`ReadingOutput.unreachableReason`:
+a path in `/Volumes/<name>` with no volume mounted there, an empty leftover mount folder
+included, or an automounted share not mounted), and Delete keeps its row, cache, and saved
+text until the drive is back and the file can be looked for: not found is "gone" only where
+its folder can be reached. A drop of things that cannot be read is taken
+so its reason shows under the card. Delete (⌫, with a
+confirmation) first saves the entry marked for deletion (`deletePending`, hidden from the
+list), stops it if it is being made, then moves the reading's finished file to the Trash
+(only when its SHA-256 matches the one saved at completion or in the cache's manifest: a
+file put at that path since, or the file edited in place, is left alone, and Delete says so; the file is first moved into a private
+`.holos-delete-<UUID>` folder beside it under its own name and checked there, so the file
+trashed is the file checked, and one that no longer matches goes back;
+`ReadingLibrary.trashVerified`), removes a copy a crash cut off (the manifest's
+`publishing` identity, never for a made reading, whose copy was finished: its file edited in
+place keeps that identity; nor for a file with that identity as large as the finished file,
+whose size the manifest saves with its checksum (`outputSize`): a crash after the copy was
+done, then an edit; a Delete moves a partly written file to the Trash too, in case it was
+that file shortened; `ReadingLibrary.ownership`) the same way (moved into a private
+`.holos-delete-…` folder, its identity checked there, then removed; every removal that
+depends on which file is at a path, the pipeline's and `ExclusivePublisher`'s included,
+goes through `ExclusivePublisher.removeVerified`; a file goes back only by an exclusive rename
+or a hard link, never over a file put there meanwhile, and one that cannot go back stays
+aside, its place saved with the entry, `outputAside`, for the next Delete; a reading's
+Delete moves its file to `.holos-delete-<entry ID>`, so one a quit or crash cut off after
+the move finds it there next time; a render removes its own partly written file through
+`.holos-delete-<cache key>.publish`, and keeps that file's identity in the manifest until the
+removal is confirmed, so the next resume or Delete finishes one a crash cut off (a joined
+file's copy goes through `.holos-delete-<join name>`, which the same sweeps find); Delete also
+removes the joined files a cut-off render left beside the output, and keeps the reading while
+that folder cannot be reached and its render got to joining; all of it holds the cache's render lock, so a
+`voiceislocal read --resume` of the same cache keeps the reading until it ends), removes the render cache only when it is
+an `Output-<16 hex>` folder directly in the Readings cache folder, and removes the saved
+text; only then does the entry leave the index. A made reading is saved as made before its
+saved text is removed. A file that cannot be
+removed brings the row back with the reason, to delete again; a quit or crash in between is
+finished at the next launch.
+
+Files go to `~/Music/Voice is Local/Readings` unless Settings › Reading names another
+folder: a folder the user sees in Finder, outside Documents and Desktop, which iCloud
+Drive's "Desktop & Documents Folders" would upload. The default folder is created when
+missing; a chosen one is not (its disk may be disconnected, and creating the path would
+write to the startup disk), so the reading fails asking to connect it or choose another.
+Documents dropped or chosen are the files `DocumentLoader` reads, RTFD packages included.
+Nothing is uploaded; the only network access is loading the page the user pasted.
+
+Quitting while a reading is made or waits asks: **Keep Rendering** (quit now; the index
+marks those readings, and the next launch queues them again, the one being made first),
+**Stop** (they are saved as stopped, with Resume), or Cancel; while the index cannot be
+saved (unreadable, a newer build's, or its last save failed) only Stop and Cancel are
+offered, and a Keep Rendering whose save fails cancels the quit (the readings go on) and says so. A
+Stop whose save fails cancels the quit (the saved list may still ask the next launch to
+continue the reading) and says why; with nothing rendering, a quit first saves again a list
+whose last save failed, and asks Quit Anyway or Cancel when it still cannot. The saved text
+of a made reading is removed after each save that works (and at launch), so one kept by a
+failed save or removal goes later. The output folder and each file's path are kept spelled
+as chosen (`ReadingOutput.fileURL(keepingSpelling:)`), so an NFC name on a share that keeps
+NFC and NFD apart is the folder the user picked. Playback stops when the playing reading's
+file is moved, deleted, or replaced. A deletion waiting
+for a render the quit stopped finishes once that render ends if the quit is cancelled
+(`ReadingWorkQueue.onAbandonedEnd`). The render in progress is
+cancelled either way; the pipeline's next run removes what that leaves. A reading found
+waiting or being made at launch without that mark (the app crashed or was killed) shows as
+stopped, with Resume. When the quit is cancelled after that question, at once (a meeting's
+question answered Cancel) or later (a meeting that could not be stopped,
+`waitBeforeQuitting`), the kept readings continue at once (`quitCancelled`).
 
 ### Dictation history
 

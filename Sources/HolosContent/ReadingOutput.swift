@@ -121,6 +121,17 @@ public enum ReadingOutput {
         return name.isEmpty ? nil : name.precomposedStringWithCanonicalMapping
     }
 
+    /// `path` as a file URL whose path keeps its bytes as given (see `RawFilePath`): for paths the app saves and reads
+    /// back (the output folder, a reading's file), so a name in NFC stays NFC on volumes that tell the spellings apart.
+    public static func fileURL(keepingSpelling path: String, isDirectory: Bool = false) -> URL {
+        RawFilePath.url(path, isDirectory: isDirectory)
+    }
+
+    /// `name` inside `folder`, both spelled as given (see `RawFilePath`).
+    public static func fileURL(_ name: String, keepingSpellingIn folder: URL) -> URL {
+        RawFilePath.appending(name, to: folder)
+    }
+
     /// Resolves `--output`:
     /// - nil: a new `<readings>/<UUID>/` holding both the cache and `<name>`;
     /// - a directory holding a reading's manifest (a reading made without `--output`): that
@@ -235,6 +246,92 @@ public enum ReadingOutput {
         return false
     }
 
+    /// Where external drives and shares are mounted; tests use another folder.
+    @TaskLocal static var volumesFolder = "/Volumes"
+
+    /// Why the folder that should hold `url` cannot be reached right now, or nil when it can (or is gone from a volume
+    /// that is connected). A file that is not found is not necessarily gone: on a drive or share that is not
+    /// connected, its path simply does not exist until the volume is mounted again. So, for a path in
+    /// `/Volumes/<name>`, a volume must be mounted there (see `isMountPoint`; an empty folder left behind by an
+    /// unclean unmount is not one); a path whose nearest existing folder is on an
+    /// automounted network location (`autofs`) waits for its share; and a folder that exists but cannot be looked
+    /// into (permissions, an I/O error, a stale network handle) cannot be reached either.
+    /// A folder reached through a link counts where the link leads: a support or output folder linked into
+    /// `/Volumes/<name>` is out of reach while that drive is not connected (the link then leads nowhere).
+    public static func unreachableReason(for url: URL) -> String? {
+        unreachableReason(folder: url.deletingLastPathComponent().path, links: 0)
+    }
+
+    /// `unreachableReason` for `folder`; `links` counts the links followed to get there (at most 8).
+    private static func unreachableReason(folder: String, links: Int) -> String? {
+        if let reason = disconnectedVolume(folder) { return reason }
+        // The nearest folder that exists, and whether the one holding the file can be looked into.
+        var probe = folder
+        var below: [String] = []
+        while true {
+            var metadata = stat()
+            if stat(RawFilePath.system(probe), &metadata) == 0 { break }
+            let error = errno
+            guard error == ENOENT || error == ENOTDIR else {
+                return "\((probe as NSString).abbreviatingWithTildeInPath) cannot be reached (\(String(cString: strerror(error))))"
+            }
+            // A link on the way that leads nowhere: where it leads decides.
+            if links < 8, let target = linkTarget(probe) {
+                let parent = (probe as NSString).deletingLastPathComponent
+                let led = target.hasPrefix("/") ? target : (parent == "/" ? "/" : parent + "/") + target
+                return unreachableReason(folder: ([led] + below.reversed()).joined(separator: "/"), links: links + 1)
+            }
+            guard probe != "/", !probe.isEmpty else { return nil }
+            below.append((probe as NSString).lastPathComponent)
+            probe = (probe as NSString).deletingLastPathComponent
+        }
+        // The nearest folder that exists, reached through links: where they lead decides too.
+        if let resolved = realPath(probe), resolved != probe,
+           let reason = disconnectedVolume(([resolved] + below.reversed()).joined(separator: "/")) {
+            return reason
+        }
+        if probe != folder, ReadingPathIdentity.fileSystemType(RawFilePath.system(probe)) == "autofs" {
+            return "the network share that holds \((folder as NSString).abbreviatingWithTildeInPath) is not connected"
+        }
+        return nil
+    }
+
+    /// Why `path` is out of reach when it is in `/Volumes/<name>` and no volume is mounted there; nil otherwise.
+    private static func disconnectedVolume(_ path: String) -> String? {
+        let volumes = volumesFolder.hasSuffix("/") ? String(volumesFolder.dropLast()) : volumesFolder
+        guard path.hasPrefix(volumes + "/") else { return nil }
+        let name = path.dropFirst(volumes.count + 1).split(separator: "/", maxSplits: 1).first.map(String.init) ?? ""
+        guard !name.isEmpty, !isMountPoint(volumes + "/" + name) else { return nil }
+        return "the drive or share “\(name)” is not connected"
+    }
+
+    /// Where the link at `path` leads, or nil when `path` is not a link.
+    private static func linkTarget(_ path: String) -> String? {
+        var buffer = [CChar](repeating: 0, count: Int(PATH_MAX) + 1)
+        let count = readlink(RawFilePath.system(path), &buffer, buffer.count - 1)
+        guard count > 0 else { return nil }
+        return String(decoding: buffer.prefix(count).map { UInt8(bitPattern: $0) }, as: UTF8.self)
+    }
+
+    private static func realPath(_ path: String) -> String? {
+        guard let resolved = realpath(RawFilePath.system(path), nil) else { return nil }
+        defer { free(resolved) }
+        return String(cString: resolved)
+    }
+
+    /// Whether a volume is mounted at `path` (links followed: "/Volumes/Macintosh HD" is a link to "/"): the volume
+    /// holding it is mounted on that very folder. An empty folder of the startup disk is not.
+    static func isMountPoint(_ path: String) -> Bool {
+        guard let resolved = realpath(RawFilePath.system(path), nil) else { return false }
+        defer { free(resolved) }
+        var info = statfs()
+        guard statfs(resolved, &info) == 0 else { return false }
+        let mountedOn = withUnsafeBytes(of: &info.f_mntonname) { bytes in
+            String(decoding: bytes.prefix { $0 != 0 }, as: UTF8.self)
+        }
+        return mountedOn == String(cString: resolved)
+    }
+
     /// The longest temporary name written beside the output while it is joined: the join file's
     /// and `AudioBookWriter`'s temporary for it (see `ReadingPipeline`).
     static let temporaryNameLength = AudioBookWriter.temporaryName(
@@ -244,9 +341,10 @@ public enum ReadingOutput {
     static func probeName() -> String { ".holos-probe-\(UUID().uuidString)" }
 
     /// The longest name other than the output's written in the output's folder: the join
-    /// temporaries, the reservation and its guard (see `ReadingOutputReservation`), and the probe.
+    /// temporaries, the reservation and its guard (see `ReadingOutputReservation`), the probe, and the name a
+    /// partly written file is moved aside to before it is removed (see `ExclusivePublisher.removeVerified`).
     static let outputFolderNameLength = max(temporaryNameLength, ReadingOutputReservation.longestNameLength,
-                                            probeName().utf8.count)
+                                            probeName().utf8.count, ExclusivePublisher.removalNameLength)
 
     /// The longest name written in the folder that holds reading caches: a cache's lock and its
     /// staging folder (see `ReadingDirectoryLock`, `ReadingCache`) and the probe. A reading
@@ -274,7 +372,13 @@ public enum ReadingOutput {
 
     static func checkPathLength(_ output: URL) throws {
         let folder = output.deletingLastPathComponent().path
-        let longest = max(output.lastPathComponent.utf8.count, outputFolderNameLength)
+        let name = output.lastPathComponent.utf8.count
+        // A file removed goes through a folder beside it first (`ExclusivePublisher.removeVerified`): the output
+        // (a reading's Delete, a partly written copy) and a joined file (see `AudioBookWriter.cleanupToken`).
+        let join = ReadingTemporaries.joinName(key: String(repeating: "0", count: 16), run: UUID()).utf8.count
+        let nested = max(ExclusivePublisher.removalNameLength + 1 + name,
+                         ExclusivePublisher.removalPrefix.utf8.count + join + 1 + join)
+        let longest = max(name, outputFolderNameLength, nested)
         // The path plus "/" and the name, and a terminating NUL, within PATH_MAX bytes.
         guard folder.utf8.count + 1 + longest < Int(PATH_MAX) else {
             throw HolosError.invalidInput("Output path is too long (the limit is \(PATH_MAX - 1) bytes): \(output.path)")
@@ -427,7 +531,14 @@ enum RawFilePath {
         guard let stream = opendir(system(folder)) else { return nil }
         defer { closedir(stream) }
         var names: [String] = []
-        while let entry = readdir(stream) {
+        while true {
+            // `readdir` ends with nil both at the end and on an error, which only `errno` tells apart: a listing cut
+            // short by an error is not the folder's names.
+            errno = 0
+            guard let entry = readdir(stream) else {
+                if errno != 0 { return nil }
+                break
+            }
             let length = Int(entry.pointee.d_namlen)
             let name = withUnsafeBytes(of: &entry.pointee.d_name) { bytes in
                 String(validating: bytes.prefix(length), as: UTF8.self)

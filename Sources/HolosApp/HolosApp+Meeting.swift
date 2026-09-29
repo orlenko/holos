@@ -1232,6 +1232,7 @@ extension HolosAppDelegate: NSMenuDelegate {
             NSApplication.shared.reply(toApplicationShouldTerminate: !undelivered)
             if undelivered, let self {
                 self.reopenAfterQuit = false  // the quit was cancelled: a later quit must not reopen
+                self.readings.quitCancelled()  // readings kept for the next launch continue now
                 let reason = self.meeting.notice.map { "\n\n\($0)" } ?? ""
                 self.showMeetingAlert(
                     "Voice is Local could not stop the recording.",

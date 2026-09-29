@@ -117,6 +117,8 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
     var mainWindow: MainWindowController?
     /// The dictation history (HolosApp+History.swift).
     let history = DictationHistoryService()
+    /// The Reading list and the readings being made (HolosApp+Reading.swift).
+    let readings = ReadingController()
     /// The dictation in progress, for its History record; nil when there is none or it was refused.
     private var historyDraft: HistoryDraft?
     /// What happened to this dictation's text, for its History record.
@@ -214,6 +216,8 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
         history.onChange = { [weak self] in self?.historyChanged() }
         history.onFailure = { [weak self] problem in self?.showHistoryProblem(problem) }
         history.start()
+        // Readings the user kept rendering over the last quit continue.
+        readings.start()
         PeopleLaunch.resumePendingForgetsOnce()
         Task { await loadLanguages() }
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
@@ -257,8 +261,17 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        // A reading being made asks first (Keep Rendering or Stop); a meeting's question can still cancel the quit.
+        // A quit the meeting cancels, now or later (`waitBeforeQuitting`), calls `readings.quitCancelled()`.
+        guard readingShouldTerminate() else {
+            reopenAfterQuit = false
+            return .terminateCancel
+        }
         let reply = meetingShouldTerminate()
-        if reply == .terminateCancel { reopenAfterQuit = false }
+        if reply == .terminateCancel {
+            reopenAfterQuit = false
+            readings.quitCancelled()
+        }
         return reply
     }
 

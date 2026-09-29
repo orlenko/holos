@@ -69,6 +69,9 @@ public struct ReadingManifest: Codable, Sendable, Equatable {
     /// volumes that cannot rename exclusively), saved before any byte is written: a copy cut off
     /// by a crash is recognized on `--resume` as this reading's own partial output.
     public var publishing: ReadingFileIdentity? = nil
+    /// The finished file's size, saved with its checksum: a copy that a crash cut off is smaller; a file with the
+    /// copy's identity that is as large is the finished file edited in place since, never removed as a partial one.
+    public var outputSize: Int64? = nil
 
     /// Manifests are small (under 1 KB per part); a larger `manifest.json` is not read.
     static let maximumBytes = 64 << 20
@@ -98,12 +101,25 @@ public struct ReadingManifest: Codable, Sendable, Equatable {
     }
 }
 
+/// How far a render has got, reported on the main actor as it goes (see `ReadingPipeline.render`).
+public enum ReadingRenderProgress: Sendable, Equatable {
+    /// Part `part` (counted from 1) of `of` is being rendered. Parts a resumed reading already
+    /// has are skipped, so the first report of a resume can be any part.
+    case rendering(part: Int, of: Int)
+    /// Every part is rendered; they are being joined into the finished file.
+    case joining(parts: Int)
+}
+
 public struct ReadingResult: Sendable, Equatable {
     public let output: URL
     public let manifest: ReadingManifest
     /// Bookkeeping that failed after the finished file was published (saving the final manifest,
     /// removing the part files): one sentence each, for stderr. The reading itself succeeded.
     public var warnings: [String] = []
+    /// The identity of the file this run published at `output` (or, when it had been published before, of the file
+    /// found there, read unchanged while its checksum was checked); nil when that could not be told. Not looked up
+    /// at `output` afterwards, where another file may have taken its place.
+    public var outputIdentity: ReadingFileIdentity? = nil
 }
 
 @MainActor public protocol ReadingAudioRenderer {
@@ -146,12 +162,12 @@ public struct AudioBookJoiner: ReadingAudioJoiner {
     private let exclusiveRename: ReadingPublisher.ExclusiveRename
     /// Called after each step of creating a new reading's cache; tests fail one to check that
     /// nothing is left behind.
-    private let initializationFault: (ReadingCache.Step) throws -> Void
+    private let initializationFault: @Sendable (ReadingCache.Step) throws -> Void
     /// Called before each manifest save of a render; tests fail one (a full or unwritable cache
     /// volume) to check how the reading copes.
-    private let saveFault: (ReadingManifest) throws -> Void
+    private let saveFault: @Sendable (ReadingManifest) throws -> Void
     /// Removes a cache's part files; tests fail it.
-    private let removeParts: (URL) throws -> Void
+    private let removeParts: @Sendable (URL) throws -> Void
 
     public convenience init(renderer: any ReadingAudioRenderer = NativeSpeechRenderer(),
                 joiner: any ReadingAudioJoiner = AudioBookJoiner()) {
@@ -160,9 +176,9 @@ public struct AudioBookJoiner: ReadingAudioJoiner {
 
     init(renderer: any ReadingAudioRenderer, joiner: any ReadingAudioJoiner,
          exclusiveRename: @escaping ReadingPublisher.ExclusiveRename = ReadingPublisher.systemExclusiveRename,
-         initializationFault: @escaping (ReadingCache.Step) throws -> Void = { _ in },
-         saveFault: @escaping (ReadingManifest) throws -> Void = { _ in },
-         removeParts: @escaping (URL) throws -> Void = ReadingPipeline.removeParts(in:)) {
+         initializationFault: @escaping @Sendable (ReadingCache.Step) throws -> Void = { _ in },
+         saveFault: @escaping @Sendable (ReadingManifest) throws -> Void = { _ in },
+         removeParts: @escaping @Sendable (URL) throws -> Void = { try ReadingPipeline.removeParts(in: $0) }) {
         self.renderer = renderer
         self.joiner = joiner
         self.exclusiveRename = exclusiveRename
@@ -213,7 +229,7 @@ public struct AudioBookJoiner: ReadingAudioJoiner {
     /// of `Identity`'s JSON, in lowercase hex. The key format is part of the manifest's schema
     /// version (so a cache keyed another way is never looked for: it is stale, like one whose
     /// settings changed).
-    public static func identity(script: ReadingScript, voiceIdentifier: String, rate: Float?,
+    nonisolated public static func identity(script: ReadingScript, voiceIdentifier: String, rate: Float?,
                                 metadata: AudioBookMetadata) -> String {
         let identity = Identity(
             kind: ReadingManifest.readingKind, schemaVersion: ReadingManifest.currentSchemaVersion,
@@ -230,14 +246,287 @@ public struct AudioBookJoiner: ReadingAudioJoiner {
     public func render(script: ReadingScript, voiceIdentifier: String, rate: Float? = nil,
                        metadata: AudioBookMetadata, location: ReadingLocation,
                        resume: Bool = false,
-                       maxPartUTF16Units: Int = defaultMaxPartUTF16Units) async throws -> ReadingResult {
+                       maxPartUTF16Units: Int = defaultMaxPartUTF16Units,
+                       progress: ((ReadingRenderProgress) -> Void)? = nil) async throws -> ReadingResult {
         let directory = location.workDirectory
         let output = location.output
         // Every setting is checked before anything (lock, cache, source, manifest) is created, so
         // a bad one never leaves a cache behind that cannot be resumed.
-        try validate(script: script, voiceIdentifier: voiceIdentifier, rate: rate, metadata: metadata,
-                     location: location, resume: resume)
-        let text = script.text
+        try validateSettings(script: script, voiceIdentifier: voiceIdentifier, rate: rate, metadata: metadata,
+                             location: location)
+        // Planned off the main actor: a book is split into hundreds of parts, each hashed.
+        let (planned, expected) = try await offMain { () -> ([ReadingScript.Part], [ReadingPart]) in
+            let planned = script.parts(maxUTF16Units: maxPartUTF16Units)
+            let expected = planned.map { part in
+                ReadingPart(index: part.index, sourceUTF16Offset: part.offset, sourceUTF16Length: part.length,
+                            textSHA256: sha256(Data(part.text.utf8)),
+                            relativeAudioPath: Self.partPath(part.index),
+                            chapter: part.chapter, startsSection: part.startsSegment, status: "pending")
+            }
+            return (planned, expected)
+        }
+        try Task.checkCancellation()
+        let manifestURL = directory.appendingPathComponent(ReadingManifest.fileName)
+        // This run's name for the joined file.
+        let run = UUID()
+        // The locations are checked, the lock and the reservation taken, and the cache made or its manifest read,
+        // off the main actor: the output folder may be on a slow share. The lock and the reservation are held until
+        // this render returns.
+        let (text, fault) = (script.text, initializationFault)
+        let prepared = try await offMain {
+            try Self.prepare(directory: directory, output: output, resume: resume, text: text, expected: expected,
+                             voiceIdentifier: voiceIdentifier, rate: rate, metadata: metadata, run: run, fault: fault)
+        }
+        // The joined file's name for this run: the joiner makes it, and it goes on every exit, cancellation (Ctrl-C in
+        // `voiceislocal read`) included. The name carries this run's UUID, so nothing but this run's joiner makes a
+        // file there.
+        let temporary = ReadingTemporaries.joinURL(beside: output, key: prepared.key, run: run)
+        do {
+            let result = try await renderPrepared(
+                prepared, planned: planned, voiceIdentifier: voiceIdentifier, rate: rate, metadata: metadata,
+                location: location, manifestURL: manifestURL, temporary: temporary, progress: progress)
+            await Self.release(prepared, temporary: temporary)
+            return result
+        } catch {
+            await Self.release(prepared, temporary: temporary)
+            throw error
+        }
+    }
+
+    /// The end of a render, off the main actor (the output folder may be on a slow share): this run's joined file
+    /// removed, and the output's reservation released (the cache's lock goes with `prepared`).
+    nonisolated private static func release(_ prepared: Prepared, temporary: URL) async {
+        _ = try? await offMain {
+            _ = unlink(RawFilePath.system(temporary))
+            prepared.held.1?.release()
+        }
+    }
+
+    /// The render once `prepare` has run: parts rendered (those a resume finds still good kept), joined into
+    /// `temporary`, and published at the output.
+    private func renderPrepared(_ prepared: Prepared, planned: [ReadingScript.Part], voiceIdentifier: String,
+                                rate: Float?, metadata: AudioBookMetadata, location: ReadingLocation,
+                                manifestURL: URL, temporary: URL,
+                                progress: ((ReadingRenderProgress) -> Void)?) async throws -> ReadingResult {
+        let directory = location.workDirectory
+        let output = location.output
+        try Task.checkCancellation()
+        var manifest = prepared.manifest
+        let key = prepared.key
+
+        // Finished before (possibly interrupted right after publishing): nothing to do. Checked off the main actor
+        // (the whole file is read), and a Stop meanwhile ends the run here rather than report it made.
+        if let published = manifest.outputSHA256 {
+            let found = try await offMain { () -> (matches: Bool, identity: ReadingFileIdentity?) in
+                // The file checked is the file at the output only when it is the same file before and after the
+                // check: one replaced or removed meanwhile (a sync client) is not taken for the reading made.
+                guard let before = ExclusivePublisher.FileIdentity.of(output),
+                      (try? fileSHA256(output)) == published,
+                      ExclusivePublisher.FileIdentity.of(output) == before else { return (false, nil) }
+                return (true, before)
+            }
+            try Task.checkCancellation()
+            if found.matches {
+                return try await finishOffMain(manifest, manifestURL: manifestURL, directory: directory,
+                                               output: output, identity: found.identity)
+            }
+        }
+        // A copy into the destination that a crash cut off is this reading's own file: it goes,
+        // and the reading is joined and published again. Anything else there is kept. Its removal goes through a
+        // place aside derived from the reading (`ReadingTemporaries.publicationToken`), where one a crash cut off is
+        // found first; the manifest keeps the copy's identity until both are gone.
+        let token = ReadingTemporaries.publicationToken(key: key)
+        let claimed = manifest.publishing
+        let evidence = ReadingLibrary.Evidence(checksums: [], publishing: claimed, finishedSize: manifest.outputSize)
+        let problem = try await offMain { () -> String? in
+            try ReadingTemporaries.recoverPublicationAside(output: output, key: key, evidence: evidence)
+            // The copy's file, as large as the finished one, is the finished file edited in place since (a crash came
+            // after the copy was done and before it was recorded): it is kept, and so is its identity.
+            if let claimed, try ReadingLibrary.FileVersion.of(output)?.identity == claimed, try !evidence.isPartial(output) {
+                throw HolosError.io("A file is at \(output.path) that may be this reading's, finished and changed "
+                    + "since; it is left there. Move it away or remove it, then try again.")
+            }
+            let problem = claimed.flatMap { ReadingLibrary.removePartial(output, identity: $0, token: token).problem }
+            // Nothing found proves nothing where the folder cannot be reached (its drive went away since the start).
+            try Self.checkReachable(output)
+            return problem
+        }
+        if let problem { throw HolosError.io(problem) }
+        if claimed != nil {
+            manifest.publishing = nil
+            try await saveManifest(manifest, to: manifestURL)
+        }
+        try Task.checkCancellation()
+        try await offMain {
+            guard try !ReadingOutput.exists(output) else {
+                throw HolosError.invalidInput("Reading output already exists and is not this reading: \(output.path)")
+            }
+            // The finished file's checksum is forgotten next: only while its folder can be looked into.
+            try Self.checkReachable(output)
+            try FileManager.default.createDirectory(at: directory.appendingPathComponent("parts"),
+                                                    withIntermediateDirectories: true)
+        }
+        manifest.status = "incomplete"
+        manifest.outputSHA256 = nil
+        manifest.outputSize = nil
+        manifest.duration = nil
+        manifest.chapters = []
+
+        // Only parts whose files still match their checksums are reused.
+        for index in manifest.parts.indices {
+            // Each check reads a part off the main actor; a Stop meanwhile ends the resume here.
+            try Task.checkCancellation()
+            let part = manifest.parts[index]
+            let audio = directory.appendingPathComponent(part.relativeAudioPath)
+            var valid = false
+            if part.status == "complete", let expected = part.audioSHA256 {
+                valid = (try? await fileSHA256OffMain(audio)) == expected
+                // A Stop during the check never marks the part for rendering again.
+                try Task.checkCancellation()
+            }
+            if !valid {
+                manifest.parts[index].status = "pending"
+                manifest.parts[index].audioSHA256 = nil
+                manifest.parts[index].duration = nil
+            }
+        }
+        try await saveManifest(manifest, to: manifestURL)
+
+        for part in planned {
+            try Task.checkCancellation()
+            if manifest.parts[part.index].status == "complete" { continue }
+            progress?(.rendering(part: part.index + 1, of: planned.count))
+            let audio = directory.appendingPathComponent(manifest.parts[part.index].relativeAudioPath)
+            try await offMain {
+                if FileManager.default.fileExists(atPath: audio.path) {
+                    let quarantined = audio.deletingLastPathComponent()
+                        .appendingPathComponent(".invalid-\(UUID().uuidString)-\(audio.lastPathComponent)")
+                    try FileManager.default.moveItem(at: audio, to: quarantined)
+                }
+            }
+            do {
+                let result = try await renderer.render(text: part.text, voiceIdentifier: voiceIdentifier,
+                                                       rate: rate, to: audio)
+                guard result.url.standardizedFileURL == audio.standardizedFileURL else {
+                    throw HolosError.io("Speech renderer returned an unexpected part path.")
+                }
+                manifest.parts[part.index].status = "complete"
+                manifest.parts[part.index].audioSHA256 = try await fileSHA256OffMain(result.url)
+                manifest.parts[part.index].duration = result.duration
+                try await saveManifest(manifest, to: manifestURL)
+            } catch {
+                manifest.status = "incomplete"
+                try? await saveManifest(manifest, to: manifestURL)
+                throw HolosError.incomplete("Reading stopped at part \(part.index + 1) of \(planned.count): \(error.localizedDescription)")
+            }
+        }
+
+        try Task.checkCancellation()
+        let audioParts = manifest.parts.map { part in
+            AudioBookPart(url: directory.appendingPathComponent(part.relativeAudioPath),
+                          silenceBefore: part.index == 0 ? 0
+                              : part.startsSection ? ReadingAudioFormat.chapterGap : ReadingAudioFormat.partGap,
+                          chapter: part.chapter)
+        }
+        let summary: AudioBookSummary
+        progress?(.joining(parts: planned.count))
+        do {
+            summary = try await joiner.join(parts: audioParts, metadata: metadata, to: temporary)
+        } catch {
+            try? await saveManifest(manifest, to: manifestURL)
+            throw HolosError.incomplete("Reading parts are rendered, but joining them failed: \(error.localizedDescription)")
+        }
+        try Task.checkCancellation()
+        manifest.outputSHA256 = try await fileSHA256OffMain(temporary)
+        manifest.outputSize = try await offMain { () -> Int64? in
+            var metadata = stat()
+            return lstat(RawFilePath.system(temporary), &metadata) == 0 ? Int64(metadata.st_size) : nil
+        }
+        manifest.duration = summary.duration
+        manifest.chapters = summary.chapters
+        try await saveManifest(manifest, to: manifestURL)
+        try Task.checkCancellation()
+        // Published off the main actor: on a volume that cannot rename exclusively the whole file is copied and
+        // flushed, which on a slow drive takes long enough to freeze the app. The manifest saves the copy's identity
+        // there, before any byte is written; a Stop reaches the copy between its chunks.
+        let (saveFault, rename) = (self.saveFault, exclusiveRename)
+        let claiming = manifest
+        let outcome = try await offMain { () -> Publication in
+            var saved = claiming
+            var claimedIdentity: ReadingFileIdentity?
+            // The file published: the joined file itself when it is renamed into place (a rename keeps its
+            // identity), or the copy made into place.
+            var published = ExclusivePublisher.FileIdentity.of(temporary)
+            do {
+                try ReadingPublisher.publish(temporary, to: output, exclusiveRename: rename, cleanupToken: token) { claimed in
+                    published = claimed
+                    claimedIdentity = claimed
+                    saved.publishing = claimed
+                    try saveFault(saved)
+                    try save(saved, to: manifestURL)
+                }
+            } catch let failure as ExclusivePublisher.CleanupFailed {
+                return .failed(failure, keep: failure.identity)
+            } catch {
+                // A copy begun whose removal found nothing where the folder cannot be reached (its drive or share went
+                // away meanwhile) may be there once it is back: its identity is kept.
+                let unconfirmed = claimedIdentity != nil && ReadingOutput.unreachableReason(for: output) != nil
+                return .failed(error, keep: unconfirmed ? claimedIdentity : nil)
+            }
+            return .published(published, claimed: claimedIdentity)
+        }
+        switch outcome {
+        case .failed(let error, let keep):
+            // A copy that may still be there (or aside) keeps its identity saved, so a resume or a Delete finds it,
+            // and the finished size and checksum: a copy that got to its end (its flush or close failed) is then
+            // recognized as the finished file.
+            manifest.publishing = keep
+            if keep == nil {
+                manifest.outputSHA256 = nil
+                manifest.outputSize = nil
+            }
+            try? await saveManifest(manifest, to: manifestURL)
+            throw error
+        case .published(let published, let claimed):
+            manifest.publishing = claimed
+            return try await finishOffMain(manifest, manifestURL: manifestURL, directory: directory, output: output,
+                                           identity: published)
+        }
+    }
+
+    /// How the publication of the finished file went: published (the file's identity, and the copy's, when it was
+    /// copied into place), or failed, keeping the identity of a copy that may still be there.
+    enum Publication: @unchecked Sendable {
+        case published(ReadingFileIdentity?, claimed: ReadingFileIdentity?)
+        case failed(any Error, keep: ReadingFileIdentity?)
+    }
+
+    /// Fails when the folder that holds `output` cannot be reached (see `ReadingOutput.unreachableReason`): a file not
+    /// found there may be there once it is back.
+    nonisolated static func checkReachable(_ output: URL) throws {
+        if let reason = ReadingOutput.unreachableReason(for: output) {
+            throw HolosError.unavailable("\(output.lastPathComponent) is unavailable: \(reason). Connect it, then try "
+                + "again.")
+        }
+    }
+
+    /// What `prepare` leaves the render: the lock and the reservation it holds, the manifest, and the reading's key.
+    struct Prepared: Sendable {
+        let held: (ReadingDirectoryLock, ReadingOutputReservation?)
+        let manifest: ReadingManifest
+        let key: String
+    }
+
+    /// The start of a render, off the main actor: the locations checked (see `checkLocation`), the cache's lock and
+    /// the output's reservation taken, caches that runs killed while creating them removed, and then, for a resume,
+    /// the saved manifest read and checked against the text and settings, or, for a new reading, the cache made (see
+    /// `ReadingCache.create`). Temporaries an interrupted earlier run left behind (killed before its cleanup ran)
+    /// are removed last: the lock means no other run of this reading is active, and only names this reading's runs
+    /// create are touched.
+    nonisolated static func prepare(directory: URL, output: URL, resume: Bool, text: String, expected: [ReadingPart],
+                                    voiceIdentifier: String, rate: Float?, metadata: AudioBookMetadata, run: UUID,
+                                    fault: (ReadingCache.Step) throws -> Void) throws -> Prepared {
+        try checkLocation(directory: directory, output: output, resume: resume)
         let writerLock = try ReadingDirectoryLock.acquire(for: directory)
         // An output inside its cache (a reading without `--output`) is reserved in the cache,
         // beside it: when resuming, now; for a new reading, once the cache is in place.
@@ -245,21 +534,12 @@ public struct AudioBookJoiner: ReadingAudioJoiner {
             == directory.standardizedFileURL.path
         var reservation = try outputInCache && !(resume && ReadingOutput.exists(directory))
             ? nil : try ReadingOutputReservation.acquire(output: output)
-        defer { withExtendedLifetime((writerLock, reservation)) {} }
         // Caches that runs killed while creating them left behind (see `ReadingCache.create`).
         ReadingCache.sweep(beside: directory)
-        let planned = script.parts(maxUTF16Units: maxPartUTF16Units)
         let sourceHash = sha256(Data(text.utf8))
         let sourceURL = directory.appendingPathComponent("source.txt")
         let manifestURL = directory.appendingPathComponent(ReadingManifest.fileName)
-        let expected = planned.map { part in
-            ReadingPart(index: part.index, sourceUTF16Offset: part.offset, sourceUTF16Length: part.length,
-                        textSHA256: sha256(Data(part.text.utf8)),
-                        relativeAudioPath: Self.partPath(part.index),
-                        chapter: part.chapter, startsSection: part.startsSegment, status: "pending")
-        }
-        var manifest: ReadingManifest
-
+        let manifest: ReadingManifest
         if resume {
             guard try ReadingOutput.exists(directory) else {
                 throw HolosError.invalidInput("No reading exists to resume at \(directory.path).")
@@ -273,20 +553,23 @@ public struct AudioBookJoiner: ReadingAudioJoiner {
                 throw HolosError.invalidInput("The reading at \(directory.path) was made by another version and cannot be resumed.")
             }
             manifest = saved
+            let savedSource = try? fileSHA256(sourceURL)
+            // A Stop during the check is a stop, never "the source differs".
+            if Task.isCancelled { throw CancellationError() }
             guard manifest.sourceSHA256 == sourceHash,
                   manifest.sameSettings(voiceIdentifier: voiceIdentifier, rate: rate, metadata: metadata, output: output),
-                  (try? fileSHA256(sourceURL)) == sourceHash else {
+                  savedSource == sourceHash else {
                 throw HolosError.invalidInput("Reading source, voice, rate, title, author, language, or output differs from the saved reading.")
             }
             guard manifest.parts.count == expected.count,
-                  zip(manifest.parts, expected).allSatisfy({ Self.samePlan($0, $1) }) else {
+                  zip(manifest.parts, expected).allSatisfy({ samePlan($0, $1) }) else {
                 throw HolosError.invalidInput("Reading part boundaries differ from the saved reading.")
             }
         } else {
             // A cache an earlier version left half made, with no manifest, goes, and the
-            // locations are checked as for a new reading (`validate` skipped them while it was there).
+            // locations are checked as for a new reading (`checkLocation` skipped them while it was there).
             if ReadingCache.removeAbandoned(directory) {
-                try Self.checkLocation(directory: directory, output: output, resume: false)
+                try checkLocation(directory: directory, output: output, resume: false)
             }
             guard try !ReadingOutput.exists(directory) else {
                 throw HolosError.invalidInput("A reading already exists at \(directory.path). Use --resume to continue it.")
@@ -302,131 +585,41 @@ public struct AudioBookJoiner: ReadingAudioJoiner {
                                        comment: metadata.comment, format: .current, output: output.path,
                                        outputSHA256: nil, duration: nil, chapters: [],
                                        status: "incomplete", parts: expected)
-            try ReadingCache.create(directory, source: Data(text.utf8), manifest: manifest,
-                                    fault: initializationFault)
+            try ReadingCache.create(directory, source: Data(text.utf8), manifest: manifest, fault: fault)
             if reservation == nil { reservation = try ReadingOutputReservation.acquire(output: output) }
         }
-
-        // This run's name for the joined file. Temporaries an interrupted earlier run left behind
-        // (killed before its cleanup ran) are removed now: the lock means no other run of this
-        // reading is active, and only names this reading's runs create are touched.
-        let run = UUID()
         let key = ReadingTemporaries.key(for: directory)
         ReadingTemporaries.sweep(workDirectory: directory, outputFolder: output.deletingLastPathComponent(),
                                  key: key, currentRun: run)
+        return Prepared(held: (writerLock, reservation), manifest: manifest, key: key)
+    }
 
-        // Finished before (possibly interrupted right after publishing): nothing to do.
-        if let published = manifest.outputSHA256,
-           (try? fileSHA256(output)) == published {
-            return finish(&manifest, manifestURL: manifestURL, directory: directory, output: output)
+    /// `finish` off the main actor (removing the part files of a long reading takes a while on a slow drive).
+    private func finishOffMain(_ manifest: ReadingManifest, manifestURL: URL, directory: URL, output: URL,
+                               identity: ReadingFileIdentity?) async throws -> ReadingResult {
+        let (saveFault, removeParts) = (self.saveFault, self.removeParts)
+        return try await offMain {
+            Self.finish(manifest, manifestURL: manifestURL, directory: directory, output: output, identity: identity,
+                        saveFault: saveFault, removeParts: removeParts)
         }
-        // A copy into the destination that a crash cut off is this reading's own file: it goes,
-        // and the reading is joined and published again. Anything else there is kept.
-        if let claimed = manifest.publishing {
-            ReadingPublisher.removeIfIdentical(output, to: claimed)
-            manifest.publishing = nil
-            try saveManifest(manifest, to: manifestURL)
-        }
-        guard try !ReadingOutput.exists(output) else {
-            throw HolosError.invalidInput("Reading output already exists and is not this reading: \(output.path)")
-        }
-        manifest.status = "incomplete"
-        manifest.outputSHA256 = nil
-        manifest.duration = nil
-        manifest.chapters = []
-        try FileManager.default.createDirectory(at: directory.appendingPathComponent("parts"),
-                                                withIntermediateDirectories: true)
-
-        // Only parts whose files still match their checksums are reused.
-        for index in manifest.parts.indices {
-            let part = manifest.parts[index]
-            let audio = directory.appendingPathComponent(part.relativeAudioPath)
-            let valid = part.status == "complete" && part.audioSHA256 != nil &&
-                (try? fileSHA256(audio)) == part.audioSHA256
-            if !valid {
-                manifest.parts[index].status = "pending"
-                manifest.parts[index].audioSHA256 = nil
-                manifest.parts[index].duration = nil
-            }
-        }
-        try saveManifest(manifest, to: manifestURL)
-
-        for part in planned {
-            try Task.checkCancellation()
-            if manifest.parts[part.index].status == "complete" { continue }
-            let audio = directory.appendingPathComponent(manifest.parts[part.index].relativeAudioPath)
-            if FileManager.default.fileExists(atPath: audio.path) {
-                let quarantined = audio.deletingLastPathComponent()
-                    .appendingPathComponent(".invalid-\(UUID().uuidString)-\(audio.lastPathComponent)")
-                try FileManager.default.moveItem(at: audio, to: quarantined)
-            }
-            do {
-                let result = try await renderer.render(text: part.text, voiceIdentifier: voiceIdentifier,
-                                                       rate: rate, to: audio)
-                guard result.url.standardizedFileURL == audio.standardizedFileURL else {
-                    throw HolosError.io("Speech renderer returned an unexpected part path.")
-                }
-                manifest.parts[part.index].status = "complete"
-                manifest.parts[part.index].audioSHA256 = try fileSHA256(result.url)
-                manifest.parts[part.index].duration = result.duration
-                try saveManifest(manifest, to: manifestURL)
-            } catch {
-                manifest.status = "incomplete"
-                try? saveManifest(manifest, to: manifestURL)
-                throw HolosError.incomplete("Reading stopped at part \(part.index + 1) of \(planned.count): \(error.localizedDescription)")
-            }
-        }
-
-        try Task.checkCancellation()
-        let temporary = ReadingTemporaries.joinURL(beside: output, key: key, run: run)
-        // Runs on every exit, cancellation (Ctrl-C in `voiceislocal read`) included. The name
-        // carries this run's UUID, so nothing but this run's joiner makes a file there.
-        defer { _ = unlink(RawFilePath.system(temporary)) }
-        let audioParts = manifest.parts.map { part in
-            AudioBookPart(url: directory.appendingPathComponent(part.relativeAudioPath),
-                          silenceBefore: part.index == 0 ? 0
-                              : part.startsSection ? ReadingAudioFormat.chapterGap : ReadingAudioFormat.partGap,
-                          chapter: part.chapter)
-        }
-        let summary: AudioBookSummary
-        do {
-            summary = try await joiner.join(parts: audioParts, metadata: metadata, to: temporary)
-        } catch {
-            try? saveManifest(manifest, to: manifestURL)
-            throw HolosError.incomplete("Reading parts are rendered, but joining them failed: \(error.localizedDescription)")
-        }
-        try Task.checkCancellation()
-        manifest.outputSHA256 = try fileSHA256(temporary)
-        manifest.duration = summary.duration
-        manifest.chapters = summary.chapters
-        try saveManifest(manifest, to: manifestURL)
-        try Task.checkCancellation()
-        do {
-            try ReadingPublisher.publish(temporary, to: output, exclusiveRename: exclusiveRename) { claimed in
-                manifest.publishing = claimed
-                try saveManifest(manifest, to: manifestURL)
-            }
-        } catch {
-            manifest.outputSHA256 = nil
-            manifest.publishing = nil
-            try? saveManifest(manifest, to: manifestURL)
-            throw error
-        }
-        return finish(&manifest, manifestURL: manifestURL, directory: directory, output: output)
     }
 
     /// The bookkeeping once the finished file is at `output`: the manifest marked complete and
     /// the part files removed. The reading has succeeded by then, so neither can fail it; a step
     /// that fails is reported as a warning. The manifest saved before publishing already holds
     /// the file's checksum, so a `--resume` recognizes the reading as done either way.
-    private func finish(_ manifest: inout ReadingManifest, manifestURL: URL, directory: URL,
-                        output: URL) -> ReadingResult {
+    nonisolated private static func finish(_ manifest: ReadingManifest, manifestURL: URL, directory: URL,
+                                           output: URL, identity: ReadingFileIdentity?,
+                                           saveFault: (ReadingManifest) throws -> Void,
+                                           removeParts: (URL) throws -> Void) -> ReadingResult {
+        var manifest = manifest
         var warnings: [String] = []
         if manifest.status != "complete" || manifest.publishing != nil {
             manifest.status = "complete"
             manifest.publishing = nil
             do {
-                try saveManifest(manifest, to: manifestURL)
+                try saveFault(manifest)
+                try save(manifest, to: manifestURL)
             } catch {
                 warnings.append("The reading was saved to \(output.path), but its cache at \(directory.path) could not be marked complete: \(error.localizedDescription)")
             }
@@ -436,21 +629,25 @@ public struct AudioBookJoiner: ReadingAudioJoiner {
         } catch {
             warnings.append("The reading was saved to \(output.path), but its part files in \(directory.path) could not be removed: \(error.localizedDescription)")
         }
-        return ReadingResult(output: output, manifest: manifest, warnings: warnings)
+        return ReadingResult(output: output, manifest: manifest, warnings: warnings, outputIdentity: identity)
     }
 
-    private func saveManifest(_ manifest: ReadingManifest, to url: URL) throws {
-        try saveFault(manifest)
-        try save(manifest, to: url)
+    /// Saves the manifest off the main actor (the cache may be on a slow drive), in the order the render asks.
+    private func saveManifest(_ manifest: ReadingManifest, to url: URL) async throws {
+        let saveFault = self.saveFault
+        try await offMain {
+            try saveFault(manifest)
+            try save(manifest, to: url)
+        }
     }
 
     /// Fails unless every setting of a reading is usable, creating nothing: the text is not
     /// empty; the rate is nil or a finite rate `AVSpeechUtterance` takes (see `SpeechRate`); the
     /// renderer has the voice; a title has readable text (see `AudioBookMetadata.usableTitle`);
-    /// the locations are file URLs, the output a `.m4a`; and both folders can take their files
-    /// (see `checkLocation`).
-    func validate(script: ReadingScript, voiceIdentifier: String, rate: Float?, metadata: AudioBookMetadata,
-                  location: ReadingLocation, resume: Bool) throws {
+    /// the locations are file URLs, the output a `.m4a`. Whether both folders can take their files
+    /// (see `checkLocation`) is checked next, off the main actor (see `prepare`).
+    func validateSettings(script: ReadingScript, voiceIdentifier: String, rate: Float?, metadata: AudioBookMetadata,
+                          location: ReadingLocation) throws {
         let directory = location.workDirectory
         let output = location.output
         guard directory.isFileURL, output.isFileURL else {
@@ -467,7 +664,6 @@ public struct AudioBookJoiner: ReadingAudioJoiner {
         if let title = metadata.title, AudioBookMetadata.usableTitle(title) == nil {
             throw HolosError.invalidInput("Reading title has no readable text.")
         }
-        try Self.checkLocation(directory: directory, output: output, resume: resume)
     }
 
     /// Checks both folders before anything is rendered, so a destination that cannot take the
@@ -475,7 +671,7 @@ public struct AudioBookJoiner: ReadingAudioJoiner {
     /// (where the cache and its lock are created) and the output's (see
     /// `ReadingOutput.checkDestination`). An output inside a cache that does not exist yet
     /// (a reading without `--output`) is checked through the cache's parent.
-    static func checkLocation(directory: URL, output: URL, resume: Bool) throws {
+    nonisolated static func checkLocation(directory: URL, output: URL, resume: Bool) throws {
         let cacheExists = try ReadingOutput.exists(directory)
         // A new reading over an existing cache, or a resume without one, fails next with a
         // clearer message ("use --resume", "no reading to resume").
@@ -500,7 +696,7 @@ public struct AudioBookJoiner: ReadingAudioJoiner {
         String(format: "parts/part%04d.%@", index + 1, partExtension)
     }
 
-    private static func samePlan(_ saved: ReadingPart, _ planned: ReadingPart) -> Bool {
+    nonisolated private static func samePlan(_ saved: ReadingPart, _ planned: ReadingPart) -> Bool {
         saved.index == planned.index && saved.sourceUTF16Offset == planned.sourceUTF16Offset &&
             saved.sourceUTF16Length == planned.sourceUTF16Length && saved.textSHA256 == planned.textSHA256 &&
             saved.relativeAudioPath == planned.relativeAudioPath && saved.chapter == planned.chapter &&
@@ -530,16 +726,11 @@ enum ReadingPublisher {
 
     /// See `ExclusivePublisher.publish`.
     static func publish(_ source: URL, to destination: URL,
-                        exclusiveRename: ExclusiveRename = systemExclusiveRename,
+                        exclusiveRename: ExclusiveRename = systemExclusiveRename, cleanupToken: String? = nil,
                         claimed: (ReadingFileIdentity) throws -> Void = { _ in }) throws {
         try ExclusivePublisher.publish(source, to: destination, exclusiveRename: exclusiveRename,
                                        existing: "Reading output already exists and is not this reading",
-                                       claimed: claimed)
-    }
-
-    /// Removes `url` when it is still the file `identity` describes; anything else is kept.
-    static func removeIfIdentical(_ url: URL, to identity: ReadingFileIdentity) {
-        ExclusivePublisher.removeIfIdentical(url, to: identity)
+                                       cleanupToken: cleanupToken, claimed: claimed)
     }
 }
 
@@ -547,7 +738,7 @@ enum ReadingPublisher {
 /// hidden file in the cache's parent (the support folder). The file is intentionally kept so
 /// another process cannot lock a replacement inode. An explicit output is reserved separately,
 /// beside the destination (see `ReadingOutputReservation`).
-final class ReadingDirectoryLock {
+final class ReadingDirectoryLock: @unchecked Sendable {
     private let descriptor: Int32
 
     private init(descriptor: Int32) { self.descriptor = descriptor }
@@ -640,7 +831,7 @@ final class ReadingDirectoryLock {
 /// limits before anything is rendered (see `ReadingOutput.outputFolderNameLength`). Its path is
 /// the destination folder as spelled (see `RawFilePath`). A reading without `--output` holds one
 /// in its cache, beside its `.m4a`.
-final class ReadingOutputReservation {
+final class ReadingOutputReservation: @unchecked Sendable {
     struct Record: Codable, Equatable {
         /// `gethostname`, for messages: two Macs can share a host name.
         var host: String
@@ -941,7 +1132,21 @@ final class ReadingOutputReservation {
         _ = unlink(RawFilePath.system(path))
     }
 
-    deinit { Self.removeIfHolding(path, record) }
+    /// Whether `release` ran.
+    private let released = NSLock()
+    private var isReleased = false
+
+    /// Removes the reservation now (see `removeIfHolding`), where the caller runs (a render does it off the main
+    /// actor: the output folder may be on a slow share); once.
+    func release() {
+        released.lock()
+        defer { released.unlock() }
+        guard !isReleased else { return }
+        isReleased = true
+        Self.removeIfHolding(path, record)
+    }
+
+    deinit { release() }
 }
 
 private extension String {
@@ -1079,6 +1284,39 @@ enum ReadingTemporaries {
 
     static func key(for directory: URL) -> String { String(ReadingDirectoryLock.key(for: directory).prefix(16)) }
 
+    /// The private folder beside the output that the reading's partly written file is moved into to be removed
+    /// (see `ExclusivePublisher.removeVerified`), when a publication fails or a resume removes a copy a crash cut off:
+    /// `.holos-delete-<reading key>.publish`. Derived from the cache, so a removal a crash cut off after the move is
+    /// found there by the next resume or Delete (see `recoverPublicationAside`).
+    static func publicationToken(key: String) -> String { ExclusivePublisher.removalPrefix + key + ".publish" }
+
+    /// Where `publicationToken`'s folder keeps the partly written file of `output`.
+    static func publicationAside(output: URL, key: String) -> URL {
+        RawFilePath.appending(output.lastPathComponent, to: RawFilePath.appending(
+            publicationToken(key: key), to: output.deletingLastPathComponent()))
+    }
+
+    /// Finishes a removal of the reading's partly written file that a crash cut off after it was moved aside: the
+    /// file in `publicationAside` goes when it is that file (`identity`, the manifest's `publishing`), then the
+    /// folder. Anything else there (another file, or one that cannot be checked) is an error and is left: the place
+    /// is only the reading's, so a later removal must not find it taken.
+    static func recoverPublicationAside(output: URL, key: String, evidence: ReadingLibrary.Evidence) throws {
+        let file = publicationAside(output: output, key: key)
+        let folder = file.deletingLastPathComponent()
+        guard try ReadingOutput.exists(folder) else { return }
+        if try ReadingOutput.exists(file) {
+            guard try evidence.isPartial(file) else {
+                throw HolosError.io("\(file.path) was left by an earlier try to save this reading, and it is not the "
+                    + "reading's partly written file. Move it away or remove it in Finder, then try again.")
+            }
+            try ExclusivePublisher.removeFile(file)
+        }
+        guard rmdir(RawFilePath.system(folder)) == 0 || errno == ENOENT else {
+            throw HolosError.io("\(folder.path), left by an earlier try to save this reading, could not be removed: "
+                + String(cString: strerror(errno)) + ". Remove it in Finder, then try again.")
+        }
+    }
+
     static func joinName(key: String, run: UUID) -> String {
         "\(joinPrefix)\(key)-\(run.uuidString).\(ReadingAudioFormat.fileExtension)"
     }
@@ -1093,12 +1331,7 @@ enum ReadingTemporaries {
     /// Removes this reading's temporaries from earlier runs: regular files owned by this user whose
     /// names match exactly, except the current run's.
     static func sweep(workDirectory: URL, outputFolder: URL, key: String, currentRun: UUID) {
-        let joinStart = "\(joinPrefix)\(key)-"
-        let joinEnd = "." + ReadingAudioFormat.fileExtension
-        remove(in: outputFolder) { name in
-            guard let run = joinRun(name, start: joinStart, end: joinEnd) else { return false }
-            return run != currentRun
-        }
+        _ = sweepJoins(outputFolder: outputFolder, key: key, currentRun: currentRun)
         remove(in: workDirectory) { name in
             uuid(between: manifestPrefix, and: manifestSuffix, in: name) != nil
         }
@@ -1130,6 +1363,50 @@ enum ReadingTemporaries {
     static func uuid(between prefix: String, and suffix: String, in name: String) -> UUID? {
         guard name.hasPrefix(prefix), name.hasSuffix(suffix), name.count > prefix.count + suffix.count else { return nil }
         return UUID(uuidString: String(name.dropFirst(prefix.count).dropLast(suffix.count)))
+    }
+
+    /// Removes this reading's joined files from runs other than `currentRun` beside the output (see `sweep`), and
+    /// the places aside a copy of one was being removed through when a crash came (`.holos-delete-<join name>`, see
+    /// `AudioBookWriter.cleanupToken`). Returns what could not be looked at or removed (nil when all is gone), for a
+    /// Delete, which keeps the reading until it is.
+    static func sweepJoins(outputFolder: URL, key: String, currentRun: UUID) -> String? {
+        let start = "\(joinPrefix)\(key)-"
+        let end = "." + ReadingAudioFormat.fileExtension
+        func isStale(_ name: String) -> Bool { joinRun(name, start: start, end: end).map { $0 != currentRun } ?? false }
+        guard let names = RawFilePath.names(in: outputFolder) else {
+            let error = errno
+            return error == ENOENT ? nil
+                : "\(outputFolder.path) could not be looked into: \(String(cString: strerror(error)))."
+        }
+        var problems: [String] = []
+        func unlinkOwn(_ url: URL) {
+            let path = RawFilePath.system(url)
+            var metadata = stat()
+            guard lstat(path, &metadata) == 0 else {
+                // Only "not there" is gone: a file that cannot be looked up may still be there.
+                if errno != ENOENT {
+                    problems.append("\(url.path) could not be checked: \(String(cString: strerror(errno))).")
+                }
+                return
+            }
+            guard (metadata.st_mode & S_IFMT) == S_IFREG, metadata.st_uid == getuid() else { return }
+            if unlink(path) != 0, errno != ENOENT {
+                problems.append("\(url.path) could not be removed: \(String(cString: strerror(errno))).")
+            }
+        }
+        for name in names {
+            if isStale(name) {
+                unlinkOwn(RawFilePath.appending(name, to: outputFolder))
+            } else if name.hasPrefix(ExclusivePublisher.removalPrefix),
+                      case let joined = String(name.dropFirst(ExclusivePublisher.removalPrefix.count)), isStale(joined) {
+                let folder = RawFilePath.appending(name, to: outputFolder)
+                unlinkOwn(RawFilePath.appending(joined, to: folder))
+                if rmdir(RawFilePath.system(folder)) != 0, errno != ENOENT {
+                    problems.append("\(folder.path) could not be removed: \(String(cString: strerror(errno))).")
+                }
+            }
+        }
+        return problems.isEmpty ? nil : problems.joined(separator: " ")
     }
 
     /// Listed and removed with `folder` spelled as given (see `RawFilePath`).
@@ -1286,18 +1563,46 @@ private func hex(_ digest: SHA256.Digest) -> String {
 /// decompose it; see `RawFilePath`): the output, its join file, and a manifest found through
 /// `--output` are in the folder the user typed.
 private func rawHandle(_ url: URL) throws -> FileHandle {
-    let descriptor = open(RawFilePath.system(url), O_RDONLY | O_CLOEXEC)
+    try openRegularFile(url)
+}
+
+/// A reading's file could not be opened: why, and the `errno` (`EFTYPE` for one that is not a regular file).
+public struct ReadingFileError: LocalizedError, Sendable {
+    public let message: String
+    public let code: Int32
+
+    public var errorDescription: String? { message }
+}
+
+/// `url` opened for reading, its path as spelled (see `RawFilePath`), only when it is a regular file: opened without
+/// waiting (`O_NONBLOCK`), so a FIFO or a device put at the path is refused at once instead of blocking the open until
+/// a writer comes, and checked on the open descriptor. Every file of a reading that is read (a checksum, a manifest,
+/// the index, a saved text, a finished file played) is opened here.
+func openRegularFile(_ url: URL, followLinks: Bool = true) throws -> FileHandle {
+    let flags = O_RDONLY | O_CLOEXEC | O_NONBLOCK | (followLinks ? 0 : O_NOFOLLOW)
+    let descriptor = open(RawFilePath.system(url), flags)
     guard descriptor >= 0 else {
-        throw HolosError.io("Could not read \(url.path): \(String(cString: strerror(errno)))")
+        let error = errno
+        throw ReadingFileError(message: "Could not read \(url.path): \(String(cString: strerror(error)))", code: error)
     }
+    var metadata = stat()
+    guard fstat(descriptor, &metadata) == 0, (metadata.st_mode & S_IFMT) == S_IFREG else {
+        close(descriptor)
+        throw ReadingFileError(message: "Could not read \(url.path): it is not a regular file.", code: EFTYPE)
+    }
+    // Reads of a regular file never wait anyway; blocking reads again, as the callers expect.
+    _ = fcntl(descriptor, F_SETFL, fcntl(descriptor, F_GETFL) & ~O_NONBLOCK)
     return FileHandle(fileDescriptor: descriptor, closeOnDealloc: true)
 }
 
-func fileSHA256(_ url: URL) throws -> String {
+/// The file's SHA-256. `isCancelled` is asked between chunks (default: the current task's cancellation), so a Stop
+/// ends a long checksum on a slow drive with `CancellationError` instead of reading the whole file.
+func fileSHA256(_ url: URL, isCancelled: () -> Bool = { Task.isCancelled }) throws -> String {
     let handle = try rawHandle(url)
     defer { try? handle.close() }
     var hasher = SHA256()
     while true {
+        if isCancelled() { throw CancellationError() }
         let done = try autoreleasepool { () throws -> Bool in
             guard let chunk = try handle.read(upToCount: 1 << 20), !chunk.isEmpty else { return true }
             hasher.update(data: chunk)
@@ -1308,8 +1613,40 @@ func fileSHA256(_ url: URL) throws -> String {
     return hex(hasher.finalize())
 }
 
+/// `fileSHA256` off the main actor, where `ReadingPipeline` runs: a rendered part or a finished reading is megabytes,
+/// and a resume checks every part, which would stall the app's window. The caller's cancellation reaches the checksum
+/// (checked between chunks), and a cancelled caller gets `CancellationError` even when the checksum had finished.
+func fileSHA256OffMain(_ url: URL) async throws -> String {
+    let checksum = try await offMain { try fileSHA256(url) }
+    try Task.checkCancellation()
+    return checksum
+}
+
+/// Runs `work` off the main actor (a detached task), with the caller's cancellation passed on to it and the test
+/// stand-ins the reading's file code reads (task-locals, which a detached task does not inherit) carried over.
+public func offMain<Result: Sendable>(priority: TaskPriority = .userInitiated,
+                                      _ work: @escaping @Sendable () throws -> Result) async throws -> Result {
+    let volume = RawFilePath.volume
+    let volumes = ReadingOutput.volumesFolder
+    let nameLimit = ReadingOutput.volumeNameLimit
+    let lockCall = ReadingDirectoryLock.lockCall
+    let takeoverStep = ReadingOutputReservation.takeoverStep
+    let task = Task.detached(priority: priority) {
+        try RawFilePath.$volume.withValue(volume) {
+            try ReadingOutput.$volumesFolder.withValue(volumes) {
+                try ReadingOutput.$volumeNameLimit.withValue(nameLimit) {
+                    try ReadingDirectoryLock.$lockCall.withValue(lockCall) {
+                        try ReadingOutputReservation.$takeoverStep.withValue(takeoverStep) { try work() }
+                    }
+                }
+            }
+        }
+    }
+    return try await withTaskCancellationHandler { try await task.value } onCancel: { task.cancel() }
+}
+
 /// The contents of a file expected to be small; a larger one is an error, not read whole.
-private func readSmallFile(_ url: URL, maximumBytes: Int) throws -> Data {
+func readSmallFile(_ url: URL, maximumBytes: Int) throws -> Data {
     let handle = try rawHandle(url)
     defer { try? handle.close() }
     let data = try handle.read(upToCount: maximumBytes + 1) ?? Data()

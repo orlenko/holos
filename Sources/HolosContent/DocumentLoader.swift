@@ -9,14 +9,25 @@ public enum DocumentLoader {
         "txt", "text", "md", "markdown", "html", "htm", "pdf", "rtf", "rtfd", "docx", "doc", "odt",
     ]
 
-    /// Unknown extensions are read as UTF-8 plain text.
-    @MainActor public static func load(_ url: URL) throws -> ReadableDocument {
+    /// Unknown extensions are read as UTF-8 plain text. Callable from any thread: none of the readers is AppKit's
+    /// HTML importer (the one that must run on the main thread), so the app loads files off the main actor. In a
+    /// cancelled task a PDF stops between pages with `CancellationError`.
+    public static func load(_ url: URL) throws -> ReadableDocument {
+        // A FIFO or a device would block the read until a writer comes (a Stop could not end it): refused. A package
+        // (an RTFD document) is a folder.
+        var metadata = stat()
+        if stat(RawFilePath.system(url), &metadata) == 0 {
+            let type = metadata.st_mode & S_IFMT
+            guard type == S_IFREG || type == S_IFDIR else {
+                throw HolosError.invalidInput("\(url.lastPathComponent) is not a document file.")
+            }
+        }
         let document: ReadableDocument
         switch url.pathExtension.lowercased() {
         case "md", "markdown":
             document = MarkdownReader.document(from: try utf8(url))
         case "html", "htm":
-            document = HTMLReader.document(from: try Data(contentsOf: url))
+            document = HTMLReader.document(from: try contents(url))
         case "pdf":
             document = try PDFReader.document(url)
         case "rtf": document = try RichTextReader.document(url, type: .rtf)
@@ -33,8 +44,16 @@ public enum DocumentLoader {
         return document
     }
 
+    /// The bytes of the file at `url`, opened without waiting and checked on the descriptor (see `openRegularFile`):
+    /// a FIFO put in its place after the check above is refused rather than waited on.
+    private static func contents(_ url: URL) throws -> Data {
+        let handle = try openRegularFile(url)
+        defer { try? handle.close() }
+        return try handle.readToEnd() ?? Data()
+    }
+
     private static func utf8(_ url: URL) throws -> String {
-        guard let text = DocumentText.decode(try Data(contentsOf: url)) else {
+        guard let text = DocumentText.decode(try contents(url)) else {
             throw HolosError.invalidInput("\(url.lastPathComponent) is not UTF-8 text.")
         }
         return text
@@ -1449,7 +1468,7 @@ public enum HTMLReader {
 
 /// PDF text through PDFKit, with line breaks reflowed into paragraphs.
 public enum PDFReader {
-    @MainActor static func document(_ url: URL) throws -> ReadableDocument {
+    static func document(_ url: URL) throws -> ReadableDocument {
         guard let pdf = PDFDocument(url: url) else {
             throw HolosError.invalidInput("\(url.lastPathComponent) is not a readable PDF.")
         }
@@ -1458,6 +1477,8 @@ public enum PDFReader {
         }
         var pages: [String] = []
         for index in 0..<pdf.pageCount {
+            // A long PDF read for a reading that was stopped ends here (outside a task, never).
+            try Task.checkCancellation()
             pages.append(pdf.page(at: index)?.string ?? "")
         }
         let paragraphs = reflow(pages: pages)
@@ -1657,7 +1678,7 @@ public enum PDFReader {
 /// while the RTF and OpenDocument readers move them into the paragraph's text list, from which
 /// they are put back.
 public enum RichTextReader {
-    @MainActor static func document(_ url: URL, type: NSAttributedString.DocumentType) throws -> ReadableDocument {
+    static func document(_ url: URL, type: NSAttributedString.DocumentType) throws -> ReadableDocument {
         var attributes: NSDictionary?
         let text: NSAttributedString
         do {
