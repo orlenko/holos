@@ -229,8 +229,12 @@ to delete it from. An index not found in a folder that cannot be reached (a supp
 `HOLOS_SUPPORT_DIR`, on a drive or share that is not connected) is not an empty list: the list
 is unavailable, never written, and read again when the section shows or its window comes back
 (so is one that could not be read, an I/O error or a permission); nothing is written in its
-place. A save writes over only the index the store read or last wrote (by its file identity):
-one put there since (another disk mounted at that path) is kept and the save fails. The index
+place. A save writes over only the index the store read or last wrote (by its file identity),
+checked and replaced under a lock across processes (`flock` on `.library.lock`; a volume
+without it saves unlocked): one put there since (another disk mounted at that path, another
+copy of the app) is kept and the save fails. A saved text is never replaced (an exclusive
+rename), and one not found in a folder that cannot be reached is not "none saved". Each
+reading keeps the output folder Settings › Reading named when it was added. The index
 is read at launch, and every save of it (and the removal of made readings' saved texts after
 it) runs off the main actor, one at a time in the order asked; a save a reading must wait for
 (Add, Delete's mark, the output chosen before rendering) is awaited, other saves wait while a
@@ -319,7 +323,9 @@ file put at that path since, or the file edited in place, is left alone, and Del
 trashed is the file checked, and one that no longer matches goes back;
 `ReadingLibrary.trashVerified`), removes a copy a crash cut off (the manifest's
 `publishing` identity, never for a made reading, whose copy was finished: its file edited in
-place keeps that identity; `ReadingLibrary.ownership`) the same way (moved into a private
+place keeps that identity; nor for a file with that identity as large as the finished file,
+whose size the manifest saves with its checksum (`outputSize`): a crash after the copy was
+done, then an edit; `ReadingLibrary.ownership`) the same way (moved into a private
 `.holos-delete-…` folder, its identity checked there, then removed; every removal that
 depends on which file is at a path, the pipeline's and `ExclusivePublisher`'s included,
 goes through `ExclusivePublisher.removeVerified`; a file goes back only by an exclusive rename

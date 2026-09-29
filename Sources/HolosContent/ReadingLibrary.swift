@@ -34,6 +34,11 @@ public struct ReadingEntry: Codable, Sendable, Equatable, Identifiable {
     public var speed: Double
     /// The finished `.m4a`'s path, chosen when the reading first starts.
     public var output: String?
+    /// The folder its file goes to, as Settings › Reading named it when the reading was added (a change of the
+    /// setting is for readings added later); nil for one an earlier build added (the setting when it starts).
+    public var folder: String?
+    /// Whether `folder` was the default folder (made when missing; a folder chosen in Settings never is).
+    public var folderIsDefault: Bool?
     /// The render cache (`Readings/Output-<hash>` in Application Support), once known.
     public var cache: String?
     public var state: State
@@ -218,25 +223,52 @@ public final class ReadingLibraryStore: @unchecked Sendable {
             throw HolosError.io("The Reading list is too large to save (\(data.count) bytes; at most \(limit)). "
                 + "Delete some readings.")
         }
-        if case .some(let known) = expected {
-            let found = try ExclusivePublisher.FileIdentity.lookup(indexURL)
-            guard found == known else {
-                throw HolosError.unavailable("The Reading list at \(indexURL.path) is not the one Voice is Local read "
-                    + "(another disk may be connected at that place); it is not written over. Quit and open Voice is "
-                    + "Local again to read it.")
-            }
-        }
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true,
                                                 attributes: [.posixPermissions: 0o700])
-        // The file written is the one renamed into place (a rename keeps its identity), known before it is.
-        expected = .some(try Self.write(data, to: indexURL))
+        // The check and the replacement under one lock across processes: another copy of the app saving this index
+        // between them would otherwise have its list replaced unseen.
+        try withIndexLock {
+            if case .some(let known) = expected {
+                let found = try ExclusivePublisher.FileIdentity.lookup(indexURL)
+                guard found == known else {
+                    throw HolosError.unavailable("The Reading list at \(indexURL.path) is not the one Voice is Local "
+                        + "read (another disk may be connected at that place, or another copy of Voice is Local "
+                        + "changed it); it is not written over. Quit and open Voice is Local again to read it.")
+                }
+            }
+            // The file written is the one renamed into place (a rename keeps its identity), known before it is.
+            expected = .some(try Self.write(data, to: indexURL))
+        }
     }
 
-    /// Keeps `document`, the text reading `id` reads, until the reading is finished or deleted.
+    /// Runs `body` holding the index's lock (`flock` on `.library.lock` in the folder, which must exist): a save of
+    /// this index by another process waits. On a volume without `flock` (some network shares) it runs unlocked.
+    private func withIndexLock<T>(_ body: () throws -> T) throws -> T {
+        let path = folder.appendingPathComponent(".library.lock").path
+        let descriptor = open(path, O_CREAT | O_RDWR | O_CLOEXEC | O_NOFOLLOW, 0o600)
+        guard descriptor >= 0 else {
+            throw HolosError.io("Could not lock the Reading list (\(path)): \(String(cString: strerror(errno)))")
+        }
+        defer { close(descriptor) }
+        var locked = flock(descriptor, LOCK_EX) == 0
+        while !locked && errno == EINTR { locked = flock(descriptor, LOCK_EX) == 0 }
+        if !locked, errno != ENOTSUP, errno != EOPNOTSUPP {
+            throw HolosError.io("Could not lock the Reading list (\(path)): \(String(cString: strerror(errno)))")
+        }
+        defer { if locked { _ = flock(descriptor, LOCK_UN) } }
+        return try body()
+    }
+
+    /// Keeps `document`, the text reading `id` reads, until the reading is finished or deleted. Never over a text
+    /// saved for it already (one `document(for:)` could not see, its folder out of reach for a moment): that one is
+    /// what the reading reads, and this save fails.
     public func saveDocument(_ document: ReadableDocument, for id: UUID) throws {
+        if let reason = ReadingOutput.unreachableReason(for: documentURL(id)) {
+            throw HolosError.unavailable("The folder of the saved texts is unavailable: \(reason).")
+        }
         try FileManager.default.createDirectory(at: documentsFolder, withIntermediateDirectories: true,
                                                 attributes: [.posixPermissions: 0o700])
-        try Self.write(try JSONEncoder.reading.encode(document), to: documentURL(id))
+        try Self.write(try JSONEncoder.reading.encode(document), to: documentURL(id), exclusive: true)
     }
 
     /// The document saved for `id`, or nil when none was saved. One that is there but cannot be read or decoded is
@@ -250,6 +282,11 @@ public final class ReadingLibraryStore: @unchecked Sendable {
             defer { try? handle.close() }
             data = try handle.readToEnd() ?? Data()
         } catch let error as ReadingFileError where error.code == ENOENT {
+            // Not found is "none saved" only where its folder can be looked into (a support folder on a drive that is
+            // not connected would have the reading load its source again, and read other text).
+            if let reason = ReadingOutput.unreachableReason(for: url) {
+                throw HolosError.unavailable("The text saved for this reading is unavailable: \(reason).")
+            }
             return nil
         }
         return try JSONDecoder.reading.decode(ReadableDocument.self, from: data)
@@ -277,7 +314,10 @@ public final class ReadingLibraryStore: @unchecked Sendable {
     /// Removes what saves that a quit or a crash cut off left (the index's and the saved texts' temporaries, see
     /// `write`). For the launch, before anything is saved: a save under way would lose its temporary.
     public func sweepTemporaries() {
-        try? removeTemporaries(in: folder) { $0 == indexURL.lastPathComponent }
+        // Under the index's lock: another process's save under way keeps its temporary.
+        if (try? ReadingOutput.exists(folder)) == true {
+            _ = try? withIndexLock { try removeTemporaries(in: folder) { $0 == indexURL.lastPathComponent } }
+        }
         try? removeTemporaries(in: documentsFolder) { name in
             name.hasSuffix(".json") && UUID(uuidString: String(name.dropLast(5))) != nil
         }
@@ -316,8 +356,10 @@ public final class ReadingLibraryStore: @unchecked Sendable {
 
     /// Writes `data` to a new temporary beside `url` (0600), then renames it over `url`; returns the identity of the
     /// file written, read from it before the rename. A temporary that is not renamed is removed.
+    /// `exclusive`: never over a file already at `url` (an exclusive rename, else a hard link where the volume has no
+    /// exclusive rename); the save fails instead.
     @discardableResult
-    private static func write(_ data: Data, to url: URL) throws -> ReadingFileIdentity {
+    private static func write(_ data: Data, to url: URL, exclusive: Bool = false) throws -> ReadingFileIdentity {
         let temporary = url.deletingLastPathComponent().appendingPathComponent(".\(url.lastPathComponent).\(UUID().uuidString).tmp")
         let failure = { (reason: String) in
             HolosError.io("Could not save \(url.lastPathComponent) in \(url.deletingLastPathComponent().path): \(reason)")
@@ -338,6 +380,19 @@ public final class ReadingLibraryStore: @unchecked Sendable {
             try? written.close()
             _ = unlink(temporary.path)
             throw error
+        }
+        if exclusive {
+            var placed = renamex_np(temporary.path, url.path, UInt32(RENAME_EXCL)) == 0
+            if !placed, errno == ENOTSUP || errno == EINVAL || errno == ENOSYS {
+                placed = link(temporary.path, url.path) == 0
+                if placed { _ = unlink(temporary.path) }
+            }
+            guard placed else {
+                let reason = errno == EEXIST ? "one is already saved there" : String(cString: strerror(errno))
+                _ = unlink(temporary.path)
+                throw HolosError.io("Could not save \(url.lastPathComponent): \(reason).")
+            }
+            return identity
         }
         guard rename(temporary.path, url.path) == 0 else {
             let reason = String(cString: strerror(errno))
@@ -526,10 +581,27 @@ public enum ReadingLibrary {
         let evidence = try ownershipEvidence(of: output, sha256: sha256, cache: cache, made: made)
         if !evidence.checksums.isEmpty, evidence.checksums.contains(try fileSHA256(output)) { return .finished }
         // A lookup that fails (not "nothing there") throws: it says nothing about which file is there.
-        if let claimed = evidence.publishing, try ExclusivePublisher.FileIdentity.lookup(output) == claimed {
-            return .partial(claimed)
-        }
+        if let claimed = evidence.publishing, try evidence.isPartial(output) { return .partial(claimed) }
         return nil
+    }
+
+    /// What identifies the reading's files (see `ownershipEvidence`).
+    struct Evidence: Equatable {
+        /// The checksums of its finished file.
+        var checksums: [String]
+        /// The identity of a copy into the output a crash cut off.
+        var publishing: ReadingFileIdentity?
+        /// The finished file's size, when known: a copy cut off is smaller.
+        var finishedSize: Int64?
+
+        /// Whether the file at `url` is the copy a crash cut off: the file `publishing` names, and smaller than the
+        /// finished file when its size is known (one as large is the finished copy, edited in place since: it is
+        /// never removed as a partial one). A look-up that fails throws.
+        func isPartial(_ url: URL) throws -> Bool {
+            guard let publishing, let found = try ReadingLibrary.FileVersion.of(url), found.identity == publishing
+            else { return false }
+            return finishedSize.map { found.size < $0 } ?? true
+        }
     }
 
     /// What identifies the reading's file at `output`: the checksums of its finished file (`sha256`, and the one
@@ -537,7 +609,7 @@ public enum ReadingLibrary {
     /// (`made`) there is no such copy: the copy was finished, so the file with that identity is its finished file,
     /// edited in place when its checksum no longer matches, never a partial one to remove.
     static func ownershipEvidence(of output: URL, sha256: String?, cache: URL?, made: Bool = false) throws
-        -> (checksums: [String], publishing: ReadingFileIdentity?) {
+        -> Evidence {
         var manifest: ReadingManifest?
         if let cache {
             let url = cache.appendingPathComponent(ReadingManifest.fileName)
@@ -554,7 +626,8 @@ public enum ReadingLibrary {
                 if sameFile(saved.output, output) { manifest = saved }
             }
         }
-        return ([sha256, manifest?.outputSHA256].compactMap { $0 }, made ? nil : manifest?.publishing)
+        return Evidence(checksums: [sha256, manifest?.outputSHA256].compactMap { $0 },
+                        publishing: made ? nil : manifest?.publishing, finishedSize: manifest?.outputSize)
     }
 
     /// The identity of the file at `output` when it is the finished file whose checksum is `sha256`, and the file read
@@ -887,7 +960,7 @@ public enum ReadingLibrary {
         if let output = entry.outputURL {
             let cache = entry.cache.map { URL(fileURLWithPath: $0, isDirectory: true) }
             let owned: OutputOwnership?
-            let evidence: (checksums: [String], publishing: ReadingFileIdentity?)
+            let evidence: Evidence
             do {
                 let made = entry.state == .done
                 owned = try ownership(of: output, sha256: entry.outputSHA256, cache: cache, made: made)
@@ -930,7 +1003,14 @@ public enum ReadingLibrary {
                 case .partial(let identity)?:
                     report = removePartial(output, identity: identity, token: asideToken(entry.id, partial: true))
                 case nil:
-                    let present = (try? ReadingOutput.exists(output)) == true
+                    // A look-up that fails (not "nothing there") tells nothing: the reading stays for another try.
+                    let present: Bool
+                    do {
+                        present = try ReadingOutput.exists(output)
+                    } catch {
+                        return DeleteResult(problem: "\(output.lastPathComponent) could not be checked: "
+                                                + "\(error.localizedDescription) Try Delete again.", aside: entry.outputAside)
+                    }
                     if present, entry.state != .done, !evidence.checksums.isEmpty {
                         // An unfinished reading whose manifest holds the finished file's checksum was being saved
                         // when it stopped: the file there may be the one it began (created before its identity was
@@ -1011,13 +1091,13 @@ public enum ReadingLibrary {
     /// Delete moved aside and could not put back) is left there and is a problem, so the entry keeps pointing at it
     /// until the user deals with it. It is in a place only a Delete of this reading uses, so nothing else takes its
     /// place between the check and the removal. The private folder it was in goes once empty.
-    static func removeAside(_ url: URL, evidence: (checksums: [String], publishing: ReadingFileIdentity?),
+    static func removeAside(_ url: URL, evidence: Evidence,
                             trash: (URL) throws -> Void) -> RemovalReport {
         do {
             if try ReadingOutput.exists(url) {
                 if !evidence.checksums.isEmpty, evidence.checksums.contains(try fileSHA256(url)) {
                     try trash(url)
-                } else if let claimed = evidence.publishing, try ExclusivePublisher.FileIdentity.lookup(url) == claimed {
+                } else if try evidence.isPartial(url) {
                     try ExclusivePublisher.removeFile(url)
                 } else {
                     return RemovalReport(problem: "An earlier Delete left \(url.lastPathComponent) at \(url.path), and "

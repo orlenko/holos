@@ -97,6 +97,62 @@ import Testing
         #expect(store.load().entries == theirs + mine)
     }
 
+    /// Another process saving the same index holds its lock from its check to its replacement: a save that comes
+    /// meanwhile checks after it, finds its index, and does not write over it.
+    @Test func savesOfOneIndexAreSerializedAcrossProcesses() async throws {
+        let root = try folder()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = ReadingLibraryStore(folder: root)
+        try store.save([entry(.done)])
+        // Another process holds the lock (a descriptor of our own stands in for it: `flock` locks are per open file).
+        let held = open(root.appendingPathComponent(".library.lock").path, O_RDWR | O_CLOEXEC)
+        #expect(held >= 0)
+        #expect(flock(held, LOCK_EX) == 0)
+        let mine = [entry(.stopped)]
+        let saving = Task.detached { try store.save(mine) }
+        // Its save lands, then it lets go.
+        let theirs = [entry(.failed)]
+        let other = ReadingLibraryStore(folder: root.appendingPathComponent("Other"))
+        try other.save(theirs)
+        #expect(rename(other.indexURL.path, store.indexURL.path) == 0)
+        _ = flock(held, LOCK_UN)
+        close(held)
+        await #expect(throws: (any Error).self) { try await saving.value }
+        #expect(ReadingLibraryStore(folder: root).load().entries == theirs)
+    }
+
+    /// A saved text is never replaced by another one (one `document(for:)` did not see): the save fails.
+    @Test func aSavedTextIsNeverReplaced() throws {
+        let root = try folder()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = ReadingLibraryStore(folder: root)
+        let id = UUID()
+        let first = ReadableDocument(title: "First", sections: [.init(paragraphs: ["One."])])
+        try store.saveDocument(first, for: id)
+        #expect(throws: (any Error).self) {
+            try store.saveDocument(ReadableDocument(title: "Other", sections: [.init(paragraphs: ["Two."])]), for: id)
+        }
+        #expect(try store.document(for: id) == first)
+        #expect(try FileManager.default.contentsOfDirectory(atPath: store.documentURL(id).deletingLastPathComponent().path)
+            == ["\(id.uuidString).json"])
+    }
+
+    /// A saved text in a folder that cannot be reached is not "none saved": the reading must not load its source
+    /// again and read other text.
+    @Test func aSavedTextOutOfReachIsNotNone() throws {
+        let root = try folder()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let volumes = root.appendingPathComponent("Volumes", isDirectory: true)
+        try FileManager.default.createDirectory(at: volumes, withIntermediateDirectories: false)
+        let store = ReadingLibraryStore(folder: volumes.appendingPathComponent("Backup/ReadingLibrary"))
+        ReadingOutput.$volumesFolder.withValue(volumes.path) {
+            #expect(throws: (any Error).self) { try store.document(for: UUID()) }
+            #expect(throws: (any Error).self) {
+                try store.saveDocument(ReadableDocument(sections: [.init(paragraphs: ["Text."])]), for: UUID())
+            }
+        }
+    }
+
     /// An index that cannot be read now (an I/O error, a permission) is read again later (`unavailable`), never
     /// replaced meanwhile.
     @Test func anIndexThatCannotBeReadIsReadAgainLater() throws {

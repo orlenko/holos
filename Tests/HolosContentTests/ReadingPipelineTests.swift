@@ -2053,6 +2053,46 @@ import Testing
         }
     }
 
+    /// A crash after the copy into place finished and before it was recorded leaves the copy's identity in the
+    /// manifest; the file edited in place since keeps that identity, but it is as large as the finished file: it is
+    /// never removed as a partial copy, by a resume or a Delete.
+    @Test func aFinishedCopyEditedInPlaceIsNeverRemovedAsAPartialOne() async throws {
+        let parent = try root()
+        defer { try? FileManager.default.removeItem(at: parent) }
+        let place = location(parent)
+        let unsupported: ReadingPublisher.ExclusiveRename = { _, _ in errno = ENOTSUP; return -1 }
+        let pipeline = ReadingPipeline(renderer: FakeRenderer(), joiner: FakeJoiner(), exclusiveRename: unsupported)
+        let script = script(3)
+        _ = try await pipeline.render(script: script, voiceIdentifier: voice, metadata: metadata, location: place)
+        var crashed = try manifest(place)
+        crashed.status = "incomplete"
+        crashed.publishing = ReadingFileIdentity.of(place.output)
+        try write(crashed, place)
+        #expect(crashed.outputSize == Int64(try Data(contentsOf: place.output).count))
+        // Edited in place: the same file, other bytes, as large.
+        let handle = try FileHandle(forWritingTo: place.output)
+        try handle.write(contentsOf: Data("EDITED".utf8))
+        try handle.close()
+        let edited = try Data(contentsOf: place.output)
+        await #expect(throws: HolosError.self) {
+            try await pipeline.render(script: script, voiceIdentifier: voice, metadata: metadata,
+                                      location: place, resume: true)
+        }
+        #expect(try Data(contentsOf: place.output) == edited)
+        #expect(try manifest(place).publishing != nil)
+
+        var reading = ReadingEntry(source: .web(URL(string: "https://example.com/book")!), requestedVoice: nil, speed: 1)
+        reading.state = .stopped
+        reading.output = place.output.path
+        reading.cache = place.workDirectory.path
+        let store = ReadingLibraryStore(folder: parent.appendingPathComponent("ReadingLibrary"))
+        let result = ReadingLibrary.deleteFiles(of: reading, readingsRoot: nil, store: store) { _ in
+            Issue.record("Trashed an edited file")
+        }
+        #expect(result.problem != nil)
+        #expect(try Data(contentsOf: place.output) == edited)
+    }
+
     /// A removal of the reading's partly written file that a crash cut off after it was moved aside leaves it in the
     /// place derived from the reading: the next resume removes it there before it forgets its identity. A file there
     /// that is not that one is left, and the resume stops.
@@ -2073,6 +2113,9 @@ import Testing
         crashed.status = "incomplete"
         crashed.publishing = try #require(ReadingFileIdentity.of(place.output))
         try write(crashed, place)
+        let handle = try FileHandle(forWritingTo: place.output)
+        try handle.truncate(atOffset: UInt64(full.count / 2))
+        try handle.close()
         try FileManager.default.createDirectory(at: aside.deletingLastPathComponent(), withIntermediateDirectories: false)
         try FileManager.default.moveItem(at: place.output, to: aside)
         let resumed = try await pipeline.render(script: script, voiceIdentifier: voice, metadata: metadata,

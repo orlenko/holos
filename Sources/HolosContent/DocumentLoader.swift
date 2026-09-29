@@ -27,7 +27,7 @@ public enum DocumentLoader {
         case "md", "markdown":
             document = MarkdownReader.document(from: try utf8(url))
         case "html", "htm":
-            document = HTMLReader.document(from: try Data(contentsOf: url))
+            document = HTMLReader.document(from: try contents(url))
         case "pdf":
             document = try PDFReader.document(url)
         case "rtf": document = try RichTextReader.document(url, type: .rtf)
@@ -44,8 +44,16 @@ public enum DocumentLoader {
         return document
     }
 
+    /// The bytes of the file at `url`, opened without waiting and checked on the descriptor (see `openRegularFile`):
+    /// a FIFO put in its place after the check above is refused rather than waited on.
+    private static func contents(_ url: URL) throws -> Data {
+        let handle = try openRegularFile(url)
+        defer { try? handle.close() }
+        return try handle.readToEnd() ?? Data()
+    }
+
     private static func utf8(_ url: URL) throws -> String {
-        guard let text = DocumentText.decode(try Data(contentsOf: url)) else {
+        guard let text = DocumentText.decode(try contents(url)) else {
             throw HolosError.invalidInput("\(url.lastPathComponent) is not UTF-8 text.")
         }
         return text

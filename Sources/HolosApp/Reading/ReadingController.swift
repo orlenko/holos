@@ -223,12 +223,22 @@ final class ReadingController {
             throw HolosError.unavailable("New readings are not made while the Reading list cannot be saved"
                 + (notice.map { ": \($0)" } ?? "."))
         }
-        let entry = ReadingEntry(source: source, requestedVoice: voice, speed: ReadingSpeed.clamped(speed))
+        var entry = ReadingEntry(source: source, requestedVoice: voice, speed: ReadingSpeed.clamped(speed))
+        // The folder as it is now: a later change in Settings is for readings added later.
+        entry.folder = ReadingPreferences.folder.path
+        entry.folderIsDefault = ReadingPreferences.isDefaultFolder
+        // One addition (or Delete mark) at a time, and other saves wait while it is saved: one that wrote this
+        // reading while its own save failed would bring back, at the next launch, a reading the user was told was
+        // not added.
+        while holdingWrites > 0 { await withCheckedContinuation { heldWaiters.append($0) } }
+        holdingWrites += 1
         all.insert(entry, at: 0)
         // Nothing is made for a reading the index does not keep: its saved text and cache would have no entry to be
         // found or deleted through after a quit.
-        guard await saved(growing: true) else {
-            all.removeAll { $0.id == entry.id }
+        let added = await saved(growing: true, holding: true)
+        if !added { all.removeAll { $0.id == entry.id } }
+        releaseWrites()
+        guard added else {
             onChange?()
             throw HolosError.io("The reading was not added: " + (notice ?? "the Reading list could not be saved."))
         }
@@ -540,8 +550,11 @@ final class ReadingController {
         let others = all.filter { $0.id != id }
         let (taken, otherCaches) = (others.compactMap(\.output), others.compactMap(\.cache))
         let (chosen, title, fallback) = (entry.outputURL, metadata.title, entry.source.fallbackName)
-        let (folder, isDefault, shown) = (ReadingPreferences.folder, ReadingPreferences.isDefaultFolder,
-                                          ReadingPreferences.folderText)
+        // The folder as Settings › Reading named it when the reading was added (a later change is for new readings).
+        let folder = entry.folder.map { ReadingOutput.fileURL(keepingSpelling: $0, isDirectory: true) }
+            ?? ReadingPreferences.folder
+        let isDefault = entry.folder == nil ? ReadingPreferences.isDefaultFolder : entry.folderIsDefault == true
+        let shown = (folder.path as NSString).abbreviatingWithTildeInPath
         let support = HolosPaths.supportRoot
         let configured = ProcessInfo.processInfo.environment["HOLOS_SUPPORT_DIR"]
         let (location, resume) = try await offMain { () -> (ReadingLocation, Bool) in
@@ -870,7 +883,7 @@ final class ReadingController {
         }
     }
 
-    /// Saves under way that change a Delete's mark: other saves wait for them (see `save`, `saved`).
+    /// Saves under way that add a reading or mark one for deletion: other saves wait for them (see `save`, `saved`).
     private var holdingWrites = 0
     private var heldSave = false
     private var heldWaiters: [CheckedContinuation<Void, Never>] = []

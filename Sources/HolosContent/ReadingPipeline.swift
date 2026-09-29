@@ -69,6 +69,9 @@ public struct ReadingManifest: Codable, Sendable, Equatable {
     /// volumes that cannot rename exclusively), saved before any byte is written: a copy cut off
     /// by a crash is recognized on `--resume` as this reading's own partial output.
     public var publishing: ReadingFileIdentity? = nil
+    /// The finished file's size, saved with its checksum: a copy that a crash cut off is smaller; a file with the
+    /// copy's identity that is as large is the finished file edited in place since, never removed as a partial one.
+    public var outputSize: Int64? = nil
 
     /// Manifests are small (under 1 KB per part); a larger `manifest.json` is not read.
     static let maximumBytes = 64 << 20
@@ -327,8 +330,15 @@ public struct AudioBookJoiner: ReadingAudioJoiner {
         // found first; the manifest keeps the copy's identity until both are gone.
         let token = ReadingTemporaries.publicationToken(key: key)
         let claimed = manifest.publishing
+        let evidence = ReadingLibrary.Evidence(checksums: [], publishing: claimed, finishedSize: manifest.outputSize)
         let problem = try await offMain { () -> String? in
-            try ReadingTemporaries.recoverPublicationAside(output: output, key: key, identity: claimed)
+            try ReadingTemporaries.recoverPublicationAside(output: output, key: key, evidence: evidence)
+            // The copy's file, as large as the finished one, is the finished file edited in place since (a crash came
+            // after the copy was done and before it was recorded): it is kept, and so is its identity.
+            if let claimed, try ReadingLibrary.FileVersion.of(output)?.identity == claimed, try !evidence.isPartial(output) {
+                throw HolosError.io("A file is at \(output.path) that may be this reading's, finished and changed "
+                    + "since; it is left there. Move it away or remove it, then try again.")
+            }
             let problem = claimed.flatMap { ReadingLibrary.removePartial(output, identity: $0, token: token).problem }
             // Nothing found proves nothing where the folder cannot be reached (its drive went away since the start).
             try Self.checkReachable(output)
@@ -351,6 +361,7 @@ public struct AudioBookJoiner: ReadingAudioJoiner {
         }
         manifest.status = "incomplete"
         manifest.outputSHA256 = nil
+        manifest.outputSize = nil
         manifest.duration = nil
         manifest.chapters = []
 
@@ -420,6 +431,10 @@ public struct AudioBookJoiner: ReadingAudioJoiner {
         }
         try Task.checkCancellation()
         manifest.outputSHA256 = try await fileSHA256OffMain(temporary)
+        manifest.outputSize = try await offMain { () -> Int64? in
+            var metadata = stat()
+            return lstat(RawFilePath.system(temporary), &metadata) == 0 ? Int64(metadata.st_size) : nil
+        }
         manifest.duration = summary.duration
         manifest.chapters = summary.chapters
         try await saveManifest(manifest, to: manifestURL)
@@ -455,9 +470,11 @@ public struct AudioBookJoiner: ReadingAudioJoiner {
         }
         switch outcome {
         case .failed(let error, let keep):
-            // A copy that may still be there (or aside) keeps its identity saved, so a resume or a Delete finds it.
+            // A copy that may still be there (or aside) keeps its identity saved, so a resume or a Delete finds it,
+            // and the finished size that tells it from the finished file.
             manifest.outputSHA256 = nil
             manifest.publishing = keep
+            if keep == nil { manifest.outputSize = nil }
             try? await saveManifest(manifest, to: manifestURL)
             throw error
         case .published(let published, let claimed):
@@ -1273,12 +1290,12 @@ enum ReadingTemporaries {
     /// file in `publicationAside` goes when it is that file (`identity`, the manifest's `publishing`), then the
     /// folder. Anything else there (another file, or one that cannot be checked) is an error and is left: the place
     /// is only the reading's, so a later removal must not find it taken.
-    static func recoverPublicationAside(output: URL, key: String, identity: ReadingFileIdentity?) throws {
+    static func recoverPublicationAside(output: URL, key: String, evidence: ReadingLibrary.Evidence) throws {
         let file = publicationAside(output: output, key: key)
         let folder = file.deletingLastPathComponent()
         guard try ReadingOutput.exists(folder) else { return }
         if try ReadingOutput.exists(file) {
-            guard let identity, try ExclusivePublisher.FileIdentity.lookup(file) == identity else {
+            guard try evidence.isPartial(file) else {
                 throw HolosError.io("\(file.path) was left by an earlier try to save this reading, and it is not the "
                     + "reading's partly written file. Move it away or remove it in Finder, then try again.")
             }
