@@ -430,6 +430,9 @@ struct AXHandle: Equatable {
     /// For a terminal, the window and session focused at key-down, which must still have focus before each chunk.
     private let terminalFocus: TerminalFocus<AXHandle>?
 
+    /// A known terminal (`captureTerminal`), not a web editor or another app's field.
+    public var isTerminal: Bool { terminalFocus != nil }
+
     private init(pid: pid_t, appName: String, element: AXUIElement? = nil,
                  terminalFocus: TerminalFocus<AXHandle>? = nil) {
         self.pid = pid

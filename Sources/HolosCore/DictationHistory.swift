@@ -44,14 +44,27 @@ public struct DictationRecord: Codable, Sendable, Equatable, Identifiable {
         public var corrections: Int
         /// Words Apple Intelligence's on-device fix changed.
         public var aiChangedWords: Int
+        /// Spoken paths and commands written as code (`SpokenCodeFormatter`); 0 in records made before it.
+        public var codeSpans: Int
 
-        public init(fillersRemoved: Bool = false, corrections: Int = 0, aiChangedWords: Int = 0) {
+        public init(fillersRemoved: Bool = false, corrections: Int = 0, aiChangedWords: Int = 0, codeSpans: Int = 0) {
             self.fillersRemoved = fillersRemoved
             self.corrections = corrections
             self.aiChangedWords = aiChangedWords
+            self.codeSpans = codeSpans
         }
 
-        public var isEmpty: Bool { !fillersRemoved && corrections == 0 && aiChangedWords == 0 }
+        enum CodingKeys: String, CodingKey { case fillersRemoved, corrections, aiChangedWords, codeSpans }
+
+        public init(from decoder: any Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            fillersRemoved = try container.decode(Bool.self, forKey: .fillersRemoved)
+            corrections = try container.decode(Int.self, forKey: .corrections)
+            aiChangedWords = try container.decode(Int.self, forKey: .aiChangedWords)
+            codeSpans = try container.decodeIfPresent(Int.self, forKey: .codeSpans) ?? 0
+        }
+
+        public var isEmpty: Bool { !fillersRemoved && corrections == 0 && aiChangedWords == 0 && codeSpans == 0 }
     }
 
     public var schemaVersion: Int
@@ -77,6 +90,9 @@ public struct DictationRecord: Codable, Sendable, Equatable, Identifiable {
     /// The microphone audio the recognizer heard, kept next to the history for Run Again; nil when none was kept
     /// (the setting was off, the dictation predates it, or the file could not be finished).
     public var audio: Audio?
+    /// The dictation was for a terminal, where code tokens are typed without backticks (Run Again does the same);
+    /// nil for any other app, and in records made before it (`SpokenCode.isTerminal` reads their app's name).
+    public var terminal: Bool?
 
     /// A dictation's saved audio: `<History>/audio/<id>.m4a` (AAC, mono), and how long it is.
     public struct Audio: Codable, Sendable, Equatable {
@@ -95,7 +111,7 @@ public struct DictationRecord: Codable, Sendable, Equatable, Identifiable {
 
     public init(id: UUID, date: Date, app: String?, language: String, text: String, heard: String,
                 unwritten: String? = nil, fixes: Fixes = Fixes(), outcome: Outcome, seconds: Double,
-                words: Int? = nil, audio: Audio? = nil) {
+                words: Int? = nil, audio: Audio? = nil, terminal: Bool? = nil) {
         self.schemaVersion = Self.currentSchemaVersion
         self.id = id
         self.date = date
@@ -111,6 +127,7 @@ public struct DictationRecord: Codable, Sendable, Equatable, Identifiable {
         self.seconds = max(0, seconds)
         self.words = words ?? Self.wordCount(text)
         self.audio = audio
+        self.terminal = terminal == true ? true : nil
     }
 
     /// What History's Copy copies: the part that was not written for a partly written dictation (what Copy Result
@@ -161,6 +178,9 @@ public struct DictationRecord: Codable, Sendable, Equatable, Identifiable {
         var parts: [String] = []
         if fixes.aiChangedWords > 0 {
             parts.append("Apple Intelligence changed \(fixes.aiChangedWords) \(fixes.aiChangedWords == 1 ? "word" : "words")")
+        }
+        if fixes.codeSpans > 0 {
+            parts.append("\(fixes.codeSpans) spoken \(fixes.codeSpans == 1 ? "path or command" : "paths or commands") as code")
         }
         if fixes.corrections > 0 {
             parts.append("\(fixes.corrections) \(fixes.corrections == 1 ? "correction" : "corrections")")
@@ -249,17 +269,24 @@ extension DictationRecord {
     /// (`AIFixTranscript.final`); nil `rest` (the transcript no longer extends what was written) keeps `recognized`.
     /// A final transcript that came back empty after text was written while the user spoke (`inserted`, the
     /// recognized chunks written) keeps what is in the field: those chunks, or their fixed form.
+    ///
+    /// With spoken code (`SpokenCodeFormatter`), which runs before Apple Intelligence's fix, `coded` is the same text
+    /// after spoken code alone: the chunks written and the rest, as `fixedWritten` and `rest` are. Words Apple
+    /// Intelligence changed are counted against it, so code tokens do not count as its changes.
     public static func endText(recognized: String, fixChanged: Bool, fixedWritten: String, rest: String?,
-                               inserted: String = "") -> (text: String, aiChangedWords: Int) {
+                               inserted: String = "", coded: (written: String, rest: String?)? = nil)
+        -> (text: String, aiChangedWords: Int) {
         let isEmpty: (String) -> Bool = { $0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
         if isEmpty(recognized), !isEmpty(inserted) {
             guard fixChanged, !isEmpty(fixedWritten) else { return (inserted, 0) }
-            return (fixedWritten, WordDiff.changedWordCount(from: inserted, to: fixedWritten))
+            let base = coded.map(\.written).flatMap { isEmpty($0) ? nil : $0 } ?? inserted
+            return (fixedWritten, WordDiff.changedWordCount(from: base, to: fixedWritten))
         }
         guard fixChanged, let final = AIFixTranscript.final(written: fixedWritten, rest: rest) else {
             return (recognized, 0)
         }
-        return (final, WordDiff.changedWordCount(from: recognized, to: final))
+        let base = coded.flatMap { AIFixTranscript.final(written: $0.written, rest: $0.rest) } ?? recognized
+        return (final, WordDiff.changedWordCount(from: base, to: final))
     }
 }
 

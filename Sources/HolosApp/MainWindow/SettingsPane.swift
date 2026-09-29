@@ -45,6 +45,9 @@ struct SetupState {
     var aiFix = false
     /// Why the on-device model cannot be used; nil when it can.
     var aiFixUnavailable: String?
+    /// Write spoken paths and commands as code, and wrap them in backticks (never in a terminal).
+    var spokenCode = true
+    var spokenCodeBackticks = true
     /// The dictation language's locale identifier ("fr-CA"), and the ones to offer (`DictationLanguage.groups`);
     /// empty while loading.
     var locale = DictationLanguage.standard
@@ -73,6 +76,8 @@ enum SetupAction: Int, CaseIterable {
     case people, clearHistory, setupAssistant
     /// Settings › History and privacy › Keep the audio of dictations.
     case toggleHistoryAudio
+    /// Settings › Dictation › Write spoken paths and commands as code, and Wrap them in backticks.
+    case toggleSpokenCode, toggleSpokenCodeBackticks
 }
 
 /// The main window's Settings section (it replaces the Setup window): cards for Permissions, Dictation, Meetings, and
@@ -108,6 +113,10 @@ final class SettingsPane: NSViewController, MainSectionContent {
                                          target: nil, action: nil)
     private static let aiFixTitle = "Fix misheard words with Apple Intelligence (on-device)"
     private let aiFixToggle = NSButton(checkboxWithTitle: aiFixTitle, target: nil, action: nil)
+    private let spokenCodeToggle = NSButton(checkboxWithTitle: "Write spoken paths and commands as code",
+                                            target: nil, action: nil)
+    private let spokenCodeBackticksToggle = NSButton(checkboxWithTitle: "Wrap them in backticks (never in a terminal)",
+                                                     target: nil, action: nil)
     private let opacitySlider = NSSlider(value: 0.85, minValue: 0.3, maxValue: 1.0, target: nil, action: nil)
     private let opacityValue = NSTextField(labelWithString: "")
     private let recordSystemAudioToggle = NSButton(
@@ -208,11 +217,17 @@ final class SettingsPane: NSViewController, MainSectionContent {
         addRow(.assets, "Speech model", to: grid)
 
         for (toggle, action) in [(fillerToggle, SetupAction.toggleFillers), (aiFixToggle, .toggleAIFix),
-                                 (previewToggle, .togglePreview)] {
+                                 (previewToggle, .togglePreview), (spokenCodeToggle, .toggleSpokenCode),
+                                 (spokenCodeBackticksToggle, .toggleSpokenCodeBackticks)] {
             toggle.target = self
             toggle.action = #selector(buttonPressed(_:))
             toggle.tag = action.rawValue
         }
+        spokenCodeToggle.toolTip = "“scripts slash restart dash app dot S H” is written scripts/restart-app.sh, “slash Q C” /qc. Apple's on-device model finds them when it is available; a token is kept only when every symbol in it was said, and the rest of the text never changes."
+        spokenCodeBackticksToggle.toolTip = "Writes `scripts/restart-app.sh` with backticks. A terminal always gets the path itself."
+        // Indented under the option it belongs to.
+        let backticksRow = NSStackView(views: [spokenCodeBackticksToggle])
+        backticksRow.edgeInsets = NSEdgeInsets(top: 0, left: 20, bottom: 0, right: 0)
         previewToggle.toolTip = "When off, text just streams into the field. Problems that need you (text that could not be written, a failed dictation) are always shown."
         aiFixToggle.toolTip = "Each phrase is checked by Apple's on-device model before it is typed, which adds about half a second. Only small fixes are kept; History and Copy Original have the text as heard."
 
@@ -228,7 +243,8 @@ final class SettingsPane: NSViewController, MainSectionContent {
         opacityRow.spacing = 10
         opacityRow.edgeInsets = NSEdgeInsets(top: 0, left: 20, bottom: 0, right: 0)
 
-        return card("Dictation", [grid, fillerToggle, aiFixToggle, previewToggle, opacityRow], widths: [grid])
+        return card("Dictation", [grid, fillerToggle, spokenCodeToggle, backticksRow, aiFixToggle, previewToggle,
+                                  opacityRow], widths: [grid])
     }
 
     private func meetingsCard() -> NSView {
@@ -478,6 +494,9 @@ final class SettingsPane: NSViewController, MainSectionContent {
         aiFixToggle.isEnabled = state.aiFixUnavailable == nil
         aiFixToggle.state = state.aiFix && state.aiFixUnavailable == nil ? .on : .off
         aiFixToggle.title = state.aiFixUnavailable.map { "\(Self.aiFixTitle) — unavailable: \($0)" } ?? Self.aiFixTitle
+        spokenCodeToggle.state = state.spokenCode ? .on : .off
+        spokenCodeBackticksToggle.state = state.spokenCodeBackticks ? .on : .off
+        spokenCodeBackticksToggle.isEnabled = state.spokenCode
         opacitySlider.isEnabled = state.showPreview
         // Leave the slider alone while the user drags it.
         if NSEvent.pressedMouseButtons == 0 { opacitySlider.doubleValue = state.previewOpacity }

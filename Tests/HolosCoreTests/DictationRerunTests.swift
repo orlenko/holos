@@ -110,10 +110,11 @@ private func fixer(_ model: FakeModel, corrections: CorrectionList = CorrectionL
     #expect(report.written.changed)
     #expect(report.changed)
     #expect(report.changedBy == [.recognizer])
-    #expect(report.steps.map(\.step) == [.recognizer, .fillers, .corrections, .aiFix])
+    #expect(report.steps.map(\.step) == [.recognizer, .fillers, .corrections, .spokenCode, .aiFix])
     #expect(report.steps[0].summary == "Recognizer: heard differently from then: “a boon to” → “Ubuntu”")
     #expect(report.steps[2].summary == "Corrections: nothing replaced")
-    #expect(report.steps[3].summary == "Apple Intelligence: off")
+    #expect(report.steps[3].summary == "Spoken code: off")
+    #expect(report.steps[4].summary == "Apple Intelligence: off")
     #expect(report.audioSeconds == 3.2)
     #expect(report.fixes == .init())
 }
@@ -150,7 +151,7 @@ private func fixer(_ model: FakeModel, corrections: CorrectionList = CorrectionL
                                      pipeline: fixing)
     #expect(fixed.changedBy == [.aiFix])
     #expect(fixed.written.now == "I wonder weather it rains.")
-    #expect(fixed.steps[3].summary == "Apple Intelligence: “whether” → “weather”")
+    #expect(fixed.steps[4].summary == "Apple Intelligence: “whether” → “weather”")
 
     // The same result as then: nothing behaved differently.
     let same = DictationRerunReport(record: saved("Send it.", heard: "Um, send it.", fixes: .init(fillersRemoved: true)),
@@ -172,7 +173,7 @@ private func fixer(_ model: FakeModel, corrections: CorrectionList = CorrectionL
     let written = try #require(object["written"] as? [String: Any])
     #expect(Set(written.keys) == ["then", "now", "changed", "changes"])
     let steps = try #require(object["steps"] as? [[String: Any]])
-    #expect(steps.map { $0["step"] as? String } == ["recognizer", "fillers", "corrections", "aiFix"])
+    #expect(steps.map { $0["step"] as? String } == ["recognizer", "fillers", "corrections", "spokenCode", "aiFix"])
     #expect(Set(steps[0].keys) == ["step", "enabled", "input", "output", "changed", "changes", "note"]
         || Set(steps[0].keys) == ["step", "enabled", "input", "output", "changed", "changes"])
     #expect(object["changedBy"] as? [String] == ["recognizer"])

@@ -63,34 +63,62 @@ public enum OnDeviceFix {
             return try await session.respond(to: prompt, options: GenerationOptions(samplingMode: .greedy)).content
         }
     }
+
+    /// Spoken paths and commands written as code for dictation in `language`: with Apple's on-device model (the same
+    /// model, guardrails, greedy sampling and a fresh session per chunk as the fix) when it can be used, else runs
+    /// found without it (`SpokenCode.fallback`). `backticks`: off for a terminal.
+    public static func spokenCode(corrections: CorrectionList, language: String, backticks: Bool,
+                                  timeout: Duration = chunkTimeout) -> SpokenCodeFormatter {
+        guard unavailableReason(language: language) == nil else {
+            return SpokenCodeFormatter(backticks: backticks, language: language, corrections: corrections,
+                                       timeout: timeout, model: nil)
+        }
+        let model = model
+        return SpokenCodeFormatter(backticks: backticks, language: language, corrections: corrections,
+                                   timeout: timeout) { instructions, prompt in
+            let session = LanguageModelSession(model: model, instructions: instructions)
+            return try await session.respond(to: prompt, options: GenerationOptions(samplingMode: .greedy)).content
+        }
+    }
 }
 
 /// The dictation settings the app saves (its UserDefaults domain), which Run Again uses: the language, filler
-/// removal, and Apple Intelligence's fix.
+/// removal, spoken code, and Apple Intelligence's fix.
 public struct DictationPreferences: Sendable, Equatable {
     /// The app's defaults domain, which `voiceislocal history rerun` reads.
     public static let appDomain = "ca.orlenko.holos.app"
     public static let languageKey = "dictationLocale"
     public static let removeFillersKey = "removeFillers"
     public static let aiFixKey = "aiFixMisheard"
+    public static let spokenCodeKey = "spokenCode"
+    public static let spokenCodeBackticksKey = "spokenCodeBackticks"
 
     /// The language chosen in Settings; nil when none was (the app then uses the supported one closest to the user's
     /// languages).
     public var language: String?
     public var removeFillers: Bool
     public var aiFix: Bool
+    /// Write spoken paths and commands as code, and wrap them in backticks (never in a terminal).
+    public var spokenCode: Bool
+    public var spokenCodeBackticks: Bool
 
-    public init(language: String?, removeFillers: Bool, aiFix: Bool) {
+    public init(language: String?, removeFillers: Bool, aiFix: Bool, spokenCode: Bool = true,
+                spokenCodeBackticks: Bool = true) {
         self.language = language
         self.removeFillers = removeFillers
         self.aiFix = aiFix
+        self.spokenCode = spokenCode
+        self.spokenCodeBackticks = spokenCodeBackticks
     }
 
-    /// The settings saved in `defaults`, with the app's defaults for those never set (fillers removed, fix off).
+    /// The settings saved in `defaults`, with the app's defaults for those never set (fillers removed, fix off,
+    /// spoken code on, in backticks).
     public static func saved(in defaults: UserDefaults?) -> Self {
         Self(language: defaults?.string(forKey: languageKey).flatMap { $0.isEmpty ? nil : $0 },
              removeFillers: defaults?.object(forKey: removeFillersKey) as? Bool ?? true,
-             aiFix: defaults?.bool(forKey: aiFixKey) ?? false)
+             aiFix: defaults?.bool(forKey: aiFixKey) ?? false,
+             spokenCode: defaults?.object(forKey: spokenCodeKey) as? Bool ?? true,
+             spokenCodeBackticks: defaults?.object(forKey: spokenCodeBackticksKey) as? Bool ?? true)
     }
 }
 
@@ -100,8 +128,11 @@ public struct DictationPreferences: Sendable, Equatable {
 /// Nothing is written into any app and nothing is copied.
 public enum DictationRerun {
     /// The text steps for the current settings, and, when the fix was asked for but cannot run, why not.
+    /// `spokenCode` writes spoken paths and commands as code, in backticks when `backticks` (never for a dictation
+    /// typed into a terminal: `run`).
     public static func pipeline(language: String, removeFillers: Bool, corrections: CorrectionList,
-                                aiFix: Bool) -> (pipeline: DictationTextPipeline, aiNote: String?) {
+                                aiFix: Bool, spokenCode: Bool = false, backticks: Bool = true)
+        -> (pipeline: DictationTextPipeline, aiNote: String?) {
         var note: String?
         var fixer: TranscriptFixer?
         if aiFix {
@@ -112,8 +143,10 @@ public enum DictationRerun {
                 fixer = OnDeviceFix.fixer(corrections: corrections, language: language)
             }
         }
+        let coder = spokenCode
+            ? OnDeviceFix.spokenCode(corrections: corrections, language: language, backticks: backticks) : nil
         return (DictationTextPipeline(language: language, removeFillers: removeFillers, corrections: corrections,
-                                      fixer: fixer), note)
+                                      fixer: fixer, coder: coder), note)
     }
 
     /// The recognizer's results for the audio at `url`, in order: the speech transcriber live dictation uses, with
@@ -136,8 +169,12 @@ public enum DictationRerun {
     }
 
     /// Runs `record`'s audio (`url`) again through the recognizer and `pipeline`, and compares.
+    /// A dictation for a terminal (`DictationRecord.terminal`, or for older records `SpokenCode.isTerminal`) gets its
+    /// code tokens without backticks, as live dictation types them.
     public static func run(_ record: DictationRecord, audio url: URL, pipeline: DictationTextPipeline,
                            aiNote: String? = nil) async throws -> DictationRerunReport {
+        var pipeline = pipeline
+        if record.terminal == true || SpokenCode.isTerminal(appName: record.app) { pipeline.coder?.backticks = false }
         let segments = try await recognize(url, locale: pipeline.language,
                                            vocabulary: pipeline.corrections.vocabulary(language: pipeline.language))
         let output = await pipeline.run(segments: segments)
@@ -150,7 +187,7 @@ public enum DictationRerun {
         var updated = DictationRecord(
             id: record.id, date: record.date, app: record.app, language: report.languageNow, text: report.written.now,
             heard: report.heard.now.isEmpty ? report.written.now : report.heard.now, fixes: report.fixes,
-            outcome: record.outcome, seconds: record.seconds, audio: record.audio)
+            outcome: record.outcome, seconds: record.seconds, audio: record.audio, terminal: record.terminal)
         updated.schemaVersion = record.schemaVersion
         return updated
     }

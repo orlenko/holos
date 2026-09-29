@@ -28,21 +28,100 @@ public enum HistoryAudio {
 }
 
 /// The text steps live dictation applies to what the recognizer heard, in order: filler removal, learned corrections,
-/// then Apple Intelligence's fix, chunk by chunk as the words are committed and the rest on release. Run Again feeds it
-/// a saved dictation's recognizer results so the text comes out as live dictation would write it now. The fix is
-/// injected (`fixer`), so tests run it with a closure; nil runs without it.
+/// spoken code, then Apple Intelligence's fix, chunk by chunk as the words are committed and the rest on release. Run
+/// Again feeds it a saved dictation's recognizer results so the text comes out as live dictation would write it now.
+/// Spoken code and the fix are injected (`coder`, `fixer`), so tests run them with closures; nil runs without them.
 public struct DictationTextPipeline: Sendable {
     public var language: String
     public var removeFillers: Bool
     public var corrections: CorrectionList
+    /// Spoken paths and commands written as code; nil when it is off.
+    public var coder: SpokenCodeFormatter?
     /// Apple Intelligence's fix; nil when it is off or cannot be used.
     public var fixer: TranscriptFixer?
 
-    public init(language: String, removeFillers: Bool, corrections: CorrectionList, fixer: TranscriptFixer? = nil) {
+    public init(language: String, removeFillers: Bool, corrections: CorrectionList, fixer: TranscriptFixer? = nil,
+                coder: SpokenCodeFormatter? = nil) {
         self.language = language
         self.removeFillers = removeFillers
         self.corrections = corrections
         self.fixer = fixer
+        self.coder = coder
+    }
+
+    /// One chunk through spoken code, then Apple Intelligence's fix, as live dictation runs them.
+    public struct ChunkResult: Sendable, Equatable {
+        /// The chunk as written.
+        public var text: String
+        /// The chunk after spoken code alone.
+        public var coded: String
+        public var codeSpans: Int
+        public var codeOutcome: SpokenCodeFormatter.Outcome?
+        public var fixOutcome: TranscriptFixer.Outcome?
+    }
+
+    /// Runs `chunk` through `coder`, then `fixer`; each is skipped when nil. Both share the fix's time limit: the fix
+    /// gets what spoken code left of it, and is skipped (`timedOut`) when that is under `minimumFixTime`. The fix
+    /// keeps every code token as it was, with what stands next to it: a fix that changed one (a space put inside
+    /// `foo-bar.txt`, a comma after `/tmp/a`) is dropped, and a chunk that ends with a token without backticks (a
+    /// terminal's) gets no closing punctuation, which would join the token (`cat /tmp/file.`).
+    public static func process(_ chunk: String, isFinal: Bool, coder: SpokenCodeFormatter?,
+                               fixer: TranscriptFixer?) async -> ChunkResult {
+        let started = ContinuousClock.now
+        let code = await coder?.format(chunk)
+        let coded = code?.text ?? chunk
+        var fix: TranscriptFixer.Result?
+        if var fixer {
+            let remaining = fixer.timeout - started.duration(to: .now)
+            if remaining < minimumFixTime {
+                fix = .init(text: coded, outcome: .timedOut)
+            } else {
+                fixer.timeout = remaining
+                // A terminal's last word that is a token, this step's or one already there (a learned
+                // correction's `/qc`), gets no closing punctuation.
+                let bareEnd = coder?.backticks == false && (code?.endsWithToken == true || endsWithToken(coded))
+                fix = await fixer.fix(coded, isFinal: isFinal && !bareEnd)
+            }
+        }
+        if let result = fix, let tokens = code?.tokens, !keeps(tokens, from: coded, in: result.text) {
+            fix = .init(text: coded, outcome: .rejected)
+        }
+        return ChunkResult(text: fix?.text ?? coded, coded: coded, codeSpans: code?.spans ?? 0,
+                           codeOutcome: code?.outcome, fixOutcome: fix?.outcome)
+    }
+
+    /// Whether the last word of `text`, without the marks that close a sentence, has a symbol of a code token
+    /// (`SpokenCode.symbols`: `/qc`, `file.txt`).
+    static func endsWithToken(_ text: String) -> Bool {
+        guard let last = text.split(whereSeparator: \.isWhitespace).last else { return false }
+        let word = last.reversed().drop { ".!?…,;:".contains($0) }.reversed()
+        return word.contains { SpokenCode.symbols.contains($0) }
+    }
+
+    /// Least time left for the fix after spoken code; a fix took 0.35–0.55 s once the model was loaded.
+    static let minimumFixTime: Duration = .milliseconds(400)
+
+    /// Whether `text` has each of `tokens`, in order, with the same character before and after each as `coded` has
+    /// (a closing mark may follow a token in backticks that ended `coded`).
+    static func keeps(_ tokens: [String], from coded: String, in text: String) -> Bool {
+        var restCoded = coded[...], restText = text[...]
+        func neighbors(_ range: Range<String.Index>, in string: String) -> (Character?, Character?) {
+            (range.lowerBound > string.startIndex ? string[string.index(before: range.lowerBound)] : nil,
+             range.upperBound < string.endIndex ? string[range.upperBound] : nil)
+        }
+        for token in tokens {
+            guard let was = restCoded.firstRange(of: token), let now = restText.firstRange(of: token) else {
+                return false
+            }
+            let (beforeWas, afterWas) = neighbors(was, in: coded), (beforeNow, afterNow) = neighbors(now, in: text)
+            let closing = token.hasPrefix("`") && coded[was.upperBound...].allSatisfy(\.isWhitespace)
+                && afterNow.map { ".!?…".contains($0) } == true
+                && text[text.index(after: now.upperBound)...].allSatisfy(\.isWhitespace)
+            guard beforeWas == beforeNow, afterWas == afterNow || closing else { return false }
+            restCoded = coded[was.upperBound...]
+            restText = text[now.upperBound...]
+        }
+        return true
     }
 
     /// What each step produced.
@@ -51,12 +130,20 @@ public struct DictationTextPipeline: Sendable {
         public var heard: String
         /// After filler removal.
         public var withoutFillers: String
-        /// After learned corrections: what dictation writes without Apple Intelligence's fix.
+        /// After learned corrections: what dictation writes without spoken code and Apple Intelligence's fix.
         public var corrected: String
-        /// The text as written: after Apple Intelligence's fix (`corrected` when it is off or changed nothing).
+        /// After spoken code (`corrected` when it is off or changed nothing): what Apple Intelligence's fix was given.
+        public var coded: String
+        /// The text as written: after Apple Intelligence's fix (`coded` when it is off or changed nothing).
         public var written: String
         /// Phrases the corrections replaced.
         public var corrections: Int
+        /// Whether spoken code ran.
+        public var spokenCode: Bool = false
+        /// Spoken paths and commands written as code.
+        public var codeSpans: Int = 0
+        /// Each chunk's spoken code outcome, in order.
+        public var codeOutcomes: [SpokenCodeFormatter.Outcome] = []
         /// Whether the fix ran.
         public var aiFixed: Bool
         /// Words Apple Intelligence's fix changed.
@@ -79,29 +166,46 @@ public struct DictationTextPipeline: Sendable {
     }
 
     /// Filler removal and corrections as live dictation applies them to the words committed so far, holding back a
-    /// trailing comma or phrase start that later words may still change.
+    /// trailing comma or phrase start that later words may still change, and with spoken code, a trailing run of
+    /// spoken symbols that later words may continue (`SpokenCode.withholdingTrailingRun`).
     public func cleanedForStreaming(_ text: String) -> String {
-        corrections.applyWithholdingPartialMatch(
-            to: removeFillers ? FillerWords.removeWithholdingTrailingComma(from: text, language: language) : text)
+        Self.cleanedForStreaming(text, language: language, removeFillers: removeFillers, corrections: corrections,
+                                 spokenCode: coder != nil)
     }
 
-    /// Runs the steps on the recognizer's results (`segments`, in order). With the fix, each result is taken as
-    /// committed in turn, as dictation writing into a field streams it (the last one too: the recognizer commits it
-    /// when it finishes, before the result), and each new part, cleaned as streaming cleans it, is fixed as a chunk;
-    /// what streaming held back (a trailing comma, the start of a correction) is fixed on release, as `isFinal`.
-    /// Live dictation joins chunks queued while the model is busy, which depends on timing, so its fix may differ.
+    /// `cleanedForStreaming`, for live dictation.
+    public static func cleanedForStreaming(_ text: String, language: String, removeFillers: Bool,
+                                           corrections: CorrectionList, spokenCode: Bool) -> String {
+        let cleaned = corrections.applyWithholdingPartialMatch(
+            to: removeFillers ? FillerWords.removeWithholdingTrailingComma(from: text, language: language) : text)
+        return spokenCode ? SpokenCode.withholdingTrailingRun(cleaned, language: language) : cleaned
+    }
+
+    /// Runs the steps on the recognizer's results (`segments`, in order). With spoken code or the fix, each result is
+    /// taken as committed in turn, as dictation writing into a field streams it (the last one too: the recognizer
+    /// commits it when it finishes, before the result), and each new part, cleaned as streaming cleans it, is
+    /// formatted and fixed as a chunk; what streaming held back (a trailing comma, the start of a correction or of a
+    /// spoken path) is on release, the fix's `isFinal`. Live dictation joins chunks queued while the model is busy,
+    /// which depends on timing, so its result may differ.
     public func run(segments: [String]) async -> Output {
         let heard = Self.transcript(segments)
         let withoutFillers = withoutFillers(heard).trimmingCharacters(in: .whitespacesAndNewlines)
         let (corrected, count) = corrections.applyCounting(to: withoutFillers)
-        var output = Output(heard: heard, withoutFillers: withoutFillers, corrected: corrected, written: corrected,
-                            corrections: count, aiFixed: false, aiChangedWords: 0, aiOutcomes: [])
-        guard let fixer, !corrected.isEmpty else { return output }
-        output.aiFixed = true
-        // Streaming: what the pipeline was handed (as recognized) and what it wrote (as fixed).
+        var output = Output(heard: heard, withoutFillers: withoutFillers, corrected: corrected, coded: corrected,
+                            written: corrected, corrections: count, aiFixed: false, aiChangedWords: 0, aiOutcomes: [])
+        guard fixer != nil || coder != nil, !corrected.isEmpty else { return output }
+        output.aiFixed = fixer != nil
+        output.spokenCode = coder != nil
+        // Streaming: what the pipeline was handed (as recognized), what spoken code made of it, and what it wrote.
         var submitted = ""
+        var coded = ""
         var written = ""
         var streaming = true
+        func note(_ result: ChunkResult) {
+            if let outcome = result.fixOutcome { output.aiOutcomes.append(outcome) }
+            if let outcome = result.codeOutcome { output.codeOutcomes.append(outcome) }
+            output.codeSpans += result.codeSpans
+        }
         for count in stride(from: 1, through: segments.count, by: 1) {
             let streamed = cleanedForStreaming(Self.transcript(Array(segments.prefix(count))))
             guard streamed.hasPrefix(submitted) else {
@@ -111,24 +215,29 @@ public struct DictationTextPipeline: Sendable {
             }
             let chunk = String(streamed.dropFirst(submitted.count))
             guard !chunk.isEmpty else { continue }
-            let result = await fixer.fix(chunk, isFinal: false)
-            output.aiOutcomes.append(result.outcome)
+            let result = await Self.process(chunk, isFinal: false, coder: coder, fixer: fixer)
+            note(result)
             submitted += chunk
+            coded += result.coded
             written += result.text
         }
         let unwritten = corrected.hasPrefix(submitted) ? String(corrected.dropFirst(submitted.count)) : nil
         var fixedRest: String?
+        var codedRest: String?
         if streaming, let rest = unwritten, !rest.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            let result = await fixer.fix(rest, isFinal: true)
-            output.aiOutcomes.append(result.outcome)
+            let result = await Self.process(rest, isFinal: true, coder: coder, fixer: fixer)
+            note(result)
             fixedRest = result.text
+            codedRest = result.coded
         }
         let attempted = unwritten.map { AIFixUnwritten.attempted($0, fixedRest: fixedRest, failedWrite: nil) }
+        let codedAttempted = unwritten.map { AIFixUnwritten.attempted($0, fixedRest: codedRest, failedWrite: nil) }
         let changed = written != submitted || (attempted ?? "") != (unwritten ?? "")
         let end = DictationRecord.endText(recognized: corrected, fixChanged: changed, fixedWritten: written,
-                                          rest: attempted)
+                                          rest: attempted, coded: (coded, codedAttempted))
         output.written = end.text.trimmingCharacters(in: .whitespacesAndNewlines)
         output.aiChangedWords = end.aiChangedWords
+        if changed, let final = AIFixTranscript.final(written: coded, rest: codedAttempted) { output.coded = final }
         return output
     }
 }
@@ -186,13 +295,14 @@ extension WordDiff {
 /// which steps did something different from then. `voiceislocal history rerun --json` prints it.
 public struct DictationRerunReport: Codable, Sendable, Equatable {
     public enum Step: String, Codable, Sendable, CaseIterable {
-        case recognizer, fillers, corrections, aiFix
+        case recognizer, fillers, corrections, spokenCode, aiFix
 
         public var title: String {
             switch self {
             case .recognizer: "Recognizer"
             case .fillers: "Filler removal"
             case .corrections: "Corrections"
+            case .spokenCode: "Spoken code"
             case .aiFix: "Apple Intelligence"
             }
         }
@@ -246,6 +356,8 @@ public struct DictationRerunReport: Codable, Sendable, Equatable {
                 !enabled ? "off" : changed ? WordDiff.describe(changes) : "nothing removed"
             case .corrections:
                 changed ? WordDiff.describe(changes) : "nothing replaced"
+            case .spokenCode:
+                !enabled ? "off" : changed ? WordDiff.describe(changes) : "no change"
             case .aiFix:
                 !enabled ? (note ?? "off") : changed ? WordDiff.describe(changes) : "no change"
             }
@@ -288,7 +400,7 @@ public struct DictationRerunReport: Codable, Sendable, Equatable {
         written = Comparison(then: record.text, now: output.written)
         changed = written.changed
         fixes = DictationRecord.Fixes(fillersRemoved: output.fillersRemoved, corrections: output.corrections,
-                                      aiChangedWords: output.aiChangedWords)
+                                      aiChangedWords: output.aiChangedWords, codeSpans: output.codeSpans)
         let outcomes = output.aiOutcomes.map(\.rawValue)
         steps = [
             StepResult(step: .recognizer, enabled: true, input: record.heard, output: output.heard),
@@ -296,7 +408,9 @@ public struct DictationRerunReport: Codable, Sendable, Equatable {
                        output: output.withoutFillers, note: pipeline.removeFillers ? nil : "off"),
             StepResult(step: .corrections, enabled: true, input: output.withoutFillers, output: output.corrected,
                        note: "\(output.corrections) replaced"),
-            StepResult(step: .aiFix, enabled: output.aiFixed, input: output.corrected, output: output.written,
+            StepResult(step: .spokenCode, enabled: output.spokenCode, input: output.corrected, output: output.coded,
+                       note: output.spokenCode ? "\(output.codeSpans) written as code" : "off"),
+            StepResult(step: .aiFix, enabled: output.aiFixed, input: output.coded, output: output.written,
                        note: output.aiFixed ? (outcomes.isEmpty ? "nothing to fix" : outcomes.joined(separator: ", "))
                                             : (aiNote ?? "off")),
         ]
@@ -319,10 +433,14 @@ public struct DictationRerunReport: Codable, Sendable, Equatable {
         }
         let (corrected, count) = pipeline.corrections.applyCounting(to: withoutFillers)
         // Without then's fix the text written then is what fillers and corrections made of the words heard.
-        let otherWords = record.fixes.aiChangedWords == 0 && !heardChanged && !steps.contains(.fillers)
-            && WordDiff.normalized(corrected) != WordDiff.normalized(record.text)
+        let otherWords = record.fixes.aiChangedWords == 0 && record.fixes.codeSpans == 0 && !heardChanged
+            && !steps.contains(.fillers) && WordDiff.normalized(corrected) != WordDiff.normalized(record.text)
         if count != record.fixes.corrections || output.corrections != record.fixes.corrections || otherWords {
             steps.append(.corrections)
+        }
+        if output.codeSpans != record.fixes.codeSpans
+            || (writtenChanged && steps.isEmpty && output.codeSpans > 0 && output.aiChangedWords == 0) {
+            steps.append(.spokenCode)
         }
         if output.aiChangedWords != record.fixes.aiChangedWords
             || (writtenChanged && steps.isEmpty && output.aiChangedWords > 0) {
@@ -343,14 +461,17 @@ public struct DictationRerunBatch: Codable, Sendable, Equatable {
         /// Why the fix could not run, when it was asked for.
         public var aiFixUnavailable: String?
         public var corrections: Int
+        /// Spoken paths and commands written as code; nil in a batch made before it.
+        public var spokenCode: Bool?
 
         public init(language: String?, removeFillers: Bool, aiFix: Bool, aiFixUnavailable: String?,
-                    corrections: Int) {
+                    corrections: Int, spokenCode: Bool? = nil) {
             self.language = language
             self.removeFillers = removeFillers
             self.aiFix = aiFix
             self.aiFixUnavailable = aiFixUnavailable
             self.corrections = corrections
+            self.spokenCode = spokenCode
         }
     }
 

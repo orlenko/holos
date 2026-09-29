@@ -145,7 +145,7 @@ Meeting can also forget the voice samples learned from that meeting. See the
 | Meetings | ⌘3 | The saved meetings (was the Meetings window). Return opens Review, ⌫ is Delete Meeting…. |
 | People | ⌘4 | People you have named and their voice samples (was the People window). |
 | Reading | ⌘5 | Articles and documents made into one audio file each (see below). |
-| Settings | ⌘, | Permissions, Dictation (on/off, shortcut, language, speech model, fillers, Apple Intelligence fix, preview), Meetings (system audio, speaker labels), Reading (default voice, speed, output folder), History and privacy (how long, Clear History…, keep the audio and its disk use), and **Run Setup Assistant…** (was the Setup window). |
+| Settings | ⌘, | Permissions, Dictation (on/off, shortcut, language, speech model, fillers, spoken paths and commands as code, Apple Intelligence fix, preview), Meetings (system audio, speaker labels), Reading (default voice, speed, output folder), History and privacy (how long, Clear History…, keep the audio and its disk use), and **Run Setup Assistant…** (was the Setup window). |
 
 A card at the bottom of the sidebar shows the dictation status ("Dictation ready", or
 "Dictation paused during meeting recording"). The window remembers its size and place;
