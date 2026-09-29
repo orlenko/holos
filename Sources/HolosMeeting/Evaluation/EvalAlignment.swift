@@ -99,7 +99,9 @@ public enum EvalText {
             current = nil
             if let waiting = prefix {
                 prefix = nil
-                if piece.text.first.map(isDigit) == true {
+                // An amount: a digit first, or a sign or decimal separator before one ("$ -50", "€ .5").
+                let startsAmount = piece.text.first.map { isDigit($0) || "-+.,\u{2212}\u{2013}".contains($0) } == true
+                if startsAmount, piece.text.contains(where: isDigit) {
                     piece = Piece(text: waiting.text + (piece.spaceBefore ? " " : "") + piece.text,
                                   utf16Start: waiting.utf16Start, utf16End: piece.utf16End,
                                   spaceBefore: waiting.spaceBefore)

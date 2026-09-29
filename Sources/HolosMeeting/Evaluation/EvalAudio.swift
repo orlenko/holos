@@ -65,6 +65,7 @@ public enum EvalAudio {
             file.framePosition = AVAudioFramePosition(max(0, range.start))
             let last = AVAudioFramePosition(min(Int(file.length), max(range.start, range.end)))
             while file.framePosition < last {
+                try Task.checkCancellation()
                 let wanted = AVAudioFrameCount(min(AVAudioFramePosition(16_384), last - file.framePosition))
                 try file.read(into: buffer, frameCount: wanted)
                 guard buffer.frameLength > 0, let channels = buffer.floatChannelData else { break }

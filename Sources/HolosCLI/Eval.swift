@@ -316,7 +316,11 @@ enum EvalInterrupt {
         }) { work.cancel() }
         defer { interrupt.restore() }
         do {
-            return try await work.start(operation).value
+            let value = try await work.start(operation).value
+            // An interrupt that came while the work was finishing anyway still stops the command: a preparation
+            // that returned is never followed by an upload after "Stopping…".
+            if interrupt.signal != nil { throw CancellationError() }
+            return value
         } catch {
             if let signal = interrupt.signal { lastExitCode = InterruptLatch.exitCode(for: signal) }
             throw error

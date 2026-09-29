@@ -759,3 +759,12 @@ private func evalReport(passages: [EvalPassage]) -> CompareReport {
     #expect(EvalText.key("$50,") == EvalText.key("$50"))
     #expect(EvalText.key("(50%)") == EvalText.key("50 %"))
 }
+
+@Test func evalSpacedCurrencyJoinsSignedAndFractionalAmounts() {
+    #expect(EvalText.tokens("balance $ -50") == ["balance", "$ -50"])
+    #expect(EvalText.key("$ -50") != EvalText.key("€ -50"))
+    #expect(EvalText.tokens("$ -50 now") == ["$ -50", "now"])
+    #expect(EvalText.tokens("€ .5") == ["€ .5"])
+    // A currency sign before a word is not part of it.
+    #expect(!EvalText.tokens("$ and more").contains("$ and"))
+}
