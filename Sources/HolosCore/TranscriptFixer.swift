@@ -258,8 +258,8 @@ public enum AIFixGuard {
         /// `gaps[i]` is the text before word i, `gaps[raw.count]` the text after the last word.
         var gaps: [String] = []
         /// Words in a unit, number, address, path, tag, option or identifier: a run of characters without spaces
-        /// that has a digit or a symbol (`symbols`: "@", "/", ".", "_", "#", "$", "=", "(" and the like) inside or
-        /// starts with "-" ("5mW", "team@right.com", "/tmp/site.py", "v1.2", "#right", "--right", "right()"), or a
+        /// that has a digit, a hyphen or a symbol (`symbols`: "@", "/", ".", "_", "#", "$", "=", "(" and the like)
+        /// ("5mW", "team@right.com", "/tmp/site.py", "v1.2", "#right", "--right", "right()", "text-right"), or a
         /// word with a capital past its first letter ("GitHub", "QC", "mW"). Only a taught pair may change them.
         var structured: [Bool] = []
         /// Words that may be names (`AIFixGuard.names`).
@@ -297,7 +297,7 @@ public enum AIFixGuard {
         }
 
         /// Whether the word at `range` of `text` is in a run of characters without spaces that has a digit or one of
-        /// `symbols` inside, or starts with "-" (`structured`, case aside).
+        /// `symbols` inside, or a hyphen (`structured`, case aside).
         static func hasSymbols(_ range: Range<String.Index>, in text: String) -> Bool {
             var start = range.lowerBound, end = range.upperBound
             while start > text.startIndex, !text[text.index(before: start)].isWhitespace {
@@ -308,7 +308,7 @@ public enum AIFixGuard {
             // Quotes, brackets and the marks that end a clause belong to the sentence, not the token.
             while let first = run.first, "([{\"'“‘«¿¡".contains(first) { run = run.dropFirst() }
             while let last = run.last, ".,;:!?…)]}\"'”’»".contains(last) { run = run.dropLast() }
-            return run.first == "-" || run.contains { $0.isNumber || symbols.contains($0) }
+            return run.contains("-") || run.contains { $0.isNumber || symbols.contains($0) }
         }
     }
 
@@ -453,9 +453,10 @@ public enum AIFixGuard {
         return gap
     }
 
-    /// The marks of `gap` that count for structure: all but spaces, commas and apostrophes (line breaks count).
+    /// The marks of `gap` that count for structure: all but spaces and commas. Line breaks count, and so do
+    /// apostrophes between words, which quote ("‘go’") or mark a plural possessive ("patients'").
     static func structural(_ gap: String) -> String {
-        String(gap.filter { $0.isNewline || !($0.isWhitespace || $0 == "," || $0 == "'" || $0 == "’") })
+        String(gap.filter { $0.isNewline || !($0.isWhitespace || $0 == ",") })
     }
 
     /// The marks of `tokens` in order: those before the first word, each non-empty one between two words, and those

@@ -579,6 +579,9 @@ let frenchOriginals: Set<String> = [
     ("Use #right today", "Use #write today"), ("Run --right now", "Run --write now"), ("Set $right now", "Set $write now"),
     ("Open right.txt", "Open write.txt"), ("Call right_now()", "Call write_now()"), ("Call right() now", "Call write() now"),
     ("Use a[right] here", "Use a[write] here"), ("Use scope:site now", "Use scope:sight now"), ("Set a;right now", "Set a;write now"),
+    ("Use class text-right now", "Use class text-write now"),
+    // Quoting apostrophes are marks.
+    ("He said ‘go’ now", "He said ‘go now"), ("He said 'go' now", "He said go now"),
     // Names, but for their apostrophes.
     ("Ask Mary about it", "Ask Marie about it"), ("Send it to Bob and Alice", "Send it to Alice and Bob"),
     ("Deploy to Windows now", "Deploy to Ubuntu now"), ("Ping John today", "Ping Joan today"),
