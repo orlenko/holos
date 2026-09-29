@@ -3931,12 +3931,16 @@ builtIn }`:
 contextual strings dictation uses, so council members' names and strata terms are
 recognized. `LiveSpeechFactory` takes `contextualStrings`; `RecordingOptions.vocabulary`
 carries them; `TrackReplayer.replay`, `TranscriptRebuilder.rebuild`, and
-`SessionImporter.importAudio` take them too. The app builds the list from
-`CorrectionList.vocabulary` (PR4) plus known people's names (PR10), at most 1,000
-entries of at most 100 characters, writes it 0600 to
+`SessionImporter.importAudio` take them too. The app builds the list with
+`RecognizerVocabulary.meeting`: the user's word list (design.md "Word list"), then known
+people's names (PR10), then `CorrectionList.vocabulary` (PR4), each once ignoring case,
+at most 100 strings (the recorder and the hand-off file allow up to 1,000 entries of at
+most 100 characters), writes it 0600 to
 `$TMPDIR/holos-vocabulary-<id>.json`, and passes `--vocabulary-file`. The recorder copies
 it to `vocabulary.json` before its first `status.json` write and deletes the temporary file;
-replay, rebuild, and import read `vocabulary.json`. Because the temporary file holds private
+replay, rebuild, and import read `vocabulary.json` (only `session recover
+--current-vocabulary` passes today's list instead, for that run, leaving the file as
+recorded). Because the temporary file holds private
 names and correction terms, the app side owns cleanup too: `MeetingController` deletes it
 on `launchFailed`, when the child exits for any reason, and as soon as the first
 `status.json` for that session appears (the recorder has copied it by then). On launch the

@@ -102,10 +102,7 @@ extension HolosAppDelegate: NSMenuDelegate {
         let controller = MeetingController(
             launcher: launcher, maintenance: maintenance, freeSpace: VolumeFreeSpace(),
             findInputDevices: { BuiltInMicrophone.devices() },
-            vocabulary: { [weak self] languages in
-                (self?.corrections.vocabulary(languages: languages) ?? [])
-                    + VoiceProfileService.profileNames().values.sorted()
-            },
+            vocabulary: { [weak self] languages in self?.meetingVocabulary(languages: languages) ?? [] },
             modelsInstalled: { [weak self] in self?.meeting.speakerModels == "verified" },
             onChange: { [weak self] state in self?.meetingStateChanged(state) },
             onEffect: { [weak self] effect in self?.handleMeetingEffect(effect) })

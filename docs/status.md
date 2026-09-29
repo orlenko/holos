@@ -327,6 +327,16 @@ Hardware-facing and cross-app acceptance remain pending.
   taught it), or changes punctuation other than commas and apostrophes (the
   last piece of a dictation may also change its closing `.`, `!`, `?` or `…`). **Copy Original** keeps
   the text as heard.
+- Word list (docs/design.md "Word list"): terms the recognizer should expect (names,
+  products, jargon), in `words.json` (versioned, atomic 0600 writes, changes under a lock),
+  edited in the Corrections section's Word list card and with `voiceislocal words
+  list|add|remove|import`. Dictation and new meetings give the recognizer the list first,
+  then correction words (meetings: people's names, then correction words), at most 100
+  contextual strings; the app picks up a change from Terminal at the next dictation. A
+  meeting's saved `vocabulary.json` stays what replays use; `session recover
+  --current-vocabulary` opts into today's list. Apple Intelligence's fix counts the terms'
+  words as real words and changes nothing else in its guard. Whether the list improves
+  recognition of the listed terms has not been measured yet.
 - Main window (docs/design.md "Main window"): **Open Voice is Local** (⌘0) opens one
   window with a sidebar: History (⌘1), Corrections (⌘2), Meetings (⌘3), People (⌘4),
   Reading (⌘5), and Settings (⌘,), with a
@@ -513,6 +523,9 @@ Still requiring real-machine or user-data validation:
 - Run the [dictation audio and Run Again checks](dictation-validation.md#dictation-audio-and-run-again):
   audio kept and played, Run Again after changing a correction, Off stops keeping audio,
   Clear History removes it. Not run yet.
+- Run the [word list checks](dictation-validation.md#word-list): terms added in the app
+  and in Terminal reach the next dictation, the card's paste, search, ⌫ and count, and
+  whether the listed terms are recognized more often. Not run yet.
 - Exercise capture failure/relaunch/recovery on hardware (`kill -9` a recorder, then
   `session recover`: the loss should be at most one 30 s chunk) and run multi-hour
   soak tests for memory growth, drift, interruptions, and audio continuity. The

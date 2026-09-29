@@ -53,10 +53,10 @@ public enum OnDeviceFix {
 
     /// The fixer for dictation in `language` (a locale identifier; its function words and homophones count): a
     /// quarter of the model's context for learned corrections leaves ample room for the chunk and the reply.
-    public static func fixer(corrections: CorrectionList, timeout: Duration = chunkTimeout,
+    public static func fixer(corrections: CorrectionList, wordList: [String] = [], timeout: Duration = chunkTimeout,
                              language: String? = nil) -> TranscriptFixer {
         let model = model
-        return TranscriptFixer(corrections: corrections, referenceBudget: model.contextSize / 4,
+        return TranscriptFixer(corrections: corrections, wordList: wordList, referenceBudget: model.contextSize / 4,
                                timeout: timeout, language: language) { instructions, prompt in
             // A fresh session per chunk: earlier chunks must not steer this one, and the context stays small.
             let session = LanguageModelSession(model: model, instructions: instructions)
@@ -131,7 +131,8 @@ public enum DictationRerun {
     /// `spokenCode` writes spoken paths and commands as code, in backticks when `backticks` (never for a dictation
     /// typed into a terminal: `run`).
     public static func pipeline(language: String, removeFillers: Bool, corrections: CorrectionList,
-                                aiFix: Bool, spokenCode: Bool = false, backticks: Bool = true)
+                                wordList: [String] = [], aiFix: Bool, spokenCode: Bool = false,
+                                backticks: Bool = true)
         -> (pipeline: DictationTextPipeline, aiNote: String?) {
         var note: String?
         var fixer: TranscriptFixer?
@@ -140,13 +141,13 @@ public enum DictationRerun {
                 note = "unavailable: \(reason)"
             } else {
                 OnDeviceFix.prewarm()
-                fixer = OnDeviceFix.fixer(corrections: corrections, language: language)
+                fixer = OnDeviceFix.fixer(corrections: corrections, wordList: wordList, language: language)
             }
         }
         let coder = spokenCode
             ? OnDeviceFix.spokenCode(corrections: corrections, language: language, backticks: backticks) : nil
         return (DictationTextPipeline(language: language, removeFillers: removeFillers, corrections: corrections,
-                                      fixer: fixer, coder: coder), note)
+                                      wordList: wordList, fixer: fixer, coder: coder), note)
     }
 
     /// The recognizer's results for the audio at `url`, in order: the speech transcriber live dictation uses, with
@@ -175,8 +176,7 @@ public enum DictationRerun {
                            aiNote: String? = nil) async throws -> DictationRerunReport {
         var pipeline = pipeline
         if record.terminal == true || SpokenCode.isTerminal(appName: record.app) { pipeline.coder?.backticks = false }
-        let segments = try await recognize(url, locale: pipeline.language,
-                                           vocabulary: pipeline.corrections.vocabulary(language: pipeline.language))
+        let segments = try await recognize(url, locale: pipeline.language, vocabulary: pipeline.vocabulary)
         let output = await pipeline.run(segments: segments)
         return DictationRerunReport(record: record, output: output, pipeline: pipeline, aiNote: aiNote)
     }

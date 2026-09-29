@@ -87,8 +87,8 @@ struct History: ParsableCommand {
             abstract: "Recognize a dictation's saved audio again with today's settings, and compare.",
             discussion: """
                 Runs the audio History kept through the recognizer and the text steps live dictation uses now: the \
-                dictation language, the learned corrections (Application Support/Holos/corrections.json, as \
-                vocabulary and as replacements), filler removal, spoken paths and commands written as code, and \
+                dictation language, the word list (Application Support/Holos/words.json, as vocabulary), the \
+                learned corrections (corrections.json, as vocabulary and as replacements), filler removal, spoken paths and commands written as code, and \
                 Apple Intelligence's fix, as set in the app's \
                 Settings. Prints the text as heard and as written, then and now, what each step did, and which steps \
                 behaved differently from then. Nothing is typed, copied, or changed in the history. --all runs every \
@@ -131,11 +131,17 @@ struct History: ParsableCommand {
             } catch {
                 throw HolosError.invalidInput("Could not read corrections.json: \(error.localizedDescription)")
             }
+            let wordList: WordList
+            do {
+                wordList = try WordListStore().load()
+            } catch {
+                throw HolosError.invalidInput("Could not read words.json: \(error.localizedDescription)")
+            }
             var chosen = language ?? preferences.language
             if chosen == nil { chosen = await RecognitionOptions.defaultLocale(backend: .speech) }
             let locale = chosen ?? DictationLanguage.standard
             let (pipeline, note) = DictationRerun.pipeline(language: locale, removeFillers: preferences.removeFillers,
-                                                           corrections: corrections,
+                                                           corrections: corrections, wordList: wordList.terms,
                                                            aiFix: preferences.aiFix && !noAIFix,
                                                            spokenCode: preferences.spokenCode && !noSpokenCode,
                                                            backticks: preferences.spokenCodeBackticks)

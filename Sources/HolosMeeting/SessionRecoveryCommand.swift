@@ -30,6 +30,21 @@ public enum SessionRecoveryCommand {
         }
     }
 
+    /// `session recover --current-vocabulary`: the vocabulary a meeting in this session's languages (meeting.json's,
+    /// else the recording's locale) would get if it started now, from the word list, people's names and learned
+    /// corrections (`RecognizerVocabulary.meeting`), for this replay only: vocabulary.json keeps what the meeting was
+    /// recorded with, so a later rebuild without the flag replays as the recording heard.
+    public static func currentVocabulary(session: URL, wordList: [String], names: [String],
+                                         corrections: CorrectionList) -> [String] {
+        let manifest = try? SessionArchive.readManifest(at: session)
+        let languages = manifest.flatMap { manifest in
+            (try? SessionFiles.meetingInfo(session: session, manifest: manifest))?.languages
+                ?? [manifest.locale]
+        } ?? []
+        return RecognizerVocabulary.meeting(wordList: wordList, names: names, corrections: corrections,
+                                            languages: languages)
+    }
+
     /// A step of the chain that has finished; the lease is still held.
     public enum Step: String, Sendable, Equatable {
         case recovered, rebuilt, postProcessed

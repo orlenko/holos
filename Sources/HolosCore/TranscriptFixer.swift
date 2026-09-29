@@ -38,6 +38,10 @@ public struct TranscriptFixer: Sendable {
     public var spellingBudget: Duration = .milliseconds(250)
 
     public var corrections: CorrectionList
+    /// The word list's terms (`WordList`): their words count as real words for the guard (`Lexicon`), so a word the
+    /// language does not know may become one of them when said alike, and one of them is never replaced but by a
+    /// listed homophone or a taught pair. Nothing else about the guard changes.
+    public var wordList: [String]
     /// Token budget for the learned corrections listed in the instructions.
     public var referenceBudget: Int
     public var timeout: Duration
@@ -46,9 +50,10 @@ public struct TranscriptFixer: Sendable {
     public var language: String?
     private let model: Model
 
-    public init(corrections: CorrectionList, referenceBudget: Int, timeout: Duration, language: String? = nil,
-                model: @escaping Model) {
+    public init(corrections: CorrectionList, wordList: [String] = [], referenceBudget: Int, timeout: Duration,
+                language: String? = nil, model: @escaping Model) {
         self.corrections = corrections
+        self.wordList = wordList
         self.referenceBudget = referenceBudget
         self.timeout = timeout
         self.language = language
@@ -68,10 +73,11 @@ public struct TranscriptFixer: Sendable {
         // The choice of learned pairs and the guard run inside the time limit too: with a long list and a long chunk
         // they are work the chunk would otherwise wait for with no bound.
         let fixed: String, verdict: AIFixGuard.Verdict
-        switch await Self.firstOf(timeout, { [model, corrections, referenceBudget, language, spellingBudget] in
+        switch await Self.firstOf(timeout, { [model, corrections, wordList, referenceBudget, language, spellingBudget] in
             // One lexicon for the chunk: each distinct word asks the spell checker once, on its own queue and within
             // `spellingBudget`; a word it did not reach counts as real, which lets nothing more through.
-            let lexicon = Lexicon(language: language, taught: corrections.entries.map(\.meant), blocking: false)
+            let lexicon = Lexicon(language: language, taught: corrections.entries.map(\.meant) + wordList,
+                                  blocking: false)
             await lexicon.prepare(AIFixGuard.words(in: core), within: spellingBudget)
             let reference = AIFixReference.select(from: corrections.entries, for: core, budget: referenceBudget,
                                                   language: language, lexicon: lexicon)
