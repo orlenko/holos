@@ -1,0 +1,410 @@
+import Foundation
+import Testing
+import HolosCore
+@testable import HolosMeeting
+
+// `voiceislocal eval` pure logic (docs/reference-evaluation.md, "Cloud reference"): segmenting and stitching, cost,
+// consent, alignment and WER, grouping, the review page, and decisions.
+
+// MARK: - Segmenting and stitching
+
+private func evalSettings(max: Double = 10, search: Double = 4) -> CloudSegmentation.Settings {
+    var settings = CloudSegmentation.Settings()
+    settings.maxSeconds = max
+    settings.searchSeconds = search
+    return settings
+}
+
+@Test func evalSegmentsCutAtTheQuietestPauseBeforeTheLimit() {
+    // 25 s of speech (RMS 0.1) at 100 ms windows, with a pause at 8.0–8.6 s and one at 17.0–17.6 s.
+    var rms = [Float](repeating: 0.1, count: 250)
+    for window in 80..<86 { rms[window] = 0.001 }
+    for window in 170..<176 { rms[window] = 0.001 }
+    let plan = CloudSegmentation.plan(frameCount: 25 * 16_000, sampleRate: 16_000, rms: rms, settings: evalSettings())
+    #expect(plan.count == 3)
+    #expect(plan.allSatisfy { $0.endFrame - $0.startFrame <= 10 * 16_000 })
+    // Cuts inside the pauses, without overlap.
+    #expect((8 * 16_000)...(Int(8.6 * 16_000)) ~= plan[0].endFrame)
+    #expect(plan[1].startFrame == plan[0].endFrame)
+    #expect((17 * 16_000)...(Int(17.6 * 16_000)) ~= plan[1].endFrame)
+    #expect(plan.allSatisfy { $0.overlapSeconds == 0 && !$0.silent })
+    #expect(plan.last?.endFrame == 25 * 16_000)
+}
+
+@Test func evalSegmentsOverlapWhenNoPauseIsFound() {
+    let rms = [Float](repeating: 0.1, count: 150)
+    let plan = CloudSegmentation.plan(frameCount: 15 * 16_000, sampleRate: 16_000, rms: rms, settings: evalSettings())
+    #expect(plan.count == 2)
+    #expect(plan[1].overlapSeconds == 1.0)
+    #expect(plan[1].startFrame == plan[0].endFrame - 16_000)
+    #expect(plan[0].endFrame - plan[0].startFrame <= 10 * 16_000)
+}
+
+@Test func evalSilentSegmentsAreMarkedAndShortTailsMerge() {
+    var rms = [Float](repeating: 0.0001, count: 200)
+    for window in 0..<50 { rms[window] = 0.1 }
+    let plan = CloudSegmentation.plan(frameCount: 20 * 16_000, sampleRate: 16_000, rms: rms, settings: evalSettings())
+    #expect(plan.first?.silent == false)
+    #expect(plan.last?.silent == true)
+    // A 1 s tail after a 10 s limit joins the segment before.
+    let tail = CloudSegmentation.plan(frameCount: Int(10.5 * 16_000), sampleRate: 16_000,
+                                      rms: [Float](repeating: 0.0001, count: 105), settings: evalSettings(search: 0.5))
+    #expect(tail.count == 1)
+    #expect(tail[0].endFrame == Int(10.5 * 16_000))
+    #expect(CloudSegmentation.plan(frameCount: 0, sampleRate: 16_000, rms: []).isEmpty)
+}
+
+@Test func evalStitchDropsWordsTheOverlapRepeated() {
+    let stitched = CloudSegmentation.stitch([
+        ("We deploy on Kubernetes every", 0),
+        ("Kubernetes, every Friday at noon.", 1.0),
+        ("Then we rest.", 0),
+        ("rest. Then more.", 0),
+    ])
+    #expect(stitched[1] == ["Friday", "at", "noon."])
+    #expect(stitched[2] == ["Then", "we", "rest."])
+    // Without overlap nothing is dropped, even when words repeat.
+    #expect(stitched[3] == ["rest.", "Then", "more."])
+    // A second of overlap drops at most four words: a phrase said again after it stays.
+    let repeated = CloudSegmentation.stitch([
+        ("thank you thank you thank you", 0),
+        ("thank you thank you thank you", 1.0),
+    ])
+    #expect(repeated[1] == ["thank", "you"])
+}
+
+// MARK: - Cost and consent
+
+@Test func evalCostEstimateUsesTheListPrice() throws {
+    #expect(try #require(CloudModels.estimate(model: "gpt-transcribe", seconds: 600)) == 0.045)
+    #expect(try #require(CloudModels.estimate(model: "whisper-1", seconds: 60)) == 0.006)
+    #expect(CloudModels.estimate(model: "someday-model", seconds: 60) == nil)
+    #expect(CloudModels.isValidName("gpt-4o-mini-transcribe"))
+    #expect(!CloudModels.isValidName("../x"))
+    #expect(!CloudModels.isValidName("a.b"))
+}
+
+@Test func evalPreparedEstimateCountsPendingSegmentsAndTheTimestampPass() throws {
+    let track = CloudTrackPlan(track: "mic", sampleRate: 16_000, frameCount: 16_000 * 700, timeMap: [],
+                               audioFingerprint: "x", segments: [
+                                   CloudSegmentPlan(index: 0, startFrame: 0, endFrame: 16_000 * 300),
+                                   CloudSegmentPlan(index: 1, startFrame: 16_000 * 300, endFrame: 16_000 * 600),
+                                   CloudSegmentPlan(index: 2, startFrame: 16_000 * 600, endFrame: 16_000 * 700,
+                                                    silent: true),
+                               ])
+    var record = CloudRunRecord(id: "gpt-transcribe-20260929T000000Z", sessionID: "S", createdAt: Date(),
+                                request: CloudRequestFields(model: "gpt-transcribe"), timestampRequest: nil,
+                                vocabulary: false, maxSegmentSeconds: 300, tracks: [track])
+    var prepared = CloudEvaluation.Prepared(session: URL(fileURLWithPath: "/tmp/x.holos"), sessionName: "Standup",
+                                            record: record, resumed: false, pending: ["mic": [0, 1]], renders: [:])
+    #expect(prepared.pendingSeconds == 600)
+    #expect(prepared.pendingRequests == 2)
+    #expect(abs(try #require(prepared.estimatedCost) - 0.045) < 1e-9)
+    #expect(record.uploadCount == 2)
+    record.timestampRequest = CloudRequestFields(model: "whisper-1", responseFormat: "verbose_json")
+    prepared.record = record
+    prepared.pending = ["mic": [1]]
+    #expect(prepared.pendingRequests == 2)
+    #expect(abs(try #require(prepared.estimatedCost) - (0.0225 + 0.03)) < 1e-9)
+    let summary = prepared.summaryLines.joined(separator: "\n")
+    #expect(summary.contains("Standup"))
+    #expect(summary.contains("5.0 min of audio in 2 requests"))
+    #expect(summary.contains("US$0.05"))
+    #expect(summary.contains("1 silent, not sent"))
+}
+
+@Test func evalConsentNeedsAnExplicitYes() {
+    var asked = 0
+    let answer: (String?) -> () -> String? = { text in { asked += 1; return text } }
+    #expect(ConsentGate.decide(assumeYes: true, isTerminal: false, readAnswer: answer("n")) == .proceed)
+    #expect(asked == 0)
+    #expect(ConsentGate.decide(assumeYes: false, isTerminal: false, readAnswer: answer("y")) == .noTerminal)
+    #expect(asked == 0)
+    #expect(ConsentGate.decide(assumeYes: false, isTerminal: true, readAnswer: answer(" Yes\n")) == .proceed)
+    #expect(ConsentGate.decide(assumeYes: false, isTerminal: true, readAnswer: answer("y")) == .proceed)
+    #expect(ConsentGate.decide(assumeYes: false, isTerminal: true, readAnswer: answer("")) == .declined)
+    #expect(ConsentGate.decide(assumeYes: false, isTerminal: true, readAnswer: answer(nil)) == .declined)
+    #expect(ConsentGate.decide(assumeYes: false, isTerminal: true, readAnswer: answer("sure")) == .declined)
+}
+
+// MARK: - Vocabulary
+
+@Test func evalVocabularyBuildsKeywordsAndABoundedPrompt() {
+    let built = CloudVocabulary.build(languages: ["en-CA", "fr-CA"], names: ["Maria Chen", "maria chen", "Jim"],
+                                      terms: ["Kubernetes", "bad<term>", "two\nlines", "Jim"])
+    #expect(built.keywords == ["Maria Chen", "Jim", "Kubernetes"])
+    #expect(built.prompt == "A meeting in English and French. People: Maria Chen, Jim. Terms: Kubernetes.")
+    let many = CloudVocabulary.build(languages: ["en-US"], names: [],
+                                     terms: (0..<500).map { "Term\($0)" })
+    #expect(many.keywords.count == CloudVocabulary.maxKeywords)
+    #expect((many.prompt?.count ?? 0) <= CloudVocabulary.maxPromptCharacters)
+    #expect(CloudVocabulary.build(languages: ["en-US"], names: [], terms: []).prompt == nil)
+    #expect(CloudVocabulary.languageCodes(["fr-CA", "fr-FR", "en-US"]) == ["fr", "en"])
+}
+
+@Test func evalRequestFieldsFollowEachModel() {
+    let fields = CloudRequestFields(model: "gpt-transcribe", languages: ["en", "fr"], prompt: "A meeting.",
+                                    keywords: ["Kubernetes"])
+    #expect(fields.formFields.map(\.0) == ["model", "response_format", "languages[]", "languages[]", "prompt",
+                                           "keywords[]"])
+    let older = CloudRequestFields(model: "gpt-4o-transcribe", languages: ["fr"], prompt: "P", keywords: ["K"])
+    #expect(older.formFields.map(\.0) == ["model", "response_format", "language", "prompt"])
+    let bilingual = CloudRequestFields(model: "whisper-1", languages: ["en", "fr"])
+    #expect(!bilingual.formFields.contains { $0.0 == "language" })
+    let diarize = CloudEvaluation.requestFields(model: "gpt-4o-transcribe-diarize", languages: ["en-US"],
+                                                vocabulary: .init(prompt: "P", keywords: []))
+    #expect(diarize.formFields.contains { $0 == ("chunking_strategy", "auto") })
+    #expect(!diarize.formFields.contains { $0.0 == "prompt" })
+}
+
+// MARK: - Alignment, WER, grouping
+
+private func timed(_ words: [String], from start: Double = 0, echo: Set<Int> = []) -> [EvalToken] {
+    words.enumerated().map { index, word in
+        EvalToken(text: word, start: start + Double(index), end: start + Double(index) + 0.8,
+                  echo: echo.contains(index))
+    }
+}
+
+private func untimed(_ text: String) -> [EvalToken] { EvalText.tokens(text).map { EvalToken(text: $0) } }
+
+@Test func evalAlignmentFindsTheMinimumEdits() {
+    let ops = EvalAlignment.align(["we", "use", "cube", "control", "daily"], ["We", "use", "kubectl", "daily."])
+    #expect(ops == [.match(0, 0, exact: false), .match(1, 1, exact: true), .localOnly(2), .substitute(3, 2),
+                    .match(4, 3, exact: false)])
+    #expect(EvalAlignment.align([], ["a"]) == [.cloudOnly(0)])
+    #expect(EvalAlignment.align(["a"], []) == [.localOnly(0)])
+}
+
+@Test func evalWindowScoresBothWaysAndGroupsPassages() {
+    let local = timed(["we", "ship", "on", "cube", "control", "at", "five", "o'clock", "okay"])
+    let cloud = untimed("We ship on Kubernetes at 5 o'clock, okay so")
+    let result = WindowComparer.compare(track: "mic", local: local, cloud: cloud, start: 0, end: 20)
+    let score = result.score
+    #expect(score.localWords == 9)
+    #expect(score.cloudWords == 9)
+    #expect(score.substitutions == 2)  // cube→Kubernetes, five→5
+    #expect(score.localOnly == 1)  // control
+    #expect(score.cloudOnly == 1)  // so
+    #expect(score.edits == 4)
+    #expect(abs((score.werAgainstLocal ?? 0) - 4.0 / 9) < 1e-9)
+    #expect(abs((score.werAgainstCloud ?? 0) - 4.0 / 9) < 1e-9)
+    let words = result.passages.filter { $0.group != .caseOrPunctuation }
+    #expect(words.map(\.local) == ["cube control", "five", ""])
+    #expect(words.map(\.cloud) == ["Kubernetes", "5", "so"])
+    #expect(words.map(\.group) == [.namesAndTerms, .numbers, .droppedOrAdded])
+    #expect(words[0].start == 3 && words[0].end == 4.8)
+    #expect(words[0].localFirst == 3 && words[0].localEnd == 5)
+    // The cloud-only "so" lies after the last local word.
+    #expect(words[2].start >= 8.8 && words[2].localFirst == 9 && words[2].localEnd == 9)
+    #expect(words[0].before == "we ship on")
+    #expect(words[0].after.hasPrefix("at"))
+    // "we"→"We", "o'clock"→"o'clock," differ only in case or punctuation.
+    #expect(score.caseOrPunctuationOnly == 2)
+    #expect(result.passages.filter { $0.group == .caseOrPunctuation }.count == 2)
+}
+
+@Test func evalEchoWordsAreLeftOutOfScoresAndPassages() {
+    // Local mic words 2–4 are echo of the system track; the cloud heard them too, and one more echo word.
+    let local = timed(["hello", "there", "the", "quarterly", "numbers", "right"], echo: [2, 3, 4])
+    let cloud = untimed("hello there the quarterly figures look right")
+    let result = WindowComparer.compare(track: "mic", local: local, cloud: cloud, start: 0, end: 10)
+    #expect(result.score.localWords == 3)
+    #expect(result.score.cloudWords == 3)
+    #expect(result.score.edits == 0)
+    #expect(result.score.echoLocalWords == 3)
+    #expect(result.score.echoCloudWords == 4)
+    #expect(result.passages.isEmpty)
+}
+
+@Test func evalGroupingRules() {
+    #expect(PassageGrouping.group(local: ["twenty"], cloud: ["20"]) == .numbers)
+    #expect(PassageGrouping.group(local: ["maria"], cloud: ["Maria"], localSentenceStart: [false],
+                                  cloudSentenceStart: [false]) == .namesAndTerms)
+    #expect(PassageGrouping.group(local: ["so"], cloud: ["So"], localSentenceStart: [true],
+                                  cloudSentenceStart: [true]) == .otherWords)
+    #expect(PassageGrouping.group(local: ["API"], cloud: ["a", "pie"]) == .namesAndTerms)
+    #expect(PassageGrouping.group(local: ["um"], cloud: []) == .droppedOrAdded)
+    #expect(PassageGrouping.group(local: ["their"], cloud: ["there"]) == .otherWords)
+    #expect(PassageGrouping.opensSentence(after: nil))
+    #expect(PassageGrouping.opensSentence(after: "done."))
+    #expect(PassageGrouping.opensSentence(after: "done?\""))
+    #expect(!PassageGrouping.opensSentence(after: "done,"))
+}
+
+@Test func evalCompareTrackUsesEachSegmentsWindow() {
+    // Two segments: [0, 10) and [10, 20); the second repeats 1 s of the first.
+    let local = timed(["alpha", "beta", "gamma"], from: 2) + timed(["delta", "epsilon"], from: 12)
+    let cloud = CloudTrackResult(run: "r", track: "system", model: "m", segments: [
+        .init(index: 0, sessionStart: 0, sessionEnd: 10, renderStart: 0, renderEnd: 10, overlapSeconds: 0,
+              silent: false, text: "alpha beta gamma", words: ["alpha", "beta", "gamma"], timedWords: nil),
+        .init(index: 1, sessionStart: 9, sessionEnd: 20, renderStart: 9, renderEnd: 20, overlapSeconds: 1,
+              silent: false, text: "delta epsilons", words: ["delta", "epsilons"], timedWords: nil),
+    ], text: "")
+    let compared = EvalCompare.compareTrack(track: "system", local: local, cloud: cloud)
+    #expect(compared.report.score.localWords == 5)
+    #expect(compared.report.score.substitutions == 1)
+    #expect(compared.passages.map(\.id) == ["system-1"])
+    #expect(compared.passages[0].start == 13)
+    #expect(compared.passages[0].localFirst == 4)
+    #expect(compared.report.warnings.isEmpty)
+}
+
+@Test func evalAWordSaidAcrossACutIsNotCountedTwice() {
+    // "gamma" starts just before the cut at 10 s locally, but the cloud heard it only in the second segment.
+    let local = timed(["alpha", "beta"], from: 7) + [EvalToken(text: "gamma", start: 9.9, end: 10.3)]
+        + timed(["delta"], from: 11)
+    let cloud = CloudTrackResult(run: "r", track: "mic", model: "m", segments: [
+        .init(index: 0, sessionStart: 0, sessionEnd: 10, renderStart: 0, renderEnd: 10, overlapSeconds: 0,
+              silent: false, text: "", words: ["alpha", "beta"], timedWords: nil),
+        .init(index: 1, sessionStart: 10, sessionEnd: 20, renderStart: 10, renderEnd: 20, overlapSeconds: 0,
+              silent: false, text: "", words: ["gamma", "delta"], timedWords: nil),
+    ], text: "")
+    let compared = EvalCompare.compareTrack(track: "mic", local: local, cloud: cloud)
+    #expect(compared.report.score.edits == 0)
+    #expect(compared.passages.isEmpty)
+}
+
+@Test func evalALongCloudOnlyRunBesideEchoIsKept() {
+    let local = timed(["the", "quarterly", "numbers", "fine"], echo: [0, 1, 2])
+    let cloud = untimed("the quarterly numbers we never heard locally at all fine")
+    let result = WindowComparer.compare(track: "mic", local: local, cloud: cloud, start: 0, end: 10)
+    #expect(result.score.cloudOnly == 6)
+    #expect(result.passages.first?.cloud == "we never heard locally at all")
+}
+
+@Test func evalMarkdownKeepsTranscriptTextInert() {
+    let escaped = EvalCompare.escape("see ![x](https://example.com/a.png) <img src=y> a|b")
+    #expect(!escaped.contains("<img"))
+    #expect(escaped.contains("\\!\\[x\\]\\("))
+    #expect(escaped.contains("a\\|b"))
+}
+
+@Test func evalTimestampPassTimesCloudOnlyWords() {
+    let segment = CloudTrackResult.Segment(
+        index: 0, sessionStart: 0, sessionEnd: 10, renderStart: 0, renderEnd: 10, overlapSeconds: 0, silent: false,
+        text: "", words: ["hello", "Maria", "Chen"],
+        timedWords: [.init(word: "Hello", start: 1, end: 1.4), .init(word: "Maria", start: 5, end: 5.3),
+                     .init(word: "Chen", start: 5.3, end: 5.6)])
+    let tokens = EvalCompare.cloudTokens(segment)
+    #expect(tokens.map(\.start) == [1, 5, 5.3])
+    let result = WindowComparer.compare(track: "mic", local: timed(["hello"], from: 1), cloud: tokens, start: 0,
+                                        end: 10)
+    #expect(result.passages.first?.start == 5)
+    #expect(result.passages.first?.end == 5.6)
+}
+
+// MARK: - Review page and decisions
+
+private func evalReport(passages: [EvalPassage]) -> CompareReport {
+    CompareReport(sessionID: "SESSION", run: "gpt-transcribe-20260929T000000Z", model: "gpt-transcribe",
+                  transcriptID: "T1", createdAt: Date(timeIntervalSince1970: 0), total: EvalScore(),
+                  tracks: [.init(track: "mic", score: EvalScore(), groups: [:], warnings: [])], passages: passages)
+}
+
+@Test func evalReviewPageHoldsThePassagesAndNoNetworkReference() throws {
+    let passages = [
+        EvalPassage(id: "mic-1", track: "mic", start: 125, end: 126, local: "cube control",
+                    cloud: "kubectl</script><img src=x onerror=alert(1)>", group: .namesAndTerms,
+                    before: "we run", after: "every day", localFirst: 2, localEnd: 4),
+        EvalPassage(id: "mic-2", track: "mic", start: 130, end: 130, local: "We", cloud: "we",
+                    group: .caseOrPunctuation, before: "", after: "", localFirst: 5, localEnd: 6),
+    ]
+    let track = CloudTrackPlan(track: "mic", sampleRate: 16_000, frameCount: 1,
+                               timeMap: [EvalSpan(.init(renderStart: 0, sessionStart: 0, duration: 100)),
+                                         EvalSpan(.init(renderStart: 105, sessionStart: 120, duration: 100))],
+                               audioFingerprint: "x", segments: [])
+    let run = CloudRunRecord(id: "gpt-transcribe-20260929T000000Z", sessionID: "SESSION", createdAt: Date(),
+                             request: CloudRequestFields(model: "gpt-transcribe"), timestampRequest: nil,
+                             vocabulary: false, maxSegmentSeconds: 300, tracks: [track])
+    let data = EvalReviewPage.pageData(report: evalReport(passages: passages), run: run, sessionName: "Standup")
+    #expect(data.items.map(\.id) == ["mic-1"])
+    #expect(data.items[0].renderStart == 110)
+    #expect(data.audio == ["mic": "review-audio/mic.m4a"])
+    let html = try EvalReviewPage.html(data)
+    #expect(html.contains("\"mic-1\""))
+    #expect(html.contains("cube control"))
+    #expect(!html.contains("</script><img"))
+    #expect(html.contains("kubectl\\u003c/script\\u003e"))
+    #expect(!html.contains("http://") && !html.contains("https://"))
+    #expect(!html.contains("__REVIEW_DATA__"))
+    #expect(html.contains("connect-src 'none'"))
+    #expect(html.contains("localStorage"))
+    #expect(html.contains("decisions.json"))
+}
+
+@Test func evalTimeMapGoesBothWays() {
+    let map = [EvalSpan(.init(renderStart: 0, sessionStart: 0, duration: 100)),
+               EvalSpan(.init(renderStart: 105, sessionStart: 300, duration: 50))]
+    #expect(EvalTimeMap.renderTime(50, map: map) == 50)
+    #expect(EvalTimeMap.renderTime(200, map: map) == 105)
+    #expect(EvalTimeMap.renderTime(310, map: map) == 115)
+    #expect(EvalTimeMap.sessionTime(115, map: map) == 310)
+    #expect(EvalTimeMap.renderTime(1_000, map: map) == 155)
+}
+
+@Test func evalDecisionsParse() throws {
+    let good = """
+        {"schemaVersion":1,"sessionID":"S","run":"r","transcriptID":"T","exportedAt":"2026-09-29T10:00:00Z",
+         "decisions":[{"id":"mic-1","choice":"edited","text":"kubectl"},{"id":"mic-2","choice":"local","text":"x"}],
+         "terms":["kubectl"]}
+        """
+    let parsed = try ReviewDecisions.parse(Data(good.utf8))
+    #expect(parsed.decisions.map(\.choice) == [.edited, .local])
+    #expect(parsed.terms == ["kubectl"])
+    let noTerms = #"{"schemaVersion":1,"sessionID":"S","run":"r","transcriptID":"T","decisions":[]}"#
+    #expect(try ReviewDecisions.parse(Data(noTerms.utf8)).terms.isEmpty)
+    for bad in [
+        #"{"schemaVersion":2,"sessionID":"S","run":"r","transcriptID":"T","decisions":[]}"#,
+        #"{"schemaVersion":1,"sessionID":"S","run":"r","transcriptID":"T","decisions":[{"id":"a","choice":"maybe","text":""}]}"#,
+        #"{"schemaVersion":1,"sessionID":"S","run":"r","transcriptID":"T","decisions":[{"id":"a","choice":"local","text":""},{"id":"a","choice":"cloud","text":""}]}"#,
+        "not json",
+    ] {
+        #expect(throws: HolosError.self) { _ = try ReviewDecisions.parse(Data(bad.utf8)) }
+    }
+}
+
+@Test func evalGoldTrackReplacesReviewedPassagesAndSkipsEcho() {
+    let local = timed(["we", "run", "cube", "control", "every", "day", "echo"], echo: [6])
+    let passage = EvalPassage(id: "mic-1", track: "mic", start: 2, end: 3.8, local: "cube control", cloud: "kubectl",
+                              group: .namesAndTerms, before: "we run", after: "every day", localFirst: 2, localEnd: 4)
+    let insertion = EvalPassage(id: "mic-2", track: "mic", start: 6, end: 6, local: "", cloud: "please",
+                                group: .droppedOrAdded, before: "", after: "", localFirst: 6, localEnd: 6)
+    let gold = EvalApply.goldTrack(track: "mic", local: local, replacements: [
+        (passage, .init(id: "mic-1", choice: .edited, text: "kubectl")),
+        (insertion, .init(id: "mic-2", choice: .cloud, text: "please")),
+    ])
+    #expect(gold.text == "we run kubectl every day please")
+    #expect(gold.pieces.map(\.passage) == [nil, "mic-1", nil, "mic-2"])
+}
+
+@Test func evalCorrectionPairsAreShortWordSubstitutions() {
+    func passage(_ local: String, before: String = "we use", after: String = "for this") -> EvalPassage {
+        EvalPassage(id: "mic-1", track: "mic", start: 0, end: 1, local: local, cloud: "", group: .otherWords,
+                    before: before, after: after, localFirst: 0, localEnd: 1)
+    }
+    #expect(EvalApply.correctionPairs(passage: passage("cube control"), final: "kubectl",
+                                      isDictionaryWord: { _ in false })
+        == [Correction(heard: "cube control", meant: "kubectl")])
+    // A lone dictionary word keeps a neighbour.
+    #expect(EvalApply.correctionPairs(passage: passage("bull", before: "a", after: "request"), final: "pull",
+                                      isDictionaryWord: { _ in true })
+        == [Correction(heard: "bull request", meant: "pull request")])
+    // Longer rewrites, case-only changes, and deletions propose nothing.
+    #expect(EvalApply.correctionPairs(passage: passage("one two three four"), final: "five six seven eight",
+                                      isDictionaryWord: { _ in false }).isEmpty)
+    #expect(EvalApply.correctionPairs(passage: passage("maria"), final: "Maria", isDictionaryWord: { _ in false })
+        .isEmpty)
+    #expect(EvalApply.correctionPairs(passage: passage("um"), final: "", isDictionaryWord: { _ in false }).isEmpty)
+    #expect(EvalApply.containsWords("we use kubectl daily", "Kubectl"))
+    #expect(!EvalApply.containsWords("we use kubectls daily", "kubectl"))
+}
+
+@Test func evalRedactsKeysInMessages() {
+    #expect(CloudTranscriptionClient.redacted("Incorrect API key provided: sk-proj-abc123***xyz9.")
+        == "Incorrect API key provided: sk-….")
+    #expect(CloudTranscriptionClient.errorMessage(Data(#"{"error":{"message":"key sk-abcdefgh"}}"#.utf8),
+                                                  status: 401).contains("401"))
+    #expect(!CloudTranscriptionClient.errorMessage(Data(#"{"error":{"message":"key sk-abcdefgh"}}"#.utf8),
+                                                   status: 401).contains("sk-"))
+}

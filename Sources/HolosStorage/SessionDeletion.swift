@@ -109,8 +109,8 @@ public enum SessionDeletion {
     /// §4.13. Requires the lease and no writer.
     ///
     /// Removes the session's audio for good: `speakers/voice/` (under the speaker lock), then writes
-    /// `audio-deleted.json`, then removes `derived/` and `audio/`. The manifest, event journal, transcripts, speaker
-    /// runs, edits, recognition results, and exports stay. The marker is written before any audio goes, so a failure
+    /// `audio-deleted.json`, then removes `derived/`, the evaluation review pages' audio copies, and `audio/`. The
+    /// manifest, event journal, transcripts, speaker runs, edits, recognition results, and exports stay. The marker is written before any audio goes, so a failure
     /// part-way never leaves chunks missing without it; calling again finishes the job and keeps the first marker.
     /// A marker that is damaged or names another session (`AudioDeletedRecord.read`) is replaced.
     ///
@@ -145,8 +145,27 @@ public enum SessionDeletion {
                                      to: SessionPaths.audioDeleted(session))
         }
         try AtomicFile.removeTree(["derived"], in: session)
+        try removeEvaluationAudio(session)
         try AtomicFile.removeTree(["audio"], in: session)
         log.notice("Session \(manifest.id, privacy: .public): deleted the audio of \(manifest.chunks.count, privacy: .public) chunks")
+    }
+
+    /// The review pages' copies of the audio (`eval/review/<run>/review-audio/`, written by `voiceislocal eval
+    /// review`). The evaluation's upload files live under `derived/`, which goes with the rest of the audio.
+    static func removeEvaluationAudio(_ session: URL) throws {
+        let reviews = session.appendingPathComponent("eval/review", isDirectory: true)
+        var info = stat()
+        guard lstat(reviews.path, &info) == 0 else {
+            if errno == ENOENT || errno == ENOTDIR { return }
+            throw HolosError.io("Could not read \(reviews.path) to delete its audio copies.")
+        }
+        // A link or file in place of the folder: removeTree refuses it below, never following it.
+        let names = (info.st_mode & S_IFMT) == S_IFDIR
+            ? try FileManager.default.contentsOfDirectory(atPath: reviews.path) : []
+        if (info.st_mode & S_IFMT) != S_IFDIR { try AtomicFile.removeTree(["eval", "review"], in: session) }
+        for name in names.sorted() where SessionArchive.validToken(name) {
+            try AtomicFile.removeTree(["eval", "review", name, "review-audio"], in: session)
+        }
     }
 
     /// §4.13. `trash` defaults to FileManager.trashItem; `logDirectory` to ~/Library/Logs/Holos (tests inject both).

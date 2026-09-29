@@ -21,6 +21,7 @@ struct Holos: AsyncParsableCommand {
             Say.self,
             Read.self,
             History.self,
+            Eval.self,
         ]
     )
 

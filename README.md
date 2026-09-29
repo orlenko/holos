@@ -425,6 +425,28 @@ skipped, and `inspect`, `recover`, and `session list` say how many were skipped.
 Each saved transcript revision is recorded as the current one in
 `transcripts/current.json`.
 
+`voiceislocal eval` is a developer tool that compares a session's transcript with a
+cloud model's (OpenAI `gpt-transcribe` by default). **`eval cloud` uploads the
+meeting's audio to OpenAI: the audio leaves this Mac.** Use it only when everyone
+recorded agreed. It shows the minutes, number of requests, and estimated cost, and asks
+before sending (`--yes` skips the question; without a terminal it refuses unless given);
+the key comes from `OPENAI_API_KEY` and is never saved. Everything else works offline,
+and the results stay in the session's `eval/` folder, which the app and the exports never
+read:
+
+```sh
+export OPENAI_API_KEY=…                          # your key; never saved
+"$voiceislocal" eval cloud <session> --vocabulary # asks first; Ctrl-C, then rerun to resume
+"$voiceislocal" eval compare <session>            # WER both ways, differing passages by kind
+"$voiceislocal" eval review <session>             # opens a page: listen, choose, export decisions.json
+"$voiceislocal" eval apply <session> ~/Downloads/decisions.json   # gold transcript + proposals
+"$voiceislocal" eval list <session>               # runs; eval delete <session> <run>|--all
+```
+
+`eval apply` adds nothing to your corrections unless given `--add-corrections` or
+`--add-vocabulary`, and refuses those while Voice is Local runs. See
+[Cloud reference](docs/reference-evaluation.md#cloud-reference).
+
 `reference-data/` is reserved for private, user-provided reference recordings and
 transcripts. It is gitignored; keep originals out of commits.
 
