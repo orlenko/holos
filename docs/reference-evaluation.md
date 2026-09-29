@@ -159,7 +159,8 @@ voiceislocal eval delete <session> (<run> | --all)
 2. **compare** takes the current transcript revision and, per track, compares
    each cloud segment with the local words that start inside it (from where
    the segment's own audio begins to where the next one's does), then aligns
-   the differences on both sides of each cut again together, so a word said
+   the 6 alignment steps on each side of each cut again together (matched
+   words included; stretches that touch are aligned as one), so a word said
    across a cut is not counted twice. Both transcripts are cut into words the
    same way, from their full text: at whitespace, and each character of a
    script written without spaces (Han, kana, Thai, Lao, Khmer, Myanmar,

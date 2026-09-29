@@ -196,18 +196,26 @@ public enum EvalCompare {
         }
     }
 
-    /// At each boundary (an index into `ops`), the run of edits just before it and just after it (at most
-    /// `boundaryEdits` on each side) is aligned again as one stretch, so "word" missing at the end of one window
-    /// and extra at the start of the next becomes a match.
+    /// Around each boundary (an index into `ops`), the `boundaryEdits` operations on each side, matches included,
+    /// are aligned again as one stretch, so "word" missing at the end of one window and extra at the start of the
+    /// next becomes a match, even with matched words between them ("that that | works" against "that | that
+    /// works"). Stretches that touch are aligned together; a stretch without an edit is left alone. Realigning
+    /// never adds edits (the alignment is minimum-edit).
     static func repairBoundaries(_ ops: [AlignmentOp], at boundaries: [Int], local: [EvalToken],
                                  cloud: [EvalToken]) -> [AlignmentOp] {
+        var regions: [Range<Int>] = []
+        for boundary in Set(boundaries).sorted() where boundary > 0 && boundary < ops.count {
+            let region = max(0, boundary - boundaryEdits)..<min(ops.count, boundary + boundaryEdits)
+            if let last = regions.last, last.upperBound >= region.lowerBound {
+                regions[regions.count - 1] = last.lowerBound..<max(last.upperBound, region.upperBound)
+            } else {
+                regions.append(region)
+            }
+        }
         var result = ops
-        for boundary in boundaries.reversed() {
-            var low = boundary
-            while low > 0, boundary - low < boundaryEdits, !isMatch(result[low - 1]) { low -= 1 }
-            var high = boundary
-            while high < result.count, high - boundary < boundaryEdits, !isMatch(result[high]) { high += 1 }
-            guard low < boundary, high > boundary else { continue }
+        // From the last region back, so each replacement leaves the positions of the earlier ones as they were.
+        for range in regions.reversed() where result[range].contains(where: { !isMatch($0) }) {
+            let low = range.lowerBound, high = range.upperBound
             let region = result[low..<high]
             let localIndices = region.compactMap(WindowComparer.localIndex)
             let cloudIndices = region.compactMap(WindowComparer.cloudIndex)

@@ -329,6 +329,12 @@ kbd { border:1px solid var(--line); border-radius:3px; padding:0 3px; font-size:
     buttons.cloud.addEventListener("click", function () { select(index); entry.choose("cloud"); });
     buttons.edited.addEventListener("click", function () { select(index); area.focus(); entry.choose("edited"); });
     area.addEventListener("focus", function () { select(index, true); });
+    // A change another tab made while the field was being typed in shows once it is left, so the field always
+    // ends up showing what Export writes.
+    area.addEventListener("blur", function () {
+      if (document.activeElement === area) return;
+      show();
+    });
     area.addEventListener("input", function () { entry.choose("edited"); });
     card.addEventListener("click", function () { select(index, true); });
     show();

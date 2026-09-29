@@ -267,6 +267,32 @@ private func untimed(_ text: String) -> [EvalToken] { EvalText.tokens(text).map 
     #expect(compared.passages.isEmpty)
 }
 
+private func cloudTrack(_ windows: [[String]]) -> CloudTrackResult {
+    CloudTrackResult(run: "r", track: "mic", model: "m", segments: windows.enumerated().map { index, words in
+        .init(index: index, sessionStart: Double(index) * 10, sessionEnd: Double(index + 1) * 10,
+              renderStart: Double(index) * 10, renderEnd: Double(index + 1) * 10, overlapSeconds: 0, silent: false,
+              text: words.joined(separator: " "), words: words, timedWords: nil)
+    }, text: "")
+}
+
+@Test func evalBoundaryRepairsThatTouchAreMadeTogether() {
+    // Windows 2 and 3 are empty on both sides: their boundaries fall on the same operation.
+    let local = timed(["hello"], from: 1) + timed(["yes"], from: 31)
+    let compared = EvalCompare.compareTrack(track: "mic", local: local, cloud: cloudTrack([[], ["hello", "no"], [], []]))
+    // Aligned as one stretch: "hello" matches, "yes" and "no" are one substitution.
+    #expect(compared.report.score.matches == 1)
+    #expect(compared.report.score.edits == 1)
+}
+
+@Test func evalBoundaryRepairLooksPastMatchedWords() {
+    // The same words, cut in another place: "I think that that | works" and "I think that | that works".
+    let local = timed(["I", "think", "that", "that"], from: 5) + timed(["works"], from: 11)
+    let compared = EvalCompare.compareTrack(track: "mic", local: local,
+                                            cloud: cloudTrack([["I", "think", "that"], ["that", "works"]]))
+    #expect(compared.report.score.edits == 0)
+    #expect(compared.passages.isEmpty)
+}
+
 @Test func evalALongCloudOnlyRunBesideEchoIsKept() {
     let local = timed(["the", "quarterly", "numbers", "fine"], echo: [0, 1, 2])
     let cloud = untimed("the quarterly numbers we never heard locally at all fine")

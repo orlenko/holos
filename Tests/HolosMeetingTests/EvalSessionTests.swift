@@ -335,6 +335,35 @@ private func evalAllText(_ folder: URL) -> String {
     #expect(failing.count == 2)
 }
 
+@Test func evalResumeChecksATrackWhoseAnswersAreAllIn() async throws {
+    let temp = try TemporaryDirectory("eval")
+    defer { temp.remove() }
+    let session = try await SessionFixtures.makeSession(in: temp.url.appendingPathComponent("a"),
+                                                        audioSeconds: ["mic": 4, "system": 12], transcript: nil)
+    let other = try await SessionFixtures.makeSession(in: temp.url.appendingPathComponent("b"),
+                                                      audioSeconds: ["mic": 4], transcript: nil, tone: 0.09)
+    let first = try CloudEvaluation.prepare(session: session, options: evalOptions(), vocabulary: evalNoVocabulary)
+    #expect(first.record.tracks.map(\.track) == ["mic", "system"])
+    #expect(first.record.tracks[0].segments.count == 1)
+    // The microphone's one segment is answered; the system track fails.
+    let failing = EvalFakeTransport { index, _ in
+        index == 0 ? evalOK("hello") : .init(status: 400, body: #"{"error":{"message":"bad"}}"#)
+    }
+    await #expect(throws: CloudTranscriptionError.self) {
+        _ = try await CloudEvaluation.upload(first, client: CloudTranscriptionClient(
+            apiKey: evalKey, transport: failing, sleep: EvalSleeps().sleep))
+    }
+    let mic = try #require(try SessionArchive.readManifest(at: session).chunks.first { $0.track == "mic" })
+    let replacement = try #require(try SessionArchive.readManifest(at: other).chunks.first { $0.track == "mic" })
+    let target = session.appendingPathComponent(mic.relativePath)
+    try FileManager.default.removeItem(at: target)
+    try FileManager.default.copyItem(at: other.appendingPathComponent(replacement.relativePath), to: target)
+    let error = #expect(throws: HolosError.self) {
+        _ = try CloudEvaluation.prepare(session: session, options: evalOptions(), vocabulary: evalNoVocabulary)
+    }
+    #expect(error?.localizedDescription.contains("mic audio renders differently") == true)
+}
+
 @Test func evalConcurrentAppliesKeepEveryCorrection() async throws {
     let temp = try TemporaryDirectory("eval")
     defer { temp.remove() }

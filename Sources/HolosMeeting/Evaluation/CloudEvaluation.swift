@@ -123,8 +123,8 @@ public enum CloudEvaluation {
     }
 
     /// Plans the run: resumes one (`options.runID`, or the newest unfinished run with the same model, tracks,
-    /// vocabulary, and timestamp settings) or plans a new one, and renders the tracks that still have segments to
-    /// send into the run's work folder. Uploads nothing and, for a new run, saves nothing but the renders.
+    /// vocabulary, and timestamp settings) or plans a new one, and renders its tracks into the run's work folder (a
+    /// resumed run's every track, whose segment digests must match the plan's). Uploads nothing and, for a new run, saves nothing but the renders.
     /// The caller holds the session's processing lease.
     public static func prepare(session: URL, options: Options, vocabulary: VocabularySource,
                                now: Date = Date(),
@@ -198,10 +198,8 @@ public enum CloudEvaluation {
                 plan.segments.filter { !$0.silent && !isSaved(record, track: track, index: $0.index, session: session) }
                     .map(\.index)
             }
-            if let missing, missing.isEmpty {
-                plans.append(existing!)
-                continue
-            }
+            // A resumed track is rendered and checked even when every answer is in: its answers are kept only for
+            // the audio they answered.
             progress("Preparing the \(track) audio…")
             let url = work.appendingPathComponent("\(track).caf")
             let rendered = try EvalAudio.render(session: session, manifest: manifest, track: track, to: url)
