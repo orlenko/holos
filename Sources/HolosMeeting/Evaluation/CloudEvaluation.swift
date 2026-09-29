@@ -44,14 +44,17 @@ public enum CloudEvaluation {
         }
     }
 
-    /// People's names and correction terms for `--vocabulary` (read only when it is given).
+    /// The word list, people's names, and correction terms for `--vocabulary` (read only when it is given, and only
+    /// for a new run). A source that cannot be read throws, so a run never goes out with less than was asked for.
     public struct VocabularySource: Sendable {
-        public var names: @Sendable () -> [String]
-        public var terms: @Sendable (_ languages: [String]) -> [String]
+        public var wordList: @Sendable () throws -> [String]
+        public var names: @Sendable () throws -> [String]
+        public var terms: @Sendable (_ languages: [String]) throws -> [String]
 
-        public init(names: @escaping @Sendable () -> [String],
-                    terms: @escaping @Sendable (_ languages: [String]) -> [String]) {
-            self.names = names; self.terms = terms
+        public init(wordList: @escaping @Sendable () throws -> [String],
+                    names: @escaping @Sendable () throws -> [String],
+                    terms: @escaping @Sendable (_ languages: [String]) throws -> [String]) {
+            self.wordList = wordList; self.names = names; self.terms = terms
         }
     }
 
@@ -104,7 +107,8 @@ public enum CloudEvaluation {
                 : record.request.languages.joined(separator: ", ")))
             if record.vocabulary {
                 lines.append("Vocabulary: \(record.request.keywords.count) keywords"
-                    + (record.request.prompt == nil ? "" : " and a prompt") + " (names and correction words)")
+                    + (record.request.prompt == nil ? "" : " and a prompt")
+                    + " (word list, people's names, and correction words)")
             }
             lines.append("To upload: \(Self.minutes(pendingSeconds)) min of audio in \(pendingRequests) "
                 + (pendingRequests == 1 ? "request" : "requests"))
@@ -172,8 +176,8 @@ public enum CloudEvaluation {
         } else {
             let languages = meetingLanguages(session: session, manifest: manifest)
             let request = requestFields(model: options.model, languages: languages, vocabulary: options.vocabulary
-                ? CloudVocabulary.build(languages: languages, names: vocabulary.names(),
-                                        terms: vocabulary.terms(languages)) : nil)
+                ? CloudVocabulary.build(languages: languages, wordList: try vocabulary.wordList(),
+                                        names: try vocabulary.names(), terms: try vocabulary.terms(languages)) : nil)
             let timestampRequest = options.timestamps
                 ? CloudRequestFields(model: CloudModels.timestampModel, responseFormat: "verbose_json",
                                      languages: request.languages, prompt: request.prompt,

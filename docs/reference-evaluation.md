@@ -100,7 +100,8 @@ recorded. It never uploads without an explicit yes: it prints what will be
 sent and asks `Upload to OpenAI? [y/N]`; without a terminal it refuses unless
 `--yes` is given. The API key is read from `OPENAI_API_KEY` and is never saved
 or printed (error messages that quote a key are redacted). With `--vocabulary`,
-people's names and the words of your corrections are sent too. Every other
+your word list, people's names, and the words of your corrections are sent
+too. Every other
 `eval` command works offline.
 
 ### What the API supports (read 2026-09-29)
@@ -215,26 +216,35 @@ voiceislocal eval delete <session> (<run> | --all)
    other script, or around an insertion or deletion, a space unless both
    sides are unspaced script). It prints heard → meant pairs (word substitutions of at
    most 3 words a side, from the passage and its context, a lone dictionary
-   word kept with a neighbour as the Corrections pane learns them) and, for
-   each marked term, what the local recognizer wrote in its place (learned the
-   same way, up to 6 words).
-   `--add-corrections` adds the pairs and `--add-vocabulary` the term pairs to
-   the app's `corrections.json` (the correction list holds heard → meant pairs
-   only, so a term with no soundalike in the review is listed, not added).
-   The read, change, and save hold the list's lock (`flock` on
-   `corrections.json.lock`), which the app takes for its own changes too, so
-   neither two applies nor an apply and the app lose an entry: the app makes
-   each change to the list as saved at that moment, and loads the file again
-   when it changes on disk (a watch on its folder), so a running Voice is Local
-   uses the additions at once and never saves over them. Nothing is added
-   without a flag.
+   word kept with a neighbour as the Corrections pane learns them) and the
+   terms you marked (whitespace collapsed, once each in any case).
+   `--add-corrections` adds the pairs to the app's `corrections.json`;
+   `--add-vocabulary` adds the marked terms to the word list (`words.json`,
+   as `voiceislocal words add` does, each entry marked as coming from a
+   review; a term already listed in any case stays as it is, and one over 100
+   characters or past the list's 1,000 terms is reported and makes the command
+   exit 1 after the rest are added). Each file's read, change, and save hold
+   its lock (`flock` on `corrections.json.lock` or `words.json.lock`), which
+   the app takes for its own changes too, so neither two applies nor an apply
+   and the app lose an entry: the app makes each change to the list as saved
+   at that moment, and reads both files again when they change on disk (a
+   watch on their folder; the word list is also checked at each dictation), so
+   a running Voice is Local uses the additions at once and never saves over
+   them. Nothing is added without a flag.
 
-With `--vocabulary`, the request carries `keywords[]` (gpt-transcribe only):
-people's names, then the words of your corrections' meant phrases for the
-meeting's languages (the recognizer's own meeting vocabulary), at most 100,
-without terms containing a line break, `<` or `>`; and a `prompt` of at most
-800 characters: `A meeting in English and French. People: Maria Chen, Jim.
-Terms: Kubernetes, Grafana.`
+With `--vocabulary`, the request carries what the recognizer's own meeting
+vocabulary holds, in its order: your word list, then people's names, then the
+words of your corrections' meant phrases for the meeting's languages, each
+once in any case or spacing. `keywords[]` (gpt-transcribe only) gets at most
+100 of them, the recognizer's limit (OpenAI documents no count limit; it
+rejects a form of about 1,000 parts), leaving out any over 100 characters or
+containing a line break, `<` or `>` (OpenAI rejects the whole request for
+one). The `prompt` lists them in the same order up to 800 characters
+(whisper-1 reads 224 tokens), stopping at the first that does not fit: `A
+meeting in English and French. Terms: Keycloak, Urban Sky. People: Maria Chen,
+Jim. Other words: Kubernetes.` A words.json or corrections.json that cannot
+be read stops the run before anything is sent. A resumed run keeps the
+request it was planned with.
 
 Files, all in the session folder (`eval/` is removed with the session; Delete
 Audio removes `review-audio/`; temporary audio lives in `derived/eval-cloud/`

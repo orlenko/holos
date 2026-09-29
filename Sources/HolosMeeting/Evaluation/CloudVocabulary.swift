@@ -1,16 +1,24 @@
 import Foundation
+import HolosCore
 
 /// What `voiceislocal eval cloud --vocabulary` tells the model (docs/reference-evaluation.md, "Cloud reference").
 ///
-/// - `keywords[]` (gpt-transcribe only): people's names, then the words of the user's corrections (the meant words, as
-///   `CorrectionList.vocabulary(languages:)` lists them for the meeting's languages), once each ignoring case, at
-///   most `maxKeywords`. A term with a line break, "<" or ">" is left out: OpenAI rejects the whole request for it.
-/// - `prompt`: "A meeting in English and French. People: Maria Chen, Jim Park. Terms: Kubernetes, Ubuntu." — the
-///   languages, then as many names and terms as fit in `maxPromptCharacters` (whisper-1 reads only 224 tokens).
+/// The same sources, in the same order, as the recognizer's meeting vocabulary (`RecognizerVocabulary.meeting`): the
+/// word list (`words.json`), then people's names, then the words of the user's corrections (the meant words, as
+/// `CorrectionList.vocabulary(languages:)` lists them for the meeting's languages), each once ignoring case and
+/// spacing, so a long correction list never pushes a word-list term or a name out.
+///
+/// - `keywords[]` (gpt-transcribe only): those strings, at most `maxKeywords` (the recognizer's own limit; OpenAI
+///   documents none, and rejects a form of about 1,000 parts). A string with a line break, "<" or ">" is left out,
+///   as OpenAI asks (it rejects the whole request for one), and so is one over `maxLength` characters.
+/// - `prompt`: "A meeting in English and French. Terms: Keycloak, Urban Sky. People: Maria Chen, Jim Park. Other
+///   words: Kubernetes." — the languages, then the kept strings in order, as many as fit in `maxPromptCharacters`
+///   (whisper-1 reads only 224 tokens); the first that does not fit ends the prompt.
 ///
 /// Without `--vocabulary` there is neither; the meeting's languages are always sent as `languages[]` (or `language`).
 public enum CloudVocabulary {
-    public static let maxKeywords = 100
+    public static let maxKeywords = RecognizerVocabulary.maximumStrings
+    public static let maxLength = RecognizerVocabulary.maximumLength
     public static let maxPromptCharacters = 800
 
     public struct Built: Sendable, Equatable {
@@ -18,33 +26,39 @@ public enum CloudVocabulary {
         public var keywords: [String]
     }
 
-    public static func build(languages: [String], names: [String], terms: [String]) -> Built {
+    public static func build(languages: [String], wordList: [String], names: [String], terms: [String]) -> Built {
         var seen = Set<String>()
-        var cleanNames: [String] = []
-        var cleanTerms: [String] = []
-        for (list, isName) in [(names, true), (terms, false)] {
-            for raw in list {
-                let term = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-                guard !term.isEmpty, term.count <= 100, !term.contains(where: { $0.isNewline || $0 == "<" || $0 == ">" }),
+        var groups: [[String]] = [[], [], []]
+        var count = 0
+        for (index, list) in [wordList, names, terms].enumerated() {
+            for raw in list where count < maxKeywords {
+                // Before cleaning: a line break would otherwise become a space, and the term would still be sent.
+                guard !raw.contains(where: { $0 == "<" || $0 == ">" }),
+                      !raw.trimmingCharacters(in: .whitespacesAndNewlines).contains(where: \.isNewline),
+                      let term = WordList.cleaned(raw), term.count <= maxLength,
                       seen.insert(term.lowercased()).inserted else { continue }
-                if isName { cleanNames.append(term) } else { cleanTerms.append(term) }
+                groups[index].append(term)
+                count += 1
             }
         }
-        let keywords = Array((cleanNames + cleanTerms).prefix(maxKeywords))
+        let keywords = groups.flatMap { $0 }
         let languageNames = languageNames(languages)
         var prompt = languageNames.isEmpty ? "A meeting." : "A meeting in \(listed(languageNames))."
+        var full = false
         func appendList(_ label: String, _ items: [String]) {
+            guard !full else { return }
             var kept: [String] = []
             for item in items {
                 let candidate = prompt + " \(label): " + (kept + [item]).joined(separator: ", ") + "."
-                if candidate.count > maxPromptCharacters { break }
+                if candidate.count > maxPromptCharacters { full = true; break }
                 kept.append(item)
             }
             if !kept.isEmpty { prompt += " \(label): " + kept.joined(separator: ", ") + "." }
         }
-        appendList("People", cleanNames)
-        appendList("Terms", cleanTerms)
-        return Built(prompt: cleanNames.isEmpty && cleanTerms.isEmpty ? nil : prompt, keywords: keywords)
+        appendList("Terms", groups[0])
+        appendList("People", groups[1])
+        appendList("Other words", groups[2])
+        return Built(prompt: keywords.isEmpty ? nil : prompt, keywords: keywords)
     }
 
     /// ISO 639-1 codes of locale identifiers ("fr-CA" → "fr"), once each, in order.

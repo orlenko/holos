@@ -131,16 +131,28 @@ private func evalSettings(max: Double = 10, search: Double = 4) -> CloudSegmenta
 
 // MARK: - Vocabulary
 
-@Test func evalVocabularyBuildsKeywordsAndABoundedPrompt() {
-    let built = CloudVocabulary.build(languages: ["en-CA", "fr-CA"], names: ["Maria Chen", "maria chen", "Jim"],
-                                      terms: ["Kubernetes", "bad<term>", "two\nlines", "Jim"])
-    #expect(built.keywords == ["Maria Chen", "Jim", "Kubernetes"])
-    #expect(built.prompt == "A meeting in English and French. People: Maria Chen, Jim. Terms: Kubernetes.")
-    let many = CloudVocabulary.build(languages: ["en-US"], names: [],
-                                     terms: (0..<500).map { "Term\($0)" })
+@Test func evalVocabularyBuildsKeywordsAndABoundedPrompt() throws {
+    // The recognizer's order: the word list, then names, then correction words; each once in any case or spacing.
+    let built = CloudVocabulary.build(languages: ["en-CA", "fr-CA"], wordList: ["Keycloak", "Urban  Sky", "jim"],
+                                      names: ["Maria Chen", "maria  chen", "Jim", "urban sky"],
+                                      terms: ["Kubernetes", "bad<term>", "two\nlines", "Jim", "keycloak"])
+    #expect(built.keywords == ["Keycloak", "Urban Sky", "jim", "Maria Chen", "Kubernetes"])
+    #expect(built.prompt == "A meeting in English and French. Terms: Keycloak, Urban Sky, jim. People: Maria Chen. "
+        + "Other words: Kubernetes.")
+    // At most the recognizer's 100: a long correction list never pushes out the word list or the names.
+    let many = CloudVocabulary.build(languages: ["en-US"], wordList: (0..<60).map { "Listed\($0)" },
+                                     names: (0..<30).map { "Name\($0)" }, terms: (0..<500).map { "Term\($0)" })
     #expect(many.keywords.count == CloudVocabulary.maxKeywords)
-    #expect((many.prompt?.count ?? 0) <= CloudVocabulary.maxPromptCharacters)
-    #expect(CloudVocabulary.build(languages: ["en-US"], names: [], terms: []).prompt == nil)
+    #expect(Array(many.keywords.prefix(90)) == (0..<60).map { "Listed\($0)" } + (0..<30).map { "Name\($0)" })
+    #expect(many.keywords.last == "Term9")
+    // The prompt keeps the order too, and ends at the first string that does not fit.
+    let prompt = try #require(many.prompt)
+    #expect(prompt.count <= CloudVocabulary.maxPromptCharacters)
+    #expect(prompt.contains("Terms: Listed0, Listed1") && !prompt.contains("Other words"))
+    let longList = CloudVocabulary.build(languages: ["en-US"], wordList: (0..<100).map { "Listed\($0)" },
+                                         names: ["Al"], terms: [])
+    #expect(longList.prompt?.contains("People") == false)
+    #expect(CloudVocabulary.build(languages: ["en-US"], wordList: [], names: [], terms: []).prompt == nil)
     #expect(CloudVocabulary.languageCodes(["fr-CA", "fr-FR", "en-US"]) == ["fr", "en"])
 }
 
@@ -473,8 +485,6 @@ private func evalReport(passages: [EvalPassage]) -> CompareReport {
     #expect(EvalApply.correctionPairs(passage: passage("maria"), final: "Maria", isDictionaryWord: { _ in false })
         .isEmpty)
     #expect(EvalApply.correctionPairs(passage: passage("um"), final: "", isDictionaryWord: { _ in false }).isEmpty)
-    #expect(EvalApply.containsWords("we use kubectl daily", "Kubectl"))
-    #expect(!EvalApply.containsWords("we use kubectls daily", "kubectl"))
 }
 
 @Test func evalRedactsKeysInMessages() {

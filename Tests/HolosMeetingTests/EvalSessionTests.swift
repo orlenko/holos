@@ -134,7 +134,7 @@ private func bodyText(_ request: URLRequest) -> String {
 
 // MARK: - Runs in a session
 
-private let evalNoVocabulary = CloudEvaluation.VocabularySource(names: { [] }, terms: { _ in [] })
+private let evalNoVocabulary = CloudEvaluation.VocabularySource(wordList: { [] }, names: { [] }, terms: { _ in [] })
 
 private func evalOptions(maxSeconds: Double = 5) -> CloudEvaluation.Options {
     var settings = CloudSegmentation.Settings()
@@ -163,6 +163,27 @@ private func evalAllText(_ folder: URL) -> String {
     #expect(throws: HolosError.self) {
         _ = try CloudEvaluation.prepare(session: session, options: CloudEvaluation.Options(tracks: ["system"]),
                                         vocabulary: evalNoVocabulary)
+    }
+}
+
+@Test func evalVocabularyTakesTheWordListFirstAndRefusesAnUnreadableSource() async throws {
+    let temp = try TemporaryDirectory("eval")
+    defer { temp.remove() }
+    let session = try await SessionFixtures.makeSession(in: temp.url, audioSeconds: ["mic": 12], transcript: nil)
+    var options = evalOptions()
+    options.vocabulary = true
+    let source = CloudEvaluation.VocabularySource(wordList: { ["Keycloak"] }, names: { ["Maria Chen"] },
+                                                  terms: { _ in ["Kubernetes", "keycloak"] })
+    let prepared = try CloudEvaluation.prepare(session: session, options: options, vocabulary: source)
+    #expect(prepared.record.request.keywords == ["Keycloak", "Maria Chen", "Kubernetes"])
+    #expect(prepared.record.request.prompt?.contains("Terms: Keycloak. People: Maria Chen. Other words: Kubernetes.")
+        == true)
+    CloudEvaluation.discard(prepared)
+
+    struct Damaged: Error {}
+    let damaged = CloudEvaluation.VocabularySource(wordList: { throw Damaged() }, names: { [] }, terms: { _ in [] })
+    #expect(throws: Damaged.self) {
+        _ = try CloudEvaluation.prepare(session: session, options: options, vocabulary: damaged)
     }
 }
 
@@ -268,12 +289,11 @@ private func evalAllText(_ folder: URL) -> String {
     let passageID = try #require(wordPassages.first?.id)
     let decisions = ReviewDecisions(sessionID: report.sessionID, run: run.id, transcriptID: report.transcriptID,
                                     decisions: [.init(id: passageID, choice: .edited, text: "Kubernetes")],
-                                    terms: ["Kubernetes", "Grafana"])
+                                    terms: ["Kubernetes", " Grafana  Loki ", "kubernetes"])
     let result = try EvalApply.build(session: session, report: report, decisions: decisions)
     #expect(result.gold.tracks.first?.text == "hello team we deploy on Kubernetes today")
     #expect(result.corrections == [Correction(heard: "cube control", meant: "Kubernetes")])
-    #expect(result.termPairs == [Correction(heard: "cube control", meant: "Kubernetes")])
-    #expect(result.termsWithoutSoundalike == ["Grafana"])
+    #expect(result.terms == ["Kubernetes", "Grafana Loki"])
     var stale = decisions
     stale.transcriptID = "other"
     #expect(throws: HolosError.self) { _ = try EvalApply.build(session: session, report: report, decisions: stale) }
@@ -285,6 +305,17 @@ private func evalAllText(_ folder: URL) -> String {
     #expect(try EvalApply.addToCorrections(result.corrections, at: corrections) == result.corrections)
     #expect(try CorrectionList.load(from: corrections).entries == result.corrections)
     #expect(try EvalApply.addToCorrections(result.corrections, at: corrections).isEmpty)
+
+    // --add-vocabulary: the marked terms go to the word list, marked as from a review; a listed term stays as it is.
+    let store = WordListStore(url: temp.url.appendingPathComponent("words.json"))
+    _ = try WordListCommand.add(["grafana loki"], store: store)
+    let added = try EvalApply.addToWordList(result.terms, store: store, at: SessionFixtures.date)
+    #expect(added.output.first == "Added: Kubernetes.")
+    #expect(added.errors == ["Already in the word list: grafana loki"])
+    #expect(added.exitCode == 0)
+    let listed = try store.load().entries
+    #expect(listed.map(\.text) == ["grafana loki", "Kubernetes"])
+    #expect(listed.map(\.source) == [.user, .review])
 
     // Delete Audio removes the review page's audio copy; the text results stay.
     let deleting = try SessionArchive.acquireProcessingLease(at: session)

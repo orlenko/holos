@@ -468,8 +468,11 @@ export OPENAI_API_KEY=…                          # your key; never saved
 "$voiceislocal" eval list <session>               # runs; eval delete <session> <run>|--all
 ```
 
-`eval apply` adds nothing to your corrections unless given `--add-corrections` or
-`--add-vocabulary`; a running Voice is Local picks the additions up and never saves over them. See
+`--vocabulary` sends what the recognizer gets for a meeting, in its order: your word list,
+people's names, then correction words. `eval apply` adds nothing unless given
+`--add-corrections` (the heard → meant pairs, to your corrections) or `--add-vocabulary`
+(the terms you marked, to your word list); a running Voice is Local picks the additions
+up and never saves over them. See
 [Cloud reference](docs/reference-evaluation.md#cloud-reference).
 
 `reference-data/` is reserved for private, user-provided reference recordings and

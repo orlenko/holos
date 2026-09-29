@@ -25,15 +25,16 @@ struct Eval: AsyncParsableCommand {
                 and what it costs, and asks before uploading (--yes skips the question; without a terminal, --yes \
                 is required). Each answer is saved as it arrives, in eval/cloud/<run>/; Ctrl-C stops, and running \
                 the same command again resumes the unfinished run. Reads the key from OPENAI_API_KEY; the key is \
-                never saved or printed. With --vocabulary, people's names and the words of your corrections are \
-                sent too (as keywords and a prompt). With --timestamps, each segment is also sent to whisper-1 for \
+                never saved or printed. With --vocabulary, your word list, people's names, and the words of your \
+                corrections are sent too (as keywords and a prompt, in that order, as the recognizer gets them). With --timestamps, each segment is also sent to whisper-1 for \
                 word times (twice the uploads and about twice the cost).
                 """)
 
         @Argument(help: "Path to a .holos folder, or a session ID.") var session: String
         @Option(help: "OpenAI transcription model.") var model = CloudModels.defaultModel
         @Option(help: "Tracks to send, comma-separated (default: every track).") var tracks: String?
-        @Flag(help: "Also send people's names and your correction words as hints.") var vocabulary = false
+        @Flag(help: "Also send your word list, people's names, and your correction words as hints.")
+        var vocabulary = false
         @Flag(help: "Also send each segment to whisper-1 for word timestamps.") var timestamps = false
         @Option(name: .customLong("run"),
                 help: "Resume this unfinished run (default: the newest unfinished run with the same settings).")
@@ -105,13 +106,23 @@ struct Eval: AsyncParsableCommand {
             }
         }
 
-        /// The meeting vocabulary the app gives the recorder: correction words for the meeting's languages and
-        /// people's names.
+        /// The sources of the meeting vocabulary the app gives the recorder (`RecognizerVocabulary.meeting`): the word
+        /// list, people's names, and correction words for the meeting's languages. A damaged words.json or
+        /// corrections.json stops the run rather than sending less than --vocabulary asked for.
         static let vocabularySource = CloudEvaluation.VocabularySource(
+            wordList: {
+                do { return try WordListStore().load().terms } catch {
+                    throw HolosError.invalidInput("Could not read the word list for --vocabulary: "
+                        + error.localizedDescription)
+                }
+            },
             names: { VoiceProfileService.profileNames().values.sorted() },
             terms: { languages in
-                ((try? CorrectionList.load(from: CorrectionList.defaultURL)) ?? CorrectionList())
-                    .vocabulary(languages: languages)
+                do { return try CorrectionList.load(from: CorrectionList.defaultURL).vocabulary(languages: languages) }
+                catch {
+                    throw HolosError.invalidInput("Could not read corrections.json for --vocabulary: "
+                        + error.localizedDescription)
+                }
             })
     }
 
@@ -187,21 +198,20 @@ struct Eval: AsyncParsableCommand {
 
     struct Apply: ParsableCommand {
         static let configuration = CommandConfiguration(
-            abstract: "Make a reference transcript from review decisions, and propose corrections and vocabulary.",
+            abstract: "Make a reference transcript from review decisions, and propose corrections and word-list terms.",
             discussion: """
                 Writes eval/gold/<run>.json: the local transcript with each reviewed passage replaced by its \
                 decided text. Prints the heard → meant pairs (word substitutions of at most 3 words) and the \
-                terms you marked. Nothing is added to your corrections unless you pass --add-corrections (those \
-                pairs) or --add-vocabulary (for each marked term, what the local recognizer wrote instead). The \
-                additions are made under the corrections file's lock; a running Voice is Local loads them when \
-                the file changes and never saves over them.
+                terms you marked. Nothing is added unless you pass --add-corrections (those pairs, to your \
+                corrections) or --add-vocabulary (the marked terms, to your word list, as voiceislocal words add \
+                does). Each addition is made under that file's lock; a running Voice is Local picks it up and \
+                never saves over it.
                 """)
 
         @Argument(help: "Path to a .holos folder, or a session ID.") var session: String
         @Argument(help: "decisions.json exported by the review page.") var decisions: String
         @Flag(help: "Add the proposed heard → meant pairs to your corrections.") var addCorrections = false
-        @Flag(help: "Add the marked terms (through the soundalikes found for them) to your corrections.")
-        var addVocabulary = false
+        @Flag(help: "Add the marked terms to your word list.") var addVocabulary = false
 
         mutating func run() throws {
             let directory = try SessionLocator.resolve(session)
@@ -225,19 +235,21 @@ struct Eval: AsyncParsableCommand {
             Console.error(result.corrections.isEmpty ? "No heard → meant pairs to propose."
                 : "Proposed corrections (heard → meant):")
             for pair in result.corrections { Console.error("  \(pair.heard) → \(pair.meant)") }
-            if !result.terms.isEmpty {
-                Console.error("Marked terms: " + result.terms.joined(separator: ", "))
-                for pair in result.termPairs { Console.error("  \(pair.heard) → \(pair.meant)") }
-                if !result.termsWithoutSoundalike.isEmpty {
-                    Console.error("  No soundalike found in this review for: "
-                        + result.termsWithoutSoundalike.joined(separator: ", "))
-                }
-            }
-            if addCorrections || addVocabulary {
-                let wanted = (addCorrections ? result.corrections : []) + (addVocabulary ? result.termPairs : [])
-                let added = try EvalApply.addToCorrections(wanted, at: CorrectionList.defaultURL)
+            if !result.terms.isEmpty { Console.error("Marked terms: " + result.terms.joined(separator: ", ")) }
+            if addCorrections {
+                let added = try EvalApply.addToCorrections(result.corrections, at: CorrectionList.defaultURL)
                 Console.error("Added \(added.count) corrections to \(CorrectionList.defaultURL.path); Voice is Local's "
                     + "Corrections pane shows them.")
+            }
+            if addVocabulary {
+                if result.terms.isEmpty {
+                    Console.error("No marked terms to add to the word list.")
+                } else {
+                    let report = try EvalApply.addToWordList(result.terms, store: WordListStore())
+                    // stdout carries only the gold transcript's path.
+                    for line in report.output + report.errors { Console.error(line) }
+                    if report.exitCode != 0 { throw ExitCode(report.exitCode) }
+                }
             }
         }
     }

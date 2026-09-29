@@ -95,17 +95,10 @@ public enum EvalApply {
         public var gold: GoldTranscript
         /// Heard (local) → meant (reviewed) pairs of at most `maxCorrectionWords` words each side.
         public var corrections: [Correction]
-        /// Terms marked on the review page, once each ignoring case.
+        /// Terms marked on the review page (whitespace collapsed), once each ignoring case and spacing, for the word
+        /// list.
         public var terms: [String]
-        /// For the terms: heard → meant pairs from the reviewed passages whose final text contains a term (what the
-        /// local recognizer wrote there, up to `maxTermSoundalikeWords` words). The correction list holds only
-        /// pairs, so a term is added to it through these.
-        public var termPairs: [Correction]
-        /// Terms no reviewed passage gives a soundalike for.
-        public var termsWithoutSoundalike: [String]
     }
-
-    public static let maxTermSoundalikeWords = 6
 
     public static let maxCorrectionWords = 3
 
@@ -155,50 +148,14 @@ public enum EvalApply {
             }
         }
         var terms: [String] = []
-        for term in decisions.terms {
-            let trimmed = term.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !trimmed.isEmpty, !terms.contains(where: { $0.lowercased() == trimmed.lowercased() }) else { continue }
-            terms.append(trimmed)
-        }
-        var termPairs: [Correction] = []
-        var withoutSoundalike: [String] = []
-        for term in terms {
-            var found = false
-            for (passage, decision) in decided
-            where containsWords(decision.text, term) && !containsWords(passage.local, term) && !passage.local.isEmpty {
-                // Learned as the corrections are (context, a lone dictionary word kept with a neighbour), without
-                // their three-word limit; nothing is proposed when learning declines.
-                let original = [passage.before, passage.local, passage.after].filter { !$0.isEmpty }
-                    .joined(separator: " ")
-                let corrected = [passage.before, decision.text, passage.after].filter { !$0.isEmpty }
-                    .joined(separator: " ")
-                let pairs = CorrectionList.learn(original: original, corrected: corrected,
-                                                 isDictionaryWord: isDictionaryWord)
-                    .filter { containsWords($0.meant, term) }
-                for pair in pairs where EvalText.tokens(pair.heard).count <= maxTermSoundalikeWords {
-                    found = true
-                    if !termPairs.contains(where: { $0.heard.lowercased() == pair.heard.lowercased() }) {
-                        termPairs.append(pair)
-                    }
-                }
-            }
-            if !found { withoutSoundalike.append(term) }
+        var seenTerms = Set<String>()
+        for raw in decisions.terms {
+            guard let term = WordList.cleaned(raw), seenTerms.insert(term.lowercased()).inserted else { continue }
+            terms.append(term)
         }
         let gold = GoldTranscript(sessionID: report.sessionID, run: report.run, transcriptID: report.transcriptID,
                                   createdAt: now, reviewedPassages: decided.count, tracks: tracks)
-        return Result(gold: gold, corrections: corrections, terms: terms, termPairs: termPairs,
-                      termsWithoutSoundalike: withoutSoundalike)
-    }
-
-    /// Whether the words of `phrase` appear in order, as whole words, in `text` (compared by key).
-    static func containsWords(_ text: String, _ phrase: String) -> Bool {
-        let words = EvalText.tokens(text).map(EvalText.key)
-        let wanted = EvalText.tokens(phrase).map(EvalText.key)
-        guard !wanted.isEmpty, words.count >= wanted.count else { return false }
-        for start in 0...(words.count - wanted.count) where Array(words[start..<start + wanted.count]) == wanted {
-            return true
-        }
-        return false
+        return Result(gold: gold, corrections: corrections, terms: terms)
     }
 
     /// How a gold piece joins the one before it.
@@ -308,5 +265,14 @@ public enum EvalApply {
             }
             return added
         }.result
+    }
+
+    /// Adds `terms` (the marked terms) to the word list in `store` (the app's words.json) as `voiceislocal words add`
+    /// does, marked as coming from a review (`WordListSource.review`); a term the list has already, in any case, is
+    /// left as it is. The read, change, and save hold the list's lock (`WordListStore.update`), which the app takes
+    /// too. The report says what was added, what was listed already, and what did not fit.
+    public static func addToWordList(_ terms: [String], store: WordListStore,
+                                     at date: Date = Date()) throws -> WordListCommand.Report {
+        try WordListCommand.add(terms, store: store, source: .review, at: date)
     }
 }
