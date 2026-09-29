@@ -169,13 +169,16 @@ voiceislocal eval delete <session> (<run> | --all)
    echo mark of the recognizer words it overlaps, and passages, context and the
    gold keep the text's own spacing. Words are compared by their lowercased
    letters and digits, plus the marks that change a number (a separator,
-   colon, slash or dash between digits, a minus sign before one): "1.5" and
-   "15", or "-5" and "5", are a word difference in the numbers group, never
-   case or punctuation only ("1,000" and "1000" are shown too). The alignment
+   colon, slash or dash between digits, a minus sign before one, a percent
+   sign after one, a currency sign beside one): "1.5" and "15", "-5" and
+   "5", "5%" and "5", or "$50" and "€50" are a word difference in the
+   numbers group, never case or punctuation only ("1,000" and "1000" are
+   shown too). The alignment
    is minimum-edit. Microphone words that are
    echo of the system track in a call (the exports' echo filter) are left out,
    and so are cloud-only words between two echo words or up to 3 of them next
-   to one. Segments without a track count for the first track only. WER is
+   to one (with `--timestamps`, only those said within 1 s of the echo
+   words' time). Segments without a track count for the first track only. WER is
    given against both sides, since neither is the truth yet.
    Differing passages are grouped as numbers, names and terms (a capital not
    at a sentence start, an acronym, letters mixed with digits), dropped or
@@ -192,8 +195,10 @@ voiceislocal eval delete <session> (<run> | --all)
    Local / Cloud / Edited choose. Keys: `j`/`k` next/previous, `1` local, `2`
    cloud, `e` edit (`Esc` leaves the field), space play/pause, `t` add the
    selected text to Terms. Decisions and terms are kept in the browser's
-   localStorage per run and transcript; **Export decisions** downloads
-   `decisions.json`. The page's own decisions are what counts: when the
+   localStorage per run and transcript, each passage and term under a key of
+   its own, so two tabs never save over each other's decisions; **Export
+   decisions** downloads `decisions.json`. The page's own decisions are what
+   counts: when the
    browser cannot store them (storage full or blocked) they stay in the page,
    are applied again on top of whatever another tab stores, and a warning
    says to export before closing (closing asks first). Case- and punctuation-only passages are left to
@@ -201,7 +206,9 @@ voiceislocal eval delete <session> (<run> | --all)
 4. **apply** checks that the decisions belong to this session, run, and
    transcript revision, then writes `eval/gold/<run>.json`: each track's local
    words (echo left out) with every decided passage replaced by its final text,
-   as timed pieces. It prints heard → meant pairs (word substitutions of at
+   as timed pieces, with the transcript's spacing (where a decided text meets
+   other script, or around an insertion or deletion, a space unless both
+   sides are unspaced script). It prints heard → meant pairs (word substitutions of at
    most 3 words a side, from the passage and its context, a lone dictionary
    word kept with a neighbour as the Corrections pane learns them) and, for
    each marked term, what the local recognizer wrote in its place (learned the

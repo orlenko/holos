@@ -24,8 +24,9 @@ public struct EvalToken: Codable, Sendable, Equatable {
 
 public enum EvalText {
     /// Lowercased letters and digits of `text`, plus the marks that change a number: a decimal or group separator,
-    /// colon, or slash between two digits ("1.5", "1,000", "3:30", "1/2"), a dash between two digits ("1-2"), and a
-    /// minus sign before a digit that follows no letter or digit ("-5", "−5"; "COVID-19" stays "covid19"). So a
+    /// colon, or slash between two digits ("1.5", "1,000", "3:30", "1/2"), a dash between two digits ("1-2"), a
+    /// minus sign before a digit that follows no letter or digit ("-5", "−5"; "COVID-19" stays "covid19"), a percent
+    /// sign after a digit ("5%"), and a currency sign next to one, spaces between allowed ("$50", "50 €"). So a
     /// difference in a number is a word difference, shown for review, never case or punctuation only.
     public static func key(_ text: String) -> String {
         let characters = Array(text.lowercased())
@@ -37,6 +38,17 @@ public enum EvalText {
             }
             let previous = index > 0 ? characters[index - 1] : nil
             let next = index + 1 < characters.count ? characters[index + 1] : nil
+            // A percent sign after a number, and a currency sign before or after one.
+            if (character == "%" || character == "‰") && previous.map(isDigit) == true {
+                out.append(character)
+                continue
+            }
+            let before = characters[..<index].last { !$0.isWhitespace }
+            let after = characters[(index + 1)...].first { !$0.isWhitespace }
+            if isCurrency(character), before.map(isDigit) == true || after.map(isDigit) == true {
+                out.append(character)
+                continue
+            }
             guard let next, isDigit(next) else { continue }
             let afterDigit = previous.map(isDigit) ?? false
             switch character {
@@ -52,6 +64,10 @@ public enum EvalText {
     }
 
     private static func isDigit(_ character: Character) -> Bool { character.isNumber && character.isWholeNumber }
+
+    private static func isCurrency(_ character: Character) -> Bool {
+        character.unicodeScalars.first?.properties.generalCategory == .currencySymbol
+    }
 
     /// One word of a text: its characters, where they are (UTF-16), and whether whitespace came before it.
     public struct Piece: Sendable, Equatable {
@@ -386,7 +402,8 @@ public enum WindowComparer {
     ///
     /// - Echo: an operation on a local echo word is left out, and so is a run of cloud-only words between two echo
     ///   words, or of at most `echoNeighbourWords` next to one: the cloud transcript hears the echo too, and its
-    ///   alignment with the echo words around it is arbitrary. A longer run beside echo is kept.
+    ///   alignment with the echo words around it is arbitrary. A longer run beside echo is kept, and so is a timed
+    ///   cloud word (timestamp pass) said more than `echoTimeSlack` away from the echo words' time.
     /// - Passages: maximal runs of consecutive edits (substitutions and one-side-only words); a run of matched
     ///   words that differ only in case or punctuation is a `caseOrPunctuation` passage of its own.
     /// - Time: a passage takes the times of its local words (and of its cloud words when they are timed); a
@@ -399,6 +416,9 @@ public enum WindowComparer {
 
     /// Cloud-only words beside a single echo word that still count as echo.
     static let echoNeighbourWords = 3
+
+    /// How far (seconds) outside the echo words' time a timed cloud word beside them still counts as echo.
+    static let echoTimeSlack = 1.0
 
     /// Scores and passages of an alignment `ops` of `local` with `cloud` (see `compare`).
     static func evaluate(track: String, ops: [AlignmentOp], local: [EvalToken], cloud: [EvalToken], start: Double,
@@ -428,9 +448,19 @@ public enum WindowComparer {
         }
         let excluded: [Bool] = ops.enumerated().map { position, op in
             if let i = localIndex(op) { return local[i].echo }
-            let before = previousLocalIndex[position].map { local[$0].echo } == true
-            let after = nextLocalIndex[position].map { local[$0].echo } == true
-            return (before && after) || ((before || after) && cloudRun[position] <= echoNeighbourWords)
+            let previousEcho = previousLocalIndex[position].flatMap { local[$0].echo ? local[$0] : nil }
+            let nextEcho = nextLocalIndex[position].flatMap { local[$0].echo ? local[$0] : nil }
+            let before = previousEcho != nil, after = nextEcho != nil
+            guard (before && after) || ((before || after) && cloudRun[position] <= echoNeighbourWords) else {
+                return false
+            }
+            // A timed cloud word (the timestamp pass) is echo only when it was said while the echo was.
+            guard let j = cloudIndex(op), let wordStart = cloud[j].start,
+                  let low = (previousEcho ?? nextEcho)?.start, let high = (nextEcho ?? previousEcho)?.end else {
+                return true
+            }
+            let wordEnd = cloud[j].end ?? wordStart
+            return wordStart <= high + echoTimeSlack && wordEnd >= low - echoTimeSlack
         }
 
         var run: [Int] = []  // op positions of the current edit run

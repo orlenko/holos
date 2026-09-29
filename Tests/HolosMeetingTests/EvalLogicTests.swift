@@ -293,6 +293,55 @@ private func cloudTrack(_ windows: [[String]]) -> CloudTrackResult {
     #expect(compared.passages.isEmpty)
 }
 
+@Test func evalTimedCloudWordsAwayFromEchoAreKept() {
+    // Echo "thanks for joining" at 0–3 s; the cloud also has "I disagree" at 10–12 s, which the microphone missed.
+    let local = timed(["thanks", "for", "joining"], echo: [0, 1, 2]) + timed(["next"], from: 20)
+    var cloud = untimed("thanks for joining I disagree next")
+    for (index, time) in [0.0, 1, 2, 10, 11, 20].enumerated() {
+        cloud[index].start = time
+        cloud[index].end = time + 0.8
+    }
+    let result = WindowComparer.compare(track: "mic", local: local, cloud: cloud, start: 0, end: 30)
+    #expect(result.score.cloudOnly == 2)
+    #expect(result.passages.map(\.cloud) == ["I disagree"])
+    // Said while the echo played, they are echo.
+    cloud[3].start = 3.2; cloud[3].end = 3.5
+    cloud[4].start = 3.5; cloud[4].end = 3.9
+    let during = WindowComparer.compare(track: "mic", local: local, cloud: cloud, start: 0, end: 30)
+    #expect(during.score.cloudOnly == 0)
+    #expect(during.passages.isEmpty)
+}
+
+@Test func evalGoldSplicesKeepWordsApart() {
+    // An insertion between a spaced word and an unspaced script, and a deletion between two spaced words.
+    let insertion = EvalCompare.segmentTokens(
+        words: WordTiming.effectiveWords(of: TranscriptSegment(start: 0, end: 3, text: "use苹果")), text: "use苹果",
+        isEcho: [false])
+    #expect(insertion.map(\.text) == ["use", "苹", "果"])
+    let added = EvalPassage(id: "mic-1", track: "mic", start: 1, end: 1, local: "", cloud: "the",
+                            group: .droppedOrAdded, before: "use", after: "苹果", localFirst: 1, localEnd: 1)
+    let inserted = EvalApply.goldTrack(track: "mic", local: insertion, replacements: [
+        (added, .init(id: "mic-1", choice: .cloud, text: "the")),
+    ]).text
+    #expect(inserted.contains("use the"))
+    let deletion = EvalCompare.segmentTokens(
+        words: WordTiming.effectiveWords(of: TranscriptSegment(start: 0, end: 3, text: "hello中world")),
+        text: "hello中world", isEcho: [false])
+    #expect(deletion.map(\.text) == ["hello", "中", "world"])
+    let removed = EvalPassage(id: "mic-1", track: "mic", start: 1, end: 2, local: "中", cloud: "",
+                              group: .droppedOrAdded, before: "hello", after: "world", localFirst: 1, localEnd: 2)
+    #expect(EvalApply.goldTrack(track: "mic", local: deletion, replacements: [
+        (removed, .init(id: "mic-1", choice: .cloud, text: "")),
+    ]).text == "hello world")
+    // Replacing a spaced word keeps the transcript's spacing on both sides.
+    let latin = timed(["we", "run", "cube", "daily"])
+    let swapped = EvalPassage(id: "mic-1", track: "mic", start: 2, end: 3, local: "cube", cloud: "kubectl",
+                              group: .otherWords, before: "we run", after: "daily", localFirst: 2, localEnd: 3)
+    #expect(EvalApply.goldTrack(track: "mic", local: latin, replacements: [
+        (swapped, .init(id: "mic-1", choice: .cloud, text: "kubectl")),
+    ]).text == "we run kubectl daily")
+}
+
 @Test func evalALongCloudOnlyRunBesideEchoIsKept() {
     let local = timed(["the", "quarterly", "numbers", "fine"], echo: [0, 1, 2])
     let cloud = untimed("the quarterly numbers we never heard locally at all fine")
@@ -449,7 +498,12 @@ private func evalReport(passages: [EvalPassage]) -> CompareReport {
     #expect(EvalText.key("1.5.") == EvalText.key("1.5"))
     #expect(EvalText.key("COVID-19") == "covid19")
     #expect(EvalText.key("well-known,") == "wellknown")
-    for (localWord, cloudWord) in [("1.5", "15"), ("-5", "5")] {
+    #expect(EvalText.key("5%") != EvalText.key("5"))
+    #expect(EvalText.key("$50") != EvalText.key("€50"))
+    #expect(EvalText.key("$50.") == EvalText.key("$50"))
+    #expect(EvalText.tokens("50 € today").map(EvalText.key) == ["50€", "today"])
+    #expect(EvalText.key("100%,") == "100%")
+    for (localWord, cloudWord) in [("1.5", "15"), ("-5", "5"), ("5%", "5"), ("$50", "€50")] {
         let result = WindowComparer.compare(track: "mic", local: timed(["it", "is", localWord, "degrees"]),
                                             cloud: untimed("it is \(cloudWord) degrees"), start: 0, end: 10)
         #expect(result.score.substitutions == 1)
@@ -531,44 +585,81 @@ private func evalReport(passages: [EvalPassage]) -> CompareReport {
     var failure: String?
     context.exceptionHandler = { _, value in failure = value?.toString() }
     context.evaluateScript(code)
+    // A localStorage stand-in: string keys in insertion order, writes that can be made to fail.
     context.evaluateScript("""
-        var box = { value: null, failWrites: false };
-        var storage = {
-          getItem: function () { return box.value; },
-          setItem: function (k, v) { if (box.failWrites) throw new Error("QuotaExceededError"); box.value = v; }
-        };
+        function makeStorage() {
+          var items = {}, order = [];
+          var s = { failWrites: false, items: items };
+          Object.defineProperty(s, "length", { get: function () { return order.length; } });
+          s.key = function (i) { return order[i] === undefined ? null : order[i]; };
+          s.getItem = function (k) { return Object.prototype.hasOwnProperty.call(items, k) ? items[k] : null; };
+          s.setItem = function (k, v) {
+            if (s.failWrites) throw new Error("QuotaExceededError");
+            if (!Object.prototype.hasOwnProperty.call(items, k)) order.push(k);
+            items[k] = String(v);
+          };
+          return s;
+        }
+        var storage = makeStorage();
         var store = makeStore(storage, "k");
-        function decide(id, text) { store.update(function (s) { s.decisions[id] = { choice: "edited", text: text }; }); }
-        function ids() { return Object.keys(store.state.decisions).sort().join(","); }
-        function stored() { return Object.keys(JSON.parse(box.value).decisions).sort().join(","); }
-        decide("a", "1");
-        box.failWrites = true;
-        decide("b", "2");
-        decide("c", "3");
+        function ids(s) { return Object.keys(s.state.decisions).sort().join(","); }
+        function stored() {
+          return Object.keys(storage.items).filter(function (k) { return k.indexOf("k|d|") === 0; })
+            .map(function (k) { return k.slice(4); }).sort().join(",");
+        }
+        store.decide("a", "edited", "1");
+        storage.failWrites = true;
+        store.decide("b", "edited", "2");
+        store.decide("c", "edited", "3");
         """)
     #expect(failure == nil)
-    #expect(context.evaluateScript("ids()").toString() == "a,b,c")
+    #expect(context.evaluateScript("ids(store)").toString() == "a,b,c")
     #expect(context.evaluateScript("store.failed").toBool())
     #expect(context.evaluateScript("store.pending.length").toInt32() == 2)
     #expect(context.evaluateScript("stored()").toString() == "a")
     // Another tab stores "d": this page takes it and keeps its own unsaved decisions on top.
     context.evaluateScript("""
-        box.value = JSON.stringify({ decisions: { a: { choice: "local", text: "1" }, d: { choice: "cloud", text: "4" } },
-                                     terms: [] });
+        storage.failWrites = false;
+        var other = makeStore(storage, "k");
+        other.decide("d", "cloud", "4");
+        storage.failWrites = true;
         store.reload();
         """)
-    #expect(context.evaluateScript("ids()").toString() == "a,b,c,d")
+    #expect(context.evaluateScript("ids(store)").toString() == "a,b,c,d")
     // Once storage works again, the next change stores everything.
-    context.evaluateScript("box.failWrites = false; decide(\"e\", \"5\");")
+    context.evaluateScript("storage.failWrites = false; store.decide(\"e\", \"edited\", \"5\");")
     #expect(context.evaluateScript("stored()").toString() == "a,b,c,d,e")
     #expect(!context.evaluateScript("store.failed").toBool())
     #expect(context.evaluateScript("store.pending.length").toInt32() == 0)
+    // Two tabs that both read before either wrote keep each other's decisions and terms.
+    context.evaluateScript("""
+        var shared = makeStorage();
+        var left = makeStore(shared, "k"), right = makeStore(shared, "k");
+        left.decide("p", "local", "x");
+        right.decide("q", "cloud", "y");
+        left.addTerm("Kubernetes");
+        right.addTerm("Grafana");
+        right.removeTerm("Kubernetes");
+        left.reload();
+        """)
+    #expect(context.evaluateScript("ids(left)").toString() == "p,q")
+    #expect(context.evaluateScript("left.state.terms.join(',')").toString() == "Grafana")
+    #expect(context.evaluateScript("ids(makeStore(shared, 'k'))").toString() == "p,q")
+    // Decisions a page kept under the key itself are read under the newer ones.
+    context.evaluateScript("""
+        var old = makeStorage();
+        old.setItem("k", JSON.stringify({ decisions: { m: { choice: "local", text: "" } }, terms: ["Priya"] }));
+        var upgraded = makeStore(old, "k");
+        upgraded.removeTerm("Priya");
+        """)
+    #expect(context.evaluateScript("ids(makeStore(old, 'k'))").toString() == "m")
+    #expect(context.evaluateScript("makeStore(old, 'k').state.terms.length").toInt32() == 0)
     // Storage that cannot even be read keeps every decision in the page.
     context.evaluateScript("""
-        var broken = makeStore({ getItem: function () { throw new Error("blocked"); },
-                                 setItem: function () { throw new Error("blocked"); } }, "k");
-        broken.update(function (s) { s.decisions.x = { choice: "local", text: "" }; });
-        broken.update(function (s) { s.decisions.y = { choice: "cloud", text: "" }; });
+        var blocked = function () { throw new Error("blocked"); };
+        var broken = makeStore({ length: 0, key: blocked, getItem: blocked, setItem: blocked }, "k");
+        broken.decide("x", "local", "");
+        broken.decide("y", "cloud", "");
         """)
     #expect(context.evaluateScript("Object.keys(broken.state.decisions).join(',')").toString() == "x,y")
     #expect(context.evaluateScript("broken.failed").toBool())

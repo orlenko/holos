@@ -149,43 +149,97 @@ kbd { border:1px solid var(--line); border-radius:3px; padding:0 3px; font-size:
   var data = JSON.parse(document.getElementById("review-data").textContent);
   var storageKey = "voiceislocal-review:" + data.run + ":" + data.transcriptID;
   // BEGIN review-store
-  // Decisions live in localStorage. Every change is merged into what is stored now, so two tabs of this page
-  // keep each other's work. The page's own state is what counts: a change that could not be stored (storage full
-  // or blocked) stays pending and is applied again on top of whatever is read later, so no later edit or other
-  // tab's save can drop it; the page warns until it is stored, and Export writes it out either way.
+  // Decisions live in localStorage, each passage's under a key of its own ("<key>|d|<id>") and each term's too
+  // ("<key>|t|<term in lower case>", a removed one marked removed), so a change writes only its own key and two
+  // tabs of this page never save over each other's work (never read, change, and write back one shared value).
+  // The page's own state is what counts: a change that could not be stored (storage full or blocked) stays
+  // pending, is tried again with the next change, and is applied on top of whatever is read later, so no later
+  // edit or other tab's save can drop it; the page warns until it is stored, and Export writes it out either way.
+  // Decisions a page kept before (everything under the key itself) are read too, under the newer ones.
   function makeStore(storage, key) {
+    var decisionPrefix = key + "|d|", termPrefix = key + "|t|";
     var store = { state: { decisions: {}, terms: [] }, failed: false, pending: [] };
+    var sequence = 0;
+    function parse(text) {
+      try { return JSON.parse(text); } catch (e) { return null; }
+    }
     function read() {
       try {
-        var saved = JSON.parse(storage.getItem(key) || "null");
-        if (saved && typeof saved === "object") {
-          return { decisions: saved.decisions && typeof saved.decisions === "object" ? saved.decisions : {},
-                   terms: Array.isArray(saved.terms) ? saved.terms : [] };
+        var decisions = {}, marks = {};
+        var legacy = parse(storage.getItem(key));
+        if (legacy && typeof legacy === "object") {
+          if (legacy.decisions && typeof legacy.decisions === "object") {
+            Object.keys(legacy.decisions).forEach(function (id) { decisions[id] = legacy.decisions[id]; });
+          }
+          if (Array.isArray(legacy.terms)) {
+            legacy.terms.forEach(function (term, index) {
+              if (typeof term === "string") marks[term.toLowerCase()] = { text: term, at: index - 1e15 };
+            });
+          }
         }
-        return { decisions: {}, terms: [] };
+        for (var i = 0; i < storage.length; i++) {
+          var name = storage.key(i);
+          if (typeof name !== "string") continue;
+          var value;
+          if (name.indexOf(decisionPrefix) === 0) {
+            value = parse(storage.getItem(name));
+            if (value && typeof value === "object") decisions[name.slice(decisionPrefix.length)] = value;
+          } else if (name.indexOf(termPrefix) === 0) {
+            value = parse(storage.getItem(name));
+            if (value && typeof value === "object" && typeof value.text === "string") {
+              marks[name.slice(termPrefix.length)] = value;
+            }
+          }
+        }
+        var terms = Object.keys(marks).map(function (k) { return marks[k]; })
+          .filter(function (mark) { return !mark.removed; })
+          .sort(function (a, b) { return (Number(a.at) || 0) - (Number(b.at) || 0); })
+          .map(function (mark) { return mark.text; });
+        return { decisions: decisions, terms: terms };
       } catch (e) {
         return null;
+      }
+    }
+    function apply(op, state) {
+      if (op.kind === "decide") {
+        state.decisions[op.id] = op.value;
+      } else {
+        var lower = op.text.toLowerCase();
+        state.terms = state.terms.filter(function (t) { return String(t).toLowerCase() !== lower; });
+        if (!op.removed) state.terms.push(op.text);
+      }
+    }
+    function write(op) {
+      if (op.kind === "decide") {
+        storage.setItem(decisionPrefix + op.id, JSON.stringify(op.value));
+      } else {
+        storage.setItem(termPrefix + op.text.toLowerCase(),
+                        JSON.stringify({ text: op.text, at: op.at, removed: !!op.removed }));
       }
     }
     function merged() {
       var fresh = read();
       if (!fresh) return null;
-      store.pending.forEach(function (change) { change(fresh); });
+      store.pending.forEach(function (op) { apply(op, fresh); });
       return fresh;
     }
-    store.update = function (change) {
-      store.pending.push(change);
+    function change(op) {
+      store.pending.push(op);
+      var left = [];
+      store.pending.forEach(function (pending) {
+        try { write(pending); } catch (e) { left.push(pending); }
+      });
+      store.pending = left;
+      store.failed = left.length > 0;
       var fresh = merged();
-      if (fresh) { store.state = fresh; } else { change(store.state); }
-      try {
-        storage.setItem(key, JSON.stringify(store.state));
-        store.pending = [];
-        store.failed = false;
-      } catch (e) {
-        store.failed = true;
-      }
+      if (fresh) { store.state = fresh; } else { apply(op, store.state); }
+    }
+    store.decide = function (id, choice, text) {
+      change({ kind: "decide", id: id, value: { choice: choice, text: text } });
     };
-    // Another tab saved: take what it stored, with this page's unsaved changes on top.
+    store.addTerm = function (text) { change({ kind: "term", text: text, at: Date.now() + (sequence++) / 1000 }); };
+    store.removeTerm = function (text) { change({ kind: "term", text: text, at: Date.now(), removed: true }); };
+    // Another tab saved: take what is stored, with this page's unsaved changes on top.
     store.reload = function () {
       var fresh = merged();
       if (fresh) store.state = fresh;
@@ -198,21 +252,20 @@ kbd { border:1px solid var(--line); border-radius:3px; padding:0 3px; font-size:
   var storage;
   try { storage = window.localStorage; } catch (e) { storage = null; }
   if (!storage) {
-    storage = { getItem: function () { throw new Error("no storage"); },
-                setItem: function () { throw new Error("no storage"); } };
+    var blocked = function () { throw new Error("no storage"); };
+    storage = { length: 0, key: blocked, getItem: blocked, setItem: blocked };
   }
   var store = makeStore(storage, storageKey);
   var state = store.state;
   var changes = 0, exported = 0;
   function unsaved() { return store.failed || store.pending.length > 0; }
-  function update(change) {
-    store.update(change);
+  function changed() {
     state = store.state;
     changes += 1;
     refreshAll();
   }
   window.addEventListener("storage", function (e) {
-    if (e.key !== storageKey) return;
+    if (e.key !== null && e.key !== storageKey && String(e.key).indexOf(storageKey + "|") !== 0) return;
     store.reload();
     state = store.state;
     refreshAll();
@@ -323,7 +376,8 @@ kbd { border:1px solid var(--line); border-radius:3px; padding:0 3px; font-size:
     entry.choose = function (choice) {
       var text = choice === "local" ? item.local : choice === "cloud" ? item.cloud : area.value;
       if (choice !== "edited") area.value = text;
-      update(function (s) { s.decisions[item.id] = { choice: choice, text: text }; });
+      store.decide(item.id, choice, text);
+      changed();
     };
     buttons.local.addEventListener("click", function () { select(index); entry.choose("local"); });
     buttons.cloud.addEventListener("click", function () { select(index); entry.choose("cloud"); });
@@ -365,7 +419,8 @@ kbd { border:1px solid var(--line); border-radius:3px; padding:0 3px; font-size:
       li.appendChild(el("span", null, term));
       var remove = el("button", { title: "Remove" }, "×");
       remove.addEventListener("click", function () {
-        update(function (s) { s.terms = s.terms.filter(function (t) { return t !== term; }); });
+        store.removeTerm(term);
+        changed();
       });
       li.appendChild(remove);
       termList.appendChild(li);
@@ -382,9 +437,9 @@ kbd { border:1px solid var(--line); border-radius:3px; padding:0 3px; font-size:
     text = text.replace(/\s+/g, " ").trim();
     if (!text || text.length > 100) return;
     var lower = text.toLowerCase();
-    update(function (s) {
-      if (!s.terms.some(function (t) { return String(t).toLowerCase() === lower; })) s.terms.push(text);
-    });
+    if (state.terms.some(function (t) { return String(t).toLowerCase() === lower; })) return;
+    store.addTerm(text);
+    changed();
   }
   document.getElementById("addTerm").addEventListener("mousedown", function (e) { e.preventDefault(); });
   document.getElementById("addTerm").addEventListener("click", addTerm);

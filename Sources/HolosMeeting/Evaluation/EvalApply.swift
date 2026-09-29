@@ -201,21 +201,38 @@ public enum EvalApply {
         return false
     }
 
+    /// How a gold piece joins the one before it.
+    enum Joint: Equatable {
+        /// As the transcript had it (a space or not).
+        case original(Bool)
+        /// By the characters that meet: a space unless both are of a script written without spaces.
+        case byCharacters
+    }
+
     /// The local words of a track (echo left out) with each reviewed passage's words replaced by its final text. The
     /// words keep the spacing they had in the transcript (none between the characters of a script written without
-    /// spaces), and so does a reviewed passage with the words around it.
+    /// spaces). Where a reviewed passage meets the words around it, the transcript's spacing is kept when the text
+    /// there is of the same kind (spaced or unspaced script) as the words it replaced; otherwise, and around an
+    /// insertion or a deletion, the characters that meet decide ("hello" and "world" get a space, "你好" and "界"
+    /// none).
     static func goldTrack(track: String, local: [EvalToken],
                           replacements: [(EvalPassage, ReviewDecisions.Decision)]) -> GoldTranscript.Track {
         var pieces: [GoldTranscript.Piece] = []
-        var spaced: [Bool] = []
+        var joints: [Joint] = []
         var run: [EvalToken] = []
+        var spliced: Joint?  // how the next piece joins the reviewed passage (or the deletion) before it
         func flushRun() {
             let kept = run.filter { !$0.echo }
             run.removeAll()
             guard let first = kept.first, let last = kept.last else { return }
             pieces.append(GoldTranscript.Piece(start: first.start ?? 0, end: last.end ?? last.start ?? 0,
                                                text: EvalText.join(kept), passage: nil))
-            spaced.append(first.spaceBefore)
+            joints.append(spliced ?? .original(first.spaceBefore))
+            spliced = nil
+        }
+        func sameKind(_ a: Character?, _ b: Character?) -> Bool {
+            guard let a, let b else { return false }
+            return EvalText.isUnspacedScript(a) == EvalText.isUnspacedScript(b)
         }
         var position = 0
         for (passage, decision) in replacements {
@@ -224,17 +241,37 @@ public enum EvalApply {
             run += local[position..<first]
             flushRun()
             let text = decision.text.split(whereSeparator: \.isWhitespace).joined(separator: " ")
-            if !text.isEmpty {
+            if text.isEmpty {
+                spliced = .byCharacters
+            } else {
                 pieces.append(GoldTranscript.Piece(start: passage.start, end: passage.end, text: text,
                                                    passage: passage.id))
-                spaced.append(first < local.count ? local[first].spaceBefore : true)
+                let replaced = first < end
+                joints.append(replaced && sameKind(text.first, local[first].text.first)
+                              ? .original(local[first].spaceBefore) : .byCharacters)
+                spliced = replaced && end < local.count && sameKind(text.last, local[end - 1].text.last)
+                    ? .original(local[end].spaceBefore) : .byCharacters
             }
             position = end
         }
         run += local[min(position, local.count)...]
         flushRun()
-        return GoldTranscript.Track(track: track, text: EvalText.join(pieces.map(\.text), spaceBefore: spaced),
-                                    pieces: pieces)
+        var text = ""
+        for (index, piece) in pieces.enumerated() {
+            if index > 0 {
+                switch joints[index] {
+                case .original(let space):
+                    if space { text += " " }
+                case .byCharacters:
+                    let before = text.last, after = piece.text.first
+                    if !(before.map(EvalText.isUnspacedScript) == true && after.map(EvalText.isUnspacedScript) == true) {
+                        text += " "
+                    }
+                }
+            }
+            text += piece.text
+        }
+        return GoldTranscript.Track(track: track, text: text, pieces: pieces)
     }
 
     /// Word-level substitutions between the passage's local text and its final text, with the passage's context
