@@ -49,6 +49,45 @@ import Testing
         #expect(back.entries == saved)
     }
 
+    /// A support folder reached through a link into a drive that is not connected is out of reach too (the link then
+    /// leads nowhere): not an empty list.
+    @Test func anIndexReachedThroughALinkToADisconnectedDriveIsUnavailable() throws {
+        let root = try folder()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let volumes = root.appendingPathComponent("Volumes", isDirectory: true)
+        try FileManager.default.createDirectory(at: volumes, withIntermediateDirectories: false)
+        let support = root.appendingPathComponent("Support")
+        try FileManager.default.createSymbolicLink(atPath: support.path,
+                                                   withDestinationPath: volumes.path + "/Backup/Support")
+        let store = ReadingLibraryStore(folder: support.appendingPathComponent("ReadingLibrary"))
+        ReadingOutput.$volumesFolder.withValue(volumes.path) {
+            let loaded = store.load()
+            #expect(loaded.unavailable)
+            #expect(!loaded.writable)
+            #expect(ReadingOutput.unreachableReason(for: store.indexURL)?.contains("“Backup”") == true)
+            // A relative link too.
+            let relative = root.appendingPathComponent("Relative")
+            #expect((try? FileManager.default.createSymbolicLink(atPath: relative.path,
+                                                                 withDestinationPath: "Volumes/Backup/Support")) != nil)
+            #expect(ReadingOutput.unreachableReason(for: relative.appendingPathComponent("library.json")) != nil)
+        }
+    }
+
+    /// Share… copies of a process that still runs (another copy of the app) are kept at a launch; those of one that
+    /// ended, and those an earlier build left, go.
+    @Test func sharingCopiesOfARunningProcessAreKept() throws {
+        let root = try folder()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let mine = ReadingLibrary.sharingFolder(in: root)
+        let ended = root.appendingPathComponent("999999-1")
+        let earlier = root.appendingPathComponent(UUID().uuidString)
+        for url in [mine, ended, earlier] {
+            try FileManager.default.createDirectory(at: url, withIntermediateDirectories: false)
+        }
+        ReadingLibrary.sweepSharingFolders(in: root)
+        #expect(try FileManager.default.contentsOfDirectory(atPath: root.path) == [mine.lastPathComponent])
+    }
+
     /// An index larger than `load` reads is never saved: the one there stays, and the next launch reads it. A save
     /// that adds a reading stops at half that, so a full list can still be changed (a Delete marks its reading first,
     /// which makes the index larger) and read back.
@@ -119,6 +158,29 @@ import Testing
         close(held)
         await #expect(throws: (any Error).self) { try await saving.value }
         #expect(ReadingLibraryStore(folder: root).load().entries == theirs)
+    }
+
+    /// On a volume without `flock`, the index's lock is a reservation file made exclusively: while another running
+    /// process holds it, a save fails rather than run unlocked; one whose process ended is taken over.
+    @Test func withoutFlockSavesUseAReservation() throws {
+        let root = try folder()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = ReadingLibraryStore(folder: root)
+        try store.save([entry(.done)])
+        let reservation = root.appendingPathComponent(".library.reservation")
+        try ReadingLibraryStore.$lockCall.withValue({ _ in errno = ENOTSUP; return -1 }) {
+            // Held by a process that runs (this one, as another copy of the app would).
+            try JSONEncoder().encode(ReadingOutputReservation.Record.current()).write(to: reservation)
+            #expect(throws: HolosError.self) { try store.save([entry(.stopped)]) }
+            #expect(store.load().entries.first?.state == .done)
+            try FileManager.default.removeItem(at: reservation)
+            try store.save([entry(.stopped)])
+            #expect(store.load().entries.first?.state == .stopped)
+            // Released after the save.
+            #expect(!FileManager.default.fileExists(atPath: reservation.path))
+            // Saved texts too.
+            try store.saveDocument(ReadableDocument(sections: [.init(paragraphs: ["Text."])]), for: UUID())
+        }
     }
 
     /// A saved text is never replaced by another one (one `document(for:)` did not see): the save fails.
@@ -444,10 +506,14 @@ import Testing
         var reading = entry(.stopped)
         reading.output = output.path
         reading.cache = cache.path
-        let result = ReadingLibrary.deleteFiles(of: reading, readingsRoot: readings, store: store) { _ in
-            Issue.record("Trashed a partly written file")
+        // The partly written file goes to the Trash (it could be the finished one shortened in place).
+        var trashed: [String] = []
+        let result = ReadingLibrary.deleteFiles(of: reading, readingsRoot: readings, store: store) { url in
+            trashed.append(url.lastPathComponent)
+            try FileManager.default.removeItem(at: url)
         }
         #expect(result == .init())
+        #expect(trashed == ["Story.m4a"])
         // The joined files and the places aside are gone; the Readings folder (and its lock) and the other reading's
         // joined file are left.
         #expect(try FileManager.default.contentsOfDirectory(atPath: root.path).sorted()

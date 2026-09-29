@@ -256,17 +256,18 @@ public enum ReadingOutput {
     /// unclean unmount is not one); a path whose nearest existing folder is on an
     /// automounted network location (`autofs`) waits for its share; and a folder that exists but cannot be looked
     /// into (permissions, an I/O error, a stale network handle) cannot be reached either.
+    /// A folder reached through a link counts where the link leads: a support or output folder linked into
+    /// `/Volumes/<name>` is out of reach while that drive is not connected (the link then leads nowhere).
     public static func unreachableReason(for url: URL) -> String? {
-        let folder = url.deletingLastPathComponent().path
-        let volumes = volumesFolder.hasSuffix("/") ? String(volumesFolder.dropLast()) : volumesFolder
-        if folder.hasPrefix(volumes + "/") {
-            let name = folder.dropFirst(volumes.count + 1).split(separator: "/", maxSplits: 1).first.map(String.init) ?? ""
-            if !name.isEmpty, !isMountPoint(volumes + "/" + name) {
-                return "the drive or share “\(name)” is not connected"
-            }
-        }
+        unreachableReason(folder: url.deletingLastPathComponent().path, links: 0)
+    }
+
+    /// `unreachableReason` for `folder`; `links` counts the links followed to get there (at most 8).
+    private static func unreachableReason(folder: String, links: Int) -> String? {
+        if let reason = disconnectedVolume(folder) { return reason }
         // The nearest folder that exists, and whether the one holding the file can be looked into.
         var probe = folder
+        var below: [String] = []
         while true {
             var metadata = stat()
             if stat(RawFilePath.system(probe), &metadata) == 0 { break }
@@ -274,13 +275,48 @@ public enum ReadingOutput {
             guard error == ENOENT || error == ENOTDIR else {
                 return "\((probe as NSString).abbreviatingWithTildeInPath) cannot be reached (\(String(cString: strerror(error))))"
             }
+            // A link on the way that leads nowhere: where it leads decides.
+            if links < 8, let target = linkTarget(probe) {
+                let parent = (probe as NSString).deletingLastPathComponent
+                let led = target.hasPrefix("/") ? target : (parent == "/" ? "/" : parent + "/") + target
+                return unreachableReason(folder: ([led] + below.reversed()).joined(separator: "/"), links: links + 1)
+            }
             guard probe != "/", !probe.isEmpty else { return nil }
+            below.append((probe as NSString).lastPathComponent)
             probe = (probe as NSString).deletingLastPathComponent
+        }
+        // The nearest folder that exists, reached through links: where they lead decides too.
+        if let resolved = realPath(probe), resolved != probe,
+           let reason = disconnectedVolume(([resolved] + below.reversed()).joined(separator: "/")) {
+            return reason
         }
         if probe != folder, ReadingPathIdentity.fileSystemType(RawFilePath.system(probe)) == "autofs" {
             return "the network share that holds \((folder as NSString).abbreviatingWithTildeInPath) is not connected"
         }
         return nil
+    }
+
+    /// Why `path` is out of reach when it is in `/Volumes/<name>` and no volume is mounted there; nil otherwise.
+    private static func disconnectedVolume(_ path: String) -> String? {
+        let volumes = volumesFolder.hasSuffix("/") ? String(volumesFolder.dropLast()) : volumesFolder
+        guard path.hasPrefix(volumes + "/") else { return nil }
+        let name = path.dropFirst(volumes.count + 1).split(separator: "/", maxSplits: 1).first.map(String.init) ?? ""
+        guard !name.isEmpty, !isMountPoint(volumes + "/" + name) else { return nil }
+        return "the drive or share “\(name)” is not connected"
+    }
+
+    /// Where the link at `path` leads, or nil when `path` is not a link.
+    private static func linkTarget(_ path: String) -> String? {
+        var buffer = [CChar](repeating: 0, count: Int(PATH_MAX) + 1)
+        let count = readlink(RawFilePath.system(path), &buffer, buffer.count - 1)
+        guard count > 0 else { return nil }
+        return String(decoding: buffer.prefix(count).map { UInt8(bitPattern: $0) }, as: UTF8.self)
+    }
+
+    private static func realPath(_ path: String) -> String? {
+        guard let resolved = realpath(RawFilePath.system(path), nil) else { return nil }
+        defer { free(resolved) }
+        return String(cString: resolved)
     }
 
     /// Whether a volume is mounted at `path` (links followed: "/Volumes/Macintosh HD" is a link to "/"): the volume

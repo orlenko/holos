@@ -191,8 +191,19 @@ public final class ReadingLibraryStore: @unchecked Sendable {
             }
         }
         let aside = folder.appendingPathComponent("library.json.unreadable-\(Self.stamp())")
+        // Set aside only while it is the file read, under the index's lock: another copy of the app may have saved a
+        // good list there since, which must not be set aside for what this one read before.
+        struct Replaced: Error {}
+        let read = expected ?? nil
         do {
-            try FileManager.default.moveItem(at: indexURL, to: aside)
+            try withIndexLock {
+                guard let read, try ExclusivePublisher.FileIdentity.lookup(indexURL) == read else { throw Replaced() }
+                try FileManager.default.moveItem(at: indexURL, to: aside)
+            }
+        } catch is Replaced {
+            expected = nil
+            return Loaded(entries: [], notice: "The Reading list changed while it was read; it is read again when you "
+                            + "come back to this window.", writable: false, unavailable: true)
         } catch {
             expected = nil
             return Loaded(entries: [], notice: "The Reading list could not be read and could not be set aside "
@@ -241,22 +252,40 @@ public final class ReadingLibraryStore: @unchecked Sendable {
         }
     }
 
+    /// Takes the place of `flock(descriptor, LOCK_EX)` on the index's lock (tests: a volume without `flock`).
+    @TaskLocal static var lockCall: (@Sendable (Int32) -> Int32)? = nil
+
     /// Runs `body` holding the index's lock (`flock` on `.library.lock` in the folder, which must exist): a save of
-    /// this index by another process waits. On a volume without `flock` (some network shares) it runs unlocked.
-    private func withIndexLock<T>(_ body: () throws -> T) throws -> T {
+    /// this index, or of a saved text, by another process waits. On a volume without `flock` (some network shares),
+    /// the lock is a reservation file made exclusively instead (`.library.reservation`, see
+    /// `ReadingOutputReservation`: one whose process ended is taken over): while another process holds it, this
+    /// fails rather than run unlocked.
+    func withIndexLock<T>(_ body: () throws -> T) throws -> T {
         let path = folder.appendingPathComponent(".library.lock").path
         let descriptor = open(path, O_CREAT | O_RDWR | O_CLOEXEC | O_NOFOLLOW, 0o600)
         guard descriptor >= 0 else {
             throw HolosError.io("Could not lock the Reading list (\(path)): \(String(cString: strerror(errno)))")
         }
         defer { close(descriptor) }
-        var locked = flock(descriptor, LOCK_EX) == 0
-        while !locked && errno == EINTR { locked = flock(descriptor, LOCK_EX) == 0 }
-        if !locked, errno != ENOTSUP, errno != EOPNOTSUPP {
+        let lock = { Self.lockCall?(descriptor) ?? flock(descriptor, LOCK_EX) }
+        var locked = lock() == 0
+        while !locked && errno == EINTR { locked = lock() == 0 }
+        if locked {
+            defer { _ = flock(descriptor, LOCK_UN) }
+            return try body()
+        }
+        guard errno == ENOTSUP || errno == EOPNOTSUPP else {
             throw HolosError.io("Could not lock the Reading list (\(path)): \(String(cString: strerror(errno)))")
         }
-        defer { if locked { _ = flock(descriptor, LOCK_UN) } }
-        return try body()
+        let reservation: ReadingOutputReservation
+        do {
+            reservation = try ReadingOutputReservation.acquire(
+                path: folder.appendingPathComponent(".library.reservation").path, output: indexURL)
+        } catch {
+            throw HolosError.unavailable("The Reading list is being saved by another copy of Voice is Local, so it "
+                + "was not saved now: \((error as? LocalizedError)?.errorDescription ?? error.localizedDescription)")
+        }
+        return try withExtendedLifetime(reservation) { try body() }
     }
 
     /// Keeps `document`, the text reading `id` reads, until the reading is finished or deleted. Never over a text
@@ -268,7 +297,9 @@ public final class ReadingLibraryStore: @unchecked Sendable {
         }
         try FileManager.default.createDirectory(at: documentsFolder, withIntermediateDirectories: true,
                                                 attributes: [.posixPermissions: 0o700])
-        try Self.write(try JSONEncoder.reading.encode(document), to: documentURL(id), exclusive: true)
+        let data = try JSONEncoder.reading.encode(document)
+        // Under the index's lock: a launch of another copy of the app sweeping temporaries leaves this one's.
+        try withIndexLock { try Self.write(data, to: documentURL(id), exclusive: true) }
     }
 
     /// The document saved for `id`, or nil when none was saved. One that is there but cannot be read or decoded is
@@ -304,7 +335,9 @@ public final class ReadingLibraryStore: @unchecked Sendable {
             try FileManager.default.removeItem(at: documentURL(id))
         } catch let error as CocoaError where error.code == .fileNoSuchFile {
         }
-        try removeTemporaries(in: documentsFolder) { $0 == documentURL(id).lastPathComponent }
+        // Under the index's lock, when there is a folder to lock in: a save under way keeps its temporary.
+        guard try ReadingOutput.exists(documentsFolder) else { return }
+        try withIndexLock { try removeTemporaries(in: documentsFolder) { $0 == documentURL(id).lastPathComponent } }
     }
 
     func documentURL(_ id: UUID) -> URL {
@@ -314,12 +347,14 @@ public final class ReadingLibraryStore: @unchecked Sendable {
     /// Removes what saves that a quit or a crash cut off left (the index's and the saved texts' temporaries, see
     /// `write`). For the launch, before anything is saved: a save under way would lose its temporary.
     public func sweepTemporaries() {
-        // Under the index's lock: another process's save under way keeps its temporary.
-        if (try? ReadingOutput.exists(folder)) == true {
-            _ = try? withIndexLock { try removeTemporaries(in: folder) { $0 == indexURL.lastPathComponent } }
-        }
-        try? removeTemporaries(in: documentsFolder) { name in
-            name.hasSuffix(".json") && UUID(uuidString: String(name.dropLast(5))) != nil
+        // Under the index's lock: another process's save under way (of the index or of a saved text) keeps its
+        // temporary.
+        guard (try? ReadingOutput.exists(folder)) == true else { return }
+        _ = try? withIndexLock {
+            try? removeTemporaries(in: folder) { $0 == indexURL.lastPathComponent }
+            try? removeTemporaries(in: documentsFolder) { name in
+                name.hasSuffix(".json") && UUID(uuidString: String(name.dropLast(5))) != nil
+            }
         }
     }
 
@@ -785,6 +820,25 @@ public enum ReadingLibrary {
         return handle
     }
 
+    /// This process's folder for Share… copies inside `base`: `<process ID>-<start time>`, so another copy of the app
+    /// running meanwhile never removes the copies it hands to a service.
+    public static func sharingFolder(in base: URL) -> URL {
+        let pid = getpid()
+        return base.appendingPathComponent("\(pid)-\(ReadingOutputReservation.processStart(pid) ?? 0)", isDirectory: true)
+    }
+
+    /// Removes the Share… copies of processes that have ended (their services are done with them by now), and those
+    /// an earlier build left directly in `base`. Not on the main actor.
+    public static func sweepSharingFolders(in base: URL) {
+        guard let names = try? FileManager.default.contentsOfDirectory(atPath: base.path) else { return }
+        for name in names {
+            let parts = name.split(separator: "-", maxSplits: 1)
+            if parts.count == 2, let pid = Int32(parts[0]), let start = Int64(parts[1]),
+               ReadingOutputReservation.processStart(pid) == start { continue }
+            try? FileManager.default.removeItem(at: base.appendingPathComponent(name))
+        }
+    }
+
     /// A copy of the open file `file`, named `name`, in a new folder inside `folder`: a clone (instant, no space)
     /// where the volume can, else its bytes. What Share… hands to the services, which read it later.
     public static func copyForSharing(_ file: FileHandle, name: String, into folder: URL) throws -> URL {
@@ -845,8 +899,11 @@ public enum ReadingLibrary {
     /// Removes the copy into `output` that a crash cut off, only while it is that very file (`identity`), through
     /// the same move-aside-then-check step as the finished file. No problem when it is gone: one replaced by another
     /// file since is gone too (the other file is left alone). `token` names the place aside (see `asideToken`).
-    static func removePartial(_ output: URL, identity: ReadingFileIdentity, token: String? = nil) -> RemovalReport {
-        report(ExclusivePublisher.removeIfIdentical(output, to: identity, token: token),
+    /// `dispose` takes the file (default: removed; a Delete moves it to the Trash, so a file that only looked like a
+    /// cut-off copy, the finished one shortened in place, can still be had back).
+    static func removePartial(_ output: URL, identity: ReadingFileIdentity, token: String? = nil,
+                              dispose: (URL) throws -> Void = ExclusivePublisher.removeFile) -> RemovalReport {
+        report(ExclusivePublisher.removeIfIdentical(output, to: identity, token: token, dispose: dispose),
                name: "The partly written \(output.lastPathComponent)", action: "removed", reportChanged: false)
     }
 
@@ -1001,7 +1058,8 @@ public enum ReadingLibrary {
                     report = trashVerified(output, checksums: evidence.checksums,
                                            token: asideToken(entry.id, partial: false), trash: trash)
                 case .partial(let identity)?:
-                    report = removePartial(output, identity: identity, token: asideToken(entry.id, partial: true))
+                    report = removePartial(output, identity: identity, token: asideToken(entry.id, partial: true),
+                                           dispose: trash)
                 case nil:
                     // A look-up that fails (not "nothing there") tells nothing: the reading stays for another try.
                     let present: Bool
@@ -1098,7 +1156,8 @@ public enum ReadingLibrary {
                 if !evidence.checksums.isEmpty, evidence.checksums.contains(try fileSHA256(url)) {
                     try trash(url)
                 } else if try evidence.isPartial(url) {
-                    try ExclusivePublisher.removeFile(url)
+                    // To the Trash too: it may be the finished file shortened in place (see `removePartial`).
+                    try trash(url)
                 } else {
                     return RemovalReport(problem: "An earlier Delete left \(url.lastPathComponent) at \(url.path), and "
                                             + "it is not this reading's file as it was made. Move it back or remove it "

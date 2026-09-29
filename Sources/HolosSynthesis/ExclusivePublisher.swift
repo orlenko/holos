@@ -247,7 +247,8 @@ public enum ExclusivePublisher {
     /// Checked before it is moved too, so another file at the path is never moved at all (on a volume that can
     /// neither rename exclusively nor link, it could not be put back); one that cannot be checked is a failure.
     @discardableResult
-    public static func removeIfIdentical(_ url: URL, to identity: FileIdentity, token: String? = nil) -> Removal {
+    public static func removeIfIdentical(_ url: URL, to identity: FileIdentity, token: String? = nil,
+                                         dispose: (URL) throws -> Void = removeFile) -> Removal {
         do {
             guard let current = try FileIdentity.lookup(url) else {
                 var metadata = stat()
@@ -257,7 +258,8 @@ public enum ExclusivePublisher {
         } catch {
             return .failed(reason: error.localizedDescription, keptAt: nil)
         }
-        return removeVerified(url, token: token) { staged in try FileIdentity.lookup(staged) == identity }
+        return removeVerified(url, token: token, matches: { staged in try FileIdentity.lookup(staged) == identity },
+                              dispose: dispose)
     }
 
     /// A file URL whose path keeps `path`'s bytes as given (`URL(fileURLWithPath:)` would decompose its names).

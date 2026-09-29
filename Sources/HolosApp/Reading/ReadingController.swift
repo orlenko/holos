@@ -142,13 +142,14 @@ final class ReadingController {
     func start() {
         guard !started else { return }
         started = true
-        let (store, share) = (store, Self.shareFolder)
+        let (store, shares) = (store, Self.sharesFolder)
         // Read off the main actor (the support folder may be on a slow share); nothing is saved or added until then
         // (`writable` is false).
         Task {
             let loaded = try? await offMain {
-                // Copies an earlier session made for Share… (their services are done with them by now).
-                try? FileManager.default.removeItem(at: share)
+                // Copies earlier sessions made for Share… (their services are done with them by now); those of
+                // another copy of the app still running stay.
+                ReadingLibrary.sweepSharingFolders(in: shares)
                 return Self.load(store)
             }
             adopt(loaded ?? .init(entries: [], notice: "The Reading list could not be read.", writable: false,
@@ -233,9 +234,11 @@ final class ReadingController {
         while holdingWrites > 0 { await withCheckedContinuation { heldWaiters.append($0) } }
         holdingWrites += 1
         all.insert(entry, at: 0)
+        pendingAdditions.insert(entry.id)
         // Nothing is made for a reading the index does not keep: its saved text and cache would have no entry to be
         // found or deleted through after a quit.
         let added = await saved(growing: true, holding: true)
+        pendingAdditions.remove(entry.id)
         if !added { all.removeAll { $0.id == entry.id } }
         releaseWrites()
         guard added else {
@@ -284,8 +287,12 @@ final class ReadingController {
         return try await offMain { try ReadingLibrary.copyForSharing(file, name: name, into: folder) }
     }
 
-    /// Where Share…'s copies go (the temporary folder); emptied at each launch.
-    static var shareFolder: URL {
+    /// Where this session's Share… copies go (in the temporary folder); removed at a later launch, once this process
+    /// has ended.
+    static var shareFolder: URL { ReadingLibrary.sharingFolder(in: sharesFolder) }
+
+    /// Every session's Share… copies (see `ReadingLibrary.sharingFolder`).
+    static var sharesFolder: URL {
         FileManager.default.temporaryDirectory.appendingPathComponent("Voice is Local Share", isDirectory: true)
     }
 
@@ -423,7 +430,9 @@ final class ReadingController {
         // until it is known: one that wrote the mark while its own save failed would delete the reading at the next
         // launch although the user was told it stays.
         holdingWrites += 1
+        pendingMarks.insert(id)
         let marked = writable ? await saved(holding: true) : true
+        pendingMarks.remove(id)
         if !marked { update(id) { $0.deletePending = nil } }
         releaseWrites()
         if !marked {
@@ -799,8 +808,8 @@ final class ReadingController {
     /// The work of one save of the list as it is now (nil `saving`: only the saved texts are removed). After a save
     /// that works (or with a list that is not saved at all), the saved text of every reading the list records as made
     /// is removed: retried after each save, so one kept because a save or a removal failed goes once they work.
-    private func writeWork(saving: Bool, growing: Bool) -> @Sendable () -> WriteResult {
-        let (store, entries, readOnly) = (store, all, readOnly)
+    private func writeWork(saving: Bool, growing: Bool, entries: [ReadingEntry]? = nil) -> @Sendable () -> WriteResult {
+        let (store, entries, readOnly) = (store, entries ?? all, readOnly)
         return {
             if saving {
                 do {
@@ -885,6 +894,9 @@ final class ReadingController {
 
     /// Saves under way that add a reading or mark one for deletion: other saves wait for them (see `save`, `saved`).
     private var holdingWrites = 0
+    /// The readings added, and marked for deletion, whose save is not known yet (see `saveNow`).
+    private var pendingAdditions: Set<UUID> = []
+    private var pendingMarks: Set<UUID> = []
     private var heldSave = false
     private var heldWaiters: [CheckedContinuation<Void, Never>] = []
 
@@ -906,7 +918,16 @@ final class ReadingController {
     /// makes it a failure, which the quit says, rather than freeze the app.
     private func saveNow() -> Bool {
         guard writable else { return false }
-        let work = writeWork(saving: true, growing: false)
+        // The list as its saves have made it: an addition or a Delete mark whose own save is not known yet is left
+        // out (its save may have failed, and the reading would come back, or go, at the next launch unasked).
+        let committed = all.compactMap { entry -> ReadingEntry? in
+            if pendingAdditions.contains(entry.id) { return nil }
+            guard pendingMarks.contains(entry.id) else { return entry }
+            var unmarked = entry
+            unmarked.deletePending = nil
+            return unmarked
+        }
+        let work = writeWork(saving: true, growing: false, entries: committed)
         writeSequence += 1
         let sequence = writeSequence
         let outcome = SaveOutcome()

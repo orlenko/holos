@@ -313,10 +313,12 @@ public struct AudioBookJoiner: ReadingAudioJoiner {
         // (the whole file is read), and a Stop meanwhile ends the run here rather than report it made.
         if let published = manifest.outputSHA256 {
             let found = try await offMain { () -> (matches: Bool, identity: ReadingFileIdentity?) in
-                let before = ExclusivePublisher.FileIdentity.of(output)
-                guard before != nil, (try? fileSHA256(output)) == published else { return (false, nil) }
-                // The file checked is the file found only when it is unchanged across the check.
-                return (true, ExclusivePublisher.FileIdentity.of(output) == before ? before : nil)
+                // The file checked is the file at the output only when it is the same file before and after the
+                // check: one replaced or removed meanwhile (a sync client) is not taken for the reading made.
+                guard let before = ExclusivePublisher.FileIdentity.of(output),
+                      (try? fileSHA256(output)) == published,
+                      ExclusivePublisher.FileIdentity.of(output) == before else { return (false, nil) }
+                return (true, before)
             }
             try Task.checkCancellation()
             if found.matches {
