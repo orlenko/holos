@@ -1425,3 +1425,37 @@ func labelSpeakersDetectsAMissedLanguageWithoutSpeakerModels() async throws {
         .allSatisfy { $0.result == .skipped && $0.message == SpeakerAnalysis.modelsMissing })
     #expect(speech.locales == languages)
 }
+
+@Test(.timeLimit(.minutes(1)))
+func recoverWithTodaysVocabularyKeepsItsRebuildOverTheLanguagesStage() async throws {
+    let temp = try TemporaryDirectory("languages")
+    defer { temp.remove() }
+    // A bilingual meeting whose last 2 s were not transcribed live; both speech models are installed.
+    let session = try await languageStageDeadMeeting(in: temp.url, coveredToEnd: false)
+    let speech = LanguageStageSpeech.standard()
+    let heard = SharedValue<[[String]]>([])
+    let outcome = try await SessionRecoveryCommand.run(
+        SessionRecoveryCommand.Request(session: session, vocabulary: ["Keycloak", "Urban Sky"]), diarizer: nil,
+        makeSpeech: { locale, backend, contextualStrings, onUpdate in
+            heard.update { $0.append(contextualStrings) }
+            return FakeSpeech(locale: locale, backend: backend, contextualStrings: contextualStrings,
+                              script: FakeSpeechScript(), onUpdate: onUpdate)
+        },
+        freeSpace: FixedFreeSpace(.max), languages: languageStageDependencies(speech))
+    let rebuiltID = try #require(outcome.rebuild?.transcriptID)
+    #expect(!heard.value.isEmpty && heard.value.allSatisfy { $0 == ["Keycloak", "Urban Sky"] })
+    // The languages stage would transcribe the meeting again with vocabulary.json and replace the rebuild.
+    #expect(speech.locales.isEmpty)
+    #expect(outcome.postProcessing.flatMap(languageStageOutcome) == nil)
+    #expect(try languageStageCurrent(session).id == rebuiltID)
+
+    // Without today's vocabulary, the same recovery goes on to merge the two languages.
+    let other = try TemporaryDirectory("languages")
+    defer { other.remove() }
+    let plain = try await languageStageDeadMeeting(in: other.url, coveredToEnd: false)
+    let plainSpeech = LanguageStageSpeech.standard()
+    _ = try await SessionRecoveryCommand.run(
+        SessionRecoveryCommand.Request(session: plain, transcribe: false), diarizer: nil,
+        freeSpace: FixedFreeSpace(.max), languages: languageStageDependencies(plainSpeech))
+    #expect(!plainSpeech.locales.isEmpty)
+}

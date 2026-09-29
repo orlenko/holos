@@ -54,14 +54,17 @@ extension HolosAppDelegate {
     }
 
     /// Run Again: the dictation's audio through the recognizer and the text steps with today's settings (the
-    /// dictation language, the learned corrections as vocabulary and replacements, filler removal, spoken code, Apple
-    /// Intelligence's fix), as live dictation would write it now. Nothing is typed anywhere and nothing is copied.
+    /// dictation language, the word list and the learned corrections as vocabulary, the corrections as replacements,
+    /// filler removal, spoken code, Apple Intelligence's fix), as live dictation would write it now. Nothing is typed
+    /// anywhere and nothing is copied.
     func runAgain(_ record: DictationRecord) async throws -> DictationRerunReport {
         guard let url = historyAudioURL(record) else {
             throw HolosError.unavailable("The audio of this dictation is no longer on this Mac.")
         }
+        refreshWordList()
         let (pipeline, note) = DictationRerun.pipeline(language: locale, removeFillers: removeFillers,
-                                                       corrections: corrections, aiFix: AIFixSetting.isOn,
+                                                       corrections: corrections, wordList: wordList.terms,
+                                                       aiFix: AIFixSetting.isOn,
                                                        spokenCode: SpokenCodeSetting.isOn,
                                                        backticks: SpokenCodeSetting.backticks)
         return try await DictationRerun.run(record, audio: url, pipeline: pipeline, aiNote: note)

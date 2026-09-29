@@ -558,8 +558,8 @@ record another writer removed meanwhile leaves it removed.
 
 Run Again (History detail, ⌘R; `voiceislocal history rerun`) reads the file back as 0.1 s
 frames and feeds them to the recognizer live dictation uses (`AppleSpeechSession`, the
-speech backend's progressive preset, the current dictation language, the learned
-corrections' phrases as contextual strings), then runs the text steps of live dictation
+speech backend's progressive preset, the current dictation language, the word list and the
+learned corrections' words as contextual strings), then runs the text steps of live dictation
 (`DictationTextPipeline`, HolosCore): filler removal and corrections as on the final text,
 and, when Apple Intelligence's fix is on and available, the fix as dictation streams it:
 each recognizer result is taken as committed in turn (the last one too: the recognizer
@@ -585,7 +585,8 @@ list focused) and stops when another dictation is selected or History leaves the
 the same comparison; `--all [--since 7d] [--json]` runs every dictation with audio and
 reports, per dictation, whether the text changed and `changedBy`, with a summary per step,
 to judge a change on the user's real dictations. The command reads the history, the
-corrections file (Application Support/Holos/corrections.json), and the app's saved settings
+corrections file (Application Support/Holos/corrections.json), the word list (words.json),
+and the app's saved settings
 (its defaults domain `ca.orlenko.holos.app`: `dictationLocale`, `removeFillers`,
 `aiFixMisheard`); it writes nothing. The recognizer needs the language's speech model
 installed for the process running it.
@@ -684,7 +685,8 @@ order with the same count, and nothing else:
 
 A word is real when the system spell checker knows it in the dictation language
 (lowercased or capitalized, so names such as "Mary" count), when it has a digit, or
-when it is a word of a meant phrase the speaker taught. Everything else is refused:
+when it is a word of a meant phrase the speaker taught or of a word-list term (see
+"Word list"). Everything else is refused:
 another real word however alike it sounds ("bat" and "bit", "want" and "wanted",
 "tooth" and "teeth", "no" and "none"); a word added, dropped, split, joined or moved,
 so articles ("a elephant" stays, as "to store" does), contractions ("do not" and
@@ -709,8 +711,71 @@ about the chunk's words, and then the reply's, on its own serial queue, waiting 
 `permissiveContentTransformations` guardrails: with the defaults about half the fixes in
 a day's log failed in about 200 ms, ordinary sentences refused as "May contain unsafe
 content". A refusal that still happens leaves the chunk as recognized. The recognizer's
-contextual strings are the content words of the meant phrases, once each ignoring case
-("on Ubuntu" and "ubuntu" give one "Ubuntu").
+contextual strings are the word list's terms, then the content words of the meant
+phrases, once each ignoring case ("on Ubuntu" and "ubuntu" give one "Ubuntu").
+
+### Word list
+
+A correction needs a misheard side, so a term the recognizer gets wrong in ways not
+yet seen ("Keycloak", "AtmoSys", "Urban Sky") had no place to go. The word list is
+that place: terms the recognizer should expect (names, products, jargon), kept in
+`Application Support/Holos/words.json`:
+
+```json
+{ "schemaVersion": 1,
+  "entries": [ { "text": "Urban Sky", "addedAt": "2026-09-29T14:02:11Z", "source": "user" } ] }
+```
+
+- A term keeps the case it was written in and may be several words; whitespace is
+  collapsed. Two terms that differ only in case or spacing are one term, spelled as it
+  was first added. At most 1,000 terms of at most 100 characters. `source` is `user`
+  (the Corrections section, `voiceislocal words`) or `review` (a meeting's Review, for
+  later); an unknown value from a newer version is kept as written.
+- The file is written whole and atomically (0600). Every change is made under an
+  exclusive lock (`words.json.lock`) on the list as it is on disk then, so the app and
+  the CLI never lose each other's changes. A damaged file, or one with a newer schema
+  version, is refused and never overwritten: the list is then empty for recognition
+  and the Corrections section says why.
+- The recognizer's contextual strings (`RecognizerVocabulary`) are the word list's terms
+  as written (whole phrases: contextual strings take phrases), then, for dictation, the
+  content words of learned corrections; for a meeting, people's names and then those
+  correction words. Each string once, ignoring case and spacing, the first spelling kept,
+  at most 100 in all. `AnalysisContext.contextualStrings` (SpeechAnalyzer) documents no
+  limit; `SFSpeechRecognitionRequest.contextualStrings`, the same feature in the older
+  API, says to keep the total to 100 phrases. Past 100 the word list, which comes
+  first, crowds out the rest; `voiceislocal words` says so. Names come before
+  correction words so a long correction list never pushes the meeting's people out.
+- Dictation: the app reads `words.json` at launch and again whenever the file changed
+  (its inode, size, modification or status-change time), or could not be read last time
+  (checked at each dictation, meeting start, Run Again, and when the Corrections section
+  shows or the window comes back from Terminal), and sets the next dictation's
+  contextual strings, as a correction does. A dictation already listening keeps the
+  strings it started with. Run Again and `voiceislocal history rerun` use today's list.
+- Meetings: the list is part of the vocabulary handed to the recorder at start and
+  saved in the meeting as `vocabulary.json` (§4.12 of meeting-design.md). Replays,
+  rebuilds and `session languages` use that saved vocabulary, never today's list: it is
+  part of what makes a meeting's transcript reproducible. `voiceislocal session recover
+  --current-vocabulary` is the one way to ask for today's list (with names and
+  corrections) instead, for the audio that run transcribes again; `vocabulary.json` is
+  not rewritten, so a later rebuild without the flag replays as the recording heard.
+  Speakers are then labelled on that rebuilt transcript as it is: the languages stage,
+  which would transcribe a meeting in several languages again with `vocabulary.json`,
+  does not run.
+  `session languages` has no such flag: its transcriptions are reused across runs,
+  and a different vocabulary would make a reused one and a fresh one disagree.
+- Apple Intelligence's fix: the words of each term count as real words for the guard
+  (`Lexicon`), and nothing else about the guard changes. A word the language does not
+  know may become a close-sounding word of a term ("keycloack" becomes "keycloak"), and
+  a word of a term is never replaced but by a listed homophone or a taught pair. No word
+  is split or joined for a term ("key cloak" stays two words), the case of a term is not
+  brought into a sentence, and a capitalized name stays as written: a correction is the
+  way to teach those.
+- The Corrections section's "Word list" card lists the terms with a search field and a
+  count; the field below adds (Return adds; a paste of several lines adds one term per
+  line; a term that could not be added, too long or with the list full or unsaved, stays
+  in the field), Remove or ⌫ removes the selected terms. `voiceislocal words list|add <term>…|
+  remove <term>…|import <file>` does the same from Terminal (import: one term per line,
+  `-` for standard input). Nothing is added automatically.
 
 LLM decisions have a bounded latency budget. On timeout, refusal, unsupported
 language, model unavailability, or invalid output, use deterministic rules plus

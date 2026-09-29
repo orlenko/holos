@@ -2,7 +2,7 @@ import AppKit
 import HolosCore
 
 /// The main window's Corrections section: fix a dictation here (the last one, or one chosen in History); Holos
-/// compares it with what it wrote and keeps the word swaps.
+/// compares it with what it wrote and keeps the word swaps. Below the corrections, the word list (`WordListView`).
 @MainActor
 final class CorrectionsPane: NSViewController, NSTextFieldDelegate, MainSectionContent {
     struct LearnResult {
@@ -22,6 +22,9 @@ final class CorrectionsPane: NSViewController, NSTextFieldDelegate, MainSectionC
     /// Replaces the first rule with the second in place, with the edit of the declined swap it resolves (if any).
     /// False means not saved.
     private let onReplace: (Correction, Correction, DeclinedCorrectionQueue.PendingEdit?) -> Bool
+    /// The section came on screen: the app reads the word list again (`voiceislocal words` may have changed it).
+    private let onShow: () -> Void
+    let wordListView: WordListView
     private let transcriptView: NSTextView
     private let learnButton = NSButton(title: "Learn Corrections", target: nil, action: nil)
     private let copyButton = NSButton(title: "Copy Text", target: nil, action: nil)
@@ -46,11 +49,14 @@ final class CorrectionsPane: NSViewController, NSTextFieldDelegate, MainSectionC
     init(onLearn: @escaping (_ edited: String, _ original: String, _ dictation: UUID?) -> LearnResult?,
          onAdd: @escaping (Correction, DeclinedCorrectionQueue.PendingEdit?) -> Bool,
          onRemove: @escaping (Correction) -> Bool,
-         onReplace: @escaping (Correction, Correction, DeclinedCorrectionQueue.PendingEdit?) -> Bool) {
+         onReplace: @escaping (Correction, Correction, DeclinedCorrectionQueue.PendingEdit?) -> Bool,
+         wordList: WordListView, onShow: @escaping () -> Void) {
         self.onLearn = onLearn
         self.onAdd = onAdd
         self.onRemove = onRemove
         self.onReplace = onReplace
+        self.wordListView = wordList
+        self.onShow = onShow
         let transcriptScroll = NSTextView.scrollableTextView()
         transcriptView = transcriptScroll.documentView as! NSTextView
         super.init(nibName: nil, bundle: nil)
@@ -131,22 +137,30 @@ final class CorrectionsPane: NSViewController, NSTextFieldDelegate, MainSectionC
         transcriptHeading.stringValue = "Last dictation — fix any misheard words, then Learn"
         let stack = NSStackView(views: [
             transcriptHeading, transcriptScroll, actions,
-            feedbackLabel, heading("Corrections"), listScroll, addRow, note,
+            feedbackLabel, heading("Corrections"), listScroll, addRow, note, wordList,
         ])
         stack.orientation = .vertical
         stack.alignment = .leading
         stack.spacing = 10
         stack.setCustomSpacing(18, after: feedbackLabel)
+        stack.setCustomSpacing(24, after: note)
         stack.translatesAutoresizingMaskIntoConstraints = false
-        let content = NSView()
-        content.addSubview(stack)
+        // The section scrolls when the window is too short for the dictation, the corrections and the word list.
+        let document = FlippedView()
+        document.translatesAutoresizingMaskIntoConstraints = false
+        document.addSubview(stack)
+        let content = NSScrollView()
+        content.hasVerticalScroller = true
+        content.drawsBackground = false
+        content.documentView = document
         NSLayoutConstraint.activate([
-            stack.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 24),
-            stack.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -24),
-            stack.topAnchor.constraint(equalTo: content.topAnchor, constant: 18),
-            stack.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -18),
+            stack.leadingAnchor.constraint(equalTo: document.leadingAnchor, constant: 24),
+            stack.trailingAnchor.constraint(equalTo: document.trailingAnchor, constant: -24),
+            stack.topAnchor.constraint(equalTo: document.topAnchor, constant: 18),
+            stack.bottomAnchor.constraint(equalTo: document.bottomAnchor, constant: -18),
+            document.widthAnchor.constraint(equalTo: content.contentView.widthAnchor),
         ])
-        for view in [transcriptScroll, feedbackLabel, listScroll, addRow, note] {
+        for view in [transcriptScroll, feedbackLabel, listScroll, addRow, note, wordList] {
             view.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
         }
         view = content
@@ -174,6 +188,14 @@ final class CorrectionsPane: NSViewController, NSTextFieldDelegate, MainSectionC
     }
 
     var preferredFirstResponder: NSView? { transcriptView.isEditable ? transcriptView : heardField }
+
+    /// ⌘F: the word list's search.
+    var searchField: NSSearchField? { wordListView.searchField }
+
+    func sectionDidShow() { onShow() }
+
+    /// Back from Terminal, where `voiceislocal words` may have changed the list.
+    func sectionWindowDidBecomeKey() { onShow() }
 
     func update(corrections: [Correction]) {
         shown = corrections

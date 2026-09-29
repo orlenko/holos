@@ -6,8 +6,9 @@ import Synchronization
 /// "teeth", "wanted", "Windows") says something, so a fix may replace it only by a listed homophone or a taught pair
 /// said there; a word the language does not know ("Onobunto", "bundu") is a mishearing, which one close-sounding real
 /// word may replace. A word is real when the system spell checker knows it in the dictation language, lowercased or
-/// capitalized (proper nouns: "Mary"), when it has a digit, or when it is a word of a meant phrase the speaker taught.
-/// Each distinct word asks the spell checker at most once.
+/// capitalized (proper nouns: "Mary"), when it has a digit, or when it is a word of a meant phrase the speaker taught
+/// or of a term of the speaker's word list (`WordList`: "Keycloak", "AtmoSys"). Each distinct word asks the spell
+/// checker at most once.
 ///
 /// The spell checker is a service another process runs, and a call may stall. The fixer therefore asks it ahead of
 /// the guard (`prepare`), on `SystemSpelling`'s own queue and within a time budget, never on the task that waits; a
@@ -22,8 +23,8 @@ public final class Lexicon: Sendable {
     private let cache = Mutex<[String: Bool]>([:])
 
     /// The system spell checker's dictionary for `language` (a locale identifier; English and French when nil), and
-    /// the words of `taught`, the meant phrases of learned corrections. With no dictionary for the language, every
-    /// word is real: only homophones and taught pairs may then change a word.
+    /// the words of `taught`: the meant phrases of learned corrections and the terms of the word list. With no
+    /// dictionary for the language, every word is real: only homophones and taught pairs may then change a word.
     public convenience init(language: String?, taught: [String] = [], blocking: Bool = true) {
         self.init(taught: taught, blocking: blocking) { SystemSpelling.knows($0, language: language) }
     }

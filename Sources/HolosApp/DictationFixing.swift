@@ -72,7 +72,7 @@ final class DictationFixPipeline {
     /// A pipeline when spoken code is on, or Apple Intelligence's fix is on and its model is available for dictation
     /// in `language`; nil otherwise, so dictation runs exactly as it does without them. `terminal`: the dictation is
     /// typed into a terminal, where code tokens are never wrapped in backticks.
-    static func make(corrections: CorrectionList, language: String, terminal: Bool,
+    static func make(corrections: CorrectionList, wordList: [String], language: String, terminal: Bool,
                      deliver: @escaping (_ chunk: String, _ text: String) -> Bool) -> DictationFixPipeline? {
         let fixes = AIFixSetting.isOn && AIFixSetting.unavailableReason(language: language) == nil
         let coder = SpokenCodeSetting.isOn
@@ -83,7 +83,9 @@ final class DictationFixPipeline {
         // Loads the model while the user starts speaking, so the first chunk does not wait for it.
         if fixes || coder?.hasModel == true { OnDeviceFix.prewarm() }
         // The same model, guardrails, sessions, and timeout Run Again uses (`OnDeviceFix`).
-        let fixer = fixes ? OnDeviceFix.fixer(corrections: corrections, timeout: chunkTimeout, language: language) : nil
+        let fixer = fixes
+            ? OnDeviceFix.fixer(corrections: corrections, wordList: wordList, timeout: chunkTimeout, language: language)
+            : nil
         return DictationFixPipeline(fixer: fixer, coder: coder, deliver: deliver)
     }
 

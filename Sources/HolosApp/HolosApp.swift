@@ -115,6 +115,13 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
     var corrections = CorrectionList()
     /// False when an existing corrections file could not be read, so it is never overwritten.
     private var correctionsWritable = true
+    /// The word list (HolosApp+WordList.swift), as `words.json` held it when last read.
+    var wordList = WordList()
+    let wordListStore = WordListStore()
+    /// `words.json` as last read, so a change made outside the app (`voiceislocal words`) is read again.
+    var wordListStamp: WordListStore.Stamp?
+    /// Why `words.json` could not be read; nil when it could.
+    var wordListProblem: String?
     /// The main window (HolosApp+MainWindow.swift), made on first use.
     var mainWindow: MainWindowController?
     /// The dictation history (HolosApp+History.swift).
@@ -211,7 +218,8 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
             correctionsWritable = false
             message = "Could not read corrections.json; corrections are off until it is fixed or removed."
         }
-        controller.contextualStrings = corrections.vocabulary(language: locale)
+        loadWordList()
+        controller.contextualStrings = dictationVocabulary(language: locale)
         controller.frameTap = { [weak self] id, frame in
             guard let audio = self?.historyAudio, audio.id == id else { return }
             audio.writer.append(frame)
@@ -426,7 +434,7 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
                 await self.loadLanguages()
                 guard !Task.isCancelled, generation == self.enableGeneration else { return }
                 self.controller.locale = self.locale
-                self.controller.contextualStrings = self.corrections.vocabulary(language: self.locale)
+                self.controller.contextualStrings = self.dictationVocabulary(language: self.locale)
                 let state = try await AppleSpeechEngine.assetStatus(locale: self.locale, backend: .speech)
                 guard !Task.isCancelled, generation == self.enableGeneration else { return }
                 self.assetState = state
@@ -500,7 +508,7 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
         }
         locale = identifier
         controller.locale = identifier
-        controller.contextualStrings = corrections.vocabulary(language: identifier)
+        controller.contextualStrings = dictationVocabulary(language: identifier)
         assetState = nil
         if enabled {
             // Enabling again checks the new language's speech model; without it, dictation stays off and Setup
@@ -620,6 +628,8 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
             historyDraft = HistoryDraft(date: Date(),
                                         app: Self.historyAppName(typed: typedAppName, pid: fieldPID ?? originPID),
                                         language: locale, terminal: dictationForTerminal)
+            // Terms added with `voiceislocal words` since the last dictation count for this one.
+            refreshWordList()
             if controller.begin() {
                 // A pending opacity sample must not hide this dictation's own preview or result.
                 // A rejected begin leaves the timer running so the sample still hides on time.
@@ -627,7 +637,8 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
                 opacitySampleTask = nil
                 sampleToken = nil
                 fixPipeline?.cancel()
-                fixPipeline = DictationFixPipeline.make(corrections: corrections, language: locale,
+                fixPipeline = DictationFixPipeline.make(corrections: corrections, wordList: wordList.terms,
+                                                        language: locale,
                                                         terminal: dictationForTerminal) { [weak self] chunk, text in
                     self?.writeFixed(chunk, as: text) ?? false
                 }
@@ -1170,7 +1181,10 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
             onRemove: { [weak self] correction in self?.changeCorrections { $0.remove(correction) } ?? false },
             onReplace: { [weak self] old, new, edit in
                 self?.replaceCorrection(old, with: new, resolving: edit) ?? false
-            })
+            },
+            wordList: makeWordListView(),
+            onShow: { [weak self] in self?.refreshWordList() })
+        pane.wordListView.update(terms: wordList.terms, problem: wordListProblem)
         pane.load(transcript: lastTranscript, recognized: lastRecognized, dictation: lastTranscriptID,
                   title: "Last dictation — fix any misheard words, then Learn", corrections: corrections.entries)
         return pane
@@ -1237,7 +1251,7 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
             return false
         }
         change(&corrections)
-        controller.contextualStrings = corrections.vocabulary(language: locale)
+        updateDictationVocabulary()
         (mainWindow?.existingController(for: .corrections) as? CorrectionsPane)?.update(corrections: corrections.entries)
         do {
             try corrections.save(to: CorrectionList.defaultURL)
@@ -1246,6 +1260,12 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
             show("Could not save corrections: \(error.localizedDescription)")
             return false
         }
+    }
+
+    /// The next dictation's contextual strings: the word list, then the words of learned corrections. A dictation
+    /// already listening keeps the ones it started with.
+    func updateDictationVocabulary() {
+        controller.contextualStrings = dictationVocabulary(language: locale)
     }
 
     private func write(_ text: String, to destination: Destination) -> InsertionOutcome {
