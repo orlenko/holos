@@ -855,15 +855,28 @@ public enum AIFixReference {
             return found
         }
 
+        /// Whether the one word of `heard` could be a person's name: letters only, with apostrophes ("Maks's",
+        /// "O'Brien") and hyphens between parts of two letters or more ("Jean-Luc"), whatever marks surround it. A
+        /// digit, a symbol, or a one-letter part ("T-Mox") makes it a coined token instead.
+        static func isNameLike(_ heard: String) -> Bool {
+            // The heard phrase without the marks around it; one word, or hyphenated parts.
+            let token = heard.drop(while: { !$0.isLetter && !$0.isNumber })
+                .reversed().drop(while: { !$0.isLetter && !$0.isNumber && !"'’".contains($0) }).reversed()
+            guard !token.isEmpty, !token.contains(where: \.isWhitespace) else { return false }
+            let parts = token.split(whereSeparator: { "-‐".contains($0) }).map(String.init)
+            return parts.allSatisfy { part in
+                part.allSatisfy { $0.isLetter || "'’".contains($0) } && part.filter(\.isLetter).count >= (parts.count > 1 ? 2 : 1)
+            }
+        }
+
         func matches(of heard: String) -> [Range<Int>] {
             let phrase = Spoken(heard)
             guard let first = phrase.words.first, phrase.words.count <= text.words.count else { return [] }
             let heardSymbolic = heard.matches(of: AIFixGuard.wordPattern).map {
                 AIFixGuard.Tokens.hasSymbols($0.range, in: heard)
             }
-            // One plain word (no hyphen, digit or symbol) is most likely a name: said only as spelled where the text
-            // capitalizes it.
-            let plainSingle = phrase.words.count == 1 && heard.allSatisfy { $0.isLetter || $0.isWhitespace }
+            // One name-like word is most likely a person's name: said only as spelled where the text capitalizes it.
+            let plainSingle = Self.isNameLike(heard)
             return positions(of: first, capitalizedVariants: !plainSingle).sorted().compactMap { start in
                 let end = start + phrase.words.count
                 guard end <= text.words.count else { return nil }

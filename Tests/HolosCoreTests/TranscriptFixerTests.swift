@@ -886,6 +886,17 @@ func aFrenchMishearingIsFixed(original: String, fixed: String) {
     #expect(AIFixReference.matches(of: "Maks", in: "Ask Meks tomorrow").isEmpty)
     #expect(AIFixGuard.check(original: "Ask Meks tomorrow", fixed: "Ask Max tomorrow", taught: [maks]) != .accept)
     #expect(AIFixReference.matches(of: "Maks", in: "Ask Maks tomorrow") == [1..<2])
+    // A possessive is still one name.
+    let makss = Correction(heard: "Maks's", meant: "Max's")
+    #expect(AIFixReference.matches(of: "Maks's", in: "Ask Meks's tomorrow").isEmpty)
+    #expect(AIFixReference.matches(of: "Maks’s", in: "Ask Meks’s tomorrow").isEmpty)
+    #expect(AIFixGuard.check(original: "Ask Meks's tomorrow", fixed: "Ask Max's tomorrow", taught: [makss]) != .accept)
+    #expect(AIFixReference.matches(of: "Maks's", in: "Ask Maks's tomorrow") == [1..<2])
+    // A hyphenated name and a name saved with a mark are names too; a coined token with a one-letter part is not.
+    #expect(AIFixReference.matches(of: "Jean-Luc", in: "Ask Jean-Lac tomorrow").isEmpty)
+    #expect(AIFixReference.matches(of: "Maks.", in: "Ask Meks. Tomorrow").isEmpty)
+    #expect(AIFixReference.Finder.isNameLike("T-Mox") == false)
+    #expect(AIFixReference.Finder.isNameLike("Jean-Luc") && AIFixReference.Finder.isNameLike("O'Brien"))
     #expect(AIFixReference.matches(of: "a Bundo", in: "it runs on a bundu machine") == [3..<5])
     // A longer phrase or a coined token carries context of its own and may still match a capitalized variant.
     #expect(AIFixReference.matches(of: "a Bundo", in: "it runs on a Bundu machine") == [3..<5])
