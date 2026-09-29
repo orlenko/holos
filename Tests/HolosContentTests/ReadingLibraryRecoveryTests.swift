@@ -204,6 +204,52 @@ import Testing
         #expect(!FileManager.default.fileExists(atPath: published.path))
     }
 
+    /// An unfinished reading whose manifest names a copy it began, as large as the finished file (its checksum not
+    /// known), keeps its entry: the file cannot be told from the finished one edited since.
+    @Test func aFullSizeCopyWithoutAChecksumKeepsTheEntry() throws {
+        let root = try folder()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let readings = root.appendingPathComponent("Readings", isDirectory: true)
+        let cache = readings.appendingPathComponent("Output-0123456789abcdef", isDirectory: true)
+        try FileManager.default.createDirectory(at: cache, withIntermediateDirectories: true)
+        let store = ReadingLibraryStore(folder: root.appendingPathComponent("ReadingLibrary"))
+        let output = root.appendingPathComponent("Story.m4a")
+        try Data("finished audio".utf8).write(to: output)
+        let manifest = ReadingManifest(
+            kind: ReadingManifest.readingKind, schemaVersion: ReadingManifest.currentSchemaVersion,
+            sourceSHA256: "s", voiceIdentifier: "v", rate: nil, title: "Story", author: nil, language: nil,
+            comment: "c", format: .current, output: output.path, outputSHA256: nil, duration: nil, chapters: [],
+            status: "incomplete", parts: [], publishing: ExclusivePublisher.FileIdentity.of(output), outputSize: 14)
+        try JSONEncoder().encode(manifest).write(to: cache.appendingPathComponent(ReadingManifest.fileName))
+        var reading = entry(.stopped)
+        reading.output = output.path
+        reading.cache = cache.path
+        let result = ReadingLibrary.deleteFiles(of: reading, readingsRoot: readings, store: store) { _ in
+            Issue.record("Removed a file that cannot be told")
+        }
+        #expect(result.problem != nil)
+        #expect(FileManager.default.fileExists(atPath: output.path))
+        #expect(FileManager.default.fileExists(atPath: cache.path))
+    }
+
+    /// The support drive goes away during a Delete: the cache and the saved text not found there are not "gone",
+    /// and the reading stays.
+    @Test func aSupportDriveGoneDuringDeleteKeepsTheReading() throws {
+        let root = try folder()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let volumes = root.appendingPathComponent("Volumes", isDirectory: true)
+        try FileManager.default.createDirectory(at: volumes, withIntermediateDirectories: false)
+        let readings = volumes.appendingPathComponent("Backup/Readings", isDirectory: true)
+        let store = ReadingLibraryStore(folder: volumes.appendingPathComponent("Backup/ReadingLibrary"))
+        var reading = entry(.stopped)
+        reading.cache = readings.appendingPathComponent("Output-0123456789abcdef").path
+        ReadingOutput.$volumesFolder.withValue(volumes.path) {
+            #expect(throws: (any Error).self) { try store.removeDocument(for: reading.id) }
+            let result = ReadingLibrary.deleteFiles(of: reading, readingsRoot: readings, store: store) { _ in }
+            #expect(result.problem?.contains("unavailable") == true)
+        }
+    }
+
     /// A saved text is never replaced by another one (one `document(for:)` did not see): the save fails.
     @Test func aSavedTextIsNeverReplaced() throws {
         let root = try folder()

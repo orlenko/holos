@@ -242,7 +242,10 @@ it) runs off the main actor, one at a time in the order asked; a save a reading 
 (Add, Delete's mark, the output chosen before rendering) is awaited, other saves wait while a
 Delete's mark is being saved (so none writes a mark whose own save failed), and the quit saves
 synchronously, waiting at most 10 s (a folder that does not answer is a failed save, which the
-quit says). An index larger than the 64 MiB `load` reads is not saved (the one there
+quit says), leaving out an addition whose own save is not known yet. Every save is flushed
+(`fsync` of the file, then of its folder) before it counts, and a saved text is placed without
+ever replacing one (an exclusive rename, else `ExclusivePublisher`'s exclusive copy). A Delete
+whose support drive goes away meanwhile keeps the reading. An index larger than the 64 MiB `load` reads is not saved (the one there
 stays), and a save that adds a reading stops at 32 MiB, so a full list can still be changed
 and deleted from. A save a quit or crash cut off leaves a `.<name>.<UUID>.tmp`
 temporary: the launch removes the index's and the saved texts', and Delete removes its

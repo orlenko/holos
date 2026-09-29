@@ -430,9 +430,7 @@ final class ReadingController {
         // until it is known: one that wrote the mark while its own save failed would delete the reading at the next
         // launch although the user was told it stays.
         holdingWrites += 1
-        pendingMarks.insert(id)
         let marked = writable ? await saved(holding: true) : true
-        pendingMarks.remove(id)
         if !marked { update(id) { $0.deletePending = nil } }
         releaseWrites()
         if !marked {
@@ -894,9 +892,8 @@ final class ReadingController {
 
     /// Saves under way that add a reading or mark one for deletion: other saves wait for them (see `save`, `saved`).
     private var holdingWrites = 0
-    /// The readings added, and marked for deletion, whose save is not known yet (see `saveNow`).
+    /// The readings added whose save is not known yet (see `saveNow`).
     private var pendingAdditions: Set<UUID> = []
-    private var pendingMarks: Set<UUID> = []
     private var heldSave = false
     private var heldWaiters: [CheckedContinuation<Void, Never>] = []
 
@@ -918,15 +915,11 @@ final class ReadingController {
     /// makes it a failure, which the quit says, rather than freeze the app.
     private func saveNow() -> Bool {
         guard writable else { return false }
-        // The list as its saves have made it: an addition or a Delete mark whose own save is not known yet is left
-        // out (its save may have failed, and the reading would come back, or go, at the next launch unasked).
-        let committed = all.compactMap { entry -> ReadingEntry? in
-            if pendingAdditions.contains(entry.id) { return nil }
-            guard pendingMarks.contains(entry.id) else { return entry }
-            var unmarked = entry
-            unmarked.deletePending = nil
-            return unmarked
-        }
+        // An addition whose own save is not known yet is left out (its save may have failed, and the reading would
+        // come back at the next launch though the user is told it was not added). A Delete mark is kept whatever its
+        // own save does: the user asked for the deletion and has not been told otherwise, and a mark this save
+        // leaves out could undo one its own save wrote (its result cannot come while the quit waits here).
+        let committed = all.filter { !pendingAdditions.contains($0.id) }
         let work = writeWork(saving: true, growing: false, entries: committed)
         writeSequence += 1
         let sequence = writeSequence

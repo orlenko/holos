@@ -473,10 +473,13 @@ public struct AudioBookJoiner: ReadingAudioJoiner {
         switch outcome {
         case .failed(let error, let keep):
             // A copy that may still be there (or aside) keeps its identity saved, so a resume or a Delete finds it,
-            // and the finished size that tells it from the finished file.
-            manifest.outputSHA256 = nil
+            // and the finished size and checksum: a copy that got to its end (its flush or close failed) is then
+            // recognized as the finished file.
             manifest.publishing = keep
-            if keep == nil { manifest.outputSize = nil }
+            if keep == nil {
+                manifest.outputSHA256 = nil
+                manifest.outputSize = nil
+            }
             try? await saveManifest(manifest, to: manifestURL)
             throw error
         case .published(let published, let claimed):

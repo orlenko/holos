@@ -332,7 +332,10 @@ public final class ReadingLibraryStore: @unchecked Sendable {
     /// `write`); one that is not there is not an error.
     public func removeDocument(for id: UUID) throws {
         // No saved-texts folder: nothing saved, nor being saved (a save makes the folder first; a folder made
-        // after this look-up holds a text saved after this removal was asked).
+        // after this look-up holds a text saved after this removal was asked). Only where it can be reached.
+        if let reason = ReadingOutput.unreachableReason(for: documentURL(id)) {
+            throw HolosError.unavailable("The folder of the saved texts is unavailable: \(reason).")
+        }
         guard try ReadingOutput.exists(documentsFolder) else { return }
         // The text and its temporaries under the index's lock, which a save holds from its temporary to its
         // publication: a save by another process is either done (and its text removed here) or not begun.
@@ -410,6 +413,11 @@ public final class ReadingLibraryStore: @unchecked Sendable {
         let identity: ReadingFileIdentity
         do {
             try written.write(contentsOf: data)
+            // On the disk before it takes the place of the file there: a save that reports success is what a crash
+            // or a drive pulled out leaves (the files removed after it rely on it).
+            if fsync(descriptor) != 0, errno != ENOTSUP, errno != EINVAL {
+                throw failure(String(cString: strerror(errno)))
+            }
             guard let known = ExclusivePublisher.FileIdentity.of(descriptor: descriptor) else {
                 throw failure(String(cString: strerror(errno)))
             }
@@ -422,24 +430,34 @@ public final class ReadingLibraryStore: @unchecked Sendable {
             throw error
         }
         if exclusive {
-            var placed = renamex_np(temporary.path, url.path, UInt32(RENAME_EXCL)) == 0
-            if !placed, errno == ENOTSUP || errno == EINVAL || errno == ENOSYS {
-                placed = link(temporary.path, url.path) == 0
-                if placed { _ = unlink(temporary.path) }
-            }
-            guard placed else {
-                let reason = errno == EEXIST ? "one is already saved there" : String(cString: strerror(errno))
+            // Never over a file there: an exclusive rename, else (a volume without one, or without hard links) an
+            // exclusive copy (see `ExclusivePublisher.publish`), whose file is then the one saved.
+            var saved = identity
+            do {
+                try ExclusivePublisher.publish(temporary, to: url, existing: "Already saved",
+                                               isCancelled: { false }) { saved = $0 }
+            } catch {
                 _ = unlink(temporary.path)
-                throw HolosError.io("Could not save \(url.lastPathComponent): \(reason).")
+                throw HolosError.io("Could not save \(url.lastPathComponent): \(error.localizedDescription)")
             }
-            return identity
+            syncFolder(of: url)
+            return saved
         }
         guard rename(temporary.path, url.path) == 0 else {
             let reason = String(cString: strerror(errno))
             _ = unlink(temporary.path)
             throw HolosError.io("Could not save \(url.lastPathComponent): \(reason)")
         }
+        syncFolder(of: url)
         return identity
+    }
+
+    /// Flushes the folder holding `url` (its new name), where the volume can.
+    private static func syncFolder(of url: URL) {
+        let folder = open(url.deletingLastPathComponent().path, O_RDONLY | O_CLOEXEC | O_DIRECTORY)
+        guard folder >= 0 else { return }
+        _ = fsync(folder)
+        close(folder)
     }
 
     /// The entries of a newer build's index that this build can read.
@@ -1074,7 +1092,9 @@ public enum ReadingLibrary {
                         return DeleteResult(problem: "\(output.lastPathComponent) could not be checked: "
                                                 + "\(error.localizedDescription) Try Delete again.", aside: entry.outputAside)
                     }
-                    if present, entry.state != .done, !evidence.checksums.isEmpty {
+                    // Or a copy it began is named (as large as the finished file: it cannot be told from that
+                    // file edited since).
+                    if present, entry.state != .done, !evidence.checksums.isEmpty || evidence.publishing != nil {
                         // An unfinished reading whose manifest holds the finished file's checksum was being saved
                         // when it stopped: the file there may be the one it began (created before its identity was
                         // saved). It cannot be told, so the reading stays until the user decides.
@@ -1119,7 +1139,13 @@ public enum ReadingLibrary {
         }
         if problems.isEmpty, let cache = entry.cache, let readingsRoot, isRenderCache(cache, in: readingsRoot) {
             do {
-                if try ReadingOutput.exists(URL(fileURLWithPath: cache, isDirectory: true)) {
+                let directory = URL(fileURLWithPath: cache, isDirectory: true)
+                // Not found is "gone" only where its folder can be reached (the support drive may have gone away
+                // since the Delete began).
+                if let reason = ReadingOutput.unreachableReason(for: directory) {
+                    throw HolosError.unavailable("its folder is unavailable: \(reason).")
+                }
+                if try ReadingOutput.exists(directory) {
                     try FileManager.default.removeItem(atPath: cache)
                 }
             } catch let error as CocoaError where error.code == .fileNoSuchFile {

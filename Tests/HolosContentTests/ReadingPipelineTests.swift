@@ -1988,7 +1988,8 @@ import Testing
         #expect(claims.withLock { $0.first } == false)
         let partial = try #require(ReadingFileIdentity.of(place.output))
         #expect(try manifest(place).publishing == partial)
-        #expect(try manifest(place).outputSHA256 == nil)
+        // The finished checksum stays with it: a copy that got to its end is then the finished file.
+        #expect(try manifest(place).outputSHA256 != nil)
 
         // The place aside is still taken: the partial file stays, and so does its identity.
         await #expect(throws: HolosError.self) {
