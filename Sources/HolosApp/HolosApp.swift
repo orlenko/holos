@@ -113,8 +113,16 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
     /// press that produces nothing (cancelled, released before listening, nothing recognized) leaves it.
     private var retention = ResultRetention()
     var corrections = CorrectionList()
+    /// The corrections the dictation in progress (or the last one) started with, used for all of its text until it
+    /// ends. `corrections` can change while it runs (corrections.json reloaded after `voiceislocal eval apply`, or a
+    /// change in Corrections); taking that mid-dictation would change text already streamed, fail the prefix check and
+    /// stop insertion, so a change counts from the next dictation. Its word list and vocabulary are fixed at the start
+    /// the same way (`DictationFixPipeline.make` takes the terms; `DictationController.begin` the contextual strings).
+    private var dictationCorrections = CorrectionList()
     /// False when an existing corrections file could not be read, so it is never overwritten.
     private var correctionsWritable = true
+    /// Loads corrections.json again when it changes on disk (`voiceislocal eval apply --add-corrections`).
+    private var correctionsWatcher: FolderWatcher?
     /// The word list (HolosApp+WordList.swift), as `words.json` held it when last read.
     var wordList = WordList()
     let wordListStore = WordListStore()
@@ -220,6 +228,18 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
         }
         loadWordList()
         controller.contextualStrings = dictationVocabulary(language: locale)
+        let folder = CorrectionList.defaultURL.deletingLastPathComponent()
+        correctionsWatcher = FolderWatcher(folder: folder) { [weak self] in
+            MainActor.assumeIsolated {
+                self?.reloadCorrectionsIfChanged()
+                // words.json lives in the same folder (`voiceislocal eval apply --add-vocabulary`, `voiceislocal words`).
+                self?.refreshWordList()
+            }
+        }
+        // Read both again now the watch is on: a change made between the first read and the watch (an `eval apply`
+        // finishing then) would otherwise wait for the next change in the folder.
+        reloadCorrectionsIfChanged()
+        refreshWordList()
         controller.frameTap = { [weak self] id, frame in
             guard let audio = self?.historyAudio, audio.id == id else { return }
             audio.writer.append(frame)
@@ -630,6 +650,9 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
                                         language: locale, terminal: dictationForTerminal)
             // Terms added with `voiceislocal words` since the last dictation count for this one.
             refreshWordList()
+            // This dictation's corrections, fixed now; a refused begin leaves the one still stopping with its own.
+            let previousCorrections = dictationCorrections
+            dictationCorrections = corrections
             if controller.begin() {
                 // A pending opacity sample must not hide this dictation's own preview or result.
                 // A rejected begin leaves the timer running so the sample still hides on time.
@@ -637,7 +660,7 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
                 opacitySampleTask = nil
                 sampleToken = nil
                 fixPipeline?.cancel()
-                fixPipeline = DictationFixPipeline.make(corrections: corrections, wordList: wordList.terms,
+                fixPipeline = DictationFixPipeline.make(corrections: dictationCorrections, wordList: wordList.terms,
                                                         language: locale,
                                                         terminal: dictationForTerminal) { [weak self] chunk, text in
                     self?.writeFixed(chunk, as: text) ?? false
@@ -649,6 +672,7 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
                     historyAudio = (id, DictationAudioWriter(store: history.store, id: id))
                 }
             } else {
+                dictationCorrections = previousCorrections
                 target = nil
                 historyDraft = nil
                 _ = retention.conclude(DictationResult())  // nothing started, so the previous result stays
@@ -704,7 +728,7 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
             stream(cleanedForStreaming(update.committedText))
         case .result:
             let recognized = withoutFillers(update.text).trimmingCharacters(in: .whitespacesAndNewlines)
-            let text = corrections.apply(to: recognized)
+            let text = dictationCorrections.apply(to: recognized)
             if !text.isEmpty {
                 lastTranscript = text
                 lastRecognized = recognized
@@ -927,16 +951,16 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
         removeFillers ? FillerWords.remove(from: text, language: locale) : text
     }
 
-    /// Filler removal, then learned corrections: the text Holos shows and writes.
+    /// Filler removal, then learned corrections (this dictation's): the text Holos shows and writes.
     private func cleaned(_ text: String) -> String {
-        corrections.apply(to: withoutFillers(text))
+        dictationCorrections.apply(to: withoutFillers(text))
     }
 
     /// Like `cleaned`, but holds back a trailing comma or phrase start that later words may still change, and with
     /// spoken code, a trailing spoken path that later words may continue.
     private func cleanedForStreaming(_ text: String) -> String {
         DictationTextPipeline.cleanedForStreaming(text, language: locale, removeFillers: removeFillers,
-                                                  corrections: corrections,
+                                                  corrections: dictationCorrections,
                                                   spokenCode: fixPipeline?.formatsCode == true)
     }
 
@@ -1134,7 +1158,8 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
         if heard.isEmpty { heard = latestCommitted.trimmingCharacters(in: .whitespacesAndNewlines) }
         let withoutFill = withoutFillers(heard)
         let fillersRemoved = removeFillers && WordDiff.normalized(withoutFill) != WordDiff.normalized(heard)
-        let swaps = corrections.applyCounting(to: withoutFill.trimmingCharacters(in: .whitespacesAndNewlines)).count
+        let swaps = dictationCorrections
+            .applyCounting(to: withoutFill.trimmingCharacters(in: .whitespacesAndNewlines)).count
         history.add(DictationRecord(
             id: draft.id ?? UUID(), date: draft.date, app: draft.app, language: draft.language, text: text,
             heard: heard.isEmpty ? text : heard, unwritten: resultText,
@@ -1245,21 +1270,35 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
 
     /// Returns false when the change was rejected or could not be saved.
     @discardableResult
+    /// The change is made to the list as saved now, under its lock (`CorrectionList.update`), so corrections another
+    /// process added since it was loaded (`voiceislocal eval apply`) are kept, never saved over.
     private func changeCorrections(_ change: (inout CorrectionList) -> Void) -> Bool {
         guard correctionsWritable else {
             show("Could not read corrections.json; fix or remove it, then relaunch Voice is Local.")
             return false
         }
-        change(&corrections)
-        updateDictationVocabulary()
-        (mainWindow?.existingController(for: .corrections) as? CorrectionsPane)?.update(corrections: corrections.entries)
         do {
-            try corrections.save(to: CorrectionList.defaultURL)
+            adoptCorrections(try CorrectionList.update(at: CorrectionList.defaultURL) { change(&$0) }.list)
             return true
         } catch {
             show("Could not save corrections: \(error.localizedDescription)")
             return false
         }
+    }
+
+    private func adoptCorrections(_ list: CorrectionList) {
+        corrections = list
+        updateDictationVocabulary()
+        (mainWindow?.existingController(for: .corrections) as? CorrectionsPane)?.update(corrections: corrections.entries)
+    }
+
+    /// corrections.json changed on disk (or its folder did): takes the saved list when it differs. An unreadable
+    /// file changes nothing; one that became readable again makes corrections writable again.
+    private func reloadCorrectionsIfChanged() {
+        guard let list = try? CorrectionList.load(from: CorrectionList.defaultURL) else { return }
+        guard list != corrections || !correctionsWritable else { return }
+        correctionsWritable = true
+        adoptCorrections(list)
     }
 
     /// The next dictation's contextual strings: the word list, then the words of learned corrections. A dictation

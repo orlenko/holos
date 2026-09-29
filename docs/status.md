@@ -401,6 +401,24 @@ Hardware-facing and cross-app acceptance remain pending.
   installed).
   Nothing of it has been seen on screen or tried with real dictation yet.
 
+- Cloud reference (developer tool, CLI only; [details](reference-evaluation.md#cloud-reference)):
+  `voiceislocal eval cloud` sends a session's audio to OpenAI (`gpt-transcribe` by
+  default) after showing the minutes, requests, and estimated cost and getting a yes; the
+  audio leaves the Mac, so it needs the consent of everyone recorded. Segments of at most
+  5 minutes are cut at pauses, each answer is saved as it arrives, failures are retried,
+  and a stopped run resumes. `eval compare` gives WER against both transcripts and the
+  differing passages by kind (echo filtered as in the exports); `eval review` writes an
+  offline HTML page with the audio to decide each passage and mark terms; `eval apply`
+  makes a reference transcript and proposes heard → meant corrections, added only with
+  `--add-corrections`, and the marked terms, added to the word list only with
+  `--add-vocabulary`, each under its file's lock (the app takes it too and reads the
+  file again when it changes). `--vocabulary` sends the word list, people's names, and
+  correction words, in the recognizer's order. Results
+  stay in the session's `eval/` folder; Delete Audio removes the page's audio copy. The
+  segmenting, stitching, cost, consent gate, HTTP layer (faked: request shape, retries,
+  resume), alignment, WER, grouping, review page, decisions, and apply are unit-tested;
+  one 16 s synthetic clip was sent to the real API. It has not been run on a real meeting.
+
 The CLI bundle embeds microphone and speech-recognition permission usage strings.
 `scripts/build.sh` ad-hoc signs the built executable to give macOS a stable CLI
 identity across launches. This packaging detail is implemented; which process

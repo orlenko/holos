@@ -1,0 +1,181 @@
+import Foundation
+
+/// One upload of a track: render frames [startFrame, endFrame) of its 16 kHz render.
+public struct CloudSegmentPlan: Codable, Sendable, Equatable {
+    public var index: Int
+    public var startFrame: Int
+    public var endFrame: Int
+    /// Seconds at the start that the previous segment also sent (when no pause was found near the cut).
+    public var overlapSeconds: Double
+    /// Every energy window is below the silence level: nothing is uploaded and the text is empty.
+    public var silent: Bool
+    /// SHA-256 of the segment's samples in the render (`EvalAudio.segmentDigests`): a resumed run keeps a saved
+    /// answer only when the audio it answered is byte for byte what the new render holds.
+    public var audioSHA256: String?
+
+    public init(index: Int, startFrame: Int, endFrame: Int, overlapSeconds: Double = 0, silent: Bool = false,
+                audioSHA256: String? = nil) {
+        self.index = index; self.startFrame = startFrame; self.endFrame = endFrame
+        self.overlapSeconds = overlapSeconds; self.silent = silent; self.audioSHA256 = audioSHA256
+    }
+
+    public func seconds(sampleRate: Double) -> Double { Double(endFrame - startFrame) / sampleRate }
+}
+
+/// Where to cut a track for upload (docs/reference-evaluation.md, "Cloud reference").
+public enum CloudSegmentation {
+    public struct Settings: Sendable, Equatable {
+        /// Longest segment. OpenAI takes files up to 25 MB; the older models refuse audio over 1,400–1,500 s and cut
+        /// their output at about 2,000 tokens (8–11 minutes), so segments stay well below both.
+        public var maxSeconds: Double = 300
+        /// How far before `maxSeconds` a cut may move to reach a pause.
+        public var searchSeconds: Double = 45
+        /// Energy window length.
+        public var windowSeconds: Double = 0.1
+        /// A pause is at least this long.
+        public var pauseSeconds: Double = 0.4
+        /// RMS level (full scale 1) under which a window is silence (about −46 dBFS).
+        public var silenceRMS: Float = 0.005
+        /// Audio the next segment repeats when the cut falls inside speech.
+        public var overlapSeconds: Double = 1.0
+        /// A last segment shorter than this is merged into the one before when that stays under `maxSeconds` +
+        /// `searchSeconds`; one shorter than 0.1 s (below the API's minimum) is dropped.
+        public var minimumSeconds: Double = 2.0
+
+        public init() {}
+    }
+
+    /// Cuts `frameCount` frames into segments of at most `maxSeconds` (except the merge above). Each cut is placed
+    /// at the quietest `pauseSeconds` stretch within the last `searchSeconds` before the limit (the latest one on a
+    /// tie); when that stretch is not silence, the next segment starts `overlapSeconds` earlier. A segment whose
+    /// every window is silence is marked `silent`. `rms` holds one value per `windowSeconds` window.
+    public static func plan(frameCount: Int, sampleRate: Double, rms: [Float], settings: Settings = Settings())
+        -> [CloudSegmentPlan] {
+        guard frameCount > 0, sampleRate > 0 else { return [] }
+        let windowFrames = max(1, Int((settings.windowSeconds * sampleRate).rounded()))
+        let maxFrames = max(windowFrames, Int(settings.maxSeconds * sampleRate))
+        let searchFrames = min(maxFrames / 2, Int(settings.searchSeconds * sampleRate))
+        let pauseWindows = max(1, Int((settings.pauseSeconds / settings.windowSeconds).rounded()))
+        let overlapFrames = Int(settings.overlapSeconds * sampleRate)
+        var cuts: [(start: Int, end: Int, overlap: Int)] = []
+        var start = 0
+        var overlap = 0
+        while frameCount - start > maxFrames {
+            let latest = start + maxFrames
+            let earliest = latest - searchFrames
+            // Candidate pause stretches: pauseWindows consecutive windows starting at w, fully inside the search.
+            var best: (level: Float, cut: Int)?
+            let firstWindow = (earliest + windowFrames - 1) / windowFrames
+            let lastWindow = latest / windowFrames - pauseWindows
+            if lastWindow >= firstWindow {
+                for window in firstWindow...lastWindow {
+                    var level: Float = 0
+                    for k in window..<(window + pauseWindows) { level = max(level, k < rms.count ? rms[k] : 0) }
+                    if best == nil || level <= best!.level {
+                        best = (level, (window + pauseWindows / 2) * windowFrames)
+                    }
+                }
+            }
+            let cut = best?.cut ?? latest
+            let quiet = (best?.level ?? .infinity) < settings.silenceRMS
+            cuts.append((start, cut, overlap))
+            overlap = quiet ? 0 : min(overlapFrames, cut - start)
+            start = cut - overlap
+        }
+        cuts.append((start, frameCount, overlap))
+        // A very short tail joins the segment before when it fits.
+        if cuts.count > 1, let tail = cuts.last {
+            let tailFrames = tail.end - tail.start - tail.overlap
+            let previous = cuts[cuts.count - 2]
+            if Double(tailFrames) < settings.minimumSeconds * sampleRate,
+               tail.end - previous.start <= maxFrames + searchFrames {
+                cuts.removeLast()
+                cuts[cuts.count - 1].end = tail.end
+            } else if Double(tail.end - tail.start) < 0.1 * sampleRate {
+                cuts.removeLast()
+            }
+        }
+        return cuts.enumerated().map { index, cut in
+            let firstWindow = cut.start / windowFrames
+            let lastWindow = min(rms.count, (cut.end + windowFrames - 1) / windowFrames)
+            let silent = lastWindow <= firstWindow
+                || rms[firstWindow..<lastWindow].allSatisfy { $0 < settings.silenceRMS }
+            return CloudSegmentPlan(index: index, startFrame: cut.start, endFrame: cut.end,
+                                    overlapSeconds: Double(cut.overlap) / sampleRate, silent: silent)
+        }
+    }
+
+    /// Words a second of overlap can hold (fast speech is about four words a second).
+    static let wordsPerOverlapSecond = 4.0
+    /// Characters of an unspaced script (each a word here, `EvalText.pieces`) a second of overlap can hold.
+    static let charactersPerSecond = 10.0
+
+    /// The words of each segment's text with the words a segment repeats from the one before removed: with an
+    /// overlap, the longest run that ends the previous segment's answer (the one just before, even when empty) and
+    /// starts this one's, compared by key, is
+    /// dropped from this one — at most as many words as the overlap can hold (`wordsPerOverlapSecond`, or
+    /// `charactersPerSecond` characters of an unspaced script), so a
+    /// phrase said again after the overlap stays. Segments without overlap are kept whole.
+    public static func stitch(_ texts: [(text: String, overlapSeconds: Double)]) -> [[String]] {
+        stitchPieces(texts).map { $0.map(\.text) }
+    }
+
+    /// `stitch`, keeping each word's place and spacing (`EvalText.pieces`). Each segment's words are the last ones of
+    /// `EvalText.pieces(text)`.
+    public static func stitchPieces(_ texts: [(text: String, overlapSeconds: Double)]) -> [[EvalText.Piece]] {
+        var result: [[EvalText.Piece]] = []
+        // The segment just before, as the model answered it: the overlap repeats its audio's end, so only its own
+        // last words can be repeated (an empty answer repeats nothing, and an earlier segment is never compared).
+        var previousAnswer: [EvalText.Piece] = []
+        for (text, overlapSeconds) in texts {
+            var words = EvalText.pieces(text)
+            let answer = words
+            defer { previousAnswer = answer }
+            if overlapSeconds > 0, !previousAnswer.isEmpty {
+                let previous = previousAnswer
+                // The overlap holds so many words' worth of speech; a character of an unspaced script is a
+                // fraction of a word (about ten are said a second).
+                let budget = max(1, (overlapSeconds * wordsPerOverlapSecond).rounded(.up))
+                var spent = 0.0
+                var maxRepeat = 0
+                for word in words {
+                    let weight = word.text.first.map(EvalText.isUnspacedScript) == true
+                        ? wordsPerOverlapSecond / charactersPerSecond : 1
+                    guard spent + weight <= budget + 1e-9 else { break }
+                    spent += weight
+                    maxRepeat += 1
+                }
+                let limit = min(max(1, maxRepeat), previous.count, words.count)
+                var drop = 0
+                if limit > 0 {
+                    for length in stride(from: limit, through: 1, by: -1) {
+                        let tail = previous.suffix(length).map { EvalText.key($0.text) }
+                        let head = words.prefix(length).map { EvalText.key($0.text) }
+                        if tail == head { drop = length; break }
+                    }
+                }
+                words.removeFirst(drop)
+            }
+            result.append(words)
+        }
+        return result
+    }
+
+    /// A stitched segment's words with their spacing: `words` are the last words of `EvalText.pieces(text)` when it
+    /// was stitched by this build; otherwise (an older run, stitched at whitespace) each saved word is cut again.
+    static func spacedWords(text: String, words: [String]) -> [EvalText.Piece] {
+        let all = EvalText.pieces(text)
+        if all.count >= words.count, all.suffix(words.count).map(\.text) == words {
+            return Array(all.suffix(words.count))
+        }
+        var pieces: [EvalText.Piece] = []
+        for word in words {
+            for (position, piece) in EvalText.pieces(word).enumerated() {
+                var spaced = piece
+                spaced.spaceBefore = position == 0 || piece.spaceBefore
+                pieces.append(spaced)
+            }
+        }
+        return pieces
+    }
+}

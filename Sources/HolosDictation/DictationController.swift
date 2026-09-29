@@ -75,7 +75,8 @@ struct DictationDependencies {
 @MainActor
 public final class DictationController {
     public private(set) var status = DictationStatus(phase: .idle)
-    /// Phrases the recognizer should expect; read when each utterance starts.
+    /// Phrases the recognizer should expect; read when each utterance starts (`begin`), so a change never affects
+    /// one in progress.
     public var contextualStrings: [String] = []
     /// The recognizer's locale; read when each utterance starts, so a change never affects one in progress.
     public var locale: String
@@ -162,8 +163,8 @@ public final class DictationController {
             guard !Task.isCancelled else { return }
             self.watchdogFired(id)
         }
-        let locale = locale
-        prepareTask = Task { [weak self] in await self?.prepare(id, locale: locale) }
+        let locale = locale, vocabulary = contextualStrings
+        prepareTask = Task { [weak self] in await self?.prepare(id, locale: locale, vocabulary: vocabulary) }
         return true
     }
 
@@ -202,7 +203,7 @@ public final class DictationController {
 
     public func reset() { cancel() }
 
-    private func prepare(_ id: UUID, locale: String) async {
+    private func prepare(_ id: UUID, locale: String, vocabulary: [String]) async {
         guard generation == id else { return }
         if releaseRequested {
             finishReleasedBeforeReady(id)
@@ -214,7 +215,7 @@ public final class DictationController {
             for await update in pair.stream { self?.accept(update, for: id) }
         }
         do {
-            let session = try await dependencies.makeSpeech(locale, backend, contextualStrings) { update in
+            let session = try await dependencies.makeSpeech(locale, backend, vocabulary) { update in
                 pair.continuation.yield(update)
             }
             guard generation == id else {

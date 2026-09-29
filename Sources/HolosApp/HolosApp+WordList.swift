@@ -5,7 +5,8 @@ import HolosStorage
 
 /// The word list (docs/design.md "Word list"): `words.json`, edited in the Corrections section and with
 /// `voiceislocal words`. The app reads it at launch, and again when the file changed since (checked at each
-/// dictation, each meeting start, Run Again, and when the Corrections section shows), so terms added in Terminal
+/// dictation, each meeting start, Run Again, when the Corrections section shows, and when the Application Support
+/// folder changes, through the corrections watch in HolosApp.swift), so terms added in Terminal
 /// count without a relaunch. Every change is made on the list as it is on disk (`WordListStore.update`).
 extension HolosAppDelegate {
     /// Reads `words.json`; a list that cannot be read is empty for recognition and is never overwritten.
