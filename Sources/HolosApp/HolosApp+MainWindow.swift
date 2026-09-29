@@ -147,8 +147,8 @@ extension HolosAppDelegate {
         showMainWindow(section)
     }
 
-    /// "Open Voice is Local" (⌘0), and a click on the Dock icon with no window on screen: the window on the section
-    /// it last showed (in this run or an earlier one), or History.
+    /// "Open Voice is Local" (⌘0), and a click on the Dock icon with the window closed: the window on the section it
+    /// last showed (in this run or an earlier one), or History.
     @objc func showMainWindowFromMenu(_ sender: Any?) {
         showMainWindow(lastMainSection)
     }

@@ -269,13 +269,15 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
         false
     }
 
-    /// A click on the Dock icon (the app is regular while one of its windows is open) with none of its windows open:
-    /// the main window comes back on the section it last showed. With a window open, AppKit's own handling brings it
-    /// forward or restores it from the Dock. The status item and the dictation preview are windows too, so `flag`
-    /// alone cannot tell.
+    /// A click on the Dock icon (the app is regular while one of its windows is open, the live transcript or Review
+    /// included) brings back the main window: restored from the Dock when minimised, else opened on the section it
+    /// last showed. With the main window on screen, AppKit's own handling brings the app forward.
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
-        let open = sender.windows.contains { ($0.isVisible || $0.isMiniaturized) && $0.canBecomeMain }
-        guard !open else { return true }
+        if let mainWindow, mainWindow.isMiniaturized {
+            mainWindow.restoreFromDock()
+            return false
+        }
+        guard mainWindow?.isVisible != true else { return true }
         showMainWindowFromMenu(nil)
         return false
     }

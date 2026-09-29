@@ -233,8 +233,9 @@ like any app's on a manual launch. Closing it never quits
 (`applicationShouldTerminateAfterLastWindowClosed` returns false): the menu bar item,
 dictation, meeting recordings, and readings keep running, and only Quit in the menu bar
 menu or ⌘Q quits. While any of its windows is open the app is a regular one (Dock,
-⌘-Tab); a click on the Dock icon with none of them open (a window can close while
-another keeps the Dock icon) reopens the main window on its last section.
+⌘-Tab); a click on the Dock icon brings the main window back, also when another window
+(the live transcript, Review) keeps the icon there: restored when minimised, else opened
+on its last section.
 
 Appearance (`AppearanceChoice`, UserDefaults `appearance`: `system`, `light`, `dark`;
 System by default): Settings › General › Appearance sets `NSApp.appearance` at launch

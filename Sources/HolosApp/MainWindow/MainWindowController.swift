@@ -109,6 +109,14 @@ final class MainWindowController: NSObject, NSWindowDelegate {
 
     var isVisible: Bool { window.isVisible }
     var isKey: Bool { window.isKeyWindow }
+    /// Minimised to the Dock (then `isVisible` is false, but the window is still open).
+    var isMiniaturized: Bool { window.isMiniaturized }
+
+    /// Brings a minimised window back from the Dock; its section still counts as shown.
+    func restoreFromDock() {
+        window.deminiaturize(nil)
+        window.makeKeyAndOrderFront(nil)
+    }
 
     init(makeSection: @escaping (MainSection) -> NSViewController) {
         self.makeSection = makeSection
