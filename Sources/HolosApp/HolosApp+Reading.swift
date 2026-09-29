@@ -41,12 +41,17 @@ extension HolosAppDelegate {
         switch (keep, response) {
         case (true, .alertFirstButtonReturn):
             if !readings.prepareForQuit(keep: true) {
-                // The save failed just now: say so rather than promise what the next launch cannot do.
+                // The save failed just now (or did not end in time): what the next launch finds cannot be told (the
+                // list may have been written without being flushed, or still be being written), so Voice is Local
+                // does not quit; the readings go on.
+                readings.quitCancelled()
                 let failed = NSAlert()
-                failed.messageText = "The reading cannot continue next time."
-                failed.informativeText = "The Reading list could not be saved, so the next launch shows it as "
-                    + "stopped, with Resume.\n\n\(readings.notice ?? "")"
+                failed.messageText = "Voice is Local did not quit."
+                failed.informativeText = "The Reading list could not be saved, so it cannot be told whether the next "
+                    + "launch would continue the reading. It goes on now. Free some space or fix the folder's "
+                    + "permissions, then quit again.\n\n\(readings.notice ?? "")"
                 failed.runModal()
+                return false
             }
         case (true, .alertSecondButtonReturn), (false, .alertFirstButtonReturn):
             if !readings.prepareForQuit(keep: false) {

@@ -363,7 +363,7 @@ Quitting while a reading is made or waits asks: **Keep Rendering** (quit now; th
 marks those readings, and the next launch queues them again, the one being made first),
 **Stop** (they are saved as stopped, with Resume), or Cancel; while the index cannot be
 saved (unreadable, a newer build's, or its last save failed) only Stop and Cancel are
-offered, and a Keep Rendering whose save fails says the reading will show as stopped. A
+offered, and a Keep Rendering whose save fails cancels the quit (the readings go on) and says so. A
 Stop whose save fails cancels the quit (the saved list may still ask the next launch to
 continue the reading) and says why; with nothing rendering, a quit first saves again a list
 whose last save failed, and asks Quit Anyway or Cancel when it still cannot. The saved text

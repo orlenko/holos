@@ -95,7 +95,14 @@ public final class ReadingPlayer: NSObject, AVAudioPlayerDelegate {
         guard let handle = await file() else { return asked != request }
         guard asked == request else { return true }
         let open = self.open
-        let opened = try await Task.detached(priority: .userInitiated) { try open(handle) }.value
+        let opened: OpenedPlayback
+        do {
+            opened = try await Task.detached(priority: .userInitiated) { try open(handle) }.value
+        } catch {
+            // Superseded meanwhile: nothing to tell about a reading no longer asked for.
+            guard asked == request else { return true }
+            throw error
+        }
         // Another reading was asked for meanwhile, or playing was stopped: this one is not played.
         guard asked == request else {
             opened.playback.stop()

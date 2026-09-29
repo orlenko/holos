@@ -69,6 +69,24 @@ private final class FakePlayback: ReadingPlayback, @unchecked Sendable {
         #expect(player.entryID == nil)
     }
 
+    /// A reading whose player fails to open after another was asked for says nothing: it is no longer asked for.
+    @Test func aFailureOfASupersededRequestIsNotTold() async throws {
+        let failing = Mutex(true)
+        let player = ReadingPlayer(open: { _ in
+            if failing.withLock({ $0 }) { throw CocoaError(.fileReadCorruptFile) }
+            return OpenedPlayback(FakePlayback())
+        })
+        let gate = SlowFile()
+        let first = Task { @MainActor in try await player.play(UUID()) { await gate.open() } }
+        await gate.waitUntilAsked()
+        player.stop()
+        gate.release()
+        #expect(try await first.value)
+        // Still asked for: its failure is the caller's.
+        await #expect(throws: (any Error).self) { try await player.play(UUID(), file: { try? self.file() }) }
+        failing.withLock { $0 = false }
+    }
+
     /// A late callback from a player replaced since leaves the new one alone.
     @Test func aCallbackFromAReplacedPlayerIsIgnored() async throws {
         let first = FakePlayback()
