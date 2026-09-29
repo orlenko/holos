@@ -143,6 +143,10 @@ import Testing
         defer { try? FileManager.default.removeItem(at: root) }
         let store = ReadingLibraryStore(folder: root)
         try store.save([entry(.done)])
+        // The other process's list, written before it takes the lock.
+        let theirs = [entry(.failed)]
+        let other = ReadingLibraryStore(folder: root.appendingPathComponent("Other"))
+        try other.save(theirs)
         // Another process holds the lock (a descriptor of our own stands in for it: `flock` locks are per open file).
         let held = open(root.appendingPathComponent(".library.lock").path, O_RDWR | O_CLOEXEC)
         #expect(held >= 0)
@@ -150,9 +154,6 @@ import Testing
         let mine = [entry(.stopped)]
         let saving = Task.detached { try store.save(mine) }
         // Its save lands, then it lets go.
-        let theirs = [entry(.failed)]
-        let other = ReadingLibraryStore(folder: root.appendingPathComponent("Other"))
-        try other.save(theirs)
         #expect(rename(other.indexURL.path, store.indexURL.path) == 0)
         _ = flock(held, LOCK_UN)
         close(held)
@@ -264,6 +265,32 @@ import Testing
         }
         try store.save(kept)
         #expect(store.load().entries == kept)
+    }
+
+    /// Without `flock`, saves of the index and of saved texts in this one process wait for one another: none is taken
+    /// for another copy of the app holding the reservation.
+    @Test func withoutFlockSavesInOneProcessWaitForEachOther() async throws {
+        let root = try folder()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = ReadingLibraryStore(folder: root)
+        try store.save([entry(.done)])
+        let noFlock: @Sendable (Int32) -> Int32 = { _ in errno = ENOTSUP; return -1 }
+        try await withThrowingTaskGroup(of: Void.self) { group in
+            for index in 0..<16 {
+                group.addTask {
+                    try ReadingLibraryStore.$lockCall.withValue(noFlock) {
+                        if index.isMultiple(of: 2) {
+                            try store.save([ReadingEntry(source: .web(URL(string: "https://example.com/\(index)")!),
+                                                         requestedVoice: nil, speed: 1)])
+                        } else {
+                            try store.saveDocument(ReadableDocument(sections: [.init(paragraphs: ["\(index)."])]),
+                                                   for: UUID())
+                        }
+                    }
+                }
+            }
+            try await group.waitForAll()
+        }
     }
 
     /// A saved text is never replaced by another one (one `document(for:)` did not see): the save fails.

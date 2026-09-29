@@ -259,6 +259,9 @@ public final class ReadingLibraryStore: @unchecked Sendable {
         }
     }
 
+    /// Serializes `withIndexLock`'s callers in this process.
+    private static let processLock = NSLock()
+
     /// Takes the place of `flock(descriptor, LOCK_EX)` on the index's lock (tests: a volume without `flock`).
     @TaskLocal static var lockCall: (@Sendable (Int32) -> Int32)? = nil
 
@@ -268,6 +271,11 @@ public final class ReadingLibraryStore: @unchecked Sendable {
     /// `ReadingOutputReservation`: one whose process ended is taken over): while another process holds it, this
     /// fails rather than run unlocked.
     func withIndexLock<T>(_ body: () throws -> T) throws -> T {
+        // Callers in this process one at a time first (a save of the index and a saved text's, say): the lock across
+        // processes then only ever meets another process, and its reservation (without `flock`) is never this
+        // process's own.
+        Self.processLock.lock()
+        defer { Self.processLock.unlock() }
         let path = folder.appendingPathComponent(".library.lock").path
         let descriptor = open(path, O_CREAT | O_RDWR | O_CLOEXEC | O_NOFOLLOW, 0o600)
         guard descriptor >= 0 else {
