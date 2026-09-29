@@ -88,7 +88,8 @@ struct History: ParsableCommand {
             discussion: """
                 Runs the audio History kept through the recognizer and the text steps live dictation uses now: the \
                 dictation language, the learned corrections (Application Support/Holos/corrections.json, as \
-                vocabulary and as replacements), filler removal, and Apple Intelligence's fix, as set in the app's \
+                vocabulary and as replacements), filler removal, spoken paths and commands written as code, and \
+                Apple Intelligence's fix, as set in the app's \
                 Settings. Prints the text as heard and as written, then and now, what each step did, and which steps \
                 behaved differently from then. Nothing is typed, copied, or changed in the history. --all runs every \
                 dictation with audio (or those from --since ago) for a report on a change to the corrections or the fix.
@@ -100,6 +101,9 @@ struct History: ParsableCommand {
         @Flag(help: "Print JSON.") var json = false
         @Flag(name: .customLong("no-ai-fix"), help: "Leave out Apple Intelligence's fix even when Settings has it on.")
         var noAIFix = false
+        @Flag(name: .customLong("no-spoken-code"),
+              help: "Leave spoken paths and commands as said even when Settings writes them as code.")
+        var noSpokenCode = false
         @Option(help: "Recognize in this language (for example en-US) instead of the one chosen in Settings.")
         var language: String?
 
@@ -132,7 +136,9 @@ struct History: ParsableCommand {
             let locale = chosen ?? DictationLanguage.standard
             let (pipeline, note) = DictationRerun.pipeline(language: locale, removeFillers: preferences.removeFillers,
                                                            corrections: corrections,
-                                                           aiFix: preferences.aiFix && !noAIFix)
+                                                           aiFix: preferences.aiFix && !noAIFix,
+                                                           spokenCode: preferences.spokenCode && !noSpokenCode,
+                                                           backticks: preferences.spokenCodeBackticks)
             if all {
                 try await runAll(records, store: store, pipeline: pipeline, note: note,
                                  aiFix: preferences.aiFix && !noAIFix)
@@ -176,7 +182,8 @@ struct History: ParsableCommand {
             }
             let batch = DictationRerunBatch(
                 settings: .init(language: pipeline.language, removeFillers: pipeline.removeFillers, aiFix: aiFix,
-                                aiFixUnavailable: note, corrections: pipeline.corrections.entries.count),
+                                aiFixUnavailable: note, corrections: pipeline.corrections.entries.count,
+                                spokenCode: pipeline.coder != nil),
                 dictations: items)
             if json {
                 try Console.json(batch)

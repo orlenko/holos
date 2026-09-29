@@ -602,7 +602,11 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
                 opacitySampleTask = nil
                 sampleToken = nil
                 fixPipeline?.cancel()
-                fixPipeline = DictationFixPipeline.make(corrections: corrections, language: locale) { [weak self] chunk, text in
+                // A terminal's code tokens are typed without backticks, also when its focus changed at key-down and
+                // the text waits for Copy Result.
+                let typesIntoTerminal = terminal?.isTerminal == true || terminalRefusal != nil
+                fixPipeline = DictationFixPipeline.make(corrections: corrections, language: locale,
+                                                        terminal: typesIntoTerminal) { [weak self] chunk, text in
                     self?.writeFixed(chunk, as: text) ?? false
                 }
                 // Its audio, for Run Again, when History keeps it; not for a dictation that already ended (`begin`
@@ -692,15 +696,27 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
             let committed = cleaned(latestCommitted).trimmingCharacters(in: .whitespacesAndNewlines)
             let unwritten = TextInsertion.unwritten(committed, after: insertedText)
             // Read before `endFixing` drops the pipeline: the chunks it wrote as fixed, for History.
-            let fixedWritten = fixPipeline?.written ?? ""
+            let pipeline = fixPipeline
+            let fixedWritten = pipeline?.written ?? ""
             let attempted = unwritten.map {
-                AIFixUnwritten.attempted($0, fixedRest: nil, failedWrite: fixPipeline?.failedWrite)
+                AIFixUnwritten.attempted($0, fixedRest: nil, failedWrite: pipeline?.failedWrite)
             }
+            // The same after spoken code alone, so History counts Apple Intelligence's words apart from code.
+            let codedAttempted = unwritten.map {
+                AIFixUnwritten.attempted($0, fixedRest: nil, failedWrite: pipeline?.failedWrite.map {
+                    ($0.chunk, pipeline?.failedCoded?.text ?? $0.chunk)
+                })
+            }
+            let changes = pipeline?.changes(offered: attempted ?? "", coded: codedAttempted ?? "",
+                                            recognized: unwritten ?? "")
             endFixing(heard: latestCommitted, offered: attempted ?? "", recognized: unwritten ?? "")
             target = nil
             message = update.message ?? "Dictation failed; no text was inserted."
             if !insertedText.isEmpty { message += " Text inserted before the failure stays in the field." }
-            if !resultOriginal.isEmpty { message += " Copy Original has what was heard, before Apple Intelligence's fix." }
+            if !resultOriginal.isEmpty {
+                let steps = PipelineChangeText.steps(code: changes?.code ?? false, fix: changes?.fix ?? true)
+                message += " Copy Original has what was heard, before \(steps)."
+            }
             if let unwritten, let rest = attempted, !unwritten.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 // Keep the leading space so pasting after the inserted prefix does not join words.
                 resultText = insertedText.isEmpty ? rest.trimmingCharacters(in: .whitespaces) : rest
@@ -727,7 +743,9 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
                                            rest: unwritten, wroteAny: !insertedText.isEmpty,
                                            typed: typedAppName != nil, unverified: streamUnverified,
                                            targetMoved: targetMoved)
-            recordHistory(recognized: committed, heard: latestCommitted, fixedWritten: fixedWritten, rest: attempted)
+            recordHistory(recognized: committed, heard: latestCommitted, fixedWritten: fixedWritten, rest: attempted,
+                          coded: pipeline.map { ($0.writtenCoded, codedAttempted) },
+                          codeSpans: (pipeline?.writtenCodeSpans ?? 0) + (pipeline?.failedCoded?.spans ?? 0))
             retainResult()
             overlay.show(title: message, text: resultText, attention: true)
             scheduleOverlayHide()
@@ -797,13 +815,16 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
         await pipeline.idle()
         guard fixPipeline === pipeline else { return }
         var fixedRest: String?
+        var codedRest: (text: String, spans: Int)?
         // Only this last part may gain closing punctuation. When the recognizer committed everything before release,
         // nothing is added at the end.
         let writable = enabled && insertionBlockReason == nil && target != nil
         if writable, let rest = TextInsertion.unwritten(text, after: insertedText),
            !rest.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            fixedRest = await pipeline.fix(rest, isFinal: true).text
+            let result = await pipeline.fix(rest, isFinal: true)
             guard fixPipeline === pipeline else { return }
+            fixedRest = result.text
+            codedRest = (result.coded, result.codeSpans)
         }
         let destination = target
         target = nil // No callback or retry can write to this target again.
@@ -813,11 +834,24 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
         let attempted = unwritten.map {
             AIFixUnwritten.attempted($0, fixedRest: fixedRest, failedWrite: pipeline.failedWrite)
         }
+        // The same after spoken code alone.
+        let codedAttempted = unwritten.map {
+            AIFixUnwritten.attempted($0, fixedRest: codedRest?.text, failedWrite: pipeline.failedWrite.map {
+                ($0.chunk, pipeline.failedCoded?.text ?? $0.chunk)
+            })
+        }
+        let changes = pipeline.changes(offered: attempted ?? "", coded: codedAttempted ?? "",
+                                       recognized: unwritten ?? "")
         endFixing(heard: heard, offered: attempted ?? "", recognized: unwritten ?? "")
         let written = finish(text, into: destination, writing: attempted == unwritten ? nil : attempted)
-        // History: what Holos wrote or tried to write, and how many words Apple Intelligence changed.
-        recordHistory(recognized: text, heard: heard, fixedWritten: pipeline.written, rest: attempted)
+        // History: what Holos wrote or tried to write, how many words Apple Intelligence changed, and how many
+        // spoken paths were written as code.
+        let restSpans = codedRest?.spans ?? (fixedRest == nil ? pipeline.failedCoded?.spans ?? 0 : 0)
+        recordHistory(recognized: text, heard: heard, fixedWritten: pipeline.written, rest: attempted,
+                      coded: (pipeline.writtenCoded, codedAttempted), codeSpans: pipeline.writtenCodeSpans + restSpans)
         if !resultOriginal.isEmpty {
+            let what = PipelineChangeText.what(code: changes.code, fix: changes.fix)
+            let steps = PipelineChangeText.steps(code: changes.code, fix: changes.fix)
             // What Holos wrote or tried to write: the fixed chunks, then the fix of the rest.
             let fixed = pipeline.written + (attempted ?? "")
             if let final = AIFixTranscript.final(written: pipeline.written, rest: attempted) {
@@ -828,13 +862,13 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
             }
             if written {
                 resultText = fixed
-                message += " Apple Intelligence fixed misheard words; Copy Original has what was heard."
+                message += " \(what); Copy Original has what was heard."
             } else if attempted != unwritten {
                 // Copy Result has the fixed words Holos tried to write (set by `finish`).
-                message += " Copy Result has Apple Intelligence's fix; Copy Original has what was heard."
+                message += " Copy Result has the text after \(steps); Copy Original has what was heard."
             } else {
-                // Only chunks already in the field were fixed; Copy Result has the rest as recognized.
-                message += " Text already written was fixed by Apple Intelligence; Copy Original has what was heard."
+                // Only chunks already in the field were changed; Copy Result has the rest as recognized.
+                message += " Text already written was changed by \(steps); Copy Original has what was heard."
             }
         }
         presentResult()
@@ -865,10 +899,12 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
         corrections.apply(to: withoutFillers(text))
     }
 
-    /// Like `cleaned`, but holds back a trailing comma or phrase start that later words may still change.
+    /// Like `cleaned`, but holds back a trailing comma or phrase start that later words may still change, and with
+    /// spoken code, a trailing spoken path that later words may continue.
     private func cleanedForStreaming(_ text: String) -> String {
-        corrections.applyWithholdingPartialMatch(
-            to: removeFillers ? FillerWords.removeWithholdingTrailingComma(from: text, language: locale) : text)
+        DictationTextPipeline.cleanedForStreaming(text, language: locale, removeFillers: removeFillers,
+                                                  corrections: corrections,
+                                                  spokenCode: fixPipeline?.formatsCode == true)
     }
 
     /// `fixed` is the on-device fix of the part not yet written, written in its place; when it cannot be written,
@@ -1037,7 +1073,10 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
     /// (`DictationRecord.endText`). The outcome is `historyOutcome`, and a partly written dictation keeps what Copy
     /// Result offers (`resultText`) for History's Copy, so this runs once both are set. Once per dictation, never for
     /// one refused at key-down (no draft), never with History off, and never while secure input is on.
-    private func recordHistory(recognized: String, heard: String, fixedWritten: String = "", rest: String? = nil) {
+    /// With spoken code, `coded` is the same text after spoken code alone (`DictationRecord.endText`), and `codeSpans`
+    /// the code spans in the text kept.
+    private func recordHistory(recognized: String, heard: String, fixedWritten: String = "", rest: String? = nil,
+                               coded: (written: String, rest: String?)? = nil, codeSpans: Int = 0) {
         // The audio goes with the record, or is deleted when there is none.
         let audio = historyAudio
         historyAudio = nil
@@ -1050,7 +1089,8 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
         historyOutcome = nil
         // Text written while the user spoke counts even when the final transcript came back empty.
         let written = DictationRecord.endText(recognized: recognized, fixChanged: !resultOriginal.isEmpty,
-                                              fixedWritten: fixedWritten, rest: rest, inserted: insertedText)
+                                              fixedWritten: fixedWritten, rest: rest, inserted: insertedText,
+                                              coded: coded)
         let aiChangedWords = written.aiChangedWords
         let text = written.text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let outcome, !text.isEmpty, history.retention.records, !TextInsertion.isSecureInputActive() else {
@@ -1065,7 +1105,8 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
         history.add(DictationRecord(
             id: draft.id ?? UUID(), date: draft.date, app: draft.app, language: draft.language, text: text,
             heard: heard.isEmpty ? text : heard, unwritten: resultText,
-            fixes: .init(fillersRemoved: fillersRemoved, corrections: swaps, aiChangedWords: aiChangedWords),
+            fixes: .init(fillersRemoved: fillersRemoved, corrections: swaps, aiChangedWords: aiChangedWords,
+                         codeSpans: resultOriginal.isEmpty ? 0 : codeSpans),
             outcome: outcome, seconds: draft.seconds(now: Date())),
             audio: audio.flatMap { $0.id == draft.id ? $0.writer : nil })
         if let audio, audio.id != draft.id { audio.writer.discard() }
@@ -1349,6 +1390,7 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
             speakerModels: speakerLabels.status, speakerModelsDetail: speakerLabels.detail,
             speakerModelsBusy: speakerLabels.busy,
             aiFix: AIFixSetting.isOn, aiFixUnavailable: AIFixSetting.unavailableReason(language: locale),
+            spokenCode: SpokenCodeSetting.isOn, spokenCodeBackticks: SpokenCodeSetting.backticks,
             locale: locale, localeGroups: localeGroups, localeChangeable: canChangeLanguage,
             fillerExamples: FillerWords.examples(language: locale),
             historyRetention: history.retention, historyCount: history.keptCount,
@@ -1406,6 +1448,12 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
             updateSettings()
         case .toggleAIFix:
             AIFixSetting.isOn.toggle()  // takes effect from the next dictation
+            updateSettings()
+        case .toggleSpokenCode:
+            SpokenCodeSetting.isOn.toggle()  // takes effect from the next dictation
+            updateSettings()
+        case .toggleSpokenCodeBackticks:
+            SpokenCodeSetting.backticks.toggle()
             updateSettings()
         case .toggleRecordSystemAudio:
             MeetingAppState.recordSystemAudio.toggle()  // takes effect from the next meeting

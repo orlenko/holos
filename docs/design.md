@@ -141,6 +141,46 @@ fails with Accessibility granted does the app name Input Monitoring as the fallb
 and show it in Settings. Validate under the actual installed app identity, not just
 `swift run`.
 
+#### Spoken paths and commands
+
+Settings › Dictation › **Write spoken paths and commands as code** (on by default)
+writes "scripts slash restart dash app dot es aytch" as `scripts/restart-app.sh` and
+"slash Q C" as `/qc`; **Wrap them in backticks** (on by default) adds the backticks,
+never for a terminal (Terminal, iTerm2, Ghostty, WezTerm, kitty, Alacritty, Warp),
+which gets the token itself. It is its own step (`SpokenCodeFormatter`), after
+learned corrections and before Apple Intelligence's fix, on each committed chunk and
+on the rest at release; Run Again runs it with the current settings, and History's
+Fixes line counts the tokens ("1 spoken path or command as code").
+
+The contract (`SpokenCode`): a code token has no spaces, at least one symbol of
+`/ \ . - _ ~ : @ * = + # $ |` and one letter, and parts that are not all function
+words (`/the` is "slash the"). Its spoken form is its symbols and parts in order:
+each symbol said as its word ("slash", "dot", "dash", "underscore", "tilde",
+"backslash", "colon", "at", "star", "equals", "plus", "hash", "dollar", "pipe",
+"double dash"; French "barre oblique", "point", "tiret", "tiret bas", "arobase"…) or
+written as itself, each part said as its words (up to three joined), letters spelled
+("S. H.", "es aytch", "Q C") or digits said. Only a recognizer's all-capitals run of
+four letters or more may be one letter off ("ZHRC" for `zshrc`). The source must say
+at least one symbol word, so "e.g." is never wrapped; "@" stands only between parts.
+
+Apple's on-device model (greedy, the fix's guardrails, only for chunks with a strong
+symbol word: slash, dot, dash, underscore, tilde, backslash) proposes spans in
+backticks. The text outside them must be the chunk's own, character for character
+but for runs of spaces, or the whole reply is refused; the output takes only the
+tokens from the reply. A span whose source does not say its token is read again
+without the model with the model's edges (its words and symbol words alternate, no
+function word at its edges), or left as said. Words a learned correction produced
+stay letter for letter inside any token. When the model is unavailable, times out,
+fails, or its reply is refused, runs that can be read one way are converted on their
+own: words joined by strong symbol words within a clause, two symbol characters at
+least, ending with a word; the word before the first symbol belongs to the token
+after "dash" or "underscore", not before "dot slash", "tilde" or "dash dash" nor when
+it is a function word; a single "slash", "dot" or "backslash" after another word, a
+run next to another run, a number word other than a digit's, or a function word at
+the end leaves the run as said. While streaming, a trailing run that more words may
+continue is held back, from the content word before its first symbol word, until it
+ends or the key is released.
+
 ### Main window
 
 The app's windows other than the transient ones are one main window, "Voice is Local"
