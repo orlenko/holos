@@ -298,6 +298,9 @@ public enum AIFixGuard {
 
         /// Whether the word at `range` of `text` is in a run of characters without spaces that has a digit or one of
         /// `symbols` inside, or a hyphen (`structured`, case aside).
+        /// The hyphen and its typographic forms (hyphen, non-breaking hyphen, figure dash).
+        static let hyphens: Set<Character> = ["-", "\u{2010}", "\u{2011}", "\u{2012}"]
+
         static func hasSymbols(_ range: Range<String.Index>, in text: String) -> Bool {
             var start = range.lowerBound, end = range.upperBound
             while start > text.startIndex, !text[text.index(before: start)].isWhitespace {
@@ -308,7 +311,7 @@ public enum AIFixGuard {
             // Quotes, brackets and the marks that end a clause belong to the sentence, not the token.
             while let first = run.first, "([{\"'“‘«¿¡".contains(first) { run = run.dropFirst() }
             while let last = run.last, ".,;:!?…)]}\"'”’»".contains(last) { run = run.dropLast() }
-            return run.contains("-") || run.contains { $0.isNumber || symbols.contains($0) }
+            return run.contains { $0.isNumber || symbols.contains($0) || hyphens.contains($0) }
         }
     }
 
@@ -355,7 +358,21 @@ public enum AIFixGuard {
     static func baselines(_ chunk: Tokens, text: String, reply: Tokens, taught: [Correction], language: String?,
                           lexicon: Lexicon) -> [Tokens] {
         guard !taught.isEmpty else { return [chunk] }
-        let changed = hunks(chunk.words, reply.words).map(\.old)
+        let wordHunks = hunks(chunk.words, reply.words)
+        var changed = wordHunks.map(\.old)
+        // Marks the reply changed between words it kept count as touched there too, so a pair that changes only
+        // punctuation ("web site -> web-site" over "web, site") is tried.
+        var (old, new) = (0, 0)
+        for hunk in wordHunks + [(chunk.words.count..<chunk.words.count, reply.words.count..<reply.words.count)] {
+            while old < hunk.old.lowerBound, new < hunk.new.lowerBound {
+                if chunk.gaps[old] != reply.gaps[new] { changed.append(old..<old) }
+                old += 1; new += 1
+            }
+            (old, new) = (hunk.old.upperBound, hunk.new.upperBound)
+        }
+        if chunk.gaps[chunk.words.count] != reply.gaps[reply.words.count] {
+            changed.append(chunk.words.count..<chunk.words.count)
+        }
         func touched(_ span: Range<Int>) -> Bool {
             changed.contains { $0.overlaps(span) || ($0.isEmpty && span.lowerBound <= $0.lowerBound
                                                      && $0.lowerBound <= span.upperBound) }
@@ -863,7 +880,7 @@ public enum AIFixReference {
             let token = heard.drop(while: { !$0.isLetter && !$0.isNumber })
                 .reversed().drop(while: { !$0.isLetter && !$0.isNumber && !"'’".contains($0) }).reversed()
             guard !token.isEmpty, !token.contains(where: \.isWhitespace) else { return false }
-            let parts = token.split(whereSeparator: { "-‐".contains($0) }).map(String.init)
+            let parts = token.split(whereSeparator: { AIFixGuard.Tokens.hyphens.contains($0) }).map(String.init)
             return parts.allSatisfy { part in
                 part.allSatisfy { $0.isLetter || "'’".contains($0) } && part.filter(\.isLetter).count >= (parts.count > 1 ? 2 : 1)
             }

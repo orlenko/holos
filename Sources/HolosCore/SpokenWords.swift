@@ -340,6 +340,9 @@ public enum SpokenWords {
     /// "one" and "won", "by" and "buy", the plural or third person of those that have one ("pairs" and "pears"); an
     /// unstressed "I" is heard as "a". French words whose silent endings differ ("vert" and "verre", "peut" and
     /// "peux", "contes" and "comptes"), or whose accent is not heard ("a" and "à", "ou" and "où").
+    /// Heteronyms are left out: a word spelled one way but said two ways ("lead", "read", "tear", "bass", "row",
+    /// "sow") is a homophone of another word only in one of its senses, so swapping it could change tense or
+    /// meaning ("They lead the team" is not "They led the team").
     static let englishHomophones: [Set<String>] = [
         // Pronouns, numbers and function words.
         ["one", "won"], ["two", "to", "too"], ["you", "ewe", "yew", "u"], ["eight", "ate"], ["our", "hour"],
@@ -347,7 +350,7 @@ public enum SpokenWords {
         ["its", "it's"], ["a", "i"], ["i", "eye", "aye"], ["four", "for", "fore"], ["we", "wee"], ["him", "hymn"],
         ["then", "than"], ["whose", "who's"], ["by", "buy", "bye"], ["know", "no"], ["knew", "new", "gnu"],
         ["hear", "here"], ["which", "witch"], ["whether", "weather", "wether"], ["where", "wear", "ware"],
-        ["so", "sew", "sow"], ["be", "bee"], ["see", "sea"], ["in", "inn"], ["or", "oar", "ore"], ["oh", "owe"],
+        ["so", "sew"], ["be", "bee"], ["see", "sea"], ["in", "inn"], ["or", "oar", "ore"], ["oh", "owe"],
         ["hi", "high"], ["way", "weigh", "whey"], ["we've", "weave"], ["theirs", "there's"], ["you'll", "yule"],
         ["threw", "through"], ["whole", "hole"], ["cant", "can't"], ["wont", "won't"], ["dont", "don't"],
         // Other words, with their plural or third person.
@@ -358,19 +361,19 @@ public enum SpokenWords {
         ["rains", "reigns", "reins"], ["pseudo", "sudo"], ["sun", "son"], ["suns", "sons"], ["break", "brake"],
         ["breaks", "brakes"], ["peace", "piece"], ["plain", "plane"], ["plains", "planes"], ["mail", "male"],
         ["tail", "tale"], ["tails", "tales"], ["sail", "sale"], ["sails", "sales"], ["road", "rode", "rowed"],
-        ["blue", "blew"], ["red", "read"], ["read", "reed"], ["made", "maid"], ["dear", "deer"], ["week", "weak"],
+        ["blue", "blew"], ["made", "maid"], ["dear", "deer"], ["week", "weak"],
         ["cell", "sell"], ["cells", "sells"], ["cent", "scent", "sent"], ["site", "sight", "cite"],
         ["sites", "sights", "cites"], ["principal", "principle"], ["stationary", "stationery"],
         ["complement", "compliment"], ["higher", "hire"], ["idle", "idol"], ["mind", "mined"], ["missed", "mist"],
-        ["passed", "past"], ["guessed", "guest"], ["rows", "rose"], ["steal", "steel"], ["stair", "stare"],
+        ["passed", "past"], ["guessed", "guest"], ["steal", "steel"], ["stair", "stare"],
         ["stairs", "stares"], ["tide", "tied"], ["toe", "tow"], ["waist", "waste"], ["hair", "hare"], ["bare", "bear"],
         ["fair", "fare"], ["flew", "flu", "flue"], ["grate", "great"], ["groan", "grown"], ["heal", "heel"],
-        ["key", "quay"], ["knead", "need"], ["lead", "led"], ["loan", "lone"], ["morning", "mourning"],
+        ["key", "quay"], ["knead", "need"], ["loan", "lone"], ["morning", "mourning"],
         ["pail", "pale"], ["pain", "pane"], ["pause", "paws"], ["pole", "poll"], ["poles", "polls"],
         ["pray", "prey"], ["profit", "prophet"], ["role", "roll"], ["roles", "rolls"], ["root", "route"],
         ["roots", "routes"], ["sole", "soul"], ["stake", "steak"], ["suite", "sweet"], ["tea", "tee"],
         ["throne", "thrown"], ["vain", "vane", "vein"], ["wail", "whale"], ["warn", "worn"], ["wine", "whine"],
-        ["yoke", "yolk"], ["base", "bass"], ["beat", "beet"], ["berry", "bury"], ["berth", "birth"],
+        ["yoke", "yolk"], ["beat", "beet"], ["berry", "bury"], ["berth", "birth"],
         ["board", "bored"], ["bread", "bred"], ["ceiling", "sealing"], ["cereal", "serial"], ["chews", "choose"],
         ["coarse", "course"], ["council", "counsel"], ["die", "dye"], ["doe", "dough"], ["feat", "feet"],
         ["find", "fined"], ["fir", "fur"], ["flea", "flee"], ["forth", "fourth"], ["foul", "fowl"], ["gait", "gate"],
@@ -379,14 +382,14 @@ public enum SpokenWords {
         ["overdo", "overdue"], ["patience", "patients"], ["peak", "peek", "pique"], ["pedal", "peddle"],
         ["presence", "presents"], ["rap", "wrap"], ["real", "reel"], ["residence", "residents"], ["ring", "wring"],
         ["rote", "wrote"], ["seam", "seem"], ["seas", "sees", "seize"], ["side", "sighed"], ["soar", "sore"],
-        ["staid", "stayed"], ["tacks", "tax"], ["team", "teem"], ["tear", "tier"], ["time", "thyme"],
+        ["staid", "stayed"], ["tacks", "tax"], ["team", "teem"], ["time", "thyme"],
         ["vary", "very"], ["waive", "wave"], ["aid", "aide"], ["altar", "alter"], ["arc", "ark"], ["bail", "bale"],
         ["band", "banned"], ["billed", "build"], ["bite", "byte", "bight"], ["bites", "bytes"], ["cache", "cash"],
         ["sink", "sync"], ["sinks", "syncs"], ["cue", "queue"], ["cues", "queues"], ["chord", "cord"],
         ["capital", "capitol"], ["creak", "creek"], ["crews", "cruise"], ["days", "daze"],
         ["discreet", "discrete"], ["dual", "duel"], ["faze", "phase"], ["flair", "flare"], ["hay", "hey"],
         ["hoard", "horde"], ["incite", "insight"], ["main", "mane"], ["mode", "mowed"], ["muscle", "mussel"],
-        ["peal", "peel"], ["please", "pleas"], ["pour", "pore"], ["raise", "rays", "raze"], ["roe", "row"],
+        ["peal", "peel"], ["please", "pleas"], ["pour", "pore"], ["raise", "rays", "raze"],
         ["rung", "wrung"], ["sign", "sine"], ["slow", "sloe"], ["stile", "style"], ["storey", "story"],
         ["straight", "strait"], ["symbol", "cymbal"], ["tire", "tyre"], ["troop", "troupe"], ["wet", "whet"],
         ["while", "wile"], ["wade", "weighed"],

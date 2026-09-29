@@ -897,6 +897,16 @@ func aFrenchMishearingIsFixed(original: String, fixed: String) {
     #expect(AIFixReference.matches(of: "Maks.", in: "Ask Meks. Tomorrow").isEmpty)
     #expect(AIFixReference.Finder.isNameLike("T-Mox") == false)
     #expect(AIFixReference.Finder.isNameLike("Jean-Luc") && AIFixReference.Finder.isNameLike("O'Brien"))
+    // Heteronyms are not homophones: a tense or sense change is refused.
+    #expect(AIFixGuard.check(original: "They lead the team today", fixed: "They led the team today",
+                             language: "en-US") != .accept)
+    #expect(AIFixGuard.check(original: "I read it", fixed: "I red it", language: "en-US") != .accept)
+    // A typographic hyphen makes an identifier as a plain one does.
+    #expect(AIFixGuard.check(original: "Use class text\u{2011}right now", fixed: "Use class text\u{2011}write now",
+                             language: "en-US") != .accept)
+    // A pair that changes only punctuation is tried where the reply changed the marks.
+    let webSite = Correction(heard: "web site", meant: "web-site")
+    #expect(AIFixGuard.check(original: "open web, site now", fixed: "open web-site now", taught: [webSite]) == .accept)
     #expect(AIFixReference.matches(of: "a Bundo", in: "it runs on a bundu machine") == [3..<5])
     // A longer phrase or a coined token carries context of its own and may still match a capitalized variant.
     #expect(AIFixReference.matches(of: "a Bundo", in: "it runs on a Bundu machine") == [3..<5])
