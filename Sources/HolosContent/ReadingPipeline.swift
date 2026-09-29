@@ -229,7 +229,7 @@ public struct AudioBookJoiner: ReadingAudioJoiner {
     /// of `Identity`'s JSON, in lowercase hex. The key format is part of the manifest's schema
     /// version (so a cache keyed another way is never looked for: it is stale, like one whose
     /// settings changed).
-    public static func identity(script: ReadingScript, voiceIdentifier: String, rate: Float?,
+    nonisolated public static func identity(script: ReadingScript, voiceIdentifier: String, rate: Float?,
                                 metadata: AudioBookMetadata) -> String {
         let identity = Identity(
             kind: ReadingManifest.readingKind, schemaVersion: ReadingManifest.currentSchemaVersion,
@@ -254,13 +254,18 @@ public struct AudioBookJoiner: ReadingAudioJoiner {
         // a bad one never leaves a cache behind that cannot be resumed.
         try validateSettings(script: script, voiceIdentifier: voiceIdentifier, rate: rate, metadata: metadata,
                              location: location)
-        let planned = script.parts(maxUTF16Units: maxPartUTF16Units)
-        let expected = planned.map { part in
-            ReadingPart(index: part.index, sourceUTF16Offset: part.offset, sourceUTF16Length: part.length,
-                        textSHA256: sha256(Data(part.text.utf8)),
-                        relativeAudioPath: Self.partPath(part.index),
-                        chapter: part.chapter, startsSection: part.startsSegment, status: "pending")
+        // Planned off the main actor: a book is split into hundreds of parts, each hashed.
+        let (planned, expected) = try await offMain { () -> ([ReadingScript.Part], [ReadingPart]) in
+            let planned = script.parts(maxUTF16Units: maxPartUTF16Units)
+            let expected = planned.map { part in
+                ReadingPart(index: part.index, sourceUTF16Offset: part.offset, sourceUTF16Length: part.length,
+                            textSHA256: sha256(Data(part.text.utf8)),
+                            relativeAudioPath: Self.partPath(part.index),
+                            chapter: part.chapter, startsSection: part.startsSegment, status: "pending")
+            }
+            return (planned, expected)
         }
+        try Task.checkCancellation()
         let manifestURL = directory.appendingPathComponent(ReadingManifest.fileName)
         // This run's name for the joined file.
         let run = UUID()

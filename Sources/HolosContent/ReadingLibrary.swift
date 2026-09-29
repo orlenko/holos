@@ -440,7 +440,7 @@ public final class ReadingLibraryStore: @unchecked Sendable {
                 _ = unlink(temporary.path)
                 throw HolosError.io("Could not save \(url.lastPathComponent): \(error.localizedDescription)")
             }
-            syncFolder(of: url)
+            try syncFolder(of: url)
             return saved
         }
         guard rename(temporary.path, url.path) == 0 else {
@@ -448,16 +448,22 @@ public final class ReadingLibraryStore: @unchecked Sendable {
             _ = unlink(temporary.path)
             throw HolosError.io("Could not save \(url.lastPathComponent): \(reason)")
         }
-        syncFolder(of: url)
+        try syncFolder(of: url)
         return identity
     }
 
-    /// Flushes the folder holding `url` (its new name), where the volume can.
-    private static func syncFolder(of url: URL) {
-        let folder = open(url.deletingLastPathComponent().path, O_RDONLY | O_CLOEXEC | O_DIRECTORY)
-        guard folder >= 0 else { return }
-        _ = fsync(folder)
-        close(folder)
+    /// Flushes the folder holding `url` (its new name). Only a volume that cannot flush a folder is let off; any
+    /// other failure (an I/O error) fails the save, which then does not count: nothing is removed on its word.
+    private static func syncFolder(of url: URL) throws {
+        let path = url.deletingLastPathComponent().path
+        let folder = open(path, O_RDONLY | O_CLOEXEC | O_DIRECTORY)
+        guard folder >= 0 else {
+            throw HolosError.io("Could not save \(url.lastPathComponent): \(path): \(String(cString: strerror(errno)))")
+        }
+        defer { close(folder) }
+        guard fsync(folder) == 0 || errno == ENOTSUP || errno == EINVAL || errno == EOPNOTSUPP else {
+            throw HolosError.io("Could not save \(url.lastPathComponent): \(path): \(String(cString: strerror(errno)))")
+        }
     }
 
     /// The entries of a newer build's index that this build can read.

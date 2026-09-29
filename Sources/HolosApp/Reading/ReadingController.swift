@@ -539,15 +539,23 @@ final class ReadingController {
         guard let entry = entry(id) else { return }
         let document = try await loadDocument(entry)
         try Task.checkCancellation()
-        let script = ReadingScript(document: document)
-        // A declared language that is not a usable tag ("english") is ignored, as in `voiceislocal read`.
-        let language = AudioBookMetadata.languageTag(document.language) ?? ReadingLanguage.detect(script.text)
+        // The script and its language off the main actor: a book's text is megabytes.
+        let (script, language) = try await offMain { () -> (ReadingScript, String?) in
+            let script = ReadingScript(document: document)
+            // A declared language that is not a usable tag ("english") is ignored, as in `voiceislocal read`.
+            return (script, AudioBookMetadata.languageTag(document.language) ?? ReadingLanguage.detect(script.text))
+        }
+        try Task.checkCancellation()
         let voice = try Self.voice(for: entry, language: language)
         let rate = ReadingSpeed.rate(for: entry.speed)
         let metadata = AudioBookMetadata(
             title: [document.title, entry.source.fallbackName].lazy.compactMap(AudioBookMetadata.usableTitle).first,
             author: document.author, language: language)
-        let identity = ReadingPipeline.identity(script: script, voiceIdentifier: voice.id, rate: rate, metadata: metadata)
+        let voiceID = voice.id
+        let identity = try await offMain {
+            ReadingPipeline.identity(script: script, voiceIdentifier: voiceID, rate: rate, metadata: metadata)
+        }
+        try Task.checkCancellation()
         let name = ReadingOutput.fileName(title: metadata.title, fallback: entry.source.fallbackName)
 
         // The file: the one chosen when the reading first started, else a new name in the output folder. A name that
