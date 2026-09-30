@@ -519,6 +519,9 @@ private func words(_ text: String) -> [String] { text.split(separator: " ").map(
         // "plus" and "percent" around a number leave its words whole.
         ("thirty percent", "30%", true), ("thirty percent", "30 percent", true), ("plus thirty", "plus 30", true),
         ("vingt pour cent", "20 pour cent", true), ("one hundred and twenty percent", "20 percent", false),
+        // A number written with digits never takes words across a clause mark.
+        ("plus 30", "+30", true), ("plus. 30", "+30", false), ("30 percent", "30%", true),
+        ("30. percent", "30%", false), ("30 (percent", "30%", false),
         // However many words a run takes.
         ("one thousand two hundred thirty four", "1234", true),
         ("nine hundred and ninety nine thousand nine hundred and ninety nine", "999999", true),

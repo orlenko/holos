@@ -648,6 +648,21 @@ private func evalLocalDependencies(_ speech: FakeSpeechFactory, status: String =
         _ = try EvalCompare.compare(session: session, run: run, local: .candidate(other), terms: terms)
     }
     #expect(mismatch?.localizedDescription.contains("different mic audio") == true)
+    // The same chunk list with other bytes, too.
+    var replaced = record
+    replaced.tracks[0].contentSHA256 = "other"
+    #expect(throws: HolosError.self) {
+        _ = try EvalCompare.compare(session: session, run: run, local: .candidate(replaced), terms: terms)
+    }
+    // A cloud run made before the bytes' digest was recorded is checked against the audio as it is now.
+    var older = run
+    older.tracks[0].contentSHA256 = nil
+    #expect(try EvalCompare.compare(session: session, run: older, local: .candidate(record), terms: terms).passages
+        == candidate.passages)
+    let changed = #expect(throws: HolosError.self) {
+        _ = try EvalCompare.compare(session: session, run: older, local: .candidate(replaced), terms: terms)
+    }
+    #expect(changed?.localizedDescription.contains("changed since local run") == true)
     let written = try EvalCompare.write(candidate, session: session)
     #expect(written.markdown.deletingLastPathComponent().lastPathComponent == record.id)
     #expect(SessionFixtures.text(written.markdown).contains("local run \(record.id)"))

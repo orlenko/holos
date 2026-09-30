@@ -181,6 +181,53 @@ public enum EvalCompare {
         case candidate(LocalRunRecord)
     }
 
+    /// Refuses a local run that did not transcribe the very audio the cloud run sent, track by track: the same chunk
+    /// list, and the same bytes (a chunk file replaced without its manifest entry keeps the list's fingerprint). A
+    /// cloud run made before its bytes' digest was recorded is checked against the audio as it is now, as the review
+    /// page checks it, and so is the local run.
+    static func checkSameAudio(_ record: LocalRunRecord, _ run: CloudRunRecord, session: URL,
+                               manifest: SessionManifest) throws {
+        let newRun = "make a new local run with voiceislocal eval local"
+        for plan in run.tracks {
+            try Task.checkCancellation()
+            guard let track = record.tracks.first(where: { $0.track == plan.track }) else {
+                throw HolosError.invalidInput("Local run \(record.id) has no \(plan.track) track, which run "
+                    + "\(run.id) has.")
+            }
+            guard track.audioFingerprint == plan.audioFingerprint, let local = track.contentSHA256 else {
+                throw HolosError.invalidInput("Local run \(record.id) and run \(run.id) used different "
+                    + "\(plan.track) audio; \(newRun).")
+            }
+            if let cloud = plan.contentSHA256 {
+                guard cloud == local else {
+                    throw HolosError.invalidInput("Local run \(record.id) and run \(run.id) used different "
+                        + "\(plan.track) audio; \(newRun).")
+                }
+                continue
+            }
+            guard try !AudioDeletedRecord.isDeleted(session: session, sessionID: manifest.id) else {
+                throw HolosError.invalidInput("Run \(run.id) is older than the check that its \(plan.track) audio is "
+                    + "the local run's, and this session's audio was deleted, so it cannot be checked.")
+            }
+            guard try EvalLocal.contentDigest(session: session, manifest: manifest, track: plan.track) == local else {
+                throw HolosError.invalidInput("The \(plan.track) audio changed since local run \(record.id); "
+                    + "\(newRun).")
+            }
+            let render = EvalPaths.work(run.id, in: session)
+                .appendingPathComponent("compare-\(plan.track)-\(UUID().uuidString).caf")
+            defer { try? FileManager.default.removeItem(at: render) }
+            let rendered = try EvalAudio.render(session: session, manifest: manifest, track: plan.track, to: render)
+            let recorded = plan.segments.map(\.audioSHA256)
+            let samplesMatch = try recorded.contains(nil) || EvalAudio.segmentDigests(
+                of: render, ranges: plan.segments.map { ($0.startFrame, $0.endFrame) }).map(Optional.some) == recorded
+            guard rendered.frameCount == plan.frameCount, rendered.timeMap.map(EvalSpan.init) == plan.timeMap,
+                  samplesMatch else {
+                throw HolosError.invalidInput("The \(plan.track) audio changed since run \(run.id); it cannot be "
+                    + "compared with local run \(record.id).")
+            }
+        }
+    }
+
     /// Compares a local transcript (the current one, or a local candidate) with the run's cloud tracks, segment by
     /// segment. `normalize` (the default) also scores the normalized comparison and marks formatting-only passages;
     /// `terms` are counted in the cloud text with the local transcript's hits (under the normalized comparison, or by
@@ -202,17 +249,7 @@ public enum EvalCompare {
                                                  vocabulary: "vocabulary.json", vocabularyCount: recorded.count,
                                                  madeAt: current.createdAt)
         case .candidate(let record):
-            // Both runs must have transcribed the same audio, track by track.
-            for plan in run.tracks {
-                guard let track = record.tracks.first(where: { $0.track == plan.track }) else {
-                    throw HolosError.invalidInput("Local run \(record.id) has no \(plan.track) track, which run "
-                        + "\(run.id) has.")
-                }
-                guard track.audioFingerprint == plan.audioFingerprint else {
-                    throw HolosError.invalidInput("Local run \(record.id) and run \(run.id) used different "
-                        + "\(plan.track) audio; make a new local run with voiceislocal eval local.")
-                }
-            }
+            try checkSameAudio(record, run, session: session, manifest: manifest)
             transcript = try EvalLocal.transcript(of: record, in: session)
             version = CompareReport.LocalVersion(source: record.id, languages: record.languages,
                                                  vocabulary: record.vocabularySource,

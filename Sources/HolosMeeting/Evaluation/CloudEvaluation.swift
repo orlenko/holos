@@ -237,6 +237,8 @@ public enum CloudEvaluation {
                 let plan = CloudTrackPlan(track: track, sampleRate: rendered.sampleRate,
                                           frameCount: rendered.frameCount, timeMap: rendered.timeMap.map(EvalSpan.init),
                                           audioFingerprint: EvalStore.audioFingerprint(manifest: manifest, track: track),
+                                          contentSHA256: try EvalLocal.contentDigest(session: session,
+                                                                                     manifest: manifest, track: track),
                                           segments: segments)
                 plans.append(plan)
                 pending[track] = segments.filter { !$0.silent }.map(\.index)

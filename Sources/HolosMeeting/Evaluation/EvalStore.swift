@@ -98,12 +98,15 @@ public struct CloudTrackPlan: Codable, Sendable, Equatable {
     public var timeMap: [EvalSpan]
     /// SHA-256 of the track's chunk list: a resumed run renders the same audio only if it is unchanged.
     public var audioFingerprint: String
+    /// `EvalLocal.contentDigest` of the track's chunk files when the run started (nil in a run made before it was
+    /// recorded): a local run is compared with this one only for the same bytes.
+    public var contentSHA256: String?
     public var segments: [CloudSegmentPlan]
 
     public init(track: String, sampleRate: Double, frameCount: Int, timeMap: [EvalSpan], audioFingerprint: String,
-                segments: [CloudSegmentPlan]) {
+                contentSHA256: String? = nil, segments: [CloudSegmentPlan]) {
         self.track = track; self.sampleRate = sampleRate; self.frameCount = frameCount; self.timeMap = timeMap
-        self.audioFingerprint = audioFingerprint; self.segments = segments
+        self.audioFingerprint = audioFingerprint; self.contentSHA256 = contentSHA256; self.segments = segments
     }
 
     public func renderStart(_ segment: CloudSegmentPlan) -> Double { Double(segment.startFrame) / sampleRate }

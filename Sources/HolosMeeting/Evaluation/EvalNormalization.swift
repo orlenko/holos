@@ -114,6 +114,16 @@ public enum EvalNormalization {
     static let closingMarks: Set<Character> = ["\"", "'", "”", "’", "»", ")", "]", "}", ".", ",", ";", ":", "!", "?",
                                                "…"]
 
+    /// Whether `words[range]` goes past a mark that ends a clause ("plus. 30") or into one that opens one, as a
+    /// spelled-number run never does.
+    static func crossesClause(_ words: [String], _ range: Range<Int>) -> Bool {
+        range.dropLast().contains { index in
+            words[index].trimmingCharacters(in: .whitespaces).last.map(closingMarks.contains) == true
+        } || range.dropFirst().contains { index in
+            words[index].trimmingCharacters(in: .whitespaces).first.map(openingMarks.contains) == true
+        }
+    }
+
     /// Lowercased, whitespace removed, the sentence's punctuation around it dropped ("Thirty," → "thirty").
     static func cleaned(_ word: String) -> String {
         var characters = Array(word.lowercased().filter { !$0.isWhitespace })
@@ -745,6 +755,7 @@ public enum NormalizedAlignment {
             for start in 0..<count {
                 for length in 1...digitRun where start + length <= count {
                     guard let indices = kept(start, length), indices.count <= NormalizedAlignment.maxDigitNumberWords,
+                          !EvalNormalization.crossesClause(words, start..<(start + length)),
                           indices.contains(where: { words[$0].contains(where: \.isNumber) }),
                           let form = EvalNormalization.number(indices.map { words[$0] }), form.hasDigit
                     else { continue }
