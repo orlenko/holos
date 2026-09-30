@@ -148,6 +148,62 @@ private func canonical(_ text: String) -> String? {
     #expect(scored.score.localWords == 7 && scored.score.cloudWords == 5)
 }
 
+@Test func fairJoinsNeedAWrittenCompoundAndWholeNumbers() {
+    // A plain word shows no join: "now here" is not "nowhere", "check up" not "checkup".
+    #expect(NormalizedAlignment.align(["now", "here"], ["nowhere"]).contains { $0.isEdit })
+    #expect(NormalizedAlignment.align(["check", "up"], ["checkup"]).contains { $0.isEdit })
+    #expect(NormalizedAlignment.align(["follow", "up"], ["follow-up"]) == [.join(local: 0..<2, cloud: 0..<1, .compound)])
+    // Capitals alone join only letters said one by one.
+    #expect(NormalizedAlignment.align(["now", "here"], ["NOWHERE"]).contains { $0.isEdit })
+    // A spelled number is taken whole: "twenty one" is never 20 and 1, "quatre vingt" never 4 and 20.
+    #expect(NormalizedAlignment.align(["twenty", "one"], ["20", "1"]).contains { $0.isEdit })
+    #expect(NormalizedAlignment.align(["quatre", "vingt"], ["4", "20"]).contains { $0.isEdit })
+    #expect(NormalizedAlignment.align(["one", "hundred", "and", "five"], ["100", "and", "5"]).contains { $0.isEdit })
+    #expect(NormalizedAlignment.align(["three", "and", "five"], ["3", "and", "5"]).allSatisfy { !$0.isEdit })
+    // Too large to align again: paired in order, no matrix.
+    let big = NormalizedAlignment.align(["a", "um", "b", "c"], ["a", "x"], cellLimit: 4)
+    #expect(big == [.fillerLocal(1), .equal(0, 0, .same), .substitute(2, 1), .localOnly(3)])
+}
+
+@Test func fairFillersFollowTheMeetingsLanguages() {
+    #expect(EvalNormalization.fillers(languages: ["en-CA"]) == EvalNormalization.englishFillers)
+    #expect(EvalNormalization.fillers(languages: ["fr-CA", "en-US"]) == EvalNormalization.allFillers)
+    #expect(EvalNormalization.fillers(languages: ["de-DE"]).isEmpty)
+    let german = WindowComparer.compare(track: "mic", local: fairTimed(["Er", "kommt"]), cloud: fairUntimed("kommt"),
+                                        start: 0, end: 5, fillers: EvalNormalization.fillers(languages: ["de-DE"]))
+    #expect(german.normalized.edits == 1)
+    #expect(!EvalNormalization.isFiller("euh", fillers: EvalNormalization.englishFillers))
+    // A mark inside is no filler ("H&M"), nor "mm" after a spelled number.
+    #expect(!EvalNormalization.isFiller("H&M"))
+    #expect(EvalNormalization.fillerFlags(["five", "mm"]) == [false, false])
+}
+
+@Test func fairPassagesSplitByAFewMatchedWordsAreNormalizedTogether() {
+    // The raw alignment matches the second "test" and leaves "test" and "flight"/"TestFlight" apart.
+    let local = fairTimed(["we", "test", "test", "flight", "daily"])
+    let result = WindowComparer.compare(track: "system", local: local, cloud: fairUntimed("we test TestFlight daily"),
+                                        start: 0, end: 10)
+    #expect(result.score.edits == 2)
+    #expect(result.normalized.edits == 0)
+    #expect(result.passages.allSatisfy { $0.formattingOnly })
+    // A matched filler between the halves of a number does not split it either.
+    let hesitant = WindowComparer.compare(track: "system", local: fairTimed(["twenty", "um", "one", "days"]),
+                                          cloud: fairUntimed("21 um days"), start: 0, end: 10)
+    #expect(hesitant.normalized.edits == 0)
+    // A real error in the stretch stays on its own passage.
+    let mixed = WindowComparer.compare(track: "system", local: fairTimed(["three", "cats", "and", "a", "dog"]),
+                                       cloud: fairUntimed("3 cats and a frog"), start: 0, end: 10)
+    #expect(mixed.passages.map(\.formattingOnly) == [true, false])
+    #expect(mixed.normalized.edits == 1)
+}
+
+@Test func fairTermsAreFoundWithTheirNumbersSpelledEitherWay() {
+    let terms = EvalTerms.terms(wordList: ["GPT-4"], corrections: [])
+    let track = EvalTerms.Track(track: "system", words: ["we", "use", "GPT", "four"], covered: [true, true, true, false])
+    #expect(EvalTerms.count(terms, tracks: [track], normalized: true).map { "\($0.hits)/\($0.cloud)" } == ["0/1"])
+    #expect(EvalTerms.count(terms, tracks: [track]).isEmpty)
+}
+
 // MARK: - Window scores and passages
 
 @Test func fairWindowScoresNormalizedAndMarksFormattingOnlyPassages() {
@@ -244,7 +300,8 @@ private func canonical(_ text: String) -> String? {
     #expect(hits(["we", "use", "machine", "deep", "learning", "daily"]) == 0)
     // A filler between them is no break.
     #expect(hits(["we", "use", "machine", "um", "learning", "daily"]) == 1)
-    #expect(hits(["we", "use", "machinelearning", "daily"]) == 1)
+    #expect(hits(["we", "use", "MachineLearning", "daily"]) == 1)
+    #expect(hits(["we", "use", "machinelearning", "daily"]) == 0)
 }
 
 // MARK: - Report and review page

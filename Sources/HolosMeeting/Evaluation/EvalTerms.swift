@@ -80,18 +80,34 @@ public enum EvalTerms {
     /// Where `term` (its keys joined) is written in `keys`, as whole words: runs of words whose keys joined are the
     /// term's, so "TestFlight" is found in "Test Flight" and "test flight" in "TestFlight". Runs do not overlap.
     static func occurrences(of term: String, in keys: [String]) -> [Range<Int>] {
-        guard !term.isEmpty else { return [] }
+        occurrences(of: [term], words: keys, keys: keys, spelled: keys.map { _ in false })
+    }
+
+    /// Longest run of cloud words an occurrence may take.
+    static let maxOccurrenceWords = 8
+
+    /// Where any of `forms` is written in the words, as whole words: their keys joined, or (for a run holding a
+    /// spelled number, `spelled`) the run's `NormalizedAlignment.compoundForms` ("GPT four" for "GPT-4").
+    static func occurrences(of forms: Set<String>, words: [String], keys: [String], spelled: [Bool]) -> [Range<Int>] {
+        let forms = forms.filter { !$0.isEmpty }
+        guard !forms.isEmpty else { return [] }
         var found: [Range<Int>] = []
         var start = 0
         while start < keys.count {
             var joined = ""
+            var hasSpelled = false
             var end = start
             var match: Int?
-            while end < keys.count, joined.count < term.count {
+            while end < keys.count, end - start < maxOccurrenceWords {
                 joined += keys[end]
+                hasSpelled = hasSpelled || spelled[end]
                 end += 1
-                if joined == term { match = end; break }
-                if !term.hasPrefix(joined) { break }
+                if forms.contains(joined) { match = end; break }
+                if hasSpelled, !Set(NormalizedAlignment.compoundForms(Array(words[start..<end]))).isDisjoint(with: forms) {
+                    match = end
+                    break
+                }
+                if !hasSpelled, !forms.contains(where: { $0.hasPrefix(joined) }) { break }
             }
             if let match {
                 found.append(start..<match)
@@ -142,14 +158,21 @@ public enum EvalTerms {
     /// Each term's count in the cloud words of every track, and how many of those the local transcript has: each of
     /// the occurrence's words covered, as one unbroken run of local words (`contiguous`). An occurrence that touches
     /// echo is not counted. Terms the cloud never has are left out. Sorted by misses, then by count, then by term.
-    public static func count(_ terms: [Term], tracks: [Track]) -> [TermStat] {
-        let keyed = tracks.map { track in (keys: track.words.map(EvalText.key), track: track) }
+    /// With `normalized`, a term is also found written with its numbers spelled the other way ("GPT four" for the
+    /// term "GPT-4", "GPT-4" for "GPT four").
+    public static func count(_ terms: [Term], tracks: [Track], normalized: Bool = false) -> [TermStat] {
+        let keyed = tracks.map { track in
+            (keys: track.words.map(EvalText.key),
+             spelled: track.words.map { normalized && NormalizedAlignment.isSpelledCardinal($0) }, track: track)
+        }
         var stats: [TermStat] = []
         for term in terms {
             var stat = TermStat(term: term.text, source: term.source, cloud: 0, hits: 0)
-            for (keys, track) in keyed {
+            var forms: Set<String> = [joinedKey(term.text)]
+            if normalized { forms.formUnion(NormalizedAlignment.compoundForms(EvalText.tokens(term.text))) }
+            for (keys, spelled, track) in keyed {
                 var count = TermStat.TrackCount(track: track.track, cloud: 0, hits: 0)
-                for range in occurrences(of: joinedKey(term.text), in: keys) {
+                for range in occurrences(of: forms, words: track.words, keys: keys, spelled: spelled) {
                     let flags = range.map { $0 < track.covered.count ? track.covered[$0] : nil }
                     guard !flags.contains(where: { $0 == nil }) else { continue }
                     count.cloud += 1

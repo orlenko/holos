@@ -208,6 +208,8 @@ public enum EvalCompare {
                                                  vocabularyCount: record.vocabulary.count, madeAt: record.completedAt)
         }
         let meeting = try? SessionFiles.meetingInfo(session: session, manifest: manifest)
+        // Fillers of the languages the local transcript was made in (none for a language other than English or French).
+        let fillers = EvalNormalization.fillers(languages: version.languages)
         let parameters = meeting.map(SpeakerAnalysis.alignmentParameters(meeting:)) ?? .v1
         var total = EvalScore()
         var normalizedTotal = EvalScore()
@@ -221,7 +223,7 @@ public enum EvalCompare {
             else { throw HolosError.incomplete("Run \(run.id) has no stitched \(plan.track) track.") }
             let local = localTokens(transcript, track: plan.track, parameters: parameters,
                                     untrackedOwner: run.tracks.first?.track)
-            var compared = compareTrack(track: plan.track, local: local, cloud: cloud)
+            var compared = compareTrack(track: plan.track, local: local, cloud: cloud, fillers: fillers)
             if !normalize {
                 compared.report.normalized = nil
                 compared.report.normalization = nil
@@ -234,7 +236,7 @@ public enum EvalCompare {
             passages += compared.passages
             termTracks.append(compared.termTrack(plan.track, normalized: normalize))
         }
-        let termStats = EvalTerms.count(terms, tracks: termTracks)
+        let termStats = EvalTerms.count(terms, tracks: termTracks, normalized: normalize)
         return CompareReport(sessionID: manifest.id, run: run.id, model: run.model, transcriptID: transcript.id,
                              createdAt: now, total: total, tracks: tracks, passages: passages,
                              mode: normalize ? "normalized" : "raw",
@@ -268,7 +270,8 @@ public enum EvalCompare {
         }
     }
 
-    static func compareTrack(track: String, local: [EvalToken], cloud: CloudTrackResult) -> TrackComparison {
+    static func compareTrack(track: String, local: [EvalToken], cloud: CloudTrackResult,
+                             fillers: Set<String> = EvalNormalization.allFillers) -> TrackComparison {
         var warnings: [String] = []
         let segments = cloud.segments
         let starts = segments.map { $0.sessionStart + $0.overlapSeconds }
@@ -299,7 +302,7 @@ public enum EvalCompare {
         let trackStart = min(segments.first?.sessionStart ?? 0, local.first?.start ?? 0)
         let trackEnd = max(segments.last?.sessionEnd ?? 0, local.last?.end ?? 0)
         var result = WindowComparer.evaluate(track: track, ops: ops, local: local, cloud: allCloud,
-                                             start: trackStart, end: trackEnd)
+                                             start: trackStart, end: trackEnd, fillers: fillers)
         for index in result.passages.indices { result.passages[index].id = "\(track)-\(index + 1)" }
         var groups: [String: Int] = [:]
         for passage in result.passages { groups[passage.group.rawValue, default: 0] += 1 }
@@ -307,7 +310,8 @@ public enum EvalCompare {
             report: CompareReport.TrackReport(track: track, score: result.score, groups: groups, warnings: warnings,
                                               normalized: result.normalized, normalization: result.normalization),
             passages: result.passages, cloud: allCloud, window: result,
-            ignorable: zip(local, EvalNormalization.fillerFlags(local.map(\.text))).map { $0.echo || $1 })
+            ignorable: zip(local, EvalNormalization.fillerFlags(local.map(\.text), fillers: fillers))
+                .map { $0.echo || $1 })
     }
 
     private static func shifted(_ op: AlignmentOp, local: Int, cloud: Int) -> AlignmentOp {

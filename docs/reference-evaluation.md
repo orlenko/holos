@@ -303,27 +303,40 @@ passages, the review page and the gold keep the words as written.
   is compared as written. A spelled number is only the same as digits, never
   as another spelled number, so "one" and "un", or "first" and "premier",
   remain different words, and so do different numbers, a cardinal and an
-  ordinal ("first"/"1"), or a sign ("+30"/"30").
-- **Fillers.** um, uh, er, erm, hmm, mm, ah (English) and euh, heu, bah, hein
-  (French), in any case, with punctuation, and drawn out ("ummm"), are left
-  out on both sides: they count neither as words nor as errors, and the report
-  counts them per side. A filler is never paired with a word the other side has.
-  "ben", "err", "uh-huh" and "mhm" are words.
+  ordinal ("first"/"1"), or a sign ("+30"/"30"). A spelled number is taken
+  whole: a part of it that the words around it extend ("twenty" in "twenty
+  one", "one hundred" in "one hundred and five") is not a number of its own,
+  so "twenty one" and "20 1" differ.
+- **Fillers.** um, uh, er, erm, hmm, mm, ah in an English meeting and euh,
+  heu, bah, hein in a French one (the local transcript's languages; none in
+  another language, where "er" or "um" are words), in any case, with the
+  sentence's punctuation around them, and drawn out ("ummm"), are left out on
+  both sides: they count neither as words nor as errors, and the report counts
+  them per side. A filler is never paired with a word the other side has.
+  "ben", "err", "uh-huh", "mhm" and "H&M" are words, and so is "mm" after a
+  number ("5 mm", "five mm").
 - **Compounds.** Two or three words whose letters and digits, joined, are the
-  one word on the other side ("test flight"/"TestFlight", "chat GPT"/"ChatGPT",
-  "follow up"/"follow-up", "A P I"/"API"), also with each run of spelled
-  numbers in digits ("V one"/"v1", "V twenty one"/"V21", never "V201"), are
-  the same. The joined words must hold a letter ("1 5" and "15" differ). Up to
-  two fillers inside a joined number or compound ("twenty um one"/"21") are
-  left out as fillers.
+  one word on the other side, when that word shows the join: a capital inside
+  ("test flight"/"TestFlight", "chat GPT"/"ChatGPT"), a hyphen, dash, slash or
+  dot between letters ("follow up"/"follow-up"), letters with digits ("V
+  one"/"v1", "V twenty one"/"V21", never "V201": each run of spelled numbers
+  in digits), or capitals only against letters said one or two at a time ("A
+  P I"/"API"). A plain word shows nothing: "now here" and "nowhere", or
+  "check up" and "checkup", stay different. The joined words must hold a
+  letter ("1 5" and "15" differ). Up to two fillers inside a joined number or
+  compound ("twenty um one"/"21") are left out as fillers.
 - **Case and punctuation** never count (as in the raw comparison).
 
-Each word passage of the raw alignment (a run of edits between matched
-words) is aligned again this way: a minimum-edit alignment where a filler
-costs nothing to leave out and a number or compound run matches its other
-spelling at no cost. Its remaining edits make the normalized WER, so every
-normalized error is in a passage the review page shows; a passage with none
-is formatting only. Matched fillers are left out of the word counts too.
+Each stretch of word passages of the raw alignment (runs of edits, with at
+most 2 matched words between two of them, and at most 400 steps) is aligned
+again this way: a minimum-edit alignment where a filler costs nothing to
+leave out and a number or compound run matches its other spelling at no cost
+(a stretch too long for that pairs its words in order). Its remaining edits
+make the normalized WER, so every normalized error is in a passage the review
+page shows; a passage none of whose words such an edit touches is formatting
+only. Matched fillers are left out of the word counts too. In the Terms
+section, the normalized comparison also finds a term written with its numbers
+spelled the other way ("GPT four" for "GPT-4").
 
 ### Local candidates
 

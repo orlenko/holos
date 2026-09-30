@@ -487,9 +487,10 @@ public enum WindowComparer {
     /// - Time: a passage takes the times of its local words (and of its cloud words when they are timed); a
     ///   cloud-only passage lies between the local words around it (or reaches the window edge).
     public static func compare(track: String, local: [EvalToken], cloud: [EvalToken], start: Double, end: Double,
-                               localOffset: Int = 0) -> WindowComparison {
+                               localOffset: Int = 0,
+                               fillers: Set<String> = EvalNormalization.allFillers) -> WindowComparison {
         evaluate(track: track, ops: EvalAlignment.align(local.map(\.text), cloud.map(\.text)), local: local,
-                 cloud: cloud, start: start, end: end, localOffset: localOffset)
+                 cloud: cloud, start: start, end: end, localOffset: localOffset, fillers: fillers)
     }
 
     /// Cloud-only words beside a single echo word that still count as echo.
@@ -500,7 +501,8 @@ public enum WindowComparer {
 
     /// Scores and passages of an alignment `ops` of `local` with `cloud` (see `compare`).
     static func evaluate(track: String, ops alignment: [AlignmentOp], local: [EvalToken], cloud: [EvalToken],
-                         start: Double, end: Double, localOffset: Int = 0) -> WindowComparison {
+                         start: Double, end: Double, localOffset: Int = 0,
+                         fillers: Set<String> = EvalNormalization.allFillers) -> WindowComparison {
         let ops = realigningAroundEcho(separatingDistantEchoPairs(alignment, local: local, cloud: cloud),
                                        local: local, cloud: cloud)
         var result = WindowComparison()
@@ -550,48 +552,18 @@ public enum WindowComparer {
 
         var run: [Int] = []  // op positions of the current edit run
         var punctuationRun: [Int] = []
+        var wordRuns: [(passage: Int, positions: [Int])] = []
         result.cloudMatched = [Bool?](repeating: nil, count: cloud.count)
         result.cloudEquivalent = [Bool?](repeating: nil, count: cloud.count)
         result.cloudMatchedSpans = [Range<Int>?](repeating: nil, count: cloud.count)
         result.cloudEquivalentSpans = [Range<Int>?](repeating: nil, count: cloud.count)
         func flush(_ positions: inout [Int], caseOnly: Bool) {
             guard !positions.isEmpty else { return }
-            var made = passage(track: track, ops: ops, positions: positions, local: local, cloud: cloud,
-                               windowStart: start, windowEnd: end, previousLocal: previousLocalIndex,
-                               nextLocal: nextLocalIndex, caseOnly: caseOnly, localOffset: localOffset)
-            if !caseOnly {
-                // The passage's words aligned again with the normalized comparison: its remaining edits are the
-                // normalized score's, and a passage with none differs only in formatting.
-                let localIndices = positions.compactMap { localIndex(ops[$0]) }
-                let cloudIndices = positions.compactMap { cloudIndex(ops[$0]) }
-                let a = localIndices.map { local[$0].text }, b = cloudIndices.map { cloud[$0].text }
-                // The words just before, for context ("mm" after "5" is millimetres, not a filler).
-                let before = (local: previousLocalIndex[positions[0]].map { local[$0].text },
-                              cloud: cloudIndices.first.flatMap { $0 > 0 ? cloud[$0 - 1].text : nil })
-                let normalizedOps = NormalizedAlignment.align(a, b, before: before)
-                let scored = NormalizedAlignment.score(normalizedOps, a: a, b: b, before: before)
-                result.normalized.add(scored.score)
-                result.normalization.add(scored.counts)
-                made.formattingOnly = scored.score.edits == 0
-                for j in cloudIndices { result.cloudMatched[j] = false }
-                for op in normalizedOps {
-                    switch op {
-                    case .equal(let i, let j, _):
-                        result.cloudEquivalent[cloudIndices[j]] = true
-                        result.cloudEquivalentSpans[cloudIndices[j]] = localIndices[i]..<(localIndices[i] + 1)
-                    case .join(let locals, let range, _):
-                        let span = localIndices[locals.lowerBound]..<(localIndices[locals.upperBound - 1] + 1)
-                        for j in range {
-                            result.cloudEquivalent[cloudIndices[j]] = true
-                            result.cloudEquivalentSpans[cloudIndices[j]] = span
-                        }
-                    case .fillerCloud(let j): result.cloudEquivalent[cloudIndices[j]] = true
-                    case .substitute(_, let j), .cloudOnly(let j): result.cloudEquivalent[cloudIndices[j]] = false
-                    case .fillerLocal, .localOnly: break
-                    }
-                }
-            }
-            result.passages.append(made)
+            if !caseOnly { wordRuns.append((result.passages.count, positions)) }
+            result.passages.append(passage(track: track, ops: ops, positions: positions, local: local, cloud: cloud,
+                                           windowStart: start, windowEnd: end, previousLocal: previousLocalIndex,
+                                           nextLocal: nextLocalIndex, caseOnly: caseOnly,
+                                           localOffset: localOffset))
             positions.removeAll()
         }
         for (position, op) in ops.enumerated() {
@@ -609,16 +581,7 @@ public enum WindowComparer {
             case .match(let i, let j, let exact):
                 result.score.localWords += 1; result.score.cloudWords += 1; result.score.matches += 1
                 result.cloudMatched[j] = true
-                result.cloudEquivalent[j] = true
                 result.cloudMatchedSpans[j] = i..<(i + 1)
-                result.cloudEquivalentSpans[j] = i..<(i + 1)
-                if EvalNormalization.fillerFlags([local[i].text], previous: i > 0 ? local[i - 1].text : nil)[0] {
-                    result.normalization.fillersLocal += 1; result.normalization.fillersCloud += 1
-                } else {
-                    result.normalized.localWords += 1; result.normalized.cloudWords += 1
-                    result.normalized.matches += 1
-                    if !exact { result.normalized.caseOrPunctuationOnly += 1 }
-                }
                 flush(&run, caseOnly: false)
                 if exact {
                     flush(&punctuationRun, caseOnly: true)
@@ -626,25 +589,125 @@ public enum WindowComparer {
                     result.score.caseOrPunctuationOnly += 1
                     punctuationRun.append(position)
                 }
-            case .substitute:
+            case .substitute(_, let j):
                 result.score.localWords += 1; result.score.cloudWords += 1; result.score.substitutions += 1
+                result.cloudMatched[j] = false
                 flush(&punctuationRun, caseOnly: true)
                 run.append(position)
             case .localOnly:
                 result.score.localWords += 1; result.score.localOnly += 1
                 flush(&punctuationRun, caseOnly: true)
                 run.append(position)
-            case .cloudOnly:
+            case .cloudOnly(let j):
                 result.score.cloudWords += 1; result.score.cloudOnly += 1
+                result.cloudMatched[j] = false
                 flush(&punctuationRun, caseOnly: true)
                 run.append(position)
             }
         }
         flush(&run, caseOnly: false)
         flush(&punctuationRun, caseOnly: true)
+        normalize(&result, ops: ops, excluded: excluded, wordRuns: wordRuns, local: local, cloud: cloud,
+                  previousLocal: previousLocalIndex, fillers: fillers)
+        return result
+    }
+
+    /// Matched words between two word passages that are still aligned again with them for the normalized comparison
+    /// ("we test test flight" against "we test TestFlight": the raw alignment matched the second "test").
+    static let normalizationGap = 2
+    /// Most operations one stretch aligned again for the normalized comparison takes; a longer chain of passages is
+    /// cut there.
+    static let normalizationStretch = 400
+
+    /// The normalized comparison (`NormalizedAlignment`) of an evaluated alignment: each stretch of word passages
+    /// (with at most `normalizationGap` matched words between two of them) is aligned again; matched words outside
+    /// such stretches count as matches (a filler as a filler). A passage none of whose words an edit of its stretch
+    /// touches is formatting only. Echo is left out as in the raw scores.
+    private static func normalize(_ result: inout WindowComparison, ops: [AlignmentOp], excluded: [Bool],
+                                  wordRuns: [(passage: Int, positions: [Int])], local: [EvalToken],
+                                  cloud: [EvalToken], previousLocal: [Int?], fillers: Set<String>) {
+        func isGapMatch(_ position: Int) -> Bool {
+            if excluded[position] { return false }
+            if case .match = ops[position] { return true }
+            return false
+        }
+        var stretches: [[Int]] = []  // indices into wordRuns
+        for (index, run) in wordRuns.enumerated() {
+            if let current = stretches.last, let last = current.last, let lastPosition = wordRuns[last].positions.last,
+               let firstPosition = run.positions.first, let stretchStart = wordRuns[current[0]].positions.first,
+               firstPosition - lastPosition - 1 <= normalizationGap,
+               ((lastPosition + 1)..<firstPosition).allSatisfy(isGapMatch),
+               run.positions.last! - stretchStart < normalizationStretch {
+                stretches[stretches.count - 1].append(index)
+            } else {
+                stretches.append([index])
+            }
+        }
+        var inStretch = [Bool](repeating: false, count: ops.count)
+        for stretch in stretches {
+            let first = wordRuns[stretch[0]].positions[0], last = wordRuns[stretch[stretch.count - 1]].positions.last!
+            for position in first...last { inStretch[position] = true }
+        }
+        for (position, op) in ops.enumerated() where !excluded[position] && !inStretch[position] {
+            guard case .match(let i, let j, let exact) = op else { continue }
+            result.cloudEquivalent[j] = true
+            result.cloudEquivalentSpans[j] = i..<(i + 1)
+            if EvalNormalization.fillerFlags([local[i].text], previous: i > 0 ? local[i - 1].text : nil,
+                                                fillers: fillers)[0] {
+                result.normalization.fillersLocal += 1; result.normalization.fillersCloud += 1
+            } else {
+                result.normalized.localWords += 1; result.normalized.cloudWords += 1
+                result.normalized.matches += 1
+                if !exact { result.normalized.caseOrPunctuationOnly += 1 }
+            }
+        }
+        for stretch in stretches {
+            let first = wordRuns[stretch[0]].positions[0], last = wordRuns[stretch[stretch.count - 1]].positions.last!
+            let positions = Array(first...last)
+            let localIndices = positions.compactMap { localIndex(ops[$0]) }
+            let cloudIndices = positions.compactMap { cloudIndex(ops[$0]) }
+            let a = localIndices.map { local[$0].text }, b = cloudIndices.map { cloud[$0].text }
+            // The words just before, for context ("mm" after "5" is millimetres, not a filler).
+            let before = (local: previousLocal[first].map { local[$0].text },
+                          cloud: cloudIndices.first.flatMap { $0 > 0 ? cloud[$0 - 1].text : nil })
+            let normalizedOps = NormalizedAlignment.align(a, b, before: before, fillers: fillers)
+            let scored = NormalizedAlignment.score(normalizedOps, a: a, b: b, before: before, fillers: fillers)
+            result.normalized.add(scored.score)
+            result.normalization.add(scored.counts)
+            var touchedLocal = Set<Int>(), touchedCloud = Set<Int>()
+            for op in normalizedOps {
+                switch op {
+                case .equal(let i, let j, _):
+                    result.cloudEquivalent[cloudIndices[j]] = true
+                    result.cloudEquivalentSpans[cloudIndices[j]] = localIndices[i]..<(localIndices[i] + 1)
+                case .join(let locals, let range, _):
+                    let span = localIndices[locals.lowerBound]..<(localIndices[locals.upperBound - 1] + 1)
+                    for j in range {
+                        result.cloudEquivalent[cloudIndices[j]] = true
+                        result.cloudEquivalentSpans[cloudIndices[j]] = span
+                    }
+                case .fillerCloud(let j): result.cloudEquivalent[cloudIndices[j]] = true
+                case .fillerLocal: break
+                case .substitute(let i, let j):
+                    result.cloudEquivalent[cloudIndices[j]] = false
+                    touchedLocal.insert(localIndices[i]); touchedCloud.insert(cloudIndices[j])
+                case .cloudOnly(let j):
+                    result.cloudEquivalent[cloudIndices[j]] = false
+                    touchedCloud.insert(cloudIndices[j])
+                case .localOnly(let i): touchedLocal.insert(localIndices[i])
+                }
+            }
+            for index in stretch {
+                let run = wordRuns[index]
+                let touched = run.positions.contains { position in
+                    localIndex(ops[position]).map(touchedLocal.contains) == true
+                        || cloudIndex(ops[position]).map(touchedCloud.contains) == true
+                }
+                result.passages[run.passage].formattingOnly = !touched
+            }
+        }
         result.normalized.echoLocalWords = result.score.echoLocalWords
         result.normalized.echoCloudWords = result.score.echoCloudWords
-        return result
     }
 
     /// A timed cloud word (the timestamp pass) aligned with a timed local echo word but said more than

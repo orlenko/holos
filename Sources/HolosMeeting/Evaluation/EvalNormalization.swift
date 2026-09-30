@@ -6,29 +6,49 @@ import Foundation
 public enum EvalNormalization {
     // MARK: - Fillers
 
-    /// Hesitation sounds left out of the normalized scores on both sides (English um, uh, er, erm, hmm, mm, ah; French
-    /// euh, heu, bah, hein), in any case, with any punctuation, and with letters drawn out ("ummm", "euhhh").
-    static let fillers: Set<String> = ["um", "uh", "uhm", "er", "erm", "hm", "m", "ah", "euh", "heu", "bah", "hein"]
+    /// Hesitation sounds left out of the normalized scores on both sides, per language, as their letters with each
+    /// run of one letter written once ("ummm" is "um", "hmm" is "hm", "mm" is "m").
+    public static let englishFillers: Set<String> = ["um", "uh", "uhm", "er", "erm", "hm", "m", "ah"]
+    public static let frenchFillers: Set<String> = ["euh", "heu", "bah", "hein"]
+    public static let allFillers = englishFillers.union(frenchFillers)
+
+    /// The fillers of a meeting in `languages` (BCP 47): English's and French's; none for another language, where
+    /// "er" or "um" are words.
+    public static func fillers(languages: [String]) -> Set<String> {
+        var set = Set<String>()
+        for language in languages {
+            let code = language.lowercased().prefix(2)
+            if code == "en" { set.formUnion(englishFillers) }
+            if code == "fr" { set.formUnion(frenchFillers) }
+        }
+        return set
+    }
 
     /// Words that would read as a drawn-out filler but are words: "err" (to make a mistake).
     static let fillerLookalikes: Set<String> = ["err"]
 
-    public static func isFiller(_ text: String) -> Bool {
-        let key = EvalText.key(text)
+    /// Whether `text` is one of `fillers`, in any case, with the sentence's punctuation around it ("Um,") and letters
+    /// drawn out ("ummm", "euhhh"). A mark inside ("H&M") makes it no filler.
+    public static func isFiller(_ text: String, fillers: Set<String> = allFillers) -> Bool {
+        let word = cleaned(text)
         // A lone "m" is a letter ("M dash"), not "mm".
-        guard key.count >= 2, key.allSatisfy({ $0.isLetter }), !fillerLookalikes.contains(key) else { return false }
+        guard word.count >= 2, word.allSatisfy({ $0.isLetter }), !fillerLookalikes.contains(word) else { return false }
         var collapsed = ""
-        for character in key where collapsed.last != character { collapsed.append(character) }
+        for character in word where collapsed.last != character { collapsed.append(character) }
         return fillers.contains(collapsed)
     }
 
-    /// `isFiller` for each of `words`, except "mm" right after a number, which is millimetres ("5 mm");
+    /// `isFiller` for each of `words`, except "mm" right after a number, which is millimetres ("5 mm", "five mm");
     /// `previous` is the word before the first.
-    public static func fillerFlags(_ words: [String], previous: String? = nil) -> [Bool] {
+    public static func fillerFlags(_ words: [String], previous: String? = nil,
+                                   fillers: Set<String> = allFillers) -> [Bool] {
         words.indices.map { index in
-            guard isFiller(words[index]) else { return false }
+            guard isFiller(words[index], fillers: fillers) else { return false }
             let before = index > 0 ? words[index - 1] : previous
-            if EvalText.key(words[index]) == "mm", before?.contains(where: \.isNumber) == true { return false }
+            if EvalText.key(words[index]) == "mm", let before,
+               before.contains(where: \.isNumber) || number([before]) != nil {
+                return false
+            }
             return true
         }
     }
@@ -444,24 +464,91 @@ public enum NormalizedAlignment {
     /// Longest run of words, fillers included, one side of a join may take.
     static let maxJoinRun = maxNumberWords + maxInnerFillers
     /// Above this many cells a passage is not aligned again: each of its words counts as the raw alignment has it.
-    static let maxCells = 16_000_000
+    public static let maxCells = 16_000_000
+
+    /// How a word written as one shows that it joins several ("TestFlight", "follow-up", "v1", "API"); a plain word
+    /// ("nowhere") shows nothing, so "now here" stays two other words.
+    enum CompoundMark { case none, acronym, joined }
+
+    static func compoundMark(_ text: String) -> CompoundMark {
+        let characters = Array(text)
+        let letters = characters.filter(\.isLetter)
+        guard !letters.isEmpty else { return .none }
+        if characters.contains(where: \.isNumber) { return .joined }
+        for index in characters.indices.dropFirst() {
+            let (before, here) = (characters[index - 1], characters[index])
+            // camelCase: a capital after a small letter.
+            if here.isUppercase, before.isLowercase { return .joined }
+            // A mark between two letters: a hyphen, a dash, a slash, a dot, an underscore.
+            if !here.isLetter, !here.isNumber, !here.isWhitespace, before.isLetter,
+               index + 1 < characters.count, characters[index + 1].isLetter, !"'’".contains(here) {
+                return .joined
+            }
+        }
+        return letters.count >= 2 && letters.allSatisfy(\.isUppercase) ? .acronym : .none
+    }
+
+    /// The ways `words` are written as one word: their keys joined ("test flight": "testflight"), and joined with
+    /// each run of spelled numbers in digits ("V one": "v1", "V twenty one": "v21", never "v201"). Only forms that
+    /// keep a letter.
+    static func compoundForms(_ words: [String]) -> [String] {
+        let keys = words.map(EvalText.key)
+        var forms = [keys.joined()]
+        var digits = ""
+        var group: [String] = []
+        var valid = true
+        var spelledAny = false
+        func flush() {
+            guard !group.isEmpty else { return }
+            if let form = EvalNormalization.number(group), !form.hasDigit, form.canonical.allSatisfy(\.isNumber) {
+                digits += form.canonical
+            } else {
+                valid = false
+            }
+            group.removeAll()
+        }
+        for (word, key) in zip(words, keys) {
+            if isSpelledCardinal(word) {
+                group.append(word)
+                spelledAny = true
+            } else {
+                flush()
+                digits += key
+            }
+        }
+        flush()
+        if valid, spelledAny { forms.append(digits) }
+        return Array(Set(forms)).filter { $0.contains(where: \.isLetter) }.sorted()
+    }
+
+    /// A spelled cardinal word ("one", "twenty", "cent").
+    static func isSpelledCardinal(_ word: String) -> Bool {
+        guard let form = EvalNormalization.number([word]) else { return false }
+        return !form.hasDigit && form.canonical.allSatisfy(\.isNumber)
+    }
 
     struct Side {
+        var words: [String]
         var keys: [String]
         var fillers: [Bool]
+        var marks: [CompoundMark]
         /// [length - 1][start]: the number the run spells, its fillers left out (length 1 is the word alone); nil for
-        /// a run that starts or ends with a filler.
+        /// a run that starts or ends with a filler, and for a spelled run that is only part of a longer spelled
+        /// number ("twenty" in "twenty one", which is 21, never 20 and 1).
         var numbers: [[EvalNormalization.NumberForm?]]
-        /// [length - 1][start]: the ways the run (2...maxCompoundWords words, fillers left out) is written as one word,
-        /// each keeping a letter: its keys joined ("test flight": "testflight"), and joined with each run of spelled
-        /// numbers in digits ("V one": "v1", "V twenty one": "v21").
+        /// [length - 1][start]: `compoundForms` of the run (2...maxCompoundWords words, fillers left out).
         var compounds: [[[String]]]
+        /// [length - 1][start]: whether each of the run's words (fillers left out) has at most two letters or
+        /// digits, as the letters of an acronym ("A P I").
+        var short: [[Bool]]
 
-        init(_ words: [String], previous: String? = nil) {
+        init(_ words: [String], previous: String? = nil, fillers fillerSet: Set<String> = EvalNormalization.allFillers) {
             let keys = words.map(EvalText.key)
-            let fillers = EvalNormalization.fillerFlags(words, previous: previous)
+            let fillers = EvalNormalization.fillerFlags(words, previous: previous, fillers: fillerSet)
+            self.words = words
             self.keys = keys
             self.fillers = fillers
+            marks = words.map(NormalizedAlignment.compoundMark)
             let count = words.count
             /// The run's words without its fillers, when it neither starts nor ends with one and has few inside.
             func kept(_ start: Int, _ length: Int) -> [Int]? {
@@ -470,48 +557,40 @@ public enum NormalizedAlignment {
                 let words = run.filter { !fillers[$0] }
                 return run.count - words.count <= NormalizedAlignment.maxInnerFillers ? words : nil
             }
+            let wordsBefore = { (index: Int, count: Int) -> [String] in
+                Array((0..<index).filter { !fillers[$0] }.suffix(count).map { words[$0] })
+            }
+            let wordsAfter = { (index: Int, count: Int) -> [String] in
+                Array((index..<words.count).filter { !fillers[$0] }.prefix(count).map { words[$0] })
+            }
             numbers = (1...NormalizedAlignment.maxJoinRun).map { length in
                 (0..<count).map { start in
-                    guard let indices = kept(start, length), indices.count <= NormalizedAlignment.maxNumberWords
-                    else { return nil }
-                    return EvalNormalization.number(indices.map { words[$0] })
+                    guard let indices = kept(start, length), indices.count <= NormalizedAlignment.maxNumberWords,
+                          let form = EvalNormalization.number(indices.map { words[$0] }) else { return nil }
+                    guard !form.hasDigit else { return form }
+                    // A spelled run the words around it extend ("twenty" before "one", "one hundred" before
+                    // "and five") is not a number of its own.
+                    let run = indices.map { words[$0] }
+                    for extra in 1...2 {
+                        let before = wordsBefore(start, extra), after = wordsAfter(start + length, extra)
+                        for extended in [before + run, run + after] where extended.count == run.count + extra {
+                            if let longer = EvalNormalization.number(extended), !longer.hasDigit { return nil }
+                        }
+                    }
+                    return form
                 }
-            }
-            /// A spelled cardinal word ("one", "twenty"): joined with its neighbours into one number in a compound.
-            let spelled: [Bool] = words.map { word in
-                guard let form = EvalNormalization.number([word]) else { return false }
-                return !form.hasDigit && form.canonical.allSatisfy(\.isNumber)
             }
             compounds = (1...NormalizedAlignment.maxJoinRun).map { length in
                 (0..<count).map { start in
                     guard length > 1, let indices = kept(start, length),
                           (2...NormalizedAlignment.maxCompoundWords).contains(indices.count) else { return [] }
-                    var forms = [indices.map { keys[$0] }.joined()]
-                    // Each run of spelled numbers in digits: "twenty one" is "21", never "201".
-                    var digits = ""
-                    var group: [Int] = []
-                    var valid = true
-                    func flush() {
-                        guard !group.isEmpty else { return }
-                        if let form = EvalNormalization.number(group.map { words[$0] }), !form.hasDigit,
-                           form.canonical.allSatisfy(\.isNumber) {
-                            digits += form.canonical
-                        } else {
-                            valid = false
-                        }
-                        group.removeAll()
-                    }
-                    for index in indices {
-                        if spelled[index] {
-                            group.append(index)
-                        } else {
-                            flush()
-                            digits += keys[index]
-                        }
-                    }
-                    flush()
-                    if valid { forms.append(digits) }
-                    return Array(Set(forms)).filter { $0.contains(where: \.isLetter) }.sorted()
+                    return NormalizedAlignment.compoundForms(indices.map { words[$0] })
+                }
+            }
+            short = (1...NormalizedAlignment.maxJoinRun).map { length in
+                (0..<count).map { start in
+                    guard let indices = kept(start, length) else { return false }
+                    return indices.allSatisfy { keys[$0].count <= 2 }
                 }
             }
         }
@@ -533,10 +612,17 @@ public enum NormalizedAlignment {
         return sameNumber(a.number(i, 1), b.number(j, 1)) ? .number : nil
     }
 
-    /// `length` words of `many` from `start` against word `one` of `single`: nil when they differ.
+    /// `length` words of `many` from `start` against word `one` of `single`: nil when they differ. A compound needs
+    /// the one word to show that it joins words (`compoundMark`; an acronym only against letters one or two at a
+    /// time).
     static func joined(_ many: Side, _ start: Int, _ length: Int, _ single: Side, _ one: Int) -> NormalizedOp.Kind? {
         guard !single.fillers[one] else { return nil }
-        if many.compound(start, length).contains(single.keys[one]) {
+        let marked = switch single.marks[one] {
+        case .joined: true
+        case .acronym: many.short[length - 1][start]
+        case .none: false
+        }
+        if marked, many.compound(start, length).contains(single.keys[one]) {
             return .compound
         }
         return sameNumber(many.number(start, length), single.number(one, 1)) ? .number : nil
@@ -546,19 +632,31 @@ public enum NormalizedAlignment {
     /// of words matches the one word it is written as on the other side. Substitution, insertion, and deletion cost
     /// 1; a filler is never substituted. On a tie: a match, a join, a filler, a substitution, then a local-only word.
     public static func align(_ a: [String], _ b: [String],
-                             before: (local: String?, cloud: String?) = (nil, nil)) -> [NormalizedOp] {
+                             before: (local: String?, cloud: String?) = (nil, nil),
+                             cellLimit: Int = maxCells,
+                             fillers: Set<String> = EvalNormalization.allFillers) -> [NormalizedOp] {
         let n = a.count, m = b.count
-        if (n + 1) * (m + 1) > maxCells {
-            return EvalAlignment.align(a, b).map { op in
-                switch op {
-                case .match(let i, let j, _): .equal(i, j, .same)
-                case .substitute(let i, let j): .substitute(i, j)
-                case .localOnly(let i): .localOnly(i)
-                case .cloudOnly(let j): .cloudOnly(j)
+        if (n + 1) * (m + 1) > cellLimit {
+            // Too large to align again (a long stretch without a shared word): words paired in order, as a raw
+            // alignment without matches counts them, fillers left out; no matrix is allocated.
+            let fillersA = EvalNormalization.fillerFlags(a, previous: before.local, fillers: fillers)
+            let fillersB = EvalNormalization.fillerFlags(b, previous: before.cloud, fillers: fillers)
+            let wordsA = a.indices.filter { !fillersA[$0] }, wordsB = b.indices.filter { !fillersB[$0] }
+            var ops: [NormalizedOp] = a.indices.filter { fillersA[$0] }.map { .fillerLocal($0) }
+            ops += b.indices.filter { fillersB[$0] }.map { .fillerCloud($0) }
+            for index in 0..<max(wordsA.count, wordsB.count) {
+                switch (index < wordsA.count ? wordsA[index] : nil, index < wordsB.count ? wordsB[index] : nil) {
+                case (let i?, let j?): ops.append(EvalText.key(a[i]) == EvalText.key(b[j]) ? .equal(i, j, .same)
+                                                  : .substitute(i, j))
+                case (let i?, nil): ops.append(.localOnly(i))
+                case (nil, let j?): ops.append(.cloudOnly(j))
+                case (nil, nil): break
                 }
             }
+            return ops
         }
-        let left = Side(a, previous: before.local), right = Side(b, previous: before.cloud)
+        let left = Side(a, previous: before.local, fillers: fillers),
+            right = Side(b, previous: before.cloud, fillers: fillers)
         let width = m + 1
         let infinity = Int32.max / 2
         var cost = [Int32](repeating: infinity, count: (n + 1) * width)
@@ -644,10 +742,11 @@ public enum NormalizedAlignment {
     /// The scores of a normalized alignment `ops` of `a` with `b`: words (fillers left out), edits, and what was taken
     /// as the same.
     static func score(_ ops: [NormalizedOp], a: [String], b: [String],
-                      before: (local: String?, cloud: String?) = (nil, nil))
+                      before: (local: String?, cloud: String?) = (nil, nil),
+                      fillers: Set<String> = EvalNormalization.allFillers)
         -> (score: EvalScore, counts: NormalizationCounts) {
-        let fillersA = EvalNormalization.fillerFlags(a, previous: before.local)
-        let fillersB = EvalNormalization.fillerFlags(b, previous: before.cloud)
+        let fillersA = EvalNormalization.fillerFlags(a, previous: before.local, fillers: fillers)
+        let fillersB = EvalNormalization.fillerFlags(b, previous: before.cloud, fillers: fillers)
         var score = EvalScore()
         var counts = NormalizationCounts()
         for op in ops {
