@@ -98,6 +98,8 @@ public enum EvalApply {
         /// Terms marked on the review page (whitespace collapsed), once each ignoring case and spacing, for the word
         /// list.
         public var terms: [String]
+        /// Decisions on formatting-only passages, left out of the gold and the proposals.
+        public var ignoredFormatting = 0
     }
 
     public static let maxCorrectionWords = 3
@@ -112,6 +114,10 @@ public enum EvalApply {
         }
         guard decisions.run == report.run else {
             throw HolosError.invalidInput("These decisions are for run \(decisions.run), not \(report.run).")
+        }
+        guard report.isOfCurrentTranscript else {
+            throw HolosError.invalidInput("This comparison is of a local candidate; review and apply work on the "
+                + "comparison of the current transcript.")
         }
         guard decisions.transcriptID == report.transcriptID else {
             throw HolosError.invalidInput("These decisions were made on another comparison of this run (transcript "
@@ -129,7 +135,10 @@ public enum EvalApply {
         let manifest = try SessionArchive.readManifest(at: session)
         let meeting = try? SessionFiles.meetingInfo(session: session, manifest: manifest)
         let parameters = meeting.map(SpeakerAnalysis.alignmentParameters(meeting:)) ?? .v1
+        // Formatting-only passages (the same words under the normalized comparison) are ignored, even when decided.
         let decided = decisions.decisions.compactMap { decision in passages[decision.id].map { ($0, decision) } }
+            .filter { !$0.0.formattingOnly }
+        let ignored = decisions.decisions.count - decided.count
 
         var tracks: [GoldTranscript.Track] = []
         for trackReport in report.tracks {
@@ -155,7 +164,7 @@ public enum EvalApply {
         }
         let gold = GoldTranscript(sessionID: report.sessionID, run: report.run, transcriptID: report.transcriptID,
                                   createdAt: now, reviewedPassages: decided.count, tracks: tracks)
-        return Result(gold: gold, corrections: corrections, terms: terms)
+        return Result(gold: gold, corrections: corrections, terms: terms, ignoredFormatting: ignored)
     }
 
     /// How a gold piece joins the one before it.

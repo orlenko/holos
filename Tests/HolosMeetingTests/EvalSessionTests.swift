@@ -461,3 +461,158 @@ private func evalAllText(_ folder: URL) -> String {
     #expect(await eventually { seen.count.withLock { $0 } > 0 })
     withExtendedLifetime(watcher) {}
 }
+
+// MARK: - Fair comparison and local candidates
+
+/// A session with `words` as its current microphone transcript and one finished cloud run answering `cloud`.
+private func evalSessionWithCloudRun(in root: URL, words: [String], cloud: String,
+                                     audioSeconds: [String: Double] = ["mic": 6]) async throws
+    -> (session: URL, run: CloudRunRecord, transcript: Transcript) {
+    let transcript = SessionFixtures.transcript([SessionFixtures.segment(words, track: "mic", start: 0.5)])
+    let session = try await SessionFixtures.makeSession(in: root, audioSeconds: audioSeconds, transcript: transcript)
+    let prepared = try CloudEvaluation.prepare(session: session, options: evalOptions(maxSeconds: 300),
+                                               vocabulary: evalNoVocabulary)
+    _ = try await CloudEvaluation.upload(prepared, client: CloudTranscriptionClient(
+        apiKey: evalKey, transport: EvalFakeTransport { _, _ in evalOK(cloud) }, sleep: EvalSleeps().sleep))
+    return (session, try EvalStore.resolveRun(nil, in: session), transcript)
+}
+
+/// Speech-model and merge dependencies for `eval local` with scripted speech.
+private func evalLocalDependencies(_ speech: FakeSpeechFactory, status: String = "installed")
+    -> LanguageDetectionDependencies {
+    LanguageDetectionDependencies(
+        makeSpeech: speech.factory, modelStatus: { _, _ in status },
+        makeScorer: { { _, languages in Dictionary(uniqueKeysWithValues: languages.map { ($0, 0.5) }) } },
+        timeouts: nil)
+}
+
+@Test func evalApplyIgnoresFormattingOnlyPassages() async throws {
+    let temp = try TemporaryDirectory("eval")
+    defer { temp.remove() }
+    let (session, run, _) = try await evalSessionWithCloudRun(
+        in: temp.url, words: ["um", "we", "ship", "three", "builds", "to", "the", "cat"],
+        cloud: "We ship 3 builds to the bat.")
+    let report = try EvalCompare.compare(session: session, run: run)
+    #expect(report.isNormalized && report.schemaVersion == CompareReport.currentSchemaVersion)
+    let words = report.passages.filter { $0.group != .caseOrPunctuation }
+    #expect(words.map(\.local) == ["um", "three", "cat"])
+    #expect(words.map(\.formattingOnly) == [true, true, false])
+    let raw = try EvalCompare.compare(session: session, run: run, normalize: false)
+    #expect(!raw.isNormalized && raw.passages.allSatisfy { !$0.formattingOnly })
+    #expect(raw.passages.map(\.id) == report.passages.map(\.id))
+    #expect(raw.total == report.total)
+    #expect(raw.normalizedTotal == nil && report.normalizedTotal?.edits == 1)
+
+    let decisions = ReviewDecisions(sessionID: report.sessionID, run: run.id, transcriptID: report.transcriptID,
+                                    decisions: [.init(id: words[1].id, choice: .cloud, text: "3"),
+                                                .init(id: words[2].id, choice: .cloud, text: "bat")])
+    let result = try EvalApply.build(session: session, report: report, decisions: decisions)
+    #expect(result.ignoredFormatting == 1)
+    #expect(result.gold.reviewedPassages == 1)
+    #expect(result.gold.tracks.first?.text == "um we ship three builds to the bat")
+    #expect(result.corrections.allSatisfy { !$0.heard.contains("three") })
+}
+
+@Test func evalLocalTranscribesEveryTrackIntoACandidateAndResumes() async throws {
+    let temp = try TemporaryDirectory("eval")
+    defer { temp.remove() }
+    let transcript = SessionFixtures.transcript([SessionFixtures.segment(["hello", "team"], track: "mic", start: 0.5)])
+    let session = try await SessionFixtures.makeSession(in: temp.url, source: .microphoneAndSystem,
+                                                        audioSeconds: ["mic": 4, "system": 4], transcript: transcript)
+    let before = SessionFixtures.files(in: session).filter { !$0.key.contains("eval/") }
+    let heard = SessionFixtures.segment(["we", "ship", "on", "Kubernetes"], track: nil, start: 0.5)
+    let vocabulary = ["Kubernetes", "Maria Chen"]
+
+    // Not installed: refused before anything is transcribed or saved.
+    let none = FakeSpeechFactory()
+    await #expect(throws: HolosError.self) {
+        _ = try await EvalLocal.run(session: session, options: .init(), vocabulary: vocabulary,
+                                    dependencies: evalLocalDependencies(none, status: "supported"))
+    }
+    #expect(none.calls.isEmpty)
+    #expect(EvalLocal.runIDs(in: session).isEmpty)
+
+    // The microphone is transcribed and saved; the system track fails.
+    let failing = FakeSpeechFactory([FakeSpeechScript(segments: [heard]),
+                                     FakeSpeechScript(makeError: .unavailable("The speech service is busy."))])
+    await #expect(throws: HolosError.self) {
+        _ = try await EvalLocal.run(session: session, options: .init(), vocabulary: vocabulary,
+                                    dependencies: evalLocalDependencies(failing),
+                                    now: Date(timeIntervalSince1970: 1_790_000_000))
+    }
+    let id = try #require(EvalLocal.runIDs(in: session).first)
+    let unfinished = try #require(try EvalLocal.record(id, in: session))
+    #expect(unfinished.completedAt == nil)
+    #expect(unfinished.vocabulary == vocabulary && unfinished.vocabularySource == "current")
+    #expect(unfinished.languages == ["en-CA"] && unfinished.tracks.map(\.track) == ["mic", "system"])
+    #expect(EvalLocal.savedParts(unfinished, in: session) == 1)
+    #expect(failing.calls.map(\.contextualStrings) == [vocabulary, vocabulary])
+    #expect(throws: HolosError.self) { _ = try EvalLocal.resolve("latest", in: session) }
+
+    // The same command resumes: only the system track is transcribed.
+    let resuming = FakeSpeechFactory([FakeSpeechScript(segments: [heard])])
+    let record = try await EvalLocal.run(session: session, options: .init(), vocabulary: vocabulary,
+                                         dependencies: evalLocalDependencies(resuming))
+    #expect(record.id == id && record.completedAt != nil)
+    #expect(resuming.calls.count == 1)
+    let candidate = try EvalLocal.transcript(of: try EvalLocal.resolve("latest", in: session), in: session)
+    #expect(candidate.id == record.transcriptID)
+    #expect(Set(candidate.segments.compactMap(\.track)) == ["mic", "system"])
+    #expect(candidate.segments.map(\.text) == ["we ship on Kubernetes", "we ship on Kubernetes"])
+
+    // The meeting itself is untouched: transcript, exports, speaker labels, vocabulary.json.
+    let after = SessionFixtures.files(in: session).filter { !$0.key.contains("eval/") }
+    #expect(after == before)
+    #expect(try SessionArchive.currentTranscriptID(at: session) == transcript.id)
+
+    // Without vocabulary, a new run; deleting one removes it.
+    let bare = FakeSpeechFactory([FakeSpeechScript(segments: [heard]), FakeSpeechScript(segments: [heard])])
+    let second = try await EvalLocal.run(session: session, options: .init(), vocabulary: nil,
+                                         dependencies: evalLocalDependencies(bare),
+                                         now: Date(timeIntervalSince1970: 1_790_000_100))
+    #expect(second.id != id && second.vocabulary.isEmpty && second.vocabularySource == "none")
+    #expect(bare.calls.map(\.contextualStrings) == [[], []])
+    #expect(try EvalStore.deleteRun(second.id, in: session))
+    #expect(EvalLocal.runIDs(in: session) == [id])
+    #expect(throws: HolosError.self) { _ = try EvalLocal.record("../x", in: session) }
+}
+
+@Test func evalCompareWithALocalCandidateCountsTermsAndLeavesTheCurrentReport() async throws {
+    let temp = try TemporaryDirectory("eval")
+    defer { temp.remove() }
+    let (session, run, transcript) = try await evalSessionWithCloudRun(
+        in: temp.url, words: ["hello", "team", "we", "deploy", "on", "cube", "control", "today"],
+        cloud: "Hello team, we deploy on Kubernetes today.")
+    let terms = EvalTerms.terms(wordList: ["Kubernetes"], corrections: ["Grafana"])
+    let current = try EvalCompare.compare(session: session, run: run, terms: terms, now: SessionFixtures.date)
+    #expect(current.terms?.map { "\($0.term) \($0.hits)/\($0.cloud)" } == ["Kubernetes 0/1"])
+    #expect(current.termsNotHeard == 1)
+    #expect(current.local?.source == "current" && current.local?.vocabulary == "vocabulary.json")
+    let currentFiles = try EvalCompare.write(current, session: session)
+
+    let heard = SessionFixtures.segment(["hello", "team", "we", "deploy", "on", "Kubernetes", "today"], track: nil,
+                                        start: 0.5)
+    let speech = FakeSpeechFactory([FakeSpeechScript(segments: [heard])])
+    let record = try await EvalLocal.run(session: session, options: .init(), vocabulary: ["Kubernetes"],
+                                         dependencies: evalLocalDependencies(speech))
+    let candidate = try EvalCompare.compare(session: session, run: run, local: .candidate(record), terms: terms)
+    #expect(candidate.local?.source == record.id)
+    #expect(candidate.local?.vocabulary == "current" && candidate.local?.vocabularyCount == 1)
+    #expect(candidate.transcriptID == record.transcriptID && candidate.transcriptID != transcript.id)
+    #expect(candidate.terms?.map { "\($0.term) \($0.hits)/\($0.cloud)" } == ["Kubernetes 1/1"])
+    #expect(candidate.passages.filter(\.needsReview).isEmpty)
+    let written = try EvalCompare.write(candidate, session: session)
+    #expect(written.markdown.deletingLastPathComponent().lastPathComponent == record.id)
+    #expect(SessionFixtures.text(written.markdown).contains("local run \(record.id)"))
+    // The comparison of the current transcript is still the one review and apply read.
+    #expect(try EvalCompare.readReport(run: run.id, session: session) == current)
+    #expect(SessionFixtures.exists(currentFiles.markdown))
+    let decisions = ReviewDecisions(sessionID: candidate.sessionID, run: run.id, transcriptID: candidate.transcriptID,
+                                    decisions: [])
+    #expect(throws: HolosError.self) { _ = try EvalApply.build(session: session, report: candidate, decisions: decisions) }
+
+    // Deleting the local run removes its comparisons too.
+    #expect(try EvalStore.deleteRun(record.id, in: session))
+    #expect(!SessionFixtures.exists(written.markdown))
+    #expect(SessionFixtures.exists(currentFiles.markdown))
+}

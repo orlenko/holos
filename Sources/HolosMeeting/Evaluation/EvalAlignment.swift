@@ -356,15 +356,46 @@ public struct EvalPassage: Codable, Sendable, Equatable {
     /// Local word positions [first, end) in the track's compared local words; first == end when local has none.
     public var localFirst: Int
     public var localEnd: Int
+    /// A word passage whose sides are the same words under the normalized comparison (numbers written in digits or
+    /// words, fillers, compounds; `NormalizedAlignment`): hidden on the review page by default and ignored by apply.
+    /// Always false in a raw comparison.
+    public var formattingOnly: Bool
 
     public init(id: String, track: String, start: Double, end: Double, local: String, cloud: String,
                 group: PassageGroup, before: String, after: String, cloudBefore: String? = nil,
-                cloudAfter: String? = nil, localFirst: Int, localEnd: Int) {
+                cloudAfter: String? = nil, localFirst: Int, localEnd: Int, formattingOnly: Bool = false) {
         self.id = id; self.track = track; self.start = start; self.end = end; self.local = local; self.cloud = cloud
         self.group = group; self.before = before; self.after = after
         self.cloudBefore = cloudBefore ?? before; self.cloudAfter = cloudAfter ?? after
-        self.localFirst = localFirst; self.localEnd = localEnd
+        self.localFirst = localFirst; self.localEnd = localEnd; self.formattingOnly = formattingOnly
     }
+
+    enum CodingKeys: String, CodingKey {
+        case id, track, start, end, local, cloud, group, before, after, cloudBefore, cloudAfter, localFirst, localEnd
+        case formattingOnly
+    }
+
+    /// A report written before the normalized comparison has no `formattingOnly`: every passage is a word passage.
+    public init(from decoder: any Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id)
+        track = try c.decode(String.self, forKey: .track)
+        start = try c.decode(Double.self, forKey: .start)
+        end = try c.decode(Double.self, forKey: .end)
+        local = try c.decode(String.self, forKey: .local)
+        cloud = try c.decode(String.self, forKey: .cloud)
+        group = try c.decode(PassageGroup.self, forKey: .group)
+        before = try c.decode(String.self, forKey: .before)
+        after = try c.decode(String.self, forKey: .after)
+        cloudBefore = try c.decode(String.self, forKey: .cloudBefore)
+        cloudAfter = try c.decode(String.self, forKey: .cloudAfter)
+        localFirst = try c.decode(Int.self, forKey: .localFirst)
+        localEnd = try c.decode(Int.self, forKey: .localEnd)
+        formattingOnly = try c.decodeIfPresent(Bool.self, forKey: .formattingOnly) ?? false
+    }
+
+    /// A passage the review page shows by default: words differ, and not only in formatting.
+    public var needsReview: Bool { group != .caseOrPunctuation && !formattingOnly }
 }
 
 public enum PassageGrouping {
@@ -425,6 +456,14 @@ public struct WindowComparison: Sendable, Equatable {
     public var score = EvalScore()
     /// Word passages and case/punctuation-only passages, in order; ids are left empty for the caller to number.
     public var passages: [EvalPassage] = []
+    /// The same comparison with fillers left out and numbers and compounds taken as the same words
+    /// (`NormalizedAlignment`, run on each word passage): its words exclude fillers; echo counts are the raw ones.
+    public var normalized = EvalScore()
+    public var normalization = NormalizationCounts()
+    /// Per cloud word: nil when it was left out as echo; else whether the local transcript has the same word there,
+    /// by key (`cloudMatched`) or under the normalized comparison (`cloudEquivalent`).
+    public var cloudMatched: [Bool?] = []
+    public var cloudEquivalent: [Bool?] = []
 }
 
 public enum WindowComparer {
@@ -507,12 +546,36 @@ public enum WindowComparer {
 
         var run: [Int] = []  // op positions of the current edit run
         var punctuationRun: [Int] = []
+        result.cloudMatched = [Bool?](repeating: nil, count: cloud.count)
+        result.cloudEquivalent = [Bool?](repeating: nil, count: cloud.count)
         func flush(_ positions: inout [Int], caseOnly: Bool) {
             guard !positions.isEmpty else { return }
-            result.passages.append(passage(track: track, ops: ops, positions: positions, local: local, cloud: cloud,
-                                           windowStart: start, windowEnd: end, previousLocal: previousLocalIndex,
-                                           nextLocal: nextLocalIndex, caseOnly: caseOnly,
-                                           localOffset: localOffset))
+            var made = passage(track: track, ops: ops, positions: positions, local: local, cloud: cloud,
+                               windowStart: start, windowEnd: end, previousLocal: previousLocalIndex,
+                               nextLocal: nextLocalIndex, caseOnly: caseOnly, localOffset: localOffset)
+            if !caseOnly {
+                // The passage's words aligned again with the normalized comparison: its remaining edits are the
+                // normalized score's, and a passage with none differs only in formatting.
+                let localIndices = positions.compactMap { localIndex(ops[$0]) }
+                let cloudIndices = positions.compactMap { cloudIndex(ops[$0]) }
+                let a = localIndices.map { local[$0].text }, b = cloudIndices.map { cloud[$0].text }
+                let normalizedOps = NormalizedAlignment.align(a, b)
+                let scored = NormalizedAlignment.score(normalizedOps, a: a, b: b)
+                result.normalized.add(scored.score)
+                result.normalization.add(scored.counts)
+                made.formattingOnly = scored.score.edits == 0
+                for j in cloudIndices { result.cloudMatched[j] = false }
+                for op in normalizedOps {
+                    switch op {
+                    case .equal(_, let j, _): result.cloudEquivalent[cloudIndices[j]] = true
+                    case .join(_, let range, _): for j in range { result.cloudEquivalent[cloudIndices[j]] = true }
+                    case .fillerCloud(let j): result.cloudEquivalent[cloudIndices[j]] = true
+                    case .substitute(_, let j), .cloudOnly(let j): result.cloudEquivalent[cloudIndices[j]] = false
+                    case .fillerLocal, .localOnly: break
+                    }
+                }
+            }
+            result.passages.append(made)
             positions.removeAll()
         }
         for (position, op) in ops.enumerated() {
@@ -527,8 +590,17 @@ public enum WindowComparer {
                 continue
             }
             switch op {
-            case .match(_, _, let exact):
+            case .match(let i, let j, let exact):
                 result.score.localWords += 1; result.score.cloudWords += 1; result.score.matches += 1
+                result.cloudMatched[j] = true
+                result.cloudEquivalent[j] = true
+                if EvalNormalization.isFiller(local[i].text) {
+                    result.normalization.fillersLocal += 1; result.normalization.fillersCloud += 1
+                } else {
+                    result.normalized.localWords += 1; result.normalized.cloudWords += 1
+                    result.normalized.matches += 1
+                    if !exact { result.normalized.caseOrPunctuationOnly += 1 }
+                }
                 flush(&run, caseOnly: false)
                 if exact {
                     flush(&punctuationRun, caseOnly: true)
@@ -552,6 +624,8 @@ public enum WindowComparer {
         }
         flush(&run, caseOnly: false)
         flush(&punctuationRun, caseOnly: true)
+        result.normalized.echoLocalWords = result.score.echoLocalWords
+        result.normalized.echoCloudWords = result.score.echoCloudWords
         return result
     }
 

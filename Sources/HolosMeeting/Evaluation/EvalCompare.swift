@@ -7,14 +7,50 @@ import HolosStorage
 public struct CompareReport: Codable, Sendable, Equatable {
     public struct TrackReport: Codable, Sendable, Equatable {
         public var track: String
+        /// The raw comparison: every word difference but case and punctuation counts.
         public var score: EvalScore
         /// Word passages per group (case/punctuation-only passages included).
         public var groups: [String: Int]
         /// Segments where the cloud text is much shorter than the local one (the model may have cut its answer).
         public var warnings: [String]
+        /// The normalized comparison (nil in a raw one, or a report made before it existed).
+        public var normalized: EvalScore?
+        public var normalization: NormalizationCounts?
+
+        public init(track: String, score: EvalScore, groups: [String: Int], warnings: [String],
+                    normalized: EvalScore? = nil, normalization: NormalizationCounts? = nil) {
+            self.track = track; self.score = score; self.groups = groups; self.warnings = warnings
+            self.normalized = normalized; self.normalization = normalization
+        }
+
+        /// More of the track's local words were left out as echo of the system track than were kept: what is left
+        /// is little and mostly what the echo filter missed, so its WER says little about recognition.
+        public var mostlyEcho: Bool { score.echoLocalWords > score.localWords }
+
+        /// The score the report leads with: the normalized one when there is one.
+        public var headline: EvalScore { normalized ?? score }
     }
 
-    public var schemaVersion = 1
+    /// The local transcript compared.
+    public struct LocalVersion: Codable, Sendable, Equatable {
+        /// "current" (the session's current transcript) or a local run ID (`voiceislocal eval local`).
+        public var source: String
+        public var languages: [String]
+        /// Where the recognizer's vocabulary came from: "vocabulary.json" (what the meeting was recorded with),
+        /// "current" (the word list, people's names, and correction words when the local run started), or "none".
+        public var vocabulary: String
+        public var vocabularyCount: Int
+        public var madeAt: Date?
+
+        public init(source: String, languages: [String], vocabulary: String, vocabularyCount: Int, madeAt: Date?) {
+            self.source = source; self.languages = languages; self.vocabulary = vocabulary
+            self.vocabularyCount = vocabularyCount; self.madeAt = madeAt
+        }
+    }
+
+    public static let currentSchemaVersion = 2
+
+    public var schemaVersion = CompareReport.currentSchemaVersion
     public var sessionID: String
     public var run: String
     public var model: String
@@ -25,6 +61,29 @@ public struct CompareReport: Codable, Sendable, Equatable {
     public var tracks: [TrackReport]
     /// Every passage, by track then time. Case/punctuation-only passages are listed too.
     public var passages: [EvalPassage]
+    /// "normalized" (the default) or "raw" (nil in a report made before there was a choice: raw).
+    public var mode: String?
+    public var normalizedTotal: EvalScore?
+    public var normalizationTotal: NormalizationCounts?
+    /// Vocabulary terms the cloud text has, with the local transcript's hits and misses (nil before there were any).
+    public var terms: [TermStat]?
+    /// Terms looked for that the cloud text never has.
+    public var termsNotHeard: Int?
+    public var local: LocalVersion?
+
+    public init(sessionID: String, run: String, model: String, transcriptID: String, createdAt: Date,
+                total: EvalScore, tracks: [TrackReport], passages: [EvalPassage], mode: String? = nil,
+                normalizedTotal: EvalScore? = nil, normalizationTotal: NormalizationCounts? = nil,
+                terms: [TermStat]? = nil, termsNotHeard: Int? = nil, local: LocalVersion? = nil) {
+        self.sessionID = sessionID; self.run = run; self.model = model; self.transcriptID = transcriptID
+        self.createdAt = createdAt; self.total = total; self.tracks = tracks; self.passages = passages
+        self.mode = mode; self.normalizedTotal = normalizedTotal; self.normalizationTotal = normalizationTotal
+        self.terms = terms; self.termsNotHeard = termsNotHeard; self.local = local
+    }
+
+    public var isNormalized: Bool { mode == "normalized" }
+    /// A comparison of the session's current transcript (what review and apply work on).
+    public var isOfCurrentTranscript: Bool { (local?.source ?? "current") == "current" }
 }
 
 /// `voiceislocal eval compare` (docs/reference-evaluation.md, "Cloud reference").
@@ -114,30 +173,74 @@ public enum EvalCompare {
         return true
     }
 
-    /// Compares the current transcript with the run's cloud tracks, segment by segment.
-    public static func compare(session: URL, run: CloudRunRecord, now: Date = Date()) throws -> CompareReport {
-        guard let transcript = try SessionFiles.currentTranscript(session: session) else {
-            throw HolosError.invalidInput("This session has no transcript to compare.")
-        }
+    /// Which local transcript to compare.
+    public enum LocalChoice: Sendable, Equatable {
+        /// The session's current transcript.
+        case current
+        /// A finished `voiceislocal eval local` run.
+        case candidate(LocalRunRecord)
+    }
+
+    /// Compares a local transcript (the current one, or a local candidate) with the run's cloud tracks, segment by
+    /// segment. `normalize` (the default) also scores the normalized comparison and marks formatting-only passages;
+    /// `terms` are counted in the cloud text with the local transcript's hits (under the normalized comparison, or by
+    /// key in a raw one).
+    public static func compare(session: URL, run: CloudRunRecord, local choice: LocalChoice = .current,
+                               normalize: Bool = true, terms: [EvalTerms.Term] = [],
+                               now: Date = Date()) throws -> CompareReport {
         let manifest = try SessionArchive.readManifest(at: session)
+        let transcript: Transcript
+        let version: CompareReport.LocalVersion
+        switch choice {
+        case .current:
+            guard let current = try SessionFiles.currentTranscript(session: session) else {
+                throw HolosError.invalidInput("This session has no transcript to compare.")
+            }
+            transcript = current
+            let recorded = (try? TranscriptRebuilder.sessionVocabulary(session)) ?? []
+            version = CompareReport.LocalVersion(source: "current", languages: current.languages ?? [current.locale],
+                                                 vocabulary: "vocabulary.json", vocabularyCount: recorded.count,
+                                                 madeAt: current.createdAt)
+        case .candidate(let record):
+            transcript = try EvalLocal.transcript(of: record, in: session)
+            version = CompareReport.LocalVersion(source: record.id, languages: record.languages,
+                                                 vocabulary: record.vocabularySource,
+                                                 vocabularyCount: record.vocabulary.count, madeAt: record.completedAt)
+        }
         let meeting = try? SessionFiles.meetingInfo(session: session, manifest: manifest)
         let parameters = meeting.map(SpeakerAnalysis.alignmentParameters(meeting:)) ?? .v1
         var total = EvalScore()
+        var normalizedTotal = EvalScore()
+        var normalizationTotal = NormalizationCounts()
         var tracks: [CompareReport.TrackReport] = []
         var passages: [EvalPassage] = []
+        var termTracks: [(words: [String], covered: [Bool?])] = []
         for plan in run.tracks {
             guard let cloud = try EvalStore.read(CloudTrackResult.self,
                                                  from: EvalPaths.trackResult(run.id, track: plan.track, in: session))
             else { throw HolosError.incomplete("Run \(run.id) has no stitched \(plan.track) track.") }
             let local = localTokens(transcript, track: plan.track, parameters: parameters,
                                     untrackedOwner: run.tracks.first?.track)
-            let compared = compareTrack(track: plan.track, local: local, cloud: cloud)
+            var compared = compareTrack(track: plan.track, local: local, cloud: cloud)
+            if !normalize {
+                compared.report.normalized = nil
+                compared.report.normalization = nil
+                for index in compared.passages.indices { compared.passages[index].formattingOnly = false }
+            }
             total.add(compared.report.score)
+            if let normalized = compared.report.normalized { normalizedTotal.add(normalized) }
+            if let counts = compared.report.normalization { normalizationTotal.add(counts) }
             tracks.append(compared.report)
             passages += compared.passages
+            termTracks.append((compared.cloud.map(\.text), normalize ? compared.cloudEquivalent : compared.cloudMatched))
         }
+        let termStats = EvalTerms.count(terms, tracks: termTracks)
         return CompareReport(sessionID: manifest.id, run: run.id, model: run.model, transcriptID: transcript.id,
-                             createdAt: now, total: total, tracks: tracks, passages: passages)
+                             createdAt: now, total: total, tracks: tracks, passages: passages,
+                             mode: normalize ? "normalized" : "raw",
+                             normalizedTotal: normalize ? normalizedTotal : nil,
+                             normalizationTotal: normalize ? normalizationTotal : nil,
+                             terms: termStats, termsNotHeard: terms.count - termStats.count, local: version)
     }
 
     /// Operations on each side of a segment boundary that are always aligned again together (`repairBoundaries`).
@@ -147,8 +250,16 @@ public enum EvalCompare {
     /// own audio begins (after any overlap) to where the next one's begins (the first and last windows are open).
     /// A word said across a cut can fall in one window locally and in the other in the cloud text, so the edits
     /// around each boundary are aligned again across it before the whole track is scored.
-    static func compareTrack(track: String, local: [EvalToken], cloud: CloudTrackResult)
-        -> (report: CompareReport.TrackReport, passages: [EvalPassage]) {
+    struct TrackComparison {
+        var report: CompareReport.TrackReport
+        var passages: [EvalPassage]
+        /// The track's cloud words, and per word whether the local transcript has it (`WindowComparison`).
+        var cloud: [EvalToken]
+        var cloudMatched: [Bool?]
+        var cloudEquivalent: [Bool?]
+    }
+
+    static func compareTrack(track: String, local: [EvalToken], cloud: CloudTrackResult) -> TrackComparison {
         var warnings: [String] = []
         let segments = cloud.segments
         let starts = segments.map { $0.sessionStart + $0.overlapSeconds }
@@ -183,8 +294,11 @@ public enum EvalCompare {
         for index in result.passages.indices { result.passages[index].id = "\(track)-\(index + 1)" }
         var groups: [String: Int] = [:]
         for passage in result.passages { groups[passage.group.rawValue, default: 0] += 1 }
-        return (CompareReport.TrackReport(track: track, score: result.score, groups: groups, warnings: warnings),
-                result.passages)
+        return TrackComparison(
+            report: CompareReport.TrackReport(track: track, score: result.score, groups: groups, warnings: warnings,
+                                              normalized: result.normalized, normalization: result.normalization),
+            passages: result.passages, cloud: allCloud, cloudMatched: result.cloudMatched,
+            cloudEquivalent: result.cloudEquivalent)
     }
 
     private static func shifted(_ op: AlignmentOp, local: Int, cloud: Int) -> AlignmentOp {
@@ -282,10 +396,13 @@ public enum EvalCompare {
         return tokens
     }
 
-    /// Writes report.json and report.md into eval/compare/<run>/, replacing an older report.
+    /// Writes report.json and report.md into eval/compare/<run>/ (a local candidate's into eval/compare/<run>/<local
+    /// run>/), replacing an older report.
     @discardableResult
     public static func write(_ report: CompareReport, session: URL) throws -> (markdown: URL, json: URL) {
-        let folder = EvalPaths.compare(report.run, in: session)
+        let candidate = report.isOfCurrentTranscript ? nil : report.local?.source
+        if let candidate { try EvalStore.checkRunID(candidate) }
+        let folder = EvalPaths.compare(report.run, local: candidate, in: session)
         let json = folder.appendingPathComponent("report.json")
         let markdown = folder.appendingPathComponent("report.md")
         try EvalStore.write(report, to: json)
@@ -293,11 +410,19 @@ public enum EvalCompare {
         return (markdown, json)
     }
 
-    /// Reads eval/compare/<run>/report.json.
+    /// Reads eval/compare/<run>/report.json (the comparison of the current transcript).
     public static func readReport(run: String, session: URL) throws -> CompareReport? {
         try EvalStore.checkRunID(run)
         return try EvalStore.read(CompareReport.self,
                                   from: EvalPaths.compare(run, in: session).appendingPathComponent("report.json"))
+    }
+
+    /// Whether a report of the current transcript `transcriptID` can be reused as it is: one made before the
+    /// normalized comparison (schema 1) cannot mark formatting-only passages.
+    public static func isCurrent(_ report: CompareReport?, transcriptID: String?) -> Bool {
+        guard let report else { return false }
+        return report.transcriptID == transcriptID && report.schemaVersion >= CompareReport.currentSchemaVersion
+            && report.isOfCurrentTranscript
     }
 
     public static func percent(_ value: Double?) -> String {
@@ -305,51 +430,145 @@ public enum EvalCompare {
         return String(format: "%.1f %%", locale: Locale(identifier: "en_US_POSIX"), value * 100)
     }
 
+    /// "the current transcript (vocabulary.json: 12 strings)", "local run local-… (en-CA; current vocabulary: 40
+    /// strings)".
+    static func localDescription(_ report: CompareReport) -> String {
+        guard let local = report.local else { return "transcript \(report.transcriptID)" }
+        let vocabulary = local.vocabulary == "none" ? "no vocabulary"
+            : "\(local.vocabulary == "current" ? "vocabulary as of the run" : local.vocabulary): "
+                + "\(local.vocabularyCount) strings"
+        if local.source == "current" {
+            return "the current transcript \(report.transcriptID) (\(vocabulary))"
+        }
+        return "local run \(local.source) (\(local.languages.joined(separator: ", ")); \(vocabulary))"
+    }
+
+    /// Why a track's WER says little: shown next to it in the summary and the report.
+    static func echoNote(_ track: CompareReport.TrackReport) -> String {
+        "unreliable: mostly echo (\(track.score.echoLocalWords) local words were echo of the system track, "
+            + "\(track.score.localWords) kept)"
+    }
+
     public static func summaryLines(_ report: CompareReport) -> [String] {
-        var lines = ["Run \(report.run) (\(report.model)) against transcript \(report.transcriptID):"]
+        var lines = ["Run \(report.run) (\(report.model)) against \(localDescription(report)), "
+            + (report.isNormalized ? "normalized:" : "raw:")]
         for track in report.tracks {
-            let s = track.score
-            lines.append("  \(track.track): \(s.localWords) local words, \(s.cloudWords) cloud words; "
+            let s = track.headline
+            var line = "  \(track.track): \(s.localWords) local words, \(s.cloudWords) cloud words; "
                 + "WER \(percent(s.werAgainstLocal)) against local, \(percent(s.werAgainstCloud)) against cloud; "
-                + "\(s.substitutions) changed, \(s.localOnly) only local, \(s.cloudOnly) only cloud")
+                + "\(s.substitutions) changed, \(s.localOnly) only local, \(s.cloudOnly) only cloud"
+            if track.normalized != nil {
+                line += " (raw WER \(percent(track.score.werAgainstLocal)), \(percent(track.score.werAgainstCloud)))"
+            }
+            lines.append(line)
+            if track.mostlyEcho { lines.append("  \(track.track) is \(echoNote(track)).") }
             for warning in track.warnings { lines.append("  Note: \(warning)") }
         }
-        let wordPassages = report.passages.filter { $0.group != .caseOrPunctuation }.count
-        lines.append("\(wordPassages) passages differ in words; "
-            + "\(report.passages.count - wordPassages) only in case or punctuation.")
+        let words = report.passages.filter { $0.group != .caseOrPunctuation }
+        let formatting = words.filter(\.formattingOnly).count
+        lines.append("\(words.count - formatting) passages differ in words"
+            + (report.isNormalized ? " (\(formatting) more only in numbers, fillers, or compounds)" : "")
+            + "; \(report.passages.count - words.count) only in case or punctuation.")
+        if let terms = report.terms, !terms.isEmpty {
+            let misses = terms.reduce(0) { $0 + $1.misses }, heard = terms.reduce(0) { $0 + $1.cloud }
+            lines.append("Terms: \(heard - misses) of \(heard) found where the cloud has them; most missed: "
+                + terms.prefix(5).filter { $0.misses > 0 }.map { "\($0.term) \($0.misses)/\($0.cloud)" }
+                    .joined(separator: ", "))
+        }
         return lines
     }
 
-    /// report.md: the scores, then the passages by group with their times.
+    /// report.md: the scores, the terms, then the passages by group with their times.
     public static func markdown(_ report: CompareReport) -> String {
         var out = "# Local and cloud transcripts compared\n\n"
-        out += "Run `\(report.run)` (\(report.model)), local transcript `\(report.transcriptID)`.\n\n"
+        out += "Run `\(report.run)` (\(report.model)) against \(escape(localDescription(report))).\n\n"
         out += "Neither transcript is taken as the truth: WER is given against each. Passages where they differ are "
         out += "listed by kind; review them with `voiceislocal eval review`.\n\n"
-        out += "| Track | Local words | Cloud words | Changed | Only local | Only cloud | Case/punct. only | "
-        out += "WER vs local | WER vs cloud | Echo words left out |\n"
-        out += "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |\n"
-        for track in report.tracks + [CompareReport.TrackReport(track: "All", score: report.total, groups: [:],
-                                                                 warnings: [])] {
-            let s = track.score
-            out += "| \(track.track) | \(s.localWords) | \(s.cloudWords) | \(s.substitutions) | \(s.localOnly) | "
-            out += "\(s.cloudOnly) | \(s.caseOrPunctuationOnly) | \(percent(s.werAgainstLocal)) | "
-            out += "\(percent(s.werAgainstCloud)) | \(s.echoLocalWords) |\n"
+        if report.isNormalized {
+            out += "**WER** is normalized: a number written in digits on one side and in words on the other "
+            out += "(\"3\"/\"three\", \"1st\"/\"first\", \"+30\"/\"plus 30\", \"30%\"/\"thirty percent\"), a filler "
+            out += "(um, uh, er, erm, hmm, mm, ah, euh, heu, bah, hein) on either side, a compound written as one "
+            out += "word or as two or three (\"TestFlight\"/\"test flight\"), and case or punctuation are not "
+            out += "errors; fillers are left out of the word counts. **Raw WER** counts every word difference but "
+            out += "case and punctuation.\n\n"
+            out += "| Track | Local words | Cloud words | Changed | Only local | Only cloud | WER vs local | "
+            out += "WER vs cloud | Raw WER vs local | Raw WER vs cloud | Fillers local / cloud | Numbers | "
+            out += "Compounds | Echo words left out |\n"
+            out += "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |\n"
+            let all = CompareReport.TrackReport(track: "All", score: report.total, groups: [:], warnings: [],
+                                                normalized: report.normalizedTotal,
+                                                normalization: report.normalizationTotal)
+            for track in report.tracks + [all] {
+                let s = track.headline, raw = track.score, counts = track.normalization ?? NormalizationCounts()
+                let name = track.track + (track.mostlyEcho ? " ⚠︎ unreliable: mostly echo" : "")
+                out += "| \(name) | \(s.localWords) | \(s.cloudWords) | \(s.substitutions) | \(s.localOnly) | "
+                out += "\(s.cloudOnly) | \(percent(s.werAgainstLocal)) | \(percent(s.werAgainstCloud)) | "
+                out += "\(percent(raw.werAgainstLocal)) | \(percent(raw.werAgainstCloud)) | "
+                out += "\(counts.fillersLocal) / \(counts.fillersCloud) | \(counts.numbers) | \(counts.compounds) | "
+                out += "\(raw.echoLocalWords) |\n"
+            }
+        } else {
+            out += "**Raw comparison** (`--raw`): every word difference but case and punctuation counts.\n\n"
+            out += "| Track | Local words | Cloud words | Changed | Only local | Only cloud | Case/punct. only | "
+            out += "WER vs local | WER vs cloud | Echo words left out |\n"
+            out += "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |\n"
+            for track in report.tracks + [CompareReport.TrackReport(track: "All", score: report.total, groups: [:],
+                                                                     warnings: [])] {
+                let s = track.score
+                let name = track.track + (track.mostlyEcho ? " ⚠︎ unreliable: mostly echo" : "")
+                out += "| \(name) | \(s.localWords) | \(s.cloudWords) | \(s.substitutions) | \(s.localOnly) | "
+                out += "\(s.cloudOnly) | \(s.caseOrPunctuationOnly) | \(percent(s.werAgainstLocal)) | "
+                out += "\(percent(s.werAgainstCloud)) | \(s.echoLocalWords) |\n"
+            }
         }
-        let warnings = report.tracks.flatMap { track in track.warnings.map { "\(track.track): \($0)" } }
-        if !warnings.isEmpty {
-            out += "\n" + warnings.map { "- \($0)" }.joined(separator: "\n") + "\n"
+        var notes = report.tracks.filter(\.mostlyEcho).map { track in
+            "\(track.track) is \(echoNote(track)): the echo filter left out more of its words than it kept, so "
+                + "what is left is mostly what the filter missed, and its WER says little about recognition."
+        }
+        notes += report.tracks.flatMap { track in track.warnings.map { "\(track.track): \($0)" } }
+        if !notes.isEmpty {
+            out += "\n" + notes.map { "- \(escape($0))" }.joined(separator: "\n") + "\n"
+        }
+        if let terms = report.terms {
+            out += "\n## Terms\n\n"
+            out += "Each word-list term and each correction's meant phrase, where the cloud text has it (echo left "
+            out += "out): whether the local transcript has the same words at the aligned position"
+            out += report.isNormalized ? " (under the normalized comparison)" : ""
+            out += ". Sorted by misses.\n\n"
+            if terms.isEmpty {
+                out += "The cloud text has none of the \(report.termsNotHeard ?? 0) terms.\n"
+            } else {
+                out += "| Term | Source | In cloud | Local hits | Local misses |\n| --- | --- | ---: | ---: | ---: |\n"
+                for term in terms {
+                    let source = term.source == .wordList ? "word list" : "correction"
+                    out += "| \(escape(term.term)) | \(source) | \(term.cloud) | \(term.hits) | \(term.misses) |\n"
+                }
+                if let unheard = report.termsNotHeard, unheard > 0 {
+                    out += "\n\(unheard) more terms are not in the cloud text.\n"
+                }
+            }
         }
         for group in PassageGroup.allCases {
-            let items = report.passages.filter { $0.group == group }
+            let items = report.passages.filter { $0.group == group && !$0.formattingOnly }
             guard !items.isEmpty else { continue }
             out += "\n## \(group.title) (\(items.count))\n\n"
-            out += "| Time | Track | Local | Cloud |\n| --- | --- | --- | --- |\n"
-            for passage in items {
-                out += "| \(TimeLabel.clock(passage.start)) | \(passage.track) | "
-                out += cell(passage.local, before: passage.before, after: passage.after) + " | "
-                out += cell(passage.cloud, before: passage.cloudBefore, after: passage.cloudAfter) + " |\n"
-            }
+            out += passageTable(items)
+        }
+        let formatting = report.passages.filter(\.formattingOnly)
+        if !formatting.isEmpty {
+            out += "\n## Formatting only: numbers, fillers, compounds (\(formatting.count))\n\n"
+            out += "The same words under the normalized comparison; hidden on the review page unless shown.\n\n"
+            out += passageTable(formatting)
+        }
+        return out
+    }
+
+    private static func passageTable(_ items: [EvalPassage]) -> String {
+        var out = "| Time | Track | Local | Cloud |\n| --- | --- | --- | --- |\n"
+        for passage in items {
+            out += "| \(TimeLabel.clock(passage.start)) | \(passage.track) | "
+            out += cell(passage.local, before: passage.before, after: passage.after) + " | "
+            out += cell(passage.cloud, before: passage.cloudBefore, after: passage.cloudAfter) + " |\n"
         }
         return out
     }

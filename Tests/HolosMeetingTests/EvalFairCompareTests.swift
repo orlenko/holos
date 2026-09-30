@@ -1,0 +1,295 @@
+import Foundation
+import Testing
+import HolosCore
+@testable import HolosMeeting
+
+// The normalized comparison of `voiceislocal eval compare` (docs/reference-evaluation.md, "Fair comparison"): number
+// spellings, fillers, compounds, term hit rates, the echo flag, and the review page's formatting filter. Synthetic
+// text only.
+
+private func fairTimed(_ words: [String], from start: Double = 0, echo: Set<Int> = []) -> [EvalToken] {
+    words.enumerated().map { index, word in
+        EvalToken(text: word, start: start + Double(index), end: start + Double(index) + 0.8,
+                  echo: echo.contains(index))
+    }
+}
+
+private func fairUntimed(_ text: String) -> [EvalToken] { EvalText.tokens(text).map { EvalToken(text: $0) } }
+
+private func canonical(_ text: String) -> String? {
+    // Cut into words as the comparison cuts them ("30 %" is one word, as "$ 50" is).
+    EvalNormalization.number(EvalText.tokens(text))?.canonical
+}
+
+// MARK: - Numbers
+
+@Test func fairEnglishNumbersHaveOneCanonicalForm() {
+    let table: [(String, String)] = [
+        ("3", "3"), ("three", "3"), ("ten", "10"), ("twenty one", "21"), ("twenty-one", "21"), ("21", "21"),
+        ("one hundred", "100"), ("a hundred", "100"), ("one hundred and five", "105"), ("fifteen hundred", "1500"),
+        ("two thousand twenty six", "2026"), ("twenty twenty six", "2026"), ("nineteen eighty four", "1984"),
+        ("twenty oh five", "2005"), ("1,000", "1000"), ("a thousand", "1000"), ("three point five", "3.5"),
+        ("3.5", "3.5"), ("first", "1º"), ("1st", "1º"), ("second", "2º"), ("2nd", "2º"), ("third", "3º"),
+        ("3rd", "3º"), ("twenty first", "21º"), ("21st", "21º"), ("fourth", "4º"), ("twelfth", "12º"),
+        ("twentieth", "20º"), ("plus 30", "+30"), ("+30", "+30"), ("plus thirty", "+30"), ("30%", "30%"),
+        ("30 %", "30%"), ("thirty percent", "30%"), ("30 percent", "30%"), ("thirty per cent", "30%"),
+        ("zero", "0"), ("Three,", "3"), ("007", "7"),
+    ]
+    for (text, expected) in table {
+        #expect(canonical(text) == expected, "\(text)")
+    }
+}
+
+@Test func fairFrenchNumbersHaveOneCanonicalForm() {
+    let table: [(String, String)] = [
+        ("trois", "3"), ("dix", "10"), ("vingt et un", "21"), ("vingt-deux", "22"), ("soixante-dix", "70"),
+        ("soixante et onze", "71"), ("soixante-dix-sept", "77"), ("quatre-vingts", "80"), ("quatre-vingt-un", "81"),
+        ("quatre-vingt-dix", "90"), ("quatre-vingt-dix-neuf", "99"), ("dix-sept", "17"), ("cent", "100"),
+        ("deux cents", "200"), ("cent cinq", "105"), ("mille", "1000"), ("deux mille vingt-six", "2026"),
+        ("trois millions", "3000000"), ("premier", "1º"), ("première", "1º"), ("1er", "1º"), ("1re", "1º"),
+        ("deuxième", "2º"), ("2e", "2º"), ("2ème", "2º"), ("cinquième", "5º"), ("neuvième", "9º"),
+        ("vingt et unième", "21º"), ("trente pour cent", "30%"), ("30 pourcent", "30%"),
+        ("trois virgule cinq", "3.5"), ("3,5", "3.5"), ("trois virgule vingt-cinq", "3.25"),
+    ]
+    for (text, expected) in table {
+        #expect(canonical(text) == expected, "\(text)")
+    }
+}
+
+@Test func fairWordsThatAreNoNumberStayWords() {
+    for text in ["one two", "twenty thirty forty", "five five", "ten five", "hundred", "and five", "a", "plus",
+                 "percent", "3:30", "-5", "$50", "1-2", "v2", "deux trois", "vingt dix", "the first one", "1.5.2",
+                 "oh", "COVID-19", "30%%", "1st%"] {
+        #expect(canonical(text) == nil, "\(text)")
+    }
+    // A decimal keeps its digits: "1.000" is not "1", and "1,5" is 1.5 while "1,500" is 1500.
+    #expect(canonical("1.000") == "1.000")
+    #expect(canonical("1,500") == "1500")
+    #expect(canonical("1,5") == "1.5")
+}
+
+@Test func fairOnlyASpelledNumberAgainstDigitsIsTheSame() {
+    // "three" and "3" are the same; "one" and "un", or "first" and "premier", are not (both spelled).
+    #expect(NormalizedAlignment.align(["three"], ["3"]) == [.equal(0, 0, .number)])
+    #expect(NormalizedAlignment.align(["one"], ["un"]) == [.substitute(0, 0)])
+    #expect(NormalizedAlignment.align(["first"], ["premier"]) == [.substitute(0, 0)])
+    #expect(NormalizedAlignment.align(["1st"], ["1er"]) == [.equal(0, 0, .number)])
+    // Different numbers, and a cardinal against an ordinal, stay errors.
+    #expect(NormalizedAlignment.align(["three"], ["4"]) == [.substitute(0, 0)])
+    #expect(NormalizedAlignment.align(["first"], ["1"]) == [.substitute(0, 0)])
+    #expect(NormalizedAlignment.align(["+30"], ["30"]) == [.substitute(0, 0)])
+    #expect(NormalizedAlignment.align(["30%"], ["30"]) == [.substitute(0, 0)])
+    #expect(NormalizedAlignment.align(["won"], ["1"]) == [.substitute(0, 0)])
+}
+
+// MARK: - Fillers
+
+@Test func fairFillersAreLeftOutOnBothSides() {
+    for word in ["um", "Um,", "uh", "UH.", "er", "erm", "hmm", "Hmm.", "mm", "Mmm", "ah", "ummm", "euh", "heu",
+                 "Euhhh,", "bah", "hein"] {
+        #expect(EvalNormalization.isFiller(word), "\(word)")
+    }
+    for word in ["M", "a", "I", "ben", "umbrella", "uh-huh", "oh", "ahead", "hum", "mhm"] {
+        #expect(!EvalNormalization.isFiller(word), "\(word)")
+    }
+    let local = ["Um,", "so", "we", "uh", "ship"]
+    let cloud = ["So", "we", "ship", "euh"]
+    let ops = NormalizedAlignment.align(local, cloud)
+    #expect(ops == [.fillerLocal(0), .equal(1, 0, .same), .equal(2, 1, .same), .fillerLocal(3),
+                    .equal(4, 2, .same), .fillerCloud(3)])
+    let scored = NormalizedAlignment.score(ops, a: local, b: cloud)
+    #expect(scored.score.localWords == 3 && scored.score.cloudWords == 3 && scored.score.edits == 0)
+    #expect(scored.counts.fillersLocal == 2 && scored.counts.fillersCloud == 1)
+    // A filler is never taken for the word the other side has there.
+    #expect(NormalizedAlignment.align(["uh"], ["a"]) == [.cloudOnly(0), .fillerLocal(0)])
+}
+
+// MARK: - Joins and splits
+
+@Test func fairCompoundsAndSpelledNumbersJoinAndSplit() {
+    #expect(NormalizedAlignment.align(["test", "flight"], ["TestFlight"])
+        == [.join(local: 0..<2, cloud: 0..<1, .compound)])
+    #expect(NormalizedAlignment.align(["ChatGPT"], ["chat", "GPT"]) == [.join(local: 0..<1, cloud: 0..<2, .compound)])
+    #expect(NormalizedAlignment.align(["A", "P", "I"], ["API"]) == [.join(local: 0..<3, cloud: 0..<1, .compound)])
+    #expect(NormalizedAlignment.align(["V", "one,"], ["v1"]) == [.join(local: 0..<2, cloud: 0..<1, .compound)])
+    #expect(NormalizedAlignment.align(["twenty", "one", "people"], ["21", "people"])
+        == [.join(local: 0..<2, cloud: 0..<1, .number), .equal(2, 1, .same)])
+    #expect(NormalizedAlignment.align(["plus", "30"], ["+30"]) == [.join(local: 0..<2, cloud: 0..<1, .number)])
+    #expect(NormalizedAlignment.align(["one", "hundred", "and", "twenty", "five"], ["125"])
+        == [.join(local: 0..<5, cloud: 0..<1, .number)])
+    // Four words are not one compound, digits alone make no compound, and a real error is still one.
+    #expect(NormalizedAlignment.align(["a", "b", "c", "d"], ["abcd"]).contains { $0.isEdit })
+    #expect(NormalizedAlignment.align(["1", "5"], ["15"]).contains { $0.isEdit })
+    #expect(NormalizedAlignment.align(["one", "two"], ["12"]).contains { $0.isEdit })
+    #expect(NormalizedAlignment.align(["React", "Native"], ["reactative"]).contains { $0.isEdit })
+    let local = ["we", "use", "test", "flight", "and", "chat", "GPT"]
+    let cloud = ["We", "use", "TestFlight", "and", "ChatGPT."]
+    let scored = NormalizedAlignment.score(NormalizedAlignment.align(local, cloud), a: local, b: cloud)
+    #expect(scored.score.edits == 0 && scored.counts.compounds == 2)
+    #expect(scored.score.localWords == 7 && scored.score.cloudWords == 5)
+}
+
+// MARK: - Window scores and passages
+
+@Test func fairWindowScoresNormalizedAndMarksFormattingOnlyPassages() {
+    let local = fairTimed(["um", "we", "have", "three", "builds", "in", "test", "flight", "and", "the", "cat"])
+    let cloud = fairUntimed("We have 3 builds in TestFlight and the bat.")
+    let result = WindowComparer.compare(track: "system", local: local, cloud: cloud, start: 0, end: 20)
+    // Raw: "um" only local, "three"/"3", "test flight"/"TestFlight", "cat"/"bat."
+    #expect(result.score.edits == 5)
+    #expect(result.normalized.edits == 1)
+    #expect(result.normalized.localWords == 10 && result.normalized.cloudWords == 9)
+    #expect(result.normalization.fillersLocal == 1)
+    #expect(result.normalization.numbers == 1 && result.normalization.compounds == 1)
+    let words = result.passages.filter { $0.group != .caseOrPunctuation }
+    #expect(words.map(\.local) == ["um", "three", "test flight", "cat"])
+    #expect(words.map(\.formattingOnly) == [true, true, true, false])
+    #expect(words.map(\.needsReview) == [false, false, false, true])
+    // Per cloud word: whether the local transcript has it (raw by key; normalized).
+    #expect(result.cloudMatched == [true, true, false, true, true, false, true, true, false])
+    #expect(result.cloudEquivalent == [true, true, true, true, true, true, true, true, false])
+}
+
+@Test func fairEchoIsLeftOutOfTheNormalizedScoreAndTheTrackIsFlagged() {
+    let local = fairTimed(["hello", "echo", "echo", "echo", "echo", "um", "team"], echo: [1, 2, 3, 4])
+    let cloud = fairUntimed("hello team")
+    let result = WindowComparer.compare(track: "mic", local: local, cloud: cloud, start: 0, end: 10)
+    #expect(result.score.localWords == 3 && result.score.echoLocalWords == 4)
+    #expect(result.normalized.echoLocalWords == 4)
+    #expect(result.normalized.localWords == 2 && result.normalized.edits == 0)
+    let report = CompareReport.TrackReport(track: "mic", score: result.score, groups: [:], warnings: [],
+                                           normalized: result.normalized, normalization: result.normalization)
+    #expect(report.mostlyEcho)
+    // As many echo words as kept ones is not "mostly".
+    var even = result.score
+    even.echoLocalWords = even.localWords
+    #expect(!CompareReport.TrackReport(track: "mic", score: even, groups: [:], warnings: []).mostlyEcho)
+}
+
+// MARK: - Terms
+
+@Test func fairTermsCountHitsAndMissesWhereTheCloudHasThem() {
+    let terms = EvalTerms.terms(wordList: ["TestFlight", "Keycloak", "Urban Sky", "Grafana"],
+                                corrections: ["keycloak", "Kubernetes", "  "])
+    #expect(terms.map(\.text) == ["TestFlight", "Keycloak", "Urban Sky", "Grafana", "Kubernetes"])
+    #expect(terms.map(\.source) == [.wordList, .wordList, .wordList, .wordList, .correction])
+    let words = ["We", "use", "Test", "Flight,", "Keycloak", "and", "Kubernetes", "at", "Urban", "Sky.", "Keycloak"]
+    let covered: [Bool?] = [true, true, true, true, false, true, true, true, true, false, nil]
+    let stats = EvalTerms.count(terms, tracks: [(words, covered)])
+    // Keycloak: one miss, one in echo (not counted). Urban Sky: its second word missed. Grafana: never heard.
+    #expect(stats.map(\.term) == ["Keycloak", "Urban Sky", "Kubernetes", "TestFlight"])
+    #expect(stats.map(\.cloud) == [1, 1, 1, 1])
+    #expect(stats.map(\.hits) == [0, 0, 1, 1])
+    #expect(stats.map(\.misses) == [1, 1, 0, 0])
+    // Whole words only.
+    #expect(EvalTerms.occurrences(of: "sky", in: ["skyline", "sky"]) == [1..<2])
+    #expect(EvalTerms.occurrences(of: "testflight", in: ["test", "flight", "testflight"]) == [0..<2, 2..<3])
+}
+
+@Test func fairTermHitsFollowTheNormalizedComparison() {
+    // The local transcript writes the term as two words: a hit under the normalized comparison, a miss raw.
+    let local = fairTimed(["ship", "it", "in", "test", "flight", "with", "cube", "control"])
+    let cloud = fairUntimed("Ship it in TestFlight with kubectl")
+    let result = WindowComparer.compare(track: "system", local: local, cloud: cloud, start: 0, end: 20)
+    let terms = EvalTerms.terms(wordList: ["TestFlight", "kubectl"], corrections: [])
+    let words = cloud.map(\.text)
+    let normalized = EvalTerms.count(terms, tracks: [(words, result.cloudEquivalent)])
+    let raw = EvalTerms.count(terms, tracks: [(words, result.cloudMatched)])
+    #expect(normalized.map { "\($0.term) \($0.hits)/\($0.cloud)" } == ["kubectl 0/1", "TestFlight 1/1"])
+    #expect(raw.map { "\($0.term) \($0.hits)/\($0.cloud)" } == ["kubectl 0/1", "TestFlight 0/1"])
+}
+
+// MARK: - Report and review page
+
+private func fairReport(tracks: [CompareReport.TrackReport], passages: [EvalPassage],
+                        terms: [TermStat] = []) -> CompareReport {
+    var total = EvalScore(), normalized = EvalScore()
+    for track in tracks {
+        total.add(track.score)
+        if let score = track.normalized { normalized.add(score) }
+    }
+    return CompareReport(sessionID: "SESSION", run: "gpt-transcribe-20260929T000000Z", model: "gpt-transcribe",
+                         transcriptID: "T1", createdAt: Date(timeIntervalSince1970: 0), total: total, tracks: tracks,
+                         passages: passages, mode: "normalized", normalizedTotal: normalized,
+                         normalizationTotal: NormalizationCounts(), terms: terms, termsNotHeard: 2,
+                         local: .init(source: "current", languages: ["en-CA"], vocabulary: "vocabulary.json",
+                                      vocabularyCount: 3, madeAt: nil))
+}
+
+private func fairScore(local: Int, edits: Int, echo: Int = 0) -> EvalScore {
+    var score = EvalScore()
+    score.localWords = local; score.cloudWords = local; score.substitutions = edits; score.matches = local - edits
+    score.echoLocalWords = echo
+    return score
+}
+
+@Test func fairReportLeadsWithNormalizedWERAndFlagsAnEchoTrack() {
+    let mic = CompareReport.TrackReport(track: "mic", score: fairScore(local: 100, edits: 50, echo: 400),
+                                        groups: [:], warnings: [], normalized: fairScore(local: 95, edits: 45),
+                                        normalization: NormalizationCounts())
+    let system = CompareReport.TrackReport(track: "system", score: fairScore(local: 1000, edits: 220, echo: 0),
+                                           groups: [:], warnings: [], normalized: fairScore(local: 980, edits: 196),
+                                           normalization: NormalizationCounts())
+    #expect(mic.mostlyEcho && !system.mostlyEcho)
+    let passages = [
+        EvalPassage(id: "system-1", track: "system", start: 1, end: 2, local: "three", cloud: "3", group: .numbers,
+                    before: "", after: "", localFirst: 0, localEnd: 1, formattingOnly: true),
+        EvalPassage(id: "system-2", track: "system", start: 3, end: 4, local: "cat", cloud: "bat",
+                    group: .otherWords, before: "", after: "", localFirst: 2, localEnd: 3),
+    ]
+    let report = fairReport(tracks: [mic, system], passages: passages,
+                            terms: [TermStat(term: "Keycloak", source: .wordList, cloud: 4, hits: 1)])
+    let markdown = EvalCompare.markdown(report)
+    #expect(markdown.contains("| system | 980 | 980 | 196 | 0 | 0 | 20.0 % | 20.0 % | 22.0 % | 22.0 % |"))
+    #expect(markdown.contains("mic ⚠︎ unreliable: mostly echo"))
+    #expect(markdown.contains("400 local words were echo of the system track, 100 kept"))
+    #expect(markdown.contains("## Terms"))
+    #expect(markdown.contains("| Keycloak | word list | 4 | 1 | 3 |"))
+    #expect(markdown.contains("2 more terms are not in the cloud text."))
+    #expect(markdown.contains("## Other word changes (1)"))
+    #expect(!markdown.contains("## Numbers"))
+    #expect(markdown.contains("## Formatting only: numbers, fillers, compounds (1)"))
+    let summary = EvalCompare.summaryLines(report).joined(separator: "\n")
+    #expect(summary.contains("system: 980 local words, 980 cloud words; WER 20.0 % against local"))
+    #expect(summary.contains("(raw WER 22.0 %, 22.0 %)"))
+    #expect(summary.contains("mic is unreliable: mostly echo"))
+    #expect(summary.contains("1 passages differ in words (1 more only in numbers, fillers, or compounds)"))
+    #expect(summary.contains("Keycloak 3/4"))
+}
+
+@Test func fairReviewPageHidesFormattingOnlyPassagesByDefault() throws {
+    let passages = [
+        EvalPassage(id: "mic-1", track: "mic", start: 1, end: 2, local: "three", cloud: "3", group: .numbers,
+                    before: "", after: "", localFirst: 0, localEnd: 1, formattingOnly: true),
+        EvalPassage(id: "mic-2", track: "mic", start: 3, end: 4, local: "cat", cloud: "bat", group: .otherWords,
+                    before: "", after: "", localFirst: 2, localEnd: 3),
+        EvalPassage(id: "mic-3", track: "mic", start: 5, end: 5, local: "We", cloud: "we",
+                    group: .caseOrPunctuation, before: "", after: "", localFirst: 4, localEnd: 5),
+    ]
+    let run = CloudRunRecord(id: "gpt-transcribe-20260929T000000Z", sessionID: "SESSION", createdAt: Date(),
+                             request: CloudRequestFields(model: "gpt-transcribe"), timestampRequest: nil,
+                             vocabulary: false, maxSegmentSeconds: 300, tracks: [])
+    let data = EvalReviewPage.pageData(report: fairReport(tracks: [], passages: passages), run: run,
+                                       sessionName: "Standup")
+    #expect(data.items.map(\.id) == ["mic-1", "mic-2"])
+    #expect(data.items.map(\.formatting) == [true, false])
+    let html = try EvalReviewPage.html(data)
+    #expect(html.contains("Show formatting-only differences"))
+    #expect(html.contains("card.hidden = !!item.formatting"))
+    #expect(passages.filter(\.needsReview).map(\.id) == ["mic-2"])
+}
+
+@Test func fairOldReportsStillDecode() throws {
+    // A report written before the normalized comparison: no mode, no formattingOnly, schema 1.
+    let old = """
+        {"schemaVersion":1,"sessionID":"S","run":"r","model":"m","transcriptID":"T",
+         "createdAt":"2026-09-29T00:00:00Z","total":{"localWords":1,"cloudWords":1,"matches":1,
+         "caseOrPunctuationOnly":0,"substitutions":0,"localOnly":0,"cloudOnly":0},"tracks":[],
+         "passages":[{"id":"mic-1","track":"mic","start":0,"end":1,"local":"a","cloud":"b","group":"other-words",
+         "before":"","after":"","cloudBefore":"","cloudAfter":"","localFirst":0,"localEnd":1}]}
+        """
+    let report = try HolosJSON.decoder().decode(CompareReport.self, from: Data(old.utf8))
+    #expect(report.passages.first?.formattingOnly == false)
+    #expect(!report.isNormalized && report.isOfCurrentTranscript)
+    #expect(!EvalCompare.isCurrent(report, transcriptID: "T"))
+}

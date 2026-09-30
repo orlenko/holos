@@ -294,6 +294,14 @@ public enum EvalStore {
     public static func deleteRun(_ id: String, in session: URL) throws -> Bool {
         try checkRunID(id)
         var removed = false
+        if EvalLocal.isLocalRunID(id) {
+            // A local candidate, and its comparisons with every cloud run.
+            if try AtomicFile.removeTree(["eval", "local", id], in: session) { removed = true }
+            for cloud in runIDs(in: session) where try AtomicFile.removeTree(["eval", "compare", cloud, id], in: session) {
+                removed = true
+            }
+            return removed
+        }
         for components in [["eval", "cloud", id], ["eval", "compare", id], ["eval", "review", id],
                            ["derived", "eval-cloud", id]] {
             if try AtomicFile.removeTree(components, in: session) { removed = true }
