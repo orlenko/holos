@@ -6652,7 +6652,7 @@ public enum SessionAudioComposition {
 
 ```
 ┌──────────────────────────────────────────────────────────────────────────────────────────────┐
-│ [▶] 01:12:03 / 2:58:12  [Next Uncertain ⌘']  [Assign to… ▾]  [Split Turn]  [🔍 Search]  [Export ▾] │
+│ [Next Uncertain ⌘']  [Assign to… ▾]  [Split Turn]  [Speakers ▾]        [🔍 Search]  [Export ▾] │
 ├──────────────────────────────┬───────────────────────────────────────────────────────────────┤
 │ SPEAKERS  [Confirm All (3)]  │ 01:12:03  [Jim ▾]         We should move the vote to next week. │
 │ [Jim            ▾]    41:12  │ 01:12:40  [Speaker 3 ▾] ⚠ overlap  Agreed, but the budget…      │
@@ -6663,6 +6663,8 @@ public enum SessionAudioComposition {
 │   This is me · Merge into… ▾ │                                                               │
 │ Me                    15:40  │                                                               │
 ├──────────────────────────────┴───────────────────────────────────────────────────────────────┤
+│ [❚❚ Pause]  1:12:03 / 2:58:12  ━━━━━━━━━━━━━━━●━━━━━━━━━━━━━━━━━━━━━━  [1.25× ▾]  Speaker 3     │
+├──────────────────────────────────────────────────────────────────────────────────────────────┤
 │ [x] Learn voices of people I name in this meeting    11 speakers · 343 turns · 5 changes · saved 17:12 │
 └──────────────────────────────────────────────────────────────────────────────────────────────┘
 ```
@@ -6674,8 +6676,23 @@ public enum SessionAudioComposition {
   into… Speakers with no turns are hidden (except user-created ones).
 - Turn row: timestamp button (plays from there), speaker pop-up (all speakers, known
   people, "Unknown", "New Speaker…"), warning glyph for uncertain turns, text
-  (wrapping). Multi-select with ⇧/⌘.
-- Keys: Space play/pause; ↑/↓ move selection; 1–9 assign the selection to the speaker
+  (wrapping; a plain click on a word selects the turn and plays from that word, with the
+  pointing hand over the text; ⇧/⌘ clicks, double clicks, and drags only select).
+  Multi-select with ⇧/⌘.
+- Playback bar (above the footer): Play/Pause, position / length, a scrubber, the speed
+  (1×, 1.25×, 1.5×, 2×; remembered, pitch kept), and who is speaking. Playing goes on
+  through the meeting until paused (only a speaker's samples stop by themselves); Play
+  resumes where it paused, from the start once the audio ended. Once something played,
+  the turn playing has a tinted background with an accent bar and its word a tint and an
+  underline; while playing, the list keeps them in view, except for 5 seconds after the
+  reader scrolls it (Play, a word, a timestamp, or ⌘←/⌘→ follow again at once). The
+  words' times are the transcript's (estimated for old sessions). VoiceOver hears only who
+  speaks, when that changes; a turn's text offers "Play from “word”" actions. Moving
+  through the list with ↑/↓, Page Up/Down, or Home/End holds following off as a scroll does.
+- Keys: Space (or K) play/pause, ←/→ (or J/L) 5 seconds back/ahead, ⌘← previous turn (the
+  start of the playing one first), ⌘→ next turn — anywhere in the window except while
+  typing in a text field (with keyboard navigation on, Space presses a focused button
+  instead); Return in the turn list plays the selected turn; ↑/↓ move selection; 1–9 assign the selection to the speaker
   with that ordinal; ⌘' next uncertain; ⌘Z undo; ⌘F search; ⌘E export menu.
 - Menu "Speakers": Confirm All Suggestions, Find More Speakers… (explains that names
   carry over and turn-level changes do not), Label Speakers on My Microphone (call

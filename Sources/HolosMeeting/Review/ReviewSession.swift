@@ -127,6 +127,7 @@ public struct ReviewWord: Sendable, Equatable {
     private var profileNames: [String: String]
     private var segments: [String: TranscriptSegment]
     private var textCache: [String: (spans: [WordSpan], text: String)] = [:]
+    private var wordCache: [String: (spans: [WordSpan], words: [ReviewWord])] = [:]
     private var knownEditedExports: Set<String>
 
     private var queue: [Operation] = []
@@ -358,6 +359,13 @@ public struct ReviewWord: Sendable, Equatable {
     /// first).
     public func words(of turnID: String) -> [ReviewWord] {
         guard let turn = turn(turnID) else { return [] }
+        return words(of: turn)
+    }
+
+    /// The words of a shown turn, cached by turn ID and checked against its spans (a split keeps an ID and changes
+    /// its words), for playing from a word and following playback word by word.
+    public func words(of turn: ProjectedTurn) -> [ReviewWord] {
+        if let cached = wordCache[turn.id], cached.spans == turn.spans { return cached.words }
         var words: [ReviewWord] = []
         for span in turn.spans {
             guard let segment = segments[span.segmentID] else { continue }
@@ -369,6 +377,7 @@ public struct ReviewWord: Sendable, Equatable {
                                         start: word.start))
             }
         }
+        wordCache[turn.id] = (turn.spans, words)
         return words
     }
 
@@ -1649,11 +1658,13 @@ public struct ReviewWord: Sendable, Equatable {
         if transcriptChanged {
             segments = Self.segmentIndex(fresh.transcript)
             textCache.removeAll()
+            wordCache.removeAll()
         }
         if headChanged {
             undoStack.removeAll()
             editIDMap.removeAll()
             textCache.removeAll()
+            wordCache.removeAll()
         }
         noteMovedAside(Self.editedExports(session: session))
         if external {

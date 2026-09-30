@@ -11,8 +11,14 @@ import UniformTypeIdentifiers
 /// and saves in the background; errors appear in the footer.
 ///
 /// Holos has no main menu, so the "Speakers" menu is a pull-down in the window's toolbar and the window handles its
-/// own shortcuts: Space play/pause and 1–9 assign (in the turn list), ⌘' next uncertain, ⌘Z undo, ⌘F search,
-/// ⌘E export, and the usual editing keys in text fields.
+/// own shortcuts: Space (or K) play/pause, ←/→ (or J/L) back and ahead 5 seconds, and ⌘←/⌘→ the previous and next
+/// turn, anywhere but while typing in a text field; 1–9 assign (in the turn list), ⌘' next uncertain, ⌘Z undo,
+/// ⌘F search, ⌘E export, and the usual editing keys in text fields.
+///
+/// The playback bar above the footer holds Play/Pause, the position, a scrubber, the speed, and who is speaking.
+/// Playing goes on through the meeting until paused; a click on a timestamp or on a word plays from there. While a
+/// meeting plays, the turn list tints the turn and word playing and keeps them in view, except for a few seconds after
+/// the reader scrolls it (`ReviewFollow`).
 @MainActor
 final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate {
     let sessionID: String
@@ -26,8 +32,19 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate {
     private let player = ReviewPlayer()
     private let sidebar = SpeakerSidebarView()
     private let turnList = TurnListView()
-    private let playButton = NSButton(title: "", target: nil, action: nil)
+    private let playButton = NSButton(title: "Play", target: nil, action: nil)
     private let timeLabel = NSTextField(labelWithString: "")
+    private let scrubber = NSSlider(value: 0, minValue: 0, maxValue: 1, target: nil, action: nil)
+    private let speedPopUp = NSPopUpButton(frame: .zero, pullsDown: false)
+    private let speakingLabel = NSTextField(labelWithString: "")
+    /// The scrubber is being dragged: the play head does not move it meanwhile.
+    private var scrubbing = false
+    /// Playback started at least once (the turn list tints what plays only from then on, paused included).
+    private var played = false
+    private var follow = ReviewFollow()
+    /// The turn playing when the list last followed playback.
+    private var followedTurnID: String?
+    private var announcer = ReviewSpeakerAnnouncer()
     private let nextUncertainButton = NSButton(title: "Next Uncertain", target: nil, action: nil)
     private let assignPopUp = NSPopUpButton(frame: .zero, pullsDown: true)
     private let splitButton = NSButton(title: "Split Turn", target: nil, action: nil)
@@ -86,6 +103,8 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate {
         window.contentMinSize = NSSize(width: 900, height: 560)
         window.delegate = self
         window.keyHandler = { [weak self] event in self?.handleKey(event) ?? false }
+        window.playbackKeyHandler = { [weak self] event in self?.handlePlaybackKey(event) ?? false }
+        player.rate = ReviewPlaybackSpeed.load(from: .standard)
         window.contentView = makeContent()
         wire()
         review.onChange = { [weak self] in self?.scheduleRefresh() }
@@ -172,11 +191,6 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate {
     // MARK: - Layout
 
     private func makeContent() -> NSView {
-        playButton.bezelStyle = .push
-        playButton.imagePosition = .imageOnly
-        playButton.toolTip = "Play or pause (Space)"
-        timeLabel.font = .monospacedDigitSystemFont(ofSize: 12, weight: .regular)
-        timeLabel.textColor = .secondaryLabelColor
         nextUncertainButton.bezelStyle = .push
         nextUncertainButton.toolTip = "Select and play the next uncertain turn (⌘')"
         assignPopUp.toolTip = "Give the selected turns to a speaker (or press 1–9 in the turn list)"
@@ -187,8 +201,8 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate {
         searchField.delegate = self
         searchField.widthAnchor.constraint(equalToConstant: 160).isActive = true
         exportPopUp.toolTip = "Save or copy the transcript (⌘E)"
-        let toolbar = NSStackView(views: [playButton, timeLabel, nextUncertainButton, assignPopUp, splitButton,
-                                          speakersPopUp, NSView(), searchField, exportPopUp])
+        let toolbar = NSStackView(views: [nextUncertainButton, assignPopUp, splitButton, speakersPopUp, NSView(),
+                                          searchField, exportPopUp])
         toolbar.spacing = 8
         toolbar.alignment = .centerY
 
@@ -216,7 +230,8 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate {
         notices.alignment = .leading
         notices.spacing = 4
 
-        let stack = NSStackView(views: [toolbar, split, footer, notices])
+        let playbackBar = makePlaybackBar()
+        let stack = NSStackView(views: [toolbar, split, playbackBar, footer, notices])
         stack.orientation = .vertical
         stack.alignment = .leading
         stack.distribution = .fill
@@ -224,6 +239,7 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate {
         stack.translatesAutoresizingMaskIntoConstraints = false
         // The panes take the height; the bars keep theirs.
         for bar in [toolbar, footer, notices] { bar.setHuggingPriority(.defaultHigh, for: .vertical) }
+        playbackBar.setContentHuggingPriority(.defaultHigh, for: .vertical)
         split.heightAnchor.constraint(greaterThanOrEqualToConstant: 300).isActive = true
         let content = NSView()
         content.addSubview(stack)
@@ -234,6 +250,7 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate {
             stack.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -10),
             toolbar.widthAnchor.constraint(equalTo: stack.widthAnchor),
             split.widthAnchor.constraint(equalTo: stack.widthAnchor),
+            playbackBar.widthAnchor.constraint(equalTo: stack.widthAnchor),
             footer.widthAnchor.constraint(equalTo: stack.widthAnchor),
             notices.widthAnchor.constraint(equalTo: stack.widthAnchor),
         ])
@@ -242,9 +259,66 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate {
         return content
     }
 
+    /// Play/Pause, "12:04 / 1:28:30", the scrubber, the speed, and who is speaking, in a band across the window.
+    private func makePlaybackBar() -> NSView {
+        playButton.bezelStyle = .push
+        playButton.controlSize = .large
+        playButton.imagePosition = .imageLeading
+        playButton.image = NSImage(systemSymbolName: "play.fill", accessibilityDescription: nil)
+        playButton.toolTip = "Play or pause (Space)"
+        playButton.widthAnchor.constraint(greaterThanOrEqualToConstant: 96).isActive = true
+        timeLabel.font = .monospacedDigitSystemFont(ofSize: 13, weight: .regular)
+        timeLabel.setContentHuggingPriority(.defaultHigh, for: .horizontal)
+        timeLabel.setContentCompressionResistancePriority(.required, for: .horizontal)
+        scrubber.isContinuous = true
+        scrubber.controlSize = .regular
+        scrubber.toolTip = "Drag to move through the meeting (← and → move 5 seconds, ⌘← and ⌘→ a turn)"
+        scrubber.setAccessibilityLabel("Playback position")
+        scrubber.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        scrubber.widthAnchor.constraint(greaterThanOrEqualToConstant: 160).isActive = true
+        for rate in ReviewPlaybackSpeed.rates {
+            speedPopUp.addItem(withTitle: ReviewPlaybackSpeed.title(rate))
+            speedPopUp.lastItem?.representedObject = rate
+        }
+        speedPopUp.toolTip = "Playback speed"
+        speedPopUp.setAccessibilityLabel("Playback speed")
+        speakingLabel.font = .systemFont(ofSize: 13, weight: .medium)
+        speakingLabel.lineBreakMode = .byTruncatingTail
+        speakingLabel.setAccessibilityLabel("Speaking")
+        speakingLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        speakingLabel.widthAnchor.constraint(greaterThanOrEqualToConstant: 140).isActive = true
+        let speakingWidth = speakingLabel.widthAnchor.constraint(equalToConstant: 220)
+        speakingWidth.priority = .defaultLow
+        speakingWidth.isActive = true
+
+        let row = NSStackView(views: [playButton, timeLabel, scrubber, speedPopUp, speakingLabel])
+        row.spacing = 12
+        row.alignment = .centerY
+        row.edgeInsets = NSEdgeInsets(top: 6, left: 8, bottom: 6, right: 10)
+        row.translatesAutoresizingMaskIntoConstraints = false
+        let bar = PlaybackBarView()
+        bar.setAccessibilityElement(true)
+        bar.setAccessibilityRole(.group)
+        bar.setAccessibilityLabel("Playback")
+        bar.addSubview(row)
+        // The controls give the bar its height.
+        NSLayoutConstraint.activate([
+            row.leadingAnchor.constraint(equalTo: bar.leadingAnchor),
+            row.trailingAnchor.constraint(equalTo: bar.trailingAnchor),
+            row.topAnchor.constraint(equalTo: bar.topAnchor),
+            row.bottomAnchor.constraint(equalTo: bar.bottomAnchor),
+        ])
+        return bar
+    }
+
     private func wire() {
         playButton.target = self
         playButton.action = #selector(togglePlay)
+        scrubber.target = self
+        scrubber.action = #selector(scrubbed(_:))
+        speedPopUp.target = self
+        speedPopUp.action = #selector(speedChosen(_:))
+        if let index = ReviewPlaybackSpeed.rates.firstIndex(of: player.rate) { speedPopUp.selectItem(at: index) }
         nextUncertainButton.target = self
         nextUncertainButton.action = #selector(nextUncertain)
         splitButton.target = self
@@ -282,7 +356,8 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate {
         }
         sidebar.onConfirm = sidebar.onPickPerson
         sidebar.onPlaySamples = { [weak self] speakerID in
-            guard let self else { return }
+            guard let self, self.player.isReady else { return }
+            self.played = true
             self.player.play(clips: self.review.sampleClips(for: speakerID))
         }
         sidebar.onMarkSelf = { [weak self] speakerID in
@@ -300,13 +375,19 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate {
         turnList.onAcceptHint = { [weak self] turnID in
             self?.perform { review in try await review.acceptTurnHint(turnID) }
         }
-        turnList.onPlay = { [weak self] seconds in self?.player.play(from: seconds) }
+        turnList.onPlay = { [weak self] seconds in self?.play(from: seconds) }
+        turnList.onUserScroll = { [weak self] in
+            self?.follow.userScrolled(at: ProcessInfo.processInfo.systemUptime)
+        }
         turnList.onAssign = { [weak self] ids, target in
             self?.perform { review in try await review.assign(ids, to: target) }
         }
         turnList.onNewSpeaker = { [weak self] ids in self?.newSpeaker(for: ids) }
         turnList.onSelectionChange = { [weak self] in self?.refreshToolbar() }
-        turnList.table.onSpace = { [weak self] in self?.togglePlay() }
+        turnList.table.onReturn = { [weak self] in
+            guard let self, let turn = self.turnList.selectedTurns.first else { return }
+            self.play(from: turn.start)
+        }
         turnList.table.onDigit = { [weak self] digit in self?.assignSelection(toOrdinal: digit) }
     }
 
@@ -330,6 +411,7 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate {
         turnList.update(turns: turns, speakers: projection.speakers, people: people, editable: review.isEditable,
                         hints: review.profiles == nil ? [:] : review.voiceMatches.turnHints,
                         text: { [review] turn in review.text(of: turn) },
+                        words: { [review] turn in review.words(of: turn) },
                         resolve: { [review] id in review.resolvedTurnID(id) })
         sidebar.update(rows: sidebarRows(), people: people, editable: review.isEditable,
                        suggestions: review.suggestionCount)
@@ -352,16 +434,70 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate {
     }
 
     private func refreshPlayback() {
-        let symbol = player.isPlaying ? "pause.fill" : "play.fill"
-        playButton.image = NSImage(systemSymbolName: symbol, accessibilityDescription: player.isPlaying ? "Pause" : "Play")
+        let playing = player.isPlaying
+        let title = playing ? "Pause" : "Play"
+        if playButton.title != title {
+            playButton.title = title
+            playButton.image = NSImage(systemSymbolName: playing ? "pause.fill" : "play.fill",
+                                       accessibilityDescription: nil)
+            playButton.setAccessibilityLabel(title)
+        }
         playButton.isEnabled = player.isReady
-        timeLabel.stringValue = TimeFormat.clock(player.currentTime) + " / " + TimeFormat.duration(review.durationSeconds)
+        // The audio's own length once it is ready (chunks missing at the end make it shorter than the meeting), so the
+        // scrubber never offers a place playback cannot reach.
+        let total = player.isReady && player.duration > 0 ? player.duration : review.durationSeconds
+        // A drag that ended without a last action (the button came up elsewhere) ends here.
+        if scrubbing, NSEvent.pressedMouseButtons & 1 == 0 { scrubbing = false }
+        let shownTime = scrubbing ? scrubber.doubleValue : player.currentTime
+        let position = TimeFormat.compact(shownTime) + " / " + TimeFormat.duration(total)
+        if timeLabel.stringValue != position { timeLabel.stringValue = position }
+        scrubber.isEnabled = player.isReady
+        if scrubber.maxValue != max(1, total) { scrubber.maxValue = max(1, total) }
+        if !scrubbing { scrubber.doubleValue = player.currentTime }
+        scrubber.setAccessibilityValueDescription(TimeFormat.compact(shownTime) + " of " + TimeFormat.duration(total))
+        refreshFollowing()
         // Every change of the player's state (loading, ready, off and why) redraws what depends on it: the sidebar's
         // play buttons and the footer's "Playback is off" notice.
         if shownPlayerState.update(player.state) {
             sidebar.update(rows: sidebarRows(), people: review.knownPeople(), editable: review.isEditable,
                            suggestions: review.suggestionCount)
             refreshFooter()
+        }
+    }
+
+    /// Who is speaking (in the bar), and the turn list's tint and scroll position, for the play head.
+    private func refreshFollowing() {
+        guard played, player.isReady else {
+            if turnList.playingTurnID != nil { turnList.showPlaying(turnID: nil, at: 0) }
+            if !speakingLabel.stringValue.isEmpty { speakingLabel.stringValue = "" }
+            announcer.reset()
+            return
+        }
+        let time = player.currentTime
+        let turns = review.projection.turns
+        let turn = ReviewTimeline.turnIndex(at: time, turns: turns.map { ($0.start, $0.end) }).map { turns[$0] }
+        let speaker = turn.map { turn in turn.speakerID.flatMap { review.speaker($0)?.label } ?? "Unknown speaker" }
+        let speaking = speaker ?? "—"
+        if speakingLabel.stringValue != speaking {
+            speakingLabel.stringValue = speaking
+            speakingLabel.toolTip = speaker.map { "Speaking now: \($0)" }
+        }
+        turnList.showPlaying(turnID: turn?.id, at: time)
+        // Kept in view while playing, and when a seek while paused moved to another turn.
+        let moved = turn?.id != followedTurnID
+        followedTurnID = turn?.id
+        if player.isPlaying || moved, follow.isFollowing(at: ProcessInfo.processInfo.systemUptime) {
+            turnList.scrollToPlaying()
+        }
+        guard player.isPlaying else {
+            announcer.reset()
+            return
+        }
+        // VoiceOver hears who speaks when that changes, and nothing else while the audio plays.
+        if NSWorkspace.shared.isVoiceOverEnabled, let announcement = announcer.announcement(for: speaker) {
+            NSAccessibility.post(element: window, notification: .announcementRequested, userInfo: [
+                .announcement: announcement, .priority: NSAccessibilityPriorityLevel.low.rawValue,
+            ])
         }
     }
 
@@ -522,19 +658,62 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate {
         }
     }
 
+    /// Play/Pause (the bar's button, Space, K): pauses, or plays on from the play head (from the start once the
+    /// audio ended). The selection does not move it: a timestamp or a word plays from elsewhere.
     @objc private func togglePlay() {
         guard player.isReady else { return }
         if player.isPlaying {
             player.pause()
             return
         }
-        // From the selected turn, unless the play head is already in it (then resume).
-        if let turn = turnList.selectedTurns.first,
-           !(turn.start...max(turn.start, turn.end)).contains(player.currentTime) {
-            player.play(from: turn.start)
-        } else {
-            player.togglePlayPause()
+        played = true
+        follow.resume()
+        player.togglePlayPause()
+    }
+
+    /// Plays from `seconds` on through the meeting (a timestamp, a word, the next uncertain turn).
+    private func play(from seconds: Double) {
+        guard player.isReady else { return }
+        played = true
+        follow.resume()
+        player.play(from: seconds)
+    }
+
+    /// Moves the play head, playing on when playing (the scrubber, ←/→, ⌘←/⌘→).
+    private func seek(to seconds: Double) {
+        guard player.isReady else { return }
+        played = true
+        follow.resume()
+        player.seek(to: seconds)
+    }
+
+    private func previousTurn() {
+        seek(to: ReviewTimeline.previousTurnStart(before: player.currentTime,
+                                                  starts: review.projection.turns.map(\.start)))
+    }
+
+    private func nextTurn() {
+        guard player.isReady else { return }
+        guard let start = ReviewTimeline.nextTurnStart(after: player.currentTime,
+                                                       starts: review.projection.turns.map(\.start)) else {
+            NSSound.beep()
+            return
         }
+        seek(to: start)
+    }
+
+    @objc private func scrubbed(_ sender: NSSlider) {
+        // Continuous: every step of a drag seeks; the time shown follows the knob until it is let go.
+        let type = NSApplication.shared.currentEvent?.type
+        scrubbing = type == .leftMouseDown || type == .leftMouseDragged
+        seek(to: sender.doubleValue)
+        refreshPlayback()
+    }
+
+    @objc private func speedChosen(_ sender: NSPopUpButton) {
+        guard let rate = sender.selectedItem?.representedObject as? Double else { return }
+        player.rate = rate
+        ReviewPlaybackSpeed.save(rate, to: .standard)
     }
 
     @objc private func nextUncertain() {
@@ -549,7 +728,7 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate {
         }
         turnList.select([turn.id], scroll: true)
         window.makeFirstResponder(turnList.table)
-        player.play(from: turn.start)
+        play(from: turn.start)
     }
 
     @objc private func assignChosen(_ sender: NSMenuItem) {
@@ -594,7 +773,7 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate {
         guard let turn = turnList.selectedTurns.first, turnList.selectedTurns.count == 1 else { return }
         let words = review.words(of: turn.id)
         guard words.count > 1 else { return }
-        let sheet = SplitSheet(words: words, onPlay: { [weak self] seconds in self?.player.play(from: seconds) })
+        let sheet = SplitSheet(words: words, onPlay: { [weak self] seconds in self?.play(from: seconds) })
         splitSheet = sheet
         window.beginSheet(sheet.panel) { [weak self] response in
             guard let self else { return }
@@ -725,6 +904,58 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate {
 
     // MARK: - Keys
 
+    /// Playback keys, anywhere in the window but while typing in a text field (or a sheet is open): Space (except
+    /// on a button focused with keyboard navigation) and K play/pause, ← and J back 5 seconds, → and L ahead 5 seconds, ⌘← the previous turn (the start of this one first),
+    /// ⌘→ the next turn.
+    private func handlePlaybackKey(_ event: NSEvent) -> Bool {
+        guard window.attachedSheet == nil else { return false }
+        if let text = window.firstResponder as? NSTextView, text.isEditable { return false }
+        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+            .subtracting([.numericPad, .function, .capsLock])
+        let special = event.specialKey
+        if flags == [.command] {
+            switch special {
+            case .leftArrow?: previousTurn()
+            case .rightArrow?: nextTurn()
+            default: return false
+            }
+            return true
+        }
+        guard flags.isEmpty else { return false }
+        switch special {
+        case .leftArrow?:
+            seek(to: player.currentTime - Self.seekStep)
+            return true
+        case .rightArrow?:
+            seek(to: player.currentTime + Self.seekStep)
+            return true
+        default:
+            break
+        }
+        let key = event.charactersIgnoringModifiers?.lowercased()
+        // With keyboard navigation on, Space presses the focused button, checkbox, or pop-up (K still plays).
+        if key == " ", NSApplication.shared.isFullKeyboardAccessEnabled, window.firstResponder is NSButton {
+            return false
+        }
+        switch key {
+        case " ", "k":
+            // Held down, it would flip on every repeat.
+            if !event.isARepeat { togglePlay() }
+            return true
+        case "j":
+            seek(to: player.currentTime - Self.seekStep)
+            return true
+        case "l":
+            seek(to: player.currentTime + Self.seekStep)
+            return true
+        default:
+            return false
+        }
+    }
+
+    /// Seconds ← and → move the play head.
+    private static let seekStep = 5.0
+
     /// Shortcuts of the window (Holos has no main menu to carry them).
     private func handleKey(_ event: NSEvent) -> Bool {
         let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
@@ -808,13 +1039,32 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate {
     }
 }
 
-/// The review window; it handles its own shortcuts first.
+/// The playback bar's band: a rounded background with a hairline border, in the window's colors.
+private final class PlaybackBarView: NSView {
+    override func draw(_ dirtyRect: NSRect) {
+        let path = NSBezierPath(roundedRect: bounds.insetBy(dx: 0.5, dy: 0.5), xRadius: 6, yRadius: 6)
+        NSColor.controlBackgroundColor.setFill()
+        path.fill()
+        NSColor.separatorColor.setStroke()
+        path.lineWidth = 1
+        path.stroke()
+    }
+}
+
+/// The review window; it handles its own shortcuts first, and the playback keys before any view sees them.
 final class ReviewKeyWindow: NSWindow {
     var keyHandler: ((NSEvent) -> Bool)?
+    /// Key presses on their way to the first responder; true when handled.
+    var playbackKeyHandler: ((NSEvent) -> Bool)?
 
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
         if keyHandler?(event) == true { return true }
         return super.performKeyEquivalent(with: event)
+    }
+
+    override func sendEvent(_ event: NSEvent) {
+        if event.type == .keyDown, playbackKeyHandler?(event) == true { return }
+        super.sendEvent(event)
     }
 }
 

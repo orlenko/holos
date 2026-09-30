@@ -397,6 +397,11 @@ func splitPartCanBeAssignedBeforeTheSplitIsSaved() async throws {
     #expect(review.turn(part.id)?.id == savedPart.id)
     #expect(try reviewJournal(fixture.session).count == 2)
     #expect(saved == review.projection)
+    // The cached words follow the split: T1 keeps its ID and its first three words; the new part has the rest.
+    let first = try #require(review.turn("T1"))
+    #expect(review.words(of: first).map(\.ref) == Array(words.prefix(3)).map(\.ref))
+    #expect(review.words(of: savedPart).map(\.ref) == Array(words.suffix(3)).map(\.ref))
+    #expect(review.words(of: "T1") == review.words(of: first))
 }
 
 @Test(.timeLimit(.minutes(1))) @MainActor
