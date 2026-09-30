@@ -519,7 +519,8 @@ kbd { border:1px solid var(--line); border-radius:3px; padding:0 3px; font-size:
       return;
     }
     // A focused button keeps its own Space and Enter (buttons in the passages give up focus when clicked).
-    if (e.target && e.target.tagName === "BUTTON" && (e.key === " " || e.key === "Enter")) return;
+    // Buttons and form controls keep their own Space and Return (the formatting checkbox, a select).
+    if (e.target && ["BUTTON", "INPUT", "SELECT"].indexOf(e.target.tagName) >= 0 && (e.key === " " || e.key === "Enter")) return;
     if (!visibleIndices().length) return;
     var entry = cards[current];
     switch (e.key) {

@@ -523,7 +523,11 @@ public enum NormalizedAlignment {
             group.removeAll()
         }
         for (word, key) in zip(words, keys) {
-            if isSpelledCardinal(word) {
+            // A scale word ("hundred", "thousand", "mille") counts only after a number: "one hundred" is 100.
+            let extends = !group.isEmpty && EvalNormalization.number(group + [word]).map {
+                !$0.hasDigit && $0.canonical.allSatisfy(\.isNumber)
+            } == true
+            if isSpelledCardinal(word) || extends {
                 group.append(word)
                 spelledAny = true
             } else {

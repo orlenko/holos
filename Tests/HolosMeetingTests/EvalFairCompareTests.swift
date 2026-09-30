@@ -453,3 +453,10 @@ private func fairScore(local: Int, edits: Int, echo: Int = 0) -> EvalScore {
     let mm = 2
     #expect(!(result.cloudEquivalent[mm] ?? false))
 }
+
+@Test func fairScaleWordsJoinTheSpelledNumberBeforeThem() {
+    #expect(NormalizedAlignment.compoundForms(["V", "one", "hundred"]).contains("v100"))
+    #expect(NormalizedAlignment.compoundForms(["V", "two", "thousand"]).contains("v2000"))
+    // A scale word alone is not a number.
+    #expect(!NormalizedAlignment.compoundForms(["V", "hundred"]).contains("v100"))
+}
