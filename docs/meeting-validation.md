@@ -334,7 +334,8 @@ Use a meeting of at least 10 minutes with several speakers.
    returns to **Play**; pressing it plays from the start.
 8. **VoiceOver** (⌘F5). Tab to the bar. Pass: the controls read "Play", "Playback position" with
    the time, "Playback speed", and the speaker; while the meeting plays, VoiceOver says only the
-   speaker's name when the speaker changes, never the words.
+   speaker's name when the speaker changes, never the words. On a turn's text, VO-⌘-Space lists
+   "Play from “word” (time)" actions; choosing one plays from that word.
 
 Result: Pending.
 

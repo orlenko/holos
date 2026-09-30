@@ -78,8 +78,17 @@ final class TurnTableView: NSTableView {
                 return
             }
         }
+        // ↑/↓, Page Up/Down, Home/End scroll the list as the reader moves: following playback holds off as for a
+        // scroll with the mouse.
+        switch event.specialKey {
+        case .upArrow?, .downArrow?, .pageUp?, .pageDown?, .home?, .end?: onKeyboardScroll?()
+        default: break
+        }
         super.keyDown(with: event)
     }
+
+    /// The reader moved through the list with the keyboard.
+    var onKeyboardScroll: (() -> Void)?
 
     override func mouseDown(with event: NSEvent) {
         let point = convert(event.locationInWindow, from: nil)
@@ -107,7 +116,12 @@ final class TurnTableView: NSTableView {
 final class TurnTextView: NSTextView {
     private var wordRanges: [NSRange?] = []
     private var wordStarts: [Double] = []
+    private var wordTexts: [String] = []
     private var playingWord: Int?
+    /// Plays from a session time: VoiceOver's "Play from …" actions, one per word (clicks go through the table).
+    var onPlay: ((Double) -> Void)?
+    /// At most this many word actions (a very long turn keeps its first words).
+    static let maximumWordActions = 300
     private var textColorShown: NSColor = .labelColor
     /// The root of this view's text system (it keeps the layout manager and the container): a text view made with
     /// its own container does not own its storage.
@@ -125,7 +139,7 @@ final class TurnTextView: NSTextView {
         view.isVerticallyResizable = false
         view.isHorizontallyResizable = false
         view.font = TurnListView.textFont
-        view.setAccessibilityHelp("Click a word to play from it.")
+        view.setAccessibilityHelp("Click a word to play from it, or choose a word in the actions.")
         return view
     }
 
@@ -172,8 +186,25 @@ final class TurnTextView: NSTextView {
         ]))
         wordRanges = ReviewWordRanges.ranges(of: words.map(\.text), in: text)
         wordStarts = words.map(\.start)
+        wordTexts = words.map(\.text)
         playingWord = nil
         window?.invalidateCursorRects(for: self)
+    }
+
+    /// The keyboard and VoiceOver way to a word (VO-⌘-Space lists them): "Play from “budget” (00:12:03)". Made
+    /// when asked for, never announced.
+    override func accessibilityCustomActions() -> [NSAccessibilityCustomAction]? {
+        var actions: [NSAccessibilityCustomAction] = []
+        for (index, start) in wordStarts.enumerated().prefix(Self.maximumWordActions) {
+            let word = index < wordTexts.count ? wordTexts[index].trimmingCharacters(in: .whitespacesAndNewlines) : ""
+            let name = "Play from “\(word)” (\(TimeFormat.clock(start)))"
+            actions.append(NSAccessibilityCustomAction(name: name) { [weak self] in
+                guard let onPlay = self?.onPlay else { return false }
+                onPlay(start)
+                return true
+            })
+        }
+        return actions.isEmpty ? nil : actions
     }
 
     /// The text color for the row's background (white on a selected row).
@@ -317,6 +348,7 @@ final class TurnListView: NSView, NSTableViewDataSource, NSTableViewDelegate {
             NotificationCenter.default.addObserver(self, selector: #selector(userScrolled), name: name, object: scroll)
         }
         scroll.onUserScroll = { [weak self] in self?.onUserScroll?() }
+        table.onKeyboardScroll = { [weak self] in self?.onUserScroll?() }
         table.onWordClick = { [weak self] seconds in self?.onPlay?(seconds) }
     }
 
@@ -409,6 +441,7 @@ final class TurnListView: NSView, NSTableViewDataSource, NSTableViewDelegate {
             cell.timeButton.action = #selector(timeClicked(_:))
             cell.speakerPopUp.target = self
             cell.speakerPopUp.action = #selector(speakerChosen(_:))
+            cell.bodyText.onPlay = { [weak self] seconds in self?.onPlay?(seconds) }
             return cell
         }()
         let turn = turns[row]

@@ -6542,7 +6542,8 @@ public enum SessionAudioComposition {
   underline; while playing, the list keeps them in view, except for 5 seconds after the
   reader scrolls it (Play, a word, a timestamp, or ⌘←/⌘→ follow again at once). The
   words' times are the transcript's (estimated for old sessions). VoiceOver hears only who
-  speaks, when that changes.
+  speaks, when that changes; a turn's text offers "Play from “word”" actions. Moving
+  through the list with ↑/↓, Page Up/Down, or Home/End holds following off as a scroll does.
 - Keys: Space (or K) play/pause, ←/→ (or J/L) 5 seconds back/ahead, ⌘← previous turn (the
   start of the playing one first), ⌘→ next turn — anywhere in the window except while
   typing in a text field (with keyboard navigation on, Space presses a focused button
