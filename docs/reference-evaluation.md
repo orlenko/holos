@@ -206,8 +206,11 @@ voiceislocal eval delete <session> (<run> | --all)
    mostly what the echo filter missed, so its WER says little). The **Terms**
    section counts, for each word-list term and each correction's meant phrase,
    how often the cloud text has it (echo left out) and how often the local
-   transcript has the same words at the aligned position, sorted by misses:
-   the number to follow from one vocabulary to the next. `--local` compares a
+   transcript has the same words at the aligned position, as one unbroken
+   run (only fillers or echo between them), sorted by misses, with each
+   track's share (the microphone's count depends on the echo left out, which
+   differs between local transcripts): the number to follow from one
+   vocabulary to the next. `--local` compares a
    local candidate (`eval local`) instead of the current transcript. Output:
    `eval/compare/<run>/report.md` and `report.json` (a candidate's in
    `eval/compare/<run>/<local run>/`); the report says which local transcript
@@ -305,12 +308,14 @@ passages, the review page and the gold keep the words as written.
   (French), in any case, with punctuation, and drawn out ("ummm"), are left
   out on both sides: they count neither as words nor as errors, and the report
   counts them per side. A filler is never paired with a word the other side has.
-  "ben", "uh-huh" and "mhm" are words.
+  "ben", "err", "uh-huh" and "mhm" are words.
 - **Compounds.** Two or three words whose letters and digits, joined, are the
   one word on the other side ("test flight"/"TestFlight", "chat GPT"/"ChatGPT",
-  "follow up"/"follow-up", "A P I"/"API"), also with a spelled number in digits
-  ("V one"/"v1"), are the same. The joined words must hold a letter ("1 5" and
-  "15" differ).
+  "follow up"/"follow-up", "A P I"/"API"), also with each run of spelled
+  numbers in digits ("V one"/"v1", "V twenty one"/"V21", never "V201"), are
+  the same. The joined words must hold a letter ("1 5" and "15" differ). Up to
+  two fillers inside a joined number or compound ("twenty um one"/"21") are
+  left out as fillers.
 - **Case and punctuation** never count (as in the raw comparison).
 
 Each word passage of the raw alignment (a run of edits between matched
@@ -343,13 +348,14 @@ live phrases do not cover. Nothing leaves the Mac.
   today (corrections, filler removal and spoken-code formatting are dictation
   steps), so a candidate is what the recognizer returned.
 - **Output:** `eval/local/<local run>/run.json` (settings, vocabulary, each
-  track's audio fingerprint), `parts/<language>-<track>.json` (each track's
+  track's audio fingerprint and the SHA-256 of its chunk files' bytes), `parts/<language>-<track>.json` (each track's
   timed words, saved as soon as it is done) and `transcript.json` once all
   are in. The meeting's transcript, speaker labels, exports and
   vocabulary.json are never changed.
 - **Resuming:** Ctrl-C stops; the same command resumes the newest unfinished
-  run with the same languages, vocabulary and audio (or `--run`, which keeps
-  the vocabulary that run started with) and transcribes only the tracks not
+  run with the same languages, vocabulary and audio, the chunk files' bytes
+  hashed again (or `--run`, which keeps the vocabulary that run started with
+  and refuses audio that changed) and transcribes only the tracks not
   saved yet. It refuses a session that is recording or whose audio was
   deleted.
 

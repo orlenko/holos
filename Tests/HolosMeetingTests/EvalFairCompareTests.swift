@@ -89,7 +89,7 @@ private func canonical(_ text: String) -> String? {
                  "Euhhh,", "bah", "hein"] {
         #expect(EvalNormalization.isFiller(word), "\(word)")
     }
-    for word in ["M", "a", "I", "ben", "umbrella", "uh-huh", "oh", "ahead", "hum", "mhm"] {
+    for word in ["M", "a", "I", "ben", "umbrella", "uh-huh", "oh", "ahead", "hum", "mhm", "err", "Err,"] {
         #expect(!EvalNormalization.isFiller(word), "\(word)")
     }
     let local = ["Um,", "so", "we", "uh", "ship"]
@@ -122,6 +122,18 @@ private func canonical(_ text: String) -> String? {
     #expect(NormalizedAlignment.align(["1", "5"], ["15"]).contains { $0.isEdit })
     #expect(NormalizedAlignment.align(["one", "two"], ["12"]).contains { $0.isEdit })
     #expect(NormalizedAlignment.align(["React", "Native"], ["reactative"]).contains { $0.isEdit })
+    // A run of spelled numbers in a compound is one number: "V twenty one" is "V21", never "V201".
+    #expect(NormalizedAlignment.align(["V", "twenty", "one"], ["V21"])
+        == [.join(local: 0..<3, cloud: 0..<1, .compound)])
+    #expect(NormalizedAlignment.align(["V", "twenty", "one"], ["V201"]).contains { $0.isEdit })
+    #expect(NormalizedAlignment.align(["V", "one", "two"], ["V12"]).contains { $0.isEdit })
+    // Fillers inside a joined run are left out as fillers.
+    let hesitant = ["twenty", "um", "one", "test", "uh", "flight"]
+    let hesitantOps = NormalizedAlignment.align(hesitant, ["21", "TestFlight"])
+    #expect(hesitantOps == [.join(local: 0..<3, cloud: 0..<1, .number), .join(local: 3..<6, cloud: 1..<2, .compound)])
+    let hesitantScore = NormalizedAlignment.score(hesitantOps, a: hesitant, b: ["21", "TestFlight"])
+    #expect(hesitantScore.score.edits == 0 && hesitantScore.score.localWords == 4)
+    #expect(hesitantScore.counts.fillersLocal == 2)
     let local = ["we", "use", "test", "flight", "and", "chat", "GPT"]
     let cloud = ["We", "use", "TestFlight", "and", "ChatGPT."]
     let scored = NormalizedAlignment.score(NormalizedAlignment.align(local, cloud), a: local, b: cloud)
@@ -175,12 +187,18 @@ private func canonical(_ text: String) -> String? {
     #expect(terms.map(\.source) == [.wordList, .wordList, .wordList, .wordList, .correction])
     let words = ["We", "use", "Test", "Flight,", "Keycloak", "and", "Kubernetes", "at", "Urban", "Sky.", "Keycloak"]
     let covered: [Bool?] = [true, true, true, true, false, true, true, true, true, false, nil]
-    let stats = EvalTerms.count(terms, tracks: [(words, covered)])
+    let stats = EvalTerms.count(terms, tracks: [.init(track: "system", words: words, covered: covered)])
     // Keycloak: one miss, one in echo (not counted). Urban Sky: its second word missed. Grafana: never heard.
     #expect(stats.map(\.term) == ["Keycloak", "Urban Sky", "Kubernetes", "TestFlight"])
     #expect(stats.map(\.cloud) == [1, 1, 1, 1])
     #expect(stats.map(\.hits) == [0, 0, 1, 1])
     #expect(stats.map(\.misses) == [1, 1, 0, 0])
+    #expect(stats[0].tracks == [.init(track: "system", cloud: 1, hits: 0)])
+    // Across tracks, each track's share is kept.
+    let two = EvalTerms.count(terms, tracks: [.init(track: "mic", words: ["Keycloak"], covered: [true]),
+                                                .init(track: "system", words: words, covered: covered)])
+    #expect(two.first { $0.term == "Keycloak" }?.tracks
+        == [.init(track: "mic", cloud: 1, hits: 1), .init(track: "system", cloud: 1, hits: 0)])
     // Whole words only.
     #expect(EvalTerms.occurrences(of: "sky", in: ["skyline", "sky"]) == [1..<2])
     #expect(EvalTerms.occurrences(of: "testflight", in: ["test", "flight", "testflight"]) == [0..<2, 2..<3])
@@ -193,10 +211,33 @@ private func canonical(_ text: String) -> String? {
     let result = WindowComparer.compare(track: "system", local: local, cloud: cloud, start: 0, end: 20)
     let terms = EvalTerms.terms(wordList: ["TestFlight", "kubectl"], corrections: [])
     let words = cloud.map(\.text)
-    let normalized = EvalTerms.count(terms, tracks: [(words, result.cloudEquivalent)])
-    let raw = EvalTerms.count(terms, tracks: [(words, result.cloudMatched)])
+    let ignorable = local.map { $0.echo || EvalNormalization.isFiller($0.text) }
+    let normalized = EvalTerms.count(terms, tracks: [.init(track: "system", words: words,
+                                                           covered: result.cloudEquivalent,
+                                                           spans: result.cloudEquivalentSpans, ignorable: ignorable)])
+    let raw = EvalTerms.count(terms, tracks: [.init(track: "system", words: words, covered: result.cloudMatched,
+                                                    spans: result.cloudMatchedSpans, ignorable: ignorable)])
     #expect(normalized.map { "\($0.term) \($0.hits)/\($0.cloud)" } == ["kubectl 0/1", "TestFlight 1/1"])
     #expect(raw.map { "\($0.term) \($0.hits)/\($0.cloud)" } == ["kubectl 0/1", "TestFlight 0/1"])
+}
+
+@Test func fairAPhraseIsAHitOnlyAsOneUnbrokenLocalRun() {
+    let terms = EvalTerms.terms(wordList: ["machine learning"], corrections: [])
+    func hits(_ localWords: [String], echo: Set<Int> = []) -> Int? {
+        let local = fairTimed(localWords, echo: echo)
+        let cloud = fairUntimed("we use machine learning daily")
+        let result = WindowComparer.compare(track: "system", local: local, cloud: cloud, start: 0, end: 20)
+        let track = EvalTerms.Track(track: "system", words: cloud.map(\.text), covered: result.cloudEquivalent,
+                                    spans: result.cloudEquivalentSpans,
+                                    ignorable: local.map { $0.echo || EvalNormalization.isFiller($0.text) })
+        return EvalTerms.count(terms, tracks: [track]).first?.hits
+    }
+    #expect(hits(["we", "use", "machine", "learning", "daily"]) == 1)
+    // A word between the phrase's words: both are matched, the phrase is not there.
+    #expect(hits(["we", "use", "machine", "deep", "learning", "daily"]) == 0)
+    // A filler between them is no break.
+    #expect(hits(["we", "use", "machine", "um", "learning", "daily"]) == 1)
+    #expect(hits(["we", "use", "machinelearning", "daily"]) == 1)
 }
 
 // MARK: - Report and review page
@@ -238,13 +279,14 @@ private func fairScore(local: Int, edits: Int, echo: Int = 0) -> EvalScore {
                     group: .otherWords, before: "", after: "", localFirst: 2, localEnd: 3),
     ]
     let report = fairReport(tracks: [mic, system], passages: passages,
-                            terms: [TermStat(term: "Keycloak", source: .wordList, cloud: 4, hits: 1)])
+                            terms: [TermStat(term: "Keycloak", source: .wordList, cloud: 4, hits: 1,
+                                             tracks: [.init(track: "system", cloud: 4, hits: 1)])])
     let markdown = EvalCompare.markdown(report)
     #expect(markdown.contains("| system | 980 | 980 | 196 | 0 | 0 | 20.0 % | 20.0 % | 22.0 % | 22.0 % |"))
     #expect(markdown.contains("mic ⚠︎ unreliable: mostly echo"))
     #expect(markdown.contains("400 local words were echo of the system track, 100 kept"))
     #expect(markdown.contains("## Terms"))
-    #expect(markdown.contains("| Keycloak | word list | 4 | 1 | 3 |"))
+    #expect(markdown.contains("| Keycloak | word list | 4 | 1 | 3 | – | 1/4 |"))
     #expect(markdown.contains("2 more terms are not in the cloud text."))
     #expect(markdown.contains("## Other word changes (1)"))
     #expect(!markdown.contains("## Numbers"))

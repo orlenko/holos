@@ -577,6 +577,46 @@ private func evalLocalDependencies(_ speech: FakeSpeechFactory, status: String =
     #expect(throws: HolosError.self) { _ = try EvalLocal.record("../x", in: session) }
 }
 
+@Test func evalLocalNeverResumesOverAudioWhoseBytesChanged() async throws {
+    let temp = try TemporaryDirectory("eval")
+    defer { temp.remove() }
+    let session = try await SessionFixtures.makeSession(in: temp.url.appendingPathComponent("a"),
+                                                        source: .microphoneAndSystem,
+                                                        audioSeconds: ["mic": 4, "system": 4], transcript: nil)
+    let other = try await SessionFixtures.makeSession(in: temp.url.appendingPathComponent("b"),
+                                                      source: .microphoneAndSystem,
+                                                      audioSeconds: ["mic": 4, "system": 4], transcript: nil,
+                                                      tone: 0.09)
+    let heard = SessionFixtures.segment(["hello"], track: nil, start: 0.5)
+    let failing = FakeSpeechFactory([FakeSpeechScript(segments: [heard]),
+                                     FakeSpeechScript(makeError: .unavailable("busy"))])
+    await #expect(throws: HolosError.self) {
+        _ = try await EvalLocal.run(session: session, options: .init(), vocabulary: nil,
+                                    dependencies: evalLocalDependencies(failing),
+                                    now: Date(timeIntervalSince1970: 1_790_000_000))
+    }
+    let id = try #require(EvalLocal.runIDs(in: session).first)
+    // Other samples in the same chunk files: the manifest and its fingerprint are unchanged, the bytes are not.
+    let chunks = try SessionArchive.readManifest(at: session).chunks
+    let replacements = try SessionArchive.readManifest(at: other).chunks
+    for (chunk, replacement) in zip(chunks, replacements) {
+        let target = session.appendingPathComponent(chunk.relativePath)
+        try FileManager.default.removeItem(at: target)
+        try FileManager.default.copyItem(at: other.appendingPathComponent(replacement.relativePath), to: target)
+    }
+    let error = await #expect(throws: HolosError.self) {
+        _ = try await EvalLocal.run(session: session, options: .init(runID: id), vocabulary: nil,
+                                    dependencies: evalLocalDependencies(FakeSpeechFactory()))
+    }
+    #expect(error?.localizedDescription.contains("audio changed") == true)
+    // Without --run, a new run is started rather than the old one resumed.
+    let fresh = FakeSpeechFactory([FakeSpeechScript(segments: [heard]), FakeSpeechScript(segments: [heard])])
+    let record = try await EvalLocal.run(session: session, options: .init(), vocabulary: nil,
+                                         dependencies: evalLocalDependencies(fresh),
+                                         now: Date(timeIntervalSince1970: 1_790_000_100))
+    #expect(record.id != id && fresh.calls.count == 2)
+}
+
 @Test func evalCompareWithALocalCandidateCountsTermsAndLeavesTheCurrentReport() async throws {
     let temp = try TemporaryDirectory("eval")
     defer { temp.remove() }

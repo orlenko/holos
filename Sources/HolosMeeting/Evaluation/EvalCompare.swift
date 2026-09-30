@@ -214,7 +214,7 @@ public enum EvalCompare {
         var normalizationTotal = NormalizationCounts()
         var tracks: [CompareReport.TrackReport] = []
         var passages: [EvalPassage] = []
-        var termTracks: [(words: [String], covered: [Bool?])] = []
+        var termTracks: [EvalTerms.Track] = []
         for plan in run.tracks {
             guard let cloud = try EvalStore.read(CloudTrackResult.self,
                                                  from: EvalPaths.trackResult(run.id, track: plan.track, in: session))
@@ -232,7 +232,7 @@ public enum EvalCompare {
             if let counts = compared.report.normalization { normalizationTotal.add(counts) }
             tracks.append(compared.report)
             passages += compared.passages
-            termTracks.append((compared.cloud.map(\.text), normalize ? compared.cloudEquivalent : compared.cloudMatched))
+            termTracks.append(compared.termTrack(plan.track, normalized: normalize))
         }
         let termStats = EvalTerms.count(terms, tracks: termTracks)
         return CompareReport(sessionID: manifest.id, run: run.id, model: run.model, transcriptID: transcript.id,
@@ -253,10 +253,19 @@ public enum EvalCompare {
     struct TrackComparison {
         var report: CompareReport.TrackReport
         var passages: [EvalPassage]
-        /// The track's cloud words, and per word whether the local transcript has it (`WindowComparison`).
+        /// The track's cloud words, and per word whether and where the local transcript has it (`WindowComparison`).
         var cloud: [EvalToken]
-        var cloudMatched: [Bool?]
-        var cloudEquivalent: [Bool?]
+        var window: WindowComparison
+        /// Per local word: a filler or echo, which may stand between a term's words.
+        var ignorable: [Bool]
+
+        /// The track for the Terms section: by key, or under the normalized comparison.
+        func termTrack(_ name: String, normalized: Bool) -> EvalTerms.Track {
+            EvalTerms.Track(track: name, words: cloud.map(\.text),
+                            covered: normalized ? window.cloudEquivalent : window.cloudMatched,
+                            spans: normalized ? window.cloudEquivalentSpans : window.cloudMatchedSpans,
+                            ignorable: ignorable)
+        }
     }
 
     static func compareTrack(track: String, local: [EvalToken], cloud: CloudTrackResult) -> TrackComparison {
@@ -297,8 +306,8 @@ public enum EvalCompare {
         return TrackComparison(
             report: CompareReport.TrackReport(track: track, score: result.score, groups: groups, warnings: warnings,
                                               normalized: result.normalized, normalization: result.normalization),
-            passages: result.passages, cloud: allCloud, cloudMatched: result.cloudMatched,
-            cloudEquivalent: result.cloudEquivalent)
+            passages: result.passages, cloud: allCloud, window: result,
+            ignorable: local.map { $0.echo || EvalNormalization.isFiller($0.text) })
     }
 
     private static func shifted(_ op: AlignmentOp, local: Int, cloud: Int) -> AlignmentOp {
@@ -534,14 +543,23 @@ public enum EvalCompare {
             out += "Each word-list term and each correction's meant phrase, where the cloud text has it (echo left "
             out += "out): whether the local transcript has the same words at the aligned position"
             out += report.isNormalized ? " (under the normalized comparison)" : ""
-            out += ". Sorted by misses.\n\n"
+            out += ". Sorted by misses. Per track, hits of the cloud's count: the microphone's count depends on the "
+            out += "echo left out, which differs from one local transcript to another.\n\n"
             if terms.isEmpty {
                 out += "The cloud text has none of the \(report.termsNotHeard ?? 0) terms.\n"
             } else {
-                out += "| Term | Source | In cloud | Local hits | Local misses |\n| --- | --- | ---: | ---: | ---: |\n"
+                let names = report.tracks.map(\.track)
+                out += "| Term | Source | In cloud | Local hits | Local misses |"
+                out += names.map { " \($0) |" }.joined() + "\n"
+                out += "| --- | --- | ---: | ---: | ---: |" + String(repeating: " ---: |", count: names.count) + "\n"
                 for term in terms {
                     let source = term.source == .wordList ? "word list" : "correction"
-                    out += "| \(escape(term.term)) | \(source) | \(term.cloud) | \(term.hits) | \(term.misses) |\n"
+                    out += "| \(escape(term.term)) | \(source) | \(term.cloud) | \(term.hits) | \(term.misses) |"
+                    for name in names {
+                        let count = term.tracks.first { $0.track == name }
+                        out += count.map { " \($0.hits)/\($0.cloud) |" } ?? " – |"
+                    }
+                    out += "\n"
                 }
                 if let unheard = report.termsNotHeard, unheard > 0 {
                     out += "\n\(unheard) more terms are not in the cloud text.\n"

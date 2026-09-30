@@ -464,6 +464,10 @@ public struct WindowComparison: Sendable, Equatable {
     /// by key (`cloudMatched`) or under the normalized comparison (`cloudEquivalent`).
     public var cloudMatched: [Bool?] = []
     public var cloudEquivalent: [Bool?] = []
+    /// Per cloud word the local transcript has: the local words (indices into the compared local words) it stands
+    /// for, by key (`cloudMatchedSpans`) or under the normalized comparison (a joined run for a compound or number).
+    public var cloudMatchedSpans: [Range<Int>?] = []
+    public var cloudEquivalentSpans: [Range<Int>?] = []
 }
 
 public enum WindowComparer {
@@ -548,6 +552,8 @@ public enum WindowComparer {
         var punctuationRun: [Int] = []
         result.cloudMatched = [Bool?](repeating: nil, count: cloud.count)
         result.cloudEquivalent = [Bool?](repeating: nil, count: cloud.count)
+        result.cloudMatchedSpans = [Range<Int>?](repeating: nil, count: cloud.count)
+        result.cloudEquivalentSpans = [Range<Int>?](repeating: nil, count: cloud.count)
         func flush(_ positions: inout [Int], caseOnly: Bool) {
             guard !positions.isEmpty else { return }
             var made = passage(track: track, ops: ops, positions: positions, local: local, cloud: cloud,
@@ -567,8 +573,15 @@ public enum WindowComparer {
                 for j in cloudIndices { result.cloudMatched[j] = false }
                 for op in normalizedOps {
                     switch op {
-                    case .equal(_, let j, _): result.cloudEquivalent[cloudIndices[j]] = true
-                    case .join(_, let range, _): for j in range { result.cloudEquivalent[cloudIndices[j]] = true }
+                    case .equal(let i, let j, _):
+                        result.cloudEquivalent[cloudIndices[j]] = true
+                        result.cloudEquivalentSpans[cloudIndices[j]] = localIndices[i]..<(localIndices[i] + 1)
+                    case .join(let locals, let range, _):
+                        let span = localIndices[locals.lowerBound]..<(localIndices[locals.upperBound - 1] + 1)
+                        for j in range {
+                            result.cloudEquivalent[cloudIndices[j]] = true
+                            result.cloudEquivalentSpans[cloudIndices[j]] = span
+                        }
                     case .fillerCloud(let j): result.cloudEquivalent[cloudIndices[j]] = true
                     case .substitute(_, let j), .cloudOnly(let j): result.cloudEquivalent[cloudIndices[j]] = false
                     case .fillerLocal, .localOnly: break
@@ -594,6 +607,8 @@ public enum WindowComparer {
                 result.score.localWords += 1; result.score.cloudWords += 1; result.score.matches += 1
                 result.cloudMatched[j] = true
                 result.cloudEquivalent[j] = true
+                result.cloudMatchedSpans[j] = i..<(i + 1)
+                result.cloudEquivalentSpans[j] = i..<(i + 1)
                 if EvalNormalization.isFiller(local[i].text) {
                     result.normalization.fillersLocal += 1; result.normalization.fillersCloud += 1
                 } else {

@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import HolosCore
 import HolosSpeakers
@@ -9,6 +10,9 @@ public struct LocalRunRecord: Codable, Sendable, Equatable {
         public var track: String
         /// `EvalStore.audioFingerprint`: a resumed run transcribes the same audio only if it is unchanged.
         public var audioFingerprint: String
+        /// SHA-256 of the track's chunk files' bytes, in order: the chunk list could stay while a file's contents
+        /// change, and a resumed run never joins transcriptions of different audio.
+        public var contentSHA256: String
         public var seconds: Double
     }
 
@@ -184,9 +188,11 @@ public enum EvalLocal {
         }
         let trackNames = CloudEvaluation.orderedTracks(Set(manifest.chunks.map(\.track)))
         guard !trackNames.isEmpty else { throw HolosError.invalidInput("This session has no saved audio.") }
-        let tracks = trackNames.map { track in
+        progress("Checking the saved audio…")
+        let tracks = try trackNames.map { track in
             LocalRunRecord.Track(track: track, audioFingerprint: EvalStore.audioFingerprint(manifest: manifest,
                                                                                             track: track),
+                                 contentSHA256: try contentDigest(session: session, manifest: manifest, track: track),
                                  seconds: manifest.audioSeconds(track: track))
         }
         let languages = try Self.languages(session: session, language: options.language)
@@ -290,6 +296,21 @@ public enum EvalLocal {
         record.completedAt = now
         try EvalStore.write(record, to: EvalPaths.localRecord(record.id, in: session))
         return record
+    }
+
+    /// SHA-256 of a track's chunk files, in the manifest's time order, read in pieces.
+    static func contentDigest(session: URL, manifest: SessionManifest, track: String) throws -> String {
+        var hasher = SHA256()
+        let chunks = manifest.chunks.filter { $0.track == track }
+            .sorted { ($0.start, $0.relativePath) < ($1.start, $1.relativePath) }
+        for chunk in chunks {
+            try Task.checkCancellation()
+            let handle = try FileHandle(forReadingFrom: session.appendingPathComponent(chunk.relativePath))
+            defer { try? handle.close() }
+            hasher.update(data: Data(chunk.relativePath.utf8))
+            while let data = try handle.read(upToCount: 1 << 20), !data.isEmpty { hasher.update(data: data) }
+        }
+        return hasher.finalize().map { String(format: "%02x", $0) }.joined()
     }
 
     /// The newest unfinished run with these settings.
