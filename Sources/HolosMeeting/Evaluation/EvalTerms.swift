@@ -101,7 +101,7 @@ public enum EvalTerms {
         return false
     }
 
-    /// Longest run of cloud words an occurrence may take.
+    /// Longest run of cloud words a spelled number may take when read against a shorter written form.
     static let maxOccurrenceWords = 8
 
     /// Where any of `forms` is written in the words, as whole words: their keys joined, or (for a run holding a
@@ -109,6 +109,7 @@ public enum EvalTerms {
     static func occurrences(of forms: Set<String>, words: [String], keys: [String], spelled: [Bool]) -> [Range<Int>] {
         let forms = forms.filter { !$0.isEmpty }
         guard !forms.isEmpty else { return [] }
+        let longestForm = forms.map(\.count).max() ?? 0
         var found: [Range<Int>] = []
         var start = 0
         while start < keys.count {
@@ -116,7 +117,9 @@ public enum EvalTerms {
             var hasSpelled = false
             var end = start
             var match: Int?
-            while end < keys.count, end - start < maxOccurrenceWords {
+            // As long as the longest form (a term may have many words), or up to `maxOccurrenceWords` words for a
+            // spelled number read against a shorter written form ("GPT four" for "GPT-4").
+            while end < keys.count, joined.count < longestForm || (hasSpelled && end - start < maxOccurrenceWords) {
                 joined += keys[end]
                 hasSpelled = hasSpelled || spelled[end]
                 end += 1

@@ -420,3 +420,19 @@ private func fairScore(local: Int, edits: Int, echo: Int = 0) -> EvalScore {
     #expect(!report.isNormalized && report.isOfCurrentTranscript)
     #expect(!EvalCompare.isCurrent(report, transcriptID: "T"))
 }
+
+@Test func fairMatchedMmIsAFillerByEachSidesOwnContext() {
+    // Local "5 mm" is millimetres, cloud "well mm" is a filler: the matched "mm" is a local-only word, not a match.
+    let result = WindowComparer.compare(track: "system", local: fairTimed(["cut", "5", "mm", "now"]),
+                                        cloud: fairUntimed("cut well mm now"), start: 0, end: 10)
+    #expect(result.normalized.localOnly >= 1)
+    #expect(result.normalized.edits >= 2)  // "5"/"well" and the one-sided "mm"
+}
+
+@Test func fairTermsLongerThanEightWordsAreFound() {
+    let phrase = "one two three four five six seven eight nine"
+    let terms = EvalTerms.terms(wordList: [phrase], corrections: [])
+    let words = ["say"] + phrase.split(separator: " ").map(String.init)
+    let track = EvalTerms.Track(track: "system", words: words, covered: Array(repeating: true, count: words.count))
+    #expect(EvalTerms.count(terms, tracks: [track]).map { "\($0.hits)/\($0.cloud)" } == ["1/1"])
+}

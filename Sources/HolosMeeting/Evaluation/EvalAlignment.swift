@@ -652,13 +652,25 @@ public enum WindowComparer {
             guard case .match(let i, let j, let exact) = op else { continue }
             result.cloudEquivalent[j] = true
             result.cloudEquivalentSpans[j] = i..<(i + 1)
-            if EvalNormalization.fillerFlags([local[i].text], previous: i > 0 ? local[i - 1].text : nil,
-                                                fillers: fillers)[0] {
+            // Each side's word is a filler or not by its own context ("5 mm" is millimetres, "well mm" a filler).
+            let localFiller = EvalNormalization.fillerFlags([local[i].text], previous: i > 0 ? local[i - 1].text : nil,
+                                                            fillers: fillers)[0]
+            let cloudFiller = EvalNormalization.fillerFlags([cloud[j].text], previous: j > 0 ? cloud[j - 1].text : nil,
+                                                            fillers: fillers)[0]
+            switch (localFiller, cloudFiller) {
+            case (true, true):
                 result.normalization.fillersLocal += 1; result.normalization.fillersCloud += 1
-            } else {
+            case (false, false):
                 result.normalized.localWords += 1; result.normalized.cloudWords += 1
                 result.normalized.matches += 1
                 if !exact { result.normalized.caseOrPunctuationOnly += 1 }
+            case (true, false):
+                // Only the local word is a filler: the cloud's word has no counterpart.
+                result.normalization.fillersLocal += 1
+                result.normalized.cloudWords += 1; result.normalized.cloudOnly += 1
+            case (false, true):
+                result.normalization.fillersCloud += 1
+                result.normalized.localWords += 1; result.normalized.localOnly += 1
             }
         }
         for stretch in stretches {
