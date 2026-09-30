@@ -85,16 +85,23 @@ func replayCancelsASessionCreatedAfterItsStartTimeout() async throws {
     try await writer.finish()
     try await archive.finish(status: ArchiveStatus.complete)
     let speech = FakeSpeechFactory()
+    let entered = SharedValue(false)
+    let released = SharedValue(false)
+    defer { released.set(true) }  // Also on a failure below: the factory never polls forever.
     let timeouts = StopTimeouts(speechFinishBase: .milliseconds(100), speechFinishPerAudioSecond: 0)
     do {
+        // The factory returns only once released, after the replay has given up on it.
         let segments = try await TrackReplayer.replay(directory: archive.directory, track: "mic", locale: "en-CA",
                                                       backend: .speech,
-                                                      makeSpeech: recorderLateSpeechFactory(speech, after: 0.4),
+                                                      makeSpeech: recorderGatedSpeechFactory(speech, entered: entered,
+                                                                                             released: released),
                                                       timeouts: timeouts)
         Issue.record("The replay returned \(segments.map(\.text)) instead of timing out.")
     } catch let partial as ReplayIncomplete {
         #expect(partial.message.hasPrefix("Speech did not start within 0.1 s"))
     }
+    #expect(entered.value, "The replay asked for a session.")
+    released.set(true)
     #expect(await eventually { speech.sessions.count == 1 }, "The factory does return, late.")
     let late = try #require(speech.sessions.first)
     #expect(await recorderEventually { await late.cancelled }, "The late session is cancelled, not left running.")
@@ -105,14 +112,22 @@ func replayCancelsASessionCreatedAfterItsStartTimeout() async throws {
 @Test(.timeLimit(.minutes(1))) @MainActor
 func liveTrackCancelsASessionCreatedAfterTheTrackWasCancelled() async throws {
     let speech = FakeSpeechFactory()
+    let entered = SharedValue(false)
+    let released = SharedValue(false)
+    defer { released.set(true) }  // Also on a failure below: the factory never polls forever.
     let track = LiveTrack(track: "mic", locale: "en-CA", backend: .speech, contextualStrings: [],
-                          makeSpeech: recorderLateSpeechFactory(speech, after: 0.4), events: { _, _ in },
-                          reporter: CollectingReporter(), timeouts: StopTimeouts(speechFinishBase: .milliseconds(50)))
+                          makeSpeech: recorderGatedSpeechFactory(speech, entered: entered, released: released),
+                          events: { _, _ in }, reporter: CollectingReporter(),
+                          timeouts: StopTimeouts(speechFinishBase: .milliseconds(50)))
     // No prepared session: the speech task makes one for this frame.
     track.push(try PCMFrame(samples: [Float](repeating: 0.1, count: 1_600), sampleRate: 16_000, channels: 1,
                             startTime: 0), epoch: 0)
-    // Waits at most 50 ms for the speech task, which is still inside the factory.
+    // Cancelling before the speech task has taken the frame discards it, and no session is ever asked for; the
+    // speech task has to be inside the factory first.
+    #expect(await eventually { entered.value }, "The speech task asks for a session.")
+    // Waits at most 50 ms for the speech task, which stays inside the factory until released.
     await track.cancel()
+    released.set(true)
     #expect(await eventually { speech.sessions.count == 1 }, "The factory does return, late.")
     let late = try #require(speech.sessions.first)
     #expect(await recorderEventually { await late.cancelled }, "The late session is cancelled.")
