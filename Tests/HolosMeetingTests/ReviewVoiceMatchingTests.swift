@@ -366,6 +366,35 @@ func aVoiceAskedForBeforeAForgetIsNotLearned() async throws {
 }
 
 @Test(.timeLimit(.minutes(1))) @MainActor
+func anUndoneOrNewerLinkTakesBackAVoiceNotLearnedYet() async throws {
+    let temp = try TemporaryDirectory("voice")
+    defer { temp.remove() }
+    let store = try voiceStore(temp)
+    let fixture = try await SessionFixtures.labelledSession(in: temp.url, speakers: ["S1", "S2"], duration: 20)
+    let review = try await voiceOpen(fixture.session, store: store, extractor: VoiceFakeExtractor(voices: voiceMap),
+                                     analyse: false, sampleDelay: .seconds(3600))
+    try await review.setName("Jim", speakerID: s1)
+    try await review.undo()
+    review.learnVoices = false
+    try await review.setName("Jim", speakerID: s1)
+    #expect(review.speaker(s1)?.name == "Jim")
+    await review.close()
+    #expect(try voiceSamples(store, named: "Jim") == 0,
+            "The link that asked for the voice was undone; the one saved with learning off does not learn it.")
+
+    // Without the undo, a newer link with learning off withdraws the request too.
+    let other = try await voiceOpen(fixture.session, store: store, extractor: VoiceFakeExtractor(voices: voiceMap),
+                                    analyse: false, sampleDelay: .seconds(3600))
+    other.learnVoices = true
+    try await other.setName("Sam", speakerID: s2)
+    other.learnVoices = false
+    try await other.setName("", speakerID: s2)
+    try await other.setName("Sam", speakerID: s2)
+    await other.close()
+    #expect(try voiceSamples(store, named: "Sam") == 0)
+}
+
+@Test(.timeLimit(.minutes(1))) @MainActor
 func noVoicesAreWorkedOutUnlessAsked() async throws {
     let temp = try TemporaryDirectory("voice")
     defer { temp.remove() }

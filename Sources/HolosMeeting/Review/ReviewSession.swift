@@ -111,6 +111,9 @@ public struct ReviewWord: Sendable, Equatable {
     /// "Merge matching voices automatically": after a name is given, speakers whose voice is all but the same as a
     /// named person's (`MeetingVoiceSuggestion.mergeable`) are merged into them as one change. Off by default.
     public var autoMergeVoices = false
+    /// The speaker whose name is being typed in the window: never merged automatically meanwhile, so the name the user
+    /// is typing still has its speaker when they press Return.
+    public var speakerBeingNamed: String?
     /// A voice sample learned from this meeting could not be learned or brought in step (why), until one is.
     public private(set) var voiceProblem: String?
     /// Voice samples are being learned or brought in step in the background.
@@ -158,6 +161,10 @@ public struct ReviewWord: Sendable, Equatable {
     private var voiceEpoch = 0
     private var voiceRunID: String?
     private var voiceEmbeddings: [String: TurnEmbedding] = [:]
+    /// What `voiceMatches` was last worked out from.
+    private var voiceMatchKey: VoiceMatchKey?
+    /// A pass a maintenance pause stopped, until its child has exited.
+    private var stoppedPass: Task<Void, Never>?
     /// A name was given since automatic merging last looked (`autoMergeVoices`).
     private var mergeArmed = false
     /// Voice samples owe a sync (`syncSamples`), for these people to enrol besides; `sampleRequests` counts
@@ -698,10 +705,18 @@ public struct ReviewWord: Sendable, Equatable {
             exportTimer = nil
             // The command may delete the audio or forget voices: no pass reads the audio meanwhile, and a sample sync
             // running is stopped and waited for (it runs again once the review resumes).
-            if case .running = voiceAnalysis { dropVoices() }
+            if case .running = voiceAnalysis {
+                stoppedPass = voiceTask
+                dropVoices()
+            }
             holdSampleSync()
             notify()
             Self.log.info("Session \(self.sessionID, privacy: .public): review paused for a maintenance command")
+        }
+        // Their children have exited (and deleted their renders) before the command starts.
+        if let stopped = stoppedPass {
+            await stopped.value
+            stoppedPass = nil
         }
         if let running = sampleRun { await running.value }
         try? await enqueue(.exports, optimistic: [])
@@ -747,9 +762,12 @@ public struct ReviewWord: Sendable, Equatable {
         }
         // A voice pass still running stops; a sample sync still owed runs now (from what the pass stored, or with a
         // pass of its own), and then the meeting's voices are dropped from memory.
+        let pass = voiceTask
         stopVoicePass()
         await flushSamples()
         dropVoices()
+        // The pass's child has exited (and deleted its render) before the window reports it closed.
+        await pass?.value
         Self.log.info("Session \(self.sessionID, privacy: .public): review closed")
     }
 
@@ -1044,7 +1062,7 @@ public struct ReviewWord: Sendable, Equatable {
     /// in the background, enrolling the people `enroll` finds in the labels adopted.
     private func savePeopleChange(
         _ op: Operation, matching: @escaping ([SpeakerEdit]) -> Bool,
-        enroll: @escaping (SpeakerSessionSnapshot) -> Set<String>,
+        enroll: @escaping (SpeakerSessionSnapshot) -> Enrollment,
         _ change: @escaping @Sendable (URL, SpeakerProfileStore, (any VoiceSampleExtractor)?) async throws
             -> SpeakerSessionSnapshot
     ) async throws {
@@ -1064,26 +1082,45 @@ public struct ReviewWord: Sendable, Equatable {
             // A link that changed nothing saved nothing and rewrote no export.
             if adopt(returned, op: op, matching: matching) { changesSaved(exportsWritten: true) }
             // Even then: an earlier run of this link may have saved its lines and not its sample.
-            oweSamples(enroll: enroll(returned), since: epoch)
+            owe(enroll(returned), since: epoch)
         case .failure(let error):
             await reloadPeople()
             do {
                 try await handleFailure(error, op: op, matching: matching)
             } catch let thrown {
                 // Saved, then something after failed: the labels were reread, and the samples are still owed.
-                if Self.isIncomplete(thrown) { oweSamples(enroll: enroll(snapshot), since: epoch) }
+                if Self.isIncomplete(thrown) { owe(enroll(snapshot), since: epoch) }
                 throw thrown
             }
         }
     }
 
-    /// The people `speakerIDs` are linked to in `snapshot`, when `learn`: who a saved link enrols.
+    /// Who a saved link names, and whether their voice is to be learned: the people `speakerIDs` are linked to in
+    /// the labels adopted.
+    private struct Enrollment {
+        let people: Set<String>
+        let learn: Bool
+    }
+
     private nonisolated static func linkedPeople(_ speakerIDs: [String], if learn: Bool)
-        -> (SpeakerSessionSnapshot) -> Set<String> {
+        -> (SpeakerSessionSnapshot) -> Enrollment {
         { snapshot in
-            guard learn, let projection = snapshot.projection else { return [] }
             let wanted = Set(speakerIDs)
-            return Set(projection.speakers.filter { wanted.contains($0.id) }.compactMap(\.profileID))
+            let people = snapshot.projection.map { projection in
+                Set(projection.speakers.filter { wanted.contains($0.id) }.compactMap(\.profileID))
+            } ?? []
+            return Enrollment(people: people, learn: learn)
+        }
+    }
+
+    /// A saved link owes a sync: learning the people's voices when asked, else withdrawing an earlier request to learn
+    /// them that has not run yet (the newest link of a person says whether their voice is learned).
+    private func owe(_ enrollment: Enrollment, since epoch: Int) {
+        if enrollment.learn {
+            oweSamples(enroll: enrollment.people, since: epoch)
+        } else {
+            for profileID in enrollment.people { sampleEnroll[profileID] = nil }
+            oweSamples()
         }
     }
 
@@ -1167,6 +1204,13 @@ public struct ReviewWord: Sendable, Equatable {
         let hook = beforeEdit
         let ordered = lines.filter(applied.contains)
         let newest = view.lastUndoableBatchID == batch
+        // A link taken back takes back its request to learn the voice, if that has not run yet: a later link of the
+        // same person with learning off must not learn it on the strength of this one.
+        let unlinked = snapshot.journal.edits.filter { ordered.contains($0.id) }.compactMap { edit -> String? in
+            if case .linkProfile(_, let profileID) = edit.action { return profileID }
+            return nil
+        }
+        for profileID in unlinked { sampleEnroll[profileID] = nil }
         let outcome = await Self.detachedResult { () throws -> SpeakerEditResult in
             if let hook { await hook() }
             if newest {
@@ -1342,6 +1386,7 @@ public struct ReviewWord: Sendable, Equatable {
         guard epoch == voiceEpoch, let runID = voiceRunID else { return }
         voiceTask = nil
         voiceEmbeddings = voiceCache.embeddings(runID: runID)
+        voiceMatchKey = nil
         if let failure, voiceEmbeddings.isEmpty {
             voiceAnalysis = .failed(failure.localizedDescription)
             Self.log.error("Session \(self.sessionID, privacy: .public): voices not worked out (\(ProcessSpawner.logCategory(failure), privacy: .public))")
@@ -1369,6 +1414,7 @@ public struct ReviewWord: Sendable, Equatable {
         stopVoicePass()
         voiceCache.clear()
         voiceEmbeddings = [:]
+        voiceMatchKey = nil
         voiceRunID = nil
         voiceMatches = .empty
         voiceAnalysis = .off
@@ -1378,11 +1424,12 @@ public struct ReviewWord: Sendable, Equatable {
     /// out again when they can be.
     private func updateVoiceAnalysis() {
         guard analyseVoices else { return }
-        if snapshot.audioDeleted || closed {
+        if snapshot.audioDeleted {
             if voiceRunID != nil || voiceAnalysis != .off { dropVoices() }
             return
         }
-        guard voiceRunID != snapshot.run?.id || voiceAnalysis == .off else { return }
+        // Closing: what the pass stored serves the last sample sync (`close` drops it afterwards); no new pass.
+        guard !closed, voiceRunID != snapshot.run?.id || voiceAnalysis == .off else { return }
         startVoiceAnalysis()
     }
 
@@ -1399,10 +1446,54 @@ public struct ReviewWord: Sendable, Equatable {
         guard profiles != nil, !voiceEmbeddings.isEmpty, voiceRunID == projection.runID,
               snapshot.journal.isComplete else {
             if voiceMatches != .empty { voiceMatches = .empty }
+            voiceMatchKey = nil
             return
         }
+        // Worked out again only when something it reads changed: the projection is rebuilt on every queue step,
+        // and on a 3-hour meeting the comparison is thousands of 256-value vectors.
+        let people = Set(profileNames.keys)
+        let thresholds = voiceThresholds
+        let key = VoiceMatchKey(
+            runID: projection.runID, people: people, thresholds: thresholds, embeddings: voiceEmbeddings.count,
+            turns: projection.turns.map {
+                VoiceMatchKey.Turn(id: $0.id, speakerID: $0.speakerID,
+                                   usable: MeetingVoiceMatcher.usable($0), track: $0.track)
+            },
+            speakers: projection.speakers.map {
+                VoiceMatchKey.Speaker(id: $0.id, name: $0.name, profileID: $0.profileID,
+                                      candidate: MeetingVoiceMatcher.isCandidate($0),
+                                      rejected: $0.rejectedProfileIDs)
+            })
+        guard key != voiceMatchKey else { return }
+        voiceMatchKey = key
         voiceMatches = MeetingVoiceMatcher.match(projection: projection, embeddings: voiceEmbeddings,
-                                                 thresholds: voiceThresholds, people: Set(profileNames.keys))
+                                                 thresholds: thresholds, people: people)
+    }
+
+    /// Everything `MeetingVoiceMatcher.match` reads, for `refreshVoiceMatches` to skip a match that would come out
+    /// the same.
+    private struct VoiceMatchKey: Equatable {
+        struct Turn: Equatable {
+            let id: String
+            let speakerID: String?
+            let usable: Bool
+            let track: String
+        }
+
+        struct Speaker: Equatable {
+            let id: String
+            let name: String
+            let profileID: String?
+            let candidate: Bool
+            let rejected: [String]
+        }
+
+        let runID: String
+        let people: Set<String>
+        let thresholds: MeetingVoiceThresholds
+        let embeddings: Int
+        let turns: [Turn]
+        let speakers: [Speaker]
     }
 
     /// `MeetingVoiceThresholds` from the people store's calibration when it was measured on this run's model.
@@ -1450,7 +1541,8 @@ public struct ReviewWord: Sendable, Equatable {
     /// a voice sample never comes from an automatic match (§4.10).
     private func autoMergeActions() -> [SpeakerEditAction] {
         var actions: [SpeakerEditAction] = []
-        for suggestion in voiceMatches.suggestions where suggestion.mergeable {
+        for suggestion in voiceMatches.suggestions
+        where suggestion.mergeable && suggestion.speakerID != speakerBeingNamed {
             let turns = projection.turns
                 .filter { $0.speakerID == suggestion.speakerID && !$0.excludedFromEnrollment }.map(\.id)
             if !turns.isEmpty { actions.append(.excludeFromEnrollment(turnIDs: turns)) }
