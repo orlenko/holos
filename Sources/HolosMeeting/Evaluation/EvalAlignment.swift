@@ -608,7 +608,7 @@ public enum WindowComparer {
         flush(&run, caseOnly: false)
         flush(&punctuationRun, caseOnly: true)
         normalize(&result, ops: ops, excluded: excluded, wordRuns: wordRuns, local: local, cloud: cloud,
-                  previousLocal: previousLocalIndex, fillers: fillers)
+                  fillers: fillers)
         return result
     }
 
@@ -625,7 +625,7 @@ public enum WindowComparer {
     /// touches is formatting only. Echo is left out as in the raw scores.
     private static func normalize(_ result: inout WindowComparison, ops: [AlignmentOp], excluded: [Bool],
                                   wordRuns: [(passage: Int, positions: [Int])], local: [EvalToken],
-                                  cloud: [EvalToken], previousLocal: [Int?], fillers: Set<String>) {
+                                  cloud: [EvalToken], fillers: Set<String>) {
         func isGapMatch(_ position: Int) -> Bool {
             if excluded[position] { return false }
             if case .match = ops[position] { return true }
@@ -648,14 +648,15 @@ public enum WindowComparer {
             let first = wordRuns[stretch[0]].positions[0], last = wordRuns[stretch[stretch.count - 1]].positions.last!
             for position in first...last { inStretch[position] = true }
         }
+        let localTexts = local.map(\.text), cloudTexts = cloud.map(\.text)
         for (position, op) in ops.enumerated() where !excluded[position] && !inStretch[position] {
             guard case .match(let i, let j, let exact) = op else { continue }
             // Each side's word is a filler or not by its own context ("5 mm" is millimetres, "well mm" a filler).
             let localFiller = EvalNormalization.fillerFlags(
-                [local[i].text], previousWords: local[max(0, i - EvalNormalization.numberContext)..<i].map(\.text),
+                [localTexts[i]], previousWords: EvalNormalization.context(before: i, in: localTexts, fillers: fillers),
                 fillers: fillers)[0]
             let cloudFiller = EvalNormalization.fillerFlags(
-                [cloud[j].text], previousWords: cloud[max(0, j - EvalNormalization.numberContext)..<j].map(\.text),
+                [cloudTexts[j]], previousWords: EvalNormalization.context(before: j, in: cloudTexts, fillers: fillers),
                 fillers: fillers)[0]
             // The cloud word is covered by the local one only when both sides read it the same way.
             if localFiller == cloudFiller {
@@ -684,14 +685,18 @@ public enum WindowComparer {
             let localIndices = positions.compactMap { localIndex(ops[$0]) }
             let cloudIndices = positions.compactMap { cloudIndex(ops[$0]) }
             let a = localIndices.map { local[$0].text }, b = cloudIndices.map { cloud[$0].text }
-            // The words just before, for context ("mm" after "5" or "one hundred" is millimetres, not a filler).
-            func context(_ words: [EvalToken], endingAt end: Int?) -> String? {
-                guard let end else { return nil }
-                return words[max(0, end - EvalNormalization.numberContext + 1)...end].map(\.text).joined(separator: " ")
+            // The words around, for context: a spelled number the stretch's first or last words are part of ("one
+            // hundred and" just before "twenty"), and "mm" after "5" or "one hundred" is millimetres.
+            func around(_ words: [String], _ indices: [Int]) -> (before: [String], after: [String]) {
+                guard let firstIndex = indices.first, let lastIndex = indices.last else { return ([], []) }
+                return (EvalNormalization.context(before: firstIndex, in: words, fillers: fillers),
+                        EvalNormalization.context(after: lastIndex + 1, in: words, fillers: fillers))
             }
-            let before = (local: context(local, endingAt: previousLocal[first]),
-                          cloud: context(cloud, endingAt: cloudIndices.first.flatMap { $0 > 0 ? $0 - 1 : nil }))
-            let normalizedOps = NormalizedAlignment.align(a, b, before: before, fillers: fillers)
+            let localAround = around(localTexts, localIndices), cloudAround = around(cloudTexts, cloudIndices)
+            let before = (local: localAround.before, cloud: cloudAround.before)
+            let normalizedOps = NormalizedAlignment.align(a, b, before: before,
+                                                          after: (localAround.after, cloudAround.after),
+                                                          fillers: fillers)
             let scored = NormalizedAlignment.score(normalizedOps, a: a, b: b, before: before, fillers: fillers)
             result.normalized.add(scored.score)
             result.normalization.add(scored.counts)

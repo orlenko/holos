@@ -80,33 +80,18 @@ public enum EvalTerms {
     /// Where `term` (its keys joined) is written in `keys`, as whole words: runs of words whose keys joined are the
     /// term's, so "TestFlight" is found in "Test Flight" and "test flight" in "TestFlight". Runs do not overlap.
     static func occurrences(of term: String, in keys: [String]) -> [Range<Int>] {
-        occurrences(of: [term], words: keys, keys: keys, spelled: keys.map { _ in false })
-    }
-
-    /// Whether the run starts or ends inside a longer spelled number ("V twenty" of "V twenty one" is not "V20").
-    static func cutsSpelledNumber(_ words: [String], _ range: Range<Int>) -> Bool {
-        func spelledGroup(_ indices: [Int]) -> [String] {
-            Array(indices.prefix { NormalizedAlignment.isSpelledCardinal(words[$0]) }.map { words[$0] })
-        }
-        if range.upperBound < words.count {
-            let tail = spelledGroup(Array(range.reversed())).reversed()
-            if !tail.isEmpty, let longer = EvalNormalization.number(Array(tail) + [words[range.upperBound]]),
-               !longer.hasDigit { return true }
-        }
-        if range.lowerBound > 0 {
-            let head = spelledGroup(Array(range))
-            if !head.isEmpty, let longer = EvalNormalization.number([words[range.lowerBound - 1]] + head),
-               !longer.hasDigit { return true }
-        }
-        return false
+        occurrences(of: [term], words: keys, keys: keys, numbers: nil)
     }
 
     /// Longest run of cloud words a spelled number may take when read against a shorter written form.
     static let maxOccurrenceWords = 8
 
-    /// Where any of `forms` is written in the words, as whole words: their keys joined, or (for a run holding a
-    /// spelled number, `spelled`) the run's `NormalizedAlignment.compoundForms` ("GPT four" for "GPT-4").
-    static func occurrences(of forms: Set<String>, words: [String], keys: [String], spelled: [Bool]) -> [Range<Int>] {
+    /// Where any of `forms` is written in the words, as whole words: their keys joined, or (with `numbers`, the
+    /// words' spelled-number runs, for a run holding one) the run's `NormalizedAlignment.compoundForms` ("GPT four"
+    /// for "GPT-4"). With `numbers`, an occurrence never starts or ends inside a spelled number: "V one hundred" of
+    /// "V one hundred five" is not "V100".
+    static func occurrences(of forms: Set<String>, words: [String], keys: [String],
+                            numbers: EvalNormalization.SpelledRuns?) -> [Range<Int>] {
         let forms = forms.filter { !$0.isEmpty }
         guard !forms.isEmpty else { return [] }
         let longestForm = forms.map(\.count).max() ?? 0
@@ -121,11 +106,11 @@ public enum EvalTerms {
             // spelled number read against a shorter written form ("GPT four" for "GPT-4").
             while end < keys.count, joined.count < longestForm || (hasSpelled && end - start < maxOccurrenceWords) {
                 joined += keys[end]
-                hasSpelled = hasSpelled || spelled[end]
+                hasSpelled = hasSpelled || numbers?.run(at: end) != nil
                 end += 1
+                if numbers?.cuts(start..<end) == true { continue }
                 if forms.contains(joined) { match = end; break }
-                if hasSpelled, !Set(NormalizedAlignment.compoundForms(Array(words[start..<end]))).isDisjoint(with: forms),
-                   !cutsSpelledNumber(words, start..<end) {
+                if hasSpelled, !Set(NormalizedAlignment.compoundForms(Array(words[start..<end]))).isDisjoint(with: forms) {
                     match = end
                     break
                 }
@@ -185,16 +170,16 @@ public enum EvalTerms {
     public static func count(_ terms: [Term], tracks: [Track], normalized: Bool = false) -> [TermStat] {
         let keyed = tracks.map { track in
             (keys: track.words.map(EvalText.key),
-             spelled: track.words.map { normalized && NormalizedAlignment.isSpelledCardinal($0) }, track: track)
+             numbers: normalized ? EvalNormalization.SpelledRuns(track.words, fillers: []) : nil, track: track)
         }
         var stats: [TermStat] = []
         for term in terms {
             var stat = TermStat(term: term.text, source: term.source, cloud: 0, hits: 0)
             var forms: Set<String> = [joinedKey(term.text)]
             if normalized { forms.formUnion(NormalizedAlignment.compoundForms(EvalText.tokens(term.text))) }
-            for (keys, spelled, track) in keyed {
+            for (keys, numbers, track) in keyed {
                 var count = TermStat.TrackCount(track: track.track, cloud: 0, hits: 0)
-                for range in occurrences(of: forms, words: track.words, keys: keys, spelled: spelled) {
+                for range in occurrences(of: forms, words: track.words, keys: keys, numbers: numbers) {
                     let flags = range.map { $0 < track.covered.count ? track.covered[$0] : nil }
                     guard !flags.contains(where: { $0 == nil }) else { continue }
                     count.cloud += 1

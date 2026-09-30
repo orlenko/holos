@@ -102,7 +102,7 @@ private func canonical(_ text: String) -> String? {
     #expect(scored.counts.fillersLocal == 2 && scored.counts.fillersCloud == 1)
     // "mm" after a number is millimetres, also when the number is just before the passage.
     #expect(EvalNormalization.fillerFlags(["5", "mm", "mm"]) == [false, false, true])
-    #expect(NormalizedAlignment.align(["mm"], [], before: ("5", "5")) == [.localOnly(0)])
+    #expect(NormalizedAlignment.align(["mm"], [], before: (["5"], ["5"])) == [.localOnly(0)])
     let millimetres = WindowComparer.compare(track: "system", local: fairTimed(["cut", "5", "mm"]),
                                              cloud: fairUntimed("cut 5"), start: 0, end: 10)
     #expect(millimetres.normalized.edits == 1)
@@ -459,4 +459,108 @@ private func fairScore(local: Int, edits: Int, echo: Int = 0) -> EvalScore {
     #expect(NormalizedAlignment.compoundForms(["V", "two", "thousand"]).contains("v2000"))
     // A scale word alone is not a number.
     #expect(!NormalizedAlignment.compoundForms(["V", "hundred"]).contains("v100"))
+}
+
+// MARK: - Spelled-number runs
+
+private func words(_ text: String) -> [String] { text.split(separator: " ").map(String.init) }
+
+@Test func fairSpelledNumberRunsAreMaximal() {
+    let table: [(String, [Range<Int>])] = [
+        ("one hundred and twenty", [0..<4]),
+        ("V one hundred five", [1..<4]),
+        ("twenty one", [0..<2]),
+        ("twenty one twenty", [0..<3]),  // a year: 2120
+        ("one two", [0..<1, 1..<2]),
+        ("three and five", [0..<1, 2..<3]),
+        ("one hundred and", [0..<2]),
+        ("cent vingt", [0..<2]),
+        ("quatre-vingt-dix-sept", [0..<1]),
+        ("quatre vingt dix sept", [0..<4]),
+        ("vingt et un", [0..<3]),
+        ("three point five", [0..<3]),
+        ("trois virgule cinq", [0..<3]),
+        ("twenty first", [0..<2]),
+        ("vingt et unième", [0..<3]),
+        ("plus thirty percent", [0..<3]),
+        ("twenty um one", [0..<3]),
+        ("um twenty", [1..<2]),
+        ("twenty. One", [0..<1, 1..<2]),
+        ("we need a hundred", [2..<4]),
+        ("a cat", []),
+        ("5 mm", []),
+    ]
+    for (text, runs) in table {
+        #expect(EvalNormalization.SpelledRuns(words(text)).runs == runs, "\(text)")
+    }
+}
+
+@Test func fairASpelledNumberEqualsDigitsOnlyAsAWholeRun() {
+    // (local, cloud, whether they are the same number): a prefix, a suffix, or the middle of a longer spelled number
+    // is never a shorter number; the whole run is its digits.
+    let table: [(String, String, Bool)] = [
+        ("one hundred and twenty", "20", false), ("one hundred and twenty", "100", false),
+        ("one hundred and twenty", "120", true), ("one hundred twenty five", "20", false),
+        ("twenty one", "20 1", false), ("twenty one", "21", true), ("twenty one", "1", false),
+        ("cent vingt", "120", true), ("cent vingt", "20", false), ("cent vingt", "100", false),
+        ("quatre-vingt-dix-sept", "97", true), ("quatre vingt dix sept", "97", true),
+        ("quatre vingt dix sept", "7", false), ("quatre vingt dix sept", "90", false),
+        ("three point five", "3.5", true), ("three point five", "5", false), ("three point five", "3", false),
+        ("trois virgule cinq", "3,5", true), ("trois virgule cinq", "5", false),
+        ("twenty first", "21st", true), ("twenty first", "1st", false), ("vingt et unième", "21e", true),
+        ("vingt et unième", "1er", false), ("three and five", "3 and 5", true),
+        // "plus" and "percent" around a number leave its words whole.
+        ("thirty percent", "30%", true), ("thirty percent", "30 percent", true), ("plus thirty", "plus 30", true),
+        ("vingt pour cent", "20 pour cent", true), ("one hundred and twenty percent", "20 percent", false),
+    ]
+    for (local, cloud, same) in table {
+        let ops = NormalizedAlignment.align(words(local), words(cloud))
+        #expect(ops.contains { $0.isEdit } == !same, "\(local) / \(cloud)")
+    }
+}
+
+@Test func fairSpelledNumbersAtAStretchsEdgeSeeTheWordsAround() {
+    // "twenty" after "one hundred and" is the end of 120, not 20; "one hundred" before "five" the start of 105.
+    #expect(NormalizedAlignment.align(["twenty"], ["20"], before: (words("we need one hundred and"), []))
+        == [.substitute(0, 0)])
+    #expect(NormalizedAlignment.align(["twenty"], ["20"], before: (words("we need"), [])) == [.equal(0, 0, .number)])
+    #expect(NormalizedAlignment.align(words("one hundred"), ["100"], after: (["five"], [])).contains { $0.isEdit })
+    #expect(NormalizedAlignment.align(words("V one"), ["V1"], after: (["hundred"], [])).contains { $0.isEdit })
+    // In a window: the raw alignment matches "twenty", leaving "one hundred" against "100".
+    let prefix = WindowComparer.compare(track: "system", local: fairTimed(words("we need one hundred twenty now")),
+                                        cloud: fairUntimed("we need 100 twenty now"), start: 0, end: 10)
+    #expect(prefix.normalized.edits > 0)
+    #expect(prefix.normalization.numbers == 0)
+    // The context stops at the first word that can be in no number.
+    #expect(EvalNormalization.context(before: 4, in: words("so we need one hundred"))
+        == words("need one"))
+    #expect(EvalNormalization.context(after: 1, in: words("V one hundred five now later")) == words("one hundred five now"))
+}
+
+@Test func fairTermsNeverStartOrEndInsideASpelledNumber() {
+    func count(_ term: String, _ text: String) -> Int {
+        let track = EvalTerms.Track(track: "system", words: words(text),
+                                    covered: Array(repeating: true, count: words(text).count))
+        return EvalTerms.count(EvalTerms.terms(wordList: [term], corrections: []), tracks: [track], normalized: true)
+            .first?.cloud ?? 0
+    }
+    let table: [(String, String, Int)] = [
+        ("V100", "we use V one hundred five", 0), ("V105", "we use V one hundred five", 1),
+        ("V100", "we use V one hundred now", 1), ("V20", "we use V twenty one", 0),
+        ("V120", "on a V cent vingt", 1), ("V20", "on a V cent vingt", 0),
+        ("GPT-4", "GPT four and GPT four hundred", 1), ("V12", "V one two", 0),
+    ]
+    for (term, text, expected) in table {
+        #expect(count(term, text) == expected, "\(term) in \(text)")
+    }
+    #expect(!NormalizedAlignment.compoundForms(words("V one hundred five")).contains("v100"))
+    #expect(NormalizedAlignment.compoundForms(words("V one hundred five")).contains("v105"))
+    #expect(!NormalizedAlignment.compoundForms(["V2", "one"]).contains("v21"))
+}
+
+@Test func fairMmFollowsTheWholeSpelledNumberBeforeIt() {
+    #expect(EvalNormalization.fillerFlags(["mm"], previousWords: words("one hundred and five")) == [false])
+    #expect(EvalNormalization.fillerFlags(["mm"], previousWords: words("one hundred and")) == [true])
+    #expect(EvalNormalization.fillerFlags(words("twenty um mm")) == [false, true, true])
+    #expect(EvalNormalization.fillerFlags(words("cent vingt mm")) == [false, false, false])
 }

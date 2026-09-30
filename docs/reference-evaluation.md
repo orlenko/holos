@@ -304,9 +304,15 @@ passages, the review page and the gold keep the words as written.
   as another spelled number, so "one" and "un", or "first" and "premier",
   remain different words, and so do different numbers, a cardinal and an
   ordinal ("first"/"1"), or a sign ("+30"/"30"). A spelled number is taken
-  whole: a part of it that the words around it extend ("twenty" in "twenty
-  one", "one hundred" in "one hundred and five") is not a number of its own,
-  so "twenty one" and "20 1" differ.
+  whole: the words are first cut into maximal spelled-number runs (from the
+  left, the longest run that reads as one number, fillers inside left out,
+  never across a sentence mark such as "twenty. One"), and a spelled number
+  equals digits only as one whole run, never as its start, end or middle
+  ("twenty" in "twenty one" or in "one hundred and twenty", "one hundred" in
+  "one hundred and five"), also when the rest of the run lies just outside the
+  passage. So "twenty one" and "20 1" differ, and "one hundred and twenty" is
+  120, never 20. A run's number without the "plus" before it or the
+  "percent" after it is whole too ("thirty percent"/"30 percent").
 - **Fillers.** um, uh, er, erm, hmm, mm, ah in an English meeting and euh,
   heu, bah, hein in a French one (the local transcript's languages; none in
   another language, where "er" or "um" are words), in any case, with the
@@ -314,7 +320,8 @@ passages, the review page and the gold keep the words as written.
   both sides: they count neither as words nor as errors, and the report counts
   them per side. A filler is never paired with a word the other side has.
   "ben", "err", "uh-huh", "mhm" and "H&M" are words, and so is "mm" after a
-  number ("5 mm", "five mm").
+  number ("5 mm", "five mm", "one hundred and five mm": the word before ends a
+  spelled-number run).
 - **Compounds.** Two or three words whose letters and digits, joined, are the
   one word on the other side, when that word shows the join: a capital inside
   ("test flight"/"TestFlight", "chat GPT"/"ChatGPT"), a hyphen, dash, slash or
@@ -337,7 +344,8 @@ page shows; a passage none of whose words such an edit touches is formatting
 only (and none of a stretch's passages is when an edit falls on a matched
 word between them). Matched fillers are left out of the word counts too. In the Terms
 section, the normalized comparison also finds a term written with its numbers
-spelled the other way ("GPT four" for "GPT-4").
+spelled the other way ("GPT four" for "GPT-4"), never starting or ending
+inside a spelled-number run ("V one hundred five" holds no "V100").
 
 ### Local candidates
 
