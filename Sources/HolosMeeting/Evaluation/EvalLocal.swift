@@ -83,8 +83,12 @@ public enum EvalLocal {
         public var language: String?
         /// Resume this unfinished run (default: the newest unfinished one with the same settings).
         public var runID: String?
+        /// Resuming `runID` with the vocabulary it saved: today's word list and corrections are not needed (nor read).
+        public var savedVocabulary: Bool
 
-        public init(language: String? = nil, runID: String? = nil) { self.language = language; self.runID = runID }
+        public init(language: String? = nil, runID: String? = nil, savedVocabulary: Bool = false) {
+            self.language = language; self.runID = runID; self.savedVocabulary = savedVocabulary
+        }
     }
 
     /// "local-<UTC yyyyMMdd'T'HHmmss'Z'>".
@@ -212,7 +216,8 @@ public enum EvalLocal {
                 throw HolosError.invalidInput("The audio changed since local run \(id) started; start a new run.")
             }
             guard found.languages == languages || options.language == nil,
-                  found.vocabularySource == source else {
+                  found.vocabularySource == source || (options.savedVocabulary && found.vocabularySource != "none")
+            else {
                 throw HolosError.invalidInput("Local run \(id) was started with other options ("
                     + found.languages.joined(separator: ",")
                     + (found.vocabularySource == "none" ? ", --no-vocabulary" : "") + "); resume it with the same.")

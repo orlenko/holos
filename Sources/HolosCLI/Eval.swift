@@ -199,7 +199,8 @@ struct Eval: AsyncParsableCommand {
             let directory = try SessionLocator.resolve(session)
             let languages = try EvalLocal.languages(session: directory, language: language)
             var vocabulary: [String]?
-            if !noVocabulary {
+            // A resumed run uses the vocabulary saved in its run.json; today's files are not read.
+            if !noVocabulary, runID == nil {
                 do {
                     vocabulary = RecognizerVocabulary.meeting(
                         wordList: try WordListStore().load().terms,
@@ -212,7 +213,8 @@ struct Eval: AsyncParsableCommand {
             }
             let lease = try SessionArchive.acquireProcessingLease(at: directory)
             defer { lease.release() }
-            let options = EvalLocal.Options(language: language, runID: runID)
+            let options = EvalLocal.Options(language: language, runID: runID,
+                                            savedVocabulary: runID != nil && !noVocabulary)
             let strings = vocabulary
             do {
                 let record = try await EvalInterrupt.run { () async throws in

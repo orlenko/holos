@@ -436,3 +436,20 @@ private func fairScore(local: Int, edits: Int, echo: Int = 0) -> EvalScore {
     let track = EvalTerms.Track(track: "system", words: words, covered: Array(repeating: true, count: words.count))
     #expect(EvalTerms.count(terms, tracks: [track]).map { "\($0.hits)/\($0.cloud)" } == ["1/1"])
 }
+
+@Test func fairMmAfterASpelledNumberRunIsAUnit() {
+    #expect(EvalNormalization.fillerFlags(["mm"], previousWords: ["one", "hundred"]) == [false])
+    #expect(EvalNormalization.fillerFlags(["one", "hundred", "mm"]) == [false, false, false])
+    #expect(EvalNormalization.fillerFlags(["mm"], previousWords: ["well"]) == [true])
+    let unit = WindowComparer.compare(track: "system", local: fairTimed(["cut", "one", "hundred", "mm"]),
+                                      cloud: fairUntimed("cut one hundred"), start: 0, end: 10)
+    #expect(unit.normalized.edits == 1)
+}
+
+@Test func fairOneSidedMatchedFillerDoesNotCoverTheCloudWord() {
+    // Local "well mm" (filler) against cloud "5 mm" (millimetres): the cloud's "mm" is not covered by the local one.
+    let result = WindowComparer.compare(track: "system", local: fairTimed(["cut", "well", "mm", "now"]),
+                                        cloud: fairUntimed("cut 5 mm now"), start: 0, end: 10)
+    let mm = 2
+    #expect(!(result.cloudEquivalent[mm] ?? false))
+}

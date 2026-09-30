@@ -650,13 +650,18 @@ public enum WindowComparer {
         }
         for (position, op) in ops.enumerated() where !excluded[position] && !inStretch[position] {
             guard case .match(let i, let j, let exact) = op else { continue }
-            result.cloudEquivalent[j] = true
-            result.cloudEquivalentSpans[j] = i..<(i + 1)
             // Each side's word is a filler or not by its own context ("5 mm" is millimetres, "well mm" a filler).
-            let localFiller = EvalNormalization.fillerFlags([local[i].text], previous: i > 0 ? local[i - 1].text : nil,
-                                                            fillers: fillers)[0]
-            let cloudFiller = EvalNormalization.fillerFlags([cloud[j].text], previous: j > 0 ? cloud[j - 1].text : nil,
-                                                            fillers: fillers)[0]
+            let localFiller = EvalNormalization.fillerFlags(
+                [local[i].text], previousWords: local[max(0, i - EvalNormalization.numberContext)..<i].map(\.text),
+                fillers: fillers)[0]
+            let cloudFiller = EvalNormalization.fillerFlags(
+                [cloud[j].text], previousWords: cloud[max(0, j - EvalNormalization.numberContext)..<j].map(\.text),
+                fillers: fillers)[0]
+            // The cloud word is covered by the local one only when both sides read it the same way.
+            if localFiller == cloudFiller {
+                result.cloudEquivalent[j] = true
+                result.cloudEquivalentSpans[j] = i..<(i + 1)
+            }
             switch (localFiller, cloudFiller) {
             case (true, true):
                 result.normalization.fillersLocal += 1; result.normalization.fillersCloud += 1
@@ -679,9 +684,13 @@ public enum WindowComparer {
             let localIndices = positions.compactMap { localIndex(ops[$0]) }
             let cloudIndices = positions.compactMap { cloudIndex(ops[$0]) }
             let a = localIndices.map { local[$0].text }, b = cloudIndices.map { cloud[$0].text }
-            // The words just before, for context ("mm" after "5" is millimetres, not a filler).
-            let before = (local: previousLocal[first].map { local[$0].text },
-                          cloud: cloudIndices.first.flatMap { $0 > 0 ? cloud[$0 - 1].text : nil })
+            // The words just before, for context ("mm" after "5" or "one hundred" is millimetres, not a filler).
+            func context(_ words: [EvalToken], endingAt end: Int?) -> String? {
+                guard let end else { return nil }
+                return words[max(0, end - EvalNormalization.numberContext + 1)...end].map(\.text).joined(separator: " ")
+            }
+            let before = (local: context(local, endingAt: previousLocal[first]),
+                          cloud: context(cloud, endingAt: cloudIndices.first.flatMap { $0 > 0 ? $0 - 1 : nil }))
             let normalizedOps = NormalizedAlignment.align(a, b, before: before, fillers: fillers)
             let scored = NormalizedAlignment.score(normalizedOps, a: a, b: b, before: before, fillers: fillers)
             result.normalized.add(scored.score)

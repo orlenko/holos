@@ -42,12 +42,27 @@ public enum EvalNormalization {
     /// `previous` is the word before the first.
     public static func fillerFlags(_ words: [String], previous: String? = nil,
                                    fillers: Set<String> = allFillers) -> [Bool] {
-        words.indices.map { index in
+        // `previous` may hold several words ("one hundred"), the context before the first.
+        fillerFlags(words, previousWords: previous.map { $0.split(whereSeparator: \.isWhitespace).map(String.init) } ?? [],
+                    fillers: fillers)
+    }
+
+    /// Words of context looked at before an "mm" for the number it may follow ("one hundred and five mm").
+    public static let numberContext = 6
+
+    /// `fillerFlags` with the words before the first as context (`previousWords`, in order): "mm" is millimetres
+    /// after any run of words ending just before it that spells a number ("one hundred mm"), not only one word.
+    public static func fillerFlags(_ words: [String], previousWords: [String],
+                                   fillers: Set<String> = allFillers) -> [Bool] {
+        let all = previousWords + words
+        return words.indices.map { index in
             guard isFiller(words[index], fillers: fillers) else { return false }
-            let before = index > 0 ? words[index - 1] : previous
-            if EvalText.key(words[index]) == "mm", let before,
-               before.contains(where: \.isNumber) || number([before]) != nil {
-                return false
+            guard EvalText.key(words[index]) == "mm" else { return true }
+            let end = previousWords.count + index
+            for length in 1...max(1, min(numberContext, end)) where end - length >= 0 {
+                let run = Array(all[(end - length)..<end])
+                if length == 1, run[0].contains(where: \.isNumber) { return false }
+                if number(run) != nil { return false }
             }
             return true
         }
