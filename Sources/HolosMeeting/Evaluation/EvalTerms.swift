@@ -149,6 +149,8 @@ public enum EvalTerms {
         let forms = pattern.forms.filter { !$0.isEmpty }
         guard !forms.isEmpty || pattern.reading != nil else { return [] }
         let longestForm = forms.map(\.count).max() ?? 0
+        // Each number of the term may take up to `maxOccurrenceWords` spelled words ("1 2 3 … 9" is nine numbers).
+        let numberWords = maxOccurrenceWords * max(1, (pattern.reading?.numbers.count ?? 0) + 1)
         var found: [Range<Int>] = []
         var start = 0
         while start < keys.count {
@@ -161,7 +163,7 @@ public enum EvalTerms {
             // number read against another written form ("GPT four" for "GPT-4"); a spelled-number run the window is
             // in is always read to its end ("V one thousand two hundred thirty four" for "V1234").
             while end < keys.count, joined.count < longestForm
-                || (hasNumber && (end - start < maxOccurrenceWords
+                || (hasNumber && (end - start < numberWords
                                   || (end > start && numbers?.run(at: end)?.contains(end - 1) == true))) {
                 joined += keys[end]
                 if let numbers {

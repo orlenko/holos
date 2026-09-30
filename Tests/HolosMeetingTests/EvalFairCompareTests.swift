@@ -622,3 +622,10 @@ private func words(_ text: String) -> [String] { text.split(separator: " ").map(
                                         cloud: fairUntimed("pay 21"), start: 0, end: 10)
     #expect(result.normalized.edits == 0)
 }
+
+@Test func fairTermsWithManyNumbersAreFoundSpelled() {
+    let terms = EvalTerms.terms(wordList: ["1 2 3 4 5 6 7 8 9"], corrections: [])
+    let words = ["say", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine"]
+    let track = EvalTerms.Track(track: "system", words: words, covered: Array(repeating: true, count: words.count))
+    #expect(EvalTerms.count(terms, tracks: [track], normalized: true).map { "\($0.hits)/\($0.cloud)" } == ["1/1"])
+}
