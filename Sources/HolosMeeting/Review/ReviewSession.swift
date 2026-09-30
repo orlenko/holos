@@ -39,8 +39,13 @@ public struct ReviewWord: Sendable, Equatable {
 /// IDs (`resolvedTurnID`).
 ///
 /// Exports are regenerated `exportDelay` after the last change (and at `close`), not on every edit. Voice samples
-/// learned from this meeting are brought in step after every change that affects them. Nothing here logs transcript
-/// text, names, or voice data.
+/// learned from this meeting are brought in step after changes that affect them, in the background and off the edit
+/// queue (`sampleDelay` after the last change, a running one cancelled by a newer change, and at `close`), so a name
+/// is saved at once. Nothing here logs transcript text, names, or voice data.
+///
+/// With `analyseVoices`, the window also works out every turn's voice once, in the background, into an in-memory
+/// `MeetingVoiceCache` (docs/meeting-design.md §4.10, "Voices within one meeting"): it serves voice learning, and
+/// `voiceMatches` compares the meeting's unnamed speakers and turns with the people named in it.
 @MainActor public final class ReviewSession {
     private nonisolated static let log = Logger(subsystem: "ca.orlenko.holos.app", category: "review")
     /// `SpeakerEdit.source` of the window's edits.
@@ -52,8 +57,15 @@ public struct ReviewWord: Sendable, Equatable {
     public let session: URL
     public let profiles: SpeakerProfileStore?
     private let maintenance: MaintenanceLauncher?
+    /// The extractor voice learning uses: the voice cache, falling back to `baseExtractor`.
     private let extractor: (any VoiceSampleExtractor)?
+    /// The extractor as given (or the bundled tool): one pass per call.
+    private let baseExtractor: (any VoiceSampleExtractor)?
     private let exportDelay: Duration
+    private let sampleDelay: Duration
+    private let analyseVoices: Bool
+    /// This meeting's turn embeddings while the window is open (`analyseVoices`); memory only.
+    let voiceCache: MeetingVoiceCache
 
     /// The saved labels, as last loaded from disk.
     public private(set) var snapshot: SpeakerSessionSnapshot
@@ -81,6 +93,28 @@ public struct ReviewWord: Sendable, Equatable {
     /// The labels on disk may differ from the ones shown (a change was saved, or they changed elsewhere, and they
     /// could not be reread), so the review is read-only until `reload` rereads them. Nil otherwise.
     public private(set) var reloadProblem: String?
+
+    /// Where working out the meeting's voices is (`analyseVoices`).
+    public enum VoiceAnalysis: Sendable, Equatable {
+        /// Not asked for, no extractor, no audio, or no track split into speakers.
+        case off
+        /// `done` of `total` tracks finished.
+        case running(done: Int, total: Int)
+        case ready
+        /// Voices cannot be compared in this meeting (why).
+        case failed(String)
+    }
+
+    public private(set) var voiceAnalysis: VoiceAnalysis = .off
+    /// Speakers and turns whose voice matches a person named in this meeting, on the shown labels.
+    public private(set) var voiceMatches: MeetingVoiceMatches = .empty
+    /// "Merge matching voices automatically": after a name is given, speakers whose voice is all but the same as a
+    /// named person's (`MeetingVoiceSuggestion.mergeable`) are merged into them as one change. Off by default.
+    public var autoMergeVoices = false
+    /// A voice sample learned from this meeting could not be learned or brought in step (why), until one is.
+    public private(set) var voiceProblem: String?
+    /// Voice samples are being learned or brought in step in the background.
+    public private(set) var isSyncingSamples = false
 
     /// Test seam: awaited off the main actor before each change is written, so a test can hold a save back.
     var beforeEdit: (@Sendable () async -> Void)?
@@ -116,15 +150,40 @@ public struct ReviewWord: Sendable, Equatable {
     /// Maintenance commands holding the review read-only, by `pause` key, oldest first.
     private var pauses: [(hold: ReviewMaintenance.Hold, reason: String)] = []
 
+    /// Recognition's thresholds as the people store gives them (calibrated only for their model), for
+    /// `voiceThresholds`.
+    private var calibration: (thresholds: RecognitionThresholds, model: EmbeddingModelID)?
+    /// The voice pass for the head run: its task, its cache epoch, and the embeddings it stored (by turn ID).
+    private var voiceTask: Task<Void, Never>?
+    private var voiceEpoch = 0
+    private var voiceRunID: String?
+    private var voiceEmbeddings: [String: TurnEmbedding] = [:]
+    /// A name was given since automatic merging last looked (`autoMergeVoices`).
+    private var mergeArmed = false
+    /// Voice samples owe a sync (`syncSamples`), for these people to enrol besides; `sampleRequests` counts
+    /// requests, so a sync that ends knows whether another one came in meanwhile.
+    private var samplesOwed = false
+    private var sampleEnroll: Set<String> = []
+    private var sampleRequests = 0
+    /// Waits `sampleDelay`, then starts `sampleRun`.
+    private var sampleTimer: Task<Void, Never>?
+    /// The running sync.
+    private var sampleRun: Task<Void, Never>?
+    /// The running sync learns somebody's voice (not only brings samples in step).
+    private var syncLearning = false
+
     // MARK: - Opening
 
-    /// Loads the snapshot off the main actor. `exportDelay` debounces export regeneration.
+    /// Loads the snapshot off the main actor. `exportDelay` debounces export regeneration; `sampleDelay` debounces
+    /// voice sample learning after a change.
     ///
     /// `extractor` learns voices (`VoiceSampleExtractor`); nil uses the bundled `voiceislocal` tool
-    /// (`SubprocessVoiceSampleExtractor`) when `maintenance` is given, else no voice is learned. Throws
-    /// `HolosError.unavailable` when the meeting has no usable speaker labels.
+    /// (`SubprocessVoiceSampleExtractor`) when `maintenance` is given, else no voice is learned. `analyseVoices` works
+    /// out every turn's voice with it in the background (once per track split into speakers) for `voiceMatches` and
+    /// for voice learning. Throws `HolosError.unavailable` when the meeting has no usable speaker labels.
     public init(session: URL, profiles: SpeakerProfileStore?, maintenance: MaintenanceLauncher?,
-                exportDelay: Duration = .seconds(2), extractor: (any VoiceSampleExtractor)? = nil) async throws {
+                exportDelay: Duration = .seconds(2), extractor: (any VoiceSampleExtractor)? = nil,
+                analyseVoices: Bool = false, sampleDelay: Duration = .milliseconds(1500)) async throws {
         let loaded = try await Self.detached { try Self.load(session: session, profiles: profiles) }
         guard let projection = loaded.snapshot.projection else {
             throw HolosError.unavailable(loaded.snapshot.runProblem
@@ -133,8 +192,14 @@ public struct ReviewWord: Sendable, Equatable {
         self.session = session
         self.profiles = profiles
         self.maintenance = maintenance
-        self.extractor = extractor ?? maintenance.map { SubprocessVoiceSampleExtractor(executable: $0.executable) }
+        let base = extractor ?? maintenance.map { SubprocessVoiceSampleExtractor(executable: $0.executable) }
+        baseExtractor = base
+        let cache = MeetingVoiceCache()
+        voiceCache = cache
+        self.extractor = base.map { CachedVoiceSampleExtractor(cache: cache, fallback: $0) }
         self.exportDelay = exportDelay
+        self.sampleDelay = sampleDelay
+        self.analyseVoices = analyseVoices
         snapshot = loaded.snapshot
         self.projection = projection
         savedProjection = projection
@@ -142,9 +207,11 @@ public struct ReviewWord: Sendable, Equatable {
         profileNames = loaded.profileNames
         rememberVoices = loaded.rememberVoices
         learnVoices = loaded.rememberVoices
+        calibration = loaded.calibration
         segments = Self.segmentIndex(loaded.snapshot.transcript)
         knownEditedExports = loaded.editedExports
         Self.log.info("Session \(loaded.snapshot.manifest.id, privacy: .public): review opened on run \(projection.runID, privacy: .public) (\(projection.speakers.count, privacy: .public) speakers, \(projection.turns.count, privacy: .public) turns)")
+        startVoiceAnalysis()
     }
 
     // MARK: - Reading
@@ -306,6 +373,29 @@ public struct ReviewWord: Sendable, Equatable {
         }?.profileID
     }
 
+    /// The suggestion shown for a speaker ("Maybe Jim", Confirm / Not Jim): a voice matched in this meeting to a
+    /// person named in it (`voiceMatches`) before recognition's, since it compares the same recording. Voice matches
+    /// need people (confirming one links the person).
+    public func suggestion(for speakerID: String) -> SpeakerMatch? {
+        guard let speaker = speaker(speakerID) else { return nil }
+        return voiceSuggestion(for: speakerID)?.match ?? speaker.suggestion
+    }
+
+    /// The speaker's suggestion when it comes from a voice matched in this meeting.
+    public func voiceSuggestion(for speakerID: String) -> MeetingVoiceSuggestion? {
+        guard profiles != nil else { return nil }
+        return voiceMatches.suggestion(for: speakerID)
+    }
+
+    /// Speakers with a suggestion (Confirm All).
+    public var suggestionCount: Int { projection.speakers.filter { suggestion(for: $0.id) != nil }.count }
+
+    /// "⚠ sounds like Jim" for a turn whose voice matches a person named in this meeting better than its speaker.
+    public func turnHint(_ turnID: String) -> MeetingTurnHint? {
+        guard profiles != nil else { return nil }
+        return voiceMatches.turnHints[resolvedTurnID(turnID)]
+    }
+
     /// Find More Speakers is possible: exactly one track was split into speakers (a minimum speaker count cannot be
     /// asked of two tracks at once).
     public var canFindMoreSpeakers: Bool { diarizedTrack != nil && maintenance != nil }
@@ -386,6 +476,7 @@ public struct ReviewWord: Sendable, Equatable {
             }
             optimistic = [.rename(speakerID: speakerID, name: clean)]
         }
+        mergeArmed = true
         try await enqueue(.link(speakerID: speakerID, target: target, learnVoice: learnVoices, byName: byName),
                           optimistic: optimistic)
     }
@@ -461,6 +552,7 @@ public struct ReviewWord: Sendable, Equatable {
             let speakerID = Self.newSpeakerID()
             let create = SpeakerEditAction.newSpeaker(speakerID: speakerID, name: person.displayName, turnIDs: ids)
             try validate([create])
+            mergeArmed = true
             try await enqueue(.assignPerson(create: create, speakerID: speakerID, profileID: profileID,
                                             learnVoice: learnVoices),
                               optimistic: [create, .linkProfile(speakerID: speakerID, profileID: profileID)])
@@ -483,14 +575,25 @@ public struct ReviewWord: Sendable, Equatable {
         try requireEditable()
         try requirePeople()
         let known = Set(people.map(\.id))
+        var chosen: [String: String] = [:]
         let optimistic = projection.speakers.flatMap { speaker -> [SpeakerEditAction] in
-            guard let suggestion = speaker.suggestion, known.contains(suggestion.profileID) else { return [] }
+            guard let suggestion = suggestion(for: speaker.id), known.contains(suggestion.profileID) else { return [] }
+            chosen[speaker.id] = suggestion.profileID
             let name = people.first { $0.id == suggestion.profileID }?.displayName ?? suggestion.profileName
             return [.linkProfile(speakerID: speaker.id, profileID: suggestion.profileID),
                     .rename(speakerID: speaker.id, name: name)]
         }
         guard !optimistic.isEmpty else { throw HolosError.invalidInput("There are no suggested names to confirm.") }
-        try await enqueue(.confirmAll(learnVoices: learnVoices), optimistic: optimistic)
+        mergeArmed = true
+        try await enqueue(.confirmAll(learnVoices: learnVoices, suggestions: chosen), optimistic: optimistic)
+    }
+
+    /// Gives a turn flagged "sounds like Jim" (`turnHint`) to Jim's speaker, as one change.
+    public func acceptTurnHint(_ turnID: String) async throws {
+        guard let hint = turnHint(turnID) else {
+            throw HolosError.invalidInput("That turn no longer sounds like someone else in this meeting.")
+        }
+        try await assign([hint.turnID], to: .speaker(hint.speakerID))
     }
 
     /// "This is me": links the speaker to you (the one `isSelf` person, created on first use). Passes `learnVoices`
@@ -506,13 +609,14 @@ public struct ReviewWord: Sendable, Equatable {
         } else {
             optimistic = [.rename(speakerID: speakerID, name: VoiceProfileService.selfName)]
         }
+        mergeArmed = true
         try await enqueue(.markSelf(speakerID: speakerID, learnVoice: learnVoices), optimistic: optimistic)
     }
 
     /// "Not Maria" for the speaker's suggestion, or "Not Jim" for its automatic name, in this meeting only.
     public func rejectSuggestion(speakerID: String) async throws {
         guard let speaker = speaker(speakerID) else { throw Self.noSpeaker(speakerID) }
-        guard let profileID = speaker.suggestion?.profileID ?? automaticProfileID(for: speakerID) else {
+        guard let profileID = suggestion(for: speaker.id)?.profileID ?? automaticProfileID(for: speakerID) else {
             throw HolosError.invalidInput("This speaker has no suggested name to reject.")
         }
         try await apply([.rejectProfile(speakerID: speakerID, profileID: profileID)])
@@ -586,9 +690,14 @@ public struct ReviewWord: Sendable, Equatable {
             pauses.append((hold, reason))
             exportTimer?.cancel()
             exportTimer = nil
+            // The command may delete the audio or forget voices: no pass reads the audio meanwhile, and a sample sync
+            // running is stopped and waited for (it runs again once the review resumes).
+            if case .running = voiceAnalysis { dropVoices() }
+            holdSampleSync()
             notify()
             Self.log.info("Session \(self.sessionID, privacy: .public): review paused for a maintenance command")
         }
+        if let running = sampleRun { await running.value }
         try? await enqueue(.exports, optimistic: [])
     }
 
@@ -600,6 +709,10 @@ public struct ReviewWord: Sendable, Equatable {
         if !closed { try? await enqueue(.reload, optimistic: []) }
         pauses.removeAll { $0.hold == hold }
         if exportsPending, pauses.isEmpty { scheduleExports() }
+        if pauses.isEmpty {
+            updateVoiceAnalysis()
+            scheduleSampleSync()
+        }
         notify()
         Self.log.info("Session \(self.sessionID, privacy: .public): review resumed after a maintenance command")
     }
@@ -626,6 +739,11 @@ public struct ReviewWord: Sendable, Equatable {
         } catch {
             Self.log.error("Session \(self.sessionID, privacy: .public): exports not rewritten at close (\(ProcessSpawner.logCategory(error), privacy: .public))")
         }
+        // A voice pass still running stops; a sample sync still owed runs now (from what the pass stored, or with a
+        // pass of its own), and then the meeting's voices are dropped from memory.
+        stopVoicePass()
+        await flushSamples()
+        dropVoices()
         Self.log.info("Session \(self.sessionID, privacy: .public): review closed")
     }
 
@@ -668,7 +786,7 @@ public struct ReviewWord: Sendable, Equatable {
             /// `byName`: from the name field; a `.new` target is linked to a person of that name existing at save time.
             case link(speakerID: String, target: ProfileTarget, learnVoice: Bool, byName: Bool)
             case assignPerson(create: SpeakerEditAction, speakerID: String, profileID: String, learnVoice: Bool)
-            case confirmAll(learnVoices: Bool)
+            case confirmAll(learnVoices: Bool, suggestions: [String: String])
             case markSelf(speakerID: String, learnVoice: Bool)
             case undo(UndoTarget)
             case relabel([String])
@@ -724,6 +842,8 @@ public struct ReviewWord: Sendable, Equatable {
 
     private func enqueue(_ kind: Operation.Kind, optimistic: [SpeakerEditAction]) async throws {
         let op = Operation(kind: kind, basis: savedVersion, runID: snapshot.run?.id, optimistic: optimistic)
+        // A newer change: voice samples wait for it (`holdSampleSync`); exports alone change no label.
+        if case .exports = kind {} else { holdSampleSync() }
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, any Error>) in
             op.continuation = continuation
             queue.append(op)
@@ -766,6 +886,8 @@ public struct ReviewWord: Sendable, Equatable {
             notify()
         }
         draining = false
+        scheduleSampleSync()
+        considerAutoMerge()
     }
 
     private func pushUndo(_ batches: [String]) {
@@ -814,33 +936,41 @@ public struct ReviewWord: Sendable, Equatable {
             }
             let target = resolved
             let view = savedProjection
-            try await savePeopleChange(op, matching: Self.linkBatch(speakerID)) { session, store, extractor in
+            try await savePeopleChange(op, matching: Self.linkBatch(speakerID),
+                                       enroll: Self.linkedPeople([speakerID], if: learnVoice)) { session, store, extractor in
                 try await VoiceProfileService.link(session: session, speakerID: speakerID, to: target, view: view,
-                                                   learnVoice: learnVoice, extractor: extractor, store: store)
+                                                   learnVoice: learnVoice, extractor: extractor, store: store,
+                                                   deferSamples: true)
             }
         case .assignPerson(let create, let speakerID, let profileID, let learnVoice):
             try requireBasis(op)
             let sent = resolve(create)
             try await saveEdit([sent], op: op) { batch in batch.map(\.action) == [sent] }
             let view = savedProjection
-            try await savePeopleChange(op, matching: Self.linkBatch(speakerID)) { session, store, extractor in
+            try await savePeopleChange(op, matching: Self.linkBatch(speakerID),
+                                       enroll: Self.linkedPeople([speakerID], if: learnVoice)) { session, store, extractor in
                 try await VoiceProfileService.link(session: session, speakerID: speakerID,
                                                    to: .existing(profileID: profileID), view: view,
-                                                   learnVoice: learnVoice, extractor: extractor, store: store)
+                                                   learnVoice: learnVoice, extractor: extractor, store: store,
+                                                   deferSamples: true)
             }
-        case .confirmAll(let learnVoices):
+        case .confirmAll(let learnVoices, let chosen):
             try requireBasis(op)
             let view = savedProjection
-            try await savePeopleChange(op, matching: Self.confirmBatch) { session, store, extractor in
+            try await savePeopleChange(op, matching: Self.confirmBatch,
+                                       enroll: Self.linkedPeople(Array(chosen.keys), if: learnVoices)) { session, store, extractor in
                 try await VoiceProfileService.confirmAll(session: session, view: view, learnVoices: learnVoices,
-                                                         extractor: extractor, store: store)
+                                                         extractor: extractor, store: store, suggestions: chosen,
+                                                         deferSamples: true)
             }
         case .markSelf(let speakerID, let learnVoice):
             try requireBasis(op)
             let view = savedProjection
-            try await savePeopleChange(op, matching: Self.linkBatch(speakerID)) { session, store, extractor in
+            try await savePeopleChange(op, matching: Self.linkBatch(speakerID),
+                                       enroll: Self.linkedPeople([speakerID], if: learnVoice)) { session, store, extractor in
                 try await VoiceProfileService.markSelf(session: session, speakerID: speakerID, view: view,
-                                                       learnVoice: learnVoice, extractor: extractor, store: store)
+                                                       learnVoice: learnVoice, extractor: extractor, store: store,
+                                                       deferSamples: true)
             }
         case .undo(let target):
             let batches: [String]
@@ -888,7 +1018,7 @@ public struct ReviewWord: Sendable, Equatable {
         switch outcome {
         case .success(let result?):
             if adopt(result.snapshot, op: op, matching: matching) { changesSaved(exportsWritten: false) }
-            if result.needsSampleRefresh { try await refreshSamples() }
+            if result.needsSampleRefresh { oweSamples() }
         case .success(nil):
             // Nothing saved (no undo step is used up): the labels on disk already read as the change asked. They are
             // reread so the window shows them; when that fails, the saved labels shown stay as they were.
@@ -899,10 +1029,13 @@ public struct ReviewWord: Sendable, Equatable {
         }
     }
 
-    /// Runs a `VoiceProfileService` change (it saves the journal and rewrites the exports itself), then adopts the
-    /// labels it returns (loaded with the people store's names, which are the window's) and rereads the people.
+    /// Runs a `VoiceProfileService` change (it saves the journal and rewrites the exports itself, and leaves the voice
+    /// samples to this window: `deferSamples`), then adopts the labels it returns (loaded with the people store's
+    /// names, which are the window's) and rereads the people. Once its lines are saved, the samples are owed a sync
+    /// in the background, enrolling the people `enroll` finds in the labels adopted.
     private func savePeopleChange(
         _ op: Operation, matching: @escaping ([SpeakerEdit]) -> Bool,
+        enroll: @escaping (SpeakerSessionSnapshot) -> Set<String>,
         _ change: @escaping @Sendable (URL, SpeakerProfileStore, (any VoiceSampleExtractor)?) async throws
             -> SpeakerSessionSnapshot
     ) async throws {
@@ -919,9 +1052,27 @@ public struct ReviewWord: Sendable, Equatable {
             await reloadPeople()
             // A link that changed nothing saved nothing and rewrote no export.
             if adopt(returned, op: op, matching: matching) { changesSaved(exportsWritten: true) }
+            // Even then: an earlier run of this link may have saved its lines and not its sample.
+            oweSamples(enroll: enroll(returned))
         case .failure(let error):
             await reloadPeople()
-            try await handleFailure(error, op: op, matching: matching)
+            do {
+                try await handleFailure(error, op: op, matching: matching)
+            } catch let thrown {
+                // Saved, then something after failed: the labels were reread, and the samples are still owed.
+                if Self.isIncomplete(thrown) { oweSamples(enroll: enroll(snapshot)) }
+                throw thrown
+            }
+        }
+    }
+
+    /// The people `speakerIDs` are linked to in `snapshot`, when `learn`: who a saved link enrols.
+    private nonisolated static func linkedPeople(_ speakerIDs: [String], if learn: Bool)
+        -> (SpeakerSessionSnapshot) -> Set<String> {
+        { snapshot in
+            guard learn, let projection = snapshot.projection else { return [] }
+            let wanted = Set(speakerIDs)
+            return Set(projection.speakers.filter { wanted.contains($0.id) }.compactMap(\.profileID))
         }
     }
 
@@ -930,9 +1081,8 @@ public struct ReviewWord: Sendable, Equatable {
     /// thrown. Anything else refused the change: the labels are reloaded (queued changes made on the older labels are
     /// then refused too) and the error is thrown, with `changedElsewhere` for a stale view.
     ///
-    /// `refreshSamples`: the change was saved by `SpeakerEditor` here (not by `VoiceProfileService`, which brings
-    /// samples in step itself), so on `incomplete` this meeting's voice samples are brought in step before the error
-    /// is thrown (`needsSampleRefresh` was lost with it).
+    /// `refreshSamples`: the change was saved by `SpeakerEditor` here, so on `incomplete` this meeting's voice samples
+    /// are owed a sync (`needsSampleRefresh` was lost with the error); `savePeopleChange` owes its own.
     private func handleFailure(_ error: any Error, op: Operation?, refreshSamples: Bool = false,
                                matching: @escaping ([SpeakerEdit]) -> Bool) async throws {
         if error is CancellationError { throw error }
@@ -947,16 +1097,7 @@ public struct ReviewWord: Sendable, Equatable {
             }
             changesSaved(exportsWritten: false)
             Self.log.error("Session \(self.sessionID, privacy: .public): a change was saved, then failed (\(ProcessSpawner.logCategory(error), privacy: .public))")
-            if refreshSamples, let store = profiles {
-                let session = self.session
-                let extractor = self.extractor
-                activity = "Updating a voice sample…"
-                notify()
-                try await Self.detached { () async throws -> Void in
-                    try await VoiceProfileService.refreshSamples(afterSaving: error, session: session,
-                                                                 extractor: extractor, store: store)
-                }
-            }
+            if refreshSamples { oweSamples() }
             throw error
         }
         Self.log.notice("Session \(self.sessionID, privacy: .public): a change was refused (\(ProcessSpawner.logCategory(error), privacy: .public)); reloading")
@@ -1037,29 +1178,243 @@ public struct ReviewWord: Sendable, Equatable {
             // `undoLast` loads its result without people's names; the window's labels need them.
             let fresh = newest ? ((try? await loadSnapshot()) ?? result.snapshot) : result.snapshot
             if adopt(fresh, op: nil, matching: matching) { changesSaved(exportsWritten: false) }
-            if result.needsSampleRefresh { try await refreshSamples() }
+            if result.needsSampleRefresh { oweSamples() }
         case .failure(let error):
             try await handleFailure(error, op: nil, refreshSamples: true, matching: matching)
         }
     }
 
-    /// Brings this meeting's voice samples in step after a saved change.
-    private func refreshSamples() async throws {
-        guard let store = profiles else { return }
+    // MARK: - Voice samples (background)
+
+    /// A saved change may have moved speech a voice sample of this meeting holds, or linked a person whose voice is
+    /// to be learned (`enroll`): the samples are brought in step (`VoiceProfileService.syncSamples`) `sampleDelay`
+    /// after the queue is idle, off the edit queue. A newer change cancels a sync that is waiting or running, and the
+    /// sync runs again after it; `close` runs any sync still owed. Without people nothing is owed.
+    private func oweSamples(enroll: Set<String> = []) {
+        guard profiles != nil else { return }
+        samplesOwed = true
+        sampleEnroll.formUnion(enroll)
+        sampleRequests += 1
+        scheduleSampleSync()
+    }
+
+    /// Starts the delay before an owed sync, when the queue is idle, no sync runs, and no command holds the review.
+    private func scheduleSampleSync() {
+        sampleTimer?.cancel()
+        sampleTimer = nil
+        guard samplesOwed, !closed, pauses.isEmpty, queue.isEmpty, sampleRun == nil else { return }
+        let delay = sampleDelay
+        sampleTimer = Task { [weak self] in
+            try? await Task.sleep(for: delay)
+            guard !Task.isCancelled, let self else { return }
+            self.sampleTimer = nil
+            self.startSampleSync()
+        }
+    }
+
+    /// A change is about to be saved: a sync waiting or running is stopped (it runs again once the queue is idle).
+    private func holdSampleSync() {
+        sampleTimer?.cancel()
+        sampleTimer = nil
+        sampleRun?.cancel()
+    }
+
+    private func startSampleSync() {
+        guard samplesOwed, sampleRun == nil, let store = profiles else { return }
+        let enroll = sampleEnroll
+        let request = sampleRequests
         let session = self.session
         let extractor = self.extractor
-        activity = "Updating a voice sample…"
+        isSyncingSamples = true
+        syncLearning = !enroll.isEmpty
         notify()
-        do {
-            try await Self.detached {
-                try await VoiceProfileService.refreshSamples(session: session, extractor: extractor, store: store)
+        sampleRun = Task { [weak self] in
+            let result = await Self.cancellableResult {
+                try await VoiceProfileService.syncSamples(session: session, extractor: extractor, store: store,
+                                                          enroll: enroll)
             }
-        } catch is CancellationError {
-            throw CancellationError()
-        } catch {
+            self?.sampleSyncEnded(result, enroll: enroll, request: request)
+        }
+    }
+
+    private func sampleSyncEnded(_ result: Result<Void, any Error>, enroll: Set<String>, request: Int) {
+        sampleRun = nil
+        isSyncingSamples = false
+        syncLearning = false
+        switch result {
+        case .success:
+            voiceProblem = nil
+            sampleEnroll.subtract(enroll)
+            if sampleRequests == request { samplesOwed = false }
+        case .failure(let error) where error is CancellationError:
+            // Still owed: it runs again after the change that stopped it.
+            Self.log.info("Session \(self.sessionID, privacy: .public): voice sample sync stopped for a newer change")
+        case .failure(let error):
+            sampleEnroll.subtract(enroll)
+            if sampleRequests == request { samplesOwed = false }
+            voiceProblem = (enroll.isEmpty ? "A voice sample learned from this meeting could not be updated: "
+                : "The name was saved, but the voice could not be learned: ") + error.localizedDescription
             Self.log.error("Session \(self.sessionID, privacy: .public): voice samples not brought in step (\(ProcessSpawner.logCategory(error), privacy: .public))")
-            throw HolosError.incomplete("The change was saved, but a voice sample learned from this meeting could "
-                                        + "not be updated: \(error.localizedDescription)")
+        }
+        scheduleSampleSync()
+        notify()
+    }
+
+    /// Runs the sync still owed now, after one already running, and waits for both (`close`, `pause`).
+    private func flushSamples() async {
+        sampleTimer?.cancel()
+        sampleTimer = nil
+        if let running = sampleRun { await running.value }
+        guard samplesOwed, sampleRun == nil else { return }
+        startSampleSync()
+        if let running = sampleRun { await running.value }
+    }
+
+    // MARK: - Voices within the meeting
+
+    /// One pass of the extractor per track split into speakers, over every turn `analysable` lets through, into
+    /// `voiceCache`; then `voiceMatches` is worked out. Replaces whatever the cache held. Nothing when voices are not
+    /// analysed, there is no extractor, the audio was deleted, or a command holds the review.
+    private func startVoiceAnalysis() {
+        dropVoices()
+        guard analyseVoices, !closed, pauses.isEmpty, let base = baseExtractor, let run = snapshot.run,
+              let projection = snapshot.projection, !snapshot.audioDeleted else { return }
+        let diarized = Set(run.tracks.filter { $0.policy == .diarized }.map(\.track))
+        var parts: [(track: String, turns: [TurnRef])] = []
+        for track in diarized.sorted() where track == "mic" || track == "system" {
+            let turns = projection.turns.filter { $0.track == track && Self.analysable($0) }.map(TurnRef.init)
+            if !turns.isEmpty { parts.append((track, turns)) }
+        }
+        guard !parts.isEmpty else { return }
+        let epoch = voiceCache.begin(session: session, runID: projection.runID)
+        voiceEpoch = epoch
+        voiceRunID = projection.runID
+        voiceAnalysis = .running(done: 0, total: parts.count)
+        Self.log.info("Session \(self.sessionID, privacy: .public): working out the voices of \(parts.reduce(0) { $0 + $1.turns.count }, privacy: .public) turns on \(parts.count, privacy: .public) tracks")
+        let session = self.session
+        let cache = voiceCache
+        voiceTask = Task { [weak self] in
+            var failure: (any Error)?
+            for (index, part) in parts.enumerated() {
+                do {
+                    let found = try await Self.cancellable {
+                        try await base.turnEmbeddings(session: session, track: part.track, turns: part.turns)
+                    }
+                    cache.store(found, asked: part.turns, track: part.track, epoch: epoch)
+                } catch {
+                    if error is CancellationError || Task.isCancelled {
+                        cache.finish(epoch: epoch)
+                        return
+                    }
+                    failure = error
+                }
+                guard let owner = self, owner.voiceEpoch == epoch else {
+                    cache.finish(epoch: epoch)
+                    return
+                }
+                owner.voiceAnalysis = .running(done: index + 1, total: parts.count)
+                owner.notify()
+            }
+            cache.finish(epoch: epoch)
+            self?.voiceAnalysisEnded(epoch: epoch, failure: failure)
+        }
+        notify()
+    }
+
+    private func voiceAnalysisEnded(epoch: Int, failure: (any Error)?) {
+        guard epoch == voiceEpoch, let runID = voiceRunID else { return }
+        voiceTask = nil
+        voiceEmbeddings = voiceCache.embeddings(runID: runID)
+        if let failure, voiceEmbeddings.isEmpty {
+            voiceAnalysis = .failed(failure.localizedDescription)
+            Self.log.error("Session \(self.sessionID, privacy: .public): voices not worked out (\(ProcessSpawner.logCategory(failure), privacy: .public))")
+        } else {
+            voiceAnalysis = .ready
+            Self.log.info("Session \(self.sessionID, privacy: .public): voices worked out for \(self.voiceEmbeddings.count, privacy: .public) of \(self.voiceCache.coveredTurns, privacy: .public) turns")
+        }
+        refreshVoiceMatches()
+        considerAutoMerge()
+        notify()
+    }
+
+    /// Stops a running pass; what it stored stays (a sample sync waiting for it goes on with that, or its own pass).
+    private func stopVoicePass() {
+        guard let task = voiceTask else { return }
+        task.cancel()
+        voiceTask = nil
+        voiceCache.finish(epoch: voiceEpoch)
+        voiceEpoch = 0
+        if case .running = voiceAnalysis { voiceAnalysis = .off }
+    }
+
+    /// Forgets the meeting's voices (memory only; nothing was written).
+    private func dropVoices() {
+        stopVoicePass()
+        voiceCache.clear()
+        voiceEmbeddings = [:]
+        voiceRunID = nil
+        voiceMatches = .empty
+        voiceAnalysis = .off
+    }
+
+    /// After labels were read: voices of another run, or of a meeting whose audio is gone, are dropped, and worked
+    /// out again when they can be.
+    private func updateVoiceAnalysis() {
+        guard analyseVoices else { return }
+        if snapshot.audioDeleted || closed {
+            if voiceRunID != nil || voiceAnalysis != .off { dropVoices() }
+            return
+        }
+        guard voiceRunID != snapshot.run?.id || voiceAnalysis == .off else { return }
+        startVoiceAnalysis()
+    }
+
+    /// Whether a turn is worth a voice: long enough to learn from, and not cut by a split (its times are its own).
+    nonisolated static func analysable(_ turn: ProjectedTurn) -> Bool {
+        !turn.modified && turn.start.isFinite && turn.end.isFinite
+            && turn.end - turn.start >= VoiceEnrollment.minimumTurnSeconds - 1e-9
+    }
+
+    /// `voiceMatches` on the shown labels (people needed: a match is confirmed by linking the person).
+    private func refreshVoiceMatches() {
+        guard profiles != nil, !voiceEmbeddings.isEmpty, voiceRunID == projection.runID else {
+            if voiceMatches != .empty { voiceMatches = .empty }
+            return
+        }
+        voiceMatches = MeetingVoiceMatcher.match(projection: projection, embeddings: voiceEmbeddings,
+                                                 thresholds: voiceThresholds)
+    }
+
+    /// `MeetingVoiceThresholds` from the people store's calibration when it was measured on this run's model.
+    var voiceThresholds: MeetingVoiceThresholds {
+        guard let calibration, let model = snapshot.run?.engine?.embeddingModel, calibration.model == model else {
+            return .defaults
+        }
+        return .derived(from: calibration.thresholds, calibrated: true)
+    }
+
+    /// After a name was given (`mergeArmed`), with `autoMergeVoices` on and the queue idle: merges every speaker whose
+    /// voice suggestion is `mergeable` into the named speaker it matched, as one change (one undo).
+    private func considerAutoMerge() {
+        guard mergeArmed else { return }
+        guard autoMergeVoices else {
+            mergeArmed = false
+            return
+        }
+        guard case .ready = voiceAnalysis, queue.isEmpty, isEditable else { return }
+        mergeArmed = false
+        let merges = voiceMatches.suggestions.filter(\.mergeable)
+            .map { SpeakerEditAction.merge(from: $0.speakerID, into: $0.anchorSpeakerID) }
+        guard !merges.isEmpty else { return }
+        Self.log.info("Session \(self.sessionID, privacy: .public): merging \(merges.count, privacy: .public) speakers with a matching voice")
+        Task { [weak self] in
+            do {
+                try await self?.apply(merges)
+            } catch {
+                guard let self else { return }
+                self.voiceProblem = "Speakers with the same voice could not be merged: " + error.localizedDescription
+                self.notify()
+            }
         }
     }
 
@@ -1143,6 +1498,7 @@ public struct ReviewWord: Sendable, Equatable {
             refuseStaleQueuedChanges()
             Self.log.info("Session \(self.sessionID, privacy: .public): labels changed elsewhere (\(added.count - windowLines, privacy: .public) other lines, head changed: \(headChanged, privacy: .public))")
         }
+        updateVoiceAnalysis()
         recomputeProjection()
         notify()
         return !ours.isEmpty
@@ -1312,6 +1668,7 @@ public struct ReviewWord: Sendable, Equatable {
         }
         projection = display
         optimisticOwner = owners
+        refreshVoiceMatches()
     }
 
     /// What a queued change shows: its actions (with turn IDs of saved splits resolved), nothing once undone, and for
@@ -1461,12 +1818,20 @@ public struct ReviewWord: Sendable, Equatable {
         case .relabel: "Labelling speakers again…"
         case .exports: exportsPending ? "Updating the transcript files…" : nil
         case .reload: nil
-        case .link(_, _, let learn, _), .assignPerson(_, _, _, let learn), .markSelf(_, let learn):
-            learn && rememberVoices ? "Saving the name and learning the voice…" : "Saving…"
-        case .confirmAll(let learn):
-            learn && rememberVoices ? "Saving the names and learning the voices…" : "Saving…"
-        case .edit, .undo: "Saving…"
+        // Voices are learned afterwards, in the background (`voiceStatus`).
+        case .link, .assignPerson, .markSelf, .confirmAll, .edit, .undo: "Saving…"
         }
+    }
+
+    /// What the window is doing with voices right now, nil when nothing: learning or updating samples, or working out
+    /// the meeting's voices.
+    public var voiceStatus: String? {
+        // A refresh that finds the samples in step takes no time; only learning is worth a word.
+        if isSyncingSamples, syncLearning, rememberVoices { return "Learning voices…" }
+        if case .running(let done, let total) = voiceAnalysis {
+            return total > 1 ? "Comparing voices (\(done + 1) of \(total))…" : "Comparing voices…"
+        }
+        return nil
     }
 
     private func notify() { onChange?() }
@@ -1482,6 +1847,7 @@ public struct ReviewWord: Sendable, Equatable {
             people = loaded.people
             profileNames = loaded.profileNames
             rememberVoices = loaded.rememberVoices
+            calibration = loaded.calibration
         }
         return loaded.snapshot
     }
@@ -1492,6 +1858,7 @@ public struct ReviewWord: Sendable, Equatable {
         people = loaded.people
         profileNames = loaded.names
         rememberVoices = loaded.remember
+        calibration = loaded.calibration
     }
 
     private static let closedError = HolosError.unavailable("The review window is closed.")
@@ -1539,15 +1906,26 @@ public struct ReviewWord: Sendable, Equatable {
         var people: [SpeakerProfile]
         var profileNames: [String: String]
         var rememberVoices: Bool
+        var calibration: (thresholds: RecognitionThresholds, model: EmbeddingModelID)?
         var editedExports: Set<String>
     }
 
+    /// What one read of the people store gives the window.
+    struct KnownPeople: Sendable {
+        var people: [SpeakerProfile] = []
+        var names: [String: String] = [:]
+        var remember = false
+        /// Calibrated recognition thresholds and the model they were measured on, when calibrated.
+        var calibration: (thresholds: RecognitionThresholds, model: EmbeddingModelID)?
+    }
+
     private nonisolated static func load(session: URL, profiles: SpeakerProfileStore?) throws -> Loaded {
-        let known = profiles.map { people(store: $0) } ?? (people: [], names: [:], remember: false)
+        let known = profiles.map { people(store: $0) } ?? KnownPeople()
         let snapshot = try SpeakerSessionSnapshot.load(session: session, profileNames: known.names,
                                                        applyRecognition: recognitionAllowed(profiles))
         return Loaded(snapshot: snapshot, people: known.people, profileNames: known.names,
-                      rememberVoices: known.remember, editedExports: editedExports(session: session))
+                      rememberVoices: known.remember, calibration: known.calibration,
+                      editedExports: editedExports(session: session))
     }
 
     /// Whether the meeting's stored recognition result may be shown and exported, decided as every other reader of
@@ -1557,22 +1935,25 @@ public struct ReviewWord: Sendable, Equatable {
         profiles.map { VoiceProfileService.recognitionAllowed(store: $0) } ?? true
     }
 
-    private nonisolated static func people(store: SpeakerProfileStore)
-        -> (people: [SpeakerProfile], names: [String: String], remember: Bool) {
+    private nonisolated static func people(store: SpeakerProfileStore) -> KnownPeople {
         people(loading: store.load)
     }
 
-    /// The people offered, their names, and Remember voices, all from one read of the store, so a rewrite of
-    /// `profiles.json` in between cannot mix two versions. Nothing (and Remember voices off) when it cannot be read.
-    nonisolated static func people(loading load: () throws -> SpeakerProfileDatabase)
-        -> (people: [SpeakerProfile], names: [String: String], remember: Bool) {
+    /// The people offered, their names, Remember voices, and the calibration, all from one read of the store, so a
+    /// rewrite of `profiles.json` in between cannot mix two versions. Nothing (and Remember voices off) when it cannot
+    /// be read.
+    nonisolated static func people(loading load: () throws -> SpeakerProfileDatabase) -> KnownPeople {
         do {
             let database = try load()
-            return (VoiceProfileService.knownPeople(in: database), VoiceProfileService.profileNames(in: database),
-                    database.rememberVoices)
+            let calibration = database.calibratedModel.flatMap { model in
+                database.calibratedThresholds(for: model).map { (thresholds: $0, model: model) }
+            }
+            return KnownPeople(people: VoiceProfileService.knownPeople(in: database),
+                               names: VoiceProfileService.profileNames(in: database),
+                               remember: database.rememberVoices, calibration: calibration)
         } catch {
             log.error("Cannot read people: \(ProcessSpawner.logCategory(error), privacy: .public)")
-            return ([], [:], false)
+            return KnownPeople()
         }
     }
 
@@ -1606,6 +1987,24 @@ public struct ReviewWord: Sendable, Equatable {
         _ body: @escaping @Sendable () async throws -> T
     ) async throws -> T {
         try await Task.detached(priority: .userInitiated, operation: body).value
+    }
+
+    /// `body` off the main actor, cancelled when the calling task is (a detached task does not inherit it).
+    private nonisolated static func cancellable<T: Sendable>(
+        _ body: @escaping @Sendable () async throws -> T
+    ) async throws -> T {
+        let task = Task.detached(priority: .utility, operation: body)
+        return try await withTaskCancellationHandler { try await task.value } onCancel: { task.cancel() }
+    }
+
+    private nonisolated static func cancellableResult<T: Sendable>(
+        _ body: @escaping @Sendable () async throws -> T
+    ) async -> Result<T, any Error> {
+        do {
+            return .success(try await cancellable(body))
+        } catch {
+            return .failure(error)
+        }
     }
 
     private nonisolated static func detachedValue<T: Sendable>(_ body: @escaping @Sendable () async -> T) async -> T {

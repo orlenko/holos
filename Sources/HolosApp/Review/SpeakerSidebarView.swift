@@ -17,9 +17,14 @@ final class SpeakerSidebarView: NSView, NSTableViewDataSource, NSTableViewDelega
         let isSelf: Bool
         /// The person of an automatic name, for "Not Jim".
         let automaticProfileID: String?
+        /// "Maybe Maria": recognition's suggestion, or a voice matched to a person named in this meeting
+        /// (`ReviewSession.suggestion(for:)`).
+        let suggestion: SpeakerMatch?
+        /// The suggestion comes from a voice matched in this meeting.
+        let suggestionFromVoice: Bool
         let canPlay: Bool
 
-        var hasExtraLine: Bool { speaker.suggestion != nil || automaticProfileID != nil }
+        var hasExtraLine: Bool { suggestion != nil || automaticProfileID != nil }
     }
 
     /// Return in the name field: (speaker ID, the text typed).
@@ -222,7 +227,7 @@ final class SpeakerSidebarView: NSView, NSTableViewDataSource, NSTableViewDelega
 
     @objc private func confirmSuggestion(_ sender: NSButton) {
         guard let speakerID = speakerID(for: sender),
-              let suggestion = rows.first(where: { $0.speaker.id == speakerID })?.speaker.suggestion else { return }
+              let suggestion = rows.first(where: { $0.speaker.id == speakerID })?.suggestion else { return }
         onConfirm?(speakerID, suggestion.profileID)
     }
 
@@ -338,9 +343,13 @@ final class SpeakerCellView: NSTableCellView {
         mergePopUp.isEnabled = editable && !others.isEmpty
         mergePopUp.toolTip = "Move every turn of this speaker to another speaker, who keeps their name."
 
-        if let suggestion = speaker.suggestion {
+        extraLabel.toolTip = nil
+        if let suggestion = row.suggestion {
             extraLabel.stringValue = "Maybe \(suggestion.profileName)"
             extraLabel.textColor = .systemBlue
+            if row.suggestionFromVoice {
+                extraLabel.toolTip = "Sounds like \(suggestion.profileName), whom you named in this meeting."
+            }
             confirmButton.isHidden = false
             rejectButton.title = "Not \(suggestion.profileName)"
         } else if row.automaticProfileID != nil {

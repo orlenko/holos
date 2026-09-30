@@ -86,11 +86,15 @@ final class TurnListView: NSView, NSTableViewDataSource, NSTableViewDelegate {
     var onAssign: (([String], ReviewAssignTarget) -> Void)?
     var onNewSpeaker: (([String]) -> Void)?
     var onSelectionChange: (() -> Void)?
+    /// "⚠ Jim?" clicked: give the turn to the named speaker it sounds like.
+    var onAcceptHint: ((String) -> Void)?
 
     let table = TurnTableView()
     private let scroll = NSScrollView()
     private(set) var turns: [ProjectedTurn] = []
     private var labels: [String: String] = [:]
+    /// Turns that sound like a person named in the meeting (`ReviewSession.voiceMatches`), by turn ID.
+    private var hints: [String: MeetingTurnHint] = [:]
     private var speakers: [ProjectedSpeaker] = []
     private var people: [SpeakerProfile] = []
     private var editable = true
@@ -138,10 +142,13 @@ final class TurnListView: NSView, NSTableViewDataSource, NSTableViewDelegate {
     /// Shows `turns`, keeping the selected turns selected (by ID, after `resolve`) and reloading only what changed
     /// when the rows are the same turns.
     func update(turns newTurns: [ProjectedTurn], speakers newSpeakers: [ProjectedSpeaker], people newPeople: [SpeakerProfile],
-                editable newEditable: Bool, text: @escaping (ProjectedTurn) -> String, resolve: (String) -> String) {
+                editable newEditable: Bool, hints newHints: [String: MeetingTurnHint] = [:],
+                text: @escaping (ProjectedTurn) -> String, resolve: (String) -> String) {
         let selected = selectedTurnIDs.map(resolve)
         let oldTurns = turns
         let oldLabels = labels
+        let oldHints = hints
+        hints = newHints
         let menusChanged = newSpeakers != speakers || newPeople.map(\.id) != people.map(\.id)
             || newPeople.map(\.displayName) != people.map(\.displayName) || newEditable != editable
         turns = newTurns
@@ -160,7 +167,10 @@ final class TurnListView: NSView, NSTableViewDataSource, NSTableViewDelegate {
         var resized = IndexSet()
         for (index, turn) in newTurns.enumerated() {
             let old = oldTurns[index]
-            if old != turn || oldLabels[turn.speakerID ?? ""] != labels[turn.speakerID ?? ""] { changed.insert(index) }
+            if old != turn || oldLabels[turn.speakerID ?? ""] != labels[turn.speakerID ?? ""]
+                || oldHints[turn.id] != hints[turn.id] {
+                changed.insert(index)
+            }
             if old.spans != turn.spans { resized.insert(index) }
         }
         if menusChanged, let visible = Range(table.rows(in: table.visibleRect)) {
@@ -218,12 +228,21 @@ final class TurnListView: NSView, NSTableViewDataSource, NSTableViewDelegate {
             cell.timeButton.action = #selector(timeClicked(_:))
             cell.speakerPopUp.target = self
             cell.speakerPopUp.action = #selector(speakerChosen(_:))
+            cell.hintButton.target = self
+            cell.hintButton.action = #selector(hintClicked(_:))
             return cell
         }()
         let turn = turns[row]
         cell.configure(turn: turn, text: text(turn),
-                       menu: AssignMenu.items(speakers: speakers, people: people), editable: editable)
+                       menu: AssignMenu.items(speakers: speakers, people: people), editable: editable,
+                       hint: hints[turn.id])
         return cell
+    }
+
+    @objc private func hintClicked(_ sender: NSButton) {
+        let row = table.row(for: sender)
+        guard row >= 0, row < turns.count else { return }
+        onAcceptHint?(turns[row].id)
     }
 
     func tableViewSelectionDidChange(_ notification: Notification) {
@@ -290,6 +309,9 @@ final class TurnCellView: NSTableCellView {
     let timeButton = NSButton(title: "", target: nil, action: nil)
     let speakerPopUp = NSPopUpButton(frame: .zero, pullsDown: false)
     let warningLabel = NSTextField(labelWithString: "")
+    /// "⚠ Jim?": the turn sounds like a person named in the meeting; a click gives it to them. Shown instead of the
+    /// warning.
+    let hintButton = NSButton(title: "", target: nil, action: nil)
     let bodyLabel = NSTextField(wrappingLabelWithString: "")
     private var menuSignature: [String] = []
 
@@ -304,15 +326,22 @@ final class TurnCellView: NSTableCellView {
         speakerPopUp.font = .systemFont(ofSize: 12)
         warningLabel.textColor = .systemOrange
         warningLabel.font = .systemFont(ofSize: 11)
+        hintButton.bezelStyle = .inline
+        hintButton.controlSize = .small
+        hintButton.font = .systemFont(ofSize: 11)
+        hintButton.contentTintColor = .systemOrange
+        hintButton.lineBreakMode = .byTruncatingTail
+        hintButton.isHidden = true
         bodyLabel.font = TurnListView.textFont
         bodyLabel.isSelectable = false
         bodyLabel.maximumNumberOfLines = 0
-        for view in [timeButton, speakerPopUp, warningLabel, bodyLabel] as [NSView] { addSubview(view) }
+        for view in [timeButton, speakerPopUp, warningLabel, hintButton, bodyLabel] as [NSView] { addSubview(view) }
     }
 
     required init?(coder: NSCoder) { nil }
 
-    func configure(turn: ProjectedTurn, text: String, menu items: [NSMenuItem], editable: Bool) {
+    func configure(turn: ProjectedTurn, text: String, menu items: [NSMenuItem], editable: Bool,
+                   hint: MeetingTurnHint? = nil) {
         timeButton.title = TimeFormat.clock(turn.start)
         // The menu is replaced only when its items changed, so an update never swaps a menu that is open.
         let signature = items.map { item in
@@ -334,6 +363,15 @@ final class TurnCellView: NSTableCellView {
         speakerPopUp.isEnabled = editable
         warningLabel.stringValue = Self.warning(turn)
         warningLabel.toolTip = Self.warningHelp(turn)
+        if let hint {
+            hintButton.title = "⚠ \(hint.name)?"
+            hintButton.toolTip = "This turn sounds like \(hint.name), whom you named in this meeting. Click to give "
+                + "it to \(hint.name)."
+            hintButton.setAccessibilityLabel("Sounds like \(hint.name). Give this turn to \(hint.name).")
+            hintButton.isEnabled = editable
+        }
+        hintButton.isHidden = hint == nil
+        warningLabel.isHidden = hint != nil
         bodyLabel.stringValue = text
         needsLayout = true
     }
@@ -345,6 +383,7 @@ final class TurnCellView: NSTableCellView {
         speakerPopUp.frame = NSRect(x: 4 + Self.timeWidth + Self.gap, y: 2, width: Self.popUpWidth, height: 22)
         warningLabel.frame = NSRect(x: 4 + Self.timeWidth + Self.gap + Self.popUpWidth + Self.gap, y: 6,
                                     width: Self.warningWidth, height: 16)
+        hintButton.frame = NSRect(x: warningLabel.frame.minX, y: 3, width: Self.warningWidth, height: 20)
         bodyLabel.frame = NSRect(x: Self.textX, y: 5, width: max(40, bounds.width - Self.textX - 4),
                                  height: max(18, height - 8))
     }
