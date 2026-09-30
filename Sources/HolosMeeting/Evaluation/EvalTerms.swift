@@ -135,6 +135,23 @@ public enum EvalTerms {
         var reading: NumberReading? = nil
     }
 
+    /// Whether `range` starts or ends inside a number written with digits and words around it ("30" of "30 percent",
+    /// of "plus 30"): the normalized comparison reads those phrases as other numbers ("30%", "+30").
+    static func cutsDigitNumber(_ words: [String], _ range: Range<Int>) -> Bool {
+        guard range.contains(where: { words[$0].contains(where: \.isNumber) }) else { return false }
+        let inside = EvalNormalization.number(Array(words[range]))
+        let reach = NormalizedAlignment.maxDigitNumberWords
+        for before in 0...reach where range.lowerBound - before >= 0 {
+            for after in 0...reach where range.upperBound + after <= words.count && before + after > 0 {
+                let wider = (range.lowerBound - before)..<(range.upperBound + after)
+                if let form = EvalNormalization.number(Array(words[wider])), form.hasDigit, form != inside {
+                    return true
+                }
+            }
+        }
+        return false
+    }
+
     /// Longest run of cloud words a number may take when read against a shorter written form, past which only a
     /// spelled-number run already begun is read to its end.
     static let maxOccurrenceWords = 8
@@ -182,6 +199,7 @@ public enum EvalTerms {
                 }
                 end += 1
                 if numbers?.cuts(start..<end) == true { continue }
+                if numbers != nil, cutsDigitNumber(words, start..<end) { continue }
                 if forms.contains(joined) { match = end; break }
                 if hasSpelled, !Set(NormalizedAlignment.compoundForms(Array(words[start..<end]))).isDisjoint(with: forms) {
                     match = end

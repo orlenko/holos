@@ -645,3 +645,15 @@ private func words(_ text: String) -> [String] { text.split(separator: " ").map(
     let track = EvalTerms.Track(track: "system", words: words, covered: Array(repeating: true, count: words.count))
     #expect(EvalTerms.count(terms, tracks: [track], normalized: true).map { "\($0.hits)/\($0.cloud)" } == ["1/1"])
 }
+
+@Test func fairDigitNumberPhrasesStayWholeForTerms() {
+    let terms = EvalTerms.terms(wordList: ["30"], corrections: [])
+    for text in ["we saw 30 percent", "it was plus 30 today"] {
+        let words = text.split(separator: " ").map(String.init)
+        let track = EvalTerms.Track(track: "system", words: words, covered: Array(repeating: true, count: words.count))
+        #expect(EvalTerms.count(terms, tracks: [track], normalized: true).isEmpty, "\(text)")
+    }
+    let plain = ["we", "saw", "30", "cats"]
+    let track = EvalTerms.Track(track: "system", words: plain, covered: Array(repeating: true, count: plain.count))
+    #expect(EvalTerms.count(terms, tracks: [track], normalized: true).map { "\($0.hits)/\($0.cloud)" } == ["1/1"])
+}
