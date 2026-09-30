@@ -141,8 +141,10 @@ public enum EvalNormalization {
         }
     }
 
-    /// Most words (fillers not counted) one spelled-number run may take.
-    static let maxRunWords = 12
+    /// Most words (fillers not counted) one spelled-number run may take: enough for any cardinal `number` reads
+    /// ("nine hundred and ninety nine billion nine hundred and ninety nine million ... and ninety nine" is 23). A
+    /// longer run of number words (a long decimal read digit by digit) is cut there.
+    static let maxRunWords = 24
 
     /// The maximal spelled-number runs of a sequence of words: from the left, each run is the longest one `number`
     /// reads as a spelled number ("one hundred and twenty", "V one hundred five", "quatre-vingt-dix-sept", "trois
@@ -242,7 +244,7 @@ public enum EvalNormalization {
     }
 
     /// Most words of context `context(before:in:)` and `context(after:in:)` take.
-    static let maxContextWords = 32
+    static let maxContextWords = 2 * maxRunWords
 
     /// The words before `index` a spelled number or an "mm" there may depend on: back over number words and fillers
     /// to the first word that is neither (included), so the runs found with them are the runs of all the words.
@@ -611,8 +613,9 @@ public enum NormalizedOp: Sendable, Equatable {
 }
 
 public enum NormalizedAlignment {
-    /// Most words (fillers not counted) a number may take on one side ("one hundred and twenty five").
-    static let maxNumberWords = 5
+    /// Most words (fillers not counted) a number may take on one side: any spelled-number run ("one thousand two
+    /// hundred thirty four").
+    static let maxNumberWords = EvalNormalization.maxRunWords
     /// Most words (fillers not counted) a compound may take on one side.
     static let maxCompoundWords = 3
     /// Most fillers inside a joined run ("twenty um one"); a run never starts or ends with one.
@@ -718,17 +721,25 @@ public enum NormalizedAlignment {
                 let words = run.filter { !fillers[$0] }
                 return run.count - words.count <= NormalizedAlignment.maxInnerFillers ? words : nil
             }
+            // Words a number may start or end with: digits, or a number word ("plus" and "percent" included).
+            let numeric = words.map { $0.contains(where: \.isNumber) || EvalNormalization.isNumberWord($0) }
             numbers = (1...NormalizedAlignment.maxJoinRun).map { length in
                 (0..<count).map { start in
-                    guard let indices = kept(start, length), indices.count <= NormalizedAlignment.maxNumberWords,
-                          let form = EvalNormalization.number(indices.map { words[$0] }) else { return nil }
-                    guard !form.hasDigit else { return form }
-                    return runs.isRun((offset + start)..<(offset + start + length)) ? form : nil
+                    guard start + length <= count, numeric[start], numeric[start + length - 1],
+                          let indices = kept(start, length), indices.count <= NormalizedAlignment.maxNumberWords
+                    else { return nil }
+                    // Spelled words are a number only as a whole run; digits ("plus 30", "30 percent") as written.
+                    let whole = runs.isRun((offset + start)..<(offset + start + length))
+                    guard whole || indices.contains(where: { words[$0].contains(where: \.isNumber) }),
+                          let form = EvalNormalization.number(indices.map { words[$0] }), form.hasDigit || whole
+                    else { return nil }
+                    return form
                 }
             }
+            let longestCompound = NormalizedAlignment.maxCompoundWords + NormalizedAlignment.maxInnerFillers
             compounds = (1...NormalizedAlignment.maxJoinRun).map { length in
                 (0..<count).map { start in
-                    guard length > 1, let indices = kept(start, length),
+                    guard (2...longestCompound).contains(length), let indices = kept(start, length),
                           (2...NormalizedAlignment.maxCompoundWords).contains(indices.count) else { return [] }
                     let whole = !runs.cuts((offset + start)..<(offset + start + length))
                     return NormalizedAlignment.compoundForms(indices.map { words[$0] }, numbers: whole)
@@ -736,11 +747,22 @@ public enum NormalizedAlignment {
             }
             short = (1...NormalizedAlignment.maxJoinRun).map { length in
                 (0..<count).map { start in
-                    guard let indices = kept(start, length) else { return false }
+                    guard length <= longestCompound, let indices = kept(start, length) else { return false }
                     return indices.allSatisfy { keys[$0].count <= 2 }
                 }
             }
+            let numbers = self.numbers, compounds = self.compounds
+            joinLengths = (0...count).map { end in
+                (2...NormalizedAlignment.maxJoinRun).filter { length in
+                    length <= end && (numbers[length - 1][end - length] != nil
+                                      || !compounds[length - 1][end - length].isEmpty)
+                }
+            }
         }
+
+        /// [end]: the lengths (2 or more) of the runs ending just before word `end` that may join one word of the
+        /// other side, as a number or a compound; the alignment tries only those.
+        var joinLengths: [[Int]] = []
 
         func number(_ start: Int, _ length: Int) -> EvalNormalization.NumberForm? { numbers[length - 1][start] }
         func compound(_ start: Int, _ length: Int) -> [String] { compounds[length - 1][start] }
@@ -825,14 +847,12 @@ public enum NormalizedAlignment {
                 if i > 0 { best = min(best, cost[(i - 1) * width + j] + (left.fillers[i - 1] ? 0 : 1)) }
                 if j > 0 { best = min(best, cost[i * width + j - 1] + (right.fillers[j - 1] ? 0 : 1)) }
                 if j > 0 {
-                    for length in 2...maxJoinRun where i >= length
-                        && joined(left, i - length, length, right, j - 1) != nil {
+                    for length in left.joinLengths[i] where joined(left, i - length, length, right, j - 1) != nil {
                         best = min(best, cost[(i - length) * width + j - 1])
                     }
                 }
                 if i > 0 {
-                    for length in 2...maxJoinRun where j >= length
-                        && joined(right, j - length, length, left, i - 1) != nil {
+                    for length in right.joinLengths[j] where joined(right, j - length, length, left, i - 1) != nil {
                         best = min(best, cost[(i - 1) * width + j - length])
                     }
                 }
@@ -848,7 +868,7 @@ public enum NormalizedAlignment {
                 continue
             }
             if j > 0 {
-                for length in 2...maxJoinRun where i >= length {
+                for length in left.joinLengths[i] {
                     if let kind = joined(left, i - length, length, right, j - 1),
                        cost[(i - length) * width + j - 1] == here {
                         ops.append(.join(local: (i - length)..<i, cloud: (j - 1)..<j, kind))
@@ -858,7 +878,7 @@ public enum NormalizedAlignment {
                 }
             }
             if i > 0 {
-                for length in 2...maxJoinRun where j >= length {
+                for length in right.joinLengths[j] {
                     if let kind = joined(right, j - length, length, left, i - 1),
                        cost[(i - 1) * width + j - length] == here {
                         ops.append(.join(local: (i - 1)..<i, cloud: (j - length)..<j, kind))

@@ -290,7 +290,7 @@ The normalized comparison (the default of `compare`) does not count them. It is
 used for the scores, the Terms section and the formatting-only mark only:
 passages, the review page and the gold keep the words as written.
 
-- **Numbers.** A run of up to 5 words that spells a number is the same as that
+- **Numbers.** A run of up to 24 words that spells a number is the same as that
   number in digits, in English or French: cardinals ("three"/"3",
   "twenty one"/"twenty-one"/"21", "a hundred"/"one hundred"/"100", "one
   hundred and five", "fifteen hundred", "two thousand twenty six", years said

@@ -512,6 +512,11 @@ private func words(_ text: String) -> [String] { text.split(separator: " ").map(
         // "plus" and "percent" around a number leave its words whole.
         ("thirty percent", "30%", true), ("thirty percent", "30 percent", true), ("plus thirty", "plus 30", true),
         ("vingt pour cent", "20 pour cent", true), ("one hundred and twenty percent", "20 percent", false),
+        // However many words a run takes.
+        ("one thousand two hundred thirty four", "1234", true),
+        ("nine hundred and ninety nine thousand nine hundred and ninety nine", "999999", true),
+        ("deux mille trois cent quarante-cinq", "2345", true),
+        ("one thousand two hundred thirty four", "234", false),
     ]
     for (local, cloud, same) in table {
         let ops = NormalizedAlignment.align(words(local), words(cloud))
@@ -549,6 +554,8 @@ private func words(_ text: String) -> [String] { text.split(separator: " ").map(
         ("V100", "we use V one hundred now", 1), ("V20", "we use V twenty one", 0),
         ("V120", "on a V cent vingt", 1), ("V20", "on a V cent vingt", 0),
         ("GPT-4", "GPT four and GPT four hundred", 1), ("V12", "V one two", 0),
+        ("V999999", "V nine hundred and ninety nine thousand nine hundred and ninety nine", 1),
+        ("V999", "V nine hundred and ninety nine thousand nine hundred and ninety nine", 0),
     ]
     for (term, text, expected) in table {
         #expect(count(term, text) == expected, "\(term) in \(text)")

@@ -83,7 +83,8 @@ public enum EvalTerms {
         occurrences(of: [term], words: keys, keys: keys, numbers: nil)
     }
 
-    /// Longest run of cloud words a spelled number may take when read against a shorter written form.
+    /// Longest run of cloud words a spelled number may take when read against a shorter written form, past which only
+    /// a spelled-number run already begun is read to its end.
     static let maxOccurrenceWords = 8
 
     /// Where any of `forms` is written in the words, as whole words: their keys joined, or (with `numbers`, the
@@ -104,7 +105,11 @@ public enum EvalTerms {
             var match: Int?
             // As long as the longest form (a term may have many words), or up to `maxOccurrenceWords` words for a
             // spelled number read against a shorter written form ("GPT four" for "GPT-4").
-            while end < keys.count, joined.count < longestForm || (hasSpelled && end - start < maxOccurrenceWords) {
+            // A spelled-number run the window is in is always read to its end ("V one thousand two hundred thirty
+            // four" for "V1234").
+            while end < keys.count, joined.count < longestForm
+                || (hasSpelled && (end - start < maxOccurrenceWords
+                                   || (end > start && numbers?.run(at: end)?.contains(end - 1) == true))) {
                 joined += keys[end]
                 hasSpelled = hasSpelled || numbers?.run(at: end) != nil
                 end += 1
