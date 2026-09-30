@@ -536,10 +536,25 @@ private func words(_ text: String) -> [String] { text.split(separator: " ").map(
                                         cloud: fairUntimed("we need 100 twenty now"), start: 0, end: 10)
     #expect(prefix.normalized.edits > 0)
     #expect(prefix.normalization.numbers == 0)
-    // The context stops at the first word that can be in no number.
-    #expect(EvalNormalization.context(before: 4, in: words("so we need one hundred"))
-        == words("need one"))
-    #expect(EvalNormalization.context(after: 1, in: words("V one hundred five now later")) == words("one hundred five now"))
+    // However far the number goes on past the stretch: the runs are found over all the window's words.
+    let long = WindowComparer.compare(
+        track: "system", local: fairTimed(words("V nine hundred and ninety nine thousand nine hundred and ninety nine now")),
+        cloud: fairUntimed("V 999 thousand nine hundred and ninety nine now"), start: 0, end: 20)
+    #expect(long.normalized.edits > 0)
+    #expect(long.normalization.numbers == 0)
+}
+
+@Test func fairSpelledNumberRunsHaveNoLengthLimit() {
+    let english = "plus nine hundred and ninety nine billion nine hundred and ninety nine million nine hundred and "
+        + "ninety nine thousand nine hundred and ninety nine percent"
+    let french = "neuf cent quatre vingt dix neuf milliards neuf cent quatre vingt dix neuf millions neuf cent "
+        + "quatre vingt dix neuf mille neuf cent quatre vingt dix neuf"
+    #expect(EvalNormalization.SpelledRuns(words(english)).runs == [0..<25])
+    #expect(EvalNormalization.SpelledRuns(words(french)).runs == [0..<27])
+    #expect(NormalizedAlignment.align(words(english), ["+999999999999%"]) == [.join(local: 0..<25, cloud: 0..<1, .number)])
+    #expect(NormalizedAlignment.align(words(french), ["999999999999"]) == [.join(local: 0..<27, cloud: 0..<1, .number)])
+    // Number words that are no number stop a run: a count is one number per word.
+    #expect(EvalNormalization.SpelledRuns(words("one two three four five six")).runs.count == 6)
 }
 
 @Test func fairTermsNeverStartOrEndInsideASpelledNumber() {

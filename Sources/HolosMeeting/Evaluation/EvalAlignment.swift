@@ -648,15 +648,22 @@ public enum WindowComparer {
             let first = wordRuns[stretch[0]].positions[0], last = wordRuns[stretch[stretch.count - 1]].positions.last!
             for position in first...last { inStretch[position] = true }
         }
+        // Each side's spelled-number runs, found once over all its words: a number at a stretch's edge is seen whole.
         let localTexts = local.map(\.text), cloudTexts = cloud.map(\.text)
+        let localRuns = EvalNormalization.SpelledRuns(localTexts, fillers: fillers)
+        let cloudRuns = EvalNormalization.SpelledRuns(cloudTexts, fillers: fillers)
+        func surroundings(_ runs: EvalNormalization.SpelledRuns, _ words: [String],
+                          at index: Int) -> NormalizedAlignment.Surroundings {
+            .init(runs: runs, offset: index, previous: index > 0 ? words[index - 1] : nil)
+        }
         for (position, op) in ops.enumerated() where !excluded[position] && !inStretch[position] {
             guard case .match(let i, let j, let exact) = op else { continue }
             // Each side's word is a filler or not by its own context ("5 mm" is millimetres, "well mm" a filler).
             let localFiller = EvalNormalization.fillerFlags(
-                [localTexts[i]], previousWords: EvalNormalization.context(before: i, in: localTexts, fillers: fillers),
+                [localTexts[i]], runs: localRuns, offset: i, previous: i > 0 ? localTexts[i - 1] : nil,
                 fillers: fillers)[0]
             let cloudFiller = EvalNormalization.fillerFlags(
-                [cloudTexts[j]], previousWords: EvalNormalization.context(before: j, in: cloudTexts, fillers: fillers),
+                [cloudTexts[j]], runs: cloudRuns, offset: j, previous: j > 0 ? cloudTexts[j - 1] : nil,
                 fillers: fillers)[0]
             // The cloud word is covered by the local one only when both sides read it the same way.
             if localFiller == cloudFiller {
@@ -685,19 +692,12 @@ public enum WindowComparer {
             let localIndices = positions.compactMap { localIndex(ops[$0]) }
             let cloudIndices = positions.compactMap { cloudIndex(ops[$0]) }
             let a = localIndices.map { local[$0].text }, b = cloudIndices.map { cloud[$0].text }
-            // The words around, for context: a spelled number the stretch's first or last words are part of ("one
-            // hundred and" just before "twenty"), and "mm" after "5" or "one hundred" is millimetres.
-            func around(_ words: [String], _ indices: [Int]) -> (before: [String], after: [String]) {
-                guard let firstIndex = indices.first, let lastIndex = indices.last else { return ([], []) }
-                return (EvalNormalization.context(before: firstIndex, in: words, fillers: fillers),
-                        EvalNormalization.context(after: lastIndex + 1, in: words, fillers: fillers))
-            }
-            let localAround = around(localTexts, localIndices), cloudAround = around(cloudTexts, cloudIndices)
-            let before = (local: localAround.before, cloud: cloudAround.before)
-            let normalizedOps = NormalizedAlignment.align(a, b, before: before,
-                                                          after: (localAround.after, cloudAround.after),
-                                                          fillers: fillers)
-            let scored = NormalizedAlignment.score(normalizedOps, a: a, b: b, before: before, fillers: fillers)
+            // The stretch's words are consecutive on each side: where they start among all the words ("one hundred
+            // and" just before "twenty" makes it 120; "mm" after "5" or "one hundred" is millimetres).
+            let around = (local: surroundings(localRuns, localTexts, at: localIndices.first ?? 0),
+                          cloud: surroundings(cloudRuns, cloudTexts, at: cloudIndices.first ?? 0))
+            let normalizedOps = NormalizedAlignment.align(a, b, surroundings: around, fillers: fillers)
+            let scored = NormalizedAlignment.score(normalizedOps, a: a, b: b, surroundings: around, fillers: fillers)
             result.normalized.add(scored.score)
             result.normalization.add(scored.counts)
             var touchedLocal = Set<Int>(), touchedCloud = Set<Int>()
