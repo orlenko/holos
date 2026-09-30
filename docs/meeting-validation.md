@@ -211,9 +211,12 @@ the **Name Speakers — <name>…** line at the top of the menu after a meeting.
 lists the speakers (name field, talk time, the start of their two longest turns, **▶ Play
 samples**, **This is me**, **Merge into…**, and "Maybe Maria" suggestions with **Confirm** /
 **Not Maria**); the right side lists the turns (time button that plays from there, speaker
-pop-up, ⚠ for uncertain turns, text). Keys: Space plays or pauses, ↑/↓ move, 1–9 give the
-selected turns to that speaker number, ⌘' goes to the next uncertain turn and plays it, ⌘Z
-undoes, ⌘F searches, ⌘E opens Export. The **Speakers** pull-down holds Confirm All
+pop-up, ⚠ for uncertain turns, text whose words play from where you click them). The
+playback bar above the footer has Play/Pause, the position, a scrubber, the speed, and who is
+speaking. Keys: Space (or K) plays or pauses and ←/→ (or J/L) move 5 seconds, ⌘←/⌘→ go to
+the previous/next turn (all of these anywhere except while typing in a field), ↑/↓ move, 1–9
+give the selected turns to that speaker number, ⌘' goes to the next uncertain turn and plays
+it, ⌘Z undoes, ⌘F searches, ⌘E opens Export. The **Speakers** pull-down holds Confirm All
 Suggestions, Find More Speakers…, Label Speakers on My Microphone… (calls recorded before the one
 meeting mode without "others in the room"), and Undo.
 
@@ -290,6 +293,45 @@ Result: Pending.
    with "Also forget voice samples learned from this meeting" checked. Pass: the review window
    closes first, the meeting goes to the Trash, and People no longer lists that sample; without
    the box checked the sample stays.
+
+Result: Pending.
+
+### Playback and following along
+
+Use a meeting of at least 10 minutes with several speakers.
+
+1. **Click a word.** Hover a turn's text: the pointer is a pointing hand. Click a word in the
+   middle of a turn. Pass: the turn is selected and playback starts at that word (the word you
+   hear is the one clicked, give or take one word on old sessions whose word times are
+   estimated). ⇧-click and ⌘-click on words only change the selection; a double click does not
+   restart the word; a drag across rows only selects them.
+2. **Pause from the bar.** While it plays, the bar's button reads **Pause** and the position
+   moves. Click **Pause**. Pass: the audio stops at once, the button reads **Play**, and **Play**
+   resumes from the same place (not from the turn's start).
+3. **Playback continues across turns.** Click a turn's timestamp and let it play past the end
+   of that turn. Pass: it goes on into the next turns (other speakers included) until paused;
+   the bar's speaker name changes with who is talking and shows "—" in silences.
+4. **Highlight follows.** While it plays, the turn playing has a tinted background with a
+   colored bar on its left and the word playing is tinted and underlined, moving word by word.
+   The list scrolls to keep the playing turn in view (and, in a turn taller than the list, the
+   playing word). Scroll the list away with the trackpad: it stays where you put it while you
+   keep scrolling, and comes back to the playing turn about 5 seconds after you stop, or at once
+   when you press Play, click a word, or click a timestamp.
+5. **Keys.** With the turn list focused, then with the **Speakers** sidebar focused (click a
+   speaker's row, not the name field): Space pauses and plays; ← and → move 5 seconds back and
+   ahead (J and L too, K plays or pauses); ⌘→ goes to the next turn's start, ⌘← to the start of
+   the turn playing and, pressed again right away, to the turn before. Holding Space does not
+   flip play and pause repeatedly. Click into the Search field or a speaker's name field and
+   type a sentence with spaces and arrow keys. Pass: the text gets the spaces and the caret
+   moves; playback does not change.
+6. **Scrubber and speed.** Drag the scrubber: the position follows the knob and playback goes
+   on from where you let go. Choose 1.5×: the voices are faster at the same pitch. Close and
+   reopen the review. Pass: the speed is still 1.5×.
+7. **End of the meeting.** Drag the scrubber near the end and let it play out. Pass: the button
+   returns to **Play**; pressing it plays from the start.
+8. **VoiceOver** (⌘F5). Tab to the bar. Pass: the controls read "Play", "Playback position" with
+   the time, "Playback speed", and the speaker; while the meeting plays, VoiceOver says only the
+   speaker's name when the speaker changes, never the words.
 
 Result: Pending.
 
