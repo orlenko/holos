@@ -287,9 +287,11 @@ public enum EvalLocal {
         // Tracks whose current transcript has words: a transcription of one that comes back empty failed rather than
         // heard silence (as the languages stage treats it), and is never saved as a finished part.
         let current = try? SessionFiles.currentTranscript(session: session)
+        // A segment without a track (an older transcript) belongs to the first track, as the comparison reads it.
+        let firstTrack = record.tracks.first?.track
         let tracksWithWords = Set((current?.segments ?? []).filter {
             !$0.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        }.compactMap(\.track))
+        }.compactMap { $0.track ?? firstTrack })
         for (language, track) in missing {
             try Task.checkCancellation()
             let label = "the \(track.track) track in \(LanguageStage.name(language))"
