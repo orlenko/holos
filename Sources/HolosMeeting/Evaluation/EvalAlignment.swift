@@ -631,6 +631,10 @@ public enum WindowComparer {
             if case .match = ops[position] { return true }
             return false
         }
+        // Every cloud word but echo is covered or not (below); only echo stays nil.
+        for (position, op) in ops.enumerated() where !excluded[position] {
+            if let j = cloudIndex(op) { result.cloudEquivalent[j] = false }
+        }
         var stretches: [[Int]] = []  // indices into wordRuns
         for (index, run) in wordRuns.enumerated() {
             if let current = stretches.last, let last = current.last, let lastPosition = wordRuns[last].positions.last,
@@ -666,10 +670,8 @@ public enum WindowComparer {
                 [cloudTexts[j]], runs: cloudRuns, offset: j, previous: j > 0 ? cloudTexts[j - 1] : nil,
                 fillers: fillers)[0]
             // The cloud word is covered by the local one only when both sides read it the same way.
-            if localFiller == cloudFiller {
-                result.cloudEquivalent[j] = true
-                result.cloudEquivalentSpans[j] = i..<(i + 1)
-            }
+            result.cloudEquivalent[j] = localFiller == cloudFiller
+            if localFiller == cloudFiller { result.cloudEquivalentSpans[j] = i..<(i + 1) }
             switch (localFiller, cloudFiller) {
             case (true, true):
                 result.normalization.fillersLocal += 1; result.normalization.fillersCloud += 1

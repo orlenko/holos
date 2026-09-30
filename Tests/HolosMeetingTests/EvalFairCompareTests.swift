@@ -451,7 +451,14 @@ private func fairScore(local: Int, edits: Int, echo: Int = 0) -> EvalScore {
     let result = WindowComparer.compare(track: "system", local: fairTimed(["cut", "well", "mm", "now"]),
                                         cloud: fairUntimed("cut 5 mm now"), start: 0, end: 10)
     let mm = 2
-    #expect(!(result.cloudEquivalent[mm] ?? false))
+    #expect(result.cloudEquivalent[mm] == false)
+    // Every cloud word but echo is covered or not: nil is echo only.
+    #expect(result.cloudEquivalent.allSatisfy { $0 != nil })
+    // So a term the cloud has there is a miss, not unheard.
+    let track = EvalTerms.Track(track: "system", words: ["cut", "5", "mm", "now"], covered: result.cloudEquivalent,
+                                spans: result.cloudEquivalentSpans)
+    let stats = EvalTerms.count(EvalTerms.terms(wordList: ["mm"], corrections: []), tracks: [track], normalized: true)
+    #expect(stats.map { "\($0.hits)/\($0.cloud)" } == ["0/1"])
 }
 
 @Test func fairScaleWordsJoinTheSpelledNumberBeforeThem() {
