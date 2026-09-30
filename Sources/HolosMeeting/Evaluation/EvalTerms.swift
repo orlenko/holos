@@ -142,20 +142,30 @@ public enum EvalTerms {
         public var spans: [Range<Int>?]
         /// Per local word: whether it may stand between a phrase's words (a filler, or echo left out).
         public var ignorable: [Bool]
+        /// Per cloud word: whether it is left out when finding terms, as echo is (a filler under the normalized
+        /// comparison: "New um York" is "New York"). Empty: none.
+        public var skipped: [Bool]
 
         public init(track: String, words: [String], covered: [Bool?], spans: [Range<Int>?] = [],
-                    ignorable: [Bool] = []) {
+                    ignorable: [Bool] = [], skipped: [Bool] = []) {
             self.track = track; self.words = words; self.covered = covered; self.spans = spans
-            self.ignorable = ignorable
+            self.ignorable = ignorable; self.skipped = skipped
+        }
+
+        /// The cloud words terms are found among, in order: all but echo and `skipped` words.
+        var kept: [Int] {
+            words.indices.filter { index in
+                index < covered.count && covered[index] != nil && !(index < skipped.count && skipped[index])
+            }
         }
     }
 
-    /// Whether the local words standing for cloud words `range` are one unbroken run: each next word's local words
-    /// follow the one before's (or are the same joined run), with only ignorable words between.
-    static func contiguous(_ range: Range<Int>, in track: Track) -> Bool {
+    /// Whether the local words standing for cloud words `indices` (in order) are one unbroken run: each next word's
+    /// local words follow the one before's (or are the same joined run), with only ignorable words between.
+    static func contiguous(_ indices: [Int], in track: Track) -> Bool {
         guard !track.spans.isEmpty else { return true }
         var previous: Range<Int>?
-        for index in range {
+        for index in indices {
             guard index < track.spans.count, let span = track.spans[index] else { return false }
             if let before = previous, span != before {
                 guard span.lowerBound >= before.upperBound,
@@ -168,27 +178,31 @@ public enum EvalTerms {
     }
 
     /// Each term's count in the cloud words of every track, and how many of those the local transcript has: each of
-    /// the occurrence's words covered, as one unbroken run of local words (`contiguous`). An occurrence that touches
-    /// echo is not counted. Terms the cloud never has are left out. Sorted by misses, then by count, then by term.
-    /// With `normalized`, a term is also found written with its numbers spelled the other way ("GPT four" for the
-    /// term "GPT-4", "GPT-4" for "GPT four").
+    /// the occurrence's words covered, as one unbroken run of local words (`contiguous`). Echo is left out: a term is
+    /// found among the other cloud words, so an echo word between two of its words does not hide it (nor, under the
+    /// normalized comparison, a filler). Terms the cloud never has are left out. Sorted by misses, then by count,
+    /// then by term. With `normalized`, a term is also found written with its numbers spelled the other way ("GPT
+    /// four" for the term "GPT-4", "GPT-4" for "GPT four").
     public static func count(_ terms: [Term], tracks: [Track], normalized: Bool = false) -> [TermStat] {
         let keyed = tracks.map { track in
-            (keys: track.words.map(EvalText.key),
-             numbers: normalized ? EvalNormalization.SpelledRuns(track.words, fillers: []) : nil, track: track)
+            let kept = track.kept
+            let words = kept.map { track.words[$0] }
+            return (kept: kept, words: words, keys: words.map(EvalText.key),
+                    numbers: normalized ? EvalNormalization.SpelledRuns(words, fillers: []) : nil, track: track)
         }
         var stats: [TermStat] = []
         for term in terms {
             var stat = TermStat(term: term.text, source: term.source, cloud: 0, hits: 0)
             var forms: Set<String> = [joinedKey(term.text)]
             if normalized { forms.formUnion(NormalizedAlignment.compoundForms(EvalText.tokens(term.text))) }
-            for (keys, numbers, track) in keyed {
+            for (kept, words, keys, numbers, track) in keyed {
                 var count = TermStat.TrackCount(track: track.track, cloud: 0, hits: 0)
-                for range in occurrences(of: forms, words: track.words, keys: keys, numbers: numbers) {
-                    let flags = range.map { $0 < track.covered.count ? track.covered[$0] : nil }
-                    guard !flags.contains(where: { $0 == nil }) else { continue }
+                for range in occurrences(of: forms, words: words, keys: keys, numbers: numbers) {
+                    let indices = range.map { kept[$0] }
                     count.cloud += 1
-                    if flags.allSatisfy({ $0 == true }), contiguous(range, in: track) { count.hits += 1 }
+                    if indices.allSatisfy({ track.covered[$0] == true }), contiguous(indices, in: track) {
+                        count.hits += 1
+                    }
                 }
                 guard count.cloud > 0 else { continue }
                 stat.cloud += count.cloud

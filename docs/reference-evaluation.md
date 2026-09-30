@@ -205,7 +205,9 @@ voiceislocal eval delete <session> (<run> | --all)
    words kept ("unreliable: mostly echo": what is left of the microphone is
    mostly what the echo filter missed, so its WER says little). The **Terms**
    section counts, for each word-list term and each correction's meant phrase,
-   how often the cloud text has it (echo left out) and how often the local
+   how often the cloud text has it (echo left out, also between its words;
+   in the normalized comparison fillers too: "New um York" is "New York")
+   and how often the local
    transcript has the same words at the aligned position, as one unbroken
    run (only fillers or echo between them), sorted by misses, with each
    track's share (the microphone's count depends on the echo left out, which

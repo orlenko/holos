@@ -580,6 +580,22 @@ private func words(_ text: String) -> [String] { text.split(separator: " ").map(
     #expect(!NormalizedAlignment.compoundForms(["V2", "one"]).contains("v21"))
 }
 
+@Test func fairTermsAreFoundPastEchoAndFillersBetweenTheirWords() {
+    let terms = EvalTerms.terms(wordList: ["New York"], corrections: [])
+    func stat(_ text: String, covered: [Bool?], skipped: [Bool] = [], normalized: Bool = false) -> String? {
+        let track = EvalTerms.Track(track: "system", words: words(text), covered: covered, skipped: skipped)
+        return EvalTerms.count(terms, tracks: [track], normalized: normalized).first.map { "\($0.hits)/\($0.cloud)" }
+    }
+    // An echo word between the term's words is left out, as echo is everywhere else.
+    #expect(stat("we went New there York", covered: [true, true, true, nil, true]) == "1/1")
+    #expect(stat("we went New there York", covered: [true, true, true, nil, false]) == "0/1")
+    // Under the normalized comparison a filler between them is too; the raw comparison reads it as a word.
+    #expect(stat("New um York", covered: [true, true, true], skipped: [false, true, false], normalized: true) == "1/1")
+    #expect(stat("New um York", covered: [true, true, true]) == nil)
+    // An echo word that is part of the term leaves it unheard.
+    #expect(stat("New York", covered: [true, nil]) == nil)
+}
+
 @Test func fairMmFollowsTheWholeSpelledNumberBeforeIt() {
     #expect(EvalNormalization.fillerFlags(["mm"], previousWords: words("one hundred and five")) == [false])
     #expect(EvalNormalization.fillerFlags(["mm"], previousWords: words("one hundred and")) == [true])

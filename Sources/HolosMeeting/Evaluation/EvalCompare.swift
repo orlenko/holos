@@ -260,13 +260,15 @@ public enum EvalCompare {
         var window: WindowComparison
         /// Per local word: a filler or echo, which may stand between a term's words.
         var ignorable: [Bool]
+        /// Per cloud word: a filler, which the normalized comparison leaves out between a term's words.
+        var cloudFillers: [Bool]
 
         /// The track for the Terms section: by key, or under the normalized comparison.
         func termTrack(_ name: String, normalized: Bool) -> EvalTerms.Track {
             EvalTerms.Track(track: name, words: cloud.map(\.text),
                             covered: normalized ? window.cloudEquivalent : window.cloudMatched,
                             spans: normalized ? window.cloudEquivalentSpans : window.cloudMatchedSpans,
-                            ignorable: ignorable)
+                            ignorable: ignorable, skipped: normalized ? cloudFillers : [])
         }
     }
 
@@ -311,7 +313,8 @@ public enum EvalCompare {
                                               normalized: result.normalized, normalization: result.normalization),
             passages: result.passages, cloud: allCloud, window: result,
             ignorable: zip(local, EvalNormalization.fillerFlags(local.map(\.text), fillers: fillers))
-                .map { $0.echo || $1 })
+                .map { $0.echo || $1 },
+            cloudFillers: EvalNormalization.fillerFlags(allCloud.map(\.text), fillers: fillers))
     }
 
     private static func shifted(_ op: AlignmentOp, local: Int, cloud: Int) -> AlignmentOp {
