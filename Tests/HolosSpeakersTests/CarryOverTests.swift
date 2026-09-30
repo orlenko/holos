@@ -146,6 +146,39 @@ private func projection(_ fixture: (run: DiarizationRun, transcript: Transcript)
     #expect(result.actions == [.rename(speakerID: "system:S1", name: "Jim")])
 }
 
+@Test func carryKeepsTimeOutOfVoiceLearning() {
+    // S3 was merged into Jim automatically, its turn first kept out of voice learning (nobody confirmed it).
+    let old = timedRun("OLD", [speech("system:S1", 0, 30), speech("system:S2", 30, 60), speech("system:S3", 60, 90),
+                               speech("mic:me", 60, 90, track: "mic")])
+    let before = projection(old, [.excludeFromEnrollment(turnIDs: ["T4"]),
+                                  .merge(from: "system:S3", into: "system:S1"),
+                                  .rename(speakerID: "system:S1", name: "Jim"),
+                                  .linkProfile(speakerID: "system:S1", profileID: "P-JIM")])
+    #expect(before.turns.filter(\.excludedFromEnrollment).map(\.id) == ["T4"])
+    // The new run cuts the speech elsewhere: B ends where the kept-out time starts, C takes it and more, D only a
+    // little of it, and the mic track has its own turn at the same time.
+    let new = timedRun("NEW", [speech("system:A", 0, 30), speech("system:B", 30, 60), speech("system:C", 55, 80),
+                               speech("system:D", 80, 95), speech("mic:S1", 60, 90, track: "mic")])
+    #expect(new.run.turns.map(\.id) == ["T1", "T2", "T3", "T4", "T5"])
+    let result = SpeakerCarryOver.carry(from: before, to: new.run)
+    #expect(result.actions.last == .excludeFromEnrollment(turnIDs: ["T3", "T5"]),
+            "Every new turn with some of that time is kept out, on the same track only.")
+    #expect(result.droppedTurnEdits == 1, "Only the merge is reported as not carried.")
+
+    let after = projection(new, result.actions, names: ["P-JIM": "Jim"])
+    #expect(after.staleEdits.isEmpty)
+    #expect(after.turns.filter(\.excludedFromEnrollment).map(\.id) == ["T3", "T5"])
+
+    // Nothing kept out: nothing to carry. An exclusion that was undone is not carried either.
+    let plain = projection(old, [.rename(speakerID: "system:S1", name: "Jim")])
+    #expect(!SpeakerCarryOver.carry(from: plain, to: new.run).actions.contains {
+        if case .excludeFromEnrollment = $0 { return true }
+        return false
+    })
+    let undone = projection(old, [.excludeFromEnrollment(turnIDs: ["T4"]), .revert(editID: "E1")])
+    #expect(SpeakerCarryOver.carry(from: undone, to: new.run).actions.isEmpty)
+}
+
 @Test func carryKeepsRejectionsAndUserCreatedSpeakers() {
     let old = timedRun("OLD", [speech("system:S1", 0, 60), speech("system:S2", 60, 120)])
     let before = projection(old, [

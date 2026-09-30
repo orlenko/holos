@@ -769,6 +769,8 @@ extension HolosAppDelegate: NSMenuDelegate {
         meeting.meetingsPane?.refresh()
         let name = Self.short(summary.name)
         if code == 0, action == .deleteMeeting || action == .deleteAudio {
+            // No voice can be learned from the meeting any more.
+            PendingVoiceSamples().clear(summary.id)
             if action == .deleteMeeting {
                 PendingExports().clear(summary.id)
                 if meeting.lastSummary?.sessionID == summary.id { meeting.lastSummary = nil }

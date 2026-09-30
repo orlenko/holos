@@ -86,7 +86,7 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate {
     /// Opens the review of a labelled meeting (the labels are loaded off the main actor first).
     static func open(sessionID: String, session: URL, maintenance: MaintenanceLauncher?) async throws -> ReviewWindow {
         let review = try await ReviewSession(session: session, profiles: SpeakerProfileStore(), maintenance: maintenance,
-                                             analyseVoices: true)
+                                             analyseVoices: true, pendingVoices: PendingVoiceSamples())
         review.autoMergeVoices = UserDefaults.standard.bool(forKey: autoMergeKey)
         return ReviewWindow(sessionID: sessionID, review: review)
     }

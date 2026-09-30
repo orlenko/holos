@@ -181,6 +181,9 @@ public struct ReviewWord: Sendable, Equatable {
     private var sampleRun: Task<Void, Never>?
     /// The running sync learns somebody's voice (not only brings samples in step).
     private var syncLearning = false
+    /// Where a sync this review could not finish is recorded for the meeting's next review, and read from when this
+    /// one opens (`PendingVoiceSamples`); nil records nothing.
+    private let pendingVoices: PendingVoiceSamples?
 
     // MARK: - Opening
 
@@ -190,10 +193,12 @@ public struct ReviewWord: Sendable, Equatable {
     /// `extractor` learns voices (`VoiceSampleExtractor`); nil uses the bundled `voiceislocal` tool
     /// (`SubprocessVoiceSampleExtractor`) when `maintenance` is given, else no voice is learned. `analyseVoices` works
     /// out every turn's voice with it in the background (once per track split into speakers) for `voiceMatches` and
-    /// for voice learning. Throws `HolosError.unavailable` when the meeting has no usable speaker labels.
+    /// for voice learning. A sync an earlier review recorded in `pendingVoices` runs again, and the footer says so.
+    /// Throws `HolosError.unavailable` when the meeting has no usable speaker labels.
     public init(session: URL, profiles: SpeakerProfileStore?, maintenance: MaintenanceLauncher?,
                 exportDelay: Duration = .seconds(2), extractor: (any VoiceSampleExtractor)? = nil,
-                analyseVoices: Bool = false, sampleDelay: Duration = .milliseconds(1500)) async throws {
+                analyseVoices: Bool = false, sampleDelay: Duration = .milliseconds(1500),
+                pendingVoices: PendingVoiceSamples? = nil) async throws {
         let loaded = try await Self.detached { try Self.load(session: session, profiles: profiles) }
         guard let projection = loaded.snapshot.projection else {
             throw HolosError.unavailable(loaded.snapshot.runProblem
@@ -210,6 +215,7 @@ public struct ReviewWord: Sendable, Equatable {
         self.exportDelay = exportDelay
         self.sampleDelay = sampleDelay
         self.analyseVoices = analyseVoices
+        self.pendingVoices = pendingVoices
         snapshot = loaded.snapshot
         self.projection = projection
         savedProjection = projection
@@ -221,6 +227,7 @@ public struct ReviewWord: Sendable, Equatable {
         segments = Self.segmentIndex(loaded.snapshot.transcript)
         knownEditedExports = loaded.editedExports
         Self.log.info("Session \(loaded.snapshot.manifest.id, privacy: .public): review opened on run \(projection.runID, privacy: .public) (\(projection.speakers.count, privacy: .public) speakers, \(projection.turns.count, privacy: .public) turns)")
+        resumePendingSamples()
         startVoiceAnalysis()
     }
 
@@ -790,6 +797,11 @@ public struct ReviewWord: Sendable, Equatable {
     /// children exit (deleting their renders) rather than outlive the app. A voice not learned yet is not learned; the
     /// names are saved.
     public func stopBackgroundWork() {
+        // A sync still owed (waiting, running, or not started) is recorded, so the meeting's next review runs it.
+        if samplesOwed, profiles != nil {
+            pendingVoices?.mark(sessionID, PendingVoiceSamples.Entry(enroll: sampleEnroll.mapValues(\.epoch),
+                                                                     problem: nil))
+        }
         backgroundStopped = true
         sampleTimer?.cancel()
         sampleTimer = nil
@@ -1346,6 +1358,7 @@ public struct ReviewWord: Sendable, Equatable {
         case .success:
             voiceProblem = nil
             settle()
+            if !samplesOwed { pendingVoices?.clear(sessionID) }
         case .failure(let error) where error is CancellationError:
             // Still owed: it runs again after the change that stopped it.
             Self.log.info("Session \(self.sessionID, privacy: .public): voice sample sync stopped for a newer change")
@@ -1354,6 +1367,16 @@ public struct ReviewWord: Sendable, Equatable {
             voiceProblem = (enroll.isEmpty ? "A voice sample learned from this meeting could not be updated: "
                 : "The name was saved, but the voice could not be learned: ") + error.localizedDescription
             Self.log.error("Session \(self.sessionID, privacy: .public): voice samples not brought in step (\(ProcessSpawner.logCategory(error), privacy: .public))")
+            if closed, !Self.isForgetWin(error) {
+                // Nobody sees the footer of a window that is closing: the next review of the meeting says so and
+                // runs it again. A forget that landed meanwhile wins for good, so that is not run again.
+                pendingVoices?.mark(sessionID, PendingVoiceSamples.Entry(enroll: enroll.mapValues(\.epoch),
+                                                                         problem: error.localizedDescription))
+                Self.log.error("Session \(self.sessionID, privacy: .public): voice sample sync failed while the review closed; recorded for the next review")
+            } else {
+                // The footer says why; confirming the person again asks again.
+                pendingVoices?.clear(sessionID)
+            }
         }
         scheduleSampleSync()
         notify()
@@ -1367,6 +1390,35 @@ public struct ReviewWord: Sendable, Equatable {
         guard samplesOwed, sampleRun == nil else { return }
         startSampleSync()
         if let running = sampleRun { await running.value }
+    }
+
+    /// The batch a request carried over from an earlier review is kept under: no link of this window made it, so
+    /// undoing one does not withdraw it (linking the person again with the footer box off still does).
+    static let earlierReviewBatch = "earlier-review"
+
+    /// A sync an earlier review of this meeting could not finish (`PendingVoiceSamples`) is owed again, with the
+    /// requests it held under the forget epochs they were made at, and the footer says why until it runs. Stays
+    /// recorded until a sync ends with this window open (the footer then shows how it went) or a later close records
+    /// it again.
+    private func resumePendingSamples() {
+        guard profiles != nil, let entry = pendingVoices?.entry(sessionID) else { return }
+        for (profileID, epoch) in entry.enroll {
+            sampleEnroll[profileID] = EnrollRequest(epoch: epoch, batches: [Self.earlierReviewBatch])
+        }
+        let what = entry.enroll.isEmpty ? "the voice samples learned from this meeting could not be updated"
+            : "a voice could not be learned"
+        let why = entry.problem.map { " " + $0 } ?? ""
+        voiceProblem = "When this meeting's review last closed, \(what); trying again.\(why)"
+        Self.log.notice("Session \(self.sessionID, privacy: .public): running a voice sample sync an earlier review could not finish")
+        oweSamples()
+    }
+
+    /// The sync failed because voices were forgotten after they were asked for: the forget is the later request.
+    private static func isForgetWin(_ error: any Error) -> Bool {
+        if case HolosError.unavailable(let message) = error {
+            return message == VoiceProfileService.forgottenWhileLearning
+        }
+        return false
     }
 
     // MARK: - Voices within the meeting

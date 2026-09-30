@@ -524,3 +524,98 @@ func aSampleSyncThatFailsSaysSoAndKeepsTheName() async throws {
     #expect(review.speaker(s1)?.name == "Jim")
     await review.close()
 }
+
+/// Fails with "The speaker models are missing." while `broken`, else gives each turn the voice `voiceMap` names.
+private final class VoiceFlakyExtractor: VoiceSampleExtractor {
+    let broken: SharedValue<Bool>
+    let working = VoiceFakeExtractor(voices: voiceMap)
+
+    init(broken: Bool) { self.broken = SharedValue(broken) }
+
+    func turnEmbeddings(session: URL, track: String, turns: [TurnRef]) async throws -> [TurnEmbedding] {
+        if broken.value { throw HolosError.unavailable("The speaker models are missing.") }
+        return try await working.turnEmbeddings(session: session, track: track, turns: turns)
+    }
+}
+
+/// A `PendingVoiceSamples` of its own (removed by `done`).
+private func voicePending() -> (pending: PendingVoiceSamples, done: () -> Void) {
+    let name = "holos-tests-\(UUID().uuidString)"
+    let defaults = UserDefaults(suiteName: name)!
+    return (PendingVoiceSamples(defaults: defaults), { defaults.removePersistentDomain(forName: name) })
+}
+
+@Test(.timeLimit(.minutes(1))) @MainActor
+func aVoiceThatFailsWhileTheReviewClosesIsLearnedWhenItOpensAgain() async throws {
+    let temp = try TemporaryDirectory("voice")
+    defer { temp.remove() }
+    let (pending, done) = voicePending()
+    defer { done() }
+    let store = try voiceStore(temp)
+    let fixture = try await SessionFixtures.labelledSession(in: temp.url, speakers: ["S1", "S2"], duration: 20)
+    let sessionID = try SessionArchive.readManifest(at: fixture.session).id
+    let extractor = VoiceFlakyExtractor(broken: true)
+
+    let first = try await ReviewSession(session: fixture.session, profiles: store, maintenance: nil,
+                                        exportDelay: .seconds(60), extractor: extractor,
+                                        sampleDelay: .seconds(3600), pendingVoices: pending)
+    try await first.setName("Jim", speakerID: s1)
+    let jim = try #require(first.speaker(s1)?.profileID)
+    #expect(pending.entry(sessionID) == nil, "Nothing is recorded while the sync can still run in this window.")
+    // The sync still owed runs as the window closes, and fails where nobody sees the footer.
+    await first.close()
+    #expect(try voiceSamples(store, named: "Jim") == 0)
+    let epoch = try store.load().forgetEpoch ?? 0
+    #expect(pending.entry(sessionID) == PendingVoiceSamples.Entry(enroll: [jim: epoch],
+                                                                   problem: "The speaker models are missing."))
+
+    // The next review says so and learns the voice.
+    extractor.broken.set(false)
+    let second = try await ReviewSession(session: fixture.session, profiles: store, maintenance: nil,
+                                         exportDelay: .seconds(60), extractor: extractor,
+                                         sampleDelay: .seconds(3600), pendingVoices: pending)
+    #expect(second.voiceProblem?.contains("When this meeting's review last closed, a voice could not be learned")
+        == true)
+    #expect(second.voiceProblem?.contains("The speaker models are missing.") == true)
+    await second.close()
+    #expect(try voiceSamples(store, named: "Jim") == 1)
+    #expect(second.voiceProblem == nil)
+    #expect(pending.entry(sessionID) == nil)
+}
+
+@Test(.timeLimit(.minutes(1))) @MainActor
+func aVoiceStoppedByQuittingIsTriedAgainAndAFailureThenShows() async throws {
+    let temp = try TemporaryDirectory("voice")
+    defer { temp.remove() }
+    let (pending, done) = voicePending()
+    defer { done() }
+    let store = try voiceStore(temp)
+    let fixture = try await SessionFixtures.labelledSession(in: temp.url, speakers: ["S1", "S2"], duration: 20)
+    let sessionID = try SessionArchive.readManifest(at: fixture.session).id
+    let extractor = VoiceFlakyExtractor(broken: false)
+
+    let first = try await ReviewSession(session: fixture.session, profiles: store, maintenance: nil,
+                                        exportDelay: .seconds(60), extractor: extractor,
+                                        sampleDelay: .seconds(3600), pendingVoices: pending)
+    try await first.markSelf(speakerID: s1)
+    let me = try #require(first.speaker(s1)?.profileID)
+    // Quitting gave up waiting for the review: the voice is not learned now, and that is recorded.
+    first.stopBackgroundWork()
+    await first.close()
+    #expect(extractor.working.callCount == 0)
+    #expect(pending.entry(sessionID)?.enroll.keys.sorted() == [me])
+    #expect(pending.entry(sessionID)?.problem == nil)
+
+    // The next review tries again; a failure then shows in its footer, and is not recorded again.
+    extractor.broken.set(true)
+    let second = try await ReviewSession(session: fixture.session, profiles: store, maintenance: nil,
+                                         exportDelay: .seconds(60), extractor: extractor,
+                                         sampleDelay: .zero, pendingVoices: pending)
+    #expect(second.voiceProblem?.contains("trying again") == true)
+    try await voiceWait("the retry to fail") { second.voiceProblem?.contains("could not be learned:") == true }
+    #expect(second.voiceProblem?.contains("The speaker models are missing.") == true)
+    #expect(pending.entry(sessionID) == nil, "The footer said so; confirming the person again asks again.")
+    await second.close()
+    #expect(pending.entry(sessionID) == nil)
+    #expect(try store.load().profiles.first(where: \.isSelf)?.samples.count == 0)
+}

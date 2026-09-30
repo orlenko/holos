@@ -219,15 +219,15 @@ public struct SpeakerProjection: Sendable, Equatable {
                                  state: next, otherRunEditCount: otherRunEditCount)
     }
 
-    /// Applied edits that `SpeakerCarryOver` cannot carry: turn-level edits (reassign, split, new speaker, exclude)
-    /// and merges. A merge changes which turns a speaker owns, and the new run's speakers need not line up with the
+    /// Applied edits that `SpeakerCarryOver` cannot carry: turn-level edits (reassign, split, new speaker) and
+    /// merges. Exclusions from voice learning are carried by time (`SpeakerCarryOver.excludedTurnIDs`). A merge changes which turns a speaker owns, and the new run's speakers need not line up with the
     /// merged clusters, so it is counted rather than silently lost.
     var appliedTurnEditCount: Int {
         zip(journal, outcomes).filter { entry, outcome in
             guard outcome == .applied else { return false }
             switch entry.action {
-            case .reassignTurns, .splitTurn, .newSpeaker, .excludeFromEnrollment, .merge: return true
-            case .rename, .linkProfile, .rejectProfile, .revert: return false
+            case .reassignTurns, .splitTurn, .newSpeaker, .merge: return true
+            case .rename, .linkProfile, .rejectProfile, .excludeFromEnrollment, .revert: return false
             }
         }.count
     }

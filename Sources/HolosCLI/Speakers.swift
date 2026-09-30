@@ -371,7 +371,10 @@ struct Speakers: AsyncParsableCommand {
 
         @Argument(help: "Path to a .holos folder, or a session ID.") var session: String
         @Option(help: "The track (mic or system).") var track: String
-        @Option(help: "Turn IDs, separated by commas; ID@start-end (session seconds) embeds exactly that span.")
+        @Option(help: """
+            Turn IDs, separated by commas; ID@start-end (session seconds) embeds exactly that span. "-" reads them \
+            from stdin, one per line (how VoiceIsLocal.app passes them, so the arguments stay short).
+            """)
         var turns: String
         @Flag(help: "Print JSON (the only format).") var json = false
 
@@ -388,8 +391,7 @@ struct Speakers: AsyncParsableCommand {
             }
             let loaded = try SpeakerCommand.load(session)
             var seen = Set<String>()
-            let entries = turns.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }
-                .filter { !$0.isEmpty }
+            let entries = try Self.entries(turns == "-" ? Self.readStandardInput() : turns)
             let byID = Dictionary(loaded.view.turns.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
             var refs: [TurnRef] = []
             for entry in entries {
@@ -430,6 +432,34 @@ struct Speakers: AsyncParsableCommand {
             var data = try HolosJSON.encoder(pretty: false).encode(TurnEmbeddingsOutput(turnEmbeddings: embeddings))
             data.append(0x0A)
             try FileHandle.standardOutput.write(contentsOf: data)
+        }
+
+        /// The most turn text read from stdin: far more than a day of turns.
+        static let maxInputBytes = 16 << 20
+
+        /// The turn entries of `text`: separated by commas or line breaks, blanks dropped.
+        static func entries(_ text: String) -> [String] {
+            text.split(whereSeparator: { $0 == "," || $0.isNewline })
+                .map { $0.trimmingCharacters(in: .whitespaces) }
+                .filter { !$0.isEmpty }
+        }
+
+        /// stdin to its end, as UTF-8 text.
+        static func readStandardInput() throws -> String {
+            var data = Data()
+            var buffer = [UInt8](repeating: 0, count: 64 * 1024)
+            while true {
+                let count = buffer.withUnsafeMutableBytes { Darwin.read(STDIN_FILENO, $0.baseAddress, $0.count) }
+                if count < 0, errno == EINTR { continue }
+                guard count >= 0 else { throw HolosError.io("Cannot read the turns from stdin.") }
+                if count == 0 { break }
+                data.append(contentsOf: buffer[0..<count])
+                guard data.count <= maxInputBytes else { throw HolosError.invalidInput("Too many turns on stdin.") }
+            }
+            guard let text = String(data: data, encoding: .utf8) else {
+                throw HolosError.invalidInput("The turns on stdin are not UTF-8 text.")
+            }
+            return text
         }
     }
 }
