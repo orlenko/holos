@@ -67,10 +67,13 @@ public enum ReviewTimeline {
         starts.filter { $0.isFinite && $0 > time + nextSkip }.min()
     }
 
-    /// Where ⌘← goes: the start of the turn playing, or of the one before it when the play head is within
-    /// `previousGrace` of that start (so pressing it again keeps going back); 0 before the first turn.
+    /// Where ⌘← goes: the start of the latest turn started at `time`, or the start just before it when the play head
+    /// is within `previousGrace` of that start (so pressing it again keeps going back); 0 before the first turn.
     public static func previousTurnStart(before time: Double, starts: [Double]) -> Double {
-        starts.filter { $0.isFinite && $0 <= time - previousGrace }.max() ?? 0
+        let sorted = starts.filter(\.isFinite).sorted()
+        guard let current = sorted.last(where: { $0 <= time }) else { return 0 }
+        if time - current >= previousGrace { return current }
+        return sorted.last { $0 < current } ?? 0
     }
 }
 

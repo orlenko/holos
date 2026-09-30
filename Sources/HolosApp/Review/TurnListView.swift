@@ -62,14 +62,21 @@ final class TurnTableView: NSTableView {
     var onDigit: ((Int) -> Void)?
     /// A word was clicked: the session time it starts at.
     var onWordClick: ((Double) -> Void)?
+    /// Return or Enter: play the selected turn (the keyboard's way to what a click on its timestamp does).
+    var onReturn: (() -> Void)?
 
     override func keyDown(with event: NSEvent) {
         let modifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
             .subtracting([.numericPad, .function, .capsLock])
-        if modifiers.isEmpty, let characters = event.charactersIgnoringModifiers,
-           characters.count == 1, let digit = Int(characters), (1...9).contains(digit) {
-            onDigit?(digit)
-            return
+        if modifiers.isEmpty, let characters = event.charactersIgnoringModifiers {
+            if characters.count == 1, let digit = Int(characters), (1...9).contains(digit) {
+                onDigit?(digit)
+                return
+            }
+            if characters == "\r" || characters == "\u{3}" {
+                onReturn?()
+                return
+            }
         }
         super.keyDown(with: event)
     }

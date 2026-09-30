@@ -369,6 +369,10 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate {
         }
         turnList.onNewSpeaker = { [weak self] ids in self?.newSpeaker(for: ids) }
         turnList.onSelectionChange = { [weak self] in self?.refreshToolbar() }
+        turnList.table.onReturn = { [weak self] in
+            guard let self, let turn = self.turnList.selectedTurns.first else { return }
+            self.play(from: turn.start)
+        }
         turnList.table.onDigit = { [weak self] digit in self?.assignSelection(toOrdinal: digit) }
     }
 
@@ -421,7 +425,9 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate {
             playButton.setAccessibilityLabel(title)
         }
         playButton.isEnabled = player.isReady
-        let total = max(player.duration, review.durationSeconds)
+        // The audio's own length once it is ready (chunks missing at the end make it shorter than the meeting), so the
+        // scrubber never offers a place playback cannot reach.
+        let total = player.isReady && player.duration > 0 ? player.duration : review.durationSeconds
         // A drag that ended without a last action (the button came up elsewhere) ends here.
         if scrubbing, NSEvent.pressedMouseButtons & 1 == 0 { scrubbing = false }
         let shownTime = scrubbing ? scrubber.doubleValue : player.currentTime
@@ -863,8 +869,8 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate {
 
     // MARK: - Keys
 
-    /// Playback keys, anywhere in the window but while typing in a text field (or a sheet is open): Space and K
-    /// play/pause, ← and J back 5 seconds, → and L ahead 5 seconds, ⌘← the previous turn (the start of this one first),
+    /// Playback keys, anywhere in the window but while typing in a text field (or a sheet is open): Space (except
+    /// on a button focused with keyboard navigation) and K play/pause, ← and J back 5 seconds, → and L ahead 5 seconds, ⌘← the previous turn (the start of this one first),
     /// ⌘→ the next turn.
     private func handlePlaybackKey(_ event: NSEvent) -> Bool {
         guard window.attachedSheet == nil else { return false }
@@ -891,7 +897,12 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate {
         default:
             break
         }
-        switch event.charactersIgnoringModifiers?.lowercased() {
+        let key = event.charactersIgnoringModifiers?.lowercased()
+        // With keyboard navigation on, Space presses the focused button, checkbox, or pop-up (K still plays).
+        if key == " ", NSApplication.shared.isFullKeyboardAccessEnabled, window.firstResponder is NSButton {
+            return false
+        }
+        switch key {
         case " ", "k":
             // Held down, it would flip on every repeat.
             if !event.isARepeat { togglePlay() }

@@ -54,6 +54,11 @@ private let playbackTurns: [(start: Double, end: Double)] = [
     #expect(ReviewTimeline.previousTurnStart(before: 21, starts: starts) == 10)
     #expect(ReviewTimeline.previousTurnStart(before: 1, starts: starts) == 0)
     #expect(ReviewTimeline.previousTurnStart(before: 3, starts: []) == 0)
+    // A short turn just before the one playing is not skipped.
+    #expect(ReviewTimeline.previousTurnStart(before: 10.6, starts: [0, 10, 10.5]) == 10)
+    #expect(ReviewTimeline.previousTurnStart(before: 10, starts: [0, 10, 10.5]) == 0)
+    // Turns starting together count once.
+    #expect(ReviewTimeline.previousTurnStart(before: 5.2, starts: [2, 5, 5]) == 2)
 }
 
 @Test func playbackWordRangesFollowTheShownText() throws {

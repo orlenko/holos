@@ -6545,7 +6545,8 @@ public enum SessionAudioComposition {
   speaks, when that changes.
 - Keys: Space (or K) play/pause, ←/→ (or J/L) 5 seconds back/ahead, ⌘← previous turn (the
   start of the playing one first), ⌘→ next turn — anywhere in the window except while
-  typing in a text field; ↑/↓ move selection; 1–9 assign the selection to the speaker
+  typing in a text field (with keyboard navigation on, Space presses a focused button
+  instead); Return in the turn list plays the selected turn; ↑/↓ move selection; 1–9 assign the selection to the speaker
   with that ordinal; ⌘' next uncertain; ⌘Z undo; ⌘F search; ⌘E export menu.
 - Menu "Speakers": Confirm All Suggestions, Find More Speakers… (explains that names
   carry over and turn-level changes do not), Label Speakers on My Microphone (call

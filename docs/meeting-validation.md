@@ -321,7 +321,10 @@ Use a meeting of at least 10 minutes with several speakers.
    speaker's row, not the name field): Space pauses and plays; ← and → move 5 seconds back and
    ahead (J and L too, K plays or pauses); ⌘→ goes to the next turn's start, ⌘← to the start of
    the turn playing and, pressed again right away, to the turn before. Holding Space does not
-   flip play and pause repeatedly. Click into the Search field or a speaker's name field and
+   flip play and pause repeatedly. In the turn list, ↓ then Return plays the selected turn from
+   its start. With Keyboard navigation on (System Settings › Keyboard), Tab to the "Learn
+   voices…" box and press Space: the box toggles and playback does not change. Click into the
+   Search field or a speaker's name field and
    type a sentence with spaces and arrow keys. Pass: the text gets the spaces and the caret
    moves; playback does not change.
 6. **Scrubber and speed.** Drag the scrubber: the position follows the knob and playback goes
