@@ -718,13 +718,14 @@ public enum NormalizedAlignment {
             self.fillers = fillers
             marks = words.map(NormalizedAlignment.compoundMark)
             let count = words.count
-            /// The run's words without its fillers, when it neither starts nor ends with one and has few inside.
-            func kept(_ start: Int, _ length: Int) -> [Int]? {
+            /// The run's words without its fillers, when it neither starts nor ends with one and has at most
+            /// `limit` inside (a whole spelled number takes all its fillers: `SpelledRuns` already skipped them).
+            func kept(_ start: Int, _ length: Int, innerFillers limit: Int = NormalizedAlignment.maxInnerFillers) -> [Int]? {
                 guard start >= 0, length > 0, start + length <= count, !fillers[start], !fillers[start + length - 1]
                 else { return nil }
                 let run = Array(start..<(start + length))
                 let words = run.filter { !fillers[$0] }
-                return run.count - words.count <= NormalizedAlignment.maxInnerFillers ? words : nil
+                return run.count - words.count <= limit ? words : nil
             }
             var numbers: [Range<Int>: EvalNormalization.NumberForm] = [:]
             // Spelled: each whole run inside the words, and its number without "plus" or "percent".
@@ -733,7 +734,7 @@ public enum NormalizedAlignment {
                 for range in Set([run, core]) where window.contains(range.lowerBound)
                     && window.contains(range.upperBound - 1) {
                     let local = (range.lowerBound - offset)..<(range.upperBound - offset)
-                    guard let indices = kept(local.lowerBound, local.count),
+                    guard let indices = kept(local.lowerBound, local.count, innerFillers: .max),
                           let form = EvalNormalization.number(indices.map { words[$0] }), !form.hasDigit
                     else { continue }
                     numbers[local] = form

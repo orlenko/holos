@@ -616,3 +616,9 @@ private func words(_ text: String) -> [String] { text.split(separator: " ").map(
     #expect(EvalNormalization.fillerFlags(words("twenty um mm")) == [false, true, true])
     #expect(EvalNormalization.fillerFlags(words("cent vingt mm")) == [false, false, false])
 }
+
+@Test func fairSpelledNumberTakesAllItsFillers() {
+    let result = WindowComparer.compare(track: "system", local: fairTimed(["pay", "twenty", "um", "uh", "er", "one"]),
+                                        cloud: fairUntimed("pay 21"), start: 0, end: 10)
+    #expect(result.normalized.edits == 0)
+}
