@@ -295,7 +295,7 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate {
             self?.perform { review in try await review.rejectSuggestion(speakerID: speakerID) }
         }
         sidebar.onConfirmAll = { [weak self] in self?.confirmAll() }
-        sidebar.onEditingSpeaker = { [weak self] speakerID in self?.review.speakerBeingNamed = speakerID }
+        review.speakerBeingNamed = { [weak self] in self?.sidebar.focusedSpeakerID }
 
         turnList.onAcceptHint = { [weak self] turnID in
             self?.perform { review in try await review.acceptTurnHint(turnID) }

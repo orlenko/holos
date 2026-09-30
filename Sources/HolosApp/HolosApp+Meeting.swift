@@ -990,6 +990,8 @@ extension HolosAppDelegate: NSMenuDelegate {
         }
         if !(await waitAtMost(limit, for: closing)) {
             Self.meetingLog.error("Quitting before \(windows.count, privacy: .public) review windows finished saving")
+            // Their voice work stops now, so no child process outlives the app with a render of the audio.
+            for window in windows { window.review.stopBackgroundWork() }
         }
     }
 

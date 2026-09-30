@@ -40,8 +40,6 @@ final class SpeakerSidebarView: NSView, NSTableViewDataSource, NSTableViewDelega
     /// "Not Maria" / "Not Jim".
     var onReject: ((String) -> Void)?
     var onConfirmAll: (() -> Void)?
-    /// A name field started (speaker ID) or stopped (nil) being edited.
-    var onEditingSpeaker: ((String?) -> Void)?
 
     private let confirmAllButton = NSButton(title: "Confirm All", target: nil, action: nil)
     private let table = NSTableView()
@@ -175,14 +173,20 @@ final class SpeakerSidebarView: NSView, NSTableViewDataSource, NSTableViewDelega
         return table.row(for: field) >= 0
     }
 
+    /// The speaker whose name field has the keyboard (typed in or not), nil when none has.
+    var focusedSpeakerID: String? {
+        guard let editor = window?.firstResponder as? NSTextView, let field = editor.delegate as? NSComboBox else {
+            return nil
+        }
+        return speakerID(for: field)
+    }
+
     func controlTextDidBeginEditing(_ notification: Notification) {
         editing = true
-        if let field = notification.object as? NSView { onEditingSpeaker?(speakerID(for: field)) }
     }
 
     func controlTextDidEndEditing(_ notification: Notification) {
         editing = false
-        onEditingSpeaker?(nil)
         let field = notification.object as? NSComboBox
         // After the field editor has let go of the keyboard (it still has it while this is sent).
         Task { [weak self] in

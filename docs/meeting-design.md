@@ -3767,8 +3767,9 @@ public struct SpeakerProfileDatabase: Codable, Sendable, Equatable {
     is left alone) and refused under the speaker lock when the journal has an unreadable
     line. The merged speaker's turns are first marked `excludeFromEnrollment` in the same
     batch: nobody confirmed them, and a voice sample never comes from an automatic match.
-    A speaker whose name field is being edited (`speakerBeingNamed`) is never merged, so
-    the name being typed still has its speaker at Return.
+    A speaker whose name field has the keyboard (`speakerBeingNamed`, asked when the merges
+    are worked out) is never merged, so the name being typed still has its speaker at
+    Return.
   - *Voice learning off the edit queue.* The window's links, "This is me", Confirm All,
     and Assign to a person save with `deferSamples: true`: the name is saved and shown at
     once, and `VoiceProfileService.syncSamples` runs afterwards in the background
@@ -3788,11 +3789,18 @@ public struct SpeakerProfileDatabase: Codable, Sendable, Equatable {
     (`syncSamples(enrollEpochs:)`): a person whose voice was asked for before a forget
     that has landed since is not enrolled ("Voices were forgotten while this one was being
     learned…"), since the forget is the later request; the epoch read at the start of the
-    sync is also held across its attempts. A request not run yet is withdrawn when its link
-    is undone or the same person is linked again with the footer box off (the newest link
-    of a person decides). `pause` and `close` also wait for a stopped voice pass's child to
-    exit, so a command never starts while it still reads the audio; while closing, the
-    cache is kept until the last sync has used it.
+    sync is also held across its attempts. The people enrolled are the ones the change
+    itself linked (`deferSamples: DeferredSamples`, filled once its lines are saved), not
+    whoever the labels name when the window rereads them. A request not run yet is kept
+    with the batch of the link that made it: undoing that link withdraws its request only
+    (another link's request for the same person stays), and linking the same person again
+    with the footer box off withdraws them all (the newest link of a person decides).
+    `pause`, `close` and a relabel from the window stop a running voice pass and wait for
+    its child to exit, so no command or second diarization runs while it still reads the
+    audio (a new pass follows a relabel); while closing, the cache is kept until the last
+    sync has used it. When quitting gives up waiting for a review (10 s), its voice work is
+    stopped (`stopBackgroundWork`) so no child outlives the app; a voice not learned by
+    then is not learned, and the name stays saved (confirm the person again to learn it).
   Tests: `meetingThresholdsAreCappedBelowRecognitions`,
   `meetingThresholdsFollowTheStoreOnlyForItsModel`, `aSpeakerSplitFromANamedOneIsSuggested`,
   `onlyVoicesWithinTheThresholdAreSuggested`, `nothingIsSuggestedBeforeAnybodyIsNamed`,
@@ -3803,6 +3811,8 @@ public struct SpeakerProfileDatabase: Codable, Sendable, Equatable {
   `theCacheServesCoveredTurnsOfTheHeadRunAndFallsBackOtherwise`, `turnSpansRoundTrip`,
   `nothingIsSuggestedWhileTheJournalHasAnUnreadableLine`,
   `aVoiceAskedForBeforeAForgetIsNotLearned`, `anUndoneOrNewerLinkTakesBackAVoiceNotLearnedYet`,
+  `undoingOneLinkKeepsAnotherLinksRequestToLearnTheVoice`,
+  `aDeferredLinkRecordsWhoItLinkedAndLearnsNothing`,
   `aLateStoreOfAnEarlierPassIsIgnored`, `aLearnerWaitsForThePassOrStopsWhenCancelled`,
   `namingASpeakerSuggestsTheSpeakersWithItsVoice`,
   `notJimOnAVoiceSuggestionIsSavedAndConfirmAllTakesTheRest`,

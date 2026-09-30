@@ -395,6 +395,39 @@ func anUndoneOrNewerLinkTakesBackAVoiceNotLearnedYet() async throws {
 }
 
 @Test(.timeLimit(.minutes(1))) @MainActor
+func undoingOneLinkKeepsAnotherLinksRequestToLearnTheVoice() async throws {
+    let temp = try TemporaryDirectory("voice")
+    defer { temp.remove() }
+    let store = try voiceStore(temp)
+    let fixture = try await SessionFixtures.labelledSession(in: temp.url, speakers: ["S1", "S2"], duration: 20)
+    let review = try await voiceOpen(fixture.session, store: store, extractor: VoiceFakeExtractor(voices: voiceMap),
+                                     analyse: false, sampleDelay: .seconds(3600))
+    try await review.setName("Jim", speakerID: s1)
+    try await review.setName("Jim", speakerID: s2)
+    try await review.undo()
+    #expect(review.speaker(s2)?.profileID == nil && review.speaker(s1)?.profileID != nil)
+    await review.close()
+    #expect(try voiceSamples(store, named: "Jim") == 1, "S1's link still asks for Jim's voice.")
+}
+
+@Test(.timeLimit(.minutes(1)))
+func aDeferredLinkRecordsWhoItLinkedAndLearnsNothing() async throws {
+    let temp = try TemporaryDirectory("voice")
+    defer { temp.remove() }
+    let store = try voiceStore(temp)
+    let fixture = try await SessionFixtures.labelledSession(in: temp.url, speakers: ["S1", "S2"], duration: 20)
+    let extractor = VoiceFakeExtractor(voices: voiceMap)
+    let deferred = DeferredSamples()
+    #expect(deferred.linkedPeople == nil)
+    _ = try await VoiceProfileService.link(session: fixture.session, speakerID: s1, to: .new(name: "Jim"),
+                                           view: try SessionFixtures.view(fixture.session), learnVoice: true,
+                                           extractor: extractor, store: store, deferSamples: deferred)
+    let jim = try #require(try store.load().profiles.first { $0.displayName == "Jim" })
+    #expect(deferred.linkedPeople == [jim.id])
+    #expect(extractor.callCount == 0 && jim.samples.isEmpty, "The caller learns the voice afterwards.")
+}
+
+@Test(.timeLimit(.minutes(1))) @MainActor
 func noVoicesAreWorkedOutUnlessAsked() async throws {
     let temp = try TemporaryDirectory("voice")
     defer { temp.remove() }

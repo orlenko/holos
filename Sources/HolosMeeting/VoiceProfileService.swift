@@ -8,6 +8,20 @@ import os
 /// Who a speaker is linked to: a known person, or a new one with this name.
 public enum ProfileTarget: Sendable, Equatable { case existing(profileID: String), new(name: String) }
 
+/// Passed as `deferSamples` to `VoiceProfileService.link`, `markSelf` and `confirmAll`: only the links are saved, and
+/// this records the people the call linked once its lines are saved, so the caller enrols exactly them when it
+/// brings the samples in step afterwards (not whoever the labels name by the time it rereads them).
+public final class DeferredSamples: Sendable {
+    private let state = OSAllocatedUnfairLock<Set<String>?>(initialState: nil)
+
+    public init() {}
+
+    func record(_ people: Set<String>) { state.withLock { $0 = people } }
+
+    /// The people linked, once the call saved its lines; nil before (or when it saved nothing).
+    public var linkedPeople: Set<String>? { state.withLock { $0 } }
+}
+
 /// People and their voices (docs/meeting-design.md §4.10, PR10). The only code that writes profiles and samples.
 ///
 /// Enrollment is asynchronous and the extractor is injected: its real implementations live in
@@ -59,7 +73,7 @@ public enum VoiceProfileService {
     /// this in the background, so a name is saved at once).
     public static func link(session: URL, speakerID: String, to target: ProfileTarget, view: SpeakerProjection,
                             learnVoice: Bool, extractor: (any VoiceSampleExtractor)?,
-                            store: SpeakerProfileStore, deferSamples: Bool = false) async throws -> SpeakerSessionSnapshot {
+                            store: SpeakerProfileStore, deferSamples: DeferredSamples? = nil) async throws -> SpeakerSessionSnapshot {
         let (profile, created) = try resolve(target, store: store)
         return try await linkPeople([(speakerID, profile)], created: created ? [profile.id] : [], session: session,
                                     view: view, enroll: learnVoice ? [profile.id] : [], extractor: extractor,
@@ -75,7 +89,7 @@ public enum VoiceProfileService {
     public static func confirmAll(session: URL, view: SpeakerProjection, learnVoices: Bool,
                                   extractor: (any VoiceSampleExtractor)?,
                                   store: SpeakerProfileStore, suggestions: [String: String]? = nil,
-                                  deferSamples: Bool = false) async throws -> SpeakerSessionSnapshot {
+                                  deferSamples: DeferredSamples? = nil) async throws -> SpeakerSessionSnapshot {
         // The suggestions are recognition decisions on the meeting's labels; with edits missing, they may contradict
         // a link or a "Not Jim" that could not be read. Read here to refuse early, and again under the speaker lock
         // before the lines are appended (`requireCompleteJournal`), where another Holos can no longer slip one in.
@@ -102,7 +116,7 @@ public enum VoiceProfileService {
     /// `deferSamples` as for `link`.
     public static func markSelf(session: URL, speakerID: String, view: SpeakerProjection,
                                 learnVoice: Bool, extractor: (any VoiceSampleExtractor)?,
-                                store: SpeakerProfileStore, deferSamples: Bool = false) async throws -> SpeakerSessionSnapshot {
+                                store: SpeakerProfileStore, deferSamples: DeferredSamples? = nil) async throws -> SpeakerSessionSnapshot {
         let (profile, created) = try store.update { database -> (SpeakerProfile, Bool) in
             if let me = database.profiles.first(where: \.isSelf) { return (me, false) }
             let me = SpeakerProfile(displayName: selfName, isSelf: true, provisional: true)
@@ -675,7 +689,7 @@ public enum VoiceProfileService {
                                    session: URL, view: SpeakerProjection, enroll: Set<String>,
                                    extractor: (any VoiceSampleExtractor)?, store: SpeakerProfileStore,
                                    requireCompleteJournal: Bool = false,
-                                   deferSamples: Bool = false) async throws -> SpeakerSessionSnapshot {
+                                   deferSamples: DeferredSamples? = nil) async throws -> SpeakerSessionSnapshot {
         let actions = links.flatMap { link -> [SpeakerEditAction] in
             [.linkProfile(speakerID: link.speakerID, profileID: link.profile.id),
              .rename(speakerID: link.speakerID, name: link.profile.displayName)]
@@ -721,11 +735,18 @@ public enum VoiceProfileService {
             // and the error is reported.
             takeUp(created, named: linked, store: store)
             // Deferred: the caller brings the samples in step once it has seen the error.
-            if deferSamples { throw error }
+            if let deferSamples {
+                deferSamples.record(Set(linked.keys))
+                throw error
+            }
             try await syncAfterSavedEdit(error, session: session, extractor: extractor, store: store, enroll: enroll)
         }
         takeUp(created, named: linked, store: store)
-        guard !deferSamples, !enroll.isEmpty || needsRefresh else { return snapshot }
+        if let deferSamples {
+            deferSamples.record(Set(linked.keys))
+            return snapshot
+        }
+        guard !enroll.isEmpty || needsRefresh else { return snapshot }
         do {
             try await syncSamples(session: session, extractor: extractor, store: store, enroll: enroll)
         } catch is CancellationError {
