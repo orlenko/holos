@@ -656,3 +656,22 @@ private func evalLocalDependencies(_ speech: FakeSpeechFactory, status: String =
     #expect(!SessionFixtures.exists(written.markdown))
     #expect(SessionFixtures.exists(currentFiles.markdown))
 }
+
+@Test func evalRefusesASessionThatWasNotFinishedProperly() async throws {
+    let temp = try TemporaryDirectory("eval")
+    defer { temp.remove() }
+    let session = try await SessionFixtures.makeSession(in: temp.url, audioSeconds: ["mic": 12], transcript: nil)
+    // A crashed recorder leaves the manifest as "recording" or "interrupted"; recovery may add unlisted audio.
+    let url = SessionPaths.manifest(session)
+    var object = try #require(JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any])
+    for status in [ArchiveStatus.recording, ArchiveStatus.interrupted] {
+        object["status"] = status
+        try JSONSerialization.data(withJSONObject: object).write(to: url)
+        #expect(throws: HolosError.self) {
+            _ = try CloudEvaluation.prepare(session: session, options: evalOptions(), vocabulary: evalNoVocabulary)
+        }
+        await #expect(throws: HolosError.self) {
+            _ = try await EvalLocal.run(session: session, options: .init(), vocabulary: nil)
+        }
+    }
+}

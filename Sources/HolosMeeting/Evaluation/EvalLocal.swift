@@ -187,6 +187,12 @@ public enum EvalLocal {
             throw HolosError.unavailable("This session is still recording; stop it first.")
         }
         let manifest = try SessionArchive.readManifest(at: session)
+        // A recording that stopped without finishing (a crash) may have saved audio its manifest does not list yet:
+        // recover it first, so every saved chunk is included.
+        guard ![ArchiveStatus.recording, ArchiveStatus.interrupted].contains(manifest.status) else {
+            throw HolosError.unavailable("This session was not finished properly; run voiceislocal session recover "
+                + "\(manifest.id) first, so all of its saved audio is included.")
+        }
         guard try !AudioDeletedRecord.isDeleted(session: session, sessionID: manifest.id) else {
             throw HolosError.invalidInput("This session's audio was deleted; there is nothing to transcribe.")
         }
