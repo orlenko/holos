@@ -202,6 +202,27 @@ private func canonical(_ text: String) -> String? {
     let track = EvalTerms.Track(track: "system", words: ["we", "use", "GPT", "four"], covered: [true, true, true, false])
     #expect(EvalTerms.count(terms, tracks: [track], normalized: true).map { "\($0.hits)/\($0.cloud)" } == ["0/1"])
     #expect(EvalTerms.count(terms, tracks: [track]).isEmpty)
+    // Never a prefix of a longer spelled number: "V twenty" of "V twenty one" is not "V20".
+    let v20 = EvalTerms.terms(wordList: ["V20"], corrections: [])
+    let longer = EvalTerms.Track(track: "system", words: ["we", "use", "V", "twenty", "one"],
+                                 covered: [true, true, true, true, true])
+    #expect(EvalTerms.count(v20, tracks: [longer], normalized: true).isEmpty)
+}
+
+@Test func fairAnEditMovedOntoAMatchedWordStaysForReview() {
+    let result = WindowComparer.compare(track: "system", local: fairTimed(["we", "use", "TestFlight", "test", "um",
+                                                                           "daily"]),
+                                        cloud: fairUntimed("we use test flight daily"), start: 0, end: 10)
+    #expect(result.normalized.edits == 1)
+    #expect(result.passages.filter { $0.group != .caseOrPunctuation }.allSatisfy { !$0.formattingOnly })
+}
+
+@Test func fairAmbiguousNumberFormsStayDifferent() {
+    #expect(canonical("0,125%") == "0.125%")
+    #expect(NormalizedAlignment.align(["0,125%"], ["125%"]).contains { $0.isEdit })
+    // "dix" joins only sept, huit, neuf: "dix deux" is no French number.
+    #expect(canonical("dix deux") == nil)
+    #expect(canonical("dix-neuf") == "19")
 }
 
 // MARK: - Window scores and passages

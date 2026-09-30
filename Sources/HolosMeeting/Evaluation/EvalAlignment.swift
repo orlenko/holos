@@ -697,13 +697,20 @@ public enum WindowComparer {
                 case .localOnly(let i): touchedLocal.insert(localIndices[i])
                 }
             }
+            // An edit on a word the raw alignment matched between two passages ("TestFlight test" against "test
+            // flight") belongs to no passage: then none of the stretch's passages is formatting only, so the edit
+            // stays in front of the reviewer.
+            let passagePositions = Set(stretch.flatMap { wordRuns[$0].positions })
+            let gapLocal = Set(positions.filter { !passagePositions.contains($0) }.compactMap { localIndex(ops[$0]) })
+            let gapCloud = Set(positions.filter { !passagePositions.contains($0) }.compactMap { cloudIndex(ops[$0]) })
+            let gapTouched = !touchedLocal.isDisjoint(with: gapLocal) || !touchedCloud.isDisjoint(with: gapCloud)
             for index in stretch {
                 let run = wordRuns[index]
                 let touched = run.positions.contains { position in
                     localIndex(ops[position]).map(touchedLocal.contains) == true
                         || cloudIndex(ops[position]).map(touchedCloud.contains) == true
                 }
-                result.passages[run.passage].formattingOnly = !touched
+                result.passages[run.passage].formattingOnly = !touched && !gapTouched
             }
         }
         result.normalized.echoLocalWords = result.score.echoLocalWords

@@ -83,6 +83,24 @@ public enum EvalTerms {
         occurrences(of: [term], words: keys, keys: keys, spelled: keys.map { _ in false })
     }
 
+    /// Whether the run starts or ends inside a longer spelled number ("V twenty" of "V twenty one" is not "V20").
+    static func cutsSpelledNumber(_ words: [String], _ range: Range<Int>) -> Bool {
+        func spelledGroup(_ indices: [Int]) -> [String] {
+            Array(indices.prefix { NormalizedAlignment.isSpelledCardinal(words[$0]) }.map { words[$0] })
+        }
+        if range.upperBound < words.count {
+            let tail = spelledGroup(Array(range.reversed())).reversed()
+            if !tail.isEmpty, let longer = EvalNormalization.number(Array(tail) + [words[range.upperBound]]),
+               !longer.hasDigit { return true }
+        }
+        if range.lowerBound > 0 {
+            let head = spelledGroup(Array(range))
+            if !head.isEmpty, let longer = EvalNormalization.number([words[range.lowerBound - 1]] + head),
+               !longer.hasDigit { return true }
+        }
+        return false
+    }
+
     /// Longest run of cloud words an occurrence may take.
     static let maxOccurrenceWords = 8
 
@@ -103,7 +121,8 @@ public enum EvalTerms {
                 hasSpelled = hasSpelled || spelled[end]
                 end += 1
                 if forms.contains(joined) { match = end; break }
-                if hasSpelled, !Set(NormalizedAlignment.compoundForms(Array(words[start..<end]))).isDisjoint(with: forms) {
+                if hasSpelled, !Set(NormalizedAlignment.compoundForms(Array(words[start..<end]))).isDisjoint(with: forms),
+                   !cutsSpelledNumber(words, start..<end) {
                     match = end
                     break
                 }

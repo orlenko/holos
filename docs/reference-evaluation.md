@@ -299,7 +299,7 @@ passages, the review page and the gold keep the words as written.
   ("first"/"1st", "twenty first"/"21st"; "premier"/"1er", "deuxième"/"2e"), decimals
   ("three point five"/"3.5"; "trois virgule cinq"/"3,5"), "plus" ("plus
   30"/"+30") and percent ("thirty percent"/"30%", "pour cent"). Digits may
-  carry group commas ("1,000"/"1000"); a minus, a currency, a time or a range
+  carry group commas ("1,000"/"1000"; "0,125" is a decimal); a minus, a currency, a time or a range
   is compared as written. A spelled number is only the same as digits, never
   as another spelled number, so "one" and "un", or "first" and "premier",
   remain different words, and so do different numbers, a cardinal and an
@@ -334,7 +334,8 @@ leave out and a number or compound run matches its other spelling at no cost
 (a stretch too long for that pairs its words in order). Its remaining edits
 make the normalized WER, so every normalized error is in a passage the review
 page shows; a passage none of whose words such an edit touches is formatting
-only. Matched fillers are left out of the word counts too. In the Terms
+only (and none of a stretch's passages is when an edit falls on a matched
+word between them). Matched fillers are left out of the word counts too. In the Terms
 section, the normalized comparison also finds a term written with its numbers
 spelled the other way ("GPT four" for "GPT-4").
 

@@ -150,7 +150,7 @@ public enum EvalNormalization {
             // "1,000" and "1,000.5": groups of three digits, the last one maybe followed by a decimal part.
             let whole = group.split(separator: ".", omittingEmptySubsequences: false)
             return whole[0].count == 3 && whole[0].allSatisfy(isDigit)
-        }), groups[0].count <= 3, groups[0].allSatisfy(isDigit),
+        }), groups[0].count <= 3, groups[0].allSatisfy(isDigit), groups[0].first != "0",
            groups.dropLast().allSatisfy({ !$0.contains(".") }) {
             let joined = groups.joined()
             let parts = joined.split(separator: ".", omittingEmptySubsequences: false)
@@ -373,7 +373,7 @@ public enum EvalNormalization {
                 previous = .and
             } else if let unit = frenchUnits[word], unit > 0 {
                 // After "dix" only in "dix-sept", "soixante-dix-neuf".
-                let afterTen = previous == .teen && lastWord == "dix"
+                let afterTen = previous == .teen && lastWord == "dix" && (7...9).contains(unit)
                 guard [.start, .tens, .hundred, .scale, .and].contains(previous) || afterTen else { return nil }
                 current += unit; previous = .unit
             } else if let teen = frenchTeens[word] {
