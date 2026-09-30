@@ -3801,6 +3801,15 @@ public struct SpeakerProfileDatabase: Codable, Sendable, Equatable {
     sync has used it. When quitting gives up waiting for a review (10 s), its voice work is
     stopped (`stopBackgroundWork`) so no child outlives the app; a voice not learned by
     then is not learned, and the name stays saved (confirm the person again to learn it).
+    A request made after a forget replaces the person's earlier requests rather than
+    joining them, so undoing it cannot leave a pre-forget request standing. "Not Jim" saves
+    the person the row showed, even when a voice match has replaced the suggestion since.
+  - *Known limits.* Labelling a meeting again carries names and links to the new speakers
+    (§4.9) but not `excludeFromEnrollment`, so after an automatic merge and a relabel the
+    merged speech can reach the person's sample on the next sync. Automatic merging is off
+    by default for this reason among others. A sample sync that fails while the window
+    closes is logged but not shown (the window is gone); reopening the review does not
+    retry it.
   Tests: `meetingThresholdsAreCappedBelowRecognitions`,
   `meetingThresholdsFollowTheStoreOnlyForItsModel`, `aSpeakerSplitFromANamedOneIsSuggested`,
   `onlyVoicesWithinTheThresholdAreSuggested`, `nothingIsSuggestedBeforeAnybodyIsNamed`,

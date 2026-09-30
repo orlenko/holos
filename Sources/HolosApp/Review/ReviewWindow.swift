@@ -291,8 +291,8 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate {
         sidebar.onMerge = { [weak self] from, into in
             self?.perform { review in try await review.merge(from, into: into) }
         }
-        sidebar.onReject = { [weak self] speakerID in
-            self?.perform { review in try await review.rejectSuggestion(speakerID: speakerID) }
+        sidebar.onReject = { [weak self] speakerID, profileID in
+            self?.perform { review in try await review.rejectSuggestion(speakerID: speakerID, profileID: profileID) }
         }
         sidebar.onConfirmAll = { [weak self] in self?.confirmAll() }
         review.speakerBeingNamed = { [weak self] in self?.sidebar.focusedSpeakerID }

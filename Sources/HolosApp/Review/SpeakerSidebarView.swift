@@ -37,8 +37,8 @@ final class SpeakerSidebarView: NSView, NSTableViewDataSource, NSTableViewDelega
     var onMerge: ((String, String) -> Void)?
     /// Confirm a suggestion: (speaker ID, profile ID).
     var onConfirm: ((String, String) -> Void)?
-    /// "Not Maria" / "Not Jim".
-    var onReject: ((String) -> Void)?
+    /// "Not Maria" / "Not Jim": (speaker ID, the person the row shows).
+    var onReject: ((String, String?) -> Void)?
     var onConfirmAll: (() -> Void)?
 
     private let confirmAllButton = NSButton(title: "Confirm All", target: nil, action: nil)
@@ -240,7 +240,10 @@ final class SpeakerSidebarView: NSView, NSTableViewDataSource, NSTableViewDelega
     }
 
     @objc private func reject(_ sender: NSButton) {
-        if let speakerID = speakerID(for: sender) { onReject?(speakerID) }
+        guard let speakerID = speakerID(for: sender), let row = rows.first(where: { $0.speaker.id == speakerID }) else {
+            return
+        }
+        onReject?(speakerID, row.suggestion?.profileID ?? row.automaticProfileID)
     }
 
     @objc private func confirmAll() { onConfirmAll?() }

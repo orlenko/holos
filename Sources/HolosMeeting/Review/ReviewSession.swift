@@ -165,6 +165,8 @@ public struct ReviewWord: Sendable, Equatable {
     private var voiceMatchKey: VoiceMatchKey?
     /// A pass a maintenance pause stopped, until its child has exited.
     private var stoppedPass: Task<Void, Never>?
+    /// `stopBackgroundWork` was called (the app is quitting): no pass or sample sync starts again.
+    private var backgroundStopped = false
     /// A name was given since automatic merging last looked (`autoMergeVoices`).
     private var mergeArmed = false
     /// Voice samples owe a sync (`syncSamples`), for these people to enrol besides; `sampleRequests` counts
@@ -627,9 +629,13 @@ public struct ReviewWord: Sendable, Equatable {
     }
 
     /// "Not Maria" for the speaker's suggestion, or "Not Jim" for its automatic name, in this meeting only.
-    public func rejectSuggestion(speakerID: String) async throws {
+    ///
+    /// `profileID`: the person the window showed ("Not Jim"), which the suggestion may no longer name by the time the
+    /// click arrives (a voice match can replace recognition's); without it, the current suggestion's.
+    public func rejectSuggestion(speakerID: String, profileID shown: String? = nil) async throws {
         guard let speaker = speaker(speakerID) else { throw Self.noSpeaker(speakerID) }
-        guard let profileID = suggestion(for: speaker.id)?.profileID ?? automaticProfileID(for: speakerID) else {
+        guard let profileID = shown ?? suggestion(for: speaker.id)?.profileID ?? automaticProfileID(for: speakerID)
+        else {
             throw HolosError.invalidInput("This speaker has no suggested name to reject.")
         }
         try await apply([.rejectProfile(speakerID: speakerID, profileID: profileID)])
@@ -775,6 +781,7 @@ public struct ReviewWord: Sendable, Equatable {
     /// children exit (deleting their renders) rather than outlive the app. A voice not learned yet is not learned; the
     /// names are saved.
     public func stopBackgroundWork() {
+        backgroundStopped = true
         sampleTimer?.cancel()
         sampleTimer = nil
         sampleRun?.cancel()
@@ -1122,7 +1129,9 @@ public struct ReviewWord: Sendable, Equatable {
         if learn {
             for profileID in people {
                 var request = sampleEnroll[profileID] ?? EnrollRequest(epoch: epoch, batches: [])
-                request.epoch = epoch
+                // Requests made before a forget that has landed since are not carried by this newer one: undoing
+                // this link must not leave them standing under its epoch.
+                if request.epoch != epoch { request = EnrollRequest(epoch: epoch, batches: []) }
                 request.batches.insert(batch ?? "")
                 sampleEnroll[profileID] = request
             }
@@ -1277,7 +1286,7 @@ public struct ReviewWord: Sendable, Equatable {
     private func scheduleSampleSync() {
         sampleTimer?.cancel()
         sampleTimer = nil
-        guard samplesOwed, !closed, pauses.isEmpty, queue.isEmpty, sampleRun == nil else { return }
+        guard samplesOwed, !closed, !backgroundStopped, pauses.isEmpty, queue.isEmpty, sampleRun == nil else { return }
         let delay = sampleDelay
         sampleTimer = Task { [weak self] in
             try? await Task.sleep(for: delay)
@@ -1295,7 +1304,7 @@ public struct ReviewWord: Sendable, Equatable {
     }
 
     private func startSampleSync() {
-        guard samplesOwed, sampleRun == nil, let store = profiles else { return }
+        guard samplesOwed, sampleRun == nil, !backgroundStopped, let store = profiles else { return }
         let enroll = sampleEnroll
         let request = sampleRequests
         let session = self.session
@@ -1358,7 +1367,8 @@ public struct ReviewWord: Sendable, Equatable {
     /// analysed, there is no extractor, the audio was deleted, or a command holds the review.
     private func startVoiceAnalysis() {
         dropVoices()
-        guard analyseVoices, !closed, pauses.isEmpty, !isRelabelling, let base = baseExtractor, let run = snapshot.run,
+        guard analyseVoices, !closed, !backgroundStopped, pauses.isEmpty, !isRelabelling, let base = baseExtractor,
+              let run = snapshot.run,
               let projection = snapshot.projection, !snapshot.audioDeleted else { return }
         let diarized = Set(run.tracks.filter { $0.policy == .diarized }.map(\.track))
         var parts: [(track: String, turns: [TurnRef])] = []
