@@ -100,6 +100,13 @@ private func canonical(_ text: String) -> String? {
     let scored = NormalizedAlignment.score(ops, a: local, b: cloud)
     #expect(scored.score.localWords == 3 && scored.score.cloudWords == 3 && scored.score.edits == 0)
     #expect(scored.counts.fillersLocal == 2 && scored.counts.fillersCloud == 1)
+    // "mm" after a number is millimetres, also when the number is just before the passage.
+    #expect(EvalNormalization.fillerFlags(["5", "mm", "mm"]) == [false, false, true])
+    #expect(NormalizedAlignment.align(["mm"], [], before: ("5", "5")) == [.localOnly(0)])
+    let millimetres = WindowComparer.compare(track: "system", local: fairTimed(["cut", "5", "mm"]),
+                                             cloud: fairUntimed("cut 5"), start: 0, end: 10)
+    #expect(millimetres.normalized.edits == 1)
+    #expect(millimetres.passages.map(\.formattingOnly) == [false])
     // A filler is never taken for the word the other side has there.
     #expect(NormalizedAlignment.align(["uh"], ["a"]) == [.cloudOnly(0), .fillerLocal(0)])
 }

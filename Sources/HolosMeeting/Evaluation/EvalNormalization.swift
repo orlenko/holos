@@ -22,6 +22,17 @@ public enum EvalNormalization {
         return fillers.contains(collapsed)
     }
 
+    /// `isFiller` for each of `words`, except "mm" right after a number, which is millimetres ("5 mm");
+    /// `previous` is the word before the first.
+    public static func fillerFlags(_ words: [String], previous: String? = nil) -> [Bool] {
+        words.indices.map { index in
+            guard isFiller(words[index]) else { return false }
+            let before = index > 0 ? words[index - 1] : previous
+            if EvalText.key(words[index]) == "mm", before?.contains(where: \.isNumber) == true { return false }
+            return true
+        }
+    }
+
     // MARK: - Numbers
 
     /// A number as the normalized comparison compares it: "+21", "3.5", "1º" (an ordinal), "30%". `hasDigit` says
@@ -446,9 +457,9 @@ public enum NormalizedAlignment {
         /// numbers in digits ("V one": "v1", "V twenty one": "v21").
         var compounds: [[[String]]]
 
-        init(_ words: [String]) {
+        init(_ words: [String], previous: String? = nil) {
             let keys = words.map(EvalText.key)
-            let fillers = words.map(EvalNormalization.isFiller)
+            let fillers = EvalNormalization.fillerFlags(words, previous: previous)
             self.keys = keys
             self.fillers = fillers
             let count = words.count
@@ -534,7 +545,8 @@ public enum NormalizedAlignment {
     /// A minimum-edit alignment where fillers cost nothing to leave out, a number matches its other spelling, and a run
     /// of words matches the one word it is written as on the other side. Substitution, insertion, and deletion cost
     /// 1; a filler is never substituted. On a tie: a match, a join, a filler, a substitution, then a local-only word.
-    public static func align(_ a: [String], _ b: [String]) -> [NormalizedOp] {
+    public static func align(_ a: [String], _ b: [String],
+                             before: (local: String?, cloud: String?) = (nil, nil)) -> [NormalizedOp] {
         let n = a.count, m = b.count
         if (n + 1) * (m + 1) > maxCells {
             return EvalAlignment.align(a, b).map { op in
@@ -546,7 +558,7 @@ public enum NormalizedAlignment {
                 }
             }
         }
-        let left = Side(a), right = Side(b)
+        let left = Side(a, previous: before.local), right = Side(b, previous: before.cloud)
         let width = m + 1
         let infinity = Int32.max / 2
         var cost = [Int32](repeating: infinity, count: (n + 1) * width)
@@ -631,7 +643,11 @@ public enum NormalizedAlignment {
 
     /// The scores of a normalized alignment `ops` of `a` with `b`: words (fillers left out), edits, and what was taken
     /// as the same.
-    static func score(_ ops: [NormalizedOp], a: [String], b: [String]) -> (score: EvalScore, counts: NormalizationCounts) {
+    static func score(_ ops: [NormalizedOp], a: [String], b: [String],
+                      before: (local: String?, cloud: String?) = (nil, nil))
+        -> (score: EvalScore, counts: NormalizationCounts) {
+        let fillersA = EvalNormalization.fillerFlags(a, previous: before.local)
+        let fillersB = EvalNormalization.fillerFlags(b, previous: before.cloud)
         var score = EvalScore()
         var counts = NormalizationCounts()
         for op in ops {
@@ -641,8 +657,8 @@ public enum NormalizedAlignment {
                 if kind == .number { counts.numbers += 1 } else if a[i] != b[j] { score.caseOrPunctuationOnly += 1 }
             case .join(let local, let cloud, let kind):
                 // Fillers inside the run ("twenty um one") are left out as fillers.
-                let localFillers = local.filter { EvalNormalization.isFiller(a[$0]) }.count
-                let cloudFillers = cloud.filter { EvalNormalization.isFiller(b[$0]) }.count
+                let localFillers = local.filter { fillersA[$0] }.count
+                let cloudFillers = cloud.filter { fillersB[$0] }.count
                 counts.fillersLocal += localFillers; counts.fillersCloud += cloudFillers
                 score.localWords += local.count - localFillers; score.cloudWords += cloud.count - cloudFillers
                 score.matches += 1

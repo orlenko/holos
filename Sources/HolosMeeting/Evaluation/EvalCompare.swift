@@ -307,7 +307,7 @@ public enum EvalCompare {
             report: CompareReport.TrackReport(track: track, score: result.score, groups: groups, warnings: warnings,
                                               normalized: result.normalized, normalization: result.normalization),
             passages: result.passages, cloud: allCloud, window: result,
-            ignorable: local.map { $0.echo || EvalNormalization.isFiller($0.text) })
+            ignorable: zip(local, EvalNormalization.fillerFlags(local.map(\.text))).map { $0.echo || $1 })
     }
 
     private static func shifted(_ op: AlignmentOp, local: Int, cloud: Int) -> AlignmentOp {

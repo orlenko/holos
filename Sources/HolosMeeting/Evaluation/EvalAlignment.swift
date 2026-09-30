@@ -565,8 +565,11 @@ public enum WindowComparer {
                 let localIndices = positions.compactMap { localIndex(ops[$0]) }
                 let cloudIndices = positions.compactMap { cloudIndex(ops[$0]) }
                 let a = localIndices.map { local[$0].text }, b = cloudIndices.map { cloud[$0].text }
-                let normalizedOps = NormalizedAlignment.align(a, b)
-                let scored = NormalizedAlignment.score(normalizedOps, a: a, b: b)
+                // The words just before, for context ("mm" after "5" is millimetres, not a filler).
+                let before = (local: previousLocalIndex[positions[0]].map { local[$0].text },
+                              cloud: cloudIndices.first.flatMap { $0 > 0 ? cloud[$0 - 1].text : nil })
+                let normalizedOps = NormalizedAlignment.align(a, b, before: before)
+                let scored = NormalizedAlignment.score(normalizedOps, a: a, b: b, before: before)
                 result.normalized.add(scored.score)
                 result.normalization.add(scored.counts)
                 made.formattingOnly = scored.score.edits == 0
@@ -609,7 +612,7 @@ public enum WindowComparer {
                 result.cloudEquivalent[j] = true
                 result.cloudMatchedSpans[j] = i..<(i + 1)
                 result.cloudEquivalentSpans[j] = i..<(i + 1)
-                if EvalNormalization.isFiller(local[i].text) {
+                if EvalNormalization.fillerFlags([local[i].text], previous: i > 0 ? local[i - 1].text : nil)[0] {
                     result.normalization.fillersLocal += 1; result.normalization.fillersCloud += 1
                 } else {
                     result.normalized.localWords += 1; result.normalized.cloudWords += 1

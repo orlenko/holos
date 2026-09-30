@@ -12,7 +12,7 @@ public struct LocalRunRecord: Codable, Sendable, Equatable {
         public var audioFingerprint: String
         /// SHA-256 of the track's chunk files' bytes, in order: the chunk list could stay while a file's contents
         /// change, and a resumed run never joins transcriptions of different audio.
-        public var contentSHA256: String
+        public var contentSHA256: String?
         public var seconds: Double
     }
 
