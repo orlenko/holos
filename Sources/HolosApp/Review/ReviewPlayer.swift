@@ -40,6 +40,9 @@ final class ReviewPlayer {
 
     private var player: AVPlayer?
     private var timeObserver: Any?
+    /// Watches whether AVFoundation plays: it pauses by itself at the end of the audio (or when the output device
+    /// goes away), sometimes after the last periodic time.
+    private var statusObservation: NSKeyValueObservation?
     /// Builds the composition; done (and empty) once it delivered, failed or not, so `load` can try again.
     private let loader = LatestLoad<AVMutableComposition>()
     /// Clips still to play after the current one, and where the current one stops.
@@ -145,6 +148,8 @@ final class ReviewPlayer {
         player?.pause()
         if let timeObserver, let player { player.removeTimeObserver(timeObserver) }
         timeObserver = nil
+        statusObservation?.invalidate()
+        statusObservation = nil
         player = nil
         pendingClips = []
         stopAt = nil
@@ -166,6 +171,9 @@ final class ReviewPlayer {
         timeObserver = player.addPeriodicTimeObserver(forInterval: CMTime(value: 1, timescale: 10),
                                                       queue: .main) { [weak self] time in
             MainActor.assumeIsolated { self?.tick(time) }
+        }
+        statusObservation = player.observe(\.timeControlStatus) { [weak self] _, _ in
+            Task { @MainActor in self?.statusChanged() }
         }
         self.player = player
         let seconds = composition.duration.seconds
@@ -210,6 +218,20 @@ final class ReviewPlayer {
 
     private var seekGeneration = 0
     private var seeking = false
+
+    /// AVFoundation started or stopped playing: `isPlaying` follows what it does now (read when this runs, so a
+    /// change reported before a newer `play` is never taken for the current one), and the play head where it stopped.
+    private func statusChanged() {
+        guard let player else { return }
+        let playing = player.timeControlStatus != .paused
+        guard playing != isPlaying else { return }
+        isPlaying = playing
+        if !playing, !seeking {
+            let seconds = player.currentTime().seconds
+            if seconds.isFinite { currentTime = seconds }
+        }
+        onChange?()
+    }
 
     private func tick(_ time: CMTime) {
         guard let player, !seeking else { return }

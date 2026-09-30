@@ -120,8 +120,6 @@ final class TurnTextView: NSTextView {
     private var playingWord: Int?
     /// Plays from a session time: VoiceOver's "Play from …" actions, one per word (clicks go through the table).
     var onPlay: ((Double) -> Void)?
-    /// At most this many word actions (a very long turn keeps its first words).
-    static let maximumWordActions = 300
     private var textColorShown: NSColor = .labelColor
     /// The root of this view's text system (it keeps the layout manager and the container): a text view made with
     /// its own container does not own its storage.
@@ -195,7 +193,7 @@ final class TurnTextView: NSTextView {
     /// when asked for, never announced.
     override func accessibilityCustomActions() -> [NSAccessibilityCustomAction]? {
         var actions: [NSAccessibilityCustomAction] = []
-        for (index, start) in wordStarts.enumerated().prefix(Self.maximumWordActions) {
+        for (index, start) in wordStarts.enumerated() {
             let word = index < wordTexts.count ? wordTexts[index].trimmingCharacters(in: .whitespacesAndNewlines) : ""
             let name = "Play from “\(word)” (\(TimeFormat.clock(start)))"
             actions.append(NSAccessibilityCustomAction(name: name) { [weak self] in
@@ -479,8 +477,14 @@ final class TurnListView: NSView, NSTableViewDataSource, NSTableViewDelegate {
         let visible = table.visibleRect
         var target = table.rect(ofRow: row)
         if target.height > visible.height - 24 {
-            guard let cell = cell(forTurn: turnID), let word = playingWord,
-                  let wordRect = cell.bodyText.rect(ofWord: word) else {
+            // The row's view is made (and laid out) when it is off screen, so the word can be found in it.
+            guard let word = playingWord,
+                  let cell = table.view(atColumn: 0, row: row, makeIfNecessary: true) as? TurnCellView else {
+                if !visible.intersects(target) { table.scrollRowToVisible(row) }
+                return
+            }
+            cell.layoutSubtreeIfNeeded()
+            guard let wordRect = cell.bodyText.rect(ofWord: word) else {
                 if !visible.intersects(target) { table.scrollRowToVisible(row) }
                 return
             }

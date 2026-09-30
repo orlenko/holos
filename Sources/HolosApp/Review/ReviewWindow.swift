@@ -290,18 +290,20 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate {
         row.spacing = 12
         row.alignment = .centerY
         row.edgeInsets = NSEdgeInsets(top: 6, left: 8, bottom: 6, right: 10)
-        row.setAccessibilityElement(true)
-        row.setAccessibilityRole(.group)
-        row.setAccessibilityLabel("Playback")
-        let box = NSBox()
-        box.boxType = .custom
-        box.borderColor = .separatorColor
-        box.borderWidth = 1
-        box.cornerRadius = 6
-        box.fillColor = .controlBackgroundColor
-        box.contentViewMargins = .zero
-        box.contentView = row
-        return box
+        row.translatesAutoresizingMaskIntoConstraints = false
+        let bar = PlaybackBarView()
+        bar.setAccessibilityElement(true)
+        bar.setAccessibilityRole(.group)
+        bar.setAccessibilityLabel("Playback")
+        bar.addSubview(row)
+        // The controls give the bar its height.
+        NSLayoutConstraint.activate([
+            row.leadingAnchor.constraint(equalTo: bar.leadingAnchor),
+            row.trailingAnchor.constraint(equalTo: bar.trailingAnchor),
+            row.topAnchor.constraint(equalTo: bar.topAnchor),
+            row.bottomAnchor.constraint(equalTo: bar.bottomAnchor),
+        ])
+        return bar
     }
 
     private func wire() {
@@ -1001,6 +1003,18 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate {
         let cleaned = name.map { "/:\\\n\r\t".contains($0) ? "-" : $0 }
         let text = String(cleaned).trimmingCharacters(in: .whitespacesAndNewlines)
         return text.isEmpty ? "Transcript" : String(text.prefix(100))
+    }
+}
+
+/// The playback bar's band: a rounded background with a hairline border, in the window's colors.
+private final class PlaybackBarView: NSView {
+    override func draw(_ dirtyRect: NSRect) {
+        let path = NSBezierPath(roundedRect: bounds.insetBy(dx: 0.5, dy: 0.5), xRadius: 6, yRadius: 6)
+        NSColor.controlBackgroundColor.setFill()
+        path.fill()
+        NSColor.separatorColor.setStroke()
+        path.lineWidth = 1
+        path.stroke()
     }
 }
 
