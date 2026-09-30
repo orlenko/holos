@@ -641,6 +641,13 @@ private func evalLocalDependencies(_ speech: FakeSpeechFactory, status: String =
     #expect(candidate.transcriptID == record.transcriptID && candidate.transcriptID != transcript.id)
     #expect(candidate.terms?.map { "\($0.term) \($0.hits)/\($0.cloud)" } == ["Kubernetes 1/1"])
     #expect(candidate.passages.filter(\.needsReview).isEmpty)
+    // A local run of other audio is never compared with the cloud run.
+    var other = record
+    other.tracks[0].audioFingerprint = "other"
+    let mismatch = #expect(throws: HolosError.self) {
+        _ = try EvalCompare.compare(session: session, run: run, local: .candidate(other), terms: terms)
+    }
+    #expect(mismatch?.localizedDescription.contains("different mic audio") == true)
     let written = try EvalCompare.write(candidate, session: session)
     #expect(written.markdown.deletingLastPathComponent().lastPathComponent == record.id)
     #expect(SessionFixtures.text(written.markdown).contains("local run \(record.id)"))
@@ -655,6 +662,35 @@ private func evalLocalDependencies(_ speech: FakeSpeechFactory, status: String =
     #expect(try EvalStore.deleteRun(record.id, in: session))
     #expect(!SessionFixtures.exists(written.markdown))
     #expect(SessionFixtures.exists(currentFiles.markdown))
+}
+
+@Test func evalLocalKeepsASilentTrackButRefusesALanguageThatHeardNothing() async throws {
+    let temp = try TemporaryDirectory("eval")
+    defer { temp.remove() }
+    let transcript = SessionFixtures.transcript([SessionFixtures.segment(["hello", "team"], track: "mic", start: 0.5)])
+    let session = try await SessionFixtures.makeSession(in: temp.url, source: .microphoneAndSystem,
+                                                        audioSeconds: ["mic": 4, "system": 4], transcript: transcript)
+    let heard = SessionFixtures.segment(["hello", "team"], track: nil, start: 0.5)
+
+    // Nothing heard on any track, while the meeting's transcript has words: refused, and nothing saved.
+    let deaf = FakeSpeechFactory([FakeSpeechScript(segments: []), FakeSpeechScript(segments: [])])
+    let error = await #expect(throws: HolosError.self) {
+        _ = try await EvalLocal.run(session: session, options: .init(), vocabulary: nil,
+                                    dependencies: evalLocalDependencies(deaf),
+                                    now: Date(timeIntervalSince1970: 1_790_000_000))
+    }
+    #expect(error?.localizedDescription.contains("No words were recognized") == true)
+    let id = try #require(EvalLocal.runIDs(in: session).first)
+    #expect(EvalLocal.savedParts(try #require(try EvalLocal.record(id, in: session)), in: session) == 0)
+
+    // The same command tries both tracks again; a silent system track is a finished part.
+    let speech = FakeSpeechFactory([FakeSpeechScript(segments: [heard]), FakeSpeechScript(segments: [])])
+    let record = try await EvalLocal.run(session: session, options: .init(), vocabulary: nil,
+                                         dependencies: evalLocalDependencies(speech))
+    #expect(record.id == id && record.completedAt != nil && speech.calls.count == 2)
+    #expect(EvalLocal.savedParts(record, in: session) == 2)
+    let candidate = try EvalLocal.transcript(of: record, in: session)
+    #expect(candidate.segments.map(\.text) == ["hello team"])
 }
 
 @Test func evalRefusesASessionThatWasNotFinishedProperly() async throws {

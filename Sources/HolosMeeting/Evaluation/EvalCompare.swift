@@ -202,6 +202,17 @@ public enum EvalCompare {
                                                  vocabulary: "vocabulary.json", vocabularyCount: recorded.count,
                                                  madeAt: current.createdAt)
         case .candidate(let record):
+            // Both runs must have transcribed the same audio, track by track.
+            for plan in run.tracks {
+                guard let track = record.tracks.first(where: { $0.track == plan.track }) else {
+                    throw HolosError.invalidInput("Local run \(record.id) has no \(plan.track) track, which run "
+                        + "\(run.id) has.")
+                }
+                guard track.audioFingerprint == plan.audioFingerprint else {
+                    throw HolosError.invalidInput("Local run \(record.id) and run \(run.id) used different "
+                        + "\(plan.track) audio; make a new local run with voiceislocal eval local.")
+                }
+            }
             transcript = try EvalLocal.transcript(of: record, in: session)
             version = CompareReport.LocalVersion(source: record.id, languages: record.languages,
                                                  vocabulary: record.vocabularySource,

@@ -284,14 +284,13 @@ public enum EvalLocal {
         if isNew { try EvalStore.write(record, to: EvalPaths.localRecord(record.id, in: session)) }
         progress("Local run \(record.id): \(record.partCount - missing.count) of \(record.partCount) track "
             + "transcriptions saved; \(record.vocabulary.count) vocabulary strings.")
-        // Tracks whose current transcript has words: a transcription of one that comes back empty failed rather than
-        // heard silence (as the languages stage treats it), and is never saved as a finished part.
+        // A language whose transcription recognized no words on any track, where the current transcript has some (or
+        // where there is none), failed rather than heard silence, as the languages stage treats it: nothing is saved
+        // for it, so the same command tries again. One silent track, or a language heard on only some tracks, is fine.
         let current = try? SessionFiles.currentTranscript(session: session)
-        // A segment without a track (an older transcript) belongs to the first track, as the comparison reads it.
-        let firstTrack = record.tracks.first?.track
-        let tracksWithWords = Set((current?.segments ?? []).filter {
-            !$0.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        }.compactMap { $0.track ?? firstTrack })
+        let expectsWords = current.map { LanguageStage.hasWords($0.segments) } ?? true
+        // Parts with no words wait until their language is known to have words somewhere.
+        var silent: [LocalRunPart] = []
         for (language, track) in missing {
             try Task.checkCancellation()
             let label = "the \(track.track) track in \(LanguageStage.name(language))"
@@ -301,15 +300,27 @@ public enum EvalLocal {
                 progress("  \(label): \(percent) %")
             }
             try Task.checkCancellation()
-            let heardWords = segments.contains { !$0.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
-            if !heardWords, tracksWithWords.contains(track.track) || current == nil {
-                throw HolosError.unavailable("No words were recognized in \(label), although the meeting's transcript "
-                    + "has some there; nothing was saved for it. Run the same command again to try again.")
+            let part = LocalRunPart(language: language, track: track.track, segments: segments, finishedAt: Date())
+            parts[language, default: [:]][track.track] = part
+            if LanguageStage.hasWords(segments) {
+                try EvalStore.write(part, to: EvalPaths.localPart(record.id, language: language, track: track.track,
+                                                                 in: session))
+            } else {
+                silent.append(part)
             }
-            let saved = LocalRunPart(language: language, track: track.track, segments: segments, finishedAt: Date())
-            try EvalStore.write(saved, to: EvalPaths.localPart(record.id, language: language, track: track.track,
-                                                              in: session))
-            parts[language, default: [:]][track.track] = saved
+        }
+        let failed = expectsWords ? record.languages.filter { language in
+            !(parts[language] ?? [:]).values.contains { LanguageStage.hasWords($0.segments) }
+        } : []
+        for part in silent where !failed.contains(part.language) {
+            try EvalStore.write(part, to: EvalPaths.localPart(record.id, language: part.language, track: part.track,
+                                                             in: session))
+        }
+        if !failed.isEmpty {
+            let names = LanguageStage.names(failed)
+            throw HolosError.unavailable("No words were recognized in \(names) on any track"
+                + (current == nil ? "" : ", although the meeting's transcript has some")
+                + "; nothing was saved for it. Run the same command again to try again.")
         }
 
         let transcript = try assemble(record: record, parts: parts, session: session, manifest: manifest,
