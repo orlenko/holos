@@ -100,7 +100,8 @@ func replayCancelsASessionCreatedAfterItsStartTimeout() async throws {
     } catch let partial as ReplayIncomplete {
         #expect(partial.message.hasPrefix("Speech did not start within 0.1 s"))
     }
-    #expect(entered.value, "The replay asked for a session.")
+    // The time limit can pass before the work task running the factory has even started.
+    #expect(await eventually { entered.value }, "The replay asks for a session.")
     released.set(true)
     #expect(await eventually { speech.sessions.count == 1 }, "The factory does return, late.")
     let late = try #require(speech.sessions.first)
