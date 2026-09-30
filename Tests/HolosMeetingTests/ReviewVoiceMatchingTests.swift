@@ -311,6 +311,9 @@ func matchingVoicesAreMergedOnlyWhenAsked() async throws {
         if automatic {
             try await voiceWait("the merge") { review.speaker(s3) == nil && !review.isWorking }
             #expect(review.turn("T3")?.speakerID == s1)
+            #expect(review.turn("T3")?.excludedFromEnrollment == true,
+                    "Nobody confirmed the merged turns, so they are kept out of Jim's voice sample.")
+            #expect(review.turn("T1")?.excludedFromEnrollment == false)
             try await review.undo()
             #expect(review.speaker(s3) != nil, "One undo takes the merge back.")
         } else {
@@ -320,6 +323,46 @@ func matchingVoicesAreMergedOnlyWhenAsked() async throws {
         }
         await review.close()
     }
+}
+
+@Test(.timeLimit(.minutes(1))) @MainActor
+func nothingIsSuggestedWhileTheJournalHasAnUnreadableLine() async throws {
+    let temp = try TemporaryDirectory("voice")
+    defer { temp.remove() }
+    let store = try voiceStore(temp, remember: false)
+    let fixture = try await SessionFixtures.labelledSession(in: temp.url, speakers: ["S1", "S2", "S3", "S4"],
+                                                            duration: 60)
+    let review = try await voiceOpen(fixture.session, store: store, extractor: VoiceFakeExtractor(voices: voiceMap))
+    try await voiceWait("the voices") { review.voiceAnalysis == .ready }
+    try await review.setName("Jim", speakerID: s1)
+    #expect(review.suggestionCount == 1)
+
+    let journal = try FileHandle(forWritingTo: SessionPaths.edits(fixture.session))
+    try journal.seekToEnd()
+    try journal.write(contentsOf: Data("{\"schemaVersion\": 99, \"something\": \"newer\"}\n".utf8))
+    try journal.close()
+    await review.reload()
+    #expect(!review.snapshot.journal.isComplete)
+    #expect(review.suggestionCount == 0 && review.turnHint("T10") == nil,
+            "A line this build cannot read may be a rejection or a reassignment the matches would contradict.")
+    await review.close()
+}
+
+@Test(.timeLimit(.minutes(1))) @MainActor
+func aVoiceAskedForBeforeAForgetIsNotLearned() async throws {
+    let temp = try TemporaryDirectory("voice")
+    defer { temp.remove() }
+    let store = try voiceStore(temp)
+    let fixture = try await SessionFixtures.labelledSession(in: temp.url, speakers: ["S1", "S2"], duration: 20)
+    let extractor = VoiceFakeExtractor(voices: voiceMap)
+    let review = try await voiceOpen(fixture.session, store: store, extractor: extractor, analyse: false,
+                                     sampleDelay: .seconds(3600))
+    try await review.setName("Jim", speakerID: s1)
+    // People forgets voices (another window) before the delay is up.
+    try store.update { $0.forgetEpoch = ($0.forgetEpoch ?? 0) + 1 }
+    await review.close()
+    #expect(try voiceSamples(store, named: "Jim") == 0, "The forget came later, so it wins.")
+    #expect(review.voiceProblem?.contains("forgotten") == true)
 }
 
 @Test(.timeLimit(.minutes(1))) @MainActor

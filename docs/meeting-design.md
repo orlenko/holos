@@ -3398,7 +3398,9 @@ public struct SpeakerProfileDatabase: Codable, Sendable, Equatable {
   `extractorSkipsTurnsWithoutADominantSpeaker`. The app never links FluidAudio: its
   extractor, `SubprocessVoiceSampleExtractor` (HolosMeeting), runs the bundled hidden
   `holos speakers embed <session> --track <t> --turns <id,id,…> --json`, which prints the
-  turn embeddings as JSON on stdout (a pipe, never a file) and writes nothing.
+  turn embeddings as JSON on stdout (a pipe, never a file) and writes nothing. The app
+  passes each turn as `ID@start-end`, its exact span; a bare ID is resolved against the
+  current labels.
   `VoiceProfileService` is the only code that turns embeddings into a stored sample. The
   CLI's own `link`/`me` commands inject `FluidVoiceSampleExtractor` directly. Extraction needs the
   session's audio: after Delete Audio, linking keeps the name and says "The recording's
@@ -3699,7 +3701,12 @@ public struct SpeakerProfileDatabase: Codable, Sendable, Equatable {
     keeps the turn embeddings in a `MeetingVoiceCache` (HolosMeeting). The footer says
     "Comparing voices (1 of 2)…" meanwhile; a pass that fails says why under the footer
     and nothing is suggested. On the user's 53-minute meeting a pass took about 30 s per
-    track (debug build).
+    track (debug build). The extractor is asked about each turn with its exact span
+    (`speakers embed --turns T12@723.5-731.25,…`), so a vector is always of the times the
+    cache keeps it against, even when a split changes the turn while the pass runs. The
+    child the app stops (a review closed, a newer change) deletes its render, a decoded
+    copy of the audio, on SIGTERM before it exits, instead of leaving it for the six-hour
+    stale-render sweep.
   - *Privacy decision.* The cache is memory only and is never written, whatever Remember
     voices says: the design keeps unconfirmed speakers' embeddings off disk ("No stored
     voice data for unconfirmed people" above), and a per-meeting file would have joined
@@ -3716,7 +3723,11 @@ public struct SpeakerProfileDatabase: Codable, Sendable, Equatable {
     mean of a group's usable turns on one track (not overlapped, not split, not excluded
     from voice learning, 2 s or more), after enrollment's outlier pass (0.5). Anchors are
     the people speakers are linked to (a typed name links a person; "This is me" links
-    you); automatic names and names without a person are not anchors. Candidates are
+    you) who are still in People; automatic names, names without a person, and a person
+    forgotten since (the meeting keeps the link and the name) are not anchors. Nothing is
+    matched while the edit journal has a line this build cannot read, as recognition's
+    suggestions are not used then: the line may be a rejection or a reassignment the
+    matches would contradict. Candidates are
     speakers with no name, link or automatic name, never a channel speaker. Voices are
     compared on the same track only (room and call audio sound different). A candidate
     gets "Maybe Jim" when Jim's voice is the nearest within `suggestMaxDistance` and no
@@ -3751,7 +3762,11 @@ public struct SpeakerProfileDatabase: Codable, Sendable, Equatable {
   - *Automatic merge* ("Merge Matching Voices Automatically" in the Speakers menu, a
     UserDefaults setting, off by default): after a name is given and the queue is idle,
     every suggestion within `mergeMaxDistance` with at least 10 s of speech on both sides
-    is merged into the named speaker it matched, as one change that one undo reverts.
+    is merged into the named speaker it matched, as one change that one undo reverts. The
+    merges are worked out again as they are queued (a speaker named or rejected meanwhile
+    is left alone) and refused under the speaker lock when the journal has an unreadable
+    line. The merged speaker's turns are first marked `excludeFromEnrollment` in the same
+    batch: nobody confirmed them, and a voice sample never comes from an automatic match.
   - *Voice learning off the edit queue.* The window's links, "This is me", Confirm All,
     and Assign to a person save with `deferSamples: true`: the name is saved and shown at
     once, and `VoiceProfileService.syncSamples` runs afterwards in the background
@@ -3766,14 +3781,22 @@ public struct SpeakerProfileDatabase: Codable, Sendable, Equatable {
     before. A sync that fails says so under the footer ("The name was saved, but the
     voice could not be learned: …"); the name stays. The generation and forget checks of
     `syncSamples` are unchanged, so a sample computed while the labels changed is not
-    saved.
+    saved. Because the voice is now learned a while after it was asked for, the window
+    records the store's `forgetEpoch` when the link is made and passes it
+    (`syncSamples(enrollEpochs:)`): a person whose voice was asked for before a forget
+    that has landed since is not enrolled ("Voices were forgotten while this one was being
+    learned…"), since the forget is the later request; the epoch read at the start of the
+    sync is also held across its attempts.
   Tests: `meetingThresholdsAreCappedBelowRecognitions`,
   `meetingThresholdsFollowTheStoreOnlyForItsModel`, `aSpeakerSplitFromANamedOneIsSuggested`,
   `onlyVoicesWithinTheThresholdAreSuggested`, `nothingIsSuggestedBeforeAnybodyIsNamed`,
   `notJimStopsJimBeingSuggestedAgain`, `aSpeakerBetweenTwoNamedPeopleIsLeftAlone`,
   `namedAndOtherTrackSpeakersAreNotSuggested`, `onlyCloseVoicesOnEnoughSpeechAreMergeable`,
-  `aTurnInsideAMixedSpeakerIsHinted`, `turnsTooShortOverlappedOrOnTheirOwnAreNotHinted`
-  (HolosSpeakers); `theCacheServesCoveredTurnsOfTheHeadRunAndFallsBackOtherwise`,
+  `aTurnInsideAMixedSpeakerIsHinted`, `turnsTooShortOverlappedOrOnTheirOwnAreNotHinted`,
+  `aForgottenPersonIsNoAnchor` (HolosSpeakers);
+  `theCacheServesCoveredTurnsOfTheHeadRunAndFallsBackOtherwise`, `turnSpansRoundTrip`,
+  `nothingIsSuggestedWhileTheJournalHasAnUnreadableLine`,
+  `aVoiceAskedForBeforeAForgetIsNotLearned`,
   `aLateStoreOfAnEarlierPassIsIgnored`, `aLearnerWaitsForThePassOrStopsWhenCancelled`,
   `namingASpeakerSuggestsTheSpeakersWithItsVoice`,
   `notJimOnAVoiceSuggestionIsSavedAndConfirmAllTakesTheRest`,

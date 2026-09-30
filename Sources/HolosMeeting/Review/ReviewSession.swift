@@ -163,7 +163,7 @@ public struct ReviewWord: Sendable, Equatable {
     /// Voice samples owe a sync (`syncSamples`), for these people to enrol besides; `sampleRequests` counts
     /// requests, so a sync that ends knows whether another one came in meanwhile.
     private var samplesOwed = false
-    private var sampleEnroll: Set<String> = []
+    private var sampleEnroll: [String: Int] = [:]
     private var sampleRequests = 0
     /// Waits `sampleDelay`, then starts `sampleRun`.
     private var sampleTimer: Task<Void, Never>?
@@ -417,12 +417,18 @@ public struct ReviewWord: Sendable, Equatable {
     /// Names are saved as `SpeakerEditor.cleanName` gives them. A batch that changes nothing returns at once and
     /// saves nothing; one that is not valid on the shown labels throws `invalidInput` and saves nothing.
     public func apply(_ actions: [SpeakerEditAction]) async throws {
+        try await apply(actions, requireCompleteJournal: false)
+    }
+
+    /// `requireCompleteJournal`: refused under the speaker lock when the edit journal has a line this build cannot
+    /// read (an automatic change made from matches that such a line may contradict).
+    private func apply(_ actions: [SpeakerEditAction], requireCompleteJournal: Bool) async throws {
         try requireEditable()
         let resolved = actions.map { Self.cleaned(resolve($0)) }
         guard !resolved.isEmpty else { return }
         try validate(resolved)
         if SpeakerEditor.changesNothing(resolved, on: projection) { return }
-        try await enqueue(.edit(resolved), optimistic: resolved)
+        try await enqueue(.edit(resolved, requireCompleteJournal: requireCompleteJournal), optimistic: resolved)
     }
 
     /// This window's newest change: a queued one is dropped (or reverted once saved), else the newest saved batch is
@@ -782,7 +788,7 @@ public struct ReviewWord: Sendable, Equatable {
         }
 
         enum Kind {
-            case edit([SpeakerEditAction])
+            case edit([SpeakerEditAction], requireCompleteJournal: Bool = false)
             /// `byName`: from the name field; a `.new` target is linked to a person of that name existing at save time.
             case link(speakerID: String, target: ProfileTarget, learnVoice: Bool, byName: Bool)
             case assignPerson(create: SpeakerEditAction, speakerID: String, profileID: String, learnVoice: Bool)
@@ -922,10 +928,12 @@ public struct ReviewWord: Sendable, Equatable {
 
     private func run(_ op: Operation) async throws {
         switch op.kind {
-        case .edit(let actions):
+        case .edit(let actions, let requireCompleteJournal):
             try requireBasis(op)
             let sent = actions.map(resolve)
-            try await saveEdit(sent, op: op) { batch in batch.map(\.action) == sent }
+            try await saveEdit(sent, op: op, requireCompleteJournal: requireCompleteJournal) { batch in
+                batch.map(\.action) == sent
+            }
         case .link(let speakerID, let asked, let learnVoice, let byName):
             try requireBasis(op)
             var resolved = asked
@@ -999,7 +1007,7 @@ public struct ReviewWord: Sendable, Equatable {
 
     /// Saves `actions` with `SpeakerEditor` on the saved labels, then adopts the result (built with the people's
     /// names as reread just before).
-    private func saveEdit(_ actions: [SpeakerEditAction], op: Operation,
+    private func saveEdit(_ actions: [SpeakerEditAction], op: Operation, requireCompleteJournal: Bool = false,
                           matching: @escaping ([SpeakerEdit]) -> Bool) async throws {
         await reloadPeople()
         let view = savedProjection
@@ -1013,7 +1021,8 @@ public struct ReviewWord: Sendable, Equatable {
             // on the shown labels (`apply`) cannot see a change saved elsewhere meanwhile that already made it.
             return try SpeakerEditor.applyUnlessUnchanged(actions, view: view, session: session, source: Self.source,
                                                           regenerateExports: false, profileNames: names,
-                                                          profiles: store)
+                                                          profiles: store,
+                                                          requireCompleteJournal: requireCompleteJournal)
         }
         switch outcome {
         case .success(let result?):
@@ -1043,6 +1052,8 @@ public struct ReviewWord: Sendable, Equatable {
         let session = self.session
         let extractor = self.extractor
         let hook = beforeEdit
+        // The voices are asked for now: a forget that lands before they are learned wins (`syncSamples`).
+        let epoch = await Self.detachedValue { (try? store.load())?.forgetEpoch ?? 0 }
         let outcome = await Self.detachedResult { () throws -> SpeakerSessionSnapshot in
             if let hook { await hook() }
             return try await change(session, store, extractor)
@@ -1053,14 +1064,14 @@ public struct ReviewWord: Sendable, Equatable {
             // A link that changed nothing saved nothing and rewrote no export.
             if adopt(returned, op: op, matching: matching) { changesSaved(exportsWritten: true) }
             // Even then: an earlier run of this link may have saved its lines and not its sample.
-            oweSamples(enroll: enroll(returned))
+            oweSamples(enroll: enroll(returned), since: epoch)
         case .failure(let error):
             await reloadPeople()
             do {
                 try await handleFailure(error, op: op, matching: matching)
             } catch let thrown {
                 // Saved, then something after failed: the labels were reread, and the samples are still owed.
-                if Self.isIncomplete(thrown) { oweSamples(enroll: enroll(snapshot)) }
+                if Self.isIncomplete(thrown) { oweSamples(enroll: enroll(snapshot), since: epoch) }
                 throw thrown
             }
         }
@@ -1189,11 +1200,12 @@ public struct ReviewWord: Sendable, Equatable {
     /// A saved change may have moved speech a voice sample of this meeting holds, or linked a person whose voice is
     /// to be learned (`enroll`): the samples are brought in step (`VoiceProfileService.syncSamples`) `sampleDelay`
     /// after the queue is idle, off the edit queue. A newer change cancels a sync that is waiting or running, and the
-    /// sync runs again after it; `close` runs any sync still owed. Without people nothing is owed.
-    private func oweSamples(enroll: Set<String> = []) {
+    /// sync runs again after it; `close` runs any sync still owed. Without people nothing is owed. `since`: the
+    /// people store's forget epoch when the voices were asked for (the latest request of a person counts).
+    private func oweSamples(enroll: Set<String> = [], since epoch: Int = 0) {
         guard profiles != nil else { return }
         samplesOwed = true
-        sampleEnroll.formUnion(enroll)
+        for profileID in enroll { sampleEnroll[profileID] = epoch }
         sampleRequests += 1
         scheduleSampleSync()
     }
@@ -1231,27 +1243,32 @@ public struct ReviewWord: Sendable, Equatable {
         sampleRun = Task { [weak self] in
             let result = await Self.cancellableResult {
                 try await VoiceProfileService.syncSamples(session: session, extractor: extractor, store: store,
-                                                          enroll: enroll)
+                                                          enroll: Set(enroll.keys), enrollEpochs: enroll)
             }
             self?.sampleSyncEnded(result, enroll: enroll, request: request)
         }
     }
 
-    private func sampleSyncEnded(_ result: Result<Void, any Error>, enroll: Set<String>, request: Int) {
+    private func sampleSyncEnded(_ result: Result<Void, any Error>, enroll: [String: Int], request: Int) {
         sampleRun = nil
         isSyncingSamples = false
         syncLearning = false
+        /// What this sync was asked to learn is done with, unless asked for again meanwhile.
+        func settle() {
+            for (profileID, epoch) in enroll where sampleEnroll[profileID] == epoch {
+                sampleEnroll[profileID] = nil
+            }
+            if sampleRequests == request { samplesOwed = false }
+        }
         switch result {
         case .success:
             voiceProblem = nil
-            sampleEnroll.subtract(enroll)
-            if sampleRequests == request { samplesOwed = false }
+            settle()
         case .failure(let error) where error is CancellationError:
             // Still owed: it runs again after the change that stopped it.
             Self.log.info("Session \(self.sessionID, privacy: .public): voice sample sync stopped for a newer change")
         case .failure(let error):
-            sampleEnroll.subtract(enroll)
-            if sampleRequests == request { samplesOwed = false }
+            settle()
             voiceProblem = (enroll.isEmpty ? "A voice sample learned from this meeting could not be updated: "
                 : "The name was saved, but the voice could not be learned: ") + error.localizedDescription
             Self.log.error("Session \(self.sessionID, privacy: .public): voice samples not brought in step (\(ProcessSpawner.logCategory(error), privacy: .public))")
@@ -1375,14 +1392,17 @@ public struct ReviewWord: Sendable, Equatable {
             && turn.end - turn.start >= VoiceEnrollment.minimumTurnSeconds - 1e-9
     }
 
-    /// `voiceMatches` on the shown labels (people needed: a match is confirmed by linking the person).
+    /// `voiceMatches` on the shown labels (people needed: a match is confirmed by linking the person, so only people
+    /// the store still holds are matched). Nothing while the edit journal has a line this build cannot read: the
+    /// labels may miss a rejection or a reassignment the matches would contradict, as recognition's are not used then.
     private func refreshVoiceMatches() {
-        guard profiles != nil, !voiceEmbeddings.isEmpty, voiceRunID == projection.runID else {
+        guard profiles != nil, !voiceEmbeddings.isEmpty, voiceRunID == projection.runID,
+              snapshot.journal.isComplete else {
             if voiceMatches != .empty { voiceMatches = .empty }
             return
         }
         voiceMatches = MeetingVoiceMatcher.match(projection: projection, embeddings: voiceEmbeddings,
-                                                 thresholds: voiceThresholds)
+                                                 thresholds: voiceThresholds, people: Set(profileNames.keys))
     }
 
     /// `MeetingVoiceThresholds` from the people store's calibration when it was measured on this run's model.
@@ -1403,19 +1423,40 @@ public struct ReviewWord: Sendable, Equatable {
         }
         guard case .ready = voiceAnalysis, queue.isEmpty, isEditable else { return }
         mergeArmed = false
-        let merges = voiceMatches.suggestions.filter(\.mergeable)
-            .map { SpeakerEditAction.merge(from: $0.speakerID, into: $0.anchorSpeakerID) }
-        guard !merges.isEmpty else { return }
-        Self.log.info("Session \(self.sessionID, privacy: .public): merging \(merges.count, privacy: .public) speakers with a matching voice")
+        guard !autoMergeActions().isEmpty else { return }
         Task { [weak self] in
+            guard let self else { return }
+            // Worked out again as the merge is queued, on the labels as they are then: a speaker named or rejected
+            // meanwhile is no longer a candidate, and a change still queued makes it wait for the queue again.
+            guard self.queue.isEmpty else {
+                self.mergeArmed = true
+                return
+            }
+            let actions = self.autoMergeActions()
+            guard !actions.isEmpty else { return }
+            Self.log.info("Session \(self.sessionID, privacy: .public): merging speakers with a matching voice (\(actions.count, privacy: .public) actions)")
             do {
-                try await self?.apply(merges)
+                // Refused when the journal has a line this build cannot read: the matches may contradict it.
+                try await self.apply(actions, requireCompleteJournal: true)
             } catch {
-                guard let self else { return }
                 self.voiceProblem = "Speakers with the same voice could not be merged: " + error.localizedDescription
                 self.notify()
             }
         }
+    }
+
+    /// The automatic merges, as one batch: each mergeable suggestion's speaker merged into the named speaker it
+    /// matched, its turns first kept out of voice learning (`excludeFromEnrollment`), since nobody confirmed them and
+    /// a voice sample never comes from an automatic match (§4.10).
+    private func autoMergeActions() -> [SpeakerEditAction] {
+        var actions: [SpeakerEditAction] = []
+        for suggestion in voiceMatches.suggestions where suggestion.mergeable {
+            let turns = projection.turns
+                .filter { $0.speakerID == suggestion.speakerID && !$0.excludedFromEnrollment }.map(\.id)
+            if !turns.isEmpty { actions.append(.excludeFromEnrollment(turnIDs: turns)) }
+            actions.append(.merge(from: suggestion.speakerID, into: suggestion.anchorSpeakerID))
+        }
+        return actions
     }
 
     /// Replaces the saved labels with `fresh` (read from disk, so `reloadProblem` ends). The window's own batch (the

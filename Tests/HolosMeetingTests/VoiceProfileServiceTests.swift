@@ -1651,6 +1651,17 @@ func extractorRefusesAnotherEmbeddingModel() async throws {
     }
 }
 
+@Test func turnSpansRoundTrip() {
+    let turns = [TurnRef(id: "T1", start: 0, end: 3), TurnRef(id: "T2/ABC", start: 1234.5678901234, end: 1240.25),
+                 TurnRef(id: "T3", start: 1e-5, end: 2.000001)]
+    for turn in turns {
+        #expect(SubprocessVoiceSampleExtractor.parseSpan(SubprocessVoiceSampleExtractor.span(turn)) == turn)
+    }
+    for bad in ["T1", "T1@", "@1-2", "T1@3-2", "T1@-1-2", "T1@nan-2", "T1@1-inf", "T1@1_2"] {
+        #expect(SubprocessVoiceSampleExtractor.parseSpan(bad) == nil, "\(bad)")
+    }
+}
+
 /// An executable shell script in the test's folder.
 private func profileScript(_ temp: TemporaryDirectory, _ body: String) throws -> URL {
     let url = temp.url.appendingPathComponent("holos-\(UUID().uuidString).sh")
@@ -1678,9 +1689,11 @@ func subprocessExtractorReadsEmbeddingsFromAPipe() async throws {
                                                             TurnRef(id: "T2", start: 5, end: 8)])
     #expect(result == [output.turnEmbeddings[0]], "Only requested turns are kept.")
     let passed = SessionFixtures.text(arguments).split(separator: "\n").map(String.init)
+    // Each turn goes with its exact span, so the child embeds that audio whatever the labels say by then.
     #expect(passed == SubprocessVoiceSampleExtractor.arguments(session: session, track: "system",
-                                                               turnIDs: ["T1", "T2"]))
-    #expect(passed == ["speakers", "embed", session.path, "--track", "system", "--turns", "T1,T2", "--json"])
+                                                               turnIDs: ["T1@0.0-3.0", "T2@5.0-8.0"]))
+    #expect(passed == ["speakers", "embed", session.path, "--track", "system", "--turns", "T1@0.0-3.0,T2@5.0-8.0",
+                       "--json"])
 
     let failing = SubprocessVoiceSampleExtractor(
         executable: try profileScript(temp, "echo 'Speaker models are not installed.' >&2\nexit 1"),

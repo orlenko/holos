@@ -102,6 +102,29 @@ private func match(_ fixture: (projection: SpeakerProjection, embeddings: [Strin
 
     let uncalibrated = MeetingVoiceThresholds.derived(from: calibrated, calibrated: false)
     #expect(uncalibrated.mergeMaxDistance == 0.15, "An uncalibrated likely distance is not used.")
+
+    // A calibration that refuses even a distance of 0 (negative thresholds) is followed, not replaced.
+    let refusing = MeetingVoiceThresholds.derived(
+        from: RecognitionThresholds(likelyMaxDistance: -0.01, likelyMinMargin: 0.1, possibleMaxDistance: -0.01,
+                                    minSampleSeconds: 20), calibrated: true)
+    #expect(refusing.suggestMaxDistance < 0 && refusing.mergeMaxDistance < 0 && refusing.turnHintMaxDistance < 0)
+    let fixture = matchFixture([
+        MatchTurn(id: "T1", speaker: s1, start: 0, voice: jimVoice),
+        MatchTurn(id: "T2", speaker: s2, start: 5, voice: jimVoice),
+    ], edits: linkJim)
+    #expect(match(fixture, thresholds: refusing) == .empty)
+}
+
+@Test func aForgottenPersonIsNoAnchor() {
+    let fixture = matchFixture([
+        MatchTurn(id: "T1", speaker: s1, start: 0, voice: jimVoice),
+        MatchTurn(id: "T2", speaker: s2, start: 5, voice: jimVoice),
+    ], edits: linkJim)
+    #expect(MeetingVoiceMatcher.match(projection: fixture.projection, embeddings: fixture.embeddings,
+                                      thresholds: .defaults, people: ["JIM"]).suggestion(for: s2) != nil)
+    #expect(MeetingVoiceMatcher.match(projection: fixture.projection, embeddings: fixture.embeddings,
+                                      thresholds: .defaults, people: ["SAM"]) == .empty,
+            "Jim was forgotten: the meeting keeps the name, but nobody could confirm him.")
 }
 
 @Test func meetingThresholdsFollowTheStoreOnlyForItsModel() {

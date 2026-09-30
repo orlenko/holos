@@ -835,8 +835,35 @@ public enum VoiceProfileService {
     /// The plan is made from an unlocked read of the store; the changes are published only if, under the speaker lock
     /// and then `profiles.lock`, the generation is unchanged and the store as it is then gives the same plan (and the
     /// same minimum sample length). Otherwise the attempt is redone from the new state.
+    ///
+    /// `enrollEpochs` (profile ID → the store's `forgetEpoch` when the voice was asked for; the review window learns
+    /// voices a while after the link is saved): a person in `enroll` whose entry differs from the epoch now is not
+    /// enrolled, because a forget landed after the voice was asked for and the forget is the later request; the other
+    /// samples are still brought in step, then `forgottenWhileLearning` is thrown. The epoch is held from that first
+    /// read for the whole sync, so a forget between two attempts is caught as well.
     static func syncSamples(session: URL, extractor: (any VoiceSampleExtractor)?, store: SpeakerProfileStore,
-                            enroll: Set<String>) async throws {
+                            enroll requested: Set<String>, enrollEpochs: [String: Int] = [:]) async throws {
+        var enroll = requested
+        var baseline: Int?
+        var forgotten = false
+        if !enrollEpochs.isEmpty, !requested.isEmpty {
+            let epoch = try store.load().forgetEpoch ?? 0
+            let stale = requested.filter { enrollEpochs[$0].map { $0 != epoch } ?? false }
+            enroll.subtract(stale)
+            forgotten = !stale.isEmpty
+            baseline = epoch
+        }
+        try await syncSampleAttempts(session: session, extractor: extractor, store: store, enroll: enroll,
+                                     forgetBaseline: baseline)
+        if forgotten {
+            log.notice("Voices were forgotten after they were asked for; they were not learned")
+            throw HolosError.unavailable(forgottenWhileLearning)
+        }
+    }
+
+    private static func syncSampleAttempts(session: URL, extractor: (any VoiceSampleExtractor)?,
+                                           store: SpeakerProfileStore, enroll: Set<String>,
+                                           forgetBaseline: Int?) async throws {
         for attempt in 1...sampleAttempts {
             try Task.checkCancellation()
             let (generation, snapshot) = try consistentSnapshot(session)
@@ -860,6 +887,10 @@ public enum VoiceProfileService {
             let model = run.engine?.embeddingModel
             let database = try store.load()
             let forgetEpoch = database.forgetEpoch ?? 0
+            if let forgetBaseline, !enroll.isEmpty, forgetEpoch != forgetBaseline {
+                log.notice("Session \(sessionID, privacy: .public): voices were forgotten while a voice was waiting to be learned; nothing was saved")
+                throw HolosError.unavailable(forgottenWhileLearning)
+            }
             let makePlans = { (database: SpeakerProfileDatabase) in
                 plan(database: database, snapshot: snapshot, run: run, projection: projection, enroll: enroll,
                      extractorAvailable: extractor != nil)

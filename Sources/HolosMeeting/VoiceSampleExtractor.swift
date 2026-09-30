@@ -118,7 +118,7 @@ public struct DiarizerVoiceSampleExtractor: VoiceSampleExtractor {
     }
 
     /// The name a render folder gets: `holos-voice-<UUID>` in the temporary directory.
-    static let renderPrefix = "holos-voice-"
+    public static let renderPrefix = "holos-voice-"
 
     /// How long a render folder must have been untouched before the sweep takes it: longer than any enrollment
     /// runs, so a render of another Holos that is using it right now is never removed.
@@ -210,12 +210,32 @@ public struct SubprocessVoiceSampleExtractor: VoiceSampleExtractor {
         ["speakers", "embed", session.path, "--track", track, "--turns", turnIDs.joined(separator: ","), "--json"]
     }
 
+    /// `ID@start-end`: the turn with the exact span to embed (session seconds, shortest round-trip form), so the
+    /// child embeds the audio the caller asked about even when the labels changed since.
+    public static func span(_ turn: TurnRef) -> String {
+        "\(turn.id)@\(turn.start)-\(turn.end)"
+    }
+
+    /// The turn `span` wrote; nil when `entry` is not in that form or its times are not a finite, non-negative,
+    /// non-empty span.
+    public static func parseSpan(_ entry: String) -> TurnRef? {
+        guard let at = entry.lastIndex(of: "@") else { return nil }
+        let id = String(entry[..<at])
+        let times = entry[entry.index(after: at)...]
+        // The end follows the last "-" that is not an exponent's sign or the start's own sign.
+        guard !id.isEmpty, let dash = times.indices.dropFirst().last(where: { index in
+            times[index] == "-" && !"eE".contains(times[times.index(before: index)])
+        }), let start = Double(times[..<dash]), let end = Double(times[times.index(after: dash)...]),
+              start.isFinite, end.isFinite, start >= 0, end > start else { return nil }
+        return TurnRef(id: id, start: start, end: end)
+    }
+
     public func turnEmbeddings(session: URL, track: String, turns: [TurnRef]) async throws -> [TurnEmbedding] {
         guard !turns.isEmpty else { return [] }
-        guard turns.allSatisfy({ !$0.id.isEmpty && !$0.id.contains(",") }) else {
-            throw HolosError.invalidInput("A turn ID cannot contain a comma.")
+        guard turns.allSatisfy({ !$0.id.isEmpty && !$0.id.contains(",") && !$0.id.contains("@") }) else {
+            throw HolosError.invalidInput("A turn ID cannot contain a comma or an @.")
         }
-        let arguments = Self.arguments(session: session, track: track, turnIDs: turns.map(\.id))
+        let arguments = Self.arguments(session: session, track: track, turnIDs: turns.map(Self.span))
         let (code, output, errorText) = try await run(arguments)
         guard code == 0 else {
             Self.log.error("voiceislocal speakers embed exited \(code, privacy: .public)")

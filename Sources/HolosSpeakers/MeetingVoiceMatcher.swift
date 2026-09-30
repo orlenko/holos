@@ -43,7 +43,9 @@ public struct MeetingVoiceThresholds: Sendable, Equatable {
     ///   when that is lower; never above `suggestMaxDistance`.
     /// - `turnHintMaxDistance`: `turnHintCap`, never above `suggestMaxDistance`.
     public static func derived(from recognition: RecognitionThresholds, calibrated: Bool) -> MeetingVoiceThresholds {
-        func usable(_ value: Double) -> Double? { value.isFinite && value > 0 ? value : nil }
+        // A calibrated threshold may be negative on purpose (`RecognitionCalibration.admitting`: even a distance of 0
+        // is refused), so only a value that is not finite is left out.
+        func usable(_ value: Double) -> Double? { value.isFinite ? value : nil }
         let suggest = min(usable(recognition.possibleMaxDistance) ?? suggestCap, suggestCap)
         var merge = mergeCap
         if calibrated, let likely = usable(recognition.likelyMaxDistance) { merge = min(merge, likely) }
@@ -143,8 +145,10 @@ public struct MeetingVoiceMatches: Sendable, Equatable {
 ///   to, has not rejected, and is not suggested as, and at least `turnHintMinMargin` closer to them than to the rest
 ///   of its own speaker (its speaker's voice without it); with no other person within `ambiguityMargin`.
 public enum MeetingVoiceMatcher {
+    /// `people`: when given, only speakers linked to these people are anchors (a person forgotten since keeps the
+    /// meeting's link and name, but cannot be confirmed any more).
     public static func match(projection: SpeakerProjection, embeddings: [String: TurnEmbedding],
-                             thresholds: MeetingVoiceThresholds) -> MeetingVoiceMatches {
+                             thresholds: MeetingVoiceThresholds, people: Set<String>? = nil) -> MeetingVoiceMatches {
         let speakers = Dictionary(projection.speakers.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         var dimension: Int?
         var bySpeaker: [TrackKey: [Item]] = [:]
@@ -157,7 +161,7 @@ public enum MeetingVoiceMatcher {
             guard values.count == dimension else { continue }
             let item = Item(turnID: turn.id, speakerID: speakerID, vector: values, seconds: turn.end - turn.start)
             bySpeaker[TrackKey(owner: speakerID, track: turn.track), default: []].append(item)
-            if let profileID = speaker.profileID {
+            if let profileID = speaker.profileID, people?.contains(profileID) ?? true {
                 byPerson[TrackKey(owner: profileID, track: turn.track), default: []].append(item)
             }
         }
