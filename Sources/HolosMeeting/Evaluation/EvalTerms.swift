@@ -80,38 +80,95 @@ public enum EvalTerms {
     /// Where `term` (its keys joined) is written in `keys`, as whole words: runs of words whose keys joined are the
     /// term's, so "TestFlight" is found in "Test Flight" and "test flight" in "TestFlight". Runs do not overlap.
     static func occurrences(of term: String, in keys: [String]) -> [Range<Int>] {
-        occurrences(of: [term], words: keys, keys: keys, numbers: nil)
+        occurrences(of: Pattern(forms: [term]), words: keys, keys: keys, numbers: nil)
     }
 
-    /// Longest run of cloud words a spelled number may take when read against a shorter written form, past which only
-    /// a spelled-number run already begun is read to its end.
+    /// Words read as the normalized comparison reads numbers: each number one unit (a whole spelled-number run,
+    /// `EvalNormalization.SpelledRuns`, or a number written with digits, "30%", "plus 30", "30 percent"), each other
+    /// word its key. `text` joins them, a number as its canonical form between marks no key holds.
+    struct NumberReading: Sendable, Equatable {
+        var text: String
+        var numbers: [EvalNormalization.NumberForm]
+
+        /// The reading of `words`, whose spelled-number runs are `runs` (ranges into `words`); nil without a number.
+        init?(_ words: [String], runs: [Range<Int>]) {
+            var text = ""
+            var numbers: [EvalNormalization.NumberForm] = []
+            let starts = Dictionary(runs.map { ($0.lowerBound, $0) }, uniquingKeysWith: { first, _ in first })
+            let spelled = Set(runs.flatMap { $0 })
+            var index = 0
+            reading: while index < words.count {
+                if let run = starts[index], let form = EvalNormalization.number(Array(words[run])), !form.hasDigit {
+                    text += "\u{1}" + form.canonical + "\u{1}"; numbers.append(form)
+                    index = run.upperBound
+                    continue
+                }
+                // The longest number with digits from here, never taking a spelled run's word.
+                let longest = min(NormalizedAlignment.maxDigitNumberWords, words.count - index)
+                for length in stride(from: longest, through: 1, by: -1) {
+                    let range = index..<(index + length)
+                    guard !range.contains(where: spelled.contains),
+                          let form = EvalNormalization.number(Array(words[range])), form.hasDigit else { continue }
+                    text += "\u{1}" + form.canonical + "\u{1}"; numbers.append(form)
+                    index += length
+                    continue reading
+                }
+                text += EvalText.key(words[index])
+                index += 1
+            }
+            guard !numbers.isEmpty else { return nil }
+            self.text = text
+            self.numbers = numbers
+        }
+
+        /// The same words, each number the same number with at least one of the two written with digits (as
+        /// `NormalizedAlignment.sameNumber`: "twenty one"/"21", never "twenty one"/"vingt et un").
+        func matches(_ other: NumberReading) -> Bool {
+            text == other.text && numbers.count == other.numbers.count
+                && zip(numbers, other.numbers).allSatisfy { NormalizedAlignment.sameNumber($0, $1) }
+        }
+    }
+
+    /// What a term is found as: its forms as joined keys, and (normalized) how it reads with its numbers.
+    struct Pattern {
+        var forms: Set<String>
+        var reading: NumberReading? = nil
+    }
+
+    /// Longest run of cloud words a number may take when read against a shorter written form, past which only a
+    /// spelled-number run already begun is read to its end.
     static let maxOccurrenceWords = 8
 
-    /// Where any of `forms` is written in the words, as whole words: their keys joined, or (with `numbers`, the
-    /// words' spelled-number runs, for a run holding one) the run's `NormalizedAlignment.compoundForms` ("GPT four"
-    /// for "GPT-4"). With `numbers`, an occurrence never starts or ends inside a spelled number: "V one hundred" of
-    /// "V one hundred five" is not "V100".
-    static func occurrences(of forms: Set<String>, words: [String], keys: [String],
+    /// Where `pattern` is written in the words, as whole words: its forms as their keys joined, or (with `numbers`,
+    /// the words' spelled-number runs, for a run holding a number) as the run's `NormalizedAlignment.compoundForms`
+    /// ("GPT four" for "GPT-4") or with the same numbers (`NumberReading`: "21" for "twenty one", "30%" for "thirty
+    /// percent"). With `numbers`, an occurrence never starts or ends inside a spelled number: "V one hundred" of "V
+    /// one hundred five" is not "V100".
+    static func occurrences(of pattern: Pattern, words: [String], keys: [String],
                             numbers: EvalNormalization.SpelledRuns?) -> [Range<Int>] {
-        let forms = forms.filter { !$0.isEmpty }
-        guard !forms.isEmpty else { return [] }
+        let forms = pattern.forms.filter { !$0.isEmpty }
+        guard !forms.isEmpty || pattern.reading != nil else { return [] }
         let longestForm = forms.map(\.count).max() ?? 0
         var found: [Range<Int>] = []
         var start = 0
         while start < keys.count {
             var joined = ""
             var hasSpelled = false
+            var hasNumber = false
             var end = start
             var match: Int?
             // As long as the longest form (a term may have many words), or up to `maxOccurrenceWords` words for a
-            // spelled number read against a shorter written form ("GPT four" for "GPT-4").
-            // A spelled-number run the window is in is always read to its end ("V one thousand two hundred thirty
-            // four" for "V1234").
+            // number read against another written form ("GPT four" for "GPT-4"); a spelled-number run the window is
+            // in is always read to its end ("V one thousand two hundred thirty four" for "V1234").
             while end < keys.count, joined.count < longestForm
-                || (hasSpelled && (end - start < maxOccurrenceWords
-                                   || (end > start && numbers?.run(at: end)?.contains(end - 1) == true))) {
+                || (hasNumber && (end - start < maxOccurrenceWords
+                                  || (end > start && numbers?.run(at: end)?.contains(end - 1) == true))) {
                 joined += keys[end]
-                hasSpelled = hasSpelled || numbers?.run(at: end) != nil
+                if let numbers {
+                    let spelled = numbers.run(at: end) != nil
+                    hasSpelled = hasSpelled || spelled
+                    hasNumber = hasNumber || spelled || words[end].contains(where: \.isNumber)
+                }
                 end += 1
                 if numbers?.cuts(start..<end) == true { continue }
                 if forms.contains(joined) { match = end; break }
@@ -119,7 +176,23 @@ public enum EvalTerms {
                     match = end
                     break
                 }
-                if !hasSpelled, !forms.contains(where: { $0.hasPrefix(joined) }) { break }
+                if hasNumber, let reading = pattern.reading, let numbers {
+                    // The window cuts no run's number: each run inside it whole, or its number when its "plus" or
+                    // "percent" lies outside.
+                    var runs: [Range<Int>] = []
+                    for index in start..<end {
+                        for run in [numbers.run(at: index), numbers.core(at: index)].compactMap({ $0 })
+                        where run.lowerBound == index && run.upperBound <= end {
+                            runs.append((run.lowerBound - start)..<(run.upperBound - start))
+                            break
+                        }
+                    }
+                    if let window = NumberReading(Array(words[start..<end]), runs: runs), window.matches(reading) {
+                        match = end
+                        break
+                    }
+                }
+                if !hasNumber, !forms.contains(where: { $0.hasPrefix(joined) }) { break }
             }
             if let match {
                 found.append(start..<match)
@@ -193,11 +266,15 @@ public enum EvalTerms {
         var stats: [TermStat] = []
         for term in terms {
             var stat = TermStat(term: term.text, source: term.source, cloud: 0, hits: 0)
-            var forms: Set<String> = [joinedKey(term.text)]
-            if normalized { forms.formUnion(NormalizedAlignment.compoundForms(EvalText.tokens(term.text))) }
+            var pattern = Pattern(forms: [joinedKey(term.text)])
+            if normalized {
+                let tokens = EvalText.tokens(term.text)
+                pattern.forms.formUnion(NormalizedAlignment.compoundForms(tokens))
+                pattern.reading = NumberReading(tokens, runs: EvalNormalization.SpelledRuns(tokens, fillers: []).runs)
+            }
             for (kept, words, keys, numbers, track) in keyed {
                 var count = TermStat.TrackCount(track: track.track, cloud: 0, hits: 0)
-                for range in occurrences(of: forms, words: words, keys: keys, numbers: numbers) {
+                for range in occurrences(of: pattern, words: words, keys: keys, numbers: numbers) {
                     let indices = range.map { kept[$0] }
                     count.cloud += 1
                     if indices.allSatisfy({ track.covered[$0] == true }), contiguous(indices, in: track) {

@@ -346,7 +346,8 @@ page shows; a passage none of whose words such an edit touches is formatting
 only (and none of a stretch's passages is when an edit falls on a matched
 word between them). Matched fillers are left out of the word counts too. In the Terms
 section, the normalized comparison also finds a term written with its numbers
-spelled the other way ("GPT four" for "GPT-4"), never starting or ending
+spelled the other way ("GPT four" for "GPT-4", "21" for "twenty one", "30%"
+for "thirty percent", as the numbers above), never starting or ending
 inside a spelled-number run ("V one hundred five" holds no "V100").
 
 ### Local candidates

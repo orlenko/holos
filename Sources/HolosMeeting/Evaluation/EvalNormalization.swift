@@ -227,7 +227,8 @@ public enum EvalNormalization {
             return runs[number]
         }
 
-        private func core(at index: Int) -> Range<Int>? {
+        /// The number without "plus" or "percent" (`cores`) of the run word `index` is in.
+        public func core(at index: Int) -> Range<Int>? {
             guard owner.indices.contains(index), let number = owner[index] else { return nil }
             return cores[number]
         }

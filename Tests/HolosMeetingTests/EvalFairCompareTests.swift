@@ -571,6 +571,13 @@ private func words(_ text: String) -> [String] { text.split(separator: " ").map(
         ("GPT-4", "GPT four and GPT four hundred", 1), ("V12", "V one two", 0),
         ("V999999", "V nine hundred and ninety nine thousand nine hundred and ninety nine", 1),
         ("V999", "V nine hundred and ninety nine thousand nine hundred and ninety nine", 0),
+        // A term that is or holds a number is found with the number written the other way, as the alignment reads it.
+        ("twenty one", "we have 21 people", 1), ("21", "we have twenty one people", 1),
+        ("twenty one", "we have 20 1 people", 0), ("twenty one", "on a vingt et un", 0),
+        ("twenty", "one hundred and twenty", 0), ("thirty percent", "about 30% more", 1),
+        ("thirty percent", "about 30 percent more", 1), ("30%", "about thirty per cent more", 1),
+        ("3.5", "version three point five", 1), ("version 2", "version two now", 1),
+        ("plus thirty", "a +30 gain", 1), ("21st", "the twenty first time", 1), ("1st", "the twenty first time", 0),
     ]
     for (term, text, expected) in table {
         #expect(count(term, text) == expected, "\(term) in \(text)")
