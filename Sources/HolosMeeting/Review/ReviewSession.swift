@@ -1476,12 +1476,16 @@ public struct ReviewWord: Sendable, Equatable {
     private func voiceAnalysisEnded(epoch: Int, failure: (any Error)?) {
         guard epoch == voiceEpoch, let runID = voiceRunID else { return }
         voiceTask = nil
-        voiceEmbeddings = voiceCache.embeddings(runID: runID)
         voiceMatchKey = nil
-        if let failure, voiceEmbeddings.isEmpty {
+        if let failure {
+            // All or nothing: matching on the tracks that worked would leave out every match on the one that failed
+            // (and merge on half the picture) with nothing said. What the other passes stored stays in the cache for
+            // voice learning, which asks about turns it covers only.
+            voiceEmbeddings = [:]
             voiceAnalysis = .failed(failure.localizedDescription)
             Self.log.error("Session \(self.sessionID, privacy: .public): voices not worked out (\(ProcessSpawner.logCategory(failure), privacy: .public))")
         } else {
+            voiceEmbeddings = voiceCache.embeddings(runID: runID)
             voiceAnalysis = .ready
             Self.log.info("Session \(self.sessionID, privacy: .public): voices worked out for \(self.voiceEmbeddings.count, privacy: .public) of \(self.voiceCache.coveredTurns, privacy: .public) turns")
         }

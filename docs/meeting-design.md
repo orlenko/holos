@@ -3706,8 +3706,10 @@ public struct SpeakerProfileDatabase: Codable, Sendable, Equatable {
     the voice sample extractor once per diarized track in the background, asking about
     every turn of 2 s or more that no split has cut (`ReviewSession.analysable`), and
     keeps the turn embeddings in a `MeetingVoiceCache` (HolosMeeting). The footer says
-    "Comparing voices (1 of 2)…" meanwhile; a pass that fails says why under the footer
-    and nothing is suggested. On the user's 53-minute meeting a pass took about 30 s per
+    "Comparing voices (1 of 2)…" meanwhile; a pass that fails on any track says why under
+    the footer and nothing is suggested or merged on any track (matching half the meeting
+    would leave out the failed track's matches unsaid; what the other passes stored still
+    serves voice learning). On the user's 53-minute meeting a pass took about 30 s per
     track (debug build). The extractor is asked about each turn with its exact span
     (`T12@723.5-731.25`), so a vector is always of the times the cache keeps it against,
     even when a split changes the turn while the pass runs. The app passes the spans on the
@@ -3844,7 +3846,7 @@ public struct SpeakerProfileDatabase: Codable, Sendable, Equatable {
   `aNewerChangeStopsAVoiceBeingLearnedAndItIsLearnedAfter`,
   `closingLearnsAVoiceStillWaitingForItsDelay`, `aSampleSyncThatFailsSaysSoAndKeepsTheName`,
   `aVoiceThatFailsWhileTheReviewClosesIsLearnedWhenItOpensAgain`,
-  `aVoiceStoppedByQuittingIsTriedAgainAndAFailureThenShows`,
+  `aVoiceStoppedByQuittingIsTriedAgainAndAFailureThenShows`, `aPassThatFailsOnOneTrackMatchesNothing`,
   `subprocessExtractorReadsEmbeddingsFromAPipe` (spans on stdin, 20 000 turns)
   (HolosMeeting).
 - **`VoiceProfileService`** (HolosMeeting, PR10) is the only code that writes profiles

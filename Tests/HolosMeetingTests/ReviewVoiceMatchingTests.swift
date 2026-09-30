@@ -525,6 +525,64 @@ func aSampleSyncThatFailsSaysSoAndKeepsTheName() async throws {
     await review.close()
 }
 
+/// Gives each turn a voice by its 5 s slot (slots 0 and 2 of every 4 are Jim's, as `voiceMap`), and fails on the
+/// `failing` track.
+private struct VoiceSlotExtractor: VoiceSampleExtractor {
+    let failing: String?
+
+    func turnEmbeddings(session: URL, track: String, turns: [TurnRef]) async throws -> [TurnEmbedding] {
+        if track == failing { throw HolosError.unavailable("The \(track) track could not be read.") }
+        return turns.map { turn in
+            let voice: [Float] = switch Int((turn.start / 5).rounded(.down)) % 4 {
+            case 0, 2: voiceJim
+            case 1: voiceA
+            default: voiceB
+            }
+            return TurnEmbedding(turnID: turn.id, speechSeconds: turn.end - turn.start,
+                                 vector: FloatVector(VectorMath.normalized(voice)))
+        }
+    }
+}
+
+@Test(.timeLimit(.minutes(1))) @MainActor
+func aPassThatFailsOnOneTrackMatchesNothing() async throws {
+    let temp = try TemporaryDirectory("voice")
+    defer { temp.remove() }
+    let store = try voiceStore(temp)
+    let transcript = SessionFixtures.transcript(SessionFixtures.alternatingSegments(track: "system", duration: 60)
+        + SessionFixtures.alternatingSegments(track: "mic", duration: 60))
+    let session = try await SessionFixtures.makeSession(in: temp.url, source: .microphoneAndSystem,
+                                                        audioSeconds: ["mic": 60, "system": 60], mode: .call,
+                                                        othersInRoom: true, transcript: transcript)
+    let speakers = FakeDiarizer.alternating(speakers: ["S1", "S2", "S3", "S4"], turnSeconds: 5, duration: 60)
+    _ = try SessionFixtures.writeHeadRun(session: session, transcript: transcript,
+                                         outputs: ["mic": speakers, "system": speakers])
+
+    // Both tracks worked: naming S1 suggests S3, which has the same voice.
+    let working = try await ReviewSession(session: session, profiles: store, maintenance: nil,
+                                          exportDelay: .seconds(60), extractor: VoiceSlotExtractor(failing: nil),
+                                          analyseVoices: true, sampleDelay: .seconds(3600))
+    try await voiceWait("the voices") { working.voiceAnalysis == .ready }
+    try await working.setName("Jim", speakerID: s1)
+    #expect(working.suggestion(for: s3)?.profileName == "Jim")
+    try await working.undo()
+    await working.close()
+
+    // The mic pass failed: nothing is matched on the system track either, and the footer says why.
+    let review = try await ReviewSession(session: session, profiles: store, maintenance: nil,
+                                         exportDelay: .seconds(60), extractor: VoiceSlotExtractor(failing: "mic"),
+                                         analyseVoices: true, sampleDelay: .seconds(3600))
+    try await voiceWait("the pass to end") {
+        if case .failed = review.voiceAnalysis { return true }
+        return review.voiceAnalysis == .ready
+    }
+    #expect(review.voiceAnalysis == .failed("The mic track could not be read."))
+    try await review.setName("Jim", speakerID: s1)
+    #expect(review.voiceMatches == .empty)
+    #expect(review.suggestion(for: s3) == nil)
+    await review.close()
+}
+
 /// Fails with "The speaker models are missing." while `broken`, else gives each turn the voice `voiceMap` names.
 private final class VoiceFlakyExtractor: VoiceSampleExtractor {
     let broken: SharedValue<Bool>
