@@ -300,7 +300,10 @@ public enum EvalStore {
             for cloud in runIDs(in: session) where try AtomicFile.removeTree(["eval", "compare", cloud, id], in: session) {
                 removed = true
             }
-            return removed
+            // A cloud run saved under this ID before "local-" model names were refused is removed below too.
+            guard FileManager.default.fileExists(atPath: EvalPaths.cloudRun(id, in: session).path)
+                    || FileManager.default.fileExists(atPath: session.appendingPathComponent("derived/eval-cloud/\(id)").path)
+            else { return removed }
         }
         for components in [["eval", "cloud", id], ["eval", "compare", id], ["eval", "review", id],
                            ["derived", "eval-cloud", id]] {

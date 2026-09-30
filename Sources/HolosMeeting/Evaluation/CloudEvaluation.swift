@@ -134,7 +134,8 @@ public enum CloudEvaluation {
                                now: Date = Date(),
                                progress: @Sendable (String) -> Void = { _ in }) throws -> Prepared {
         guard CloudModels.isValidName(options.model) else {
-            throw HolosError.invalidInput("\(options.model) is not a model name (letters, digits, \"-\" and \"_\").")
+            throw HolosError.invalidInput("\(options.model) is not a model name (letters, digits, \"-\" and \"_\"; "
+                + "not starting with \"\(EvalLocal.idPrefix)\").")
         }
         guard try !SessionArchive.isActive(at: session) else {
             throw HolosError.unavailable("This session is still recording; stop it first.")
