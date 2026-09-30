@@ -483,13 +483,14 @@ public enum ProcessSpawner {
         return true
     }
 
-    /// Spawns `executable` with `arguments` (argv[0] is the executable's path). stdin is `/dev/null`.
+    /// Spawns `executable` with `arguments` (argv[0] is the executable's path). stdin is `standardInput` (an open
+    /// descriptor of the caller's, not closed by `spawn`) or `/dev/null`.
     /// `inheritedDescriptors` are placed at their target numbers with `posix_spawn_file_actions_adddup2` (the copy loses
     /// close-on-exec; the source must not already have the target number). The environment is this process's plus
     /// `environment`. Returns the pid; throws `HolosError.unavailable` when the executable is missing and
     /// `HolosError.io` for any other failure.
-    static func spawn(executable: URL, arguments: [String], standardOutput: Output, standardError: Output,
-                      inheritedDescriptors: [(from: Int32, to: Int32)] = [], newSession: Bool = true,
+    static func spawn(executable: URL, arguments: [String], standardInput: Int32? = nil,
+                      standardOutput: Output, standardError: Output, inheritedDescriptors: [(from: Int32, to: Int32)] = [], newSession: Bool = true,
                       environment: [String: String] = [:]) throws -> pid_t {
         var opened: [Int32] = []
         defer { for fd in opened { Darwin.close(fd) } }
@@ -510,7 +511,11 @@ public enum ProcessSpawner {
         var actions: posix_spawn_file_actions_t?
         posix_spawn_file_actions_init(&actions)
         defer { posix_spawn_file_actions_destroy(&actions) }
-        posix_spawn_file_actions_addopen(&actions, 0, "/dev/null", O_RDONLY, 0)
+        if let standardInput {
+            posix_spawn_file_actions_adddup2(&actions, standardInput, 0)
+        } else {
+            posix_spawn_file_actions_addopen(&actions, 0, "/dev/null", O_RDONLY, 0)
+        }
         if let outFD {
             posix_spawn_file_actions_adddup2(&actions, outFD, 1)
         } else {

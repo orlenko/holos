@@ -17,9 +17,14 @@ final class SpeakerSidebarView: NSView, NSTableViewDataSource, NSTableViewDelega
         let isSelf: Bool
         /// The person of an automatic name, for "Not Jim".
         let automaticProfileID: String?
+        /// "Maybe Maria": recognition's suggestion, or a voice matched to a person named in this meeting
+        /// (`ReviewSession.suggestion(for:)`).
+        let suggestion: SpeakerMatch?
+        /// The suggestion comes from a voice matched in this meeting.
+        let suggestionFromVoice: Bool
         let canPlay: Bool
 
-        var hasExtraLine: Bool { speaker.suggestion != nil || automaticProfileID != nil }
+        var hasExtraLine: Bool { suggestion != nil || automaticProfileID != nil }
     }
 
     /// Return in the name field: (speaker ID, the text typed).
@@ -32,8 +37,8 @@ final class SpeakerSidebarView: NSView, NSTableViewDataSource, NSTableViewDelega
     var onMerge: ((String, String) -> Void)?
     /// Confirm a suggestion: (speaker ID, profile ID).
     var onConfirm: ((String, String) -> Void)?
-    /// "Not Maria" / "Not Jim".
-    var onReject: ((String) -> Void)?
+    /// "Not Maria" / "Not Jim": (speaker ID, the person the row shows).
+    var onReject: ((String, String?) -> Void)?
     var onConfirmAll: (() -> Void)?
 
     private let confirmAllButton = NSButton(title: "Confirm All", target: nil, action: nil)
@@ -168,6 +173,14 @@ final class SpeakerSidebarView: NSView, NSTableViewDataSource, NSTableViewDelega
         return table.row(for: field) >= 0
     }
 
+    /// The speaker whose name field has the keyboard (typed in or not), nil when none has.
+    var focusedSpeakerID: String? {
+        guard let editor = window?.firstResponder as? NSTextView, let field = editor.delegate as? NSComboBox else {
+            return nil
+        }
+        return speakerID(for: field)
+    }
+
     func controlTextDidBeginEditing(_ notification: Notification) {
         editing = true
     }
@@ -222,12 +235,15 @@ final class SpeakerSidebarView: NSView, NSTableViewDataSource, NSTableViewDelega
 
     @objc private func confirmSuggestion(_ sender: NSButton) {
         guard let speakerID = speakerID(for: sender),
-              let suggestion = rows.first(where: { $0.speaker.id == speakerID })?.speaker.suggestion else { return }
+              let suggestion = rows.first(where: { $0.speaker.id == speakerID })?.suggestion else { return }
         onConfirm?(speakerID, suggestion.profileID)
     }
 
     @objc private func reject(_ sender: NSButton) {
-        if let speakerID = speakerID(for: sender) { onReject?(speakerID) }
+        guard let speakerID = speakerID(for: sender), let row = rows.first(where: { $0.speaker.id == speakerID }) else {
+            return
+        }
+        onReject?(speakerID, row.suggestion?.profileID ?? row.automaticProfileID)
     }
 
     @objc private func confirmAll() { onConfirmAll?() }
@@ -338,9 +354,13 @@ final class SpeakerCellView: NSTableCellView {
         mergePopUp.isEnabled = editable && !others.isEmpty
         mergePopUp.toolTip = "Move every turn of this speaker to another speaker, who keeps their name."
 
-        if let suggestion = speaker.suggestion {
+        extraLabel.toolTip = nil
+        if let suggestion = row.suggestion {
             extraLabel.stringValue = "Maybe \(suggestion.profileName)"
             extraLabel.textColor = .systemBlue
+            if row.suggestionFromVoice {
+                extraLabel.toolTip = "Sounds like \(suggestion.profileName), whom you named in this meeting."
+            }
             confirmButton.isHidden = false
             rejectButton.title = "Not \(suggestion.profileName)"
         } else if row.automaticProfileID != nil {

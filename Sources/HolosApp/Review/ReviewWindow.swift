@@ -73,6 +73,9 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate {
     private lazy var findMoreItem = menuItem("Find More Speakers…", #selector(findMoreSpeakers))
     private lazy var microphoneItem = menuItem("Label Speakers on My Microphone…", #selector(labelMicrophoneSpeakers))
     private lazy var undoItem = menuItem("Undo", #selector(undo))
+    private lazy var autoMergeItem = menuItem("Merge Matching Voices Automatically", #selector(toggleAutoMerge))
+    /// "Merge Matching Voices Automatically" (off unless the user turned it on), kept across windows.
+    static let autoMergeKey = "reviewAutoMergeVoices"
     private let timeFormatter: DateFormatter = {
         let formatter = DateFormatter()
         formatter.dateStyle = .none
@@ -82,7 +85,9 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate {
 
     /// Opens the review of a labelled meeting (the labels are loaded off the main actor first).
     static func open(sessionID: String, session: URL, maintenance: MaintenanceLauncher?) async throws -> ReviewWindow {
-        let review = try await ReviewSession(session: session, profiles: SpeakerProfileStore(), maintenance: maintenance)
+        let review = try await ReviewSession(session: session, profiles: SpeakerProfileStore(), maintenance: maintenance,
+                                             analyseVoices: true, pendingVoices: PendingVoiceSamples())
+        review.autoMergeVoices = UserDefaults.standard.bool(forKey: autoMergeKey)
         return ReviewWindow(sessionID: sessionID, review: review)
     }
 
@@ -326,6 +331,10 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate {
         speakersMenu.addItem(NSMenuItem(title: "Speakers", action: nil, keyEquivalent: ""))
         for item in [confirmAllItem, findMoreItem, microphoneItem] { speakersMenu.addItem(item) }
         speakersMenu.addItem(.separator())
+        autoMergeItem.toolTip = "After you name a speaker, merge other speakers whose voice is all but the same into "
+            + "them (one Undo takes it back). Off: they are only suggested."
+        speakersMenu.addItem(autoMergeItem)
+        speakersMenu.addItem(.separator())
         speakersMenu.addItem(undoItem)
         speakersPopUp.menu = speakersMenu
 
@@ -357,11 +366,15 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate {
         sidebar.onMerge = { [weak self] from, into in
             self?.perform { review in try await review.merge(from, into: into) }
         }
-        sidebar.onReject = { [weak self] speakerID in
-            self?.perform { review in try await review.rejectSuggestion(speakerID: speakerID) }
+        sidebar.onReject = { [weak self] speakerID, profileID in
+            self?.perform { review in try await review.rejectSuggestion(speakerID: speakerID, profileID: profileID) }
         }
         sidebar.onConfirmAll = { [weak self] in self?.confirmAll() }
+        review.speakerBeingNamed = { [weak self] in self?.sidebar.focusedSpeakerID }
 
+        turnList.onAcceptHint = { [weak self] turnID in
+            self?.perform { review in try await review.acceptTurnHint(turnID) }
+        }
         turnList.onPlay = { [weak self] seconds in self?.play(from: seconds) }
         turnList.onUserScroll = { [weak self] in
             self?.follow.userScrolled(at: ProcessInfo.processInfo.systemUptime)
@@ -396,11 +409,12 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate {
         let turns = query.isEmpty ? projection.turns : review.turns(matching: query)
         let people = review.knownPeople()
         turnList.update(turns: turns, speakers: projection.speakers, people: people, editable: review.isEditable,
+                        hints: review.profiles == nil ? [:] : review.voiceMatches.turnHints,
                         text: { [review] turn in review.text(of: turn) },
                         words: { [review] turn in review.words(of: turn) },
                         resolve: { [review] id in review.resolvedTurnID(id) })
         sidebar.update(rows: sidebarRows(), people: people, editable: review.isEditable,
-                       suggestions: projection.speakers.filter { $0.suggestion != nil }.count)
+                       suggestions: review.suggestionCount)
         refreshToolbar()
         refreshFooter()
         refreshPlayback()
@@ -413,6 +427,8 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate {
                 speaker: speaker, previews: review.previews(for: speaker.id),
                 isSelf: me != nil && speaker.profileID == me,
                 automaticProfileID: review.automaticProfileID(for: speaker.id),
+                suggestion: review.suggestion(for: speaker.id),
+                suggestionFromVoice: review.voiceSuggestion(for: speaker.id) != nil,
                 canPlay: player.isReady && !review.sampleClips(for: speaker.id).isEmpty)
         }
     }
@@ -444,7 +460,7 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate {
         // play buttons and the footer's "Playback is off" notice.
         if shownPlayerState.update(player.state) {
             sidebar.update(rows: sidebarRows(), people: review.knownPeople(), editable: review.isEditable,
-                           suggestions: review.projection.speakers.filter { $0.suggestion != nil }.count)
+                           suggestions: review.suggestionCount)
             refreshFooter()
         }
     }
@@ -514,8 +530,11 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate {
         splitButton.isEnabled = editable && selected.count == 1
             && review.words(of: selected[0].id).count > 1
 
-        let suggestions = review.projection.speakers.filter { $0.suggestion != nil }.count
+        let suggestions = review.suggestionCount
+        confirmAllItem.title = suggestions > 0 ? "Confirm All Suggestions (\(suggestions))" : "Confirm All Suggestions"
         confirmAllItem.isEnabled = editable && suggestions > 0 && review.profiles != nil
+        autoMergeItem.state = review.autoMergeVoices ? .on : .off
+        autoMergeItem.isEnabled = review.profiles != nil
         findMoreItem.isEnabled = editable && review.canFindMoreSpeakers
         microphoneItem.isHidden = !review.canLabelMicrophoneSpeakers
         microphoneItem.isEnabled = editable
@@ -545,6 +564,7 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate {
         } else if let saved = review.lastSavedAt {
             parts.append("saved \(timeFormatter.string(from: saved))")
         }
+        if let voices = review.voiceStatus { parts.append(voices) }
         statusLabel.stringValue = parts.joined(separator: " · ")
 
         var lines: [Notice] = []
@@ -572,6 +592,13 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate {
         }
         if let exportProblem = review.exportProblem {
             lines.append(Notice(text: "⚠ " + exportProblem, color: .systemOrange))
+        }
+        if let voiceProblem = review.voiceProblem {
+            lines.append(Notice(text: "⚠ " + voiceProblem, color: .systemOrange))
+        }
+        if case .failed(let reason) = review.voiceAnalysis {
+            lines.append(Notice(text: "Voices can't be compared in this meeting, so no matching speakers are "
+                                + "suggested: " + reason))
         }
         if case .unavailable(let reason) = player.state { lines.append(Notice(text: reason)) }
         // Rebuilt only when they change, so a notice's button is never removed while it is being clicked.
@@ -818,6 +845,12 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate {
 
     @objc private func learnChanged() {
         review.learnVoices = learnBox.state == .on
+    }
+
+    @objc private func toggleAutoMerge() {
+        review.autoMergeVoices.toggle()
+        UserDefaults.standard.set(review.autoMergeVoices, forKey: Self.autoMergeKey)
+        refreshToolbar()
     }
 
     // MARK: - Export

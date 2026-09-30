@@ -8,6 +8,20 @@ import os
 /// Who a speaker is linked to: a known person, or a new one with this name.
 public enum ProfileTarget: Sendable, Equatable { case existing(profileID: String), new(name: String) }
 
+/// Passed as `deferSamples` to `VoiceProfileService.link`, `markSelf` and `confirmAll`: only the links are saved, and
+/// this records the people the call linked once its lines are saved, so the caller enrols exactly them when it
+/// brings the samples in step afterwards (not whoever the labels name by the time it rereads them).
+public final class DeferredSamples: Sendable {
+    private let state = OSAllocatedUnfairLock<Set<String>?>(initialState: nil)
+
+    public init() {}
+
+    func record(_ people: Set<String>) { state.withLock { $0 = people } }
+
+    /// The people linked, once the call saved its lines; nil before (or when it saved nothing).
+    public var linkedPeople: Set<String>? { state.withLock { $0 } }
+}
+
 /// People and their voices (docs/meeting-design.md §4.10, PR10). The only code that writes profiles and samples.
 ///
 /// Enrollment is asynchronous and the extractor is injected: its real implementations live in
@@ -53,20 +67,29 @@ public enum VoiceProfileService {
     /// and the audio exists, learns or updates that person's sample from this meeting through `extractor`. A person
     /// created here is removed again when the link is refused. Once the link is saved, a failure to update samples
     /// throws `HolosError.incomplete` saying the link was saved.
+    ///
+    /// `deferSamples`: only the link is saved; the caller brings the samples in step afterwards with
+    /// `syncSamples(session:extractor:store:enroll:)`, enrolling the person when `learnVoice` (the review window does
+    /// this in the background, so a name is saved at once).
     public static func link(session: URL, speakerID: String, to target: ProfileTarget, view: SpeakerProjection,
                             learnVoice: Bool, extractor: (any VoiceSampleExtractor)?,
-                            store: SpeakerProfileStore) async throws -> SpeakerSessionSnapshot {
+                            store: SpeakerProfileStore, deferSamples: DeferredSamples? = nil) async throws -> SpeakerSessionSnapshot {
         let (profile, created) = try resolve(target, store: store)
         return try await linkPeople([(speakerID, profile)], created: created ? [profile.id] : [], session: session,
                                     view: view, enroll: learnVoice ? [profile.id] : [], extractor: extractor,
-                                    store: store)
+                                    store: store, deferSamples: deferSamples)
     }
 
     /// Links every current suggestion ("Maybe Jim") to its person in one batch, so one undo reverts it, and with
     /// `learnVoices` learns their samples. Refuses (`invalidInput`) a view without suggestions of known people.
+    ///
+    /// `suggestions` (speaker ID → profile ID), when given, are the suggestions to confirm instead of the view's
+    /// recognition suggestions: the review window's list, which adds the voices matched within the meeting.
+    /// `deferSamples` as for `link`.
     public static func confirmAll(session: URL, view: SpeakerProjection, learnVoices: Bool,
                                   extractor: (any VoiceSampleExtractor)?,
-                                  store: SpeakerProfileStore) async throws -> SpeakerSessionSnapshot {
+                                  store: SpeakerProfileStore, suggestions: [String: String]? = nil,
+                                  deferSamples: DeferredSamples? = nil) async throws -> SpeakerSessionSnapshot {
         // The suggestions are recognition decisions on the meeting's labels; with edits missing, they may contradict
         // a link or a "Not Jim" that could not be read. Read here to refuse early, and again under the speaker lock
         // before the lines are appended (`requireCompleteJournal`), where another Holos can no longer slip one in.
@@ -76,23 +99,24 @@ public enum VoiceProfileService {
         let database = try store.load()
         var links: [(String, SpeakerProfile)] = []
         for speaker in view.speakers {
-            guard let suggestion = speaker.suggestion,
-                  let profile = database.profiles.first(where: { $0.id == suggestion.profileID }) else { continue }
+            guard let profileID = suggestions.map({ $0[speaker.id] }) ?? speaker.suggestion?.profileID,
+                  let profile = database.profiles.first(where: { $0.id == profileID }) else { continue }
             links.append((speaker.id, profile))
         }
         guard !links.isEmpty else { throw HolosError.invalidInput("There are no suggested names to confirm.") }
         let people = Set(links.map(\.1.id))
         return try await linkPeople(links, created: [], session: session, view: view,
                                     enroll: learnVoices ? people : [], extractor: extractor, store: store,
-                                    requireCompleteJournal: true)
+                                    requireCompleteJournal: true, deferSamples: deferSamples)
     }
 
     /// "This is me": links `speakerID` to the one `isSelf` person, created on first use with the account's full
     /// name (editable in People). Enrolls a voice sample only when `learnVoice` (the review window's "Learn voices"
     /// box) and "Remember voices" is on; otherwise it only records the link.
+    /// `deferSamples` as for `link`.
     public static func markSelf(session: URL, speakerID: String, view: SpeakerProjection,
                                 learnVoice: Bool, extractor: (any VoiceSampleExtractor)?,
-                                store: SpeakerProfileStore) async throws -> SpeakerSessionSnapshot {
+                                store: SpeakerProfileStore, deferSamples: DeferredSamples? = nil) async throws -> SpeakerSessionSnapshot {
         let (profile, created) = try store.update { database -> (SpeakerProfile, Bool) in
             if let me = database.profiles.first(where: \.isSelf) { return (me, false) }
             let me = SpeakerProfile(displayName: selfName, isSelf: true, provisional: true)
@@ -102,7 +126,7 @@ public enum VoiceProfileService {
         if created { log.notice("Created the person who is you") }
         return try await linkPeople([(speakerID, profile)], created: created ? [profile.id] : [], session: session,
                                     view: view, enroll: learnVoice ? [profile.id] : [], extractor: extractor,
-                                    store: store)
+                                    store: store, deferSamples: deferSamples)
     }
 
     /// "Not Jim" for this meeting only (`rejectProfile`); unlinks the speaker if it was linked to that person. Takes
@@ -664,7 +688,8 @@ public enum VoiceProfileService {
     private static func linkPeople(_ links: [(speakerID: String, profile: SpeakerProfile)], created: Set<String>,
                                    session: URL, view: SpeakerProjection, enroll: Set<String>,
                                    extractor: (any VoiceSampleExtractor)?, store: SpeakerProfileStore,
-                                   requireCompleteJournal: Bool = false) async throws -> SpeakerSessionSnapshot {
+                                   requireCompleteJournal: Bool = false,
+                                   deferSamples: DeferredSamples? = nil) async throws -> SpeakerSessionSnapshot {
         let actions = links.flatMap { link -> [SpeakerEditAction] in
             [.linkProfile(speakerID: link.speakerID, profileID: link.profile.id),
              .rename(speakerID: link.speakerID, name: link.profile.displayName)]
@@ -709,9 +734,18 @@ public enum VoiceProfileService {
             // person the meeting links. Then samples are brought in step anyway (cheap when nothing changed),
             // and the error is reported.
             takeUp(created, named: linked, store: store)
+            // Deferred: the caller brings the samples in step once it has seen the error.
+            if let deferSamples {
+                deferSamples.record(Set(linked.keys))
+                throw error
+            }
             try await syncAfterSavedEdit(error, session: session, extractor: extractor, store: store, enroll: enroll)
         }
         takeUp(created, named: linked, store: store)
+        if let deferSamples {
+            deferSamples.record(Set(linked.keys))
+            return snapshot
+        }
         guard !enroll.isEmpty || needsRefresh else { return snapshot }
         do {
             try await syncSamples(session: session, extractor: extractor, store: store, enroll: enroll)
@@ -822,8 +856,35 @@ public enum VoiceProfileService {
     /// The plan is made from an unlocked read of the store; the changes are published only if, under the speaker lock
     /// and then `profiles.lock`, the generation is unchanged and the store as it is then gives the same plan (and the
     /// same minimum sample length). Otherwise the attempt is redone from the new state.
+    ///
+    /// `enrollEpochs` (profile ID → the store's `forgetEpoch` when the voice was asked for; the review window learns
+    /// voices a while after the link is saved): a person in `enroll` whose entry differs from the epoch now is not
+    /// enrolled, because a forget landed after the voice was asked for and the forget is the later request; the other
+    /// samples are still brought in step, then `forgottenWhileLearning` is thrown. The epoch is held from that first
+    /// read for the whole sync, so a forget between two attempts is caught as well.
     static func syncSamples(session: URL, extractor: (any VoiceSampleExtractor)?, store: SpeakerProfileStore,
-                            enroll: Set<String>) async throws {
+                            enroll requested: Set<String>, enrollEpochs: [String: Int] = [:]) async throws {
+        var enroll = requested
+        var baseline: Int?
+        var forgotten = false
+        if !enrollEpochs.isEmpty, !requested.isEmpty {
+            let epoch = try store.load().forgetEpoch ?? 0
+            let stale = requested.filter { enrollEpochs[$0].map { $0 != epoch } ?? false }
+            enroll.subtract(stale)
+            forgotten = !stale.isEmpty
+            baseline = epoch
+        }
+        try await syncSampleAttempts(session: session, extractor: extractor, store: store, enroll: enroll,
+                                     forgetBaseline: baseline)
+        if forgotten {
+            log.notice("Voices were forgotten after they were asked for; they were not learned")
+            throw HolosError.unavailable(forgottenWhileLearning)
+        }
+    }
+
+    private static func syncSampleAttempts(session: URL, extractor: (any VoiceSampleExtractor)?,
+                                           store: SpeakerProfileStore, enroll: Set<String>,
+                                           forgetBaseline: Int?) async throws {
         for attempt in 1...sampleAttempts {
             try Task.checkCancellation()
             let (generation, snapshot) = try consistentSnapshot(session)
@@ -847,6 +908,10 @@ public enum VoiceProfileService {
             let model = run.engine?.embeddingModel
             let database = try store.load()
             let forgetEpoch = database.forgetEpoch ?? 0
+            if let forgetBaseline, !enroll.isEmpty, forgetEpoch != forgetBaseline {
+                log.notice("Session \(sessionID, privacy: .public): voices were forgotten while a voice was waiting to be learned; nothing was saved")
+                throw HolosError.unavailable(forgottenWhileLearning)
+            }
             let makePlans = { (database: SpeakerProfileDatabase) in
                 plan(database: database, snapshot: snapshot, run: run, projection: projection, enroll: enroll,
                      extractorAvailable: extractor != nil)

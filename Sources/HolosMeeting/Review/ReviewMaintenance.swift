@@ -59,6 +59,62 @@ public enum ReviewMaintenance {
     }
 }
 
+/// Voice sample syncs a review could not finish (docs/meeting-design.md §5.10, "Voice learning off the edit queue"):
+/// one failed while its window was closing (nobody saw it), or the app quit before it ran. The meeting's next review
+/// says so in its footer and runs it again. Kept in UserDefaults like `PendingExports`: session IDs, the IDs of the
+/// people whose voices were asked for with the store's forget epoch then (so a forget since still wins), and why it
+/// failed. No voice data.
+public struct PendingVoiceSamples {
+    public static let key = "meeting.voiceSamplesPending"
+
+    public struct Entry: Codable, Sendable, Equatable {
+        /// Profile ID → the store's `forgetEpoch` when the voice was asked for. Empty: only bringing this meeting's
+        /// samples in step with its labels was owed.
+        public var enroll: [String: Int]
+        /// Why it failed; nil when it was stopped (the app quit).
+        public var problem: String?
+
+        public init(enroll: [String: Int], problem: String?) {
+            self.enroll = enroll; self.problem = problem
+        }
+    }
+
+    private let defaults: UserDefaults
+
+    public init(defaults: UserDefaults = .standard) {
+        self.defaults = defaults
+    }
+
+    public var entries: [String: Entry] {
+        guard let data = defaults.data(forKey: Self.key),
+              let entries = try? JSONDecoder().decode([String: Entry].self, from: data) else { return [:] }
+        return entries
+    }
+
+    public func entry(_ sessionID: String) -> Entry? { entries[sessionID] }
+
+    public func mark(_ sessionID: String, _ entry: Entry) {
+        var all = entries
+        guard all[sessionID] != entry else { return }
+        all[sessionID] = entry
+        store(all)
+    }
+
+    public func clear(_ sessionID: String) {
+        var all = entries
+        guard all.removeValue(forKey: sessionID) != nil else { return }
+        store(all)
+    }
+
+    private func store(_ all: [String: Entry]) {
+        guard !all.isEmpty, let data = try? JSONEncoder().encode(all) else {
+            defaults.removeObject(forKey: Self.key)
+            return
+        }
+        defaults.set(data, forKey: Self.key)
+    }
+}
+
 /// Meetings whose transcript files (`exports/`) are older than their saved speaker labels because rewriting them
 /// failed when a review window closed (docs/meeting-design.md §5.10). Kept in UserDefaults, which a full disk does not
 /// stop, so Meetings can say so and the meeting's next review rewrites them. Holds session IDs only.

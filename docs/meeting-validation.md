@@ -296,6 +296,37 @@ Result: Pending.
 
 Result: Pending.
 
+### Voices within one meeting
+
+Use a meeting where the diarizer split one person into two or more "Speaker N" (a long
+call usually has one; otherwise **Find More Speakers…** on a two-person meeting makes one).
+
+1. **Voice pass.** Open its review. Pass: the footer shows "Comparing voices…" (with "1 of 2"
+   when both tracks were split) and it goes away within a minute or two for an hour of audio;
+   editing names works the whole time. Nothing new appears in the meeting folder
+   (`ls -la <session>` before and after), whatever Remember voices says.
+2. **Suggestions after naming.** Name one part of the split person ("Jim"). Pass: within a
+   second of the name being saved, the other part shows "Maybe Jim" with Confirm / Not Jim,
+   Confirm All counts it, and speakers of other people show nothing. **Confirm** gives it
+   the name; **Not Jim** removes the suggestion, and it stays removed after closing and
+   reopening the review.
+3. **Mixed speakers.** Where Jim's turns were given to another speaker, the turn row shows
+   "⚠ Jim?" instead of the uncertainty warning. Pass: clicking it gives that turn to Jim at
+   once, and ⌘Z takes it back.
+4. **Names save at once.** With Remember voices on and the footer box checked, name a
+   person. Pass: the name shows and saves at once ("saved <time>"), "Learning voices…"
+   follows in the footer, and People then lists a sample from this meeting. Renaming
+   another speaker while it learns is not held up, and the sample still arrives.
+5. **Automatic merge.** Turn on **Speakers ▾ › Merge Matching Voices Automatically**, then
+   name the other part of a split person in a fresh review. Pass: parts with the same voice
+   disappear into the named speaker as one change (one ⌘Z brings them back); parts that are
+   only similar keep a "Maybe" suggestion. Turn it off again: naming only suggests.
+6. **Close while learning.** Name a person and close the window at once. Pass: the window
+   closes after the voice is learned (People lists the sample), and reopening the review
+   works out the voices again.
+
+Result: Pending.
+
 ### Playback and following along
 
 Use a meeting of at least 10 minutes with several speakers.

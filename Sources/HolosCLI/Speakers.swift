@@ -371,7 +371,11 @@ struct Speakers: AsyncParsableCommand {
 
         @Argument(help: "Path to a .holos folder, or a session ID.") var session: String
         @Option(help: "The track (mic or system).") var track: String
-        @Option(help: "Turn IDs, separated by commas.") var turns: String
+        @Option(help: """
+            Turn IDs, separated by commas; ID@start-end (session seconds) embeds exactly that span. "-" reads them \
+            from stdin, one per line (how VoiceIsLocal.app passes them, so the arguments stay short).
+            """)
+        var turns: String
         @Flag(help: "Print JSON (the only format).") var json = false
 
         func validate() throws {
@@ -387,22 +391,75 @@ struct Speakers: AsyncParsableCommand {
             }
             let loaded = try SpeakerCommand.load(session)
             var seen = Set<String>()
-            let ids = turns.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }
-                .filter { !$0.isEmpty && seen.insert($0).inserted }
+            let entries = try Self.entries(turns == "-" ? Self.readStandardInput() : turns)
             let byID = Dictionary(loaded.view.turns.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
-            let refs = try ids.map { id -> TurnRef in
-                guard let turn = byID[id], turn.track == track else {
-                    throw HolosError.invalidInput("There is no turn \(id) on the \(track) track.")
+            var refs: [TurnRef] = []
+            for entry in entries {
+                // With a span, exactly that audio is embedded, whatever the labels say now: the app's voice pass
+                // keeps each vector against the times it asked about, and a split made while it runs must not
+                // shorten one of them behind its back.
+                if let span = SubprocessVoiceSampleExtractor.parseSpan(entry) {
+                    if seen.insert(span.id).inserted { refs.append(span) }
+                    continue
                 }
-                return TurnRef(turn)
+                guard !entry.contains("@") else {
+                    throw HolosError.invalidInput("\(entry) is not a turn ID or ID@start-end.")
+                }
+                guard seen.insert(entry).inserted else { continue }
+                guard let turn = byID[entry], turn.track == track else {
+                    throw HolosError.invalidInput("There is no turn \(entry) on the \(track) track.")
+                }
+                refs.append(TurnRef(turn))
             }
-            guard let extractor = makeVoiceSampleExtractor(session: loaded.session) else {
+            // Stopped by the app (SIGTERM) when its review closes or a newer change comes: the render, a decoded copy
+            // of the meeting's audio, is deleted before exiting instead of waiting for the stale-render sweep.
+            let scratch = FileManager.default.temporaryDirectory.appendingPathComponent(
+                DiarizerVoiceSampleExtractor.renderPrefix + UUID().uuidString, isDirectory: true)
+            signal(SIGTERM, SIG_IGN)
+            let terminate = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .global())
+            terminate.setEventHandler {
+                try? FileManager.default.removeItem(at: scratch)
+                _exit(143)
+            }
+            terminate.resume()
+            try FileManager.default.createDirectory(at: scratch, withIntermediateDirectories: false,
+                                                    attributes: [.posixPermissions: 0o700])
+            defer { try? FileManager.default.removeItem(at: scratch) }
+            guard let extractor = makeVoiceSampleExtractor(session: loaded.session, temporaryDirectory: scratch) else {
                 throw HolosError.unavailable(SpeakerCommand.modelsMissing)
             }
             let embeddings = try await extractor.turnEmbeddings(session: loaded.session, track: track, turns: refs)
             var data = try HolosJSON.encoder(pretty: false).encode(TurnEmbeddingsOutput(turnEmbeddings: embeddings))
             data.append(0x0A)
             try FileHandle.standardOutput.write(contentsOf: data)
+        }
+
+        /// The most turn text read from stdin: far more than a day of turns.
+        static let maxInputBytes = 16 << 20
+
+        /// The turn entries of `text`: separated by commas or line breaks, blanks dropped.
+        static func entries(_ text: String) -> [String] {
+            text.split(whereSeparator: { $0 == "," || $0.isNewline })
+                .map { $0.trimmingCharacters(in: .whitespaces) }
+                .filter { !$0.isEmpty }
+        }
+
+        /// stdin to its end, as UTF-8 text.
+        static func readStandardInput() throws -> String {
+            var data = Data()
+            var buffer = [UInt8](repeating: 0, count: 64 * 1024)
+            while true {
+                let count = buffer.withUnsafeMutableBytes { Darwin.read(STDIN_FILENO, $0.baseAddress, $0.count) }
+                if count < 0, errno == EINTR { continue }
+                guard count >= 0 else { throw HolosError.io("Cannot read the turns from stdin.") }
+                if count == 0 { break }
+                data.append(contentsOf: buffer[0..<count])
+                guard data.count <= maxInputBytes else { throw HolosError.invalidInput("Too many turns on stdin.") }
+            }
+            guard let text = String(data: data, encoding: .utf8) else {
+                throw HolosError.invalidInput("The turns on stdin are not UTF-8 text.")
+            }
+            return text
         }
     }
 }

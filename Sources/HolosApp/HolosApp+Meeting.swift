@@ -769,6 +769,8 @@ extension HolosAppDelegate: NSMenuDelegate {
         meeting.meetingsPane?.refresh()
         let name = Self.short(summary.name)
         if code == 0, action == .deleteMeeting || action == .deleteAudio {
+            // No voice can be learned from the meeting any more.
+            PendingVoiceSamples().clear(summary.id)
             if action == .deleteMeeting {
                 PendingExports().clear(summary.id)
                 if meeting.lastSummary?.sessionID == summary.id { meeting.lastSummary = nil }
@@ -990,6 +992,8 @@ extension HolosAppDelegate: NSMenuDelegate {
         }
         if !(await waitAtMost(limit, for: closing)) {
             Self.meetingLog.error("Quitting before \(windows.count, privacy: .public) review windows finished saving")
+            // Their voice work stops now, so no child process outlives the app with a render of the audio.
+            for window in windows { window.review.stopBackgroundWork() }
         }
     }
 

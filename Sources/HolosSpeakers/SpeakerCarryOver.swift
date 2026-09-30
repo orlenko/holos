@@ -1,17 +1,18 @@
 import Foundation
 import HolosCore
 
-/// Carries speaker-level labels (names, profile links, rejections) from the projection of a replaced head to a new
-/// run, so human edits survive relabelling (docs/contracts.md; docs/meeting-design.md §4.9). Turn-level edits stay
-/// in the journal under the old run and are only counted. Pure; the caller appends the actions with
+/// Carries speaker-level labels (names, profile links, rejections) and the time kept out of voice learning from the
+/// projection of a replaced head to a new run, so human edits survive relabelling (docs/contracts.md;
+/// docs/meeting-design.md §4.9). Other turn-level edits stay in the journal under the old run and are only counted. Pure; the caller appends the actions with
 /// `source: "carry"`, the new run as `baseRunID`, and one batch ID.
 public enum SpeakerCarryOver {
     public struct Result: Sendable, Equatable {
-        /// rename / linkProfile / rejectProfile actions on the new run's speakers.
+        /// rename / linkProfile / rejectProfile actions on the new run's speakers, then at most one
+        /// excludeFromEnrollment of the new run's turns.
         public var actions: [SpeakerEditAction]
         /// Old speakers with a name, link, or rejection that matched nothing (IDs only).
         public var unmatchedSpeakers: [String]
-        /// Turn-level edits (reassign, split, new speaker, exclude) and merges that are not carried.
+        /// Turn-level edits (reassign, split, new speaker) and merges that are not carried.
         public var droppedTurnEdits: Int
 
         public init(actions: [SpeakerEditAction] = [], unmatchedSpeakers: [String] = [], droppedTurnEdits: Int = 0) {
@@ -101,7 +102,26 @@ public enum SpeakerCarryOver {
                 actions.append(.rejectProfile(speakerID: target, profileID: profileID))
             }
         }
+        let excluded = excludedTurnIDs(from: old, to: new)
+        if !excluded.isEmpty { actions.append(.excludeFromEnrollment(turnIDs: excluded)) }
         return Result(actions: actions, unmatchedSpeakers: unmatched, droppedTurnEdits: old.appliedTurnEditCount)
+    }
+
+    /// The new run's turns (in run order) that share speech time with a turn the old projection keeps out of voice
+    /// learning, on the same track. A turn kept out of voice learning (by the user, or by an automatic merge nobody
+    /// confirmed) stays out after relabelling, whichever speaker its speech lands in: its time is kept out, and a new
+    /// turn that takes in any of it is kept out whole.
+    static func excludedTurnIDs(from old: SpeakerProjection, to new: DiarizationRun) -> [String] {
+        var ranges: [String: [SecondsRange]] = [:]
+        for turn in old.turns where turn.excludedFromEnrollment {
+            ranges[turn.track, default: []].append(SecondsRange(start: turn.start, end: turn.end))
+        }
+        guard !ranges.isEmpty else { return [] }
+        let unions = ranges.mapValues(Intervals.union)
+        return new.turns.filter { turn in
+            guard let union = unions[turn.track] else { return false }
+            return Intervals.overlap(union, start: turn.start, end: turn.end) > timeEpsilon
+        }.map(\.id)
     }
 
     /// Shared time must be at least this share of the smaller talk time.

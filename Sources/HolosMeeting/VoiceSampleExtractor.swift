@@ -118,7 +118,7 @@ public struct DiarizerVoiceSampleExtractor: VoiceSampleExtractor {
     }
 
     /// The name a render folder gets: `holos-voice-<UUID>` in the temporary directory.
-    static let renderPrefix = "holos-voice-"
+    public static let renderPrefix = "holos-voice-"
 
     /// How long a render folder must have been untouched before the sweep takes it: longer than any enrollment
     /// runs, so a render of another Holos that is using it right now is never removed.
@@ -188,9 +188,11 @@ public struct DiarizerVoiceSampleExtractor: VoiceSampleExtractor {
 }
 
 /// The app's extractor (§4.10): the app never links FluidAudio, so it runs the bundled hidden
-/// `voiceislocal speakers embed <session> --track <t> --turns <id,id,…> --json` and reads the embeddings from its stdout
-/// through a pipe (never a file). The child's stderr goes to a private temporary file that is read on failure and
-/// deleted. Cancelling the task stops the child (SIGTERM).
+/// `voiceislocal speakers embed <session> --track <t> --turns - --json` and reads the embeddings from its stdout
+/// through a pipe (never a file). The turns go on the child's stdin, one `ID@start-end` per line, from a private
+/// temporary file (0600) that is unlinked before the child starts: a 3-hour meeting has thousands of turns, and one
+/// argv entry holding them all could pass `ARG_MAX`. The child's stderr goes to a private temporary file that is read
+/// on failure and deleted. Cancelling the task stops the child (SIGTERM).
 public struct SubprocessVoiceSampleExtractor: VoiceSampleExtractor {
     private static let log = Logger(subsystem: "ca.orlenko.holos.app", category: "profiles")
     /// The most output accepted from the child.
@@ -205,18 +207,46 @@ public struct SubprocessVoiceSampleExtractor: VoiceSampleExtractor {
         self.executable = executable; self.temporaryDirectory = temporaryDirectory
     }
 
-    /// ["speakers", "embed", <session path>, "--track", track, "--turns", "T1,T2,…", "--json"]
-    public static func arguments(session: URL, track: String, turnIDs: [String]) -> [String] {
-        ["speakers", "embed", session.path, "--track", track, "--turns", turnIDs.joined(separator: ","), "--json"]
+    /// ["speakers", "embed", <session path>, "--track", track, "--turns", "-", "--json"]: the same few arguments
+    /// however many turns are asked about (they go on stdin, `turnList`).
+    public static func arguments(session: URL, track: String) -> [String] {
+        ["speakers", "embed", session.path, "--track", track, "--turns", "-", "--json"]
+    }
+
+    /// What the child reads on stdin: one `span` per line.
+    public static func turnList(_ turns: [TurnRef]) -> Data {
+        Data(turns.map { span($0) + "\n" }.joined().utf8)
+    }
+
+    /// `ID@start-end`: the turn with the exact span to embed (session seconds, shortest round-trip form), so the
+    /// child embeds the audio the caller asked about even when the labels changed since.
+    public static func span(_ turn: TurnRef) -> String {
+        "\(turn.id)@\(turn.start)-\(turn.end)"
+    }
+
+    /// The turn `span` wrote; nil when `entry` is not in that form or its times are not a finite, non-negative,
+    /// non-empty span.
+    public static func parseSpan(_ entry: String) -> TurnRef? {
+        guard let at = entry.lastIndex(of: "@") else { return nil }
+        let id = String(entry[..<at])
+        let times = entry[entry.index(after: at)...]
+        // The end follows the last "-" that is not an exponent's sign or the start's own sign.
+        guard !id.isEmpty, let dash = times.indices.dropFirst().last(where: { index in
+            times[index] == "-" && !"eE".contains(times[times.index(before: index)])
+        }), let start = Double(times[..<dash]), let end = Double(times[times.index(after: dash)...]),
+              start.isFinite, end.isFinite, start >= 0, end > start else { return nil }
+        return TurnRef(id: id, start: start, end: end)
     }
 
     public func turnEmbeddings(session: URL, track: String, turns: [TurnRef]) async throws -> [TurnEmbedding] {
         guard !turns.isEmpty else { return [] }
-        guard turns.allSatisfy({ !$0.id.isEmpty && !$0.id.contains(",") }) else {
-            throw HolosError.invalidInput("A turn ID cannot contain a comma.")
+        guard turns.allSatisfy({ turn in
+            !turn.id.isEmpty && !turn.id.contains(",") && !turn.id.contains("@") && !turn.id.contains(where: \.isNewline)
+        }) else {
+            throw HolosError.invalidInput("A turn ID cannot contain a comma, an @, or a line break.")
         }
-        let arguments = Self.arguments(session: session, track: track, turnIDs: turns.map(\.id))
-        let (code, output, errorText) = try await run(arguments)
+        let (code, output, errorText) = try await run(Self.arguments(session: session, track: track),
+                                                      input: Self.turnList(turns))
         guard code == 0 else {
             Self.log.error("voiceislocal speakers embed exited \(code, privacy: .public)")
             throw HolosError.unavailable(errorText ?? "The voiceislocal tool could not learn this voice (exit \(code)).")
@@ -234,8 +264,11 @@ public struct SubprocessVoiceSampleExtractor: VoiceSampleExtractor {
         return decoded.turnEmbeddings.filter { requested.contains($0.turnID) }
     }
 
-    /// Spawns the child with stdout on a pipe, reads it to the end off the cooperative pool, and waits for the exit.
-    private func run(_ arguments: [String]) async throws -> (code: Int32, output: Data, error: String?) {
+    /// Spawns the child with `input` on stdin and stdout on a pipe, reads it to the end off the cooperative pool, and
+    /// waits for the exit.
+    private func run(_ arguments: [String], input: Data) async throws -> (code: Int32, output: Data, error: String?) {
+        let inputFD = try Self.unlinkedFile(holding: input, in: temporaryDirectory)
+        defer { Darwin.close(inputFD) }
         var fds: [Int32] = [-1, -1]
         guard pipe(&fds) == 0 else {
             throw HolosError.io("Cannot start the voiceislocal tool: \(String(cString: strerror(errno))).")
@@ -247,7 +280,7 @@ public struct SubprocessVoiceSampleExtractor: VoiceSampleExtractor {
         let errorLog = temporaryDirectory.appendingPathComponent("holos-embed-\(UUID().uuidString).log")
         let pid: pid_t
         do {
-            pid = try ProcessSpawner.spawn(executable: executable, arguments: arguments,
+            pid = try ProcessSpawner.spawn(executable: executable, arguments: arguments, standardInput: inputFD,
                                            standardOutput: .descriptor(writeEnd),
                                            standardError: .file(errorLog, append: false))
         } catch {
@@ -278,6 +311,33 @@ public struct SubprocessVoiceSampleExtractor: VoiceSampleExtractor {
         }
         try Task.checkCancellation()
         return (result.0, result.1, result.0 == 0 ? nil : ProcessSpawner.lastLine(of: errorLog))
+    }
+
+    /// A descriptor open for reading at the start of `data`, from a file created 0600 in `directory` and unlinked
+    /// before this returns: nothing is left on disk, whatever happens to the child or the app.
+    static func unlinkedFile(holding data: Data, in directory: URL) throws -> Int32 {
+        let url = directory.appendingPathComponent("holos-embed-\(UUID().uuidString).turns")
+        let fd = Darwin.open(url.path, O_RDWR | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0o600)
+        guard fd >= 0 else {
+            throw HolosError.io("Cannot pass the turns to the voiceislocal tool: \(String(cString: strerror(errno))).")
+        }
+        unlink(url.path)
+        let written = data.withUnsafeBytes { bytes -> Bool in
+            var offset = 0
+            while offset < bytes.count {
+                let count = Darwin.write(fd, bytes.baseAddress! + offset, bytes.count - offset)
+                if count < 0, errno == EINTR { continue }
+                guard count > 0 else { return false }
+                offset += count
+            }
+            return true
+        }
+        guard written, lseek(fd, 0, SEEK_SET) == 0 else {
+            let reason = String(cString: strerror(errno))
+            Darwin.close(fd)
+            throw HolosError.io("Cannot pass the turns to the voiceislocal tool: \(reason).")
+        }
+        return fd
     }
 
     /// Everything readable from `fd` until end of file; nil when it exceeds `limit`.
