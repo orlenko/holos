@@ -284,6 +284,12 @@ public enum EvalLocal {
         if isNew { try EvalStore.write(record, to: EvalPaths.localRecord(record.id, in: session)) }
         progress("Local run \(record.id): \(record.partCount - missing.count) of \(record.partCount) track "
             + "transcriptions saved; \(record.vocabulary.count) vocabulary strings.")
+        // Tracks whose current transcript has words: a transcription of one that comes back empty failed rather than
+        // heard silence (as the languages stage treats it), and is never saved as a finished part.
+        let current = try? SessionFiles.currentTranscript(session: session)
+        let tracksWithWords = Set((current?.segments ?? []).filter {
+            !$0.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }.compactMap(\.track))
         for (language, track) in missing {
             try Task.checkCancellation()
             let label = "the \(track.track) track in \(LanguageStage.name(language))"
@@ -293,6 +299,11 @@ public enum EvalLocal {
                 progress("  \(label): \(percent) %")
             }
             try Task.checkCancellation()
+            let heardWords = segments.contains { !$0.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+            if !heardWords, tracksWithWords.contains(track.track) || current == nil {
+                throw HolosError.unavailable("No words were recognized in \(label), although the meeting's transcript "
+                    + "has some there; nothing was saved for it. Run the same command again to try again.")
+            }
             let saved = LocalRunPart(language: language, track: track.track, segments: segments, finishedAt: Date())
             try EvalStore.write(saved, to: EvalPaths.localPart(record.id, language: language, track: track.track,
                                                               in: session))

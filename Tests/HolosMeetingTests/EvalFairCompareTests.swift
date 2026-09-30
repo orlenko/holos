@@ -638,3 +638,10 @@ private func words(_ text: String) -> [String] { text.split(separator: " ").map(
     let track = EvalTerms.Track(track: "system", words: words, covered: Array(repeating: true, count: words.count))
     #expect(EvalTerms.count(terms, tracks: [track], normalized: true).map { "\($0.hits)/\($0.cloud)" } == ["1/1"])
 }
+
+@Test func fairMixedNumericTermsAreScannedToTheirFullLength() {
+    let terms = EvalTerms.terms(wordList: ["1 a b c d e f g h i j"], corrections: [])
+    let words = ["say", "one", "a", "b", "c", "d", "e", "f", "g", "h", "i", "j"]
+    let track = EvalTerms.Track(track: "system", words: words, covered: Array(repeating: true, count: words.count))
+    #expect(EvalTerms.count(terms, tracks: [track], normalized: true).map { "\($0.hits)/\($0.cloud)" } == ["1/1"])
+}

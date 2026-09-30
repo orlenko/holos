@@ -151,7 +151,12 @@ public enum EvalTerms {
         let longestForm = forms.map(\.count).max() ?? 0
         // Counted in units, a whole spelled-number run being one however long ("plus nine hundred … percent"):
         // room for each number of the term and `maxOccurrenceWords` more.
-        let unitCap = maxOccurrenceWords + (pattern.reading?.numbers.count ?? 0)
+        // The whole reading: each of its numbers and each other word is one unit ("1 a b c … j" is eleven).
+        let readingUnits = pattern.reading.map { reading in
+            reading.numbers.count + reading.text.split(separator: "\u{1}", omittingEmptySubsequences: false).enumerated()
+                .filter { $0.offset % 2 == 0 }.reduce(0) { $0 + $1.element.count }
+        } ?? 0
+        let unitCap = maxOccurrenceWords + readingUnits
         var found: [Range<Int>] = []
         var start = 0
         while start < keys.count {
