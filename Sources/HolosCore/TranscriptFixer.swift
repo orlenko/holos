@@ -79,8 +79,8 @@ public struct TranscriptFixer: Sendable {
 
         // The choice of learned pairs and the guard run inside the time limit too: with a long list and a long chunk
         // they are work the chunk would otherwise wait for with no bound.
-        let fixed: String, verdict: AIFixGuard.Verdict, swapped: String?
-        switch await Self.firstOf(timeout, { [model, corrections, wordList, heardAs, referenceBudget, language,
+        let fixed: String, verdict: AIFixGuard.Verdict
+        switch await Self.firstOf(timeout, { [model, corrections, wordList, referenceBudget, language,
                                                spellingBudget] in
             // One lexicon for the chunk: each distinct word asks the spell checker once, on its own queue and within
             // `spellingBudget`; a word it did not reach counts as real, which lets nothing more through.
@@ -96,14 +96,29 @@ public struct TranscriptFixer: Sendable {
             let verdict = AIFixGuard.check(original: core, fixed: fixed, protecting: corrections.entries,
                                            taught: reference, language: language, lexicon: lexicon)
             try Task.checkCancellation()
-            // Then the word list's "often heard as" words, each place asked about on its own.
-            let swapped = try await Self.choosingTerms(in: verdict == .accept ? fixed : core, pairs: heardAs,
-                                                       protecting: corrections.entries, model: model)
-            return (fixed, verdict, swapped)
+            return (fixed, verdict)
         }) {
-        case .value(let value): (fixed, verdict, swapped) = value
+        case .value(let value): (fixed, verdict) = value
         case .timedOut: return Result(text: chunk, outcome: .timedOut)
         case .failed: return Result(text: chunk, outcome: .failed)
+        }
+
+        // Term questions get their own bounded pass after the base fix is validated. A slow question must not throw
+        // away that safe fix merely because it used the tail of the base fix's time budget.
+        let swapped: String?
+        if heardAs.isEmpty {
+            swapped = nil
+        } else {
+            switch await Self.firstOf(timeout, { [model, corrections, heardAs] in
+                try await Self.choosingTerms(in: verdict == .accept ? fixed : core, pairs: heardAs,
+                                             protecting: corrections.entries, model: model)
+            }) {
+            case .value(let value): swapped = value
+            case .timedOut: swapped = nil
+            case .failed:
+                if Task.isCancelled { return Result(text: chunk, outcome: .failed) }
+                swapped = nil
+            }
         }
         if let swapped {
             var result = Result(text: leading + swapped + trailing, outcome: .fixed)

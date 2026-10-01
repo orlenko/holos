@@ -305,6 +305,7 @@ func editedSpeakerLabelsKeepTheTranscriptUnlessFixWordsIsForced() async throws {
     #expect(wordFixOutcome(automatic)?.result == .skipped)
     #expect(wordFixOutcome(automatic)?.message == WordFixStage.editedHead)
     #expect(try wordFixCurrent(session) == recorded)
+    #expect(model.questions.value == 0, "An automatic run does no model work it cannot publish.")
     let unforced = try await SessionWordFixesCommand.run(
         SessionWordFixesCommand.Request(session: session), diarizer: FakeDiarizer(
             outputs: ["mic": SessionFixtures.alternatingOutput()]), freeSpace: FixedFreeSpace(.max),
@@ -313,6 +314,7 @@ func editedSpeakerLabelsKeepTheTranscriptUnlessFixWordsIsForced() async throws {
     #expect(unforced.summary.hasPrefix(WordFixStage.editedHead))
     #expect(try wordFixCurrent(session) == recorded)
     #expect(try SessionFixtures.view(session).speakers.contains { $0.name == "Alice" })
+    #expect(model.questions.value == 0, "An unforced fix-words does no model work it cannot publish.")
 
     // With --force the words are fixed, speakers labelled again on them, and the name carries over.
     let forced = try await SessionWordFixesCommand.run(

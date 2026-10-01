@@ -258,6 +258,20 @@ private let claudePairs = ["cloud", "clot"].map { Correction(heard: $0, meant: "
     #expect(result.outcome == .fixed && result.text == "Then cloud fixed the parser.")
 }
 
+@Test func aTimedOutQuestionKeepsThePlaceAndTheFix() async {
+    var fixer = TranscriptFixer(corrections: CorrectionList(), wordList: ["Claude"], heardAs: claudePairs,
+                                referenceBudget: 500, timeout: .milliseconds(50), language: "en-US") { _, prompt in
+        guard prompt.hasPrefix("Text: ") else {
+            try await Task.sleep(for: .seconds(3600))
+            return "Claude"
+        }
+        return "Then cloud fixed the parser."
+    }
+    fixer.spellingBudget = .seconds(60)
+    let result = await fixer.fix("Then cloud fixed the parcer.", isFinal: true)
+    #expect(result.outcome == .fixed && result.text == "Then cloud fixed the parser.")
+}
+
 @Test func aTermJoinsTheFixAndOnlyItsPlaceChanges() async {
     // The fix corrects a non-word; the question then puts the term at the heard word, and only there.
     let fixer = heardAsFixer(heardAs: claudePairs, reply: "Then cloud fixed the parser.",
@@ -272,4 +286,3 @@ private let claudePairs = ["cloud", "clot"].map { Correction(heard: $0, meant: "
     #expect(swapped.text == "Claude and cloud and clot and cloud")
     #expect(calls.questions.count == TranscriptFixer.maximumHeardAsQuestions)
 }
-

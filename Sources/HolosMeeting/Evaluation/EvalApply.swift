@@ -394,6 +394,7 @@ public enum EvalApply {
         for (term, change) in changes {
             guard let change else {
                 report.errors.append("Not in the word list, so its often-heard-as words were not added: \(term)")
+                report.exitCode = 1
                 continue
             }
             WordListCommand.add(change, to: &report)

@@ -83,6 +83,7 @@ private let evalDictionary: Set<String> = ["i", "asked", "cloud", "to", "help", 
                                            store: store)
     #expect(added.output == ["Claude is often heard as: cloud."])
     #expect(added.errors == ["Not in the word list, so its often-heard-as words were not added: Codex"])
+    #expect(added.exitCode == 1)
     #expect(try store.load().heardAsPairs == [Correction(heard: "cloud", meant: "Claude")])
     #expect(try EvalApply.addToHeardAs(result.heardAs, store: store).errors == ["Already listed for Claude: cloud"])
 }

@@ -112,6 +112,13 @@ enum WordFixStage {
         let started = recorder.begin(.wordFixes, message: "Fixing misheard words…")
         try Task.checkCancellation()
 
+        // Do not spend model work on a result that cannot be published. This is checked again after the work and
+        // under the publication locks because the labels can still be edited while the model is running.
+        if let problem = editedHeadProblem(request) {
+            recorder.end(.wordFixes, .skipped, problem, since: started)
+            return Outcome(transcript: current, problem: problem)
+        }
+
         // Always from the transcript before any fix, so fixes never stack.
         let base: Transcript
         if let id = current.fixedFrom {
