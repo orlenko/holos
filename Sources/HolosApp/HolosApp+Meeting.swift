@@ -582,9 +582,16 @@ extension HolosAppDelegate: NSMenuDelegate {
         case .saving:
             detail = Self.savingText(status, name: name)
         case .saved:
-            detail = "Saved" + (summary.map { " · \(MeetingFormat.clock($0.savedSeconds))" } ?? "")
+            detail = (summary.map(MeetingsPane.stateText) ?? "Saved")
+                + (summary.map { " · \(MeetingFormat.clock($0.savedSeconds))" } ?? "")
+        case .interrupted:
+            detail = "Interrupted before it was saved · select it in Meetings and choose Recover…"
         case .failed:
-            if case .failed(_, let message) = state { detail = message } else { detail = "Failed" }
+            if follows, case .failed(_, let message) = state {
+                detail = message
+            } else {
+                detail = summary.map(MeetingsPane.stateText) ?? "Failed"
+            }
         }
         return LiveMeetingHeader(name: name, phase: phase, detail: detail)
     }

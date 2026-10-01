@@ -35,8 +35,10 @@ public struct LiveTextFile: Codable, Sendable, Equatable {
 }
 
 /// What one track's live speech has not finalized yet (`LiveTrack`'s volatile words). Follows the speech framework's
-/// own rule (`ResultCollector`): a result replaces the volatile hypotheses over the audio interval it covers, so a
-/// final result removes the volatile words it confirms. Times are on the session timeline. Pure.
+/// own rule (`ResultCollector`): a result replaces the volatile hypotheses over the audio interval it covers. A final
+/// result confirms the volatile words it covers, but they stay shown until that final segment is in the journal
+/// (`journaled`): a reader that looks in between finds the words in one place or the other, never in neither. Times
+/// are on the session timeline. Pure.
 struct VolatileText: Sendable, Equatable {
     struct Entry: Sendable, Equatable {
         /// The speech session that reported it (`LiveTrack`'s session serial).
@@ -44,9 +46,15 @@ struct VolatileText: Sendable, Equatable {
         var segment: TranscriptSegment
     }
 
+    /// Hypotheses no final result covers yet.
     private(set) var entries: [Entry] = []
+    /// Hypotheses a final result covers, by that final segment's ID, until it is journaled.
+    private(set) var confirmed: [String: [Entry]] = [:]
 
-    var segments: [TranscriptSegment] { entries.map(\.segment) }
+    /// What is shown: open and confirmed hypotheses, by start.
+    var segments: [TranscriptSegment] {
+        (entries + confirmed.values.joined()).map(\.segment).sorted { $0.start < $1.start }
+    }
 
     /// A volatile result: replaces the volatile hypotheses it overlaps. Returns whether anything changed.
     @discardableResult
@@ -58,15 +66,24 @@ struct VolatileText: Sendable, Equatable {
         return entries != before
     }
 
-    /// A final result: the volatile hypotheses it overlaps are now final text. Returns whether anything changed.
-    @discardableResult
-    mutating func final(_ segment: TranscriptSegment) -> Bool {
-        let count = entries.count
-        removeOverlapping(segment)
-        return entries.count != count
+    /// A final result: the volatile hypotheses it overlaps are now final text, still shown until `journaled` is
+    /// called with its ID. Changes nothing that is shown.
+    mutating func final(_ segment: TranscriptSegment) {
+        let covered = entries.filter { Self.overlaps($0.segment, segment) }
+        guard !covered.isEmpty else { return }
+        entries.removeAll { Self.overlaps($0.segment, segment) }
+        confirmed[segment.id, default: []] += covered
     }
 
-    /// The speech session ended (finished, failed, or was cancelled): its hypotheses will not be confirmed.
+    /// The final segment `segmentID` is in the journal (or will never be: its write failed or was dropped): the
+    /// hypotheses it confirmed go. Returns whether anything shown changed.
+    @discardableResult
+    mutating func journaled(_ segmentID: String) -> Bool {
+        confirmed.removeValue(forKey: segmentID) != nil
+    }
+
+    /// The speech session ended (finished, failed, or was cancelled): its open hypotheses will not be confirmed.
+    /// Confirmed ones stay until their final segment is journaled.
     @discardableResult
     mutating func endSession(_ session: Int) -> Bool {
         let count = entries.count
@@ -76,16 +93,20 @@ struct VolatileText: Sendable, Equatable {
 
     @discardableResult
     mutating func removeAll() -> Bool {
-        defer { entries.removeAll() }
-        return !entries.isEmpty
+        defer {
+            entries.removeAll()
+            confirmed.removeAll()
+        }
+        return !entries.isEmpty || !confirmed.isEmpty
     }
 
     private mutating func removeOverlapping(_ segment: TranscriptSegment) {
-        // As `ResultCollector`: overlapping intervals; a zero-length result still replaces one that starts with it.
-        entries.removeAll { entry in
-            let other = entry.segment
-            return (other.start < segment.end && other.end > segment.start) || other.start == segment.start
-        }
+        entries.removeAll { Self.overlaps($0.segment, segment) }
+    }
+
+    /// As `ResultCollector`: overlapping intervals; a zero-length result still replaces one that starts with it.
+    private static func overlaps(_ other: TranscriptSegment, _ segment: TranscriptSegment) -> Bool {
+        (other.start < segment.end && other.end > segment.start) || other.start == segment.start
     }
 }
 

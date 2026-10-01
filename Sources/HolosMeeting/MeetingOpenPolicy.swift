@@ -46,11 +46,20 @@ public enum MeetingOpenPolicy {
         sessions.filter { isLive($0, liveSessionID: liveSessionID) }
             + sessions.filter { !isLive($0, liveSessionID: liveSessionID) }
     }
+
+    /// Going to meeting `sessionID` in the Meetings section (the menu's last-meeting line, Name Speakers' fallback)
+    /// while the live transcript of `showing` is on screen: whether that live transcript stays. Only when it shows that
+    /// very meeting; otherwise the list comes back, so the selection made there is seen.
+    public static func keepsLiveView(showing: String?, goingTo sessionID: String) -> Bool {
+        showing == sessionID
+    }
 }
 
 /// Where a meeting shown in the live transcript is (docs/design.md "Live transcript"). Pure.
 public enum LiveMeetingPhase: String, Sendable, Equatable {
-    case starting, recording, paused, saving, saved, failed
+    /// `interrupted`: the recorder stopped before the meeting was saved (Recover repairs it); `failed`: the start
+    /// failed, or the catalog says failed or damaged.
+    case starting, recording, paused, saving, saved, interrupted, failed
 
     /// The phase of `sessionID` from the app's meeting state, or from the catalog (`summary`) for a meeting the app
     /// does not follow (recorded by the voiceislocal tool, or one the app stopped following).
@@ -73,7 +82,9 @@ public enum LiveMeetingPhase: String, Sendable, Equatable {
         switch summary?.state {
         case .recording: return .recording
         case .processing: return .saving
-        default: return .saved
+        case .interrupted: return .interrupted
+        case .failed, .damaged: return .failed
+        case .complete, .audioOnly, .transcriptionIncomplete, .incomplete, .recovered, nil: return .saved
         }
     }
 
@@ -81,7 +92,7 @@ public enum LiveMeetingPhase: String, Sendable, Equatable {
     public var capturing: Bool {
         switch self {
         case .starting, .recording, .paused: true
-        case .saving, .saved, .failed: false
+        case .saving, .saved, .interrupted, .failed: false
         }
     }
 }

@@ -481,11 +481,22 @@ final class LiveTrack: Sendable {
             state.sessions[serial]?.finals.append(shifted)
             state.lastFinalized = max(state.lastFinalized ?? shifted.end, shifted.end)
             state.lastPhrase = String(shifted.text.prefix(200))
-            if state.volatile.final(shifted) { publishVolatile(state) }
+            // Its volatile copy stays shown until the journal has it (`journaled`), so a reader never misses both.
+            state.volatile.final(shifted)
             return shifted
         }
         if showPhrases { reporter.phrase(absolute, track: track) }
-        if !journal.push(.finalized(absolute)) { noteJournalHole(from: absolute.start, reason: "journalFull") }
+        if !journal.push(.finalized(absolute)) {
+            noteJournalHole(from: absolute.start, reason: "journalFull")
+            journaled(absolute.id)
+        }
+    }
+
+    /// The finalized segment `segmentID` reached the journal, or never will: its volatile copy goes.
+    private func journaled(_ segmentID: String) {
+        state.withLock { state in
+            if state.volatile.journaled(segmentID) { publishVolatile(state) }
+        }
     }
 
     /// A volatile result: shown live (`onVolatile`) until a final result confirms or replaces it. Nothing is kept
@@ -549,6 +560,7 @@ final class LiveTrack: Sendable {
                     failed(error)
                     noteJournalHole(from: segment.start, reason: "journalWriteFailed")
                 }
+                journaled(segment.id)
             case .behind(let from, let reason):
                 do {
                     try await events(MeetingEventKind.transcriptionBehind,

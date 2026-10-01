@@ -53,6 +53,42 @@ private func texts(_ paragraphs: [LiveParagraph]) -> [String] {
     #expect(later[0].runs[1].segmentID == nil)
 }
 
+@Test func volatileWordsOutsideFinalsStay() {
+    // After a capture restart an older speech session can still hold volatile words (9–10 s) while the new one has
+    // finalized later words (11–12 s): only words a final segment covers go.
+    let older = segment("v-old", "mic", "earlier words here", start: 9)
+    let newer = segment("v-new", "mic", "later words", start: 11)
+    let final = segment("f", "mic", "later words", start: 11)
+    let paragraphs = LiveTranscript.paragraphs(finals: [final], volatile: ["mic": [older, newer]], echo: callEcho)
+    #expect(texts(paragraphs) == ["mic: ~earlier words here later words"])
+}
+
+@Test func wordRangesFromTheFileCannotOverflow() {
+    // A damaged or hostile live.json: a word range whose end does not fit in an Int.
+    let words = [
+        TimedWord(text: "covered", start: 1.0, end: 1.2, utf16Offset: 0, utf16Length: 7),
+        TimedWord(text: "odd", start: 3.0, end: 3.2, utf16Offset: Int.max, utf16Length: 1),
+        TimedWord(text: "far", start: 3.3, end: 3.5, utf16Offset: 5, utf16Length: Int.max),
+    ]
+    let heard = TranscriptSegment(id: "v", start: 1, end: 3.5, text: "covered odd far", words: words, track: "mic")
+    let final = segment("f", "mic", "covered", start: 1)
+    // A word is cut away, so the rest is rendered word by word from the ranges.
+    let paragraphs = LiveTranscript.paragraphs(finals: [final], volatile: ["mic": [heard]], echo: callEcho)
+    #expect(texts(paragraphs) == ["mic: covered ~odd far"])
+}
+
+@Test func echoMatchesOnlyTheWordsShown() {
+    // The stale hypothesis "please send" was replaced by the final "please now": its words are not heard twice, so
+    // the final "report" after them does not complete an echo of the system's "please send report".
+    let remote = segment("s", "system", "please send report", start: 10)
+    let replaced = segment("f1", "mic", "please now", start: 10.3)
+    let stale = segment("v", "mic", "please send", start: 10.3)
+    let after = segment("f2", "mic", "report", start: 10.9)
+    let paragraphs = LiveTranscript.paragraphs(finals: [remote, replaced, after], volatile: ["mic": [stale]],
+                                               echo: callEcho)
+    #expect(texts(paragraphs) == ["system: please send report", "mic: please now report"])
+}
+
 @Test func paragraphsFollowTracksAndPauses() {
     let finals = [
         segment("a", "system", "good morning everyone", start: 0),
@@ -193,6 +229,13 @@ private func summary(_ id: String, state: SessionState = .complete, runID: Strin
     #expect(MeetingOpenPolicy.ordered([newer, older], liveSessionID: "old").map(\.id) == ["old", "new"])
 }
 
+@Test func goingToAnotherMeetingLeavesTheLiveView() {
+    // Meeting A's live transcript is open; the menu's line for meeting B selects B: the list must come back.
+    #expect(!MeetingOpenPolicy.keepsLiveView(showing: "A", goingTo: "B"))
+    #expect(MeetingOpenPolicy.keepsLiveView(showing: "A", goingTo: "A"))
+    #expect(!MeetingOpenPolicy.keepsLiveView(showing: nil, goingTo: "B"))
+}
+
 @Test func livePhaseFollowsTheMeetingState() {
     let status = { (phase: RecorderPhase) in
         RecorderStatus(sessionID: "A", name: "Weekly", pid: 1, phase: phase, sequence: 1, startedAt: Date(),
@@ -208,6 +251,13 @@ private func summary(_ id: String, state: SessionState = .complete, runID: Strin
     #expect(of(.finishing(sessionID: "A", status: nil), nil) == .saving)
     #expect(of(.failed(sessionID: "A", message: "No microphone."), nil) == .failed)
     #expect(of(.idle, summary("A")) == .saved)
+    // Stopped, then the recorder was killed while transcribing: the reducer is idle again, the catalog says
+    // interrupted. Not "Saved".
+    #expect(of(.idle, summary("A", state: .interrupted)) == .interrupted)
+    #expect(of(.idle, summary("A", state: .failed)) == .failed)
+    #expect(of(.idle, summary("A", state: .damaged)) == .failed)
+    #expect(of(.idle, summary("A", state: .transcriptionIncomplete)) == .saved)
+    #expect(!LiveMeetingPhase.interrupted.capturing)
     #expect(of(.idle, summary("A", state: .recording)) == .recording, "A recording the app does not follow.")
     #expect(of(.active(sessionID: "B", status: status(.recording)), summary("A", state: .processing)) == .saving)
     #expect(LiveMeetingPhase.recording.capturing && LiveMeetingPhase.paused.capturing)
@@ -223,9 +273,12 @@ private func summary(_ id: String, state: SessionState = .complete, runID: Strin
     // A longer hypothesis over the same audio replaces it.
     text.volatile(segment("v2", "mic", "the budget is", start: 1), session: 0)
     #expect(text.segments.map(\.text) == ["the budget is"])
-    // A final result confirms the words it covers.
-    let confirmed = text.final(segment("f1", "mic", "the budget is", start: 1))
-    #expect(confirmed)
+    // A final result confirms the words it covers; they stay shown until the journal has it.
+    text.final(segment("f1", "mic", "the budget is", start: 1))
+    #expect(text.segments.map(\.text) == ["the budget is"])
+    let other = text.journaled("f0")
+    let own = text.journaled("f1")
+    #expect(!other && own)
     #expect(text.segments.isEmpty)
     text.volatile(segment("v3", "mic", "next", start: 5), session: 1)
     let otherSession = text.endSession(0)
@@ -258,6 +311,49 @@ private final class VolatileLog: Sendable {
     let result = await track.finish()
     #expect(result.segments.map(\.text) == ["Call to order"])
     #expect(log.all == [["Call to"], []], "Shown while volatile, gone once final.")
+}
+
+/// A journal whose writes wait until released, like a slow disk.
+private final class HeldJournal: Sendable {
+    private let state = Mutex((held: true, written: [String]()))
+    var sink: LiveEventSink {
+        { kind, details in
+            while self.state.withLock({ $0.held }) { try await Task.sleep(for: .milliseconds(2)) }
+            if kind == MeetingEventKind.transcriptFinalized {
+                self.state.withLock { $0.written.append(details["text"] ?? "") }
+            }
+        }
+    }
+    func release() { state.withLock { $0.held = false } }
+    var written: [String] { state.withLock { $0.written } }
+}
+
+@Test(.timeLimit(.minutes(1))) func volatileWordsStayUntilTheirFinalIsJournaled() async throws {
+    // Codex review on PR #65: clearing the volatile copy as soon as the final result arrives let live.json lose the
+    // words before events.jsonl had them, so a reader in between saw neither.
+    let heard = TranscriptSegment(start: 0, end: 0.2, text: "Call to")
+    let final = TranscriptSegment(start: 0, end: 0.3, text: "Call to order")
+    let speech = FakeSpeechFactory([FakeSpeechScript(segments: [final], volatile: [heard])])
+    let log = VolatileLog()
+    let journal = HeldJournal()
+    let track = LiveTrack(track: "mic", locale: "en-CA", backend: .speech, contextualStrings: [],
+                          makeSpeech: speech.factory, events: journal.sink, reporter: CollectingReporter(),
+                          onVolatile: log.sink)
+    try await track.prepareSession(epoch: 0, epochStart: 0)
+    for index in 0..<4 {
+        track.push(try PCMFrame(samples: [Float](repeating: 0.1, count: 1_600), sampleRate: 16_000, channels: 1,
+                                startTime: Double(index) / 10), epoch: 0)
+    }
+    // The final result has arrived (the speech fake reports it once 0.3 s was fed); the journal has not written it.
+    var budget = PollBudget(timeout: .seconds(30))
+    while (await speech.sessions.first?.fedSeconds ?? 0) < 0.35, !budget.isSpent { await budget.poll() }
+    #expect(journal.written.isEmpty)
+    #expect(log.all.last == ["Call to"], "The volatile copy stays while the final segment is not journaled.")
+    journal.release()
+    let result = await track.finish()
+    #expect(result.segments.map(\.text) == ["Call to order"])
+    #expect(journal.written == ["Call to order"])
+    #expect(log.all.last == [], "Gone once the journal has the final segment.")
 }
 
 @Test(.timeLimit(.minutes(1))) func publisherWritesLiveTextAndRemovesItAtClose() async throws {

@@ -191,6 +191,7 @@ final class LiveMeetingViewController: NSViewController {
         case .paused: (.systemOrange, "Paused")
         case .saving: (.systemBlue, "Saving")
         case .saved: (.systemGreen, "Saved")
+        case .interrupted: (.systemOrange, "Interrupted")
         case .failed: (.systemOrange, "Failed")
         }
         statusDot.contentTintColor = tint

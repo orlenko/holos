@@ -35,9 +35,11 @@ public struct LiveParagraph: Sendable, Equatable {
 
 /// Builds the live transcript from what live speech finalized and what it still hears. Pure.
 ///
-/// - Volatile words follow the finalized words of their track: a volatile word that starts before the end of the
-///   track's last finalized segment is already in it (`live.json` is written up to 200 ms after the journal), so it
-///   is left out, and a volatile segment with no word left disappears.
+/// - Volatile words follow the finalized words of their track: a volatile word that starts inside a finalized segment
+///   of its track is already in it (the recorder keeps a volatile copy in `live.json` until its final segment is
+///   journaled), so it is left out, and a volatile segment with no word left disappears. Words outside every
+///   finalized segment stay, also when they are earlier than the newest one (an older speech session still
+///   finishing after a capture restart).
 /// - Microphone echo of a call (the laptop speakers playing the call into the microphone) is hidden with the rule
 ///   post-processing uses (`EchoFilter.echoSpans` with the meeting's `SpeakerAnalysis.alignmentParameters`): runs
 ///   of at least three microphone words that repeat the system track's words in order, each starting at most
@@ -65,40 +67,32 @@ public enum LiveTranscript {
     public static func paragraphs(finals: [TranscriptSegment], volatile: [String: [TranscriptSegment]],
                                   echo: AlignmentParameters?) -> [LiveParagraph] {
         var items: [Item] = []
-        var lastFinalEnd: [String: Double] = [:]
+        /// Each track's finalized intervals.
+        var finalized: [String: [(start: Double, end: Double)]] = [:]
         for segment in finals {
             let track = segment.track ?? "mic"
-            lastFinalEnd[track] = max(lastFinalEnd[track] ?? segment.end, segment.end)
+            finalized[track, default: []].append((segment.start, segment.end))
             items.append(Item(segment: segment, track: track, isFinal: true))
         }
         for track in volatile.keys.sorted() {
+            let covered = finalized[track] ?? []
             for (index, original) in (volatile[track] ?? []).enumerated() {
                 var segment = original
                 // Unique among the finals for the echo filter's word references.
                 segment.id = "volatile:\(track):\(index)"
                 segment.track = track
                 var item = Item(segment: segment, track: track, isFinal: false)
-                if let end = lastFinalEnd[track] {
-                    for (word, timing) in item.words.enumerated() where timing.start < end - finalOverlapTolerance {
-                        item.keep[word] = false
-                    }
+                // Only words a finalized segment covers: an older speech session (finished in the background after a
+                // capture restart) can still hold volatile words before a newer session's finals.
+                for (word, timing) in item.words.enumerated()
+                where covered.contains(where: { timing.start >= $0.start - finalOverlapTolerance
+                                               && timing.start < $0.end - finalOverlapTolerance }) {
+                    item.keep[word] = false
                 }
                 items.append(item)
             }
         }
-        if let echo {
-            let transcript = Transcript(source: "", locale: "", backend: .speech,
-                                        segments: items.map(\.segment))
-            let dropped = EchoFilter.words(in: EchoFilter.echoSpans(transcript: transcript, parameters: echo))
-            if !dropped.isEmpty {
-                for index in items.indices where items[index].track == EchoFilter.microphoneTrack {
-                    for word in items[index].words.indices
-                    where dropped.contains(WordRef(segmentID: items[index].segment.id, word: word)) {
-                        items[index].keep[word] = false
-                    }
-                }
-            }
-        }
+        if let echo { hideEcho(in: &items, parameters: echo) }
         let shown = items.compactMap { $0.shown() }.enumerated().sorted { left, right in
             // Finals before volatile words at the same time; otherwise as listed.
             (left.element.start, left.element.isFinal ? 0 : 1, left.offset)
@@ -118,6 +112,33 @@ public enum LiveTranscript {
             }
         }
         return paragraphs
+    }
+
+    /// Leaves out the microphone words `EchoFilter.echoSpans` finds to be echo. It is given only the words still
+    /// shown (a volatile word a final segment replaced is not heard twice), each segment cut down to them, and its
+    /// word references are mapped back to the full segment.
+    private static func hideEcho(in items: inout [Item], parameters: AlignmentParameters) {
+        var segments: [TranscriptSegment] = []
+        /// For each cut-down segment (by ID): the item and, per word, the word's index in the item.
+        var origins: [String: (item: Int, words: [Int])] = [:]
+        for (index, item) in items.enumerated() {
+            let kept = item.words.indices.filter { item.keep[$0] }
+            guard !kept.isEmpty else { continue }
+            var segment = item.segment
+            segment.words = kept.map { word in
+                let timing = item.words[word]
+                return TimedWord(text: timing.text, start: timing.start, end: timing.end, utf16Offset: 0,
+                                 utf16Length: 0)
+            }
+            segments.append(segment)
+            origins[segment.id] = (index, kept)
+        }
+        let transcript = Transcript(source: "", locale: "", backend: .speech, segments: segments)
+        for ref in EchoFilter.words(in: EchoFilter.echoSpans(transcript: transcript, parameters: parameters)) {
+            guard let origin = origins[ref.segmentID], items[origin.item].track == EchoFilter.microphoneTrack,
+                  ref.word >= 0, ref.word < origin.words.count else { continue }
+            items[origin.item].keep[origin.words[ref.word]] = false
+        }
     }
 
     /// A finalized or volatile segment and which of its words show.
@@ -158,7 +179,9 @@ public enum LiveTranscript {
         /// The word as it appears in the segment's text, else its own text; trimmed.
         private static func text(of word: EffectiveWord, in text: String) -> String {
             let utf16 = text.utf16
-            guard word.utf16Offset >= 0, word.utf16Length > 0, word.utf16Offset + word.utf16Length <= utf16.count
+            // Ranges come from a file: checked without adding them, which could overflow.
+            guard word.utf16Offset >= 0, word.utf16Length > 0, word.utf16Offset <= utf16.count,
+                  word.utf16Length <= utf16.count - word.utf16Offset
             else { return word.text.trimmingCharacters(in: .whitespacesAndNewlines) }
             let start = utf16.index(utf16.startIndex, offsetBy: word.utf16Offset)
             let end = utf16.index(start, offsetBy: word.utf16Length)
@@ -234,8 +257,10 @@ public struct LiveTranscriptReader: Sendable {
             mode = (try? AtomicFile.readJSON(MeetingInfo.self, from: SessionPaths.meetingInfo(session),
                                              maxBytes: 1 << 20))?.mode
         }
-        readJournal()
+        // live.json first: the recorder drops a volatile copy from it only after its final segment is in the journal,
+        // so the journal read next has every word live.json no longer shows (`VolatileText`).
         volatile = includeVolatile ? (LiveTextFile.read(session: session)?.volatile ?? [:]) : [:]
+        readJournal()
     }
 
     private mutating func readJournal() {

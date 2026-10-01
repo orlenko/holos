@@ -285,9 +285,12 @@ not finalized (volatile results) to the session's `live.json` at most every 200 
 (`LiveTextPublisher`, removed when live speech ends), and the view reads it and the
 journal's `transcriptFinalized` events four times a second, off the main actor
 (`LiveTranscriptReader`, the newest 1,000 segments). Volatile words are drawn in the
-secondary label colour and turn into label-coloured text when their final result arrives;
-a volatile word that starts before the end of its track's last final segment is already in
-it and is left out. While the user is at the bottom (within 24 points) the view follows
+secondary label colour and turn into label-coloured text when their final result arrives.
+The recorder keeps a volatile copy in `live.json` until its final segment is in the
+journal, and the view reads `live.json` before the journal, so words are never missing
+from both; a volatile word that starts inside a final segment of its track is already in
+it and is left out (words outside every final segment stay, such as an older speech
+session's still finishing after a capture restart). While the user is at the bottom (within 24 points) the view follows
 the newest words; scrolling up stops that and shows a "Jump to Live" pill at the bottom,
 which (like scrolling back down, or End) follows again (`LiveFollow`).
 
@@ -295,15 +298,19 @@ Microphone echo is hidden with post-processing's own rule (`LiveTranscript`, usi
 `EchoFilter.echoSpans` with `SpeakerAnalysis.alignmentParameters` of the meeting, so only
 in a call): a run of at least three microphone words that repeat the system track's words
 in order, each starting at most 1 s after (and at most 0.25 s before) its system word, is
-left out; a microphone segment with no other word is not shown. Volatile words of both
-tracks take part, so an echo disappears as soon as the system track has heard the same
+left out; a microphone segment with no other word is not shown. Only the words shown take
+part (a volatile word a final segment replaced is not heard twice); volatile words of both
+tracks do, so an echo disappears as soon as the system track has heard the same
 words. The user speaking over the call, a short reply that repeats one or two words, and
 microphone words ahead of the system's stay. The first one or two volatile words of an echo
 can show until the third makes it a run.
 
 When recording stops, the view stays on the meeting while it saves; once it is saved, the
 header offers what opening a finished meeting shows: **Open Review** (Return) for a
-labelled meeting, else **Open Transcript**. Correcting speakers or text during the meeting
+labelled meeting, else **Open Transcript**. A meeting whose recorder stopped before it was
+saved shows "Interrupted" (orange) and points to Recover…; a failed or damaged one shows
+the catalog's state. Going to another meeting from the menu bar while a live transcript is
+open brings the list back with that meeting selected. Correcting speakers or text during the meeting
 is not built yet; each final run keeps its segment ID (`LiveRun.segmentID`) for it.
 
 ### Reading section

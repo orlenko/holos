@@ -162,8 +162,14 @@ final class MeetingsPane: NSViewController, NSTableViewDataSource, NSTableViewDe
         return button
     }
 
-    /// Selects the meeting once the list is read (nil keeps the selection).
+    /// Selects the meeting once the list is read (nil keeps the selection). A live transcript of another meeting gives
+    /// way to the list first, so the selection is seen (`MeetingOpenPolicy.keepsLiveView`).
     func select(sessionID: String?) {
+        if let sessionID, let live, !MeetingOpenPolicy.keepsLiveView(showing: live.sessionID, goingTo: sessionID) {
+            removeLive()
+            listView.isHidden = false
+            view.window?.makeFirstResponder(table)
+        }
         pendingSelection = sessionID
         refresh()
     }
@@ -408,7 +414,7 @@ final class MeetingsPane: NSViewController, NSTableViewDataSource, NSTableViewDe
         case .paused: ("● Paused", .systemOrange)
         case .starting: ("Starting…", .secondaryLabelColor)
         case .saving: ("Saving…", .secondaryLabelColor)
-        case .saved, .failed: nil
+        case .saved, .interrupted, .failed: nil
         }
     }
 
