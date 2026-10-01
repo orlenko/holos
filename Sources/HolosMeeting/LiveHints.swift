@@ -188,6 +188,15 @@ public enum LiveHintStore {
 public enum LiveHints {
     private static let maximumReplayMatchGap = 1.0
 
+    public struct SpeakerActionPlan: Sendable, Equatable {
+        public var actions: [SpeakerEditAction]
+        public var unmatched: Int
+
+        public init(actions: [SpeakerEditAction] = [], unmatched: Int = 0) {
+            self.actions = actions; self.unmatched = unmatched
+        }
+    }
+
     public struct CorrectionLearningState: Sendable, Equatable {
         public var previous: [Correction]
         public var other: [Correction]
@@ -331,11 +340,21 @@ public enum LiveHints {
     /// Speaker renames in hint order. Several phrases assigned to the same machine speaker collapse to its last name.
     public static func speakerActions(_ hints: [LiveHint], projection: SpeakerProjection,
                                       transcript: Transcript) -> [SpeakerEditAction] {
+        speakerActionPlan(hints, projection: projection, transcript: transcript).actions
+    }
+
+    /// Speaker renames together with the number of name hints that could not be mapped to a labelled turn.
+    public static func speakerActionPlan(_ hints: [LiveHint], projection: SpeakerProjection,
+                                         transcript: Transcript) -> SpeakerActionPlan {
         var names: [String: String] = [:]
         var order: [String] = []
+        var unmatched = 0
         for hint in hints {
-            guard case .nameSpeaker(let rawName) = hint.action,
-                  let name = SpeakerEditor.cleanName(rawName) else { continue }
+            guard case .nameSpeaker(let rawName) = hint.action else { continue }
+            guard let name = SpeakerEditor.cleanName(rawName) else {
+                unmatched += 1
+                continue
+            }
             let found = match(hint, in: transcript, text: hint.heard)
             let refs: Set<WordRef> = found.map { item in
                 Set(item.words.map { WordRef(segmentID: transcript.segments[item.segment].id, word: $0) })
@@ -344,13 +363,23 @@ public enum LiveHints {
             let turn = candidates.max { left, right in
                 turnScore(left, refs: refs, hint: hint) < turnScore(right, refs: refs, hint: hint)
             }
-            guard let turn, let speakerID = turn.speakerID else { continue }
+            guard let turn, let speakerID = turn.speakerID else {
+                unmatched += 1
+                continue
+            }
             let score = turnScore(turn, refs: refs, hint: hint)
-            guard score.0 > 0 || score.1 > 0 else { continue }
+            guard score.0 > 0 || score.1 > 0 else {
+                unmatched += 1
+                continue
+            }
             if names[speakerID] == nil { order.append(speakerID) }
             names[speakerID] = name
         }
-        return order.compactMap { id in names[id].map { .rename(speakerID: id, name: $0) } }
+        var actions: [SpeakerEditAction] = []
+        for id in order {
+            if let name = names[id] { actions.append(.rename(speakerID: id, name: name)) }
+        }
+        return SpeakerActionPlan(actions: actions, unmatched: unmatched)
     }
 
     static func match(_ hint: LiveHint, in transcript: Transcript, text: String) -> Match? {

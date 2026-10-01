@@ -47,7 +47,9 @@ enum LiveHintStage {
                 guard applied.contains(edit.id), case .rename(let speakerID, _) = edit.action else { return nil }
                 return speakerID
             })
-            let proposed = LiveHints.speakerActions(hints, projection: projection, transcript: transcript)
+            let plan = LiveHints.speakerActionPlan(hints, projection: projection, transcript: transcript)
+            if plan.unmatched > 0 { return true }
+            let proposed = plan.actions
             guard !proposed.isEmpty else { return true }
             return proposed.contains { action in
                 guard case .rename(let speakerID, let name) = action,
@@ -111,7 +113,7 @@ enum LiveHintStage {
         } ?? result.transcript
         do {
             let labelsPreserved = try await publish(published, liveBase: result.transcript,
-                                                    base: transcript, result: result,
+                                                    liveSource: base, current: transcript, result: result,
                                                     session: session, lease: lease)
             let text = result.applied == 1 ? "Applied 1 live text correction."
                 : "Applied \(result.applied) live text corrections."
@@ -151,39 +153,44 @@ enum LiveHintStage {
                 guard applied.contains(edit.id), case .rename(let speakerID, _) = edit.action else { return nil }
                 return speakerID
             })
-            let proposed = LiveHints.speakerActions(hints, projection: projection, transcript: transcript)
+            let plan = LiveHints.speakerActionPlan(hints, projection: projection, transcript: transcript)
+            let proposed = plan.actions
             let actions = proposed.filter { action in
                 guard case .rename(let speakerID, _) = action else { return true }
                 return !protected.contains(speakerID)
             }
+            let unmatchedProblem = unmatchedSpeakerProblem(plan.unmatched)
             guard !actions.isEmpty else {
                 // An effective rename means this hint was applied before or superseded later; either is complete.
-                if !proposed.isEmpty { return SpeakerOutcome() }
-                return SpeakerOutcome(problem: "Live speaker names could not be matched to the final speaker labels.")
+                if !proposed.isEmpty { return SpeakerOutcome(problem: unmatchedProblem) }
+                return SpeakerOutcome(problem: unmatchedProblem
+                    ?? "Live speaker names could not be matched to the final speaker labels.")
             }
             let changed = try SpeakerEditor.applyUnlessUnchanged(actions, view: projection, session: session,
                                                                  source: "live", regenerateExports: false,
                                                                  profileNames: names, profiles: profiles)
-            guard changed != nil else { return SpeakerOutcome() }
+            guard changed != nil else { return SpeakerOutcome(problem: unmatchedProblem) }
             let count = actions.count
             return SpeakerOutcome(note: count == 1 ? "Applied 1 live speaker name."
-                                                   : "Applied \(count) live speaker names.")
+                                                   : "Applied \(count) live speaker names.",
+                                  problem: unmatchedProblem)
         } catch {
             return SpeakerOutcome(problem: "Live speaker names could not be saved: \(error.localizedDescription)")
         }
     }
 
-    private static func publish(_ transcript: Transcript, liveBase: Transcript, base: Transcript,
+    private static func publish(_ transcript: Transcript, liveBase: Transcript, liveSource: Transcript,
+                                current: Transcript,
                                 result: LiveHints.TextOutcome,
                                 session: URL, lease: ProcessingLease) async throws -> Bool {
         let archive = try SessionArchive.openForMaintenance(at: session, lease: lease)
         do {
             let preserved = try await SessionArchive.withSpeakerLockAsync(at: session) { () async throws -> Bool in
-                guard try SessionFiles.currentTranscript(session: session)?.id == base.id else {
+                guard try SessionFiles.currentTranscript(session: session)?.id == current.id else {
                     throw HolosError.unavailable("The transcript changed while live corrections were being saved.")
                 }
                 var plan: SpeakerTranscriptRetarget.Plan?
-                if let head = try SpeakerAnalysis.headState(session: session, transcript: base),
+                if let head = try SpeakerAnalysis.headState(session: session, transcript: current),
                    head.usableRunID != nil {
                     let snapshot = try SpeakerSessionSnapshot.load(session: session)
                     plan = try SpeakerTranscriptRetarget.plan(session: session, from: snapshot, to: transcript)
@@ -193,9 +200,15 @@ enum LiveHintStage {
                 }
                 try Task.checkCancellation()
                 if let plan { try SpeakerTranscriptRetarget.stage(plan, session: session) }
-                if transcript.id != liveBase.id { try await archive.saveTranscriptRevision(liveBase) }
+                if transcript.id != liveBase.id {
+                    try await archive.saveTranscriptRevision(liveBase)
+                    try await archive.recordEvent(kind: MeetingEventKind.liveHintsApplied, details: [
+                        "transcriptID": liveBase.id, "base": liveSource.id,
+                        "applied": String(result.applied), "unmatched": String(result.unmatched),
+                    ])
+                }
                 try await archive.recordEvent(kind: MeetingEventKind.liveHintsApplied, details: [
-                    "transcriptID": transcript.id, "base": base.id,
+                    "transcriptID": transcript.id, "base": current.id,
                     "applied": String(result.applied), "unmatched": String(result.unmatched),
                 ])
                 try await archive.saveTranscript(transcript, writeLegacyExports: false)
@@ -212,6 +225,11 @@ enum LiveHintStage {
             await archive.releaseLock()
             throw error
         }
+    }
+
+    private static func unmatchedSpeakerProblem(_ count: Int) -> String? {
+        guard count > 0 else { return nil }
+        return "\(count) live speaker \(count == 1 ? "name could" : "names could") not be matched to the final speaker labels."
     }
 
     /// Repairs the only incomplete text publication: the corrected transcript is current while its staged speaker

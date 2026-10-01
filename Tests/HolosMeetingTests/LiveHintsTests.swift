@@ -335,6 +335,33 @@ private func hint(_ segment: TranscriptSegment, words: Range<Int>, action: LiveH
         == [.rename(speakerID: speakerID, name: "Ada")])
 }
 
+@Test func unmatchedSpeakerHintsStayPendingWhenAnotherNameApplies() async throws {
+    let temp = try TemporaryDirectory()
+    defer { temp.remove() }
+    let fixture = try await SessionFixtures.labelledSession(in: temp.url)
+    let segment = fixture.transcript.segments[0]
+    let matched = hint(segment, words: 0..<segment.words.count, action: .nameSpeaker("Ada"), id: "matched")
+    let absentSegment = SessionFixtures.segment(["absent"], track: "system", start: 100, id: "absent")
+    let unmatched = hint(absentSegment, words: 0..<1, action: .nameSpeaker("Grace"), id: "unmatched")
+    try LiveHintStore.append(matched, session: fixture.session)
+    try LiveHintStore.append(unmatched, session: fixture.session)
+
+    let first = LiveHintStage.applySpeakers([matched, unmatched], session: fixture.session,
+                                            transcript: fixture.transcript, profiles: nil)
+    let speakerID = try #require(fixture.run.turns[0].speakerID)
+    let projection = try SessionFixtures.view(fixture.session)
+
+    #expect(first.note == "Applied 1 live speaker name.")
+    #expect(first.problem == "1 live speaker name could not be matched to the final speaker labels.")
+    #expect(projection.speakers.first(where: { $0.id == speakerID })?.name == "Ada")
+    #expect(LiveHintStage.hasPendingWork(session: fixture.session, transcript: fixture.transcript))
+
+    let retry = LiveHintStage.applySpeakers([matched, unmatched], session: fixture.session,
+                                            transcript: fixture.transcript, profiles: nil)
+    #expect(retry.note == nil)
+    #expect(retry.problem == first.problem)
+}
+
 @Test func laterExplicitSpeakerRenameWinsOverALiveHint() async throws {
     let temp = try TemporaryDirectory()
     defer { temp.remove() }
@@ -495,6 +522,8 @@ func aLaterPassRepairsLiveTextWhoseSpeakerHeadWasNotPublished() async throws {
     #expect(final.fixedFrom != fixed.id)
     #expect(final.segments[0].fixes?.contains { $0.kind == .liveCorrection } == true)
     #expect(final.segments[0].fixes?.contains { $0.kind == .correction } == true)
+    let events = try SessionArchive.readEvents(at: session).events
+    #expect(WordFixStage.unfixedID(final.id, events: events) == original.id)
 }
 
 @Test(.timeLimit(.minutes(1))) func lateLiveHintKeepsEarlierFixesWhenEditedLabelsBlockRecomputation() async throws {
