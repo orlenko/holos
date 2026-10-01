@@ -27,6 +27,38 @@ enum LiveHintStage {
         var errorDescription: String? { message }
     }
 
+    /// Whether an otherwise up-to-date post-processing record must be retried for its saved live hints. A damaged
+    /// sidecar, an unmatched text or speaker hint, or an effective speaker rename is pending; a correction already
+    /// present and a rename already applied or superseded are settled.
+    static func hasPendingWork(session: URL, transcript: Transcript) -> Bool {
+        do {
+            let hints = try LiveHintStore.read(session: session).hints
+            let base = try transcript.fixedFrom.map { try SessionFiles.transcript(id: $0, session: session) }
+                ?? transcript
+            let text = LiveHints.applyingText(hints, to: base)
+            if text.applied > 0 || text.unmatched > 0 { return true }
+            guard hints.contains(where: { if case .nameSpeaker = $0.action { true } else { false } }) else {
+                return false
+            }
+            let snapshot = try SpeakerSessionSnapshot.load(session: session)
+            guard snapshot.transcript.id == transcript.id, let projection = snapshot.projection else { return true }
+            let applied = Set(projection.appliedEditIDs)
+            let protected = Set(snapshot.journal.edits.compactMap { edit -> String? in
+                guard applied.contains(edit.id), case .rename(let speakerID, _) = edit.action else { return nil }
+                return speakerID
+            })
+            let proposed = LiveHints.speakerActions(hints, projection: projection, transcript: transcript)
+            guard !proposed.isEmpty else { return true }
+            return proposed.contains { action in
+                guard case .rename(let speakerID, let name) = action,
+                      !protected.contains(speakerID) else { return false }
+                return projection.speakers.first(where: { $0.id == speakerID })?.name != name
+            }
+        } catch {
+            return true
+        }
+    }
+
     static func applyText(session: URL, transcript: Transcript, lease: ProcessingLease) async throws -> TextOutcome {
         let hints: [LiveHint]
         do {
