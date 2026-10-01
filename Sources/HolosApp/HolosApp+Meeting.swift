@@ -445,6 +445,7 @@ extension HolosAppDelegate: NSMenuDelegate {
         let percent = progress.fraction.map { " \(Int((min(1, max(0, $0)) * 100).rounded()))%" } ?? ""
         let what = switch progress.stage {
         case .languages: "detecting languages"
+        case .wordFixes: "fixing misheard words"
         case .render, .diarize, .align, .recognize: "labelling speakers"
         case .export: "writing transcript files"
         default: "reading the transcript"

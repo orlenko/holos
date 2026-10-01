@@ -70,7 +70,7 @@ extension Session {
                 SessionLanguagesCommand.Request(session: session, languages: DictationLanguage.list(languages),
                                                 force: force),
                 diarizer: makeDiarizer(engineOverrides: [:]), profiles: SpeakerProfileStore(),
-                progress: Self.progressPrinter())
+                wordFixes: makeWordFixDependencies(), progress: Self.progressPrinter())
             // Stdout carries the result; a warning or failure is explained on stderr (docs/meeting-design.md §1.4).
             if json {
                 try Console.json(outcome.record)

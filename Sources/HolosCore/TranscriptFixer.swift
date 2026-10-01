@@ -42,6 +42,12 @@ public struct TranscriptFixer: Sendable {
     /// language does not know may become one of them when said alike, and one of them is never replaced but by a
     /// listed homophone or a taught pair. Nothing else about the guard changes.
     public var wordList: [String]
+    /// The word list's "often heard as" pairs (heard words → term, `WordList.heardAsPairs`): candidate swaps, never
+    /// made on their own. After the fix, each place in the chunk where such words were said (whole words, any case; at
+    /// most `maximumHeardAsQuestions`) is one question to the model (`HeardAsJudge`: the chunk with the place marked,
+    /// "did the speaker say "cloud" or "Claude"?"), and only a reply that is exactly the term replaces exactly that
+    /// place. Listed in the fix's own instructions instead, the model put the term in sentences about the cloud.
+    public var heardAs: [Correction]
     /// Token budget for the learned corrections listed in the instructions.
     public var referenceBudget: Int
     public var timeout: Duration
@@ -50,10 +56,11 @@ public struct TranscriptFixer: Sendable {
     public var language: String?
     private let model: Model
 
-    public init(corrections: CorrectionList, wordList: [String] = [], referenceBudget: Int, timeout: Duration,
-                language: String? = nil, model: @escaping Model) {
+    public init(corrections: CorrectionList, wordList: [String] = [], heardAs: [Correction] = [],
+                referenceBudget: Int, timeout: Duration, language: String? = nil, model: @escaping Model) {
         self.corrections = corrections
         self.wordList = wordList
+        self.heardAs = heardAs
         self.referenceBudget = referenceBudget
         self.timeout = timeout
         self.language = language
@@ -73,7 +80,8 @@ public struct TranscriptFixer: Sendable {
         // The choice of learned pairs and the guard run inside the time limit too: with a long list and a long chunk
         // they are work the chunk would otherwise wait for with no bound.
         let fixed: String, verdict: AIFixGuard.Verdict
-        switch await Self.firstOf(timeout, { [model, corrections, wordList, referenceBudget, language, spellingBudget] in
+        switch await Self.firstOf(timeout, { [model, corrections, wordList, referenceBudget, language,
+                                               spellingBudget] in
             // One lexicon for the chunk: each distinct word asks the spell checker once, on its own queue and within
             // `spellingBudget`; a word it did not reach counts as real, which lets nothing more through.
             let lexicon = Lexicon(language: language, taught: corrections.entries.map(\.meant) + wordList,
@@ -94,11 +102,78 @@ public struct TranscriptFixer: Sendable {
         case .timedOut: return Result(text: chunk, outcome: .timedOut)
         case .failed: return Result(text: chunk, outcome: .failed)
         }
+
+        // Term questions run after the base fix is validated and each gets its own bound. A slow later question must
+        // not throw away either that safe fix or term choices already completed before it.
+        let swapped: String?
+        if heardAs.isEmpty {
+            swapped = nil
+        } else {
+            do {
+                swapped = try await Self.choosingTerms(in: verdict == .accept ? fixed : core, pairs: heardAs,
+                                                       protecting: corrections.entries, timeout: timeout,
+                                                       model: model)
+            } catch {
+                if Task.isCancelled { return Result(text: chunk, outcome: .failed) }
+                swapped = nil
+            }
+        }
+        if let swapped {
+            var result = Result(text: leading + swapped + trailing, outcome: .fixed)
+            if case .reject(let why) = verdict { result.rejection = why }
+            return result
+        }
         switch verdict {
         case .accept: return Result(text: leading + fixed + trailing, outcome: .fixed)
         case .unchanged: return Result(text: chunk, outcome: .unchanged)
         case .reject(let why): return Result(text: chunk, outcome: .rejected, rejection: why)
         }
+    }
+
+    /// Most places of a chunk where "often heard as" words were said that are put to the model.
+    public static let maximumHeardAsQuestions = 3
+
+    /// The places of `text` where words of `pairs` were said (whole words, any case: `CorrectionList.matches`), in
+    /// order, but none that overlaps a meant phrase of `protecting` (the learned corrections): the text a fix gets has
+    /// already been corrected and does not say which words a correction produced, so every occurrence of a meant phrase
+    /// is kept, as `AIFixGuard` keeps them ("clawed -> cloud" keeps every "cloud" from becoming "Claude").
+    public static func heardAsPlaces(in text: String, pairs: [Correction],
+                                     protecting: [Correction]) -> [CorrectionList.Match] {
+        guard !pairs.isEmpty else { return [] }
+        let produced = CorrectionList(entries: protecting.map { Correction(heard: $0.meant, meant: $0.heard) })
+            .matches(in: text).map(\.range)
+        return CorrectionList(entries: pairs).matches(in: text).filter { place in
+            !produced.contains { NSIntersectionRange($0, place.range).length > 0 }
+        }
+    }
+
+    /// `text` with each place where words of `pairs` were said (`heardAsPlaces`; the first `maximumHeardAsQuestions`)
+    /// replaced by the term, spelled exactly as listed, where the model chose it (`HeardAsJudge`, the text as the
+    /// passage); nil when none was. Exactly the place changes.
+    static func choosingTerms(in text: String, pairs: [Correction], protecting: [Correction] = [],
+                              timeout: Duration, model: @escaping Model) async throws -> String? {
+        let places = heardAsPlaces(in: text, pairs: pairs, protecting: protecting).prefix(maximumHeardAsQuestions)
+        var chosen: [CorrectionList.Match] = []
+        for place in places {
+            try Task.checkCancellation()
+            let range = place.range.location..<(place.range.location + place.range.length)
+            let context = HeardAsJudge.context(of: range, in: text)
+            // The term as saved ("iPhone"), never with a sentence's capital ("IPhone").
+            let term = place.correction.meant
+            let question = HeardAsJudge.Question(title: nil, before: context.before, heard: place.heard,
+                                                 after: context.after, term: term)
+            // A question that fails or times out keeps its place; completed choices and the base fix survive it.
+            switch await HeardAsJudge.ask(question, model: model, timeout: timeout) {
+            case .term: chosen.append(place)
+            case .keep, .timedOut: continue
+            case .failed:
+                try Task.checkCancellation()
+            }
+        }
+        guard !chosen.isEmpty else { return nil }
+        let swapped = NSMutableString(string: text)
+        for place in chosen.reversed() { swapped.replaceCharacters(in: place.range, with: place.correction.meant) }
+        return swapped as String
     }
 
     static let baseInstructions = """

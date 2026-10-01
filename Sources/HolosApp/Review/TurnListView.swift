@@ -117,6 +117,8 @@ final class TurnTextView: NSTextView {
     private var wordRanges: [NSRange?] = []
     private var wordStarts: [Double] = []
     private var wordTexts: [String] = []
+    /// What the meeting's word fixes changed, per word (nil for a word as recognized).
+    private var wordFixes: [TranscriptWordFix?] = []
     private var playingWord: Int?
     /// Plays from a session time: VoiceOver's "Play from …" actions, one per word (clicks go through the table).
     var onPlay: ((Double) -> Void)?
@@ -185,8 +187,26 @@ final class TurnTextView: NSTextView {
         wordRanges = ReviewWordRanges.ranges(of: words.map(\.text), in: text)
         wordStarts = words.map(\.start)
         wordTexts = words.map(\.text)
+        wordFixes = words.map(\.fix)
+        // Words the meeting's word fixes changed: a dotted underline, and what was heard there in the tooltip.
+        if let storage = textStorage {
+            for (index, fix) in wordFixes.enumerated() {
+                guard let fix, index < wordRanges.count, let range = wordRanges[index],
+                      NSMaxRange(range) <= storage.length else { continue }
+                storage.addAttributes([
+                    .underlineStyle: NSUnderlineStyle.single.rawValue | NSUnderlineStyle.patternDot.rawValue,
+                    .toolTip: TurnTextView.fixDescription(fix),
+                ], range: range)
+            }
+        }
         playingWord = nil
         window?.invalidateCursorRects(for: self)
+    }
+
+    /// "Heard as “cloud”; a word-list term" — for a fixed word's tooltip and VoiceOver.
+    static func fixDescription(_ fix: TranscriptWordFix) -> String {
+        "Heard as “\(fix.heard)”; " + (fix.kind == .term ? "a word-list term Apple Intelligence chose"
+            : "fixed by a learned correction")
     }
 
     /// The keyboard and VoiceOver way to a word (VO-⌘-Space lists them): "Play from “budget” (00:12:03)". Made
@@ -195,7 +215,8 @@ final class TurnTextView: NSTextView {
         var actions: [NSAccessibilityCustomAction] = []
         for (index, start) in wordStarts.enumerated() {
             let word = index < wordTexts.count ? wordTexts[index].trimmingCharacters(in: .whitespacesAndNewlines) : ""
-            let name = "Play from “\(word)” (\(TimeFormat.clock(start)))"
+            let fix = index < wordFixes.count ? wordFixes[index].map { ", " + TurnTextView.fixDescription($0) } : nil
+            let name = "Play from “\(word)” (\(TimeFormat.clock(start))\(fix ?? ""))"
             actions.append(NSAccessibilityCustomAction(name: name) { [weak self] in
                 guard let onPlay = self?.onPlay else { return false }
                 onPlay(start)

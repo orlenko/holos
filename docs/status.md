@@ -335,8 +335,30 @@ Hardware-facing and cross-app acceptance remain pending.
   contextual strings; the app picks up a change from Terminal at the next dictation. A
   meeting's saved `vocabulary.json` stays what replays use; `session recover
   --current-vocabulary` opts into today's list. Apple Intelligence's fix counts the terms'
-  words as real words and changes nothing else in its guard. Whether the list improves
-  recognition of the listed terms has not been measured yet.
+  words as real words and changes nothing else in its guard. On one real meeting the list
+  took term hits from 30 of 82 to 32 of 82. A term may list real words it is often heard as
+  ("cloud", "clot" for "Claude": `voiceislocal words add Claude --heard-as cloud,clot`,
+  `words heard-as`, the card's "Often heard as" column); after dictation's fix, each place
+  such a word was said is one question to the on-device model, which may put the term
+  exactly there and nowhere else (on 5 invented sentences: right in all 5). Unit-tested with
+  a stand-in model; the card's column is built and compiled only.
+- Meeting word fixes (docs/design.md "Meeting word fixes"): post-processing stage 1c, after
+  the languages and before the speakers, applies the learned corrections to every segment
+  (as dictation does) and asks Apple's on-device model, place by place, whether a term was
+  meant where its often-heard-as word was written (only with Apple Intelligence's fix on);
+  a replaced phrase takes the time of the words it replaced. The result is a new transcript
+  revision (`fixedFrom`, `wordsFixed`; the one before is kept), fixed words are marked and
+  shown with a dotted underline and a "Heard as" tooltip in the review, and `voiceislocal
+  session fix-words <session> [--force]` fixes an existing meeting again with today's
+  corrections and terms (edited speaker labels are kept unless `--force`). On invented
+  sentences the model never put the term where it was not meant and found it in 3 of the 6
+  places of an invented meeting where it was meant.
+  The stage (versions, re-runs, the model off, edited labels, cancellation, the languages
+  stage and recovery seeing through a fix), the timings, and the question are unit-tested
+  with a scripted model; it has not run on a real meeting yet, and the review's underline
+  has not been seen on screen. `eval apply --add-vocabulary` proposes and adds
+  often-heard-as words where reviewed passages replaced real words by a term. Reverting one
+  fix from the review, and `eval local` applying the stage to its candidate, are follow-ups.
 - Main window (docs/design.md "Main window"): **Open Voice is Local** (⌘0) opens one
   window with a sidebar: History (⌘1), Corrections (⌘2), Meetings (⌘3), People (⌘4),
   Reading (⌘5), and Settings (⌘,), with a
@@ -589,6 +611,12 @@ Still requiring real-machine or user-data validation:
   turn's language; `session languages` redoes the whole meeting. The live transcript stays
   in the first language. Where two passages in different languages meet, a word can appear
   twice or not at all.
+- Meeting word fixes: a fix cannot be reverted one at a time in the review (it edits
+  speakers only; `session fix-words` after removing the correction or heard-as word undoes
+  it in a new version). A meeting whose speaker labels were edited is fixed only with
+  `session fix-words --force`, which labels its speakers again (names carry over, turn-level
+  changes do not). `eval local` does not apply the fixes to its candidate yet. The model
+  is asked one place at a time (at most 500 per run).
 - Live transcript: speakers and text cannot be corrected during the meeting yet. The first
   one or two volatile words of a microphone echo can show briefly (the echo rule needs a
   run of three words), and an echo heard before the system track's words arrive shows until

@@ -130,29 +130,54 @@ public struct CorrectionList: Codable, Sendable, Equatable {
 
     /// `apply`, and how many phrases it replaced (History's "2 corrections").
     public func applyCounting(to text: String) -> (text: String, count: Int) {
-        guard !entries.isEmpty, let pattern = matcher() else { return (text, 0) }
-        let replacements = Dictionary(entries.map { (Self.normalized($0.heard), $0) },
-                                      uniquingKeysWith: { _, last in last })
+        let found = matches(in: text)
+        guard !found.isEmpty else { return (text, 0) }
         let source = text as NSString
         var output = ""
         var cursor = 0
-        var count = 0
+        for match in found {
+            output += source.substring(with: NSRange(location: cursor, length: match.range.location - cursor))
+            output += match.meant
+            cursor = match.range.location + match.range.length
+        }
+        return (output + source.substring(from: cursor), found.count)
+    }
+
+    /// One place `apply` replaces: the UTF-16 range of the heard phrase as written, and the text it becomes.
+    public struct Match: Sendable, Equatable {
+        /// UTF-16 range in the text searched.
+        public var range: NSRange
+        /// The heard phrase as the text has it.
+        public var heard: String
+        /// The meant phrase, with a capital the sentence gave the heard phrase carried over.
+        public var meant: String
+        /// The entry that matched.
+        public var correction: Correction
+    }
+
+    /// Where `apply` replaces in `text`, in order and without overlaps: whole words and phrases, in any case and
+    /// spacing, the longest heard phrase first. The meant phrase takes a capital the sentence gave the heard phrase
+    /// ("Bundu" at a sentence start becomes "Ubuntu"), unless the saved heard phrase has one ("Mac OS" → "macOS" stays
+    /// lowercase). The meeting word-fix stage applies corrections through this, as dictation does.
+    public func matches(in text: String) -> [Match] {
+        guard !entries.isEmpty, let pattern = matcher() else { return [] }
+        let replacements = Dictionary(entries.map { (Self.normalized($0.heard), $0) },
+                                      uniquingKeysWith: { _, last in last })
+        let source = text as NSString
+        var found: [Match] = []
         for match in pattern.matches(in: text, range: NSRange(location: 0, length: source.length)) {
-            let found = source.substring(with: match.range)
-            guard let entry = replacements[Self.normalized(found)] else { continue }
-            count += 1
+            let heard = source.substring(with: match.range)
+            guard let entry = replacements[Self.normalized(heard)] else { continue }
             var meant = entry.meant
             // A capital the saved phrase lacks came from sentence position, so carry it over; a saved
             // capital ("Mac OS" → "macOS") means the lowercase replacement is deliberate.
-            if let first = found.first, first.isUppercase, entry.heard.first?.isLowercase == true,
+            if let first = heard.first, first.isUppercase, entry.heard.first?.isLowercase == true,
                let head = meant.first, head.isLowercase {
                 meant = head.uppercased() + meant.dropFirst()
             }
-            output += source.substring(with: NSRange(location: cursor, length: match.range.location - cursor))
-            output += meant
-            cursor = match.range.location + match.range.length
+            found.append(Match(range: match.range, heard: heard, meant: meant, correction: entry))
         }
-        return (output + source.substring(from: cursor), count)
+        return found
     }
 
     /// For text still growing while the user speaks: withholds trailing words that could become the start

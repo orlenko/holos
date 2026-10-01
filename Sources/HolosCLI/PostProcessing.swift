@@ -2,6 +2,7 @@ import Darwin
 import Foundation
 import HolosCore
 import HolosDiarization
+import HolosDictation
 import HolosMeeting
 import HolosStorage
 
@@ -11,7 +12,25 @@ import HolosStorage
 /// (`SpeakerProfileStore()`) lets stage 7 suggest known people when "Remember voices" is on (PR10).
 func makeMeetingPostProcessor(options: PostProcessingOptions = .init()) -> MeetingPostProcessor {
     MeetingPostProcessor(diarizer: makeDiarizer(engineOverrides: options.engineOverrides), options: options,
-                         profiles: SpeakerProfileStore())
+                         profiles: SpeakerProfileStore(), wordFixes: makeWordFixDependencies())
+}
+
+/// The meeting word-fix stage's inputs (docs/design.md "Meeting word fixes"): the user's corrections.json and
+/// words.json (in `HolosPaths.supportRoot`, so `HOLOS_SUPPORT_DIR` points them elsewhere), and Apple's on-device model
+/// when the app's "Fix misheard words with Apple Intelligence" setting is on and the model can be used for the
+/// meeting's language. A file that cannot be read fails the stage, which keeps the transcript and says why.
+func makeWordFixDependencies() -> WordFixDependencies {
+    WordFixDependencies(
+        corrections: { try CorrectionList.load(from: CorrectionList.defaultURL) },
+        wordList: { try WordListStore().load() },
+        model: { language in
+            let preferences = DictationPreferences.saved(in: UserDefaults(suiteName: DictationPreferences.appDomain))
+            guard preferences.aiFix else {
+                return .unavailable("Fix misheard words with Apple Intelligence is off in Settings")
+            }
+            if let reason = OnDeviceFix.unavailableReason(language: language) { return .unavailable(reason) }
+            return .available(OnDeviceFix.answerer())
+        })
 }
 
 /// `FluidDiarizer` over the installed models with `engineOverrides` applied (`FluidDiarizer.forInstalledModels`):

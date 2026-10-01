@@ -98,6 +98,11 @@ public enum EvalApply {
         /// Terms marked on the review page (whitespace collapsed), once each ignoring case and spacing, for the word
         /// list.
         public var terms: [String]
+        /// Local real words a reviewed passage replaced by a term (one of `knownTerms`, the word list's, or a marked
+        /// term): "often heard as" words of that term (`heard` the local words, `meant` the term as listed), not
+        /// corrections, since the same words are often meant as they are ("cloud" for "Claude"). A pair whose local
+        /// side has a word that is not a real word stays a correction.
+        public var heardAs: [Correction] = []
         /// Decisions on formatting-only passages, left out of the gold and the proposals.
         public var ignoredFormatting = 0
     }
@@ -106,8 +111,10 @@ public enum EvalApply {
 
     /// Builds the gold transcript and the proposals. The decisions must belong to this session and run and to the
     /// compare report's transcript revision, and the current transcript must still be that revision (the passage
-    /// positions refer to it). A decision for a passage the report does not have is refused.
+    /// positions refer to it). A decision for a passage the report does not have is refused. `knownTerms` are the word
+    /// list's terms, which with the marked terms decide which pairs are "often heard as" words (`Result.heardAs`).
     public static func build(session: URL, report: CompareReport, decisions: ReviewDecisions, now: Date = Date(),
+                             knownTerms: [String] = [],
                              isDictionaryWord: (String) -> Bool = { _ in false }) throws -> Result {
         guard decisions.sessionID == report.sessionID else {
             throw HolosError.invalidInput("These decisions belong to another session.")
@@ -149,22 +156,121 @@ public enum EvalApply {
                 .sorted { ($0.0.localFirst, $0.0.localEnd) < ($1.0.localFirst, $1.0.localEnd) }
             tracks.append(goldTrack(track: track, local: local, replacements: replacements))
         }
-        var corrections: [Correction] = []
-        for (passage, decision) in decided {
-            for pair in correctionPairs(passage: passage, final: decision.text, isDictionaryWord: isDictionaryWord)
-            where !corrections.contains(where: { $0.heard.lowercased() == pair.heard.lowercased() }) {
-                corrections.append(pair)
-            }
-        }
         var terms: [String] = []
         var seenTerms = Set<String>()
         for raw in decisions.terms {
             guard let term = WordList.cleaned(raw), seenTerms.insert(term.lowercased()).inserted else { continue }
             terms.append(term)
         }
+        // The terms a pair may be "often heard as" words of: the word list's, then the marked ones.
+        let spelled = termIndex(knownTerms + terms)
+        var corrections: [Correction] = []
+        var heardAs: [Correction] = []
+        for (passage, decision) in decided {
+            let pairs = proposals(passage: passage, final: decision.text, isDictionaryWord: isDictionaryWord)
+            for pair in pairs.corrections {
+                if let term = heardAsTerm(pair, terms: spelled, isDictionaryWord: isDictionaryWord) {
+                    if !heardAs.contains(where: { termKey($0.heard) == termKey(term.heard) && $0.meant == term.meant }) {
+                        heardAs.append(term)
+                    }
+                } else if !corrections.contains(where: { $0.heard.lowercased() == pair.heard.lowercased() }) {
+                    corrections.append(pair)
+                }
+            }
+            // A lone real word replaced by a term has no neighbour to learn a correction with, but is a heard-as word.
+            for pair in pairs.declined {
+                guard let term = heardAsTerm(pair, terms: spelled, isDictionaryWord: isDictionaryWord),
+                      !heardAs.contains(where: { termKey($0.heard) == termKey(term.heard) && $0.meant == term.meant })
+                else { continue }
+                heardAs.append(term)
+            }
+        }
         let gold = GoldTranscript(sessionID: report.sessionID, run: report.run, transcriptID: report.transcriptID,
                                   createdAt: now, reviewedPassages: decided.count, tracks: tracks)
-        return Result(gold: gold, corrections: corrections, terms: terms, ignoredFormatting: ignored)
+        return Result(gold: gold, corrections: corrections, terms: terms, heardAs: heardAs,
+                      ignoredFormatting: ignored)
+    }
+
+    /// What two spellings of a term share: its words lowercased, without the marks around them.
+    static func termKey(_ text: String) -> String {
+        words(of: text).joined(separator: " ")
+    }
+
+    /// The words of `text`, lowercased, without the marks around each.
+    static func words(of text: String) -> [String] {
+        text.split(whereSeparator: \.isWhitespace).map {
+            $0.lowercased().trimmingCharacters(in: .punctuationCharacters.union(.symbols))
+        }.filter { !$0.isEmpty }
+    }
+
+    /// Listed terms by how a reviewed text may write them: exactly (any case, whitespace collapsed), else without the
+    /// quotes, brackets and sentence marks around them. A term's own marks stay part of it, so "C#", "C++" and ".NET"
+    /// are three terms, not "c", "c" and "net". The first spelling of each key is kept.
+    struct TermIndex: Sendable {
+        var exact: [String: String] = [:]
+        var loose: [String: String] = [:]
+
+        /// The listed spelling of the term `text` writes; nil when it is none.
+        func term(_ text: String) -> String? {
+            exact[EvalApply.exactKey(text)] ?? loose[EvalApply.looseKey(text)]
+        }
+    }
+
+    static func termIndex(_ terms: [String]) -> TermIndex {
+        var index = TermIndex()
+        for term in terms {
+            guard let cleaned = WordList.cleaned(term) else { continue }
+            if index.exact[exactKey(cleaned)] == nil { index.exact[exactKey(cleaned)] = cleaned }
+            let loose = looseKey(cleaned)
+            if !loose.isEmpty, index.loose[loose] == nil { index.loose[loose] = cleaned }
+        }
+        return index
+    }
+
+    static func exactKey(_ text: String) -> String {
+        text.lowercased().split(whereSeparator: \.isWhitespace).joined(separator: " ")
+    }
+
+    /// Quotes and brackets around a term, and the sentence marks after it.
+    private static let leadingWrappers: Set<Character> = ["\"", "'", "“", "‘", "«", "(", "[", "{"]
+    private static let trailingWrappers: Set<Character> = ["\"", "'", "”", "’", "»", ")", "]", "}", ".", ",", ";", ":",
+                                                           "!", "?", "…"]
+
+    static func looseKey(_ text: String) -> String {
+        var key = Substring(exactKey(text))
+        while let first = key.first, leadingWrappers.contains(first) { key = key.dropFirst() }
+        while let last = key.last, trailingWrappers.contains(last) { key = key.dropLast() }
+        return String(key)
+    }
+
+    /// The "often heard as" pair `pair` stands for. The longest run of the meant side's words that is a listed term
+    /// (`terms`) is found first; the words around it must be the same on both sides (a correction's neighbour, "asked
+    /// cloud" → "asked Claude"), and the heard words between them are the term's heard-as words, when every one of them
+    /// is a real word. Heard as the local words, meant as the term is spelled in the list. Nil otherwise: a correction.
+    static func heardAsTerm(_ pair: Correction, terms: TermIndex,
+                            isDictionaryWord: (String) -> Bool) -> Correction? {
+        let heardWords = pair.heard.split(whereSeparator: \.isWhitespace).map(String.init)
+        let meantWords = pair.meant.split(whereSeparator: \.isWhitespace).map(String.init)
+        guard !heardWords.isEmpty, !meantWords.isEmpty else { return nil }
+        for length in stride(from: meantWords.count, through: 1, by: -1) {
+            for start in 0...(meantWords.count - length) {
+                guard let term = terms.term(meantWords[start..<(start + length)].joined(separator: " ")) else {
+                    continue
+                }
+                let after = meantWords.count - start - length
+                guard start + after < heardWords.count,
+                      zip(heardWords.prefix(start), meantWords.prefix(start)).allSatisfy({ termKey($0) == termKey($1) }),
+                      zip(heardWords.suffix(after), meantWords.suffix(after)).allSatisfy({ termKey($0) == termKey($1) })
+                else { continue }
+                let heard = heardWords[start..<(heardWords.count - after)].joined(separator: " ")
+                    .trimmingCharacters(in: .punctuationCharacters.union(.whitespaces))
+                let local = words(of: heard)
+                guard !heard.isEmpty, exactKey(heard) != exactKey(term), !local.isEmpty,
+                      local.allSatisfy(isDictionaryWord) else { return nil }
+                return Correction(heard: heard, meant: term)
+            }
+        }
+        return nil
     }
 
     /// How a gold piece joins the one before it.
@@ -245,19 +351,55 @@ public enum EvalApply {
     /// most `maxCorrectionWords` words on each side whose words differ in more than case or punctuation.
     static func correctionPairs(passage: EvalPassage, final: String,
                                 isDictionaryWord: (String) -> Bool) -> [Correction] {
+        proposals(passage: passage, final: final, isDictionaryWord: isDictionaryWord).corrections
+    }
+
+    /// `correctionPairs`, and the lone dictionary words `CorrectionList.learnReportingDeclined` declined (no neighbour
+    /// to learn them with), which may still be "often heard as" words of a term.
+    static func proposals(passage: EvalPassage, final: String,
+                          isDictionaryWord: (String) -> Bool) -> (corrections: [Correction], declined: [Correction]) {
         guard !passage.local.isEmpty, !final.trimmingCharacters(in: .whitespaces).isEmpty,
               EvalText.tokens(passage.local).map(EvalText.key) != EvalText.tokens(final).map(EvalText.key) else {
-            return []
+            return ([], [])
         }
         let original = [passage.before, passage.local, passage.after].filter { !$0.isEmpty }.joined(separator: " ")
         let corrected = [passage.before, final, passage.after].filter { !$0.isEmpty }.joined(separator: " ")
-        return CorrectionList.learn(original: original, corrected: corrected, isDictionaryWord: isDictionaryWord)
-            .filter { pair in
-                let heard = EvalText.tokens(pair.heard)
-                let meant = EvalText.tokens(pair.meant)
-                return !heard.isEmpty && !meant.isEmpty && heard.count <= maxCorrectionWords
-                    && meant.count <= maxCorrectionWords && heard.map(EvalText.key) != meant.map(EvalText.key)
+        let learned = CorrectionList.learnReportingDeclined(original: original, corrected: corrected,
+                                                            isDictionaryWord: isDictionaryWord)
+        func fits(_ pair: Correction) -> Bool {
+            let heard = EvalText.tokens(pair.heard)
+            let meant = EvalText.tokens(pair.meant)
+            return !heard.isEmpty && !meant.isEmpty && heard.count <= maxCorrectionWords
+                && meant.count <= maxCorrectionWords && heard.map(EvalText.key) != meant.map(EvalText.key)
+        }
+        return (learned.learned.filter(fits), learned.declined.filter(fits))
+    }
+
+    /// Adds each pair's heard words (`Result.heardAs`) to its term's "often heard as" words in `store` (the app's
+    /// words.json), under the list's lock. A term the list does not have is skipped (the caller adds marked terms
+    /// first). The report says what each term is heard as now, and which terms were missing.
+    public static func addToHeardAs(_ pairs: [Correction], store: WordListStore) throws -> WordListCommand.Report {
+        let (_, changes, _) = try store.update { list -> [(String, WordList.HeardAsChange?)] in
+            var grouped: [(term: String, phrases: [String])] = []
+            for pair in pairs {
+                if let index = grouped.firstIndex(where: { $0.term == pair.meant }) {
+                    grouped[index].phrases.append(pair.heard)
+                } else {
+                    grouped.append((pair.meant, [pair.heard]))
+                }
             }
+            return grouped.map { ($0.term, list.addHeardAs($0.phrases, to: $0.term)) }
+        }
+        var report = WordListCommand.Report()
+        for (term, change) in changes {
+            guard let change else {
+                report.errors.append("Not in the word list, so its often-heard-as words were not added: \(term)")
+                report.exitCode = 1
+                continue
+            }
+            WordListCommand.add(change, to: &report)
+        }
+        return report
     }
 
     /// Adds `corrections` to the correction list at `url` (the app's corrections.json) as the app adds one: an entry

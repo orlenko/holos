@@ -22,9 +22,12 @@ public struct ReviewWord: Sendable, Equatable {
     public let text: String
     /// Session time.
     public let start: Double
+    /// For a word the meeting word-fix stage changed (`TranscriptSegment.fixes`): what the recognizer wrote there, and
+    /// whether a learned correction or a word-list term made the change. Nil for every other word.
+    public let fix: TranscriptWordFix?
 
-    public init(ref: WordRef, text: String, start: Double) {
-        self.ref = ref; self.text = text; self.start = start
+    public init(ref: WordRef, text: String, start: Double, fix: TranscriptWordFix? = nil) {
+        self.ref = ref; self.text = text; self.start = start; self.fix = fix
     }
 }
 
@@ -378,10 +381,12 @@ public struct ReviewWord: Sendable, Equatable {
             guard let segment = segments[span.segmentID] else { continue }
             let effective = WordTiming.effectiveWords(of: segment)
             guard span.first >= 0, span.first < span.end, span.end <= effective.count else { continue }
+            let fixes = segment.fixes ?? []
             for index in span.first..<span.end {
                 let word = effective[index]
                 words.append(ReviewWord(ref: WordRef(segmentID: span.segmentID, word: index), text: word.text,
-                                        start: word.start))
+                                        start: word.start,
+                                        fix: fixes.first { $0.first <= index && index < $0.end }))
             }
         }
         wordCache[turn.id] = (turn.spans, words)

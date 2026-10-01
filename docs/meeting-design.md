@@ -2838,6 +2838,11 @@ No speaker labels: speaker models are not installed. [Install…]"). An explicit
 `holos session diarize` without verified models fails early (exit 1) with the setup
 hint. `postprocess.json` writes are throttled to one per 250 ms plus every stage change.
 
+Added later, both before stage 2 and both skipped with `keepTranscript`: stage 1b
+`languages` (§4.14) and stage 1c `wordFixes` (learned corrections and the word list's "often
+heard as" terms applied to the final transcript, which becomes a new current revision;
+docs/design.md "Meeting word fixes"). A word-fix problem makes the record `partial` too.
+
 **Render time map** (PR7b, in `TrackRenderer`). A meeting left paused for hours would
 otherwise render hours of silence. Gaps longer than 60 s (including before the first
 chunk) become 5 s of silence in the render. `RenderedTrack.timeMap` lists

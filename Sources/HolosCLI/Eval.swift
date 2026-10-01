@@ -287,16 +287,20 @@ struct Eval: AsyncParsableCommand {
             discussion: """
                 Writes eval/gold/<run>.json: the local transcript with each reviewed passage replaced by its \
                 decided text. Prints the heard → meant pairs (word substitutions of at most 3 words) and the \
-                terms you marked. Nothing is added unless you pass --add-corrections (those pairs, to your \
-                corrections) or --add-vocabulary (the marked terms, to your word list, as voiceislocal words add \
-                does). Each addition is made under that file's lock; a running Voice is Local picks it up and \
-                never saves over it.
+                terms you marked. Where real words were replaced by a term of your word list or a marked term \
+                (local "cloud", cloud "Claude"), the pair is proposed as an often-heard-as word of that term \
+                instead of a correction, since those words are often meant as they are; a pair with a word that is \
+                not a real word stays a correction. Nothing is added unless you pass --add-corrections (the \
+                corrections, to your corrections) or --add-vocabulary (the marked terms, to your word list, as \
+                voiceislocal words add does, then the often-heard-as words, to their terms). Each addition is made \
+                under that file's lock; a running Voice is Local picks it up and never saves over it.
                 """)
 
         @Argument(help: "Path to a .holos folder, or a session ID.") var session: String
         @Argument(help: "decisions.json exported by the review page.") var decisions: String
         @Flag(help: "Add the proposed heard → meant pairs to your corrections.") var addCorrections = false
-        @Flag(help: "Add the marked terms to your word list.") var addVocabulary = false
+        @Flag(help: "Add the marked terms to your word list, and the proposed often-heard-as words to their terms.")
+        var addVocabulary = false
 
         mutating func run() throws {
             let directory = try SessionLocator.resolve(session)
@@ -311,7 +315,20 @@ struct Eval: AsyncParsableCommand {
                 throw HolosError.invalidInput("This session has no comparison for run \(parsed.run).")
             }
             let lexicon = Lexicon(language: nil)
+            let store = WordListStore()
+            let knownTerms: [String]
+            do {
+                knownTerms = try store.load().terms
+            } catch {
+                if addVocabulary {
+                    throw HolosError.invalidInput("Could not read the word list: \(error.localizedDescription)")
+                }
+                Console.error("Could not read the word list, so only marked terms count as terms: "
+                    + error.localizedDescription)
+                knownTerms = []
+            }
             let result = try EvalApply.build(session: directory, report: report, decisions: parsed,
+                                             knownTerms: knownTerms,
                                              isDictionaryWord: { lexicon.isWord($0.lowercased()) })
             let gold = EvalPaths.gold(parsed.run, in: directory)
             try EvalStore.write(result.gold, to: gold)
@@ -324,20 +341,32 @@ struct Eval: AsyncParsableCommand {
                 : "Proposed corrections (heard → meant):")
             for pair in result.corrections { Console.error("  \(pair.heard) → \(pair.meant)") }
             if !result.terms.isEmpty { Console.error("Marked terms: " + result.terms.joined(separator: ", ")) }
+            if !result.heardAs.isEmpty {
+                Console.error("Proposed often-heard-as words (real words replaced by a term; Apple Intelligence "
+                    + "decides from the context, so they are not corrections):")
+                for pair in result.heardAs { Console.error("  \(pair.meant) ← \(pair.heard)") }
+            }
             if addCorrections {
                 let added = try EvalApply.addToCorrections(result.corrections, at: CorrectionList.defaultURL)
                 Console.error("Added \(added.count) corrections to \(CorrectionList.defaultURL.path); Voice is Local's "
                     + "Corrections pane shows them.")
             }
             if addVocabulary {
+                var exitCode: Int32 = 0
                 if result.terms.isEmpty {
                     Console.error("No marked terms to add to the word list.")
                 } else {
-                    let report = try EvalApply.addToWordList(result.terms, store: WordListStore())
+                    let report = try EvalApply.addToWordList(result.terms, store: store)
                     // stdout carries only the gold transcript's path.
                     for line in report.output + report.errors { Console.error(line) }
-                    if report.exitCode != 0 { throw ExitCode(report.exitCode) }
+                    exitCode = max(exitCode, report.exitCode)
                 }
+                if !result.heardAs.isEmpty {
+                    let report = try EvalApply.addToHeardAs(result.heardAs, store: store)
+                    for line in report.output + report.errors { Console.error(line) }
+                    exitCode = max(exitCode, report.exitCode)
+                }
+                if exitCode != 0 { throw ExitCode(exitCode) }
             }
         }
     }

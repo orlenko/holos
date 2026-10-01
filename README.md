@@ -229,6 +229,9 @@ searches and counts; from Terminal:
 
 ```sh
 voiceislocal words add "Urban Sky" Keycloak   # quote a term of several words
+voiceislocal words add Claude --heard-as cloud,clot,clod   # real words it is often heard as
+voiceislocal words heard-as Claude --add clawed --remove clod
+voiceislocal words heard-as                  # every term's often-heard-as words
 voiceislocal words list
 voiceislocal words remove Keycloak
 voiceislocal words import terms.txt          # one term per line; - reads standard input
@@ -243,6 +246,36 @@ become it ("keycloack" → "keycloak"); it still never joins or splits words or 
 which is what a correction is for. A meeting keeps the vocabulary it was recorded with
 (`vocabulary.json`); `voiceislocal session recover --force --current-vocabulary` transcribes
 its missed audio again with today's list instead.
+
+Some terms come out as real words: "Claude" as "cloud", "clot" or "clod". A correction
+would be wrong there, since "cloud" is often meant. List those words as the term's **often
+heard as** words (`--heard-as`, or double-click the card's "Often heard as" column). With
+"Fix misheard words with Apple Intelligence" on, dictation's fix and a meeting's word fixes
+(below) may replace such a word by the term where the context says it was meant ("I asked
+cloud to refactor the parser"), and only there; nothing replaces it on its own.
+
+### Meeting word fixes
+
+After a recording, before speakers are labelled, a meeting's transcript gets your learned
+corrections (applied as dictation applies them: whole words and phrases, any case, a
+sentence's capital carried over), then Apple's on-device model is asked, for each place
+where a term's often-heard-as word was written, whether the term was meant there (the
+passage around it and the meeting's title; one short question per place, and only the
+term itself replaces that place). A replaced phrase takes the time of the words it
+replaced. The result is a new version of the transcript; the one before is kept, and the
+review marks each fixed word with a dotted underline whose tooltip says what was heard.
+Running it again after you add corrections or terms fixes the meeting again from the
+transcript before any fix:
+
+```sh
+voiceislocal session fix-words <session>          # today's corrections and word list
+voiceislocal session fix-words <session> --force  # also when speaker labels were edited
+```
+
+It exits 0 when done (also without speaker models), 3 when the words could not be fixed
+(edited speaker labels without `--force`, an unreadable list) or speaker labelling was
+skipped, and 1 when nothing could be done. Speakers are labelled again on the new text
+(names carry over); running it again with the same corrections and terms changes nothing.
 
 ## Quick start
 
@@ -268,6 +301,7 @@ voiceislocal="$BIN_DIR/voiceislocal"
 "$voiceislocal" session import ./meeting.m4a   # an audio file to a transcribed, labelled session
 "$voiceislocal" session diarize /path/to/session.holos
 "$voiceislocal" session languages <session> --languages fr-CA,en-CA   # mixed French and English
+"$voiceislocal" session fix-words <session>    # fix misheard words with today's corrections and terms
 "$voiceislocal" session list                   # sessions, newest first, with state and size
 "$voiceislocal" speakers list <session>        # a session's speakers; also rename, merge, assign, ...
 "$voiceislocal" speakers rename <session> S2 "Maria"
@@ -472,7 +506,10 @@ export OPENAI_API_KEY=…                          # your key; never saved
 people's names, then correction words. `eval apply` adds nothing unless given
 `--add-corrections` (the heard → meant pairs, to your corrections) or `--add-vocabulary`
 (the terms you marked, to your word list); a running Voice is Local picks the additions
-up and never saves over them. See
+up and never saves over them. Where a reviewed passage replaced local real words by a term
+of your word list or a marked one (local "cloud", cloud "Claude"), the pair is proposed as
+an often-heard-as word of that term instead of a correction, and `--add-vocabulary` adds it
+there; a pair with a word that is not a real word stays a correction. See
 [Cloud reference](docs/reference-evaluation.md#cloud-reference).
 
 `reference-data/` is reserved for private, user-provided reference recordings and

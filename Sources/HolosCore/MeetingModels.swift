@@ -134,6 +134,9 @@ public enum MeetingEventKind {
     /// fallback (the language the recorded transcript stood in for, when it did): journaled before the transcript
     /// merged from one transcription per language is saved as current (LANG2, §4.14)
     public static let languagesDetected = "languagesDetected"
+    /// transcriptID, base, corrections, terms, asked: journaled before a transcript whose misheard words were fixed is
+    /// saved as current; `base` is the revision it was fixed from, which is kept (docs/design.md "Meeting word fixes")
+    public static let wordsFixed = "wordsFixed"
 }
 
 // MARK: - Meeting setup (meeting.json, vocabulary.json)
@@ -265,6 +268,9 @@ public struct PostProcessingStage: OpenStringCode {
     public static let transcript = PostProcessingStage("transcript")
     /// A meeting in several languages: the audio transcribed again in each, and the transcript merged (LANG2, §4.14).
     public static let languages = PostProcessingStage("languages")
+    /// Learned corrections and the word list's "often heard as" terms applied to the final transcript, which becomes a
+    /// new revision (docs/design.md "Meeting word fixes").
+    public static let wordFixes = PostProcessingStage("wordFixes")
     public static let render = PostProcessingStage("render")
     public static let diarize = PostProcessingStage("diarize")
     public static let align = PostProcessingStage("align")

@@ -15,9 +15,15 @@ public struct WordListEntry: Codable, Sendable, Equatable {
     public var text: String
     public var addedAt: Date
     public var source: WordListSource
+    /// "Often heard as": real words the recognizer writes for this term ("cloud", "clot" for "Claude"). They are never
+    /// replaced on their own: Apple Intelligence decides from the context whether the term was meant there (docs/
+    /// design.md "Word list"). Nil (left out of words.json) when there are none, so older lists read and write as
+    /// before.
+    public var heardAs: [String]?
 
-    public init(text: String, addedAt: Date, source: WordListSource) {
+    public init(text: String, addedAt: Date, source: WordListSource, heardAs: [String]? = nil) {
         self.text = text; self.addedAt = addedAt; self.source = source
+        self.heardAs = heardAs?.isEmpty == true ? nil : heardAs
     }
 }
 
@@ -25,7 +31,9 @@ public struct WordListEntry: Codable, Sendable, Equatable {
 /// products, jargon) that no correction teaches, because a correction needs a misheard side. Terms keep the case they
 /// were written in and may be several words ("Urban Sky"); two terms that differ only in case or spacing are one term,
 /// spelled as it was first added. The recognizer gets the terms as contextual strings, first
-/// (`RecognizerVocabulary`), and Apple Intelligence's fix counts their words as real words (`Lexicon`).
+/// (`RecognizerVocabulary`), and Apple Intelligence's fix counts their words as real words (`Lexicon`). A term may list
+/// real words it is often heard as ("cloud" for "Claude", `heardAsPairs`), which Apple Intelligence may replace by the
+/// term where the context says it was meant, in dictation and in meetings.
 public struct WordList: Codable, Sendable, Equatable {
     public static let currentSchemaVersion = 1
     /// Longest term, in characters: the longest string a meeting's vocabulary keeps (§4.12).
@@ -81,6 +89,115 @@ public struct WordList: Codable, Sendable, Equatable {
         Self.cleaned(text).map { entry(matching: $0) != nil } ?? false
     }
 
+    // MARK: - Often heard as
+
+    /// Most "often heard as" phrases kept for one term.
+    public static let maximumHeardAs = 20
+
+    /// What a change of a term's "often heard as" phrases did.
+    public struct HeardAsChange: Sendable, Equatable {
+        /// The term, as the list spells it.
+        public var term: String
+        /// Phrases added, as kept (whitespace collapsed).
+        public var added: [String] = []
+        /// Phrases removed, as they were spelled.
+        public var removed: [String] = []
+        /// Phrases the term had already (in any case), or asked to be removed and not there.
+        public var unchanged: [String] = []
+        /// Phrases refused: the term itself, longer than `maximumLength`, without a letter or digit, or past
+        /// `maximumHeardAs`.
+        public var refused: [String] = []
+        /// The term's phrases after the change.
+        public var phrases: [String] = []
+    }
+
+    /// The "often heard as" phrases of the term matching `text` (any case or spacing); nil when the list does not have
+    /// the term, empty when it has none.
+    public func heardAs(of text: String) -> [String]? {
+        guard let term = Self.cleaned(text), let entry = entry(matching: term) else { return nil }
+        return entry.heardAs ?? []
+    }
+
+    /// Adds `phrases` (comma lists are not split here: see `heardAsList`) to the "often heard as" phrases of the term
+    /// matching `text`; nil when the list does not have the term. A phrase the term has already, in any case, is left
+    /// as it is; one that is the term itself, too long, without a letter or digit, or past `maximumHeardAs` is
+    /// refused.
+    @discardableResult
+    public mutating func addHeardAs(_ phrases: [String], to text: String) -> HeardAsChange? {
+        guard let term = Self.cleaned(text), let index = entries.firstIndex(where: { Self.key($0.text) == Self.key(term) })
+        else { return nil }
+        var current = entries[index].heardAs ?? []
+        var change = HeardAsChange(term: entries[index].text)
+        for raw in phrases {
+            guard let phrase = Self.cleaned(raw) else { continue }
+            if current.contains(where: { Self.key($0) == Self.key(phrase) }) {
+                change.unchanged.append(phrase)
+            } else if !Self.isHeardAs(phrase, of: entries[index].text) || current.count >= Self.maximumHeardAs {
+                change.refused.append(phrase)
+            } else {
+                current.append(phrase)
+                change.added.append(phrase)
+            }
+        }
+        entries[index].heardAs = current.isEmpty ? nil : current
+        change.phrases = current
+        return change
+    }
+
+    /// Removes `phrases` (any case or spacing) from the "often heard as" phrases of the term matching `text`; nil when
+    /// the list does not have the term.
+    @discardableResult
+    public mutating func removeHeardAs(_ phrases: [String], from text: String) -> HeardAsChange? {
+        guard let term = Self.cleaned(text), let index = entries.firstIndex(where: { Self.key($0.text) == Self.key(term) })
+        else { return nil }
+        var current = entries[index].heardAs ?? []
+        var change = HeardAsChange(term: entries[index].text)
+        for raw in phrases {
+            guard let phrase = Self.cleaned(raw) else { continue }
+            if let at = current.firstIndex(where: { Self.key($0) == Self.key(phrase) }) {
+                change.removed.append(current.remove(at: at))
+            } else {
+                change.unchanged.append(phrase)
+            }
+        }
+        entries[index].heardAs = current.isEmpty ? nil : current
+        change.phrases = current
+        return change
+    }
+
+    /// Makes `phrases` the "often heard as" phrases of the term matching `text` (as `addHeardAs` keeps them, in order);
+    /// nil when the list does not have the term. The Word list card's "Often heard as" column sets them this way.
+    @discardableResult
+    public mutating func setHeardAs(_ phrases: [String], for text: String) -> HeardAsChange? {
+        guard let term = Self.cleaned(text), let index = entries.firstIndex(where: { Self.key($0.text) == Self.key(term) })
+        else { return nil }
+        let before = entries[index].heardAs ?? []
+        entries[index].heardAs = nil
+        guard var change = addHeardAs(phrases, to: term) else { return nil }
+        change.removed = before.filter { old in !change.phrases.contains { Self.key($0) == Self.key(old) } }
+        change.added = change.added.filter { new in !before.contains { Self.key($0) == Self.key(new) } }
+        change.unchanged = []
+        return change
+    }
+
+    /// Every term's "often heard as" phrases as pairs (heard phrase → term), in list order: what Apple Intelligence may
+    /// swap where the context says the term was meant, never on its own. A phrase heard for two terms counts for the
+    /// last one listed.
+    public var heardAsPairs: [Correction] {
+        entries.flatMap { entry in (entry.heardAs ?? []).map { Correction(heard: $0, meant: entry.text) } }
+    }
+
+    /// The phrases of a comma-separated list ("cloud, clot,clod"), trimmed, blanks skipped.
+    public static func heardAsList(_ text: String) -> [String] {
+        text.split(separator: ",").compactMap { cleaned(String($0)) }
+    }
+
+    /// Whether `phrase` (cleaned) may be an "often heard as" phrase of `term`: not the term itself in any case, at most
+    /// `maximumLength` characters, with a letter or digit.
+    static func isHeardAs(_ phrase: String, of term: String) -> Bool {
+        key(phrase) != key(term) && phrase.count <= maximumLength && phrase.contains { $0.isLetter || $0.isNumber }
+    }
+
     /// `text` trimmed, with each run of whitespace (line breaks too) made one space; nil when nothing is left.
     public static func cleaned(_ text: String) -> String? {
         let term = text.split(whereSeparator: \.isWhitespace).joined(separator: " ")
@@ -103,10 +220,12 @@ public struct WordList: Codable, Sendable, Equatable {
     }
 
     /// Keeps a decoded entry the way `add` would: cleaned, not too long, not a duplicate, within the limit.
+    /// Its "often heard as" phrases are kept as `addHeardAs` keeps them.
     private mutating func insert(_ entry: WordListEntry) {
         guard let term = Self.cleaned(entry.text), term.count <= Self.maximumLength, self.entry(matching: term) == nil,
               entries.count < Self.maximumTerms else { return }
         entries.append(WordListEntry(text: term, addedAt: entry.addedAt, source: entry.source))
+        if let heardAs = entry.heardAs { addHeardAs(heardAs, to: term) }
     }
 
     // MARK: - Coding
