@@ -716,22 +716,27 @@ public enum WindowComparer {
         for range in bounds { for position in range { inStretch[position] = true } }
         let (localTexts, cloudTexts) = texts
         let (localRuns, cloudRuns) = runs
-        // A matched word just outside a stretch joins it when a number goes on from it into the stretch's words, on
-        // either side: the number is then aligned whole.
+        // Whether a number goes on from the words of positions `left` into those of `right` just after them, on
+        // either side.
+        func numberSpans(_ left: ClosedRange<Int>, _ right: ClosedRange<Int>) -> Bool {
+            let local = (left.last(where: { localIndex(ops[$0]) != nil }).flatMap { localIndex(ops[$0]) },
+                         right.first(where: { localIndex(ops[$0]) != nil }).flatMap { localIndex(ops[$0]) })
+            let cloud = (left.last(where: { cloudIndex(ops[$0]) != nil }).flatMap { cloudIndex(ops[$0]) },
+                         right.first(where: { cloudIndex(ops[$0]) != nil }).flatMap { cloudIndex(ops[$0]) })
+            if let i = local.0, local.1 == i + 1, continuesNumber(localTexts, runs: localRuns, at: i, fillers: fillers) {
+                return true
+            }
+            if let j = cloud.0, cloud.1 == j + 1, continuesNumber(cloudTexts, runs: cloudRuns, at: j, fillers: fillers) {
+                return true
+            }
+            return false
+        }
+        // A matched word just outside a stretch joins it when a number goes on from it into the stretch's words: the
+        // number is then aligned whole.
         func joinsNumber(_ position: Int, before: Bool, _ range: ClosedRange<Int>) -> Bool {
             guard position >= 0, position < ops.count, !inStretch[position], !excluded[position],
-                  range.count < normalizationStretch, case .match(let i, let j, _) = ops[position] else { return false }
-            let stretchLocal = range.compactMap { localIndex(ops[$0]) }
-            let stretchCloud = range.compactMap { cloudIndex(ops[$0]) }
-            let local = before ? stretchLocal.first == i + 1 && continuesNumber(localTexts, runs: localRuns, at: i,
-                                                                                 fillers: fillers)
-                : stretchLocal.last == i - 1 && continuesNumber(localTexts, runs: localRuns, at: i - 1,
-                                                                fillers: fillers)
-            let cloud = before ? stretchCloud.first == j + 1 && continuesNumber(cloudTexts, runs: cloudRuns, at: j,
-                                                                                 fillers: fillers)
-                : stretchCloud.last == j - 1 && continuesNumber(cloudTexts, runs: cloudRuns, at: j - 1,
-                                                                fillers: fillers)
-            return local || cloud
+                  range.count < normalizationStretch, case .match = ops[position] else { return false }
+            return before ? numberSpans(position...position, range) : numberSpans(range, position...position)
         }
         for index in bounds.indices {
             while joinsNumber(bounds[index].lowerBound - 1, before: true, bounds[index]) {
@@ -741,6 +746,17 @@ public enum WindowComparer {
             while joinsNumber(bounds[index].upperBound + 1, before: false, bounds[index]) {
                 bounds[index] = bounds[index].lowerBound...(bounds[index].upperBound + 1)
                 inStretch[bounds[index].upperBound] = true
+            }
+        }
+        // Stretches that now touch, with a number going on from one into the next ("twenty um uh er one", its
+        // fillers matched), are one stretch: the number is aligned whole.
+        var merged: [(stretch: [Int], range: ClosedRange<Int>)] = []
+        for (stretch, range) in zip(stretches, bounds) {
+            if let last = merged.last, last.range.upperBound + 1 == range.lowerBound,
+               range.upperBound - last.range.lowerBound < normalizationStretch, numberSpans(last.range, range) {
+                merged[merged.count - 1] = (last.stretch + stretch, last.range.lowerBound...range.upperBound)
+            } else {
+                merged.append((stretch, range))
             }
         }
         func surroundings(_ runs: EvalNormalization.SpelledRuns, _ words: [String],
@@ -762,7 +778,7 @@ public enum WindowComparer {
                 if !exact { result.normalized.caseOrPunctuationOnly += 1 }
             }
         }
-        for (stretch, range) in zip(stretches, bounds) {
+        for (stretch, range) in merged {
             let positions = Array(range)
             let localIndices = positions.compactMap { localIndex(ops[$0]) }
             let cloudIndices = positions.compactMap { cloudIndex(ops[$0]) }

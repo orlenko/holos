@@ -347,7 +347,8 @@ passages, the review page and the gold keep the words as written.
 Each stretch of word passages of the raw alignment (runs of edits, with at
 most 2 matched words between two of them, and at most 400 steps), with the
 matched words at its edges that a number carries on from into it ("30" of
-"30 per cent" against "30 percent"), is aligned
+"30 per cent" against "30 percent"; two stretches it then joins, as matched
+fillers inside "twenty um uh er one" leave them, are one), is aligned
 again this way: a minimum-edit alignment where a filler costs nothing to
 leave out and a number or compound run matches its other spelling at no cost
 (a stretch too long for that pairs its words in order). Its remaining edits

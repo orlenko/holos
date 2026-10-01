@@ -793,3 +793,11 @@ private func fairHits(_ term: String, in text: String) -> [String] {
     #expect(EvalTerms.count(terms, tracks: [echoed.termTrack("system", normalized: false)])
         .map { "\($0.hits)/\($0.cloud)" } == ["1/1"])
 }
+
+@Test func fairStretchesOneNumberConnectsAreNormalizedTogether() {
+    // Three matched fillers inside the spelled number split the raw passages; the number joins them again.
+    let result = WindowComparer.compare(track: "system", local: fairTimed(words("pay twenty um uh er one now")),
+                                        cloud: fairUntimed("pay 21 um uh er now"), start: 0, end: 10)
+    #expect(result.normalized.edits == 0 && result.normalization.numbers == 1)
+    #expect(result.passages.allSatisfy { $0.formattingOnly })
+}
