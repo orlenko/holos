@@ -178,8 +178,9 @@ public enum EvalTerms {
     /// Where `pattern` is written in the words, as whole words: its forms as their keys joined, or (with `numbers`,
     /// the words' spelled-number runs, for a run holding a number) as the run's `NormalizedAlignment.compoundForms`
     /// ("GPT four" for "GPT-4") or with the same numbers (`NumberReading`: "21" for "twenty one", "30%" for "thirty
-    /// percent"). With `numbers`, an occurrence never starts or ends inside a spelled number: "V one hundred" of "V
-    /// one hundred five" is not "V100".
+    /// percent"). With `numbers`, an occurrence never starts or ends inside a spelled number, its "plus" and
+    /// "percent" included: "V one hundred" of "V one hundred five" is not "V100", nor "thirty" of "thirty percent"
+    /// 30.
     static func occurrences(of pattern: Pattern, words: [String], keys: [String],
                             numbers: EvalNormalization.SpelledRuns?) -> [Range<Int>] {
         let forms = pattern.forms.filter { !$0.isEmpty }
@@ -217,7 +218,7 @@ public enum EvalTerms {
                     hasNumber = hasNumber || spelled || words[end].contains(where: \.isNumber)
                 }
                 end += 1
-                if numbers?.cuts(start..<end) == true { continue }
+                if numbers?.cutsRun(start..<end) == true { continue }
                 if numbers != nil, cutsDigitNumber(words, start..<end) { continue }
                 if forms.contains(joined) { match = end; break }
                 // Only a form with a spelled number in digits: the words as written are `joined`.
@@ -228,14 +229,10 @@ public enum EvalTerms {
                     break
                 }
                 if hasNumber, let reading = pattern.reading, let numbers {
-                    // The window cuts no run's number: each run inside it whole, or its number when its "plus" or
-                    // "percent" lies outside.
-                    var runs: [Range<Int>] = []
-                    for index in start..<end {
-                        for run in [numbers.run(at: index), numbers.core(at: index)].compactMap({ $0 })
-                        where run.lowerBound == index && run.upperBound <= end {
-                            runs.append((run.lowerBound - start)..<(run.upperBound - start))
-                            break
+                    // The window cuts no run: each run in it is whole.
+                    let runs = (start..<end).compactMap { index in
+                        numbers.run(at: index).flatMap { run in
+                            run.lowerBound == index ? (run.lowerBound - start)..<(run.upperBound - start) : nil
                         }
                     }
                     if let window = NumberReading(Array(words[start..<end]), runs: runs), window.matches(reading) {

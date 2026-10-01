@@ -262,6 +262,16 @@ public enum EvalNormalization {
             }
             return false
         }
+
+        /// Whether `range` starts or ends inside a run, its "plus" and "percent" included: "thirty" of "plus thirty"
+        /// or of "thirty percent" (which `cuts` takes as whole, as the alignment reads "thirty percent" against "30
+        /// percent").
+        public func cutsRun(_ range: Range<Int>) -> Bool {
+            guard !range.isEmpty else { return false }
+            return [range.lowerBound, range.upperBound - 1].contains { index in
+                run(at: index).map { $0.lowerBound < range.lowerBound || $0.upperBound > range.upperBound } == true
+            }
+        }
     }
 
 

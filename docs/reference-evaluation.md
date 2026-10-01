@@ -362,7 +362,8 @@ word between them). Matched fillers are left out of the word counts too. In the 
 section, the normalized comparison also finds a term written with its numbers
 spelled the other way ("GPT four" for "GPT-4", "21" for "twenty one", "30%"
 for "thirty percent", as the numbers above), never starting or ending
-inside a spelled-number run ("V one hundred five" holds no "V100") or a
+inside a spelled-number run, its "plus" and "percent" included ("V one
+hundred five" holds no "V100", "thirty percent" no "30") or a
 number written with digits and words ("version 30 percent" holds no "version
 30"), and never with a number both sides spell in other words ("version un"
 holds no "version one"; "version one" does).

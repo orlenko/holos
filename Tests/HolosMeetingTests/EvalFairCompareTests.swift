@@ -808,3 +808,14 @@ private func fairHits(_ term: String, in text: String) -> [String] {
     #expect(!NormalizedAlignment.compoundForms(["v1", "2"]).contains("v12"))
     #expect(NormalizedAlignment.align(["v1", "2"], ["v12"]).contains { $0.isEdit })
 }
+
+@Test func fairTermsNeverTakeASpelledNumberWithoutItsPlusOrPercent() {
+    #expect(fairHits("version 30", in: "we use version thirty percent").isEmpty)
+    #expect(fairHits("30", in: "it was plus thirty today").isEmpty)
+    #expect(fairHits("version 30%", in: "we use version thirty percent") == ["1/1"])
+    #expect(fairHits("+30", in: "it was plus thirty today") == ["1/1"])
+    #expect(fairHits("version 30", in: "we use version thirty today") == ["1/1"])
+    // The alignment still takes the number without its "percent" against digits.
+    #expect(NormalizedAlignment.align(words("thirty percent"), words("30 percent"))
+        == [.equal(0, 0, .number), .equal(1, 1, .same)])
+}
