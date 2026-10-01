@@ -254,11 +254,16 @@ public enum EvalCompare {
             }
             transcript = current
             let recorded = (try? TranscriptRebuilder.sessionVocabulary(session)) ?? []
+            let processing = try? SessionFiles.postProcessingRecord(session: session, manifest: manifest)
+            let wordFixOutcome = processing?.stages.last { $0.stage == .wordFixes }
+            let processingAppliedWordFixes = processing?.transcriptID == current.id
+                && wordFixOutcome?.result == .succeeded
+            let wordFixesApplied = current.fixedFrom != nil || processingAppliedWordFixes
             version = CompareReport.LocalVersion(source: "current", languages: current.languages ?? [current.locale],
                                                  vocabulary: "vocabulary.json", vocabularyCount: recorded.count,
                                                  madeAt: current.createdAt,
-                                                 textSteps: current.fixedFrom == nil ? []
-                                                     : [PostProcessingStage.wordFixes.rawValue])
+                                                 textSteps: wordFixesApplied
+                                                     ? [PostProcessingStage.wordFixes.rawValue] : [])
         case .candidate(let record):
             try checkSameAudio(record, run, session: session, manifest: manifest)
             transcript = try EvalLocal.transcript(of: record, in: session)

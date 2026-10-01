@@ -652,11 +652,21 @@ private func evalLocalDependencies(_ speech: FakeSpeechFactory, status: String =
         in: temp.url, words: ["hello", "team", "we", "deploy", "on", "cube", "control", "today"],
         cloud: "Hello team, we deploy on Kubernetes today.")
     let terms = EvalTerms.terms(wordList: ["Kubernetes"], corrections: ["Grafana"])
+    let unprocessed = try EvalCompare.compare(session: session, run: run, terms: terms, now: SessionFixtures.date)
+    #expect(unprocessed.local?.textSteps == [])
+    #expect(transcript.fixedFrom == nil)
+    let manifest = try SessionArchive.readManifest(at: session)
+    try AtomicFile.writeJSON(
+        PostProcessingRecord(sessionID: manifest.id, state: .succeeded,
+                             stages: [StageOutcome(stage: .wordFixes, result: .succeeded)],
+                             transcriptID: transcript.id, pid: 1, startedAt: SessionFixtures.date,
+                             updatedAt: SessionFixtures.date),
+        to: SessionPaths.postprocess(session))
     let current = try EvalCompare.compare(session: session, run: run, terms: terms, now: SessionFixtures.date)
     #expect(current.terms?.map { "\($0.term) \($0.hits)/\($0.cloud)" } == ["Kubernetes 0/1"])
     #expect(current.termsNotHeard == 1)
     #expect(current.local?.source == "current" && current.local?.vocabulary == "vocabulary.json")
-    #expect(current.local?.textSteps == [])
+    #expect(current.local?.textSteps == [PostProcessingStage.wordFixes.rawValue])
     let currentFiles = try EvalCompare.write(current, session: session)
 
     let heard = SessionFixtures.segment(["hello", "team", "we", "deploy", "on", "Kubernetes", "today"], track: nil,
