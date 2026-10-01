@@ -44,6 +44,10 @@ public enum MeetingScreenOCR {
                 let url = try ScreenContextStore.image(record.frames[index].id, session: session)
                 guard let data = try AtomicFile.readIfPresent(url, maxBytes: ScreenContextStore.maximumImageBytes),
                       let source = CGImageSourceCreateWithData(data as CFData, nil),
+                      let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
+                      let width = properties[kCGImagePropertyPixelWidth] as? Int,
+                      let height = properties[kCGImagePropertyPixelHeight] as? Int,
+                      (1...1600).contains(width), (1...1600).contains(height),
                       let image = CGImageSourceCreateImageAtIndex(source, 0, nil) else {
                     record.failure = "imageUnavailable"
                     try ScreenContextStore.update(session: session, sessionID: sessionID) { $0.failure = "imageUnavailable" }

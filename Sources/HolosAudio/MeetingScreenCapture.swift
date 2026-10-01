@@ -1,4 +1,5 @@
 import CoreImage
+import CoreGraphics
 import CoreMedia
 import Foundation
 import HolosCore
@@ -20,8 +21,11 @@ public struct ScreenWindowSelection: Codable, Sendable, Equatable {
     private var stream: SCStream?
     private var receiver: ScreenFrameReceiver?
     private var stopped = false
+    private let permissionCheck: @MainActor () -> Bool
 
-    public init() {}
+    public init(permissionCheck: @escaping @MainActor () -> Bool = { CGPreflightScreenCaptureAccess() }) {
+        self.permissionCheck = permissionCheck
+    }
 
     public func start(selection: ScreenWindowSelection, session: URL, origin: Double) {
         guard starting == nil, !stopped else { return }
@@ -29,6 +33,7 @@ public struct ScreenWindowSelection: Codable, Sendable, Equatable {
             Task { @MainActor in await self?.stop() }
         }
         self.receiver = receiver
+        guard permissionCheck() else { receiver.failed(); return }
         starting = Task { [weak self] in
             do {
                 let content = try await SCShareableContent.excludingDesktopWindows(true, onScreenWindowsOnly: true)

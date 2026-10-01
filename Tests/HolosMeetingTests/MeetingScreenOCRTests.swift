@@ -74,6 +74,33 @@ private func screenOCRImage() throws -> CGImage {
     #expect(!prompts.value[1].contains("Nearby screen OCR"))
 }
 
+@Test(arguments: [false, true])
+func screenOCRRejectsMissingOrOversizedImages(oversized: Bool) async throws {
+    let temp = try TemporaryDirectory("screen-ocr-invalid-image")
+    defer { temp.remove() }
+    let archive = try SessionArchive.create(root: temp.url, name: "Invented meeting", source: .microphone,
+        locale: "en-CA", backend: .speech)
+    try await archive.finish(status: ArchiveStatus.audioOnly)
+    let frame = ScreenKeyframe(start: 1, end: 2)
+    try ScreenContextStore.write(ScreenContextRecord(sessionID: archive.id, frames: [frame]), session: archive.directory)
+    if oversized {
+        let context = try #require(CGContext(data: nil, width: 2000, height: 2, bitsPerComponent: 8,
+            bytesPerRow: 2000, space: CGColorSpaceCreateDeviceGray(), bitmapInfo: 0))
+        let image = try #require(context.makeImage())
+        let bytes = NSMutableData()
+        let destination = try #require(CGImageDestinationCreateWithData(bytes, UTType.jpeg.identifier as CFString, 1, nil))
+        CGImageDestinationAddImage(destination, image, nil)
+        #expect(CGImageDestinationFinalize(destination))
+        try AtomicFile.create(bytes as Data, at: ScreenContextStore.image(frame.id, session: archive.directory))
+    }
+    let calls = SharedValue(0)
+    try await MeetingScreenOCR.process(session: archive.directory, sessionID: archive.id, languages: ["en-CA"],
+        recognizer: { _, _ in calls.update { $0 += 1 }; return [] })
+    let result = try #require(try ScreenContextStore.read(session: archive.directory, sessionID: archive.id))
+    #expect(calls.value == 0 && result.failure == "imageUnavailable" && result.frames[0].lines == nil)
+    #expect(try SessionArchive.readManifest(at: archive.directory).status == ArchiveStatus.audioOnly)
+}
+
 @Test(.enabled(if: ProcessInfo.processInfo.environment["HOLOS_SCREEN_BENCHMARK"] == "1"))
 func screenSyntheticOCRAndDiffBenchmark() throws {
     let image = try screenOCRImage()

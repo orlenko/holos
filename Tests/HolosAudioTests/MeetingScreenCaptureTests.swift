@@ -31,6 +31,18 @@ private func deliver(_ receiver: ScreenFrameReceiver, image: CGImage? = nil, tim
     }
 }
 
+@Test @MainActor func screenCaptureDeniedPermissionNeverQueriesWindowsOrStartsAStream() async throws {
+    let (root, archive) = try await screenCaptureFixture()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let capture = MeetingScreenCapture(permissionCheck: { false })
+    capture.start(selection: .init(windowID: 123, ownerPID: 456), session: archive.directory, origin: 0)
+    await capture.stop()
+    let record = try #require(try ScreenContextStore.read(session: archive.directory, sessionID: archive.id))
+    #expect(record.failure == "captureFailed" && record.frames.isEmpty && record.captureID == nil)
+    #expect(try SessionArchive.readManifest(at: archive.directory).status == ArchiveStatus.recording)
+    try await archive.finish(status: ArchiveStatus.audioOnly)
+}
+
 @Test func screenCaptureKeepsOnlyChangesAndDoesNotBridgeSuspensionOrLateStop() async throws {
     let (root, archive) = try await screenCaptureFixture()
     defer { try? FileManager.default.removeItem(at: root) }
