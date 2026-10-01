@@ -266,6 +266,9 @@ private func summary(_ id: String, state: SessionState = .complete, runID: Strin
     #expect(of(.active(sessionID: "B", status: status(.recording)), summary("A", state: .processing)) == .saving)
     #expect(LiveMeetingPhase.recording.capturing && LiveMeetingPhase.paused.capturing)
     #expect(!LiveMeetingPhase.saving.capturing && !LiveMeetingPhase.saved.capturing)
+    #expect(LiveMeetingPhase.recording.includesVolatileText && LiveMeetingPhase.saving.includesVolatileText,
+            "live.json stays visible while speech tracks finish during Saving.")
+    #expect(!LiveMeetingPhase.saved.includesVolatileText && !LiveMeetingPhase.interrupted.includesVolatileText)
 }
 
 // MARK: - Recorder side
@@ -505,5 +508,5 @@ private func transcript(of outcome: RecordingOutcome) throws -> Transcript {
     #expect(reader.revision > revision)
     #expect(reader.volatile["system"]?.map(\.text) == ["and"])
     reader.read(includeVolatile: false)
-    #expect(reader.volatile.isEmpty, "Once saving, volatile words are not read.")
+    #expect(reader.volatile.isEmpty, "The caller can stop reading volatile words once the live file's lifetime ends.")
 }

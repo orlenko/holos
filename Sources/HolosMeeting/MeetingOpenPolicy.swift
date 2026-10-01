@@ -95,4 +95,13 @@ public enum LiveMeetingPhase: String, Sendable, Equatable {
         case .saving, .saved, .interrupted, .failed: false
         }
     }
+
+    /// Whether the live view reads `live.json`. The recorder keeps it through `.saving` while speech tracks finish,
+    /// then removes it; reading a missing file simply clears the last volatile words.
+    public var includesVolatileText: Bool {
+        switch self {
+        case .starting, .recording, .paused, .saving: true
+        case .saved, .interrupted, .failed: false
+        }
+    }
 }

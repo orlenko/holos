@@ -223,11 +223,11 @@ final class LiveMeetingViewController: NSViewController {
         guard !reading else { return }
         reading = true
         let current = reader
-        let capturing = header.phase.capturing
+        let includeVolatile = header.phase.includesVolatileText
         Task { [weak self] in
             let (updated, built) = await Task.detached { () -> (LiveTranscriptReader, [LiveParagraph]?) in
                 var next = current
-                next.read(includeVolatile: capturing)
+                next.read(includeVolatile: includeVolatile)
                 guard next.revision != current.revision || next.volatile != current.volatile
                     || next.mode != current.mode else { return (next, nil) }
                 let echo = next.mode.flatMap(LiveTranscript.echoParameters(mode:))
