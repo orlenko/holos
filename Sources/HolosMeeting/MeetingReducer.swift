@@ -22,19 +22,22 @@ public struct MeetingStartSettings: Codable, Sendable, Equatable {
     /// by passage, the language that fits (docs/meeting-design.md §4.14). The start panel's Language pop-up chooses
     /// the first, "Also detect" up to two more. Empty leaves the choice to the recorder's own default.
     public var locales: [String]
+    public var screenWindow: ScreenWindowSelection?
 
     /// The language the recorder transcribes in, or nil for the recorder's default.
     public var locale: String? { locales.first }
 
     public init(name: String, source: AudioSource, applicationBundleID: String? = nil, othersInRoom: Bool = false,
-                expectedSpeakers: Int? = nil, microphone: MicrophoneSelection? = nil, locales: [String] = []) {
+                expectedSpeakers: Int? = nil, microphone: MicrophoneSelection? = nil, locales: [String] = [],
+                screenWindow: ScreenWindowSelection? = nil) {
         self.name = name; self.source = source; self.applicationBundleID = applicationBundleID
         self.othersInRoom = othersInRoom; self.expectedSpeakers = expectedSpeakers; self.microphone = microphone
         self.locales = locales
+        self.screenWindow = screenWindow
     }
 
     private enum CodingKeys: String, CodingKey {
-        case name, source, applicationBundleID, othersInRoom, expectedSpeakers, microphone, locales
+        case name, source, applicationBundleID, othersInRoom, expectedSpeakers, microphone, locales, screenWindow
     }
 
     /// Settings saved before meetings had a language (or a microphone choice) decode with none.
@@ -46,7 +49,8 @@ public struct MeetingStartSettings: Codable, Sendable, Equatable {
                   othersInRoom: try container.decode(Bool.self, forKey: .othersInRoom),
                   expectedSpeakers: try container.decodeIfPresent(Int.self, forKey: .expectedSpeakers),
                   microphone: try container.decodeIfPresent(MicrophoneSelection.self, forKey: .microphone),
-                  locales: try container.decodeIfPresent([String].self, forKey: .locales) ?? [])
+                  locales: try container.decodeIfPresent([String].self, forKey: .locales) ?? [],
+                  screenWindow: try container.decodeIfPresent(ScreenWindowSelection.self, forKey: .screenWindow))
     }
 
     /// "Meeting 2026-09-23 14:00" in `timeZone`.

@@ -100,6 +100,21 @@ func recordOnlySavesAudioAndFinishesAudioOnly() async throws {
 }
 
 @Test(.timeLimit(.minutes(1))) @MainActor
+func screenWindowRequestIsOptionalAndDoesNotChangeAudioOutcome() async throws {
+    let temp = try TemporaryDirectory("screen-options")
+    defer { temp.remove() }
+    let captures = threeMicFrames()
+    var options = RecordingOptions.testing(root: temp.url, recordOnly: true)
+    options.screenWindow = ScreenWindowSelection(windowID: 12, ownerPID: 34)
+    let outcome = try await record(options, captures: captures, stopAfterConsuming: 3)
+    #expect(outcome.archiveStatus == ArchiveStatus.audioOnly && outcome.transcriptErrors.isEmpty)
+    #expect(captures.requests.first?.screenWindow == options.screenWindow)
+    #expect(captures.requests.first?.sessionDirectory == outcome.directory)
+    #expect(try ScreenContextStore.read(session: outcome.directory, sessionID: outcome.sessionID) == nil,
+            "The fake audio capture never creates a real screen stream or asks for a permission.")
+}
+
+@Test(.timeLimit(.minutes(1))) @MainActor
 func microphoneInOtherFormatsIsSavedAs48kMono() async throws {
     // A stereo 96 kHz interface: AVAudioEngine delivers the device's format. The saved audio must be what
     // DiskPolicy budgets (48 kHz mono Int16), not 4× that.

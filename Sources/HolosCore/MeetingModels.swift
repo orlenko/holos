@@ -462,6 +462,7 @@ public struct RecorderStatus: Codable, Sendable, Equatable {
     /// microphone whatever the default is (`--microphone built-in`); nil without a microphone track, or from a recorder
     /// that predates the field.
     public var microphoneIsSystemDefault: Bool?
+    public var screenSnapshotStatus: String?
     /// Session time now: time since capture first started, including pauses and sleep.
     public var elapsedSeconds: Double
     /// Audio actually captured on the longest track.
@@ -490,6 +491,7 @@ public struct RecorderStatus: Codable, Sendable, Equatable {
         self.phase = phase; self.sequence = sequence; self.startedAt = startedAt; self.updatedAt = updatedAt
         self.source = source; self.microphoneName = microphoneName
         self.microphoneIsSystemDefault = microphoneIsSystemDefault; self.elapsedSeconds = elapsedSeconds
+        self.screenSnapshotStatus = nil
         self.recordedSeconds = recordedSeconds; self.bytesWritten = bytesWritten; self.freeBytes = freeBytes
         self.tracks = tracks; self.lastPhrase = lastPhrase; self.warnings = warnings; self.markers = markers
         self.progress = progress; self.handledRequests = handledRequests; self.exit = exit

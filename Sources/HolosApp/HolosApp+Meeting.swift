@@ -15,6 +15,11 @@ final class MeetingAppState {
     static let promptedKey = "meeting.promptedInterrupted"
     /// Settings › Meetings: meetings record the computer's audio too (on when never set).
     static let recordSystemAudioKey = "meetingRecordSystemAudio"
+    static let screenCaptureKey = "meetingScreenCaptureDefault"
+    static var screenCaptureDefault: Bool {
+        get { UserDefaults.standard.bool(forKey: screenCaptureKey) }
+        set { UserDefaults.standard.set(newValue, forKey: screenCaptureKey) }
+    }
     /// The meeting languages chosen in the start panel (`HolosAppDelegate.meetingLocales`).
     static let localesKey = "meetingLocales"
 
@@ -425,6 +430,7 @@ extension HolosAppDelegate: NSMenuDelegate {
     static func detailLine(_ status: RecorderStatus) -> String {
         var parts = [MeetingFormat.clock(status.elapsedSeconds), "\(MeetingFormat.gigabytes(status.bytesWritten)) used"]
         if let free = status.freeBytes { parts.append("\(MeetingFormat.gigabytes(free)) free") }
+        if let screen = status.screenSnapshotStatus { parts.append(screen) }
         return parts.joined(separator: " · ")
     }
 
@@ -486,7 +492,8 @@ extension HolosAppDelegate: NSMenuDelegate {
             devices: BuiltInMicrophone.devices(), freeBytes: try? VolumeFreeSpace().availableBytes(at: root),
             speakerModels: meeting.speakerModels, checking: meeting.checkingSpeakerModels,
             installProgress: meeting.speakerModelInstall, installError: meeting.speakerModelError,
-            recordSystemAudio: MeetingAppState.recordSystemAudio, systemAudioAllowed: CGPreflightScreenCaptureAccess())
+            recordSystemAudio: MeetingAppState.recordSystemAudio, systemAudioAllowed: CGPreflightScreenCaptureAccess(),
+            screenCaptureDefault: MeetingAppState.screenCaptureDefault)
         addLanguages(to: &environment)
         return environment
     }
@@ -510,6 +517,7 @@ extension HolosAppDelegate: NSMenuDelegate {
         var remembered = settings
         remembered.name = ""
         remembered.locales = []  // kept in `meetingLocales` instead
+        remembered.screenWindow = nil  // no implicit capture of a previously selected or reused window ID
         if let data = try? HolosJSON.encoder().encode(remembered) {
             UserDefaults.standard.set(data, forKey: MeetingAppState.lastSettingsKey)
         }

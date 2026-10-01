@@ -51,6 +51,8 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate {
     private let speakersPopUp = NSPopUpButton(frame: .zero, pullsDown: true)
     private let searchField = NSSearchField()
     private let exportPopUp = NSPopUpButton(frame: .zero, pullsDown: true)
+    private let screenTextButton = NSButton(title: "Screen Text…", target: nil, action: nil)
+    private var screenTextPanel: ScreenTextPanel?
     private let learnBox = NSButton(checkboxWithTitle: "Learn voices of people I name in this meeting", target: nil,
                                     action: nil)
     private let statusLabel = NSTextField(labelWithString: "")
@@ -201,8 +203,11 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate {
         searchField.delegate = self
         searchField.widthAnchor.constraint(equalToConstant: 160).isActive = true
         exportPopUp.toolTip = "Save or copy the transcript (⌘E)"
+        screenTextButton.target = self; screenTextButton.action = #selector(showScreenText)
+        screenTextButton.bezelStyle = .push
+        screenTextButton.toolTip = "Read saved screen OCR and unverified vocabulary candidates; never adds words automatically"
         let toolbar = NSStackView(views: [nextUncertainButton, assignPopUp, splitButton, speakersPopUp, NSView(),
-                                          searchField, exportPopUp])
+                                          screenTextButton, searchField, exportPopUp])
         toolbar.spacing = 8
         toolbar.alignment = .centerY
 
@@ -688,6 +693,30 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate {
         played = true
         follow.resume()
         player.seek(to: seconds)
+    }
+
+    @objc private func showScreenText() {
+        guard screenTextButton.isEnabled, window.attachedSheet == nil else { return }
+        screenTextButton.isEnabled = false
+        let session = review.session, id = sessionID
+        Task { [weak self] in
+            let result = await Task.detached(priority: .utility) {
+                Result { (try ScreenContextStore.read(session: session, sessionID: id), try WordListStore().load().terms) }
+            }.value
+            guard let self, !self.isClosing else { return }
+            defer { self.screenTextButton.isEnabled = true }
+            switch result {
+            case .success(let (record, known)):
+                guard let record, !record.frames.isEmpty else {
+                    self.problem = "No screen snapshots were saved for this meeting."; self.refresh(); return
+                }
+                let panel = ScreenTextPanel(record: record, known: known, onSeek: { [weak self] in self?.seek(to: $0) })
+                self.screenTextPanel = panel
+                self.window.beginSheet(panel.window) { [weak self] _ in self?.screenTextPanel = nil }
+            case .failure:
+                self.problem = "Screen text or the word list could not be read."; self.refresh()
+            }
+        }
     }
 
     private func previousTurn() {

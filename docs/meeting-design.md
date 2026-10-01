@@ -4487,6 +4487,67 @@ several languages; a Markdown option to mark language switches; detecting a miss
 language on its own once its model is installed, and an app action that detects languages
 over edited labels (today only `session languages --force` does).
 
+### 4.15 Optional meeting-window context
+
+Snapshots are off by default. Each meeting requires an explicit window ID plus owner
+PID; neither is remembered. Settings can default the offer on, not authorize a
+previous window. Capture uses a desktop-independent ScreenCaptureKit window filter,
+never a display filter or fallback target. Other windows (including desktop
+notifications) are excluded; sensitive content drawn inside the selected window is
+still captured. Permission must already be granted; listing/capture failures are
+optional-evidence failures and never invalidate saved audio.
+
+One serial utility queue samples at most 0.5 fps, with no cursor, shadow, or audio.
+Images have a maximum dimension of 1600 and JPEG quality 0.65. A 160×90 grayscale
+fingerprint has 16×9 tiles. At least 6 pixels changing by 20/255 within a tile makes
+it changed; at least 18% changed tiles keeps a frame, compared with the last retained
+frame. This ignores small cursor/video changes, but can miss sparse edits or
+colour-only changes and can keep a large video tile. It is a heuristic, not a semantic
+slide detector. Idle samples extend an observed frame; suspended/blank samples break
+its interval. Stop does not extend evidence into an unobserved gap.
+
+Private `screen/context.json` records UUID keyframes, observed session-time intervals,
+JPEG byte totals, and optional OCR lines with normalized bottom-left boxes and
+confidence. `screen/<UUID>.jpg` is owner-only. Caps are 1000 keyframes, 1 MiB per
+JPEG, and 256 MiB total JPEGs. Metadata is bounded on read. Atomic no-follow reads and
+safe tree deletion protect against planted links. Capture generations fence old
+callbacks before image creation; metadata changes use the existing speaker lock off
+the main actor. Delete Audio holds that same lock for the tombstone and removal of
+`screen/`, so abandoned callbacks cannot recreate deleted evidence.
+
+Vision `.accurate` text recognition runs on a utility task **after capture stops**,
+never per live frame. Language correction is disabled to avoid inventing spellings;
+requested meeting languages are matched to supported Vision locales (otherwise
+Vision's defaults). Completed frames persist independently and are not repeated on
+resume. Each frame keeps at most 64 lines, 4000 characters total, 1000 per line.
+OCR failure/cancellation preserves recording and any already recognized frames.
+The existing post-stop word-fix pass can finish OCR left by an interrupted recorder.
+
+Only existing word-list heard-as questions receive nearby OCR: the candidate word's
+timing (or its segment if untimed), confidence ≥0.6, deduplicated lines, at most 800
+characters. OCR is quoted as untrusted data, never instructions or spoken evidence.
+Unknown OCR tokens are read-only user-review candidates, not automatic vocabulary
+or transcript edits. No Foundation Models or other LLM call is added during recording.
+Review's Screen Text sheet selects timestamped OCR and seeks without starting
+playback. A thumbnail timeline is an explicit follow-up.
+
+Default tests use invented pixels, fake OCR/model responses, and temporary archives;
+no permission, screen, microphone, private data, network, or installed speech models.
+`HOLOS_SCREEN_BENCHMARK=1 ./scripts/test.sh --no-parallel --filter Screen` adds native
+Vision measurements on a synthetic 1280×720 text slide, with CPU/time printed but no
+timing assertions. On Koza (M5, 16 GB), one debug synthetic run including Vision's
+first-use overhead recognized five frames in 39.27 s, with 4.79 process CPU seconds;
+1000 unchanged-frame comparisons took 1.89 s. Process CPU excludes any framework
+service work; this is not an end-to-end capture, thermal, or OCR-accuracy benchmark.
+It supports deferring OCR until stop rather than paying for it at every live sample.
+`scripts/preview-screen-choice.swift` renders injected choice
+controls offscreen in light and dark appearances without launching Holos. Manual
+checks still required: granted/denied permission, selected-window closure and PID
+identity, desktop notifications, cursor/video changes versus slides/scrolling,
+pause/restart, audio-only survival of capture failure, deletion, and the full start,
+Settings, recording indicator, and Review UI in both appearances. These checks must
+not be run by agents against the user's running app or real meeting content.
+
 ## 5. PRs
 
 Each section lists: goal, files, API, formats/CLI/UI, tests (name: input → expected),

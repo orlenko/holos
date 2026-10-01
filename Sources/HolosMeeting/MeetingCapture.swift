@@ -1,5 +1,6 @@
 import HolosAudio
 import HolosCore
+import Foundation
 
 /// What one capture epoch records.
 public struct CaptureRequest: Sendable, Equatable {
@@ -17,11 +18,15 @@ public struct CaptureRequest: Sendable, Equatable {
     /// part of the session timeline and of the gap before its first frame. Nil for epoch 0: the timeline starts when
     /// its capture has started.
     public var offsetHostTime: Double?
+    public var screenWindow: ScreenWindowSelection?
+    public var sessionDirectory: URL?
 
     public init(source: AudioSource, applicationBundleID: String? = nil, timelineOffset: Double = 0,
-                microphone: MicrophoneSelection = .systemDefault, offsetHostTime: Double? = nil) {
+                microphone: MicrophoneSelection = .systemDefault, offsetHostTime: Double? = nil,
+                screenWindow: ScreenWindowSelection? = nil, sessionDirectory: URL? = nil) {
         self.source = source; self.applicationBundleID = applicationBundleID; self.timelineOffset = timelineOffset
         self.microphone = microphone; self.offsetHostTime = offsetHostTime
+        self.screenWindow = screenWindow; self.sessionDirectory = sessionDirectory
     }
 }
 
@@ -45,6 +50,7 @@ extension MeetingCapture {
 /// Wraps `AudioCapture`, passing the epoch's timeline offset and microphone selection through.
 @MainActor public final class LiveMeetingCapture: MeetingCapture {
     private let capture: AudioCapture
+    private var screen: MeetingScreenCapture?
     public nonisolated let frames: AsyncThrowingStream<CapturedAudio, Error>
 
     /// A full frame stream drops the buffer and counts it; capture continues (§4.3). A configuration change ends the
@@ -62,7 +68,17 @@ extension MeetingCapture {
         try await capture.start(source: request.source, applicationBundleID: request.applicationBundleID,
                                 timelineOffset: request.timelineOffset, microphone: request.microphone,
                                 timelineOffsetHostTime: request.offsetHostTime)
+        if let selection = request.screenWindow, let session = request.sessionDirectory {
+            let screen = MeetingScreenCapture()
+            self.screen = screen
+            screen.start(selection: selection, session: session, origin: capture.hostTimeOrigin)
+        }
     }
 
-    public func stop() async throws { try await capture.stop() }
+    public func stop() async throws {
+        // Audio stops first. Optional visual capture failures never turn a recording into an audio failure.
+        do { try await capture.stop() }
+        catch { await screen?.stop(); throw error }
+        await screen?.stop()
+    }
 }

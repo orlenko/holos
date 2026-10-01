@@ -1,5 +1,6 @@
 import Darwin
 import Foundation
+import HolosAudio
 import HolosCore
 @testable import HolosMeeting
 import HolosStorage
@@ -52,6 +53,19 @@ private func launcherMode(_ url: URL) -> mode_t? {
     let arguments = ChildProcessLauncher.arguments(dashed, sessionID: id, root: root, vocabularyFile: nil)
     #expect(arguments.contains("--name=-1:1 with Sam"))
     #expect(!arguments.contains("--name"))
+}
+
+@Test func screenWindowOptInIsPassedToChildAndLegacySettingsStayOff() throws {
+    let selection = ScreenWindowSelection(windowID: 123, ownerPID: 456)
+    let settings = MeetingStartSettings(name: "Synthetic", source: .microphone, screenWindow: selection)
+    let args = ChildProcessLauncher.arguments(settings, sessionID: "id", root: URL(fileURLWithPath: "/tmp/test"),
+                                              vocabularyFile: nil)
+    #expect(args.contains("--screen-window") && args.contains("123"))
+    #expect(args.contains("--screen-owner") && args.contains("456"))
+    #expect(try HolosJSON.decoder().decode(MeetingStartSettings.self,
+        from: HolosJSON.encoder().encode(settings)).screenWindow == selection)
+    let legacy = Data("{\"name\":\"Synthetic\",\"source\":\"mic\",\"othersInRoom\":false}".utf8)
+    #expect(try HolosJSON.decoder().decode(MeetingStartSettings.self, from: legacy).screenWindow == nil)
 }
 
 @Test @MainActor func childWatcherRetriesWhenTheExitEventComesBeforeTheChildIsWaitable() async throws {
