@@ -8,6 +8,8 @@ public enum SessionPaths {
     public static func meetingInfo(_ session: URL) -> URL { file("meeting.json", in: session) }
     public static func vocabulary(_ session: URL) -> URL { file("vocabulary.json", in: session) }
     public static func status(_ session: URL) -> URL { file("status.json", in: session) }
+    /// The words live speech has not finalized yet, while a recorder runs (`LiveTextFile`); removed at its exit.
+    public static func liveText(_ session: URL) -> URL { file("live.json", in: session) }
     public static func controlDirectory(_ session: URL) -> URL { folder("control", in: session) }
     public static func postprocess(_ session: URL) -> URL { file("postprocess.json", in: session) }
     public static func audioDeleted(_ session: URL) -> URL { file("audio-deleted.json", in: session) }

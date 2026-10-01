@@ -408,6 +408,8 @@ private final class Recorder {
     var reporter: any RecordingReporter { dependencies.reporter }
 
     var live: [String: LiveTrack] = [:]
+    /// live.json: the live tracks' volatile words, for the app's live transcript; closed once live speech ends.
+    let liveText: LiveTextPublisher
     var machine: RecorderMachine
     /// Session time; a placeholder at 0 until epoch 0's capture starts.
     var clock: any SessionClock = ManualSessionClock(0)
@@ -468,6 +470,7 @@ private final class Recorder {
         writer = AudioChunkWriter(archive: archive)
         pump = ChunkWriterPump(writer: writer, capacitySeconds: dependencies.tuning.pumpCapacitySeconds)
         let directory = archive.directory
+        liveText = LiveTextPublisher(session: directory)
         let info = MeetingInfo(sessionID: archive.id, mode: options.source == .microphone ? .inPerson : .call,
                                othersInRoom: options.othersInRoom, applicationBundleID: options.applicationBundleID,
                                expectedSpeakers: options.expectedSpeakers,
@@ -595,12 +598,14 @@ private final class Recorder {
 
     private func makeLiveTrack(_ track: String) -> LiveTrack {
         let archive = self.archive
+        let liveText = self.liveText
         return LiveTrack(track: track, locale: options.locale, backend: options.backend,
                          contextualStrings: options.vocabulary, makeSpeech: dependencies.makeSpeech,
                          events: { kind, details in try await archive.recordEvent(kind: kind, details: details) },
                          reporter: reporter, showPhrases: options.liveText, timeouts: dependencies.timeouts,
                          queueSeconds: dependencies.tuning.liveQueueSeconds,
-                         journalCapacity: dependencies.tuning.journalCapacity)
+                         journalCapacity: dependencies.tuning.journalCapacity,
+                         onVolatile: { track, segments in liveText.set(track: track, segments: segments) })
     }
 
     /// Consumes one epoch's frames off the main actor. It never waits for the disk or speech: it only stamps arrival
@@ -1252,6 +1257,8 @@ private final class Recorder {
             }
             segments += TranscriptCoverage.merge(live: result.segments, replayed: replayed, coverageEnd: coverage)
         }
+        // Live speech is over: no volatile words are left to show.
+        await liveText.close()
         // Cancelled during transcription: keep the audio, publish no partial transcript.
         if transcriptionCancelled || Task.isCancelled {
             try await finishCancelled(status: untranscribed)
@@ -1456,6 +1463,7 @@ private final class Recorder {
     private func exitStatus(_ exit: RecorderExit) async {
         if !exited {
             exited = true
+            await liveText.close()
             if let stoppedInbox {
                 stoppedInbox.cancel()
                 await stoppedInbox.value

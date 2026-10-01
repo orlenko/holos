@@ -324,13 +324,16 @@ struct FakeSpeechScript: Sendable {
     var finishHangs: Bool
     /// `finish()` throws this, without reporting the segments not yet reported.
     var finishError: HolosError?
+    /// Reported as volatile updates once the audio fed reaches their end, before any final update of that frame.
+    var volatile: [TranscriptSegment]
 
     init(segments: [TranscriptSegment] = [], makeError: HolosError? = nil, appendError: HolosError? = nil,
          finishDelay: Duration? = nil, finishHangs: Bool = false, appendErrorAfter: Double? = nil,
-         finishError: HolosError? = nil) {
+         finishError: HolosError? = nil, volatile: [TranscriptSegment] = []) {
         self.segments = segments; self.makeError = makeError; self.appendError = appendError
         self.finishDelay = finishDelay; self.finishHangs = finishHangs
         self.appendErrorAfter = appendErrorAfter; self.finishError = finishError
+        self.volatile = volatile
     }
 }
 
@@ -349,6 +352,7 @@ actor FakeSpeech: LiveSpeechSession {
     private(set) var cancelled = false
     private var firstStart: Double?
     private var reported: Set<Int> = []
+    private var reportedVolatile: Set<Int> = []
 
     init(locale: String, backend: SpeechBackend, contextualStrings: [String], script: FakeSpeechScript,
          onUpdate: @escaping @Sendable (TranscriptUpdate) -> Void) {
@@ -381,6 +385,11 @@ actor FakeSpeech: LiveSpeechSession {
     func cancel() async { cancelled = true }
 
     private func report(through end: Double) {
+        for (index, segment) in script.volatile.enumerated()
+        where !reportedVolatile.contains(index) && segment.end <= end + 1e-9 {
+            reportedVolatile.insert(index)
+            onUpdate(TranscriptUpdate(segment: segment, isFinal: false))
+        }
         for (index, segment) in script.segments.enumerated() where !reported.contains(index) && segment.end <= end + 1e-9 {
             reported.insert(index)
             onUpdate(TranscriptUpdate(segment: segment, isFinal: true))
