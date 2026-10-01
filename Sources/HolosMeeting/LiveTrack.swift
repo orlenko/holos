@@ -46,6 +46,9 @@ final class LiveTrack: Sendable {
     private let events: LiveEventSink
     private let reporter: any RecordingReporter
     private let showPhrases: Bool
+    /// Receives the track's volatile (not yet final) segments whenever they change, in order (`LiveTextPublisher`).
+    /// Called while the track's state is locked: it must not call back into the track.
+    private let onVolatile: (@Sendable (_ track: String, _ segments: [TranscriptSegment]) -> Void)?
     private let timeouts: StopTimeouts
     private let input: WorkQueue<LiveInput>
     private let journal: WorkQueue<JournalItem>
@@ -97,6 +100,8 @@ final class LiveTrack: Sendable {
         var unjournaled: [String: Double] = [:]
         var lastFinalized: Double?
         var lastPhrase: String?
+        /// What speech heard and has not finalized yet (`onVolatile`).
+        var volatile = VolatileText()
         var cancelled = false
     }
 
@@ -110,10 +115,12 @@ final class LiveTrack: Sendable {
     init(track: String, locale: String, backend: SpeechBackend, contextualStrings: [String],
          makeSpeech: @escaping LiveSpeechFactory, events: @escaping LiveEventSink, reporter: any RecordingReporter,
          showPhrases: Bool = true, timeouts: StopTimeouts = .standard, queueSeconds: Double = LiveTrack.queueSeconds,
-         journalCapacity: Int = LiveTrack.journalCapacity) {
+         journalCapacity: Int = LiveTrack.journalCapacity,
+         onVolatile: (@Sendable (_ track: String, _ segments: [TranscriptSegment]) -> Void)? = nil) {
         self.track = track; self.locale = locale; self.backend = backend
         self.contextualStrings = contextualStrings; self.makeSpeech = makeSpeech; self.events = events
         self.reporter = reporter; self.showPhrases = showPhrases; self.timeouts = timeouts
+        self.onVolatile = onVolatile
         input = WorkQueue(capacity: queueSeconds) { item in
             if case .frame(let frame, _) = item { return frame.duration }
             return 0
@@ -350,8 +357,11 @@ final class LiveTrack: Sendable {
             return state.nextSerial
         }
         let session = try await makeSpeech(locale, backend, contextualStrings) { [weak self] update in
-            guard update.isFinal else { return }
-            self?.finalized(update.segment, session: serial)
+            if update.isFinal {
+                self?.finalized(update.segment, session: serial)
+            } else {
+                self?.heard(update.segment, session: serial)
+            }
         }
         let cancelled = Task.isCancelled
         let kept = state.withLock { state -> Bool in
@@ -406,6 +416,7 @@ final class LiveTrack: Sendable {
                 state.sessions[serial]?.result = segments
                 state.sessions[serial]?.finals = []
                 state.sessions[serial]?.session = nil
+                endVolatile(of: serial, in: &state)
             }
             return
         case .finished(.failure(let error)):
@@ -421,6 +432,7 @@ final class LiveTrack: Sendable {
         // Its finalized segments are kept; the rest of its audio is transcribed from disk.
         let from = state.withLock { state -> Double? in
             state.sessions[serial]?.session = nil
+            endVolatile(of: serial, in: &state)
             guard !state.cancelled, let record = state.sessions[serial] else { return nil }
             return record.finals.map(\.end).max() ?? record.base
         }
@@ -449,6 +461,7 @@ final class LiveTrack: Sendable {
         let (sessions, running) = state.withLock { state -> ([any LiveSpeechSession], Bool) in
             let wasCancelled = state.cancelled
             state.cancelled = true
+            if state.volatile.removeAll() { publishVolatile(state) }
             return (state.sessions.values.compactMap(\.session), wasCancelled)
         }
         guard !running else { return }
@@ -468,10 +481,31 @@ final class LiveTrack: Sendable {
             state.sessions[serial]?.finals.append(shifted)
             state.lastFinalized = max(state.lastFinalized ?? shifted.end, shifted.end)
             state.lastPhrase = String(shifted.text.prefix(200))
+            if state.volatile.final(shifted) { publishVolatile(state) }
             return shifted
         }
         if showPhrases { reporter.phrase(absolute, track: track) }
         if !journal.push(.finalized(absolute)) { noteJournalHole(from: absolute.start, reason: "journalFull") }
+    }
+
+    /// A volatile result: shown live (`onVolatile`) until a final result confirms or replaces it. Nothing is kept
+    /// once live speech stopped (behind or cancelled).
+    private func heard(_ segment: TranscriptSegment, session serial: Int) {
+        guard onVolatile != nil else { return }
+        state.withLock { state in
+            guard !state.cancelled, state.behindFrom == nil, let record = state.sessions[serial],
+                  record.session != nil else { return }
+            let shifted = Self.shifted(segment, by: record.base ?? 0, track: track)
+            if state.volatile.volatile(shifted, session: serial) { publishVolatile(state) }
+        }
+    }
+
+    private func endVolatile(of serial: Int, in state: inout State) {
+        if state.volatile.endSession(serial) { publishVolatile(state) }
+    }
+
+    private func publishVolatile(_ state: State) {
+        onVolatile?(track, state.volatile.segments)
     }
 
     private func noteJournalHole(from: Double, reason: String) {
@@ -484,6 +518,7 @@ final class LiveTrack: Sendable {
             guard !state.cancelled else { return false }
             if let current = state.behindFrom, current <= from { return false }
             state.behindFrom = from
+            if state.volatile.removeAll() { publishVolatile(state) }
             return true
         }
         guard record else { return }

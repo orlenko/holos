@@ -217,9 +217,9 @@ speech model, fillers, Apple Intelligence fix, preview and its opacity), Meeting
 system audio, speaker labels, a link to People for remembered voices), Reading (default
 voice, speed, output folder), History and privacy (Keep dictations, the count, Clear
 History…, Keep the audio of dictations and its disk use), and Run Setup Assistant…; it polls
-the permissions every second while on screen. The Setup Assistant, the meeting start
-panel, the live transcript, Review (Name Speakers), and the dictation preview stay
-separate windows.
+the permissions every second while on screen. The meeting's live transcript is part of
+Meetings (see "Live transcript"). The Setup Assistant, the meeting start panel, Review
+(Name Speakers), and the dictation preview stay separate windows.
 
 Launch and closing (`MainWindowLaunch`): the first launch opens the Setup Assistant (and
 the check after its reopen), and a launch with dictation off opens Settings, as before.
@@ -234,18 +234,18 @@ like any app's on a manual launch. Closing it never quits
 dictation, meeting recordings, and readings keep running, and only Quit in the menu bar
 menu or ⌘Q quits. While any of its windows is open the app is a regular one (Dock,
 ⌘-Tab); a click on the Dock icon brings the main window back, also when another window
-(the live transcript, Review) keeps the icon there: restored when minimised, else opened
-on its last section.
+(Review) keeps the icon there: restored when minimised, else opened on its last section.
 
 Appearance (`AppearanceChoice`, UserDefaults `appearance`: `system`, `light`, `dark`;
 System by default): Settings › General › Appearance sets `NSApp.appearance` at launch
 and at once on a change (nil, `.aqua`, `.darkAqua`), so every window follows it: the
-main window, the dictation preview, Review, the Setup Assistant, the meeting start panel,
-the live transcript, and alerts. Views draw with semantic colours only (layer colours
+main window (with the live transcript), the dictation preview, Review, the Setup
+Assistant, the meeting start panel, and alerts. Views draw with semantic colours only (layer colours
 are set in `updateLayer`, custom drawing in `draw(_:)`), so they redraw for either.
 
 Keyboard: ⌘1–⌘5 and ⌘, switch sections; ⌘F focuses the section's search field; ↑↓ move
-in lists, Return opens (History: the text; Meetings: Review or the transcript), ⌫ deletes
+in lists, Return opens (History: the text; Meetings: the live transcript, Review, or the
+transcript), ⌫ deletes
 after a confirmation (History: the dictation; Meetings: Delete Meeting…; People:
 Forget…); in History, Space plays or pauses the selected dictation's audio and ⌘R runs it
 again; Tab reaches the sidebar, list, and detail. A key does exactly what its button
@@ -263,6 +263,48 @@ dictation toggle (and Cancel Dictation while one runs), Copy Result / Copy Origi
 Discard Result while a result is kept, Correct Last Dictation…, the meeting block, then
 Open Voice is Local, History, Meetings, Settings…, About, and Quit. The language and
 shortcut submenus moved to Settings.
+
+### Live transcript
+
+The meeting being recorded is the first row of Meetings, its name in bold and its State
+"● Recording" in red ("● Paused", "Starting…", or "Saving…" while it is in those
+phases; `MeetingOpenPolicy.ordered`, `LiveMeetingPhase`). A meeting recorded by the
+`voiceislocal` tool in a terminal counts too. Opening a meeting (double-click, Return, or
+the Live Transcript button) follows `MeetingOpenPolicy`: the live transcript while the
+meeting records or saves, Review for a labelled meeting, else the transcript preview, as
+before. The menu bar's Show Live Transcript… opens the main window on it.
+
+The live transcript (`LiveMeetingViewController`) replaces the list inside Meetings: a
+header with ‹ Meetings (also Escape) back to the list (the meeting stays selected), the
+meeting's name, and its state (a red dot and the clock while recording; orange while
+starting or paused; blue "Saving … — labelling speakers 42%" after the stop; green
+"Saved" once done), then the words. One paragraph per turn of a track: a small header
+(a blue dot for Mic, purple for System, the track, the session time) over its words.
+Words appear as they are spoken: the recorder writes the words live speech has heard but
+not finalized (volatile results) to the session's `live.json` at most every 200 ms
+(`LiveTextPublisher`, removed when live speech ends), and the view reads it and the
+journal's `transcriptFinalized` events four times a second, off the main actor
+(`LiveTranscriptReader`, the newest 1,000 segments). Volatile words are drawn in the
+secondary label colour and turn into label-coloured text when their final result arrives;
+a volatile word that starts before the end of its track's last final segment is already in
+it and is left out. While the user is at the bottom (within 24 points) the view follows
+the newest words; scrolling up stops that and shows a "Jump to Live" pill at the bottom,
+which (like scrolling back down, or End) follows again (`LiveFollow`).
+
+Microphone echo is hidden with post-processing's own rule (`LiveTranscript`, using
+`EchoFilter.echoSpans` with `SpeakerAnalysis.alignmentParameters` of the meeting, so only
+in a call): a run of at least three microphone words that repeat the system track's words
+in order, each starting at most 1 s after (and at most 0.25 s before) its system word, is
+left out; a microphone segment with no other word is not shown. Volatile words of both
+tracks take part, so an echo disappears as soon as the system track has heard the same
+words. The user speaking over the call, a short reply that repeats one or two words, and
+microphone words ahead of the system's stay. The first one or two volatile words of an echo
+can show until the third makes it a run.
+
+When recording stops, the view stays on the meeting while it saves; once it is saved, the
+header offers what opening a finished meeting shows: **Open Review** (Return) for a
+labelled meeting, else **Open Transcript**. Correcting speakers or text during the meeting
+is not built yet; each final run keeps its segment ID (`LiveRun.segmentID`) for it.
 
 ### Reading section
 

@@ -9,7 +9,7 @@ public enum EchoFilter {
     /// `DroppedWords.reason` of microphone echo.
     public static let reason = "echo"
     /// The track whose words can be echo.
-    static let microphoneTrack = "mic"
+    public static let microphoneTrack = "mic"
     /// The track they echo.
     static let systemTrack = "system"
     /// A diarized microphone cluster with at least this share of its words dropped as echo is echo itself: it is not
@@ -154,8 +154,8 @@ public enum EchoFilter {
         return spans
     }
 
-    /// Every word position `spans` cover.
-    static func words(in spans: [WordSpan]) -> Set<WordRef> {
+    /// Every word position `spans` cover (also the live transcript's, `LiveTranscript`).
+    public static func words(in spans: [WordSpan]) -> Set<WordRef> {
         var refs = Set<WordRef>()
         for span in spans where span.first < span.end {
             for word in span.first..<span.end { refs.insert(WordRef(segmentID: span.segmentID, word: word)) }
