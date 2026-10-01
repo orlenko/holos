@@ -224,6 +224,30 @@ func termsTheModelChoseAreKeptWhileItIsUnavailable() async throws {
     #expect(try wordFixCurrent(session).id == fixed.id)
 }
 
+@Test(.timeLimit(.minutes(1)), arguments: [false, true])
+func termsTheModelChoseAreKeptWhenARerunFailsOrTimesOut(timesOut: Bool) async throws {
+    let temp = try TemporaryDirectory("word-fixes")
+    defer { temp.remove() }
+    let (session, _) = try await wordFixSession(in: temp.url)
+    let model = WordFixModel()
+    _ = try await wordFixProcessor(wordFixDependencies(model: .available(model.model))).run(session: session, lease: nil)
+    let fixed = try wordFixCurrent(session)
+
+    let broken = WordFixDependencies(corrections: { wordFixCorrections }, wordList: { wordFixList() }, model: { _ in
+        .available({ _, _ in
+            if timesOut { try await Task.sleep(for: .seconds(3600)) }
+            throw HolosError.unavailable("The model stopped answering.")
+        })
+    }, timeout: .milliseconds(20))
+    let later = try await wordFixProcessor(broken, options: PostProcessingOptions(force: true))
+        .run(session: session, lease: nil)
+    let stage = try #require(wordFixOutcome(later))
+    #expect(stage.result == .skipped)
+    #expect(stage.message?.hasPrefix("Kept the words fixed before: Apple Intelligence did not finish checking") == true)
+    #expect(try wordFixCurrent(session).id == fixed.id)
+    #expect(try wordFixEvents(session).count == 1, "An incomplete rerun publishes no replacement revision.")
+}
+
 @Test(.timeLimit(.minutes(1)))
 func nothingIsRecordedWithoutCorrectionsOrTerms() async throws {
     let temp = try TemporaryDirectory("word-fixes")

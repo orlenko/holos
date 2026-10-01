@@ -829,8 +829,10 @@ words with the on-device model:
    the segment before it in time and the start of the next, any track, 120 characters
    each), the meeting's title, and "At [[cloud]], did the speaker say "cloud" or
    "Claude"?". Only a reply that is exactly the term (ignoring case and the spaces, quotes
-   and marks around it) replaces that place, by the term as listed; any other reply, an
-   error or a time-out keeps it. On invented sentences: asked yes or no, the model answered
+   and marks around it) replaces that place, by the term as listed; any other complete reply
+   keeps it. An error or a time-out keeps the current fixed revision on a rerun, rather than
+   taking an unanswered place for a rejection and undoing a term chosen before. On invented
+   sentences: asked yes or no, the model answered
    no every time; asked to choose, it never put the term where it was not meant (single
    sentences: 13 of 15 right; the stage's own path on a 10-sentence invented meeting: the
    cloud kept in all 4 places it was meant, "Claude" in 3 of the 6 where it was, the misses
@@ -867,7 +869,9 @@ words with the on-device model:
    edited are never touched: like the languages stage it then keeps the transcript
    ("Speaker labels were edited, so misheard words were not fixed again…"), unless asked by
    name with `--force` (speakers are labelled again, names carry over). Without the model,
-   a transcript whose terms the model chose before is kept rather than undone. A
+   a transcript whose terms the model chose before is kept rather than undone. The same is
+   true when any term question fails, times out, is skipped after three consecutive timeouts,
+   or lies past the 500-question limit: an incomplete rerun publishes no replacement. A
    cancellation publishes nothing. A corrections.json or words.json that cannot be read
    keeps the transcript and makes the record partial.
 6. *Review.* Each fixed word is underlined with dots in the review window; its tooltip and

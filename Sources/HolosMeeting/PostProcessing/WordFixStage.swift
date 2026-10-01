@@ -133,11 +133,22 @@ enum WordFixStage {
             journal.progress(PostProcessingProgress(stage: .wordFixes, fraction: fraction,
                                                     message: "Checking words the recognizer may have misheard…"))
         }
-        // Without the model, the terms it chose before are kept rather than undone.
-        if let unavailable = computed.unavailable, WordFixes.Counts(current).terms > 0 {
-            let message = "Kept the words fixed before: Apple Intelligence cannot check the word list's "
-                + "often-heard-as phrases now (\(unavailable))."
-            recorder.end(.wordFixes, .skipped, message, since: started)
+        // An incomplete rerun cannot tell a prior rejection from a place it never decided: keep the current revision
+        // rather than silently undoing a term the model chose before.
+        if WordFixes.Counts(current).terms > 0, !computed.termChecksComplete {
+            let message: String
+            let detail: String?
+            if let unavailable = computed.unavailable {
+                message = "Kept the words fixed before: Apple Intelligence cannot check the word list's "
+                    + "often-heard-as phrases now (\(unavailable))."
+                detail = nil
+            } else {
+                message = "Kept the words fixed before: Apple Intelligence did not finish checking the word list's "
+                    + "often-heard-as phrases."
+                detail = computed.notes.isEmpty ? nil : computed.notes.joined(separator: " ")
+            }
+            recorder.end(.wordFixes, .skipped, [message, detail].compactMap { $0 }.joined(separator: " "),
+                         since: started)
             return Outcome(transcript: current)
         }
         let fixed = computed.transcript
@@ -194,6 +205,9 @@ enum WordFixStage {
         var notes: [String]
         /// Why the model could not be asked about some place (it was not), when it could not.
         var unavailable: String?
+        /// Every often-heard-as place was decided by the model (`.term` or `.keep`). False for unavailable models,
+        /// failures, timeouts, or places left past a timeout streak or the per-run question limit.
+        var termChecksComplete: Bool
     }
 
     /// Fixes `base` (a transcript none of whose words were fixed) without saving anything: the learned corrections
@@ -227,6 +241,7 @@ enum WordFixStage {
         var notes: [String] = []
         var asked = 0
         var unavailable: String?
+        var termChecksComplete = true
         if !places.isEmpty {
             // Asked once per language the places are in.
             var models: [String: WordFixDependencies.Model] = [:]
@@ -246,6 +261,7 @@ enum WordFixStage {
             let position = Dictionary(uniqueKeysWithValues: order.enumerated().map { ($1, $0) })
             let total = min(places.count, maximumQuestions)
             var timedOut = 0
+            var failed = 0
             var timedOutInARow = 0
             var stoppedAt: Int?
             for (number, place) in places.prefix(maximumQuestions).enumerated() {
@@ -260,6 +276,7 @@ enum WordFixStage {
                 case .available(let found): ask = found
                 case .unavailable(let why):
                     unavailable = why
+                    termChecksComplete = false
                     continue
                 }
                 guard let item = working[place.segment] else { continue }
@@ -280,10 +297,14 @@ enum WordFixStage {
                     accepted[place.segment, default: []].append(
                         // The term as saved ("iPhone"), never with a sentence's capital ("IPhone").
                         WordFixes.Replacement(range: range, text: place.match.correction.meant, kind: .term))
-                case .keep, .failed:
+                case .keep:
                     break
+                case .failed:
+                    failed += 1
+                    termChecksComplete = false
                 case .timedOut:
                     timedOut += 1
+                    termChecksComplete = false
                 }
             }
             if let stoppedAt {
@@ -294,12 +315,17 @@ enum WordFixStage {
                 notes.append("The word list's often-heard-as phrases were not checked: \(unavailable).")
             }
             if places.count > maximumQuestions {
+                termChecksComplete = false
                 notes.append("\(places.count - maximumQuestions) places past the first \(maximumQuestions) were not "
                     + "checked.")
             }
             if timedOut > 0 {
                 notes.append("Apple Intelligence did not answer in time for \(timedOut) "
                     + "\(timedOut == 1 ? "place" : "places"), which stay as written.")
+            }
+            if failed > 0 {
+                notes.append("Apple Intelligence could not answer for \(failed) "
+                    + "\(failed == 1 ? "place" : "places"), which stay as written.")
             }
             for (segment, replacements) in accepted {
                 working[segment] = working[segment].map { WordFixes.applying(replacements, to: $0) }
@@ -312,7 +338,7 @@ enum WordFixStage {
         let fixed = Transcript(source: base.source, locale: base.locale, backend: base.backend, segments: segments,
                                languages: base.languages, fixedFrom: base.id)
         return Computed(transcript: fixed, counts: WordFixes.Counts(fixed), asked: asked, notes: notes,
-                        unavailable: unavailable)
+                        unavailable: unavailable, termChecksComplete: termChecksComplete)
     }
 
     /// "12 misheard words: 9 by corrections, 3 word-list terms"
