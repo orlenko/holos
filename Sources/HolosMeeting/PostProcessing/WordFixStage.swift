@@ -287,6 +287,15 @@ enum WordFixStage {
         var tolerance: Double
     }
 
+    private struct PriorFix {
+        var segmentID: String
+        var heard: String
+        var visible: String
+        var kind: TranscriptWordFixKind
+        var midpoint: Double
+        var tolerance: Double
+    }
+
     /// Fixes `base` (a transcript none of whose words were fixed) without saving anything: the learned corrections
     /// everywhere, then each place where a phrase of `terms` (heard → term pairs) was written, outside what the
     /// corrections changed, put to the model with the passage around it (its segment, and for a short segment the ends
@@ -455,6 +464,78 @@ enum WordFixStage {
                                liveCorrectedFrom: base.liveCorrectedFrom)
         return Computed(transcript: fixed, counts: WordFixes.Counts(fixed), asked: asked, notes: notes,
                         unavailable: unavailable, termChecksComplete: termChecksComplete)
+    }
+
+    /// Carries the automatic decisions of a displaced fixed revision onto a newly live-corrected base. This makes
+    /// the live stage's publication self-contained: if edited speaker labels make the following automatic stage
+    /// decline to recompute, its previous corrections, accepted terms, and Review reverts are still present. A live
+    /// mark wins on overlap. The following word-fix stage can still rebuild these from `fixedFrom` when permitted.
+    static func preservingPriorFixes(from prior: Transcript, on live: Transcript) -> Transcript {
+        let evidence = priorFixes(in: prior)
+        guard !evidence.isEmpty else { return live }
+        var working = live.segments.map { WordFixes.Working($0, preservingExistingFixes: true) }
+        var used: Set<Int> = []
+        var preserved = false
+        for segmentIndex in live.segments.indices {
+            guard var item = working[segmentIndex] else { continue }
+            while let choice = evidence.indices.compactMap({ index -> (Int, CorrectionList.Match, Double)? in
+                guard !used.contains(index), evidence[index].segmentID == live.segments[segmentIndex].id else {
+                    return nil
+                }
+                let prior = evidence[index]
+                let sought = prior.kind == .reviewRevert ? prior.visible : prior.heard
+                let finder = CorrectionList(entries: [
+                    Correction(heard: sought, meant: sought + "\u{2060}"),
+                ])
+                return finder.matches(in: item.text).compactMap { match in
+                    let range = match.range.location..<(match.range.location + match.range.length)
+                    guard !item.marks.contains(where: { $0.range.overlaps(range) }),
+                          let location = location(of: match, in: item, segment: live.segments[segmentIndex]),
+                          abs(prior.midpoint - location.midpoint)
+                            <= max(prior.tolerance, location.tolerance) else { return nil }
+                    return (index, match, abs(prior.midpoint - location.midpoint))
+                }.min(by: { $0.2 < $1.2 })
+            }).min(by: { $0.2 < $1.2 }) {
+                let prior = evidence[choice.0]
+                let range = choice.1.range.location..<(choice.1.range.location + choice.1.range.length)
+                let before = item
+                item = WordFixes.applying([
+                    .init(range: range, text: prior.visible, kind: prior.kind, heard: prior.heard),
+                ], to: item)
+                preserved = preserved || item != before
+                used.insert(choice.0)
+            }
+            working[segmentIndex] = item
+        }
+        guard preserved else { return live }
+        let segments = live.segments.indices.map { index in
+            working[index].map { WordFixes.finished($0, segment: live.segments[index]) } ?? live.segments[index]
+        }
+        return Transcript(source: live.source, locale: live.locale, backend: live.backend, segments: segments,
+                          languages: live.languages, fixedFrom: live.id,
+                          liveCorrectedFrom: live.liveCorrectedFrom)
+    }
+
+    private static func priorFixes(in transcript: Transcript) -> [PriorFix] {
+        var result: [PriorFix] = []
+        for segment in transcript.segments {
+            let words = WordTiming.effectiveWords(of: segment)
+            let text = segment.text as NSString
+            for fix in segment.fixes ?? []
+            where fix.kind == .correction || fix.kind == .term || fix.kind == .reviewRevert {
+                guard fix.first >= 0, fix.first < fix.end, fix.end <= words.count else { continue }
+                let first = words[fix.first], last = words[fix.end - 1]
+                let range = NSRange(location: first.utf16Offset,
+                                    length: last.utf16Offset + last.utf16Length - first.utf16Offset)
+                guard range.location >= 0, range.location + range.length <= text.length else { continue }
+                let duration = max(0, last.end - first.start)
+                result.append(PriorFix(segmentID: segment.id, heard: fix.heard,
+                                       visible: text.substring(with: range), kind: fix.kind,
+                                       midpoint: (first.start + last.end) / 2,
+                                       tolerance: max(0.05, duration / 4)))
+            }
+        }
+        return result
     }
 
     private static func acceptedTerms(in transcript: Transcript?) -> [AcceptedTerm] {

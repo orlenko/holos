@@ -306,7 +306,35 @@ public enum LiveHints {
                 return start..<(start + length)
             }
         }
-        return range
+        // A replay may keep the words but choose different untimed punctuation ("Hello." → "Hello!"). The hint's
+        // boundary punctuation still says that punctuation was part of the editable phrase, so replace whatever
+        // non-word marks the replay put directly against that boundary.
+        let utf16 = segment.text.utf16
+        let lowerUTF16 = utf16.index(utf16.startIndex, offsetBy: range.lowerBound)
+        let upperUTF16 = utf16.index(utf16.startIndex, offsetBy: range.upperBound)
+        guard displayed.first.map(isBoundaryMark) == true || displayed.last.map(isBoundaryMark) == true,
+              let lower = String.Index(lowerUTF16, within: segment.text),
+              let upper = String.Index(upperUTF16, within: segment.text) else { return range }
+        var expandedLower = lower
+        var expandedUpper = upper
+        if displayed.first.map(isBoundaryMark) == true {
+            while expandedLower > segment.text.startIndex {
+                let previous = segment.text.index(before: expandedLower)
+                guard isBoundaryMark(segment.text[previous]) else { break }
+                expandedLower = previous
+            }
+        }
+        if displayed.last.map(isBoundaryMark) == true {
+            while expandedUpper < segment.text.endIndex,
+                  isBoundaryMark(segment.text[expandedUpper]) {
+                expandedUpper = segment.text.index(after: expandedUpper)
+            }
+        }
+        return expandedLower.utf16Offset(in: segment.text)..<expandedUpper.utf16Offset(in: segment.text)
+    }
+
+    private static func isBoundaryMark(_ character: Character) -> Bool {
+        !character.isLetter && !character.isNumber && !character.isWhitespace
     }
 
     private static func text(in range: Range<Int>, of segment: TranscriptSegment) -> String {

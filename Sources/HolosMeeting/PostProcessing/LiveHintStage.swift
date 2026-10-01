@@ -106,15 +106,19 @@ enum LiveHintStage {
                                    speakerHeadIncomplete: true)
             }
         }
+        let published = wordFixedBeforeRebase.map {
+            WordFixStage.preservingPriorFixes(from: $0, on: result.transcript)
+        } ?? result.transcript
         do {
-            let labelsPreserved = try await publish(result.transcript, base: transcript, result: result,
+            let labelsPreserved = try await publish(published, liveBase: result.transcript,
+                                                    base: transcript, result: result,
                                                     session: session, lease: lease)
             let text = result.applied == 1 ? "Applied 1 live text correction."
                 : "Applied \(result.applied) live text corrections."
             let problem = result.unmatched > 0
                 ? "\(result.unmatched) live text \(result.unmatched == 1 ? "correction could" : "corrections could") not be matched to the final transcript."
                 : nil
-            return TextOutcome(transcript: result.transcript, hints: hints, note: text, problem: problem,
+            return TextOutcome(transcript: published, hints: hints, note: text, problem: problem,
                                labelsPreserved: labelsPreserved,
                                wordFixedBeforeRebase: wordFixedBeforeRebase)
         } catch let error where !(error is CancellationError) {
@@ -122,7 +126,7 @@ enum LiveHintStage {
             let message = incomplete
                 ? "Live text corrections were saved, but their speaker labels could not be published: \(error.localizedDescription)"
                 : "Live text corrections could not be saved: \(error.localizedDescription)"
-            return TextOutcome(transcript: incomplete ? result.transcript : transcript, hints: hints,
+            return TextOutcome(transcript: incomplete ? published : transcript, hints: hints,
                                problem: message, speakerHeadIncomplete: incomplete,
                                wordFixedBeforeRebase: incomplete ? wordFixedBeforeRebase : nil)
         }
@@ -169,7 +173,8 @@ enum LiveHintStage {
         }
     }
 
-    private static func publish(_ transcript: Transcript, base: Transcript, result: LiveHints.TextOutcome,
+    private static func publish(_ transcript: Transcript, liveBase: Transcript, base: Transcript,
+                                result: LiveHints.TextOutcome,
                                 session: URL, lease: ProcessingLease) async throws -> Bool {
         let archive = try SessionArchive.openForMaintenance(at: session, lease: lease)
         do {
@@ -188,6 +193,7 @@ enum LiveHintStage {
                 }
                 try Task.checkCancellation()
                 if let plan { try SpeakerTranscriptRetarget.stage(plan, session: session) }
+                if transcript.id != liveBase.id { try await archive.saveTranscriptRevision(liveBase) }
                 try await archive.recordEvent(kind: MeetingEventKind.liveHintsApplied, details: [
                     "transcriptID": transcript.id, "base": base.id,
                     "applied": String(result.applied), "unmatched": String(result.unmatched),

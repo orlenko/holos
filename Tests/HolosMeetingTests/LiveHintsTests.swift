@@ -73,6 +73,12 @@ private func hint(_ segment: TranscriptSegment, words: Range<Int>, action: LiveH
     #expect(second.applied == 0)
     #expect(second.alreadyApplied == 1)
     #expect(second.transcript.segments[0].text == "Hi.")
+
+    var replayed = segment
+    replayed.id = "replayed"
+    replayed.text = "Hello!"
+    let changedPunctuation = LiveHints.applyingText([live], to: SessionFixtures.transcript([replayed]))
+    #expect(changedPunctuation.transcript.segments[0].text == "Hi.")
 }
 
 @Test func liveTextHintUsesTimeToDisambiguateRepeatedWords() {
@@ -385,6 +391,48 @@ func aLaterPassRepairsLiveTextWhoseSpeakerHeadWasNotPublished() async throws {
     #expect(final.fixedFrom != fixed.id)
     #expect(final.segments[0].fixes?.contains { $0.kind == .liveCorrection } == true)
     #expect(final.segments[0].fixes?.contains { $0.kind == .correction } == true)
+}
+
+@Test(.timeLimit(.minutes(1))) func lateLiveHintKeepsEarlierFixesWhenEditedLabelsBlockRecomputation() async throws {
+    let temp = try TemporaryDirectory()
+    defer { temp.remove() }
+    let segment = SessionFixtures.segment(["alpha", "wrong", "tail"], track: "mic", start: 2, id: "S1")
+    let original = SessionFixtures.transcript([segment], id: "original")
+    let session = try await SessionFixtures.makeSession(in: temp.url, mode: .inPerson, transcript: original)
+    try AtomicFile.write(Data("damaged".utf8), to: SessionPaths.liveHints(session))
+    let dependencies = WordFixDependencies(
+        corrections: { CorrectionList(entries: [.init(heard: "wrong", meant: "right")]) },
+        wordList: { WordList() }, model: { _ in .unavailable("off") })
+    let firstProcessor = MeetingPostProcessor(freeSpace: FixedFreeSpace(.max), wordFixes: dependencies)
+
+    _ = try await firstProcessor.run(session: session, lease: nil)
+    let fixed = try SessionFiles.transcript(
+        id: try #require(try SessionArchive.currentTranscriptID(at: session)), session: session)
+    let run = try SessionFixtures.writeHeadRun(
+        session: session, transcript: fixed,
+        outputs: ["mic": FakeDiarizer.alternating(speakers: ["S1"], turnSeconds: 5, duration: 5)])
+    let speakerID = try #require(run.turns.first?.speakerID)
+    try SessionFixtures.appendEdits([.rename(speakerID: speakerID, name: "Ada")], session: session)
+
+    let live = hint(segment, words: 2..<3, action: .replaceText("live tail"), id: "late")
+    let sessionID = try SessionArchive.readManifest(at: session).id
+    try AtomicFile.writeJSON(LiveHintFile(sessionID: sessionID, hints: [live]),
+                             to: SessionPaths.liveHints(session))
+    let second = try await MeetingPostProcessor(
+        diarizer: FakeDiarizer(outputs: [:], error: .unavailable("Speaker labelling must not run.")),
+        freeSpace: FixedFreeSpace(.max), wordFixes: dependencies).run(session: session, lease: nil)
+    let final = try SessionFiles.transcript(
+        id: try #require(try SessionArchive.currentTranscriptID(at: session)), session: session)
+    let liveBase = try SessionFiles.transcript(id: try #require(final.fixedFrom), session: session)
+    let view = try SessionFixtures.view(session)
+
+    #expect(second.state == .partial)
+    #expect(final.segments[0].text == "alpha right live tail")
+    #expect(final.segments[0].fixes?.contains { $0.kind == .correction } == true)
+    #expect(final.segments[0].fixes?.contains { $0.kind == .liveCorrection } == true)
+    #expect(liveBase.segments[0].text == "alpha wrong live tail")
+    #expect(view.transcriptID == final.id)
+    #expect(view.speakers.first(where: { $0.id == speakerID })?.name == "Ada")
 }
 
 @Test(.timeLimit(.minutes(1))) func lateLiveHintKeepsAnAcceptedTermWhenTheModelIsUnavailable() async throws {
