@@ -1,4 +1,5 @@
 import Darwin
+import CoreGraphics
 import Foundation
 import HolosAudio
 import HolosCore
@@ -76,6 +77,7 @@ public struct MeetingPostProcessor: Sendable {
     let profiles: SpeakerProfileStore?
     let languageDetection: LanguageDetectionDependencies
     let wordFixes: WordFixDependencies
+    let screenOCR: MeetingScreenOCR.Recognizer
 
     /// `diarizer == nil` (speaker models not installed) gives speaker-less exports and the setup hint.
     /// `freeSpace` measures the volume before rendering. With `profiles` (PR10) whose "Remember voices" is on and
@@ -85,9 +87,11 @@ public struct MeetingPostProcessor: Sendable {
     /// corrections, word list and model of stage 1d; `.none` fixes nothing.
     public init(diarizer: (any SpeakerDiarizer)? = nil, options: PostProcessingOptions = .init(),
                 freeSpace: any FreeSpaceProvider = VolumeFreeSpace(), profiles: SpeakerProfileStore? = nil,
-                languages: LanguageDetectionDependencies = .live, wordFixes: WordFixDependencies = .none) {
+                languages: LanguageDetectionDependencies = .live, wordFixes: WordFixDependencies = .none,
+                screenOCR: @escaping MeetingScreenOCR.Recognizer = { try MeetingScreenOCR.recognize($0, languages: $1) }) {
         self.diarizer = diarizer; self.options = options; self.freeSpace = freeSpace; self.profiles = profiles
         self.languageDetection = languages; self.wordFixes = wordFixes
+        self.screenOCR = screenOCR
     }
 
     /// Runs every stage for one finished session under `lease` (nil: acquire one, retry 1 s) and returns the
@@ -186,6 +190,18 @@ public struct MeetingPostProcessor: Sendable {
     private func stages(session: URL, manifest: SessionManifest, journal: ProcessingJournal,
                         lease: ProcessingLease) async throws -> PostProcessingRecord {
         let recorder = StageRecorder(journal: journal)
+        // Visual evidence is independent of learned corrections, word-list pairs and even a transcript. Recovery
+        // resumes a bounded batch before any text-stage early return; it never runs an unbounded OCR marathon.
+        do {
+            let languages = options.languages ?? (try? SessionFiles.meetingInfo(session: session, manifest: manifest))?.languages
+                ?? [manifest.locale]
+            _ = try await MeetingScreenOCR.processBounded(session: session, sessionID: manifest.id,
+                                                         languages: languages,
+                                                         recognizer: screenOCR)
+        } catch {
+            try Task.checkCancellation()
+            Self.log.error("Optional screen OCR did not complete; transcript processing continues")
+        }
 
         // Stage 1: the current transcript.
         var started = recorder.begin(.transcript, message: "Reading the transcript…")

@@ -138,11 +138,14 @@ public enum SessionDeletion {
         // Voice data is only for evaluation sessions; it goes first and is never left behind by a later failure.
         try SessionArchive.withSpeakerLock(at: session) {
             try SessionSpeakerStore.deleteVoiceData(session: session)
-        }
-        if existing == nil {
-            try AtomicFile.writeJSON(AudioDeletedRecord(sessionID: manifest.id, chunkCount: manifest.chunks.count,
-                                                        seconds: manifest.savedSeconds),
-                                     to: SessionPaths.audioDeleted(session))
+            // Screen workers use this same lock. Publish the tombstone and remove their evidence together,
+            // so an abandoned callback cannot pass the deletion check and recreate screen/ afterwards.
+            if existing == nil {
+                try AtomicFile.writeJSON(AudioDeletedRecord(sessionID: manifest.id, chunkCount: manifest.chunks.count,
+                                                            seconds: manifest.savedSeconds),
+                                         to: SessionPaths.audioDeleted(session))
+            }
+            try AtomicFile.removeTree(["screen"], in: session)
         }
         try AtomicFile.removeTree(["derived"], in: session)
         try removeEvaluationAudio(session)

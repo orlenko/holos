@@ -5,6 +5,15 @@ milestone are implemented, not the full T01–T14 plan. The package builds with
 Swift 6.4 on macOS 27 / Apple Silicon. Native speech inference is local.
 Hardware-facing and cross-app acceptance remain pending.
 
+Opt-in meeting-window context is implemented: fresh explicit window selection,
+low-rate changed JPEGs, post-stop on-device Vision OCR, read-only timed text and
+vocabulary candidates in Review, and bounded OCR context for existing word-list
+questions. Screen evidence is removed with audio; no new live LLM step is added.
+Synthetic frame/lifecycle/storage/OCR tests and offscreen light/dark choice-control
+previews cover the implementation. Real ScreenCaptureKit permission, window,
+pause/restart, and end-to-end UI acceptance checks remain pending. The thumbnail
+timeline and larger local-model benchmark are follow-ups, not completed features.
+
 ## Available now
 
 - `doctor` reports local framework/model, voice, permission, and speech-asset

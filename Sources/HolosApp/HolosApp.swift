@@ -1494,6 +1494,7 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
             inputMonitoring: CGPreflightListenEventAccess(), inputMonitoringNeeded: inputMonitoringNeeded,
             systemAudio: CGPreflightScreenCaptureAccess(),
             recordSystemAudio: MeetingAppState.recordSystemAudio,
+            screenCaptureDefault: MeetingAppState.screenCaptureDefault,
             assets: assetState, installingAssets: installingAssets,
             dictationEnabled: enabled, enabling: enabling, busy: isBusy, shortcutTitle: shortcutTitle,
             shortcut: shortcut, shortcutChangeable: canChangeShortcut,
@@ -1576,6 +1577,9 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
         case .toggleRecordSystemAudio:
             MeetingAppState.recordSystemAudio.toggle()  // takes effect from the next meeting
             meeting.startPanel?.refresh()
+            updateSettings()
+        case .toggleMeetingScreenCapture:
+            MeetingAppState.screenCaptureDefault.toggle()
             updateSettings()
         case .speakerModels:
             installSpeakerModels()

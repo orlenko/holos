@@ -169,8 +169,10 @@ enum WordFixStage {
         }
 
         let journal = recorder.journal
+        let screen = try? ScreenContextStore.read(session: request.session, sessionID: request.manifest.id)
         let computed = try await fix(base, title: request.manifest.name, corrections: corrections, terms: terms,
-                                     dependencies: dependencies, preservingTermsFrom: request.priorFixed) { fraction in
+                                     dependencies: dependencies, preservingTermsFrom: request.priorFixed,
+                                     screenContext: screen) { fraction in
             journal.progress(PostProcessingProgress(stage: .wordFixes, fraction: fraction,
                                                     message: "Checking words the recognizer may have misheard…"))
         }
@@ -318,6 +320,7 @@ enum WordFixStage {
     static func fix(_ base: Transcript, title: String, corrections: CorrectionList, terms: CorrectionList,
                     dependencies: WordFixDependencies,
                     preservingTermsFrom priorFixed: Transcript? = nil,
+                    screenContext: ScreenContextRecord? = nil,
                     progress: (Double) -> Void = { _ in }) async throws -> Computed {
         var working: [WordFixes.Working?] = base.segments.map {
             WordFixes.Working($0, preservingExistingFixes: true)
@@ -421,8 +424,15 @@ enum WordFixStage {
                 let next = at + 1 < order.count ? working[order[at + 1]]?.text : nil
                 let range = place.match.range.location..<(place.match.range.location + place.match.range.length)
                 let context = HeardAsJudge.context(of: range, in: item.text, previous: previous, next: next)
+                let screenLocation = location(of: place.match, in: item, segment: base.segments[place.segment])
+                let screenBefore = screenLocation.map { $0.midpoint - max(1, $0.tolerance * 2) }
+                    ?? base.segments[place.segment].start
+                let screenAfter = screenLocation.map { $0.midpoint + max(1, $0.tolerance * 2) }
+                    ?? base.segments[place.segment].end
                 let question = HeardAsJudge.Question(title: title, before: context.before, heard: place.match.heard,
-                                                     after: context.after, term: place.match.correction.meant)
+                                                     after: context.after, term: place.match.correction.meant,
+                                                     screenEvidence: screenContext?.words(
+                                                        from: screenBefore, to: screenAfter) ?? [])
                 asked += 1
                 let answer = await HeardAsJudge.ask(question, model: ask, timeout: dependencies.timeout)
                 try Task.checkCancellation()

@@ -56,6 +56,10 @@ struct Record: AsyncParsableCommand {
         @Option(help: "How many people are expected to speak (1-20), a hint for speaker labelling.") var expectedSpeakers: Int?
         @Option(help: "A JSON file of names and terms to recognize ({\"schemaVersion\": 1, \"strings\": [...]}); it is deleted once read.")
         var vocabularyFile: String?
+        @Option(help: "Opt-in: capture only this explicitly selected window ID for slide OCR after recording.")
+        var screenWindow: UInt32?
+        @Option(help: "Owner process ID of --screen-window; must match (never fall back to another window or display).")
+        var screenOwner: Int32?
 
         mutating func validate() throws {
             if let duration, !duration.isFinite || duration <= 0 { throw ValidationError("Duration must be positive and finite.") }
@@ -76,6 +80,9 @@ struct Record: AsyncParsableCommand {
                 throw ValidationError("--expected-speakers must be between 1 and 20.")
             }
             try meetingLanguages.validate(with: recognition)
+            if (screenWindow == nil) != (screenOwner == nil) || screenWindow == 0 || (screenOwner ?? 1) <= 0 {
+                throw ValidationError("--screen-window and --screen-owner must both identify a window and its owner.")
+            }
         }
 
         @MainActor mutating func run() async throws {
@@ -92,7 +99,10 @@ struct Record: AsyncParsableCommand {
                                            expectedSpeakers: expectedSpeakers, liveText: !noLiveText,
                                            microphone: microphone.flatMap(MicrophoneSelection.init(argument:))
                                                ?? RecordingOptions.microphone(for: source),
-                                           languages: languages)
+                                           languages: languages,
+                                           screenWindow: screenWindow.flatMap { id in screenOwner.map {
+                                               ScreenWindowSelection(windowID: id, ownerPID: $0)
+                                           } })
             let dependencies = RecordingDependencies.live(stop: SignalStopController(), reporter: ConsoleReporter(),
                 postProcess: noPostprocess || recordOnly ? nil : recordingPostProcessHook())
             let outcome = try await RecordingWorkflow.run(options, dependencies: dependencies)

@@ -120,6 +120,21 @@ when its labelling was interrupted (at most twice per meeting, within 7 days). *
 (⌘4) lists the people you have named and their remembered voices (below). When the Mac's speakers play a call,
 labelling drops the microphone's echo of it (below); nothing warns about it.
 
+Meeting-window snapshots are optional and off by default. Enable **Save changed
+meeting-window snapshots** in the start panel and choose one window each time;
+Settings › Meetings can offer that choice by default, but never remembers a window.
+Only that window is captured, not the display or other windows. Content inside the
+chosen window can still be sensitive. Screen Recording permission must already be
+granted; an unavailable window does not stop audio or switch capture to another window.
+Changed snapshots are saved locally at up to one sample every two seconds. OCR runs
+on this Mac after recording stops; no language-model correction runs during recording.
+Recorder/recovery OCR batches are limited to eight frames and five seconds of waiting;
+unfinished frames stay saved. **Screen Text…** in Review shows timestamped OCR and
+unverified word-list candidates, and **Recognize Next Batch** continues unfinished OCR.
+They are never added automatically. Nearby OCR can support an existing word-list
+question, but is not proof that a term was spoken. Delete Audio removes both snapshots
+and their OCR. A thumbnail timeline is not implemented yet.
+
 **Review…** in Meetings (or double-clicking a labelled meeting, or the
 **Name Speakers — <name>…** line the menu shows after a meeting) opens the review window:
 speakers on the left (a name field that suggests known people, talk time, the start of
