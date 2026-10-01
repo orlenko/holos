@@ -43,7 +43,7 @@ final class MeetingsPane: NSViewController, NSTableViewDataSource, NSTableViewDe
     /// The live transcript's header for a meeting (the app delegate describes the meeting state).
     private let liveHeader: (String, SessionSummary?) -> LiveMeetingHeader
     /// Learns safe phrase replacements from a live text correction.
-    private let learnLiveText: (String, String, String) -> String?
+    private let learnLiveText: ([Correction], String, String) -> LiveTextLearning
     /// The app's meeting state (`MeetingController.state`).
     private var meetingState: MeetingState = .idle
     /// The live transcript shown in place of the list, if any.
@@ -74,7 +74,7 @@ final class MeetingsPane: NSViewController, NSTableViewDataSource, NSTableViewDe
          openReview: @escaping (SessionSummary) -> Void,
          beginUsing: @escaping (String, String) -> Bool, endUsing: @escaping (String) -> Void,
          liveHeader: @escaping (String, SessionSummary?) -> LiveMeetingHeader,
-         learnLiveText: @escaping (String, String, String) -> String? = { _, _, _ in nil }) {
+         learnLiveText: @escaping ([Correction], String, String) -> LiveTextLearning = { _, _, _ in .init() }) {
         self.root = root
         self.perform = perform
         self.openReview = openReview

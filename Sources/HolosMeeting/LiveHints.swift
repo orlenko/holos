@@ -22,12 +22,16 @@ public struct LiveHint: Codable, Sendable, Equatable, Identifiable {
     public var end: Double
     public var heard: String
     public var action: Action
+    /// Correction-list rules this live edit actually added. Nil is an older hint that did not record ownership;
+    /// treating it as none keeps an identical rule that may have predated the edit.
+    public var learned: [Correction]?
 
     public init(id: String = UUID().uuidString, at: Date = Date(), segmentID: String, track: String,
-                firstWord: Int, endWord: Int, start: Double, end: Double, heard: String, action: Action) {
+                firstWord: Int, endWord: Int, start: Double, end: Double, heard: String, action: Action,
+                learned: [Correction]? = nil) {
         self.id = id; self.at = at; self.segmentID = segmentID; self.track = track
         self.firstWord = firstWord; self.endWord = endWord; self.start = start; self.end = end
-        self.heard = heard; self.action = action
+        self.heard = heard; self.action = action; self.learned = learned
     }
 }
 
@@ -47,6 +51,7 @@ public struct LiveHintFile: Codable, Sendable, Equatable {
 
 public enum LiveHintStore {
     public static let maximumHints = 5_000
+    private static let maximumLearnedCorrections = 2_000
     private static let maximumBytes = 8 << 20
 
     /// Missing means no hints. A newer file is refused; a copied file must name this session.
@@ -79,6 +84,26 @@ public enum LiveHintStore {
                 throw HolosError.invalidInput("This meeting already has too many live corrections.")
             }
             file.hints.append(hint)
+            let data = try HolosJSON.encoder().encode(file)
+            guard data.count <= maximumBytes else {
+                throw HolosError.invalidInput("This meeting already has too much live correction data.")
+            }
+            try AtomicFile.write(data, to: url)
+        }
+    }
+
+    /// Records which global correction rules an already-saved hint actually added. This follows `append` because
+    /// the timed edit is useful even when learning fails. A crash between the two writes conservatively leaves nil,
+    /// so a later edit will keep rather than delete a possibly pre-existing rule.
+    public static func recordLearned(_ learned: [Correction], for hintID: String, session: URL) throws {
+        let url = SessionPaths.liveHints(session)
+        try CorrectionList.withFileLock(for: url) {
+            var file = try read(session: session)
+            guard let index = file.hints.lastIndex(where: { $0.id == hintID }) else {
+                throw HolosError.invalidInput("That live correction is no longer in this meeting.")
+            }
+            file.hints[index].learned = learned
+            try validate(file.hints[index])
             let data = try HolosJSON.encoder().encode(file)
             guard data.count <= maximumBytes else {
                 throw HolosError.invalidInput("This meeting already has too much live correction data.")
@@ -135,6 +160,17 @@ public enum LiveHintStore {
               hint.heard.utf8.count <= 16_384 else {
             throw HolosError.invalidInput("That live correction is empty or too long.")
         }
+        guard let learned = hint.learned else { return }
+        guard learned.count <= maximumLearnedCorrections,
+              learned.allSatisfy({ correction in
+                  correction.heard.contains(where: { !$0.isWhitespace })
+                      && correction.meant.contains(where: { !$0.isWhitespace })
+                      && correction.heard != correction.meant
+                      && correction.heard.utf8.count <= 16_384
+                      && correction.meant.utf8.count <= 16_384
+              }) else {
+            throw HolosError.invalidInput("That live correction has invalid learned rules.")
+        }
     }
 }
 
@@ -163,6 +199,16 @@ public enum LiveHints {
             return candidate.segmentID == hint.segmentID && candidate.track == hint.track
                 && candidate.firstWord == hint.firstWord && candidate.endWord == hint.endWord
         }?.heard ?? hint.heard
+    }
+
+    /// Rules the last text edit of this same timed phrase actually added. Older hints did not record this field;
+    /// returning none for them avoids claiming and later deleting a rule that may have existed beforehand.
+    public static func learnedCorrections(for hint: LiveHint, among hints: [LiveHint]) -> [Correction] {
+        hints.last { candidate in
+            guard case .replaceText = candidate.action else { return false }
+            return candidate.segmentID == hint.segmentID && candidate.track == hint.track
+                && candidate.firstWord == hint.firstWord && candidate.endWord == hint.endWord
+        }?.learned ?? []
     }
 
     public static func applyingText(_ hints: [LiveHint], to transcript: Transcript,

@@ -99,14 +99,26 @@ public struct CorrectionList: Codable, Sendable, Equatable {
         entries.removeAll { $0 == correction }
     }
 
-    /// Replaces the exact rules learned from an earlier version of one edit with the rules learned from its current
-    /// version. Exact removal leaves a rule the person changed meanwhile alone; rules whose result the remaining
-    /// list already supplies stay implicit, and `add` keeps the usual one-rule-per-heard-phrase behavior. In
-    /// particular, changing A→B back to A removes the A→B rules instead of leaving them available to undo that
-    /// reversal later.
-    public mutating func replaceLearned(_ previous: [Correction], with current: [Correction]) {
+    /// Replaces the exact rules this edit owned before with the rules its current version can add. Exact removal
+    /// leaves a rule the person changed meanwhile alone; rules whose result the remaining list already supplies stay
+    /// implicit and are not returned as owned. `add` keeps the usual one-rule-per-heard-phrase behavior. In
+    /// particular, changing A→B back to A removes an A→B rule the edit added, but never an identical rule that was
+    /// already in the list before the edit.
+    @discardableResult
+    public mutating func replaceLearned(_ previous: [Correction], with current: [Correction]) -> [Correction] {
         for correction in previous { remove(correction) }
-        for correction in current where apply(to: correction.heard) != correction.meant { add(correction) }
+        var owned: [Correction] = []
+        for correction in current {
+            let normalized = Correction(
+                heard: correction.heard.trimmingCharacters(in: .whitespacesAndNewlines),
+                meant: correction.meant.trimmingCharacters(in: .whitespacesAndNewlines))
+            guard !normalized.heard.isEmpty, !normalized.meant.isEmpty,
+                  normalized.heard != normalized.meant,
+                  apply(to: normalized.heard) != normalized.meant else { continue }
+            add(normalized)
+            owned.append(normalized)
+        }
+        return owned
     }
 
     /// Other entries `replace(_:with:)` would drop because they have the same heard phrase as `new`.

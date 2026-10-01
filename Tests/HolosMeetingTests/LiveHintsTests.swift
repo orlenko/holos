@@ -140,11 +140,14 @@ private func hint(_ segment: TranscriptSegment, words: Range<Int>, action: LiveH
 
 @Test func repeatedEditOfOneLivePhraseKeepsTheOriginalProvenance() {
     let segment = SessionFixtures.segment(["send", "the", "deck"], track: "system", start: 2, id: "live")
-    let first = hint(segment, words: 0..<3, action: .replaceText("share the doc"), id: "H1")
+    var first = hint(segment, words: 0..<3, action: .replaceText("share the doc"), id: "H1")
+    let owned = Correction(heard: "send the deck", meant: "share the doc")
+    first.learned = [owned]
     var second = first
     second.id = "H2"
     second.heard = "share the doc"
     second.action = .replaceText("share this document")
+    second.learned = nil
     let transcript = SessionFixtures.transcript([segment])
     let outcome = LiveHints.applyingText([first, second], to: transcript)
 
@@ -154,6 +157,7 @@ private func hint(_ segment: TranscriptSegment, words: Range<Int>, action: LiveH
         TranscriptWordFix(first: 0, end: 3, heard: "send the deck", kind: .liveCorrection),
     ])
     #expect(LiveHints.originalHeard(for: second, among: [first]) == "send the deck")
+    #expect(LiveHints.learnedCorrections(for: second, among: [first]) == [owned])
 }
 
 @Test func repeatedLiveEditMatchesAnIntermediateReplayAndKeepsOriginalProvenance() {
@@ -202,10 +206,13 @@ private func hint(_ segment: TranscriptSegment, words: Range<Int>, action: LiveH
     let transcript = SessionFixtures.transcript([])
     let session = try await SessionFixtures.makeSession(in: temp.url, transcript: transcript)
     let segment = SessionFixtures.segment(["hello"], track: "mic", start: 1, id: "S1")
-    let first = hint(segment, words: 0..<1, action: .replaceText("hullo"), id: "H1")
+    var first = hint(segment, words: 0..<1, action: .replaceText("hullo"), id: "H1")
     let second = hint(segment, words: 0..<1, action: .nameSpeaker("Ada"), id: "H2")
+    let owned = Correction(heard: "hello", meant: "hullo")
 
     try LiveHintStore.append(first, session: session)
+    try LiveHintStore.recordLearned([owned], for: first.id, session: session)
+    first.learned = [owned]
     try LiveHintStore.append(second, session: session)
     #expect(try LiveHintStore.read(session: session).hints == [first, second])
 

@@ -1243,21 +1243,22 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
     }
 
     /// A live meeting's exact timed text correction also teaches safe, small mishearing pairs for future speech.
-    /// Re-editing the same phrase replaces the prior edit's rules, so restoring the recognizer text removes rules the
-    /// earlier edit taught. Rewordings and unanchored dictionary-word swaps remain timed-only.
-    func learnMeetingCorrection(heard: String, current: String, meant: String) -> String? {
+    /// Re-editing the same phrase replaces only rules the prior edit actually added, so restoring the recognizer text
+    /// never removes an identical rule that predated it. Rewordings and unanchored dictionary-word swaps remain
+    /// timed-only.
+    func learnMeetingCorrection(previous: [Correction], heard: String, meant: String) -> LiveTextLearning {
         let dictionaryWord: (String) -> Bool = { word in
             NSSpellChecker.shared.checkSpelling(of: word.lowercased(), startingAt: 0).location == NSNotFound
         }
-        let previous = CorrectionList.learn(original: heard, corrected: current,
-                                            isDictionaryWord: dictionaryWord)
         let learned = CorrectionList.learn(original: heard, corrected: meant,
                                            isDictionaryWord: dictionaryWord)
-        guard !previous.isEmpty || !learned.isEmpty else { return nil }
-        guard changeCorrections({ $0.replaceLearned(previous, with: learned) }) else {
-            return "the corrections list is unavailable"
+        guard !previous.isEmpty || !learned.isEmpty else { return LiveTextLearning() }
+        var owned: [Correction] = []
+        guard changeCorrections({ owned = $0.replaceLearned(previous, with: learned) }) else {
+            // The failed write left the prior edit's rules in place, so the new timed hint inherits their ownership.
+            return LiveTextLearning(owned: previous, problem: "the corrections list is unavailable")
         }
-        return nil
+        return LiveTextLearning(owned: owned)
     }
 
     /// A manual Add; one that resolves a declined swap also keeps the edit that swap came from, as Learn

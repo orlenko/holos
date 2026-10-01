@@ -10,6 +10,11 @@ struct LiveMeetingHeader: Equatable {
     var detail: String
 }
 
+struct LiveTextLearning {
+    var owned: [Correction] = []
+    var problem: String?
+}
+
 /// A meeting's live transcript in the Meetings section (docs/design.md "Live transcript"): its words as they are
 /// spoken, volatile ones in a secondary colour until they are final, with the microphone's echo of the call hidden
 /// (`LiveTranscript`). It follows the newest words while the user is at the bottom; scrolling up stops that and shows
@@ -23,9 +28,9 @@ final class LiveMeetingViewController: NSViewController, NSTextViewDelegate {
     let sessionID: String
     private let onBack: () -> Void
     private let onOpenFinished: () -> Void
-    /// Replaces safe correction pairs learned from the prior edit. Arguments are the original recognizer text, what
-    /// was on screen before this edit, and the new text. Nil means success; a string says why only the hint was saved.
-    private let onLearnText: (String, String, String) -> String?
+    /// Replaces the safe correction pairs owned by the prior edit. Arguments are those owned rules, the original
+    /// recognizer text, and the new text. The result records what this edit owns and why only the timed hint was saved.
+    private let onLearnText: ([Correction], String, String) -> LiveTextLearning
     private var reader: LiveTranscriptReader
     private var header = LiveMeetingHeader(name: "", phase: .starting, detail: "")
     private var paragraphs: [LiveParagraph] = []
@@ -51,7 +56,7 @@ final class LiveMeetingViewController: NSViewController, NSTextViewDelegate {
     private let editStatus = NSTextField(labelWithString: "")
 
     init(sessionID: String, directory: URL, onBack: @escaping () -> Void, onOpenFinished: @escaping () -> Void,
-         onLearnText: @escaping (String, String, String) -> String? = { _, _, _ in nil }) {
+         onLearnText: @escaping ([Correction], String, String) -> LiveTextLearning = { _, _, _ in .init() }) {
         self.sessionID = sessionID
         self.onBack = onBack
         self.onOpenFinished = onOpenFinished
@@ -369,13 +374,24 @@ final class LiveMeetingViewController: NSViewController, NSTextViewDelegate {
         let corrected = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !corrected.isEmpty, corrected != target.hint.heard else { return }
         let originalHeard = LiveHints.originalHeard(for: target.hint, among: reader.hints)
+        let previouslyLearned = LiveHints.learnedCorrections(for: target.hint, among: reader.hints)
         var hint = target.hint
         hint.id = UUID().uuidString
         hint.at = Date()
         hint.action = .replaceText(corrected)
+        hint.learned = nil
         guard save(hint, success: "Text correction saved") else { return }
-        if let problem = onLearnText(originalHeard, target.hint.heard, corrected) {
-            editStatus.stringValue = "Timed correction saved; could not learn it: \(problem)"
+        let learning = onLearnText(previouslyLearned, originalHeard, corrected)
+        var problems: [String] = []
+        if let problem = learning.problem { problems.append("could not learn it: \(problem)") }
+        do {
+            try LiveHintStore.recordLearned(learning.owned, for: hint.id, session: reader.session)
+            refresh()
+        } catch {
+            problems.append("could not record which correction rules it owns: \(error.localizedDescription)")
+        }
+        if !problems.isEmpty {
+            editStatus.stringValue = "Timed correction saved; " + problems.joined(separator: "; ")
         }
     }
 

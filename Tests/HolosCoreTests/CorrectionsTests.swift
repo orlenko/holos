@@ -74,12 +74,32 @@ import Testing
     let finalRules = CorrectionList.learn(original: original, corrected: final)
     var list = CorrectionList(entries: [.init(heard: "wrong", meant: "right")])
 
-    list.replaceLearned([], with: firstRules)
+    let firstOwned = list.replaceLearned([], with: firstRules)
     #expect(list.apply(to: original) == first)
-    list.replaceLearned(firstRules, with: finalRules)
+    list.replaceLearned(firstOwned, with: finalRules)
 
     #expect(list.apply(to: original) == original)
     #expect(list.entries == [.init(heard: "wrong", meant: "right")])
+}
+
+@Test func replacingLearnedCorrectionsKeepsAnIdenticalRuleTheEditDidNotAdd() {
+    let existing = Correction(heard: "send the deck", meant: "share the doc")
+    var list = CorrectionList(entries: [existing])
+
+    let owned = list.replaceLearned([], with: [existing])
+    list.replaceLearned(owned, with: [])
+
+    #expect(owned.isEmpty)
+    #expect(list.entries == [existing])
+}
+
+@Test func replacingLearnedCorrectionsReturnsTheRuleAsActuallyStored() {
+    var list = CorrectionList()
+
+    let owned = list.replaceLearned([], with: [.init(heard: "  send the deck ", meant: " share the doc  ")])
+
+    #expect(owned == [.init(heard: "send the deck", meant: "share the doc")])
+    #expect(list.entries == owned)
 }
 
 @Test func reviewFindingsOnMatchingAndStreaming() {
