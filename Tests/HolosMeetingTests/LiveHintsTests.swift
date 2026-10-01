@@ -93,17 +93,33 @@ private func hint(_ segment: TranscriptSegment, words: Range<Int>, action: LiveH
     #expect(outcome.transcript.segments.map(\.text) == ["send the deck", "share the doc"])
 }
 
-@Test func alreadyAppliedLiveTextHintDoesNotMakeAnotherRevision() {
+@Test func alreadyVisibleLiveTextHintGetsProvenanceOnceAndBlocksAutomaticFixes() async throws {
     let live = SessionFixtures.segment(["send", "the", "deck"], track: "system", start: 2, id: "live")
     let corrected = SessionFixtures.segment(["share", "the", "doc"], track: "system", start: 2, id: "final")
     let transcript = SessionFixtures.transcript([corrected], id: "current")
-    let outcome = LiveHints.applyingText([
+    let first = LiveHints.applyingText([
         hint(live, words: 0..<3, action: .replaceText("share the doc"), id: "H4"),
     ], to: transcript)
+    let second = LiveHints.applyingText([
+        hint(live, words: 0..<3, action: .replaceText("share the doc"), id: "H4"),
+    ], to: first.transcript)
+    let fixed = try await WordFixStage.fix(
+        first.transcript, title: "Test",
+        corrections: CorrectionList(entries: [.init(heard: "share", meant: "chair")]),
+        terms: CorrectionList(), dependencies: .none)
 
-    #expect(outcome.applied == 0)
-    #expect(outcome.alreadyApplied == 1)
-    #expect(outcome.transcript.id == "current")
+    #expect(first.applied == 1)
+    #expect(first.alreadyApplied == 0)
+    #expect(first.transcript.id != "current")
+    #expect(first.transcript.segments[0].text == "share the doc")
+    #expect(first.transcript.segments[0].words == corrected.words)
+    #expect(first.transcript.segments[0].fixes == [
+        TranscriptWordFix(first: 0, end: 3, heard: "send the deck", kind: .liveCorrection),
+    ])
+    #expect(second.applied == 0)
+    #expect(second.alreadyApplied == 1)
+    #expect(second.transcript.id == first.transcript.id)
+    #expect(fixed.transcript.segments[0].text == "share the doc")
 }
 
 @Test func normalizedEquivalentLiveHintIsAlreadyAppliedOnLaterRuns() {

@@ -196,7 +196,24 @@ public enum LiveHints {
                let range = characterRange(found.words, matching: replacement,
                                           in: result.segments[found.segment]),
                text(in: range, of: result.segments[found.segment]) == replacement {
-                already += 1
+                let segment = result.segments[found.segment]
+                guard var working = WordFixes.Working(segment, preservingExistingFixes: true) else {
+                    unmatched += 1
+                    continue
+                }
+                // Replay may independently produce the text the person requested. It still needs live provenance:
+                // without the mark, the automatic word-fix stage can replace the person's explicit choice. Replace
+                // an overlapping older mark, but keep the replay's text and word timings exactly as they are.
+                working.marks.removeAll { $0.range.overlaps(range) }
+                working.marks.append(.init(range: range, heard: hint.heard, kind: .liveCorrection))
+                working.marks.sort { $0.range.lowerBound < $1.range.lowerBound }
+                let marked = WordFixes.finished(working, segment: segment)
+                if marked != segment {
+                    result.segments[found.segment] = marked
+                    applied += 1
+                } else {
+                    already += 1
+                }
                 continue
             }
             // Recovery may already contain an intermediate state (A→B→C replayed from B). Prefer the most
