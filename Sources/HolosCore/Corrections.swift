@@ -99,6 +99,16 @@ public struct CorrectionList: Codable, Sendable, Equatable {
         entries.removeAll { $0 == correction }
     }
 
+    /// Replaces the exact rules learned from an earlier version of one edit with the rules learned from its current
+    /// version. Exact removal leaves a rule the person changed meanwhile alone; rules whose result the remaining
+    /// list already supplies stay implicit, and `add` keeps the usual one-rule-per-heard-phrase behavior. In
+    /// particular, changing A→B back to A removes the A→B rules instead of leaving them available to undo that
+    /// reversal later.
+    public mutating func replaceLearned(_ previous: [Correction], with current: [Correction]) {
+        for correction in previous { remove(correction) }
+        for correction in current where apply(to: correction.heard) != correction.meant { add(correction) }
+    }
+
     /// Other entries `replace(_:with:)` would drop because they have the same heard phrase as `new`.
     public func conflicts(replacing old: Correction, with new: Correction) -> [Correction] {
         let key = Self.normalized(new.heard.trimmingCharacters(in: .whitespacesAndNewlines))

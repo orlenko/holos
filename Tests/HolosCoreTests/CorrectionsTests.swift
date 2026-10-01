@@ -66,6 +66,22 @@ import Testing
     #expect(try CorrectionList.load(from: url.appendingPathExtension("missing")) == CorrectionList())
 }
 
+@Test func replacingLearnedCorrectionsRemovesRulesAnEditUndid() {
+    let original = "send the deck"
+    let first = "share the doc"
+    let final = "send the deck"
+    let firstRules = CorrectionList.learn(original: original, corrected: first)
+    let finalRules = CorrectionList.learn(original: original, corrected: final)
+    var list = CorrectionList(entries: [.init(heard: "wrong", meant: "right")])
+
+    list.replaceLearned([], with: firstRules)
+    #expect(list.apply(to: original) == first)
+    list.replaceLearned(firstRules, with: finalRules)
+
+    #expect(list.apply(to: original) == original)
+    #expect(list.entries == [.init(heard: "wrong", meant: "right")])
+}
+
 @Test func reviewFindingsOnMatchingAndStreaming() {
     let overlapping = CorrectionList(entries: [.init(heard: "foo", meant: "bar"), .init(heard: "foo baz", meant: "qux")])
     let streamed = overlapping.applyWithholdingPartialMatch(to: "say foo")

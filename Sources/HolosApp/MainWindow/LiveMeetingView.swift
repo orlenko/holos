@@ -23,8 +23,9 @@ final class LiveMeetingViewController: NSViewController, NSTextViewDelegate {
     let sessionID: String
     private let onBack: () -> Void
     private let onOpenFinished: () -> Void
-    /// Learns safe correction pairs globally; nil means success, a string is why only the timed hint was saved.
-    private let onLearnText: (String, String) -> String?
+    /// Replaces safe correction pairs learned from the prior edit. Arguments are the original recognizer text, what
+    /// was on screen before this edit, and the new text. Nil means success; a string says why only the hint was saved.
+    private let onLearnText: (String, String, String) -> String?
     private var reader: LiveTranscriptReader
     private var header = LiveMeetingHeader(name: "", phase: .starting, detail: "")
     private var paragraphs: [LiveParagraph] = []
@@ -50,7 +51,7 @@ final class LiveMeetingViewController: NSViewController, NSTextViewDelegate {
     private let editStatus = NSTextField(labelWithString: "")
 
     init(sessionID: String, directory: URL, onBack: @escaping () -> Void, onOpenFinished: @escaping () -> Void,
-         onLearnText: @escaping (String, String) -> String? = { _, _ in nil }) {
+         onLearnText: @escaping (String, String, String) -> String? = { _, _, _ in nil }) {
         self.sessionID = sessionID
         self.onBack = onBack
         self.onOpenFinished = onOpenFinished
@@ -373,7 +374,7 @@ final class LiveMeetingViewController: NSViewController, NSTextViewDelegate {
         hint.at = Date()
         hint.action = .replaceText(corrected)
         guard save(hint, success: "Text correction saved") else { return }
-        if let problem = onLearnText(originalHeard, corrected) {
+        if let problem = onLearnText(originalHeard, target.hint.heard, corrected) {
             editStatus.stringValue = "Timed correction saved; could not learn it: \(problem)"
         }
     }

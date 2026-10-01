@@ -1243,13 +1243,18 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
     }
 
     /// A live meeting's exact timed text correction also teaches safe, small mishearing pairs for future speech.
-    /// Rewordings and unanchored dictionary-word swaps remain timed-only, as Corrections' Learn command treats them.
-    func learnMeetingCorrection(heard: String, meant: String) -> String? {
-        let learned = CorrectionList.learn(original: heard, corrected: meant) { word in
+    /// Re-editing the same phrase replaces the prior edit's rules, so restoring the recognizer text removes rules the
+    /// earlier edit taught. Rewordings and unanchored dictionary-word swaps remain timed-only.
+    func learnMeetingCorrection(heard: String, current: String, meant: String) -> String? {
+        let dictionaryWord: (String) -> Bool = { word in
             NSSpellChecker.shared.checkSpelling(of: word.lowercased(), startingAt: 0).location == NSNotFound
-        }.filter { corrections.apply(to: $0.heard) != $0.meant }
-        guard !learned.isEmpty else { return nil }
-        guard changeCorrections({ list in for correction in learned { list.add(correction) } }) else {
+        }
+        let previous = CorrectionList.learn(original: heard, corrected: current,
+                                            isDictionaryWord: dictionaryWord)
+        let learned = CorrectionList.learn(original: heard, corrected: meant,
+                                           isDictionaryWord: dictionaryWord)
+        guard !previous.isEmpty || !learned.isEmpty else { return nil }
+        guard changeCorrections({ $0.replaceLearned(previous, with: learned) }) else {
             return "the corrections list is unavailable"
         }
         return nil
