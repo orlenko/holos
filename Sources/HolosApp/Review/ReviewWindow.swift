@@ -53,6 +53,7 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate {
     private let exportPopUp = NSPopUpButton(frame: .zero, pullsDown: true)
     private let screenTextButton = NSButton(title: "Screen Text…", target: nil, action: nil)
     private var screenTextPanel: ScreenTextPanel?
+    private var screenOCRTask: Task<Void, Never>?
     private let learnBox = NSButton(checkboxWithTitle: "Learn voices of people I name in this meeting", target: nil,
                                     action: nil)
     private let statusLabel = NSTextField(labelWithString: "")
@@ -701,7 +702,7 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate {
         let session = review.session, id = sessionID
         Task { [weak self] in
             let result = await Task.detached(priority: .utility) {
-                Result { (try ScreenContextStore.read(session: session, sessionID: id), try WordListStore().load().terms) }
+                Result { try ScreenContextStore.readForReview(session: session, sessionID: id) { try WordListStore().load().terms } }
             }.value
             guard let self, !self.isClosing else { return }
             defer { self.screenTextButton.isEnabled = true }
@@ -710,11 +711,43 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate {
                 guard let record, !record.frames.isEmpty else {
                     self.problem = "No screen snapshots were saved for this meeting."; self.refresh(); return
                 }
-                let panel = ScreenTextPanel(record: record, known: known, onSeek: { [weak self] in self?.seek(to: $0) })
+                let panel = ScreenTextPanel(record: record, known: known, onSeek: { [weak self] in self?.seek(to: $0) },
+                    onRecognize: { [weak self] panel in self?.recognizeNextScreenBatch(panel) })
                 self.screenTextPanel = panel
-                self.window.beginSheet(panel.window) { [weak self] _ in self?.screenTextPanel = nil }
+                self.window.beginSheet(panel.window) { [weak self] _ in
+                    self?.screenOCRTask?.cancel(); self?.screenOCRTask = nil; self?.screenTextPanel = nil
+                }
             case .failure:
-                self.problem = "Screen text or the word list could not be read."; self.refresh()
+                self.problem = "Saved screen text could not be read."; self.refresh()
+            }
+        }
+    }
+
+    private func recognizeNextScreenBatch(_ panel: ScreenTextPanel) {
+        guard screenOCRTask == nil else { return }
+        panel.setProcessing()
+        let session = review.session, id = sessionID
+        let languages = review.snapshot.transcript.languages ?? [review.snapshot.transcript.locale]
+        screenOCRTask = Task { [weak self, weak panel] in
+            let worker = Task.detached(priority: .utility) {
+                do {
+                    let lease = try SessionArchive.acquireProcessingLease(at: session)
+                    defer { lease.release() }
+                    return try await lease.withUse(for: session) {
+                        guard try !SessionArchive.isActive(at: session) else {
+                            throw HolosError.unavailable("This meeting is still recording.")
+                        }
+                        _ = try await MeetingScreenOCR.processBounded(session: session, sessionID: id, languages: languages)
+                        return Result<ScreenContextRecord?, Error>.success(try ScreenContextStore.read(session: session, sessionID: id))
+                    }
+                } catch { return Result<ScreenContextRecord?, Error>.failure(error) }
+            }
+            let result = await withTaskCancellationHandler { await worker.value } onCancel: { worker.cancel() }
+            guard let self, let panel, !self.isClosing, self.screenTextPanel === panel else { return }
+            self.screenOCRTask = nil
+            switch result {
+            case .success(let record?): panel.update(record)
+            default: panel.failed("OCR could not continue; another operation may be using this meeting. Try again later.")
             }
         }
     }
@@ -1050,6 +1083,7 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate {
 
     private func beginClosing() {
         guard closeTask == nil else { return }
+        screenOCRTask?.cancel()
         player.invalidate()
         review.onChange = nil
         let review = self.review

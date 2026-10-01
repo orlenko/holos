@@ -79,6 +79,7 @@ final class ScreenFrameReceiver: NSObject, SCStreamOutput, SCStreamDelegate, Sen
     private let origin: Double
     private let captureID = UUID().uuidString
     private let onFailure: @Sendable () -> Void
+    private let encoder: @Sendable (CGImage) throws -> Data
     private struct State {
         var stopped = false
         var record: ScreenContextRecord?
@@ -87,15 +88,17 @@ final class ScreenFrameReceiver: NSObject, SCStreamOutput, SCStreamDelegate, Sen
     }
     private let state = Mutex(State())
     private let stopped = Mutex(false)
-    init(session: URL, origin: Double, onFailure: @escaping @Sendable () -> Void = {}) {
+    init(session: URL, origin: Double, onFailure: @escaping @Sendable () -> Void = {},
+         encoder: @escaping @Sendable (CGImage) throws -> Data = ScreenFrameReceiver.jpeg) {
         self.session = session; self.origin = origin; self.onFailure = onFailure
+        self.encoder = encoder
         super.init()
         queue.async {
             let initialized = self.state.withLock { value in
                 do {
                     let id = try SessionArchive.readManifest(at: session).id
                     value.record = try ScreenContextStore.update(session: session, sessionID: id) {
-                        $0.captureID = self.captureID; $0.failure = nil
+                        $0.captureID = self.captureID; $0.ocrID = nil; $0.failure = nil
                     }
                     value.bytes = value.record?.imageBytes ?? 0
                     return true
@@ -165,7 +168,7 @@ final class ScreenFrameReceiver: NSObject, SCStreamOutput, SCStreamDelegate, Sen
                 if value.record == nil {
                     let id = try SessionArchive.readManifest(at: session).id
                     value.record = try ScreenContextStore.update(session: session, sessionID: id) {
-                        $0.captureID = self.captureID
+                        $0.captureID = self.captureID; $0.ocrID = nil
                     }
                 }
                 guard var record = value.record else { return }
@@ -188,17 +191,20 @@ final class ScreenFrameReceiver: NSObject, SCStreamOutput, SCStreamDelegate, Sen
                         onFailure()
                         return
                     }
-                    let data = NSMutableData()
-                    guard let destination = CGImageDestinationCreateWithData(data, UTType.jpeg.identifier as CFString, 1, nil)
-                    else { return }
-                    CGImageDestinationAddImage(destination, image, [kCGImageDestinationLossyCompressionQuality: 0.65] as CFDictionary)
-                    guard CGImageDestinationFinalize(destination), data.length <= ScreenContextStore.maximumImageBytes,
-                          value.bytes + data.length <= ScreenContextStore.maximumTotalImageBytes else { return }
+                    let data = try encoder(image)
+                    guard data.count <= ScreenContextStore.maximumImageBytes,
+                          value.bytes + data.count <= ScreenContextStore.maximumTotalImageBytes else {
+                        record.failure = "storageLimit"; value.stopped = true
+                        value.record = record
+                        try publish(record)
+                        onFailure()
+                        return
+                    }
                     let frame = ScreenKeyframe(start: max(time, record.frames.last?.end ?? 0), end: max(time, record.frames.last?.end ?? 0))
                     guard !stopped.withLock({ $0 }) else { return }
-                    newImage = (frame.id, data as Data)
+                    newImage = (frame.id, data)
                     record.frames.append(frame)
-                    value.bytes += data.length
+                    value.bytes += data.count
                     record.imageBytes = value.bytes
                     value.fingerprint = fingerprint
                 } else if !record.frames.isEmpty {
@@ -212,6 +218,18 @@ final class ScreenFrameReceiver: NSObject, SCStreamOutput, SCStreamDelegate, Sen
                 onFailure()
             }
         }
+    }
+
+    private static func jpeg(_ image: CGImage) throws -> Data {
+        let data = NSMutableData()
+        guard let destination = CGImageDestinationCreateWithData(data, UTType.jpeg.identifier as CFString, 1, nil) else {
+            throw HolosError.unavailable("A screen snapshot could not be encoded.")
+        }
+        CGImageDestinationAddImage(destination, image, [kCGImageDestinationLossyCompressionQuality: 0.65] as CFDictionary)
+        guard CGImageDestinationFinalize(destination) else {
+            throw HolosError.unavailable("A screen snapshot could not be encoded.")
+        }
+        return data as Data
     }
 
     private func publish(_ record: ScreenContextRecord, newImage: (id: String, data: Data)? = nil) throws {

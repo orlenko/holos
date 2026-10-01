@@ -34,6 +34,8 @@ public struct ScreenContextRecord: Codable, Sendable, Equatable {
     public var imageBytes = 0
     /// A capture generation fences callbacks abandoned during a bounded stop/restart.
     public var captureID: String?
+    /// Fences OCR callbacks abandoned by a bounded batch, cancellation, or a newer worker.
+    public var ocrID: String?
     /// A safe status code, never window titles or OCR text.
     public var failure: String?
     public init(sessionID: String, frames: [ScreenKeyframe] = [], failure: String? = nil) {
@@ -101,6 +103,12 @@ public enum ScreenContextStore {
             lastEnd = frame.end
         }
         return record
+    }
+
+    /// Candidate filtering is optional: a damaged/newer/unreadable word list never hides valid screen evidence.
+    public static func readForReview(session: URL, sessionID: String, knownTerms: () throws -> [String]) throws
+        -> (record: ScreenContextRecord?, known: [String]?) {
+        (try read(session: session, sessionID: sessionID), try? knownTerms())
     }
 
     public static func write(_ record: ScreenContextRecord, session: URL) throws {

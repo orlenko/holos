@@ -128,7 +128,9 @@ chosen window can still be sensitive. Screen Recording permission must already b
 granted; an unavailable window does not stop audio or switch capture to another window.
 Changed snapshots are saved locally at up to one sample every two seconds. OCR runs
 on this Mac after recording stops; no language-model correction runs during recording.
-**Screen Text…** in Review shows timestamped OCR and unverified word-list candidates.
+Recorder/recovery OCR batches are limited to eight frames and five seconds of waiting;
+unfinished frames stay saved. **Screen Text…** in Review shows timestamped OCR and
+unverified word-list candidates, and **Recognize Next Batch** continues unfinished OCR.
 They are never added automatically. Nearby OCR can support an existing word-list
 question, but is not proof that a term was spoken. Delete Audio removes both snapshots
 and their OCR. A thumbnail timeline is not implemented yet.

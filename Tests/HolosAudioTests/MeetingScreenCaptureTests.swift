@@ -105,3 +105,22 @@ private func deliver(_ receiver: ScreenFrameReceiver, image: CGImage? = nil, tim
     #expect(images.count == 2, "A stale frame must not create an orphan image or replace the newer generation.")
     try await archive.finish(status: ArchiveStatus.audioOnly)
 }
+
+@Test(arguments: [false, true])
+func screenCaptureEncodedImageAndTotalByteCapsStopRatherThanSilentlyDrop(totalCap: Bool) async throws {
+    let (root, archive) = try await screenCaptureFixture()
+    defer { try? FileManager.default.removeItem(at: root) }
+    var record = ScreenContextRecord(sessionID: archive.id)
+    record.imageBytes = totalCap ? ScreenContextStore.maximumTotalImageBytes - 1 : 0
+    try ScreenContextStore.write(record, session: archive.directory)
+    let receiver = ScreenFrameReceiver(session: archive.directory, origin: 0, encoder: { _ in
+        Data(repeating: 0, count: totalCap ? 2 : ScreenContextStore.maximumImageBytes + 1)
+    })
+    await deliver(receiver, image: try screenCaptureImage(gray: 1), time: 1)
+    await deliver(receiver, image: try screenCaptureImage(gray: 0), time: 2)
+    await receiver.close()
+    let result = try #require(try ScreenContextStore.read(session: archive.directory, sessionID: archive.id))
+    #expect(result.failure == "storageLimit" && result.frames.isEmpty && result.captureID == nil)
+    #expect(try SessionArchive.readManifest(at: archive.directory).status == ArchiveStatus.recording)
+    try await archive.finish(status: ArchiveStatus.audioOnly)
+}

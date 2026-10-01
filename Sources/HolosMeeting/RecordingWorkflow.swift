@@ -1305,8 +1305,9 @@ private final class Recorder {
         if options.screenWindow != nil, !Task.isCancelled {
             reporter.message("Recognizing text in saved meeting window snapshots on this Mac…")
             do {
-                try await MeetingScreenOCR.process(session: archive.directory, sessionID: archive.id,
+                let complete = try await MeetingScreenOCR.processBounded(session: archive.directory, sessionID: archive.id,
                     languages: options.languages.isEmpty ? [options.locale] : options.languages)
+                if !complete { reporter.message("Remaining screen OCR is deferred; use Screen Text in Review to continue.") }
             } catch {
                 // Optional visual evidence never fails audio/transcription, and raw OCR text is never logged.
                 Self.log.error("Screen OCR did not complete; saved recording is unaffected")

@@ -169,15 +169,7 @@ enum WordFixStage {
         }
 
         let journal = recorder.journal
-        let screen: ScreenContextRecord?
-        do {
-            try await MeetingScreenOCR.process(session: request.session, sessionID: request.manifest.id,
-                                               languages: base.languages ?? [base.locale])
-            screen = try ScreenContextStore.read(session: request.session, sessionID: request.manifest.id)
-        } catch {
-            try Task.checkCancellation()
-            screen = nil
-        }
+        let screen = try? ScreenContextStore.read(session: request.session, sessionID: request.manifest.id)
         let computed = try await fix(base, title: request.manifest.name, corrections: corrections, terms: terms,
                                      dependencies: dependencies, preservingTermsFrom: request.priorFixed,
                                      screenContext: screen) { fraction in

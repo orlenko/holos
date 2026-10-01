@@ -70,3 +70,15 @@ private func screenStoreFixture() async throws -> (URL, SessionArchive) {
     }
     #expect(try FileManager.default.contentsOfDirectory(atPath: outside.path).isEmpty)
 }
+
+@Test func screenContextReviewKeepsOCRWhenCandidateWordListCannotBeRead() async throws {
+    let (root, archive) = try await screenStoreFixture()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let line = ScreenTextLine(text: "ExampleTool", x: 0, y: 0, width: 0.5, height: 0.1, confidence: 0.9)
+    let record = ScreenContextRecord(sessionID: archive.id, frames: [.init(start: 1, end: 2, lines: [line])])
+    try ScreenContextStore.write(record, session: archive.directory)
+    let result = try ScreenContextStore.readForReview(session: archive.directory, sessionID: archive.id) {
+        throw HolosError.unavailable("Synthetic word list failure.")
+    }
+    #expect(result.record == record && result.known == nil)
+}

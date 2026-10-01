@@ -4521,7 +4521,12 @@ requested meeting languages are matched to supported Vision locales (otherwise
 Vision's defaults). Completed frames persist independently and are not repeated on
 resume. Each frame keeps at most 64 lines, 4000 characters total, 1000 per line.
 OCR failure/cancellation preserves recording and any already recognized frames.
-The existing post-stop word-fix pass can finish OCR left by an interrupted recorder.
+Recorder and recovery each process at most eight unfinished frames, waiting at most
+five seconds for recognition (plus bounded metadata IO). A stuck native call may
+return later, but cancellation and an OCR generation fence prevent late publication.
+The next recovery resumes a batch even with no transcript, corrections, or word-list
+pairs. Review's explicit Recognize Next Batch action continues under a processing
+lease without blocking the recorder or a new meeting. Completed lines are not redone.
 
 Only existing word-list heard-as questions receive nearby OCR: the candidate word's
 timing (or its segment if untimed), confidence ≥0.6, deduplicated lines, at most 800
@@ -4529,7 +4534,8 @@ characters. OCR is quoted as untrusted data, never instructions or spoken eviden
 Unknown OCR tokens are read-only user-review candidates, not automatic vocabulary
 or transcript edits. No Foundation Models or other LLM call is added during recording.
 Review's Screen Text sheet selects timestamped OCR and seeks without starting
-playback. A thumbnail timeline is an explicit follow-up.
+playback. An unreadable word list disables candidate filtering, not saved OCR display.
+A thumbnail timeline is an explicit follow-up.
 
 Default tests use invented pixels, fake OCR/model responses, and temporary archives;
 no permission, screen, microphone, private data, network, or installed speech models.
