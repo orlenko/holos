@@ -355,7 +355,7 @@ public enum LiveHints {
                 if found.parts.count > 1 {
                     guard let marked = applyingAcrossSegments(found, replacement: replacement,
                                                               matchedText: replacement,
-                                                              provenance: hint.heard, to: result,
+                                                              provenance: replacement, to: result,
                                                               markingOnly: true) else {
                         unmatched += 1
                         continue
@@ -385,7 +385,7 @@ public enum LiveHints {
                 // without the mark, the automatic word-fix stage can replace the person's explicit choice. Replace
                 // an overlapping older mark, but keep the replay's text and word timings exactly as they are.
                 working.marks.removeAll { $0.range.overlaps(range) }
-                working.marks.append(.init(range: range, heard: hint.heard, kind: .liveCorrection))
+                working.marks.append(.init(range: range, heard: replacement, kind: .liveCorrection))
                 working.marks.sort { $0.range.lowerBound < $1.range.lowerBound }
                 let marked = WordFixes.finished(working, segment: segment)
                 if marked != segment {
@@ -396,11 +396,12 @@ public enum LiveHints {
                 }
                 continue
             }
-            // Keep the first heard form as the single collapsed mark's provenance.
+            // The hint history retains the original heard form for review and learning. The transcript mark records
+            // the form actually matched in this replay, so speaker retargeting maps from that revision's word span.
             if let heardFound, heardFound.found.match.parts.count > 1 {
                 if let changed = applyingAcrossSegments(heardFound.found.match, replacement: replacement,
                                                         matchedText: heardFound.heard,
-                                                        provenance: hint.heard, to: result,
+                                                        provenance: heardFound.heard, to: result,
                                                         markingOnly: false), changed != result {
                     result = changed
                     applied += 1
@@ -413,7 +414,7 @@ public enum LiveHints {
                let range = characterRange(heardFound.found.match.words, matching: heardFound.heard,
                                           in: result.segments[heardFound.found.match.segment]) {
                 let changed = WordFixes.applying([
-                    .init(range: range, text: replacement, kind: .liveCorrection, heard: hint.heard),
+                    .init(range: range, text: replacement, kind: .liveCorrection, heard: heardFound.heard),
                 ], to: working)
                 let segment = WordFixes.finished(changed,
                                                  segment: result.segments[heardFound.found.match.segment])

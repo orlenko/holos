@@ -299,6 +299,7 @@ enum WordFixStage {
         /// Position in the segment's word order. Unlike estimated times, this is not redistributed when an untimed
         /// segment gains or loses words elsewhere.
         var wordMidpoint: Double
+        var wordTolerance: Double
         var estimated: Bool
     }
 
@@ -539,6 +540,7 @@ enum WordFixStage {
                                         midpoint: (first.start + last.end) / 2,
                                         tolerance: max(0.05, duration / 4),
                                         wordMidpoint: (Double(fix.first) + Double(fix.end)) / 2,
+                                        wordTolerance: max(1, Double(fix.end - fix.first) / 4),
                                         estimated: first.estimated || last.estimated)))
             }
         }
@@ -564,6 +566,7 @@ enum WordFixStage {
                                             midpoint: (first.start + last.end) / 2,
                                             tolerance: max(0.05, duration / 4),
                                             wordMidpoint: (Double(fix.first) + Double(fix.end)) / 2,
+                                            wordTolerance: max(1, Double(fix.end - fix.first) / 4),
                                             estimated: first.estimated || last.estimated)))
             }
         }
@@ -620,6 +623,7 @@ enum WordFixStage {
                                             midpoint: (first.start + last.end) / 2,
                                             tolerance: max(0.05, duration / 4),
                                             wordMidpoint: (Double(fix.first) + Double(fix.end)) / 2,
+                                            wordTolerance: max(1, Double(fix.end - fix.first) / 4),
                                             estimated: first.estimated || last.estimated)))
             }
         }
@@ -641,12 +645,14 @@ enum WordFixStage {
         return FixLocation(midpoint: (first.start + last.end) / 2,
                            tolerance: max(0.05, duration / 4),
                            wordMidpoint: (Double(firstIndex) + Double(lastIndex + 1)) / 2,
+                           wordTolerance: max(1, Double(lastIndex + 1 - firstIndex) / 4),
                            estimated: first.estimated || last.estimated)
     }
 
     private static func matchDistance(_ prior: FixLocation, _ current: FixLocation) -> Double? {
         if prior.estimated || current.estimated {
-            return abs(prior.wordMidpoint - current.wordMidpoint)
+            let distance = abs(prior.wordMidpoint - current.wordMidpoint)
+            return distance <= max(prior.wordTolerance, current.wordTolerance) ? distance : nil
         }
         let distance = abs(prior.midpoint - current.midpoint)
         return distance <= max(prior.tolerance, current.tolerance) ? distance : nil

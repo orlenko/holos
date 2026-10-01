@@ -237,7 +237,7 @@ private func hint(_ segment: TranscriptSegment, words: Range<Int>, action: LiveH
     #expect(first.transcript.segments[0].text == "share the doc")
     #expect(first.transcript.segments[0].words == corrected.words)
     #expect(first.transcript.segments[0].fixes == [
-        TranscriptWordFix(first: 0, end: 3, heard: "send the deck", kind: .liveCorrection),
+        TranscriptWordFix(first: 0, end: 3, heard: "share the doc", kind: .liveCorrection),
     ])
     #expect(second.applied == 0)
     #expect(second.alreadyApplied == 1)
@@ -344,23 +344,39 @@ private func hint(_ segment: TranscriptSegment, words: Range<Int>, action: LiveH
         == .init(previous: [managed], managed: [managed], preexisting: [displaced]))
 }
 
-@Test func repeatedLiveEditMatchesAnIntermediateReplayAndKeepsOriginalProvenance() {
-    let original = SessionFixtures.segment(["send", "the", "deck"], track: "system", start: 2, id: "live")
-    let first = hint(original, words: 0..<3, action: .replaceText("share the doc"), id: "H1")
+@Test func repeatedLiveEditMapsSpeakerWordsFromTheIntermediateReplay() throws {
+    let original = TranscriptSegment(id: "live", start: 2, end: 3, text: "send", track: "system")
+    let first = hint(original, words: 0..<1, action: .replaceText("share doc"), id: "H1")
     var second = first
     second.id = "H2"
-    second.heard = "share the doc"
-    second.action = .replaceText("share this document")
-    let intermediate = SessionFixtures.segment(["share", "the", "doc"], track: "system", start: 2, id: "replayed")
+    second.heard = "share doc"
+    second.action = .replaceText("sent")
+    let intermediate = TranscriptSegment(id: "live", start: 2, end: 3, text: "share doc", track: "system")
 
     let outcome = LiveHints.applyingText([first, second], to: SessionFixtures.transcript([intermediate]))
 
     #expect(outcome.applied == 1)
     #expect(outcome.unmatched == 0)
-    #expect(outcome.transcript.segments[0].text == "share this document")
+    #expect(outcome.transcript.segments[0].text == "sent")
     #expect(outcome.transcript.segments[0].fixes == [
-        TranscriptWordFix(first: 0, end: 3, heard: "send the deck", kind: .liveCorrection),
+        TranscriptWordFix(first: 0, end: 1, heard: "share doc", kind: .liveCorrection),
     ])
+    #expect(try SpeakerTranscriptRetarget.owners(
+        from: intermediate, to: outcome.transcript.segments[0], commonBase: true).count == 1)
+}
+
+@Test func anUntimedPriorFixDoesNotMoveToADistantDuplicate() {
+    let prior = TranscriptSegment(
+        id: "S1", start: 0, end: 6, text: "right one two three four wrong", track: "mic",
+        fixes: [.init(first: 0, end: 1, heard: "wrong", kind: .correction)])
+    let live = TranscriptSegment(
+        id: "S1", start: 0, end: 6, text: "live one two three four wrong", track: "mic",
+        fixes: [.init(first: 0, end: 1, heard: "wrong", kind: .liveCorrection)])
+
+    let preserved = WordFixStage.preservingPriorFixes(
+        from: SessionFixtures.transcript([prior]), on: SessionFixtures.transcript([live]))
+
+    #expect(preserved.segments == [live])
 }
 
 @Test func revertingAnAutomaticFixBesideALongerLiveCorrectionUsesTheLiveBase() throws {
