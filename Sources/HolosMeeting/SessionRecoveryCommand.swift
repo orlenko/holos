@@ -142,11 +142,12 @@ public enum SessionRecoveryCommand {
     /// the chain would read or replace and that a newer Holos wrote (the current transcript pointer or revision,
     /// vocabulary.json, postprocess.json, the speaker head or run) throws `unavailable` (schema rule 3, §1.6), with
     /// the archive recovery kept. `profiles` is passed to the post-processor (voice suggestions, PR10), and
-    /// `languages` too (a meeting in several languages, §4.14).
+    /// `languages` (a meeting in several languages, §4.14) and `wordFixes` (docs/design.md "Meeting word fixes") too.
     public static func run(_ request: Request, diarizer: (any SpeakerDiarizer)?, makeSpeech: LiveSpeechFactory? = nil,
                            freeSpace: any FreeSpaceProvider = VolumeFreeSpace(),
                            profiles: SpeakerProfileStore? = nil,
                            languages: LanguageDetectionDependencies = .live,
+                           wordFixes: WordFixDependencies = .none,
                            progress: @escaping @Sendable (String) -> Void = { _ in },
                            step: @escaping @Sendable (Step) -> Void = { _ in }) async throws -> Outcome {
         let session = request.session
@@ -261,7 +262,7 @@ public enum SessionRecoveryCommand {
                     let processor = MeetingPostProcessor(diarizer: diarizer,
                                                          options: PostProcessingOptions(keepTranscript: keepTranscript),
                                                          freeSpace: freeSpace, profiles: profiles,
-                                                         languages: languages)
+                                                         languages: languages, wordFixes: wordFixes)
                     let result = try await processor.run(session: session, lease: lease) { progress($0.message) }
                     record = result
                     step(.postProcessed)
@@ -368,8 +369,8 @@ public enum SessionRecoveryCommand {
     /// succeeded, or was skipped for a reason a new run would meet unchanged (speaker models not installed, no track
     /// to label, the transcript unchanged, speaker labels of this transcript that were edited), recognition did not
     /// fail, and the exports were written. What made such a record `partial` is the languages stage (a language
-    /// missed, or languages asked for that could not be recorded) or edited labels, which a run without `--force`
-    /// keeps again. A stage this build does not know counts as unsettled.
+    /// missed, or languages asked for that could not be recorded), the word-fix stage, or edited labels, which a run
+    /// without `--force` keeps again. A stage this build does not know counts as unsettled.
     static func speakerStagesSettled(_ record: PostProcessingRecord) -> Bool {
         let unchangedSkips: Set<String> = [
             SpeakerAnalysis.modelsMissing, SpeakerAnalysis.noTrackToLabel, SpeakerAnalysis.transcriptUnchanged,
@@ -378,7 +379,7 @@ public enum SessionRecoveryCommand {
         guard record.stages.contains(where: { $0.stage == .export && $0.result == .succeeded }) else { return false }
         return record.stages.allSatisfy { outcome in
             switch outcome.stage {
-            case .transcript, .languages, .export:
+            case .transcript, .languages, .wordFixes, .export:
                 return true
             case .recognize:
                 return outcome.result != .failed

@@ -661,7 +661,7 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
                 sampleToken = nil
                 fixPipeline?.cancel()
                 fixPipeline = DictationFixPipeline.make(corrections: dictationCorrections, wordList: wordList.terms,
-                                                        language: locale,
+                                                        heardAs: wordList.heardAsPairs, language: locale,
                                                         terminal: dictationForTerminal) { [weak self] chunk, text in
                     self?.writeFixed(chunk, as: text) ?? false
                 }
@@ -1209,7 +1209,7 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
             },
             wordList: makeWordListView(),
             onShow: { [weak self] in self?.refreshWordList() })
-        pane.wordListView.update(terms: wordList.terms, problem: wordListProblem)
+        pane.wordListView.update(entries: wordList.entries, problem: wordListProblem)
         pane.load(transcript: lastTranscript, recognized: lastRecognized, dictation: lastTranscriptID,
                   title: "Last dictation — fix any misheard words, then Learn", corrections: corrections.entries)
         return pane

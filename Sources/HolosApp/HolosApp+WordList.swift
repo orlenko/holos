@@ -48,7 +48,26 @@ extension HolosAppDelegate {
     func makeWordListView() -> WordListView {
         WordListView(
             onAdd: { [weak self] terms in self?.addWords(terms) ?? .init(message: "", unadded: terms) },
-            onRemove: { [weak self] terms in self?.removeWords(terms) ?? "" })
+            onRemove: { [weak self] terms in self?.removeWords(terms) ?? "" },
+            onSetHeardAs: { [weak self] term, phrases in self?.setHeardAs(phrases, for: term) ?? "" })
+    }
+
+    /// Makes `phrases` the "often heard as" words of `term`; returns what happened, for the Corrections section.
+    func setHeardAs(_ phrases: [String], for term: String) -> String {
+        let change: WordList.HeardAsChange?
+        do {
+            change = try changeWordList { list in list.setHeardAs(phrases, for: term) }
+        } catch {
+            return "Could not save the word list: \(error.localizedDescription)"
+        }
+        guard let change else { return "\(term) is no longer in the word list." }
+        var parts = [change.phrases.isEmpty ? "\(change.term) has no often-heard-as words."
+            : "\(change.term) is often heard as: \(change.phrases.joined(separator: ", "))."]
+        if !change.refused.isEmpty {
+            parts.append("Not kept: \(change.refused.joined(separator: ", ")) (the term itself, too long, or past "
+                + "\(WordList.maximumHeardAs) words).")
+        }
+        return parts.joined(separator: " ")
     }
 
     /// Adds `terms`; returns what happened, for the Corrections section, and the terms that were not added and are not
@@ -103,7 +122,7 @@ extension HolosAppDelegate {
     func wordListChanged() {
         updateDictationVocabulary()
         (mainWindow?.existingController(for: .corrections) as? CorrectionsPane)?.wordListView
-            .update(terms: wordList.terms, problem: wordListProblem)
+            .update(entries: wordList.entries, problem: wordListProblem)
     }
 
     /// "Added: Keycloak, Urban Sky. Already listed: Apex." and the like.

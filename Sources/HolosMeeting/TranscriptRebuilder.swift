@@ -294,11 +294,11 @@ public enum TranscriptRebuilder {
     /// The transcript that stands for `transcriptID` in the rebuild's bookkeeping: for a transcript merged from the
     /// meeting's languages (docs/meeting-design.md §4.14; its `languagesDetected` event names it), the recorded
     /// transcript it was merged from (`base`), which the merge replaced as current without undoing the rebuild; else
-    /// `transcriptID` itself.
+    /// `transcriptID` itself, or for a transcript whose words were fixed (`WordFixStage`) the one it was fixed from.
     static func recordedTranscriptID(_ transcriptID: String, events: [ArchiveEvent]) -> String {
         guard let base = LanguageStage.mergeEvent(of: transcriptID, events: events)?.details["base"], !base.isEmpty
-        else { return transcriptID }
-        return base
+        else { return WordFixStage.unfixedID(transcriptID, events: events) }
+        return WordFixStage.unfixedID(base, events: events)
     }
 
     /// Whether `transcriptID` is a transcript merged from the meeting's languages (docs/meeting-design.md §4.14) that
@@ -322,12 +322,14 @@ public enum TranscriptRebuilder {
     /// Whether transcript `transcriptID` was saved by a rebuild that did not transcribe audio (`transcribed: false`:
     /// `--no-transcribe`, or the audio was deleted) while some track's saved audio runs past the journaled phrases
     /// it kept (its `coverageEnd.<track>`, by more than `uncoveredTolerance`), so the transcript is known to leave
-    /// that audio out, though the manifest then says `recovered`. False for a transcript no rebuild saved.
+    /// that audio out, though the manifest then says `recovered`. False for a transcript no rebuild saved. A transcript
+    /// whose words were fixed (`WordFixStage`) holds the audio the one it was fixed from holds.
     static func leftAudioUntranscribed(_ transcriptID: String, events: [ArchiveEvent],
                                        manifest: SessionManifest) -> Bool {
+        let unfixed = WordFixStage.unfixedID(transcriptID, events: events)
         guard let rebuild = events.last(where: { event in
             (event.kind == MeetingEventKind.transcriptRebuilt || event.kind == MeetingEventKind.transcriptRebuilding)
-                && event.details["transcriptID"] == transcriptID
+                && (event.details["transcriptID"] == transcriptID || event.details["transcriptID"] == unfixed)
         }), rebuild.details["transcribed"] == "false" else { return false }
         var ends: [String: Double] = [:]
         for chunk in manifest.chunks { ends[chunk.track] = max(ends[chunk.track] ?? chunk.end, chunk.end) }

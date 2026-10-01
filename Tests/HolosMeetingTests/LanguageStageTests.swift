@@ -239,6 +239,41 @@ func mergedTranscriptIsKeptOnTheNextRun() async throws {
 }
 
 @Test(.timeLimit(.minutes(1)))
+func aMergeWhoseWordsWereFixedIsKeptOnTheNextRun() async throws {
+    let temp = try TemporaryDirectory("languages")
+    defer { temp.remove() }
+    let (session, recorded) = try await languageStageSession(in: temp.url)
+    let speech = LanguageStageSpeech.standard()
+    // The word-fix stage (docs/design.md "Meeting word fixes") runs on the merge and makes a new revision of it.
+    let fixes = WordFixDependencies(
+        corrections: { CorrectionList(entries: [Correction(heard: "fr-18@fr", meant: "bonjour")]) },
+        wordList: { WordList() }, model: { _ in .unavailable("unused") })
+    func processor(_ options: PostProcessingOptions = .init()) -> MeetingPostProcessor {
+        MeetingPostProcessor(diarizer: FakeDiarizer(outputs: ["mic": SessionFixtures.alternatingOutput()]),
+                             options: options, freeSpace: FixedFreeSpace(.max),
+                             languages: languageStageDependencies(speech), wordFixes: fixes)
+    }
+    let first = try await processor().run(session: session, lease: nil)
+    #expect(first.stages.map(\.stage) == [.transcript, .languages, .wordFixes, .render, .diarize, .align, .export])
+    let fixed = try languageStageCurrent(session)
+    let merge = try #require(try languageStageEvents(session, MeetingEventKind.languagesDetected).first)
+    #expect(fixed.fixedFrom == merge.details["transcriptID"] && fixed.languages == [languageStageEnglish,
+                                                                                     languageStageFrench])
+    #expect(fixed.segments.contains { $0.text.hasPrefix("bonjour") })
+
+    // The fixed transcript stands for the merge: nothing is transcribed or merged again, and the fix is kept.
+    let again = try await processor(PostProcessingOptions(force: true)).run(session: session, lease: nil)
+    #expect(again.state == .succeeded)
+    #expect(languageStageOutcome(again) == nil)
+    #expect(try languageStageCurrent(session).id == fixed.id)
+    #expect(speech.locales == [languageStageEnglish, languageStageFrench])
+    #expect(try languageStageEvents(session, MeetingEventKind.languagesDetected).count == 1)
+    let manifest = try SessionArchive.readManifest(at: session)
+    #expect(LanguageStage.pendingLanguages(session: session, manifest: manifest, transcript: fixed) == nil)
+    #expect(merge.details["base"] == recorded.id)
+}
+
+@Test(.timeLimit(.minutes(1)))
 func aSavedPassIsReusedWhenDetectionResumes() async throws {
     let temp = try TemporaryDirectory("languages")
     defer { temp.remove() }

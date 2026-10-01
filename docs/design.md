@@ -723,7 +723,9 @@ that place: terms the recognizer should expect (names, products, jargon), kept i
 
 ```json
 { "schemaVersion": 1,
-  "entries": [ { "text": "Urban Sky", "addedAt": "2026-09-29T14:02:11Z", "source": "user" } ] }
+  "entries": [ { "text": "Urban Sky", "addedAt": "2026-09-29T14:02:11Z", "source": "user" },
+               { "text": "Claude", "addedAt": "2026-09-30T09:12:40Z", "source": "user",
+                 "heardAs": [ "cloud", "clot", "clod" ] } ] }
 ```
 
 - A term keeps the case it was written in and may be several words; whitespace is
@@ -770,17 +772,110 @@ that place: terms the recognizer should expect (names, products, jargon), kept i
   is split or joined for a term ("key cloak" stays two words), the case of a term is not
   brought into a sentence, and a capitalized name stays as written: a correction is the
   way to teach those.
+- **Often heard as.** Some terms come out as real words ("Claude" as "cloud", "clot",
+  "clod"), where a correction would be wrong: "cloud" is often meant. A term may list such
+  words (`heardAs`, at most 20, each at most 100 characters with a letter or digit, never
+  the term itself, once each ignoring case; left out of the file when there are none, so
+  older lists read and write as before, and the schema stays 1: an older build that saves
+  the list drops them). They are candidate swaps the on-device model decides from the
+  context, never made on their own (`WordList.heardAsPairs`, heard → term; a word heard for
+  two terms counts for the last). In dictation, after Apple Intelligence's fix (which is
+  never told the pairs, and whose guard still refuses a real word replaced by a term), each
+  place in the chunk where such a word was said (whole words, any case; at most 3 per
+  chunk, within the chunk's time limit) is one question to the model, as for meetings
+  (`HeardAsJudge`, below, with the chunk as the passage and no title); only a reply that is
+  exactly the term replaces exactly that place, spelled as listed (a sentence's capital
+  carried over). Told the pairs as candidates in the fix's own instructions instead, the
+  model put "Claude" in 2 of 3 invented sentences about the cloud; asked this way it kept
+  all 3 and put the term in the 2 where a coding assistant was talked to. Meetings:
+  "Meeting word fixes" below.
 - The Corrections section's "Word list" card lists the terms with a search field and a
   count; the field below adds (Return adds; a paste of several lines adds one term per
   line; a term that could not be added, too long or with the list full or unsaved, stays
-  in the field), Remove or ⌫ removes the selected terms. `voiceislocal words list|add <term>…|
-  remove <term>…|import <file>` does the same from Terminal (import: one term per line,
-  `-` for standard input). Nothing is added automatically.
+  in the field), Remove or ⌫ removes the selected terms. Its "Often heard as" column is
+  edited in place (double-click, comma-separated, saved when the field is left); the
+  search finds those words too. `voiceislocal words list|add <term>… [--heard-as a,b]|
+  remove <term>…|import <file>|heard-as [<term>] [--add a,b] [--remove a,b]` does the same
+  from Terminal (import: one term per line, `-` for standard input; `--heard-as` with one
+  term, added to those a listed term has). Nothing is added automatically.
 
 LLM decisions have a bounded latency budget. On timeout, refusal, unsupported
 language, model unavailability, or invalid output, use deterministic rules plus
 the transcript. A valid structured response is not evidence that the edit is right.
 General prose polishing can be a separate opt-in feature after correctness is measured.
+
+### Meeting word fixes
+
+Meetings use a lot of jargon the recognizer misses, and contextual strings barely help (on a
+real meeting, term hits went from 30 of 82 to 32 of 82 with the word list). Learned
+corrections used to reach dictation only. The post-processor's stage 1c `wordFixes`
+(`WordFixStage`, after the languages stage and before the speakers, so speakers are
+labelled on the fixed text) applies them to meetings, and the word list's "often heard as"
+words with the on-device model:
+
+1. *Corrections.* Every segment gets the learned corrections as dictation applies them
+   (`CorrectionList.matches`: whole words and phrases, any case and spacing, the longest
+   heard phrase first, a sentence's capital carried over unless the saved heard phrase
+   has one). Deterministic.
+2. *Often heard as.* Each place where a term's heard word is written (matched the same way,
+   outside what the corrections changed) is one question to Apple's on-device model
+   (`HeardAsJudge`; `SystemLanguageModel` with the fix's permissive guardrails, greedy, a
+   fresh session per question, 10 s each, at most 500 places per run, one after another in
+   the background): the passage (the segment with the place marked `[[cloud]]`, at most 300
+   characters before and 200 after; for a segment of fewer than 8 words also the end of
+   the segment before it in time and the start of the next, any track, 120 characters
+   each), the meeting's title, and "At [[cloud]], did the speaker say "cloud" or
+   "Claude"?". Only a reply that is exactly the term (ignoring case and the spaces, quotes
+   and marks around it) replaces that place, by the term as listed; any other reply, an
+   error or a time-out keeps it. On invented sentences: asked yes or no, the model answered
+   no every time; asked to choose, it never put the term where it was not meant (single
+   sentences: 13 of 15 right; the stage's own path on a 10-sentence invented meeting: the
+   cloud kept in all 4 places it was meant, "Claude" in 3 of the 6 where it was, the misses
+   being "The cloud code session…", "Cloud wrote most of this function…" and "Let's ask
+   cloud to summarize…"). Given the neighbouring sentences of that meeting (alternating
+   topics) for every place, it found "Claude" in 2 of 6 and once put it where it was not,
+   which is why neighbours come only with short segments. It runs only with "Fix misheard words with Apple Intelligence" on
+   (`DictationPreferences.aiFix`, read from the app's defaults domain) and the model usable
+   for the place's language (English and French, as for dictation); otherwise only the
+   corrections are made and the stage says why.
+3. *Timings.* A replaced phrase takes the time span of the whole words it touched, its new
+   words share that span evenly (lowest confidence of the replaced words), every other word
+   keeps its time, and offsets are rebuilt for the new text (`WordFixes`). Segment IDs,
+   starts and ends stay, so turns and exports find their segments. A segment whose word
+   offsets do not fit its text is left alone.
+4. *Versions.* The result is a new revision with `fixedFrom` naming the one it was fixed
+   from (kept), each change marked on its segment (`fixes`: the effective words, what was
+   heard, `correction` or `term`), journaled as `wordsFixed {transcriptID, base,
+   corrections, terms, asked}` before it is saved as current (under the writer and speaker
+   locks, as the languages stage publishes). Fixes are always made from the transcript
+   before any fix: the same corrections and terms keep the current transcript ("The words
+   were already fixed"), changed ones make a new revision from that base, and none left
+   undo the fixes in a new revision. A fixed transcript stands for its base in every
+   bookkeeping that names transcripts by ID (`WordFixStage.unfixedID`: a merge's
+   `languagesDetected`, a rebuild's events, `recordedTranscriptID`,
+   `leftAudioUntranscribed`), so the languages stage and Recover treat it as the transcript
+   it was fixed from.
+5. *When it runs.* After every recording, import and recovery (stage 1c of each run), and
+   on request: Label Speakers and `session diarize` (with today's corrections and terms),
+   and `voiceislocal session fix-words <session> [--force]`, which records the stage even
+   with nothing to fix and keeps the speaker labels when the transcript does not change.
+   Nothing is recorded without corrections, terms with heard-as words, or an earlier fix.
+   The review window's relabels (`--keep-transcript`) never run it. Speaker labels the user
+   edited are never touched: like the languages stage it then keeps the transcript
+   ("Speaker labels were edited, so misheard words were not fixed again…"), unless asked by
+   name with `--force` (speakers are labelled again, names carry over). Without the model,
+   a transcript whose terms the model chose before is kept rather than undone. A
+   cancellation publishes nothing. A corrections.json or words.json that cannot be read
+   keeps the transcript and makes the record partial.
+6. *Review.* Each fixed word is underlined with dots in the review window; its tooltip and
+   its VoiceOver action say what was heard and whether a correction or a word-list term
+   made it. Reverting one fix there is a follow-up (the review edits speakers only; a text
+   change would be a new revision and a relabel).
+7. *Evaluation.* `eval apply --add-vocabulary`: where a reviewed passage replaced local
+   real words by a term of the word list or a marked one (local "cloud", cloud "Claude"),
+   the pair, without the neighbour a correction is learned with, is proposed and added as
+   an often-heard-as word of that term instead of a correction; a pair with a word that is
+   not a real word stays a correction.
 
 ### Meetings
 

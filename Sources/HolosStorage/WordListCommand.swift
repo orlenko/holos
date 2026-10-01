@@ -9,6 +9,10 @@ public enum WordListCommand {
         public var errors: [String] = []
         /// 0 done; 1 some term could not be added or removed (the rest were).
         public var exitCode: Int32 = 0
+
+        public init(output: [String] = [], errors: [String] = [], exitCode: Int32 = 0) {
+            self.output = output; self.errors = errors; self.exitCode = exitCode
+        }
     }
 
     /// Largest file `import` reads.
@@ -20,11 +24,93 @@ public enum WordListCommand {
     }
 
     /// Adds each of `terms` (a term may be several words: "Urban Sky"). A term the list has already, in any case, is
-    /// noted and left as it is.
-    public static func add(_ terms: [String], store: WordListStore, source: WordListSource = .user,
-                           at date: Date = Date()) throws -> Report {
-        let (list, outcomes, _) = try store.update { list in terms.map { list.add($0, source: source, at: date) } }
-        return report(outcomes, count: list.count)
+    /// noted and left as it is. `heardAs` ("cloud", "clot") become the "often heard as" phrases of each term, added to
+    /// those a listed term has already (the CLI allows them with one term only).
+    public static func add(_ terms: [String], heardAs: [String] = [], store: WordListStore,
+                           source: WordListSource = .user, at date: Date = Date()) throws -> Report {
+        let (list, result, _) = try store.update { list in
+            let outcomes = terms.map { list.add($0, source: source, at: date) }
+            let changes: [WordList.HeardAsChange] = heardAs.isEmpty ? [] : zip(terms, outcomes).compactMap { term, outcome in
+                switch outcome {
+                case .added(let added): list.addHeardAs(heardAs, to: added)
+                case .duplicate(let existing): list.addHeardAs(heardAs, to: existing)
+                case .empty, .tooLong, .full: nil
+                }
+            }
+            return (outcomes, changes)
+        }
+        var summary = Self.report(result.0, count: list.count)
+        for change in result.1 { add(change, to: &summary) }
+        return summary
+    }
+
+    /// The "often heard as" phrases of `term`, or of every term that has some (nil), one term per line:
+    /// "Claude: cloud, clot, clod". A term the list does not have makes the exit code 1.
+    public static func heardAs(of term: String?, store: WordListStore) throws -> Report {
+        let list = try store.load()
+        var report = Report()
+        if let term {
+            guard let phrases = list.heardAs(of: term) else {
+                report.errors.append("Not in the word list: \(WordList.cleaned(term) ?? term)")
+                report.exitCode = 1
+                return report
+            }
+            let spelled = list.terms.first { $0.lowercased() == WordList.cleaned(term)?.lowercased() } ?? term
+            report.output.append(phrases.isEmpty ? "\(spelled) has no often-heard-as phrases."
+                : "\(spelled): \(phrases.joined(separator: ", "))")
+            return report
+        }
+        for entry in list.entries {
+            guard let phrases = entry.heardAs, !phrases.isEmpty else { continue }
+            report.output.append("\(entry.text): \(phrases.joined(separator: ", "))")
+        }
+        if report.output.isEmpty { report.errors.append("No term has often-heard-as phrases.") }
+        return report
+    }
+
+    /// Adds `adding` to the "often heard as" phrases of `term`, then removes `removing`. A term the list does not have,
+    /// a phrase refused, or one to remove that the term does not have makes the exit code 1.
+    public static func changeHeardAs(of term: String, adding: [String], removing: [String],
+                                     store: WordListStore) throws -> Report {
+        let (_, result, _) = try store.update { list -> (WordList.HeardAsChange?, WordList.HeardAsChange?) in
+            let added = adding.isEmpty ? nil : list.addHeardAs(adding, to: term)
+            let removed = removing.isEmpty ? nil : list.removeHeardAs(removing, from: term)
+            return (added, removed)
+        }
+        var report = Report()
+        guard result.0 != nil || result.1 != nil else {
+            report.errors.append("Not in the word list: \(WordList.cleaned(term) ?? term). Add it first: "
+                + "voiceislocal words add \"\(WordList.cleaned(term) ?? term)\" --heard-as …")
+            report.exitCode = 1
+            return report
+        }
+        if let added = result.0 { add(added, to: &report) }
+        if let removed = result.1 {
+            if !removed.removed.isEmpty { report.output.append("Removed: \(removed.removed.joined(separator: ", ")).") }
+            for phrase in removed.unchanged {
+                report.errors.append("\(removed.term) is not listed as heard as: \(phrase)")
+                report.exitCode = 1
+            }
+            report.output.append(phrasesLine(removed))
+        }
+        return report
+    }
+
+    /// The lines for one `addHeardAs`: what was added, what the term had already, what was refused, and its phrases.
+    public static func add(_ change: WordList.HeardAsChange, to report: inout Report) {
+        for phrase in change.unchanged { report.errors.append("Already listed for \(change.term): \(phrase)") }
+        for phrase in change.refused {
+            report.errors.append("Not added for \(change.term): \(phrase) (the term itself, longer than "
+                + "\(WordList.maximumLength) characters, without a letter, or past \(WordList.maximumHeardAs) phrases).")
+            report.exitCode = 1
+        }
+        report.output.append(phrasesLine(change))
+    }
+
+    /// "Claude is often heard as: cloud, clot." or "Claude has no often-heard-as phrases."
+    public static func phrasesLine(_ change: WordList.HeardAsChange) -> String {
+        change.phrases.isEmpty ? "\(change.term) has no often-heard-as phrases."
+            : "\(change.term) is often heard as: \(change.phrases.joined(separator: ", "))."
     }
 
     /// Removes each of `terms`, matched in any case or spacing. A term the list does not have makes the exit code 1.

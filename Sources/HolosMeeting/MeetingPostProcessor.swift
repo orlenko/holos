@@ -34,14 +34,19 @@ public struct PostProcessingOptions: Sendable, Equatable {
     /// (`voiceislocal session diarize --keep-transcript`, which the review window's relabels use, so a speaker action
     /// there never transcribes the meeting again or replaces the transcript under the open review).
     public var keepTranscript: Bool
+    /// The word-fix stage was asked for by name (`voiceislocal session fix-words`): it is recorded even with nothing to
+    /// fix, `force` with it lets it replace a transcript whose speaker labels were edited, and when it leaves the
+    /// transcript as it was the speaker labels stay as they are. `keepTranscript` skips the stage.
+    public var fixWords: Bool
 
     public init(speakers: SpeakerCountHint? = nil, force: Bool = false, keepDerived: Bool = false,
                 othersInRoom: Bool? = nil, engineOverrides: [String: String] = [:], forceVoiceData: Bool = false,
-                stopReason: StopReason? = nil, languages: [String]? = nil, keepTranscript: Bool = false) {
+                stopReason: StopReason? = nil, languages: [String]? = nil, keepTranscript: Bool = false,
+                fixWords: Bool = false) {
         self.speakers = speakers; self.force = force; self.keepDerived = keepDerived
         self.othersInRoom = othersInRoom; self.engineOverrides = engineOverrides
         self.forceVoiceData = forceVoiceData; self.stopReason = stopReason; self.languages = languages
-        self.keepTranscript = keepTranscript
+        self.keepTranscript = keepTranscript; self.fixWords = fixWords
     }
 }
 
@@ -49,8 +54,9 @@ public struct PostProcessingOptions: Sendable, Equatable {
 ///
 /// Stages, in order: 0 checks and `postprocess.json` `running`; 1 `transcript` (the current revision); 1b
 /// `languages` for a meeting in several languages: the audio transcribed again in each language and the transcript
-/// merged passage by passage, which becomes current (§4.14; nothing is recorded for one language);
-/// 2 track policies; 3 the head decision (an edited head of this transcript is kept unless `force`); 4 `render` each
+/// merged passage by passage, which becomes current (§4.14; nothing is recorded for one language); 1c `wordFixes`:
+/// learned corrections and the word list's "often heard as" terms applied to that transcript, which becomes a new
+/// current revision (`WordFixStage`; nothing is recorded without corrections or such terms); 2 track policies; 3 the head decision (an edited head of this transcript is kept unless `force`); 4 `render` each
 /// diarized track to `derived/<track>-16k.caf`; 5 `diarize` them one at a time and map the times back to the
 /// session; 6 `align`: build and publish the run (no voice embeddings; `speakers/voice/` only with
 /// `forceVoiceData`) with names carried over; 7 `recognize` (PR10); 8 `export`; 9 delete `derived/` and write the
@@ -63,17 +69,19 @@ public struct MeetingPostProcessor: Sendable {
     let freeSpace: any FreeSpaceProvider
     let profiles: SpeakerProfileStore?
     let languageDetection: LanguageDetectionDependencies
+    let wordFixes: WordFixDependencies
 
     /// `diarizer == nil` (speaker models not installed) gives speaker-less exports and the setup hint.
     /// `freeSpace` measures the volume before rendering. With `profiles` (PR10) whose "Remember voices" is on and
     /// some person has voice samples, stage 7 compares the new run's speakers with them (distances only), and the
     /// exports show people's current names; without it nothing is recognized. `languages` transcribes and tells
-    /// languages apart for a meeting in several (stage 1b); it is used only for such a meeting.
+    /// languages apart for a meeting in several (stage 1b); it is used only for such a meeting. `wordFixes` gives the
+    /// corrections, word list and model of stage 1c; `.none` fixes nothing.
     public init(diarizer: (any SpeakerDiarizer)? = nil, options: PostProcessingOptions = .init(),
                 freeSpace: any FreeSpaceProvider = VolumeFreeSpace(), profiles: SpeakerProfileStore? = nil,
-                languages: LanguageDetectionDependencies = .live) {
+                languages: LanguageDetectionDependencies = .live, wordFixes: WordFixDependencies = .none) {
         self.diarizer = diarizer; self.options = options; self.freeSpace = freeSpace; self.profiles = profiles
-        self.languageDetection = languages
+        self.languageDetection = languages; self.wordFixes = wordFixes
     }
 
     /// Runs every stage for one finished session under `lease` (nil: acquire one, retry 1 s) and returns the
@@ -204,16 +212,27 @@ public struct MeetingPostProcessor: Sendable {
                 LanguageStage.Request(session: session, manifest: manifest, transcript: current, lease: lease,
                                       requested: options.languages, force: options.force),
                 dependencies: languageDetection, recorder: recorder)
-        guard let transcript = languages.transcript else {
+        guard let merged = languages.transcript else {
             let message = languages.problem ?? "This meeting has no transcript, so there is nothing to label."
             return recorder.finalRecord(state: .failed, message: message)
         }
+
+        // Stage 1c: learned corrections and the word list's terms, on the final text, before the speakers are labelled
+        // on it. Not run for a relabel that keeps the transcript (`keepTranscript`).
+        let fixes = options.keepTranscript
+            ? WordFixStage.Outcome(transcript: merged)
+            : try await WordFixStage.run(
+                WordFixStage.Request(session: session, manifest: manifest, transcript: merged, lease: lease,
+                                     requested: options.fixWords, force: options.force),
+                dependencies: wordFixes, recorder: recorder)
+        let transcript = fixes.transcript
         if transcript.id != current?.id { journal.update { $0.transcriptID = transcript.id } }
 
-        // Stages 2–7. Languages asked for by name (`voiceislocal session languages`) that left the transcript as it
-        // was also leave its speaker labels as they are, edited or not (§4.14).
+        // Stages 2–7. Languages or word fixes asked for by name (`voiceislocal session languages`, `session
+        // fix-words`) that left the transcript as it was also leave its speaker labels as they are, edited or not
+        // (§4.14).
         let speakers: SpeakerResult
-        if options.languages != nil, transcript.id == current?.id,
+        if options.languages != nil || options.fixWords, transcript.id == current?.id,
            let kept = keptLabels(session: session, manifest: manifest, transcript: transcript, recorder: recorder) {
             speakers = kept
         } else {
@@ -244,14 +263,14 @@ public struct MeetingPostProcessor: Sendable {
         try Task.checkCancellation()
         // A language that could not be detected, like a speaker stage that failed, makes the result partial; the
         // speakers' own message follows a language problem when they were labelled.
-        let problems = [languages.problem, speakers.problem].compactMap { $0 }
+        let problems = [languages.problem, fixes.problem, speakers.problem].compactMap { $0 }
         if !problems.isEmpty {
             let message = (problems + (speakers.problem == nil ? [speakers.message].compactMap { $0 } : []))
                 .joined(separator: " ")
             return recorder.finalRecord(state: .partial, message: message, runID: speakers.runID,
                                         othersInRoom: speakers.othersInRoom)
         }
-        let notes = [languages.note, speakers.message].compactMap { $0 }
+        let notes = [languages.note, fixes.note, speakers.message].compactMap { $0 }
         return recorder.finalRecord(state: .succeeded, message: notes.isEmpty ? nil : notes.joined(separator: " "),
                                     runID: speakers.runID, othersInRoom: speakers.othersInRoom)
     }

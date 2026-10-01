@@ -18,6 +18,7 @@ struct Session: AsyncParsableCommand {
             Score.self,
             Delete.self,
             Languages.self,
+            FixWords.self,
         ])
 
     struct Inspect: ParsableCommand {
@@ -124,7 +125,8 @@ struct Session: AsyncParsableCommand {
                                                          vocabulary: vocabulary)
             let outcome = try await SessionRecoveryCommand.run(
                 request, diarizer: noPostprocess ? nil : makeDiarizer(engineOverrides: [:]),
-                profiles: SpeakerProfileStore(), progress: Self.progressPrinter())
+                profiles: SpeakerProfileStore(), wordFixes: makeWordFixDependencies(),
+                progress: Self.progressPrinter())
             if json {
                 let recovery = outcome.recovery
                 try Console.json(Result(

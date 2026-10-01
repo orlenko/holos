@@ -38,6 +38,7 @@ public enum SessionLanguagesCommand {
                            freeSpace: any FreeSpaceProvider = VolumeFreeSpace(),
                            profiles: SpeakerProfileStore? = nil,
                            languages: LanguageDetectionDependencies = .live,
+                           wordFixes: WordFixDependencies = .none,
                            progress: @escaping @Sendable (PostProcessingProgress) -> Void = { _ in })
         async throws -> Outcome {
         if let problem = DictationLanguage.meetingLanguagesProblem(request.languages) {
@@ -46,7 +47,7 @@ public enum SessionLanguagesCommand {
         let list = DictationLanguage.meetingLanguages(request.languages)
         let options = PostProcessingOptions(force: request.force, languages: list)
         let processor = MeetingPostProcessor(diarizer: diarizer, options: options, freeSpace: freeSpace,
-                                             profiles: profiles, languages: languages)
+                                             profiles: profiles, languages: languages, wordFixes: wordFixes)
         let record = try await processor.run(session: request.session, lease: nil, progress: progress)
         return Outcome(record: record, exitCode: SessionDiarizeCommand.exitCode(record.state),
                        summary: summary(record, session: request.session, languages: list))

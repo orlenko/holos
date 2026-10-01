@@ -53,12 +53,25 @@ public enum OnDeviceFix {
 
     /// The fixer for dictation in `language` (a locale identifier; its function words and homophones count): a
     /// quarter of the model's context for learned corrections leaves ample room for the chunk and the reply.
-    public static func fixer(corrections: CorrectionList, wordList: [String] = [], timeout: Duration = chunkTimeout,
-                             language: String? = nil) -> TranscriptFixer {
+    /// `heardAs`: the word list's "often heard as" pairs (`WordList.heardAsPairs`), swaps the model may make only where
+    /// the context calls for the term.
+    public static func fixer(corrections: CorrectionList, wordList: [String] = [], heardAs: [Correction] = [],
+                             timeout: Duration = chunkTimeout, language: String? = nil) -> TranscriptFixer {
         let model = model
-        return TranscriptFixer(corrections: corrections, wordList: wordList, referenceBudget: model.contextSize / 4,
-                               timeout: timeout, language: language) { instructions, prompt in
+        return TranscriptFixer(corrections: corrections, wordList: wordList, heardAs: heardAs,
+                               referenceBudget: model.contextSize / 4, timeout: timeout,
+                               language: language) { instructions, prompt in
             // A fresh session per chunk: earlier chunks must not steer this one, and the context stays small.
+            let session = LanguageModelSession(model: model, instructions: instructions)
+            return try await session.respond(to: prompt, options: GenerationOptions(samplingMode: .greedy)).content
+        }
+    }
+
+    /// The model for questions that bring their own instructions (the meeting word-fix stage's `HeardAsJudge`): the
+    /// fix's model and guardrails, greedy sampling, and a fresh session per question.
+    public static func answerer() -> TranscriptFixer.Model {
+        let model = model
+        return { instructions, prompt in
             let session = LanguageModelSession(model: model, instructions: instructions)
             return try await session.respond(to: prompt, options: GenerationOptions(samplingMode: .greedy)).content
         }
@@ -131,8 +144,8 @@ public enum DictationRerun {
     /// `spokenCode` writes spoken paths and commands as code, in backticks when `backticks` (never for a dictation
     /// typed into a terminal: `run`).
     public static func pipeline(language: String, removeFillers: Bool, corrections: CorrectionList,
-                                wordList: [String] = [], aiFix: Bool, spokenCode: Bool = false,
-                                backticks: Bool = true)
+                                wordList: [String] = [], heardAs: [Correction] = [], aiFix: Bool,
+                                spokenCode: Bool = false, backticks: Bool = true)
         -> (pipeline: DictationTextPipeline, aiNote: String?) {
         var note: String?
         var fixer: TranscriptFixer?
@@ -141,7 +154,8 @@ public enum DictationRerun {
                 note = "unavailable: \(reason)"
             } else {
                 OnDeviceFix.prewarm()
-                fixer = OnDeviceFix.fixer(corrections: corrections, wordList: wordList, language: language)
+                fixer = OnDeviceFix.fixer(corrections: corrections, wordList: wordList, heardAs: heardAs,
+                                          language: language)
             }
         }
         let coder = spokenCode

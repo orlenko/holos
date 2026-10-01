@@ -69,7 +69,8 @@ extension Session {
             let labels = request.transcribe && request.postprocess
             let outcome = try await SessionImportCommand.run(
                 request, diarizer: labels ? makeDiarizer(engineOverrides: [:]) : nil, profiles: SpeakerProfileStore(),
-                importProgress: importProgressPrinter(), labellingProgress: labellingProgressPrinter())
+                wordFixes: makeWordFixDependencies(), importProgress: importProgressPrinter(),
+                labellingProgress: labellingProgressPrinter())
             if let summary = outcome.summary { Console.error(summary) }
             Console.output(outcome.session.path)
             return outcome.exitCode

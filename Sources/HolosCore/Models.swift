@@ -56,6 +56,33 @@ public struct TimedWord: Codable, Sendable, Equatable {
     }
 }
 
+/// What made a word fix (`TranscriptWordFix`). Open string code.
+public struct TranscriptWordFixKind: OpenStringCode {
+    public let rawValue: String
+    public init(rawValue: String) { self.rawValue = rawValue }
+
+    /// A learned correction (corrections.json), applied as dictation applies it.
+    public static let correction = TranscriptWordFixKind("correction")
+    /// A word-list term the on-device model chose where one of its "often heard as" phrases was written.
+    public static let term = TranscriptWordFixKind("term")
+}
+
+/// Words of a segment that the meeting word-fix stage changed (docs/design.md "Meeting word fixes"): what the
+/// recognizer wrote there, and what made the change.
+public struct TranscriptWordFix: Codable, Sendable, Equatable {
+    /// The fixed words: `[first, end)` of the segment's effective words (`WordTiming.effectiveWords`, the index space
+    /// of speaker turns).
+    public var first: Int
+    public var end: Int
+    /// The text the recognizer wrote there.
+    public var heard: String
+    public var kind: TranscriptWordFixKind
+
+    public init(first: Int, end: Int, heard: String, kind: TranscriptWordFixKind) {
+        self.first = first; self.end = end; self.heard = heard; self.kind = kind
+    }
+}
+
 public struct TranscriptSegment: Codable, Sendable, Equatable, Identifiable {
     public var id: String
     public var start: Double
@@ -67,11 +94,16 @@ public struct TranscriptSegment: Codable, Sendable, Equatable, Identifiable {
     /// The language this segment was transcribed in ("fr-CA"), in a transcript merged from several languages
     /// (`Transcript.languages`, docs/meeting-design.md §4.14); nil in a transcript made in one language.
     public var language: String?
+    /// The words the meeting word-fix stage changed in this segment (`Transcript.fixedFrom`); nil when none, and in
+    /// every transcript the stage did not make, so those encode as before.
+    public var fixes: [TranscriptWordFix]?
 
     public init(id: String = UUID().uuidString, start: Double, end: Double, text: String,
-                words: [TimedWord] = [], track: String? = nil, speakerID: String? = nil, language: String? = nil) {
+                words: [TimedWord] = [], track: String? = nil, speakerID: String? = nil, language: String? = nil,
+                fixes: [TranscriptWordFix]? = nil) {
         self.id = id; self.start = start; self.end = end; self.text = text
         self.words = words; self.track = track; self.speakerID = speakerID; self.language = language
+        self.fixes = fixes
     }
 }
 
@@ -96,12 +128,16 @@ public struct Transcript: Codable, Sendable, Equatable {
     /// chose from, the first one (`locale`) preferred on a tie; each segment names its own (`language`). Nil for a
     /// transcript made in `locale` alone.
     public var languages: [String]?
+    /// For a transcript made by the meeting word-fix stage (docs/design.md "Meeting word fixes"): the revision whose
+    /// words it fixed, which is kept. Nil for every other transcript.
+    public var fixedFrom: String?
 
     public init(id: String = UUID().uuidString, createdAt: Date = Date(), source: String,
                 locale: String, backend: SpeechBackend, segments: [TranscriptSegment] = [],
-                languages: [String]? = nil) {
+                languages: [String]? = nil, fixedFrom: String? = nil) {
         self.id = id; self.createdAt = createdAt; self.source = source
         self.locale = locale; self.backend = backend; self.segments = segments; self.languages = languages
+        self.fixedFrom = fixedFrom
     }
 
     public var text: String { segments.map(\.text).joined(separator: " ") }

@@ -429,9 +429,14 @@ enum LanguageStage {
 
     /// The `languagesDetected` event of the merged transcript `transcriptID`, if it was journaled: the last one naming
     /// it (`recordRequest` can add one with other `requested` languages). For a transcript that is not merged, one
-    /// only records the languages asked for by name that it answers (its `base` is empty).
+    /// only records the languages asked for by name that it answers (its `base` is empty). A transcript whose words
+    /// were fixed (`WordFixStage`) stands for the one it was fixed from, so that one's event counts for it too.
     static func mergeEvent(of transcriptID: String, events: [ArchiveEvent]) -> ArchiveEvent? {
-        events.last { $0.kind == MeetingEventKind.languagesDetected && $0.details["transcriptID"] == transcriptID }
+        let unfixed = WordFixStage.unfixedID(transcriptID, events: events)
+        return events.last { event in
+            event.kind == MeetingEventKind.languagesDetected
+                && (event.details["transcriptID"] == transcriptID || event.details["transcriptID"] == unfixed)
+        }
     }
 
     /// Records that `current` answers the languages asked for by name (`request.requested`, as `target`) when it is
@@ -510,10 +515,16 @@ enum LanguageStage {
 
     // MARK: - The transcription in each language
 
-    /// The recorded transcript the merged ones are made from: the current transcript when it is not merged, else the
-    /// one its `languagesDetected` event names (nil when that cannot be read).
+    /// The recorded transcript the merged ones are made from: the current transcript when it is not merged (the one its
+    /// words were fixed from, when they were and it can be read), else the one its `languagesDetected` event names (nil
+    /// when that cannot be read).
     private static func baseTranscript(_ current: Transcript, events: [ArchiveEvent], session: URL) -> Transcript? {
-        guard current.languages != nil else { return current }
+        guard current.languages != nil else {
+            let unfixed = WordFixStage.unfixedID(current.id, events: events)
+            guard unfixed != current.id,
+                  let recorded = try? SessionFiles.transcript(id: unfixed, session: session) else { return current }
+            return recorded
+        }
         guard let id = mergeEvent(of: current.id, events: events)?.details["base"], !id.isEmpty,
               let base = try? SessionFiles.transcript(id: id, session: session), base.languages == nil else {
             return nil
