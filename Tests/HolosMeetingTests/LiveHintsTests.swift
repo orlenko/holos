@@ -114,6 +114,21 @@ private func hint(_ segment: TranscriptSegment, words: Range<Int>, action: LiveH
     #expect(outcome.transcript.segments.map(\.text) == ["send the deck", "share the doc"])
 }
 
+@Test func exactLiveTextTargetWinsOverNearbyReplacementText() {
+    let segment = SessionFixtures.segment(["send", "share"], track: "mic", start: 2, id: "live")
+    let outcome = LiveHints.applyingText([
+        hint(segment, words: 0..<1, action: .replaceText("share"), id: "H1"),
+    ], to: SessionFixtures.transcript([segment]))
+
+    #expect(outcome.applied == 1)
+    #expect(outcome.alreadyApplied == 0)
+    #expect(outcome.unmatched == 0)
+    #expect(outcome.transcript.segments[0].text == "share share")
+    #expect(outcome.transcript.segments[0].fixes == [
+        TranscriptWordFix(first: 0, end: 1, heard: "send", kind: .liveCorrection),
+    ])
+}
+
 @Test func replayedLiveTextHintMatchesOnlyTheSameWordsNearTheirRecordedTime() {
     let live = SessionFixtures.segment(["send", "the", "deck"], track: "system", start: 120, id: "live")
     let nearby = SessionFixtures.segment(["send", "the", "deck"], track: "system", start: 121.9, id: "nearby")

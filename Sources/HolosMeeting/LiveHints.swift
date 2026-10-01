@@ -221,6 +221,18 @@ public enum LiveHints {
         var end: Double
     }
 
+    private struct LocatedMatch {
+        var match: Match
+        var exactID: Bool
+        var overlap: Double
+        var distance: Double
+
+        func isPreferred(over other: LocatedMatch) -> Bool {
+            (exactID ? 1 : 0, overlap, -distance, -match.start)
+                > (other.exactID ? 1 : 0, other.overlap, -other.distance, -other.match.start)
+        }
+    }
+
     /// What a repeated edit originally corrected. The hint being saved contains the text currently on screen (so its
     /// timed chain remains A→B→C); learning should replace the global A→B rule with A→C.
     public static func originalHeard(for hint: LiveHint, among hints: [LiveHint]) -> String {
@@ -282,10 +294,32 @@ public enum LiveHints {
         for edit in textHints {
             let hint = edit.hint
             guard case .replaceText(let replacement) = hint.action else { continue }
-            if let found = match(hint, in: result, text: replacement),
-               let range = characterRange(found.words, matching: replacement,
-                                          in: result.segments[found.segment]),
-               text(in: range, of: result.segments[found.segment]) == replacement {
+            let replacementFound = locatedMatch(hint, in: result, text: replacement).flatMap { found in
+                characterRange(found.match.words, matching: replacement,
+                               in: result.segments[found.match.segment]).flatMap { range in
+                    text(in: range, of: result.segments[found.match.segment]) == replacement
+                        ? (found: found, range: range) : nil
+                }
+            }
+            // Recovery may already contain an intermediate state (A→B→C replayed from B). Prefer the most
+            // recent heard form when locations tie, but let the strongest location win across all recorded forms.
+            var heardFound: (found: LocatedMatch, heard: String)?
+            for heard in edit.heard.reversed() {
+                guard let found = locatedMatch(hint, in: result, text: heard) else { continue }
+                if let current = heardFound, !found.isPreferred(over: current.found) { continue }
+                heardFound = (found, heard)
+            }
+            // A replacement elsewhere near the recorded time is not proof that this edit was applied. The exact
+            // segment/range (or otherwise stronger timed location) still containing heard text must be changed.
+            let heardIsStronger: Bool
+            if let heardFound, let replacementFound {
+                heardIsStronger = heardFound.found.isPreferred(over: replacementFound.found)
+            } else {
+                heardIsStronger = false
+            }
+            if let replacementFound, !heardIsStronger {
+                let found = replacementFound.found.match
+                let range = replacementFound.range
                 let segment = result.segments[found.segment]
                 guard var working = WordFixes.Working(segment, preservingExistingFixes: true) else {
                     unmatched += 1
@@ -306,21 +340,19 @@ public enum LiveHints {
                 }
                 continue
             }
-            // Recovery may already contain an intermediate state (A→B→C replayed from B). Prefer the most
-            // recent heard form, but keep the first form as the single collapsed mark's provenance.
-            let found = edit.heard.reversed().lazy.compactMap { heard in
-                match(hint, in: result, text: heard).map { (match: $0, heard: heard) }
-            }.first
-            if let found,
-               let working = WordFixes.Working(result.segments[found.match.segment], preservingExistingFixes: true),
-               let range = characterRange(found.match.words, matching: found.heard,
-                                          in: result.segments[found.match.segment]) {
+            // Keep the first heard form as the single collapsed mark's provenance.
+            if let heardFound,
+               let working = WordFixes.Working(result.segments[heardFound.found.match.segment],
+                                               preservingExistingFixes: true),
+               let range = characterRange(heardFound.found.match.words, matching: heardFound.heard,
+                                          in: result.segments[heardFound.found.match.segment]) {
                 let changed = WordFixes.applying([
                     .init(range: range, text: replacement, kind: .liveCorrection, heard: hint.heard),
                 ], to: working)
-                let segment = WordFixes.finished(changed, segment: result.segments[found.match.segment])
-                if segment != result.segments[found.match.segment] {
-                    result.segments[found.match.segment] = segment
+                let segment = WordFixes.finished(changed,
+                                                 segment: result.segments[heardFound.found.match.segment])
+                if segment != result.segments[heardFound.found.match.segment] {
+                    result.segments[heardFound.found.match.segment] = segment
                     applied += 1
                 } else {
                     unmatched += 1
@@ -383,9 +415,14 @@ public enum LiveHints {
     }
 
     static func match(_ hint: LiveHint, in transcript: Transcript, text: String) -> Match? {
+        locatedMatch(hint, in: transcript, text: text)?.match
+    }
+
+    private static func locatedMatch(_ hint: LiveHint, in transcript: Transcript,
+                                     text: String) -> LocatedMatch? {
         let wanted = tokens(text)
         guard !wanted.isEmpty else { return nil }
-        var candidates: [(match: Match, exactID: Bool, overlap: Double, distance: Double)] = []
+        var candidates: [LocatedMatch] = []
         for (segmentIndex, segment) in transcript.segments.enumerated() where (segment.track ?? "mic") == hint.track {
             let words = WordTiming.effectiveWords(of: segment)
             let comparable: [(word: Int, token: String)] = words.enumerated().compactMap { index, word in
@@ -406,14 +443,12 @@ public enum LiveHints {
                 let exactID = segment.id == hint.segmentID && range == hint.firstWord..<hint.endWord
                 let gap = max(0, max(hint.start - end, start - hint.end))
                 guard exactID || gap <= maximumReplayMatchGap else { continue }
-                candidates.append((Match(segment: segmentIndex, words: range, start: start, end: end), exactID,
-                                   overlap, distance))
+                candidates.append(LocatedMatch(
+                    match: Match(segment: segmentIndex, words: range, start: start, end: end),
+                    exactID: exactID, overlap: overlap, distance: distance))
             }
         }
-        return candidates.max {
-            ($0.exactID ? 1 : 0, $0.overlap, -$0.distance, -$0.match.start)
-                < ($1.exactID ? 1 : 0, $1.overlap, -$1.distance, -$1.match.start)
-        }?.match
+        return candidates.max { $1.isPreferred(over: $0) }
     }
 
     /// The word range, expanded to the exact displayed phrase when it also contains untimed punctuation. Speech can
