@@ -363,9 +363,9 @@ extension HolosAppDelegate: NSMenuDelegate {
         button.image = image
         button.contentTintColor = tint
         button.imagePosition = title.isEmpty ? .imageOnly : .imageLeading
-        button.attributedTitle = NSAttributedString(string: title.isEmpty ? "" : " " + title, attributes: [
-            .font: NSFont.monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .regular),
-        ])
+        // A plain title lets the status bar choose its text color for the current appearance and highlight.
+        button.font = NSFont.monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .regular)
+        button.title = title.isEmpty ? "" : " " + title
     }
 
     /// The tooltip while a meeting is followed; nil otherwise (the dictation message is used).
