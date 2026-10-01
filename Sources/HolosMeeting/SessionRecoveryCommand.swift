@@ -250,17 +250,26 @@ public enum SessionRecoveryCommand {
             let keepTranscript = request.vocabulary != nil
             let languageWork = unreadable == nil && unchanged && labels != nil && !keepTranscript
                 ? await languageWorkPending(session, transcriptID: transcriptID, dependencies: languages) : false
+            let liveHintWork: Bool
+            if unreadable == nil, unchanged, labels != nil,
+               let transcript = try? SessionFiles.transcript(id: transcriptID, session: session) {
+                liveHintWork = LiveHintStage.hasPendingWork(session: session, transcript: transcript)
+            } else {
+                liveHintWork = false
+            }
             if let unreadable {
                 warnings.append("Speaker labels were not updated: \(unreadable.localizedDescription)")
                 exitCode = 3
-            } else if unchanged, let current = labels, !languageWork {
+            } else if unchanged, let current = labels, !languageWork, !liveHintWork {
                 // A success without labels repeats why (the setup hint) instead of calling them up to date.
                 parts.append(current.runID == nil ? (current.message ?? "No speaker labels.")
                     : "Speaker labels are up to date.")
             } else {
                 do {
                     let processor = MeetingPostProcessor(diarizer: diarizer,
-                                                         options: PostProcessingOptions(keepTranscript: keepTranscript),
+                                                         options: PostProcessingOptions(
+                                                             keepTranscript: keepTranscript,
+                                                             reconcileLiveHints: keepTranscript),
                                                          freeSpace: freeSpace, profiles: profiles,
                                                          languages: languages, wordFixes: wordFixes)
                     let result = try await processor.run(session: session, lease: lease) { progress($0.message) }

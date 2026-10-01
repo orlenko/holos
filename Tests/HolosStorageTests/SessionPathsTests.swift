@@ -13,6 +13,7 @@ import Testing
         (SessionPaths.meetingInfo(session), "meeting.json"),
         (SessionPaths.vocabulary(session), "vocabulary.json"),
         (SessionPaths.status(session), "status.json"),
+        (SessionPaths.liveHints(session), "live-hints.json"),
         (SessionPaths.controlDirectory(session), "control"),
         (SessionPaths.postprocess(session), "postprocess.json"),
         (SessionPaths.audioDeleted(session), "audio-deleted.json"),

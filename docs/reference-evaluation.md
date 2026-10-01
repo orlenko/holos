@@ -389,7 +389,7 @@ live phrases do not cover. Nothing leaves the Mac.
   strings; `--no-vocabulary` gives it none. The exact strings are saved in
   `run.json`.
 - **Text steps:** meeting word fixes are applied after recognition: learned
-  corrections, then the word list's often-heard-as questions, just as stage 1c
+  corrections, then the word list's often-heard-as questions, just as stage 1d
   applies them to a meeting. `--no-word-fixes` keeps the recognizer's words so
   the effect can be measured. The choice is saved in `run.json` and must match
   when a run is resumed.

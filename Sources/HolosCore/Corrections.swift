@@ -33,6 +33,15 @@ public struct Correction:Codable, Sendable, Equatable, Hashable {
 /// Phrase replacements learned from the user's fixes. Matching is whole-word, case-insensitive,
 /// and tolerant of whitespace differences inside a phrase.
 public struct CorrectionList: Codable, Sendable, Equatable {
+    public struct LearningReconciliation: Sendable, Equatable {
+        public var owned: [Correction]
+        public var displaced: [Correction]
+
+        public init(owned: [Correction] = [], displaced: [Correction] = []) {
+            self.owned = owned; self.displaced = displaced
+        }
+    }
+
     public private(set) var entries: [Correction] = []
 
     public init(entries: [Correction] = []) {
@@ -97,6 +106,56 @@ public struct CorrectionList: Codable, Sendable, Equatable {
 
     public mutating func remove(_ correction: Correction) {
         entries.removeAll { $0 == correction }
+    }
+
+    /// Reconciles rules introduced by live editing with the rules its latest edits still confirm. `managed` is every
+    /// exact rule a live edit has introduced; removing those first lets the desired rules be rebuilt in edit order.
+    /// `preexisting` remembers desired rules known to have been present before live editing, including one temporarily
+    /// displaced by a conflicting managed rule. Such a rule is restored only when no unrelated rule now owns its
+    /// heard phrase, and is never returned as newly managed. The returned rules exclude rules already recorded in
+    /// `managed`, so later reconciliation removes only rules live editing introduced. It also returns unrelated
+    /// rules a desired rule displaced, so later reconciliation can restore them.
+    @discardableResult
+    public mutating func reconcileLearned(_ managed: [Correction], preserving preexisting: [Correction] = [],
+                                          with desired: [Correction]) -> LearningReconciliation {
+        let managed = managed.compactMap(Self.storedCorrection)
+        let preexisting = preexisting.compactMap(Self.storedCorrection)
+        for correction in managed { remove(correction) }
+        let alreadyManaged = Set(managed)
+        let knownPreexisting = Set(preexisting)
+        // A later baseline rule represents a more recent manual change to the same heard phrase. Keep the
+        // chronological order of unrelated phrases while discarding superseded conflicts.
+        var restoredKeys: Set<String> = []
+        let restorable = preexisting.reversed().filter {
+            restoredKeys.insert(Self.normalized($0.heard)).inserted
+        }.reversed()
+        for correction in restorable {
+            let key = Self.normalized(correction.heard)
+            guard !entries.contains(where: { Self.normalized($0.heard) == key }) else { continue }
+            add(correction)
+        }
+        let unrelated = Set(entries)
+        var introduced: [Correction] = []
+        var displaced: [Correction] = []
+        for correction in desired.compactMap(Self.storedCorrection) {
+            guard apply(to: correction.heard) != correction.meant else { continue }
+            let key = Self.normalized(correction.heard)
+            for entry in entries where entry != correction && Self.normalized(entry.heard) == key
+                && unrelated.contains(entry) && !knownPreexisting.contains(entry) {
+                if !displaced.contains(entry) { displaced.append(entry) }
+            }
+            add(correction)
+            if !alreadyManaged.contains(correction), !unrelated.contains(correction) {
+                introduced.append(correction)
+            }
+        }
+        return LearningReconciliation(owned: introduced.filter(entries.contains), displaced: displaced)
+    }
+
+    private static func storedCorrection(_ correction: Correction) -> Correction? {
+        let heard = correction.heard.trimmingCharacters(in: .whitespacesAndNewlines)
+        let meant = correction.meant.trimmingCharacters(in: .whitespacesAndNewlines)
+        return !heard.isEmpty && !meant.isEmpty && heard != meant ? Correction(heard: heard, meant: meant) : nil
     }
 
     /// Other entries `replace(_:with:)` would drop because they have the same heard phrase as `new`.

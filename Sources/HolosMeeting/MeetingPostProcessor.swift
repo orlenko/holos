@@ -34,6 +34,10 @@ public struct PostProcessingOptions: Sendable, Equatable {
     /// (`voiceislocal session diarize --keep-transcript`, which the review window's relabels use, so a speaker action
     /// there never transcribes the meeting again or replaces the transcript under the open review).
     public var keepTranscript: Bool
+    /// Reconcile corrections saved while recording even when `keepTranscript` suppresses language and word-fix
+    /// stages. Recovery with a one-run vocabulary uses this: its replay must stay current, but its live corrections
+    /// still belong on that replay. Ordinary relabelling leaves this false and keeps its no-text-change promise.
+    public var reconcileLiveHints: Bool
     /// The word-fix stage was asked for by name (`voiceislocal session fix-words`): it is recorded even with nothing to
     /// fix, `force` with it lets it replace a transcript whose speaker labels were edited, and when it leaves the
     /// transcript as it was the speaker labels stay as they are. `keepTranscript` skips the stage.
@@ -42,11 +46,12 @@ public struct PostProcessingOptions: Sendable, Equatable {
     public init(speakers: SpeakerCountHint? = nil, force: Bool = false, keepDerived: Bool = false,
                 othersInRoom: Bool? = nil, engineOverrides: [String: String] = [:], forceVoiceData: Bool = false,
                 stopReason: StopReason? = nil, languages: [String]? = nil, keepTranscript: Bool = false,
-                fixWords: Bool = false) {
+                reconcileLiveHints: Bool = false, fixWords: Bool = false) {
         self.speakers = speakers; self.force = force; self.keepDerived = keepDerived
         self.othersInRoom = othersInRoom; self.engineOverrides = engineOverrides
         self.forceVoiceData = forceVoiceData; self.stopReason = stopReason; self.languages = languages
-        self.keepTranscript = keepTranscript; self.fixWords = fixWords
+        self.keepTranscript = keepTranscript; self.reconcileLiveHints = reconcileLiveHints
+        self.fixWords = fixWords
     }
 }
 
@@ -54,12 +59,13 @@ public struct PostProcessingOptions: Sendable, Equatable {
 ///
 /// Stages, in order: 0 checks and `postprocess.json` `running`; 1 `transcript` (the current revision); 1b
 /// `languages` for a meeting in several languages: the audio transcribed again in each language and the transcript
-/// merged passage by passage, which becomes current (§4.14; nothing is recorded for one language); 1c `wordFixes`:
-/// learned corrections and the word list's "often heard as" terms applied to that transcript, which becomes a new
-/// current revision (`WordFixStage`; nothing is recorded without corrections or such terms); 2 track policies; 3 the head decision (an edited head of this transcript is kept unless `force`); 4 `render` each
+/// merged passage by passage, which becomes current (§4.14; nothing is recorded for one language); 1c live text
+/// hints; 1d `wordFixes`: learned corrections and the word list's "often heard as" terms applied to that transcript,
+/// which becomes a new current revision (`WordFixStage`; nothing is recorded without corrections or such terms);
+/// 2 track policies; 3 the head decision (an edited head of this transcript is kept unless `force`); 4 `render` each
 /// diarized track to `derived/<track>-16k.caf`; 5 `diarize` them one at a time and map the times back to the
 /// session; 6 `align`: build and publish the run (no voice embeddings; `speakers/voice/` only with
-/// `forceVoiceData`) with names carried over; 7 `recognize` (PR10); 8 `export`; 9 delete `derived/` and write the
+/// `forceVoiceData`) with names carried over; 7 `recognize` (PR10), then live speaker-name hints; 8 `export`; 9 delete `derived/` and write the
 /// final record.
 public struct MeetingPostProcessor: Sendable {
     private static let log = Logger(subsystem: "ca.orlenko.holos.app", category: "postprocess")
@@ -76,7 +82,7 @@ public struct MeetingPostProcessor: Sendable {
     /// some person has voice samples, stage 7 compares the new run's speakers with them (distances only), and the
     /// exports show people's current names; without it nothing is recognized. `languages` transcribes and tells
     /// languages apart for a meeting in several (stage 1b); it is used only for such a meeting. `wordFixes` gives the
-    /// corrections, word list and model of stage 1c; `.none` fixes nothing.
+    /// corrections, word list and model of stage 1d; `.none` fixes nothing.
     public init(diarizer: (any SpeakerDiarizer)? = nil, options: PostProcessingOptions = .init(),
                 freeSpace: any FreeSpaceProvider = VolumeFreeSpace(), profiles: SpeakerProfileStore? = nil,
                 languages: LanguageDetectionDependencies = .live, wordFixes: WordFixDependencies = .none) {
@@ -217,21 +223,39 @@ public struct MeetingPostProcessor: Sendable {
             return recorder.finalRecord(state: .failed, message: message)
         }
 
-        // Stage 1c: learned corrections and the word list's terms, on the final text, before the speakers are labelled
-        // on it. Not run for a relabel that keeps the transcript (`keepTranscript`).
+        // Stage 1c: exact corrections made in the live view, reconciled by phrase ID or by track, time, and words.
+        // They become the base for automatic fixes, so one provenance map never has to compose overlapping edits.
+        // A relabel explicitly promising to keep the transcript does not introduce a text revision.
+        let liveText: LiveHintStage.TextOutcome
+        if options.keepTranscript && !options.reconcileLiveHints {
+            do {
+                liveText = LiveHintStage.TextOutcome(
+                    transcript: merged, hints: try LiveHintStore.read(session: session).hints)
+            } catch {
+                liveText = LiveHintStage.TextOutcome(
+                    transcript: merged, hints: [],
+                    problem: "Live corrections could not be read: \(error.localizedDescription)")
+            }
+        } else {
+            liveText = try await LiveHintStage.applyText(session: session, transcript: merged, lease: lease)
+        }
+
+        // Stage 1d: learned corrections and the word list's terms, on the live-corrected final text, before the
+        // speakers are labelled on it. Not run for a relabel that keeps the transcript (`keepTranscript`).
         let fixes = options.keepTranscript
-            ? WordFixStage.Outcome(transcript: merged)
+            ? WordFixStage.Outcome(transcript: liveText.transcript)
             : try await WordFixStage.run(
-                WordFixStage.Request(session: session, manifest: manifest, transcript: merged, lease: lease,
-                                     requested: options.fixWords, force: options.force),
+                WordFixStage.Request(session: session, manifest: manifest, transcript: liveText.transcript, lease: lease,
+                                     requested: options.fixWords, force: options.force,
+                                     priorFixed: liveText.wordFixedBeforeRebase),
                 dependencies: wordFixes, recorder: recorder)
         let transcript = fixes.transcript
         if transcript.id != current?.id { journal.update { $0.transcriptID = transcript.id } }
 
         // The transcript pointer moved but the staged replacement head did not. The old head is still the only copy
         // of the person's turn edits; never relabel over it or write exports from its older transcript.
-        if fixes.speakerHeadIncomplete {
-            let problem = fixes.problem ?? "The fixed transcript's speaker labels could not be published."
+        if fixes.speakerHeadIncomplete || liveText.speakerHeadIncomplete {
+            let problem = liveText.problem ?? fixes.problem ?? "The corrected transcript's speaker labels could not be published."
             recorder.skip([.render, .diarize, .align, .export], problem)
             return recorder.finalRecord(state: .partial, message: problem)
         }
@@ -240,14 +264,17 @@ public struct MeetingPostProcessor: Sendable {
         // fix-words`) that left the transcript as it was also leave its speaker labels as they are, edited or not
         // (§4.14).
         let speakers: SpeakerResult
-        let keepsExistingLabels = fixes.labelsPreserved
+        let keepsExistingLabels = liveText.labelsPreserved || fixes.labelsPreserved
             || ((options.languages != nil || options.fixWords) && transcript.id == current?.id)
         if keepsExistingLabels,
            let kept = keptLabels(session: session, manifest: manifest, transcript: transcript, recorder: recorder,
-                                 reason: fixes.labelsPreserved ? "Kept the speaker labels on the fixed words."
-                                     : SpeakerAnalysis.transcriptUnchanged) {
+                                 reason: liveText.labelsPreserved
+                                     ? "Kept the speaker labels on the live-corrected words."
+                                     : fixes.labelsPreserved
+                                         ? "Kept the speaker labels on the fixed words."
+                                         : SpeakerAnalysis.transcriptUnchanged) {
             var published = kept
-            published.published = fixes.labelsPreserved
+            published.published = liveText.labelsPreserved || fixes.labelsPreserved
             speakers = published
         } else {
             speakers = try await labelSpeakers(session: session, manifest: manifest, transcript: transcript,
@@ -256,6 +283,10 @@ public struct MeetingPostProcessor: Sendable {
         // Once a new head is published, the exports are written from it before a cancellation is honoured, so the
         // head and the exports never disagree.
         if !speakers.published { try Task.checkCancellation() }
+
+        // The run now exists and still precedes exports: turn overlap can identify the machine speaker named live.
+        let liveSpeakers = LiveHintStage.applySpeakers(liveText.hints, session: session, transcript: transcript,
+                                                       profiles: profiles)
 
         // Stage 8: exports (the speaker lock taken in stage 6 was released there).
         started = recorder.begin(.export, message: "Writing transcript files…")
@@ -277,14 +308,15 @@ public struct MeetingPostProcessor: Sendable {
         try Task.checkCancellation()
         // A language that could not be detected, like a speaker stage that failed, makes the result partial; the
         // speakers' own message follows a language problem when they were labelled.
-        let problems = [languages.problem, fixes.problem, speakers.problem].compactMap { $0 }
+        let problems = [languages.problem, fixes.problem, liveText.problem, speakers.problem,
+                        liveSpeakers.problem].compactMap { $0 }
         if !problems.isEmpty {
             let message = (problems + (speakers.problem == nil ? [speakers.message].compactMap { $0 } : []))
                 .joined(separator: " ")
             return recorder.finalRecord(state: .partial, message: message, runID: speakers.runID,
                                         othersInRoom: speakers.othersInRoom)
         }
-        let notes = [languages.note, fixes.note, speakers.message].compactMap { $0 }
+        let notes = [languages.note, fixes.note, liveText.note, speakers.message, liveSpeakers.note].compactMap { $0 }
         return recorder.finalRecord(state: .succeeded, message: notes.isEmpty ? nil : notes.joined(separator: " "),
                                     runID: speakers.runID, othersInRoom: speakers.othersInRoom)
     }

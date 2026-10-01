@@ -393,7 +393,7 @@ public enum EvalLocal {
         return nil
     }
 
-    /// Applies stage 1c without publishing to the meeting. With no configured fixes, or no matching words, the
+    /// Applies stage 1d without publishing to the meeting. With no configured fixes, or no matching words, the
     /// recognized candidate is kept exactly as assembled; the run still records that the step was checked.
     private static func applyingWordFixes(to transcript: Transcript, title: String,
                                           dependencies: WordFixDependencies,

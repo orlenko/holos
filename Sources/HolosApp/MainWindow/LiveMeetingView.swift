@@ -10,6 +10,16 @@ struct LiveMeetingHeader: Equatable {
     var detail: String
 }
 
+struct LiveTextLearning {
+    var learned: [Correction]?
+    var owned: [Correction]?
+    var displaced: [Correction]?
+    var problem: String?
+    /// Restores the correction list to its state before this learning result. Used when the sidecar cannot record
+    /// the ownership metadata that makes a later live edit able to reconcile the learned rules.
+    var rollback: (() -> Bool)?
+}
+
 /// A meeting's live transcript in the Meetings section (docs/design.md "Live transcript"): its words as they are
 /// spoken, volatile ones in a secondary colour until they are final, with the microphone's echo of the call hidden
 /// (`LiveTranscript`). It follows the newest words while the user is at the bottom; scrolling up stops that and shows
@@ -17,12 +27,15 @@ struct LiveMeetingHeader: Equatable {
 /// meeting is saved, the header offers what opens a finished meeting (Review or the transcript). The ‹ Meetings
 /// button (Escape) goes back to the list.
 @MainActor
-final class LiveMeetingViewController: NSViewController {
+final class LiveMeetingViewController: NSViewController, NSTextViewDelegate {
     static let refreshInterval: Duration = .milliseconds(250)
 
     let sessionID: String
     private let onBack: () -> Void
     private let onOpenFinished: () -> Void
+    /// Reconciles safe correction pairs with the latest live edits. Arguments are the saved learning state, original
+    /// recognizer text, and new text. The result records what this edit confirms, newly owns, and displaced.
+    private let onLearnText: (LiveHints.CorrectionLearningState, String, String) -> LiveTextLearning
     private var reader: LiveTranscriptReader
     private var header = LiveMeetingHeader(name: "", phase: .starting, detail: "")
     private var paragraphs: [LiveParagraph] = []
@@ -31,6 +44,7 @@ final class LiveMeetingViewController: NSViewController {
     private var reading = false
     /// The text is being replaced or scrolled by the view itself, not by the user.
     private var updating = false
+    private var targets: [TargetRange] = []
 
     private let backButton = NSButton()
     private let titleLabel = NSTextField(labelWithString: "")
@@ -42,11 +56,18 @@ final class LiveMeetingViewController: NSViewController {
     private let placeholder = NSTextField(wrappingLabelWithString: "")
     private let jumpButton = NSButton()
     private let jumpPill = NSVisualEffectView()
+    private let correctTextButton = NSButton()
+    private let nameSpeakerButton = NSButton()
+    private let editStatus = NSTextField(labelWithString: "")
 
-    init(sessionID: String, directory: URL, onBack: @escaping () -> Void, onOpenFinished: @escaping () -> Void) {
+    init(sessionID: String, directory: URL, onBack: @escaping () -> Void, onOpenFinished: @escaping () -> Void,
+         onLearnText: @escaping (LiveHints.CorrectionLearningState, String, String) -> LiveTextLearning = {
+             _, _, _ in .init()
+         }) {
         self.sessionID = sessionID
         self.onBack = onBack
         self.onOpenFinished = onOpenFinished
+        self.onLearnText = onLearnText
         reader = LiveTranscriptReader(session: directory)
         super.init(nibName: nil, bundle: nil)
     }
@@ -102,6 +123,7 @@ final class LiveMeetingViewController: NSViewController {
         textView.backgroundColor = .textBackgroundColor
         textView.textContainerInset = NSSize(width: 20, height: 16)
         textView.setAccessibilityLabel("Live transcript")
+        textView.delegate = self
         scroll.hasVerticalScroller = true
         scroll.borderType = .noBorder
         scroll.translatesAutoresizingMaskIntoConstraints = false
@@ -142,8 +164,27 @@ final class LiveMeetingViewController: NSViewController {
             jumpPill.heightAnchor.constraint(equalToConstant: 30),
         ])
 
+        correctTextButton.title = "Correct Text…"
+        correctTextButton.target = self
+        correctTextButton.action = #selector(correctText)
+        correctTextButton.toolTip = "Correct the selected finalized phrase and learn safe word corrections"
+        nameSpeakerButton.title = "Name Speaker…"
+        nameSpeakerButton.target = self
+        nameSpeakerButton.action = #selector(nameSpeaker)
+        nameSpeakerButton.toolTip = "Attach a speaker name to the selected finalized phrase"
+        editStatus.textColor = .secondaryLabelColor
+        editStatus.font = .systemFont(ofSize: 11)
+        editStatus.lineBreakMode = .byTruncatingTail
+        editStatus.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        let editSpacer = NSView()
+        editSpacer.setContentHuggingPriority(.init(1), for: .horizontal)
+        let editBar = NSStackView(views: [correctTextButton, nameSpeakerButton, editSpacer, editStatus])
+        editBar.spacing = 8
+        editBar.alignment = .centerY
+        editBar.translatesAutoresizingMaskIntoConstraints = false
+
         let root = NSView()
-        for view in [bar, separator, scroll, placeholder, jumpPill] as [NSView] { root.addSubview(view) }
+        for view in [bar, separator, scroll, editBar, placeholder, jumpPill] as [NSView] { root.addSubview(view) }
         NSLayoutConstraint.activate([
             bar.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 16),
             bar.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -16),
@@ -154,7 +195,11 @@ final class LiveMeetingViewController: NSViewController {
             scroll.leadingAnchor.constraint(equalTo: root.leadingAnchor),
             scroll.trailingAnchor.constraint(equalTo: root.trailingAnchor),
             scroll.topAnchor.constraint(equalTo: separator.bottomAnchor),
-            scroll.bottomAnchor.constraint(equalTo: root.bottomAnchor),
+            scroll.bottomAnchor.constraint(equalTo: editBar.topAnchor),
+            editBar.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 16),
+            editBar.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -16),
+            editBar.bottomAnchor.constraint(equalTo: root.bottomAnchor, constant: -10),
+            editBar.heightAnchor.constraint(equalToConstant: 30),
             placeholder.centerXAnchor.constraint(equalTo: scroll.centerXAnchor),
             placeholder.centerYAnchor.constraint(equalTo: scroll.centerYAnchor),
             placeholder.widthAnchor.constraint(lessThanOrEqualTo: scroll.widthAnchor, constant: -80),
@@ -198,6 +243,7 @@ final class LiveMeetingViewController: NSViewController {
         statusLabel.setAccessibilityLabel("\(word). \(header.detail)")
         placeholder.stringValue = header.phase.capturing || header.phase == .saving
             ? "Listening… Words appear here as they are spoken." : "Nothing was transcribed."
+        updateEditButtons()
     }
 
     /// Starts reading the session (the section came on screen with this view).
@@ -229,9 +275,11 @@ final class LiveMeetingViewController: NSViewController {
                 var next = current
                 next.read(includeVolatile: includeVolatile)
                 guard next.revision != current.revision || next.volatile != current.volatile
+                    || next.hints != current.hints
                     || next.mode != current.mode else { return (next, nil) }
                 let echo = next.mode.flatMap(LiveTranscript.echoParameters(mode:))
-                return (next, LiveTranscript.paragraphs(finals: next.finals, volatile: next.volatile, echo: echo))
+                return (next, LiveTranscript.paragraphs(finals: next.finals, volatile: next.volatile, echo: echo,
+                                                        hints: next.hints))
             }.value
             guard let self else { return }
             self.reading = false
@@ -247,10 +295,13 @@ final class LiveMeetingViewController: NSViewController {
         guard paragraphs != self.paragraphs else { return }
         self.paragraphs = paragraphs
         updating = true
-        textView.textStorage?.setAttributedString(Self.attributed(paragraphs))
+        let rendered = Self.render(paragraphs)
+        targets = rendered.targets
+        textView.textStorage?.setAttributedString(rendered.text)
         if follow.scrollsToNewWords { textView.scrollToEndOfDocument(nil) }
         updating = false
         updateJump()
+        updateEditButtons()
     }
 
     override func viewDidLayout() {
@@ -287,6 +338,119 @@ final class LiveMeetingViewController: NSViewController {
 
     @objc private func openFinished() { onOpenFinished() }
 
+    // MARK: - Live corrections
+
+    func textViewDidChangeSelection(_ notification: Notification) { updateEditButtons() }
+
+    private struct TargetRange {
+        var range: NSRange
+        var hint: LiveHint
+        var speakerName: String?
+    }
+
+    private func selectedTarget() -> TargetRange? {
+        let selected = textView.selectedRange()
+        let matches = targets.filter { target in
+            if selected.length == 0 {
+                return selected.location >= target.range.location && selected.location < NSMaxRange(target.range)
+            }
+            return NSIntersectionRange(selected, target.range).length > 0
+        }
+        return matches.count == 1 ? matches[0] : nil
+    }
+
+    private func updateEditButtons() {
+        guard isViewLoaded else { return }
+        let enabled = header.phase.capturing && selectedTarget() != nil
+        correctTextButton.isEnabled = enabled
+        nameSpeakerButton.isEnabled = enabled
+    }
+
+    @objc private func correctText() {
+        guard let target = selectedTarget() else { return }
+        let field = NSTextField(string: target.hint.heard)
+        field.frame.size = NSSize(width: 360, height: 24)
+        let alert = NSAlert()
+        alert.messageText = "Correct this phrase"
+        alert.informativeText = "The correction is matched to this time in the final transcript. Safe misheard-word changes are also learned for the future."
+        alert.accessoryView = field
+        alert.addButton(withTitle: "Save Correction")
+        alert.addButton(withTitle: "Cancel")
+        alert.window.initialFirstResponder = field
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        let corrected = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !corrected.isEmpty, corrected != target.hint.heard else { return }
+        var hint = target.hint
+        hint.id = UUID().uuidString
+        hint.at = Date()
+        hint.action = .replaceText(corrected)
+        hint.learned = nil
+        hint.owned = nil
+        hint.displaced = nil
+        guard let savedHints = save(hint, success: "Text correction saved") else { return }
+        let originalHeard = LiveHints.originalHeard(for: target.hint, among: savedHints)
+        let learningState = LiveHints.correctionLearningState(for: target.hint, among: savedHints)
+        let learning = onLearnText(learningState, originalHeard, corrected)
+        var problems: [String] = []
+        if let problem = learning.problem { problems.append("could not learn it: \(problem)") }
+        if let learned = learning.learned, let owned = learning.owned,
+           let displaced = learning.displaced {
+            do {
+                try LiveHintStore.recordLearning(learned, owned: owned, displaced: displaced,
+                                                 for: hint.id, session: reader.session)
+                refresh()
+            } catch {
+                problems.append("could not record its correction rules: \(error.localizedDescription)")
+                if learning.rollback?() == false {
+                    problems.append("could not roll back its learned correction rules")
+                }
+            }
+        }
+        if !problems.isEmpty {
+            editStatus.stringValue = "Timed correction saved; " + problems.joined(separator: "; ")
+        }
+    }
+
+    @objc private func nameSpeaker() {
+        guard let target = selectedTarget() else { return }
+        let field = NSTextField(string: target.speakerName ?? "")
+        field.placeholderString = "Speaker name"
+        field.frame.size = NSSize(width: 280, height: 24)
+        let alert = NSAlert()
+        alert.messageText = "Name the speaker of this phrase"
+        alert.informativeText = "After speaker labelling, the speaker at this time will use this name."
+        alert.accessoryView = field
+        alert.addButton(withTitle: "Save Name")
+        alert.addButton(withTitle: "Cancel")
+        alert.window.initialFirstResponder = field
+        guard alert.runModal() == .alertFirstButtonReturn,
+              let name = SpeakerEditor.cleanName(field.stringValue) else { return }
+        var hint = target.hint
+        hint.id = UUID().uuidString
+        hint.at = Date()
+        hint.action = .nameSpeaker(name)
+        _ = save(hint, success: "Speaker name saved")
+    }
+
+    @discardableResult
+    private func save(_ hint: LiveHint, success: String) -> [LiveHint]? {
+        guard header.phase.capturing else {
+            editStatus.stringValue = "The meeting is no longer recording; this change was not saved."
+            return nil
+        }
+        do {
+            let saved = try LiveHintStore.append(hint, session: reader.session)
+            editStatus.stringValue = success
+            refresh()
+            return saved.hints
+        } catch {
+            let alert = NSAlert(error: error)
+            alert.messageText = "The live correction could not be saved"
+            alert.runModal()
+            return nil
+        }
+    }
+
     // MARK: - Text
 
     static func trackName(_ track: String) -> String {
@@ -296,7 +460,12 @@ final class LiveMeetingViewController: NSViewController {
     /// One paragraph per turn: a small header (a dot in the track's colour, the track, the time), then its words,
     /// final ones in the label colour and volatile ones in the secondary label colour.
     static func attributed(_ paragraphs: [LiveParagraph]) -> NSAttributedString {
+        render(paragraphs).text
+    }
+
+    private static func render(_ paragraphs: [LiveParagraph]) -> (text: NSAttributedString, targets: [TargetRange]) {
         let result = NSMutableAttributedString()
+        var targets: [TargetRange] = []
         let body = NSFont.systemFont(ofSize: 14)
         let small = NSFont.systemFont(ofSize: 11, weight: .semibold)
         for (index, paragraph) in paragraphs.enumerated() {
@@ -308,22 +477,34 @@ final class LiveMeetingViewController: NSViewController {
                 .font: NSFont.systemFont(ofSize: 9), .foregroundColor: dotColor, .paragraphStyle: headerStyle,
                 .baselineOffset: 1,
             ]))
+            let label = paragraph.speakerName.map { "\($0) · \(trackName(paragraph.track))" }
+                ?? trackName(paragraph.track)
             result.append(NSAttributedString(
-                string: "\(trackName(paragraph.track))  \(MeetingFormat.clock(paragraph.start))\n",
+                string: "\(label)  \(MeetingFormat.clock(paragraph.start))\n",
                 attributes: [.font: small, .foregroundColor: NSColor.secondaryLabelColor, .paragraphStyle: headerStyle]))
             let bodyStyle = NSMutableParagraphStyle()
             bodyStyle.lineSpacing = 3
             for (runIndex, run) in paragraph.runs.enumerated() {
                 let text = (runIndex == 0 ? "" : " ") + run.text
+                let location = result.length + (runIndex == 0 ? 0 : 1)
                 result.append(NSAttributedString(string: text, attributes: [
                     .font: body, .paragraphStyle: bodyStyle,
                     .foregroundColor: run.isFinal ? NSColor.labelColor : NSColor.secondaryLabelColor,
                 ]))
+                if run.isFinal, let segmentID = run.segmentID, let firstWord = run.firstWord,
+                   let endWord = run.endWord, let start = run.start, let end = run.end {
+                    targets.append(TargetRange(
+                        range: NSRange(location: location, length: run.text.utf16.count),
+                        hint: LiveHint(segmentID: segmentID, track: paragraph.track, firstWord: firstWord,
+                                       endWord: endWord, start: start, end: end, heard: run.text,
+                                       action: .replaceText(run.text)),
+                        speakerName: run.speakerName))
+                }
             }
             if index < paragraphs.count - 1 {
                 result.append(NSAttributedString(string: "\n", attributes: [.font: body, .paragraphStyle: bodyStyle]))
             }
         }
-        return result
+        return (result, targets)
     }
 }

@@ -1,5 +1,6 @@
 import Foundation
 import HolosCore
+import HolosSpeakers
 import HolosStorage
 import os
 
@@ -36,8 +37,8 @@ public struct WordFixDependencies: Sendable {
                                                  model: { _ in .unavailable("No model was given.") })
 }
 
-/// Stage 1c of the post-processor, `wordFixes` (docs/design.md "Meeting word fixes"), after the languages stage and
-/// before the speakers, so speakers are labelled on the fixed text: the learned corrections are applied to every
+/// Stage 1d of the post-processor, `wordFixes` (docs/design.md "Meeting word fixes"), after languages and live text
+/// corrections and before the speakers, so speakers are labelled on the fixed text: learned corrections apply to every
 /// segment as dictation applies them (whole words and phrases, any case, a sentence's capital carried over), then each
 /// place where the word list's "often heard as" phrase of a term was written is put to Apple's on-device model
 /// (`HeardAsJudge`), which may replace exactly that place by the term and nothing else. A replaced phrase takes the
@@ -71,6 +72,9 @@ enum WordFixStage {
         /// `PostProcessingOptions.force`: with `requested`, it lets the stage replace a transcript whose speaker labels
         /// were edited.
         var force: Bool
+        /// A fixed revision displaced when late live hints were rebased onto its unfixed base. Its accepted term and
+        /// Review-revert decisions can be carried across the retry.
+        var priorFixed: Transcript? = nil
     }
 
     struct Outcome {
@@ -119,7 +123,8 @@ enum WordFixStage {
             recorder.end(.wordFixes, .failed, message, since: started)
             return Outcome(transcript: current, problem: message)
         }
-        guard !corrections.entries.isEmpty || !terms.entries.isEmpty || current.fixedFrom != nil || request.requested
+        guard !corrections.entries.isEmpty || !terms.entries.isEmpty || current.fixedFrom != nil
+            || request.priorFixed != nil || request.requested
         else { return unchanged }
         let started = recorder.begin(.wordFixes, message: "Fixing misheard words…")
         try Task.checkCancellation()
@@ -165,7 +170,7 @@ enum WordFixStage {
 
         let journal = recorder.journal
         let computed = try await fix(base, title: request.manifest.name, corrections: corrections, terms: terms,
-                                     dependencies: dependencies) { fraction in
+                                     dependencies: dependencies, preservingTermsFrom: request.priorFixed) { fraction in
             journal.progress(PostProcessingProgress(stage: .wordFixes, fraction: fraction,
                                                     message: "Checking words the recognizer may have misheard…"))
         }
@@ -192,7 +197,10 @@ enum WordFixStage {
         let counts = computed.counts
         let asked = computed.asked
         let detail = computed.notes.isEmpty ? nil : computed.notes.joined(separator: " ")
-        if counts.total == 0, current.fixedFrom == nil {
+        let keptReviewReverts = segments.contains { segment in
+            (segment.fixes ?? []).contains { $0.kind == .reviewRevert }
+        }
+        if counts.total == 0, current.fixedFrom == nil, segments == current.segments {
             recorder.end(.wordFixes, .succeeded, ["No misheard words to fix.", detail].compactMap { $0 }
                 .joined(separator: " "), since: started)
             return unchanged
@@ -221,7 +229,8 @@ enum WordFixStage {
             "transcriptID": fixed.id, "base": base.id, "corrections": String(counts.corrections),
             "terms": String(counts.terms), "asked": String(asked),
         ]
-        let message = counts.total == 0 ? "No misheard words to fix; the earlier fixes were undone."
+        let message = keptReviewReverts ? reviewRevert
+            : counts.total == 0 ? "No misheard words to fix; the earlier fixes were undone."
             : "Fixed \(summary(counts))."
         do {
             let publication = try await publish(fixed, details: details, request: request)
@@ -260,6 +269,45 @@ enum WordFixStage {
         var termChecksComplete: Bool
     }
 
+    private struct AcceptedTerm {
+        var segmentID: String
+        var heard: String
+        var visible: String
+        var location: FixLocation
+    }
+
+    private struct RevertedFix {
+        var segmentID: String
+        /// The automatic replacement the person rejected.
+        var rejected: String
+        /// The recognizer text restored in Review and expected in the new base.
+        var visible: String
+        var location: FixLocation
+    }
+
+    private struct PriorFix {
+        var segmentID: String
+        var heard: String
+        var visible: String
+        var kind: TranscriptWordFixKind
+        var location: FixLocation
+    }
+
+    private struct FixLocation {
+        var midpoint: Double
+        var tolerance: Double
+        /// Position in the segment's word order. Unlike estimated times, this is not redistributed when an untimed
+        /// segment gains or loses words elsewhere.
+        var wordMidpoint: Double
+        var wordTolerance: Double
+        var estimated: Bool
+    }
+
+    private struct WordOrigin {
+        var start: Double
+        var end: Double
+    }
+
     /// Fixes `base` (a transcript none of whose words were fixed) without saving anything: the learned corrections
     /// everywhere, then each place where a phrase of `terms` (heard → term pairs) was written, outside what the
     /// corrections changed, put to the model with the passage around it (its segment, and for a short segment the ends
@@ -269,10 +317,21 @@ enum WordFixStage {
     /// candidate can use it as is.
     static func fix(_ base: Transcript, title: String, corrections: CorrectionList, terms: CorrectionList,
                     dependencies: WordFixDependencies,
+                    preservingTermsFrom priorFixed: Transcript? = nil,
                     progress: (Double) -> Void = { _ in }) async throws -> Computed {
-        // The corrections, everywhere.
-        var working: [WordFixes.Working?] = base.segments.map { segment in
-            WordFixes.Working(segment).map { WordFixes.applying(WordFixes.corrections(in: $0, list: corrections), to: $0) }
+        var working: [WordFixes.Working?] = base.segments.map {
+            WordFixes.Working($0, preservingExistingFixes: true)
+        }
+        // A late live-hint rebase deliberately starts from the unfixed revision, which would otherwise discard a
+        // correction the person changed back in Review. Restore those marks at the same timed text before applying
+        // automatic rules; the ordinary overlap rule then keeps each rejected replacement out. A live correction
+        // over the same words wins because the restored recognizer text is no longer present there.
+        preserveReviewReverts(from: priorFixed, in: base, working: &working)
+        // The corrections, everywhere outside live corrections and preserved Review reverts.
+        for index in working.indices {
+            working[index] = working[index].map {
+                WordFixes.applying(WordFixes.corrections(in: $0, list: corrections), to: $0)
+            }
         }
         // The places where a term's "often heard as" phrase was written, outside what the corrections changed.
         struct Place {
@@ -288,6 +347,33 @@ enum WordFixStage {
                 places.append(Place(segment: index, match: match))
             }
         }
+        // A late live-hint retry starts again from the earlier fixed revision's base. Carry its accepted term
+        // decisions at the same timed locations into that new base before asking the model. A live correction that
+        // overlaps one of them leaves no matching place, so the direct edit wins.
+        var accepted: [Int: [WordFixes.Replacement]] = [:]
+        var usedPriorTerms: Set<Int> = []
+        let priorTerms = acceptedTerms(in: priorFixed)
+        places.removeAll { place in
+            guard let item = working[place.segment],
+                  let location = location(of: place.match, in: item,
+                                          segment: base.segments[place.segment]),
+                  let evidence = priorTerms.indices
+                    .filter({ index in
+                        guard !usedPriorTerms.contains(index) else { return false }
+                        let prior = priorTerms[index]
+                        return prior.segmentID == base.segments[place.segment].id
+                            && normalized(prior.heard) == normalized(place.match.heard)
+                            && prior.visible.contains(place.match.correction.meant)
+                            && matchDistance(prior.location, location) != nil
+                    })
+                    .min(by: { matchDistance(priorTerms[$0].location, location)!
+                        < matchDistance(priorTerms[$1].location, location)! }) else { return false }
+            usedPriorTerms.insert(evidence)
+            let range = place.match.range.location..<(place.match.range.location + place.match.range.length)
+            accepted[place.segment, default: []].append(
+                WordFixes.Replacement(range: range, text: place.match.correction.meant, kind: .term))
+            return true
+        }
         var notes: [String] = []
         var asked = 0
         var unavailable: String?
@@ -302,7 +388,6 @@ enum WordFixStage {
                 models[language] = found
                 return found
             }
-            var accepted: [Int: [WordFixes.Replacement]] = [:]
             // The passage around a place: the segments before and after it in time, whatever their track.
             let order = base.segments.indices.sorted {
                 (base.segments[$0].start, base.segments[$0].track ?? "")
@@ -377,18 +462,252 @@ enum WordFixStage {
                 notes.append("Apple Intelligence could not answer for \(failed) "
                     + "\(failed == 1 ? "place" : "places"), which stay as written.")
             }
-            for (segment, replacements) in accepted {
-                working[segment] = working[segment].map { WordFixes.applying(replacements, to: $0) }
-            }
+        }
+        for (segment, replacements) in accepted {
+            working[segment] = working[segment].map { WordFixes.applying(replacements, to: $0) }
         }
         try Task.checkCancellation()
         let segments = base.segments.indices.map { index in
             working[index].map { WordFixes.finished($0, segment: base.segments[index]) } ?? base.segments[index]
         }
         let fixed = Transcript(source: base.source, locale: base.locale, backend: base.backend, segments: segments,
-                               languages: base.languages, fixedFrom: base.id)
+                               languages: base.languages, fixedFrom: base.id,
+                               liveCorrectedFrom: base.liveCorrectedFrom)
         return Computed(transcript: fixed, counts: WordFixes.Counts(fixed), asked: asked, notes: notes,
                         unavailable: unavailable, termChecksComplete: termChecksComplete)
+    }
+
+    /// Carries the automatic decisions of a displaced fixed revision onto a newly live-corrected base. This makes
+    /// the live stage's publication self-contained: if edited speaker labels make the following automatic stage
+    /// decline to recompute, its previous corrections, accepted terms, and Review reverts are still present. A live
+    /// mark wins on overlap. The following word-fix stage can still rebuild these from `fixedFrom` when permitted.
+    static func preservingPriorFixes(from prior: Transcript, on live: Transcript) -> Transcript {
+        let evidence = priorFixes(in: prior)
+        guard !evidence.isEmpty else { return live }
+        var working = live.segments.map { WordFixes.Working($0, preservingExistingFixes: true) }
+        var used: Set<Int> = []
+        var preserved = false
+        for segmentIndex in live.segments.indices {
+            guard var item = working[segmentIndex] else { continue }
+            while let choice = evidence.indices.compactMap({ index -> (Int, CorrectionList.Match, Double)? in
+                guard !used.contains(index), evidence[index].segmentID == live.segments[segmentIndex].id else {
+                    return nil
+                }
+                let prior = evidence[index]
+                let sought = prior.kind == .reviewRevert ? prior.visible : prior.heard
+                let finder = CorrectionList(entries: [
+                    Correction(heard: sought, meant: sought + "\u{2060}"),
+                ])
+                return finder.matches(in: item.text).compactMap { match in
+                    let range = match.range.location..<(match.range.location + match.range.length)
+                    guard !item.marks.contains(where: { $0.range.overlaps(range) }),
+                          let location = location(of: match, in: item, segment: live.segments[segmentIndex]),
+                          let distance = matchDistance(prior.location, location) else { return nil }
+                    return (index, match, distance)
+                }.min(by: { $0.2 < $1.2 })
+            }).min(by: { $0.2 < $1.2 }) {
+                let prior = evidence[choice.0]
+                let range = choice.1.range.location..<(choice.1.range.location + choice.1.range.length)
+                let before = item
+                item = WordFixes.applying([
+                    .init(range: range, text: prior.visible, kind: prior.kind, heard: prior.heard),
+                ], to: item)
+                preserved = preserved || item != before
+                used.insert(choice.0)
+            }
+            working[segmentIndex] = item
+        }
+        guard preserved else { return live }
+        let segments = live.segments.indices.map { index in
+            working[index].map { WordFixes.finished($0, segment: live.segments[index]) } ?? live.segments[index]
+        }
+        return Transcript(source: live.source, locale: live.locale, backend: live.backend, segments: segments,
+                          languages: live.languages, fixedFrom: live.id,
+                          liveCorrectedFrom: live.liveCorrectedFrom)
+    }
+
+    private static func priorFixes(in transcript: Transcript) -> [PriorFix] {
+        var result: [PriorFix] = []
+        for segment in transcript.segments {
+            let words = WordTiming.effectiveWords(of: segment)
+            guard let origins = wordOrigins(of: segment) else { continue }
+            let text = segment.text as NSString
+            for fix in segment.fixes ?? []
+            where fix.kind == .correction || fix.kind == .term || fix.kind == .reviewRevert {
+                guard fix.first >= 0, fix.first < fix.end, fix.end <= words.count else { continue }
+                let first = words[fix.first], last = words[fix.end - 1]
+                let range = NSRange(location: first.utf16Offset,
+                                    length: last.utf16Offset + last.utf16Length - first.utf16Offset)
+                guard range.location >= 0, range.location + range.length <= text.length,
+                      let location = fixLocation(first: fix.first, end: fix.end,
+                                                 words: words, origins: origins) else { continue }
+                result.append(PriorFix(segmentID: segment.id, heard: fix.heard,
+                                       visible: text.substring(with: range), kind: fix.kind,
+                                       location: location))
+            }
+        }
+        return result
+    }
+
+    private static func acceptedTerms(in transcript: Transcript?) -> [AcceptedTerm] {
+        guard let transcript else { return [] }
+        var result: [AcceptedTerm] = []
+        for segment in transcript.segments {
+            let words = WordTiming.effectiveWords(of: segment)
+            guard let origins = wordOrigins(of: segment) else { continue }
+            let text = segment.text as NSString
+            for fix in segment.fixes ?? [] where fix.kind == .term {
+                guard fix.first >= 0, fix.first < fix.end, fix.end <= words.count else { continue }
+                let first = words[fix.first], last = words[fix.end - 1]
+                let range = NSRange(location: first.utf16Offset,
+                                    length: last.utf16Offset + last.utf16Length - first.utf16Offset)
+                guard range.location >= 0, range.location + range.length <= text.length,
+                      let location = fixLocation(first: fix.first, end: fix.end,
+                                                 words: words, origins: origins) else { continue }
+                result.append(AcceptedTerm(segmentID: segment.id, heard: fix.heard,
+                                           visible: text.substring(with: range),
+                                           location: location))
+            }
+        }
+        return result
+    }
+
+    private static func preserveReviewReverts(from transcript: Transcript?, in base: Transcript,
+                                              working: inout [WordFixes.Working?]) {
+        let evidence = reviewReverts(in: transcript)
+        var used: Set<Int> = []
+        for segmentIndex in base.segments.indices {
+            guard var item = working[segmentIndex] else { continue }
+            while let choice = evidence.indices.compactMap({ index -> (Int, CorrectionList.Match, Double)? in
+                guard !used.contains(index), evidence[index].segmentID == base.segments[segmentIndex].id else {
+                    return nil
+                }
+                let prior = evidence[index]
+                let finder = CorrectionList(entries: [
+                    Correction(heard: prior.visible, meant: prior.visible + "\u{2060}"),
+                ])
+                return finder.matches(in: item.text).compactMap { match in
+                    let range = match.range.location..<(match.range.location + match.range.length)
+                    guard !item.marks.contains(where: { $0.range.overlaps(range) }),
+                          let location = location(of: match, in: item, segment: base.segments[segmentIndex]),
+                          let distance = matchDistance(prior.location, location) else { return nil }
+                    return (index, match, distance)
+                }.min(by: { $0.2 < $1.2 })
+            }).min(by: { $0.2 < $1.2 }) {
+                let prior = evidence[choice.0]
+                let range = choice.1.range.location..<(choice.1.range.location + choice.1.range.length)
+                item.marks.append(.init(range: range, heard: prior.rejected, kind: .reviewRevert))
+                used.insert(choice.0)
+            }
+            working[segmentIndex] = item
+        }
+    }
+
+    private static func reviewReverts(in transcript: Transcript?) -> [RevertedFix] {
+        guard let transcript else { return [] }
+        var result: [RevertedFix] = []
+        for segment in transcript.segments {
+            let words = WordTiming.effectiveWords(of: segment)
+            guard let origins = wordOrigins(of: segment) else { continue }
+            let text = segment.text as NSString
+            for fix in segment.fixes ?? [] where fix.kind == .reviewRevert {
+                guard fix.first >= 0, fix.first < fix.end, fix.end <= words.count else { continue }
+                let first = words[fix.first], last = words[fix.end - 1]
+                let range = NSRange(location: first.utf16Offset,
+                                    length: last.utf16Offset + last.utf16Length - first.utf16Offset)
+                guard range.location >= 0, range.location + range.length <= text.length,
+                      let location = fixLocation(first: fix.first, end: fix.end,
+                                                 words: words, origins: origins) else { continue }
+                result.append(RevertedFix(segmentID: segment.id, rejected: fix.heard,
+                                          visible: text.substring(with: range),
+                                          location: location))
+            }
+        }
+        return result
+    }
+
+    private static func location(of match: CorrectionList.Match, in working: WordFixes.Working,
+                                 segment: TranscriptSegment)
+        -> FixLocation? {
+        let range = match.range.location..<(match.range.location + match.range.length)
+        let finished = WordFixes.finished(working, segment: segment)
+        let words = WordTiming.effectiveWords(of: finished)
+        guard let origins = wordOrigins(of: finished) else { return nil }
+        let touched = words.indices.filter { index in
+            let word = words[index]
+            return (word.utf16Offset..<(word.utf16Offset + word.utf16Length)).overlaps(range)
+        }
+        guard let firstIndex = touched.first, let lastIndex = touched.last else { return nil }
+        return fixLocation(first: firstIndex, end: lastIndex + 1, words: words, origins: origins)
+    }
+
+    /// Each current word's interval in the segment's pre-fix word order. Live replacements before an untimed match
+    /// can change its raw index; their `heard` provenance keeps both revisions in this common coordinate space.
+    private static func wordOrigins(of segment: TranscriptSegment) -> [WordOrigin]? {
+        let count = WordTiming.effectiveWords(of: segment).count
+        let fixes = (segment.fixes ?? []).sorted { ($0.first, $0.end) < ($1.first, $1.end) }
+        var result: [WordOrigin] = []
+        var current = 0
+        var original = 0
+        func appendUnchanged(_ amount: Int) {
+            for offset in 0..<amount {
+                result.append(WordOrigin(start: Double(original + offset), end: Double(original + offset + 1)))
+            }
+        }
+        for fix in fixes {
+            guard fix.first >= current, fix.first < fix.end, fix.end <= count else { return nil }
+            let unchanged = fix.first - current
+            appendUnchanged(unchanged)
+            current += unchanged
+            original += unchanged
+            let replacementCount = fix.end - fix.first
+            let originalCount: Int
+            switch fix.kind {
+            case .correction, .term, .liveCorrection:
+                originalCount = WordFixes.tokens(of: Array(fix.heard.utf16)).count
+            case .reviewRevert:
+                originalCount = replacementCount
+            default:
+                return nil
+            }
+            guard originalCount > 0 else { return nil }
+            for offset in 0..<replacementCount {
+                result.append(WordOrigin(
+                    start: Double(original) + Double(offset * originalCount) / Double(replacementCount),
+                    end: Double(original) + Double((offset + 1) * originalCount) / Double(replacementCount)))
+            }
+            current = fix.end
+            original += originalCount
+        }
+        appendUnchanged(count - current)
+        return result.count == count ? result : nil
+    }
+
+    private static func fixLocation(first: Int, end: Int, words: [EffectiveWord], origins: [WordOrigin])
+        -> FixLocation? {
+        guard first >= 0, first < end, end <= words.count, origins.count == words.count else { return nil }
+        let firstWord = words[first], lastWord = words[end - 1]
+        let duration = max(0, lastWord.end - firstWord.start)
+        let originStart = origins[first].start
+        let originEnd = origins[end - 1].end
+        return FixLocation(midpoint: (firstWord.start + lastWord.end) / 2,
+                           tolerance: max(0.05, duration / 4),
+                           wordMidpoint: (originStart + originEnd) / 2,
+                           wordTolerance: max(1, (originEnd - originStart) / 4),
+                           estimated: firstWord.estimated || lastWord.estimated)
+    }
+
+    private static func matchDistance(_ prior: FixLocation, _ current: FixLocation) -> Double? {
+        if prior.estimated || current.estimated {
+            let distance = abs(prior.wordMidpoint - current.wordMidpoint)
+            return distance <= max(prior.wordTolerance, current.wordTolerance) ? distance : nil
+        }
+        let distance = abs(prior.midpoint - current.midpoint)
+        return distance <= max(prior.tolerance, current.tolerance) ? distance : nil
+    }
+
+    private static func normalized(_ text: String) -> String {
+        text.split(whereSeparator: \.isWhitespace).joined(separator: " ").lowercased()
     }
 
     /// "12 misheard words: 9 by corrections, 3 word-list terms"
@@ -512,14 +831,15 @@ enum WordFixStage {
 
     // MARK: - Lineage
 
-    /// The transcript `transcriptID` was fixed from, following `wordsFixed` events back to one that was not fixed;
-    /// `transcriptID` itself when it was not. Every bookkeeping that names transcripts by ID (a merge's languages, a
-    /// rebuild) asks about that one, since a fixed transcript stands for it.
+    /// The transcript `transcriptID` was corrected from, following automatic and live correction events back to one
+    /// that was not corrected; `transcriptID` itself when it was not. Every bookkeeping that names transcripts by ID
+    /// (a merge's languages, a rebuild) asks about that one, since a corrected transcript stands for it.
     static func unfixedID(_ transcriptID: String, events: [ArchiveEvent]) -> String {
         var id = transcriptID
         var seen: Set<String> = [id]
         while let base = events.last(where: {
-            $0.kind == MeetingEventKind.wordsFixed && $0.details["transcriptID"] == id
+            ($0.kind == MeetingEventKind.wordsFixed || $0.kind == MeetingEventKind.liveHintsApplied)
+                && $0.details["transcriptID"] == id
         })?.details["base"], !base.isEmpty, seen.insert(base).inserted {
             id = base
         }

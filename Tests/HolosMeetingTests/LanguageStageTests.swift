@@ -1501,22 +1501,46 @@ func recoverWithTodaysVocabularyKeepsItsRebuildOverTheLanguagesStage() async thr
     defer { temp.remove() }
     // A bilingual meeting whose last 2 s were not transcribed live; both speech models are installed.
     let session = try await languageStageDeadMeeting(in: temp.url, coveredToEnd: false)
+    let liveSegment = languageStageHeard(by: "en", prefix: "E")[0]
+    let liveWord = liveSegment.words[0]
+    let live = LiveHint(id: "live", at: SessionFixtures.date, segmentID: liveSegment.id, track: "mic",
+                        firstWord: 0, endWord: 1, start: liveWord.start, end: liveWord.end,
+                        heard: liveWord.text, action: .replaceText("corrected-live-word"))
+    try AtomicFile.write(Data("damaged".utf8), to: SessionPaths.liveHints(session))
     let speech = LanguageStageSpeech.standard()
     let heard = SharedValue<[[String]]>([])
-    let outcome = try await SessionRecoveryCommand.run(
-        SessionRecoveryCommand.Request(session: session, vocabulary: ["Keycloak", "Urban Sky"]), diarizer: nil,
-        makeSpeech: { locale, backend, contextualStrings, onUpdate in
+    let request = SessionRecoveryCommand.Request(session: session, vocabulary: ["Keycloak", "Urban Sky"])
+    let makeSpeech: LiveSpeechFactory = { locale, backend, contextualStrings, onUpdate in
             heard.update { $0.append(contextualStrings) }
             return FakeSpeech(locale: locale, backend: backend, contextualStrings: contextualStrings,
                               script: FakeSpeechScript(), onUpdate: onUpdate)
-        },
+        }
+    let failed = try await SessionRecoveryCommand.run(
+        request, diarizer: nil, makeSpeech: makeSpeech,
         freeSpace: FixedFreeSpace(.max), languages: languageStageDependencies(speech))
-    let rebuiltID = try #require(outcome.rebuild?.transcriptID)
+    let rebuiltID = try #require(failed.rebuild?.transcriptID)
+    #expect(failed.postProcessing?.state == .partial)
+    #expect(try languageStageCurrent(session).id == rebuiltID)
+
+    // Repairing the sidecar makes an otherwise unchanged recovery run post-processing again instead of declaring
+    // the partial record up to date.
+    let sessionID = try SessionArchive.readManifest(at: session).id
+    try AtomicFile.writeJSON(LiveHintFile(sessionID: sessionID, hints: [live]),
+                             to: SessionPaths.liveHints(session))
+    let outcome = try await SessionRecoveryCommand.run(
+        request, diarizer: nil, makeSpeech: makeSpeech,
+        freeSpace: FixedFreeSpace(.max), languages: languageStageDependencies(speech))
+    #expect(outcome.rebuild?.reused == true)
+    #expect(outcome.postProcessing != nil)
     #expect(!heard.value.isEmpty && heard.value.allSatisfy { $0 == ["Keycloak", "Urban Sky"] })
     // The languages stage would transcribe the meeting again with vocabulary.json and replace the rebuild.
     #expect(speech.locales.isEmpty)
     #expect(outcome.postProcessing.flatMap(languageStageOutcome) == nil)
-    #expect(try languageStageCurrent(session).id == rebuiltID)
+    let corrected = try languageStageCurrent(session)
+    #expect(corrected.id != rebuiltID)
+    #expect(corrected.liveCorrectedFrom == rebuiltID)
+    #expect(corrected.segments[0].text.hasPrefix("corrected-live-word "))
+    #expect(try languageStageEvents(session, MeetingEventKind.liveHintsApplied).count == 1)
 
     // Without today's vocabulary, the same recovery goes on to merge the two languages.
     let other = try TemporaryDirectory("languages")

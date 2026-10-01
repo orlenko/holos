@@ -1242,6 +1242,39 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
         return CorrectionsPane.LearnResult(learned: learned, declined: declined, edit: nil)
     }
 
+    /// A live meeting's exact timed text correction also teaches safe, small mishearing pairs for future speech.
+    /// Reconciles every live-managed rule with the latest edit of each phrase, so a shared rule stays until its last
+    /// confirming phrase releases it while an identical rule predating live editing is never claimed. Rewordings and
+    /// unanchored dictionary-word swaps remain timed-only.
+    func learnMeetingCorrection(state: LiveHints.CorrectionLearningState,
+                                heard: String, meant: String) -> LiveTextLearning {
+        let dictionaryWord: (String) -> Bool = { word in
+            NSSpellChecker.shared.checkSpelling(of: word.lowercased(), startingAt: 0).location == NSNotFound
+        }
+        let learned = CorrectionList.learn(original: heard, corrected: meant,
+                                           isDictionaryWord: dictionaryWord)
+        let desired = state.other + learned
+        guard !state.managed.isEmpty || !desired.isEmpty else {
+            return LiveTextLearning(learned: learned, owned: [], displaced: [])
+        }
+        var reconciliation = CorrectionList.LearningReconciliation()
+        guard changeCorrections({
+            reconciliation = $0.reconcileLearned(state.managed, preserving: state.preexisting, with: desired)
+        }) else {
+            // Nil metadata leaves the prior successful learning state in place for this phrase.
+            return LiveTextLearning(problem: "the corrections list is unavailable")
+        }
+        return LiveTextLearning(learned: learned, owned: reconciliation.owned,
+                                displaced: reconciliation.displaced,
+                                rollback: { [weak self] in
+            self?.changeCorrections { list in
+                list.reconcileLearned(state.managed + reconciliation.owned,
+                                      preserving: state.preexisting + reconciliation.displaced,
+                                      with: state.other + state.previous)
+            } ?? false
+        })
+    }
+
     /// A manual Add; one that resolves a declined swap also keeps the edit that swap came from, as Learn
     /// does, unless a newer dictation or kept edit has replaced the text it was edited from.
     private func addCorrection(_ correction: Correction, resolving edit: DeclinedCorrectionQueue.PendingEdit?)
