@@ -660,3 +660,59 @@ private func words(_ text: String) -> [String] { text.split(separator: " ").map(
     let track = EvalTerms.Track(track: "system", words: plain, covered: Array(repeating: true, count: plain.count))
     #expect(EvalTerms.count(terms, tracks: [track], normalized: true).map { "\($0.hits)/\($0.cloud)" } == ["1/1"])
 }
+
+@Test func fairNumbersOfSeveralWordsOnBothSidesAreTheSame() {
+    #expect(NormalizedAlignment.align(words("thirty per cent"), words("30 percent"))
+        == [.join(local: 0..<3, cloud: 0..<2, .number)])
+    #expect(NormalizedAlignment.align(words("30 per cent"), words("thirty percent"))
+        == [.join(local: 0..<3, cloud: 0..<2, .number)])
+    #expect(NormalizedAlignment.align(words("30 per cent"), ["30%"]) == [.join(local: 0..<3, cloud: 0..<1, .number)])
+    let result = WindowComparer.compare(track: "system", local: fairTimed(words("up thirty per cent today")),
+                                        cloud: fairUntimed("up 30 percent today"), start: 0, end: 10)
+    #expect(result.normalized.edits == 0 && result.normalization.numbers == 1)
+    #expect(result.passages.allSatisfy { $0.formattingOnly })
+    // Still only as whole numbers, and never two spelled ones.
+    #expect(NormalizedAlignment.align(words("thirty per cent"), words("thirty percent")).contains { $0.isEdit })
+    #expect(NormalizedAlignment.align(words("plus thirty per cent"), words("30 percent")).contains { $0.isEdit })
+}
+
+@Test func fairAMatchedWordReadAsAFillerOnOneSideIsInAPassage() {
+    // Local "mm" follows "um" (a filler), the cloud's follows "5" (millimetres): the only raw passage is the "um",
+    // which alone would be formatting only; the one-sided "mm" joins it, so its edit is in front of the reviewer.
+    let result = WindowComparer.compare(track: "system", local: fairTimed(words("cut 5 um mm now")),
+                                        cloud: fairUntimed("cut 5 mm now"), start: 0, end: 10)
+    #expect(result.score.edits == 1 && result.normalized.edits == 1)
+    #expect(result.passages.map(\.local) == ["um mm"] && result.passages.map(\.cloud) == ["mm"])
+    #expect(result.passages.map(\.formattingOnly) == [false])
+    #expect(result.cloudEquivalent[2] == false)
+}
+
+private func fairHits(_ term: String, in text: String) -> [String] {
+    let track = EvalTerms.Track(track: "system", words: words(text),
+                                covered: Array(repeating: true, count: words(text).count))
+    return EvalTerms.count(EvalTerms.terms(wordList: [term], corrections: []), tracks: [track], normalized: true)
+        .map { "\($0.hits)/\($0.cloud)" }
+}
+
+@Test func fairTermsReadADigitPhraseBeforeTheSpelledNumbersInIt() {
+    // "cent" alone is the French 100, but in "30 per cent" it is part of 30%.
+    #expect(fairHits("30%", in: "we saw 30 per cent") == ["1/1"])
+    #expect(fairHits("30%", in: "on a vu 30 pour cent") == ["1/1"])
+    #expect(fairHits("100", in: "we saw 30 per cent").isEmpty)
+}
+
+@Test func fairCompoundTermsNeverMatchAnotherSpelledNumber() {
+    // "version one" and "version un" both read "version1", as two spelled numbers they stay different words.
+    #expect(fairHits("version one", in: "we use version un").isEmpty)
+    #expect(fairHits("version one", in: "we use version one") == ["1/1"])
+    #expect(fairHits("version 1", in: "we use version un") == ["1/1"])
+    #expect(fairHits("version un", in: "we use version 1") == ["1/1"])
+}
+
+@Test func fairTermsNeverEndInsideADigitPhraseWhateverTheirOtherWords() {
+    #expect(fairHits("version 30", in: "we use version 30 percent").isEmpty)
+    #expect(fairHits("version 30", in: "we use version 30 today") == ["1/1"])
+    #expect(fairHits("plus 30", in: "a plus 30 percent").isEmpty)
+    // A phrase whose part in the term holds no number does not cut it.
+    #expect(fairHits("Blorb plus", in: "on Blorb plus 30 today") == ["1/1"])
+}

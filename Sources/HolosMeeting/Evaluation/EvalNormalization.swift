@@ -667,11 +667,31 @@ public enum NormalizedAlignment {
     /// never "v201"; "V one hundred": "v100"). No digit form when a run is not a whole number ("three point five"),
     /// or touches another number ("V one two", "V2 one"), or with `numbers` false. Only forms that keep a letter.
     static func compoundForms(_ words: [String], numbers: Bool = true) -> [String] {
+        Array(Set(compoundReadings(words, numbers: numbers).map(\.text))).sorted()
+    }
+
+    /// One of `compoundForms`, with where its spelled numbers stand in it: "V one" is "v1", with "one" written as
+    /// the "1" at characters 1..<2.
+    struct CompoundForm: Sendable, Equatable {
+        var text: String
+        /// The characters of `text` that are a spelled number written in digits.
+        var spelled: [Range<Int>] = []
+
+        /// The same words, as `sameNumber` takes numbers: a number both forms spelled is never the same, even when
+        /// its digits are ("version one" and "version un" are both "version1"; only "version 1" is both).
+        func matches(_ other: CompoundForm) -> Bool {
+            text == other.text && !spelled.contains { mine in other.spelled.contains { $0.overlaps(mine) } }
+        }
+    }
+
+    /// `compoundForms` with where each form's spelled numbers are.
+    static func compoundReadings(_ words: [String], numbers: Bool = true) -> [CompoundForm] {
         let keys = words.map(EvalText.key)
-        var forms = [keys.joined()]
+        var forms = [CompoundForm(text: keys.joined())]
         let runs = numbers ? EvalNormalization.SpelledRuns(words, fillers: []).runs : []
         if !runs.isEmpty {
             var digits = ""
+            var spelled: [Range<Int>] = []
             var valid = true
             var index = 0
             var runIndex = 0
@@ -684,6 +704,7 @@ public enum NormalizedAlignment {
                 if let form = EvalNormalization.number(Array(words[run])), form.canonical.allSatisfy(\.isNumber),
                    index == 0 || keys[index - 1].last?.isNumber != true,
                    run.upperBound == words.count || keys[run.upperBound].first?.isNumber != true {
+                    spelled.append(digits.count..<(digits.count + form.canonical.count))
                     digits += form.canonical
                 } else {
                     valid = false
@@ -692,9 +713,9 @@ public enum NormalizedAlignment {
             }
             // Runs next to each other ("one two") are two numbers, never "12".
             let adjacent = zip(runs, runs.dropFirst()).contains { $0.upperBound == $1.lowerBound }
-            if valid, !adjacent { forms.append(digits) }
+            if valid, !adjacent, digits != forms[0].text { forms.append(CompoundForm(text: digits, spelled: spelled)) }
         }
-        return Array(Set(forms)).filter { $0.contains(where: \.isLetter) }.sorted()
+        return forms.filter { $0.text.contains(where: \.isLetter) }
     }
 
     struct Side {
@@ -716,6 +737,9 @@ public enum NormalizedAlignment {
         /// [end]: the lengths (2 or more) of the runs ending just before word `end` that may join one word of the
         /// other side, as a number or a compound; the alignment tries only those.
         var joinLengths: [[Int]]
+        /// [end]: the lengths (2 or more) of the numbers (`numbers`) ending just before word `end`, which may also
+        /// join several words of the other side ("thirty per cent"/"30 percent").
+        var numberLengths: [[Int]]
 
         init(_ words: [String], surroundings: Surroundings,
              fillers fillerSet: Set<String> = EvalNormalization.allFillers) {
@@ -779,6 +803,7 @@ public enum NormalizedAlignment {
             }
             var joinLengths = [Set<Int>](repeating: [], count: count + 1)
             for range in numbers.keys where range.count > 1 { joinLengths[range.upperBound].insert(range.count) }
+            numberLengths = joinLengths.map { $0.sorted() }
             for (index, row) in compounds.enumerated() {
                 for (start, forms) in row.enumerated() where !forms.isEmpty {
                     joinLengths[start + index + 1].insert(index + 1)
@@ -827,8 +852,23 @@ public enum NormalizedAlignment {
         return sameNumber(many.number(start, length), single.number(one, 1)) ? .number : nil
     }
 
-    /// A minimum-edit alignment where fillers cost nothing to leave out, a number matches its other spelling, and a run
-    /// of words matches the one word it is written as on the other side. Substitution, insertion, and deletion cost
+    /// The lengths of the numbers of several words each ending just before local word `i` and cloud word `j` that are
+    /// the same number ("thirty per cent" and "30 percent"): each side's number is one it reads whole
+    /// (`Side.numbers`), so a spelled number is still only ever a whole run.
+    static func numberPairs(_ a: Side, _ i: Int, _ b: Side, _ j: Int) -> [(Int, Int)] {
+        guard i < a.numberLengths.count, j < b.numberLengths.count, !a.numberLengths[i].isEmpty,
+              !b.numberLengths[j].isEmpty else { return [] }
+        return a.numberLengths[i].flatMap { localLength in
+            b.numberLengths[j].compactMap { cloudLength in
+                sameNumber(a.number(i - localLength, localLength), b.number(j - cloudLength, cloudLength))
+                    ? (localLength, cloudLength) : nil
+            }
+        }
+    }
+
+    /// A minimum-edit alignment where fillers cost nothing to leave out, a number matches its other spelling (also
+    /// several words against several: "thirty per cent"/"30 percent"), and a run of words matches the one word it is
+    /// written as on the other side. Substitution, insertion, and deletion cost
     /// 1; a filler is never substituted. On a tie: a match, a join, a filler, a substitution, then a local-only word.
     /// `before` and `after` are each side's words around `a` and `b`: a spelled number there may extend one at an
     /// edge, and "mm" after a number is millimetres.
@@ -895,6 +935,9 @@ public enum NormalizedAlignment {
                         best = min(best, cost[(i - 1) * width + j - length])
                     }
                 }
+                for (localLength, cloudLength) in numberPairs(left, i, right, j) {
+                    best = min(best, cost[(i - localLength) * width + j - cloudLength])
+                }
                 cost[i * width + j] = best
             }
         }
@@ -925,6 +968,12 @@ public enum NormalizedAlignment {
                         continue traceback
                     }
                 }
+            }
+            for (localLength, cloudLength) in numberPairs(left, i, right, j)
+            where cost[(i - localLength) * width + j - cloudLength] == here {
+                ops.append(.join(local: (i - localLength)..<i, cloud: (j - cloudLength)..<j, .number))
+                i -= localLength; j -= cloudLength
+                continue traceback
             }
             if i > 0, left.fillers[i - 1], cost[(i - 1) * width + j] == here {
                 ops.append(.fillerLocal(i - 1)); i -= 1

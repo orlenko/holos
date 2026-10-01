@@ -314,7 +314,11 @@ passages, the review page and the gold keep the words as written.
   "one hundred and five"), also when the rest of the run lies just outside the
   passage. So "twenty one" and "20 1" differ, and "one hundred and twenty" is
   120, never 20. A run's number without the "plus" before it or the
-  "percent" after it is whole too ("thirty percent"/"30 percent").
+  "percent" after it is whole too ("thirty percent"/"30 percent"). A number
+  of several words matches one of several words on the other side too
+  ("thirty per cent"/"30 percent"), and digits with "per cent" or "pour cent"
+  are read before the spelled numbers inside them ("30 per cent" is 30%, its
+  "cent" no 100).
 - **Fillers.** um, uh, er, erm, hmm, mm, ah in an English meeting and euh,
   heu, bah, hein in a French one (the local transcript's languages; none in
   another language, where "er" or "um" are words), in any case, with the
@@ -342,13 +346,18 @@ again this way: a minimum-edit alignment where a filler costs nothing to
 leave out and a number or compound run matches its other spelling at no cost
 (a stretch too long for that pairs its words in order). Its remaining edits
 make the normalized WER, so every normalized error is in a passage the review
-page shows; a passage none of whose words such an edit touches is formatting
+page shows (a word both sides have that is a filler on one side only, such as
+"mm" after "um" on one side and after "5" on the other, is part of a passage
+too); a passage none of whose words such an edit touches is formatting
 only (and none of a stretch's passages is when an edit falls on a matched
 word between them). Matched fillers are left out of the word counts too. In the Terms
 section, the normalized comparison also finds a term written with its numbers
 spelled the other way ("GPT four" for "GPT-4", "21" for "twenty one", "30%"
 for "thirty percent", as the numbers above), never starting or ending
-inside a spelled-number run ("V one hundred five" holds no "V100").
+inside a spelled-number run ("V one hundred five" holds no "V100") or a
+number written with digits and words ("version 30 percent" holds no "version
+30"), and never with a number both sides spell ("version un" holds no
+"version one").
 
 ### Local candidates
 
@@ -374,7 +383,10 @@ live phrases do not cover. Nothing leaves the Mac.
   steps), so a candidate is what the recognizer returned.
 - **Output:** `eval/local/<local run>/run.json` (settings, vocabulary, each
   track's audio fingerprint and the SHA-256 of its chunk files' bytes), `parts/<language>-<track>.json` (each track's
-  timed words, saved as soon as it is done) and `transcript.json` once all
+  timed words, saved as soon as it is done; a track that heard no words once
+  its language has words on some track, since a language that recognized no
+  words on any track, while the meeting's transcript has some, fails and
+  saves nothing) and `transcript.json` once all
   are in. The meeting's transcript, speaker labels, exports and
   vocabulary.json are never changed.
 - **Resuming:** Ctrl-C stops; the same command resumes the newest unfinished

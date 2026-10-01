@@ -95,23 +95,24 @@ public enum EvalTerms {
             var text = ""
             var numbers: [EvalNormalization.NumberForm] = []
             let starts = Dictionary(runs.map { ($0.lowerBound, $0) }, uniquingKeysWith: { first, _ in first })
-            let spelled = Set(runs.flatMap { $0 })
             var index = 0
             reading: while index < words.count {
-                if let run = starts[index], let form = EvalNormalization.number(Array(words[run])), !form.hasDigit {
-                    text += "\u{1}" + form.canonical + "\u{1}"; numbers.append(form)
-                    index = run.upperBound
-                    continue
-                }
-                // The longest number with digits from here, never taking a spelled run's word.
+                // The longest number with digits from here, first: "30 per cent" is 30%, its "cent" no French 100.
+                // It takes a spelled run's words only as the whole run, and never goes past a clause mark.
                 let longest = min(NormalizedAlignment.maxDigitNumberWords, words.count - index)
                 for length in stride(from: longest, through: 1, by: -1) {
                     let range = index..<(index + length)
-                    guard !range.contains(where: spelled.contains),
+                    guard !runs.contains(where: { $0.overlaps(range) && $0.clamped(to: range) != $0 }),
+                          !EvalNormalization.crossesClause(words, range),
                           let form = EvalNormalization.number(Array(words[range])), form.hasDigit else { continue }
                     text += "\u{1}" + form.canonical + "\u{1}"; numbers.append(form)
                     index += length
                     continue reading
+                }
+                if let run = starts[index], let form = EvalNormalization.number(Array(words[run])), !form.hasDigit {
+                    text += "\u{1}" + form.canonical + "\u{1}"; numbers.append(form)
+                    index = run.upperBound
+                    continue
                 }
                 text += EvalText.key(words[index])
                 index += 1
@@ -129,22 +130,29 @@ public enum EvalTerms {
         }
     }
 
-    /// What a term is found as: its forms as joined keys, and (normalized) how it reads with its numbers.
+    /// What a term is found as: its forms as joined keys, and (normalized) its `NormalizedAlignment.compoundReadings`
+    /// and how it reads with its numbers.
     struct Pattern {
         var forms: Set<String>
+        var compounds: [NormalizedAlignment.CompoundForm] = []
         var reading: NumberReading? = nil
     }
 
     /// Whether `range` starts or ends inside a number written with digits and words around it ("30" of "30 percent",
-    /// of "plus 30"): the normalized comparison reads those phrases as other numbers ("30%", "+30").
+    /// of "plus 30"; "version 30" of "version 30 percent"; "cent" of "30 per cent"): the normalized comparison reads
+    /// those phrases as other numbers ("30%", "+30"). Each edge is checked on its own, whatever words the range has
+    /// past it. Only a phrase whose part inside the range holds a number counts: "Disney plus" of "Disney plus 30"
+    /// ends at a word, not inside a number.
     static func cutsDigitNumber(_ words: [String], _ range: Range<Int>) -> Bool {
-        guard range.contains(where: { words[$0].contains(where: \.isNumber) }) else { return false }
-        let inside = EvalNormalization.number(Array(words[range]))
         let reach = NormalizedAlignment.maxDigitNumberWords
-        for before in 0...reach where range.lowerBound - before >= 0 {
-            for after in 0...reach where range.upperBound + after <= words.count && before + after > 0 {
-                let wider = (range.lowerBound - before)..<(range.upperBound + after)
-                if let form = EvalNormalization.number(Array(words[wider])), form.hasDigit, form != inside {
+        for edge in [range.lowerBound, range.upperBound] where edge > 0 && edge < words.count {
+            for lower in max(0, edge - reach + 1)..<edge {
+                for upper in (edge + 1)...min(words.count, lower + reach) {
+                    let phrase = lower..<upper
+                    guard !EvalNormalization.crossesClause(words, phrase),
+                          let form = EvalNormalization.number(Array(words[phrase])), form.hasDigit,
+                          phrase.clamped(to: range).contains(where: { EvalNormalization.number([words[$0]]) != nil })
+                    else { continue }
                     return true
                 }
             }
@@ -201,7 +209,9 @@ public enum EvalTerms {
                 if numbers?.cuts(start..<end) == true { continue }
                 if numbers != nil, cutsDigitNumber(words, start..<end) { continue }
                 if forms.contains(joined) { match = end; break }
-                if hasSpelled, !Set(NormalizedAlignment.compoundForms(Array(words[start..<end]))).isDisjoint(with: forms) {
+                if hasSpelled, NormalizedAlignment.compoundReadings(Array(words[start..<end])).contains(where: { form in
+                    forms.contains(form.text) && pattern.compounds.contains { $0.matches(form) }
+                }) {
                     match = end
                     break
                 }
@@ -298,7 +308,8 @@ public enum EvalTerms {
             var pattern = Pattern(forms: [joinedKey(term.text)])
             if normalized {
                 let tokens = EvalText.tokens(term.text)
-                pattern.forms.formUnion(NormalizedAlignment.compoundForms(tokens))
+                pattern.compounds = [.init(text: pattern.forms.first ?? "")] + NormalizedAlignment.compoundReadings(tokens)
+                pattern.forms.formUnion(pattern.compounds.map(\.text))
                 pattern.reading = NumberReading(tokens, runs: EvalNormalization.SpelledRuns(tokens, fillers: []).runs)
             }
             for (kept, words, keys, numbers, track) in keyed {

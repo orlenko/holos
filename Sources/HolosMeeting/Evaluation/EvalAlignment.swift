@@ -550,6 +550,23 @@ public enum WindowComparer {
             }
         }
 
+        // Each side's spelled-number runs, found once over all its words: a number at a passage's edge is seen whole,
+        // and "mm" after one is millimetres.
+        let localTexts = local.map(\.text), cloudTexts = cloud.map(\.text)
+        let localRuns = EvalNormalization.SpelledRuns(localTexts, fillers: fillers)
+        let cloudRuns = EvalNormalization.SpelledRuns(cloudTexts, fillers: fillers)
+        /// Whether matched words `i` and `j` are a filler on one side only ("mm" after "5" is millimetres, after "um"
+        /// a filler): an edit of the normalized comparison, so it goes in a word passage, in front of the reviewer.
+        func readsDifferently(_ i: Int, _ j: Int) -> Bool {
+            let localFiller = EvalNormalization.fillerFlags(
+                [localTexts[i]], runs: localRuns, offset: i, previous: i > 0 ? localTexts[i - 1] : nil,
+                fillers: fillers)[0]
+            let cloudFiller = EvalNormalization.fillerFlags(
+                [cloudTexts[j]], runs: cloudRuns, offset: j, previous: j > 0 ? cloudTexts[j - 1] : nil,
+                fillers: fillers)[0]
+            return localFiller != cloudFiller
+        }
+
         var run: [Int] = []  // op positions of the current edit run
         var punctuationRun: [Int] = []
         var wordRuns: [(passage: Int, positions: [Int])] = []
@@ -582,6 +599,11 @@ public enum WindowComparer {
                 result.score.localWords += 1; result.score.cloudWords += 1; result.score.matches += 1
                 result.cloudMatched[j] = true
                 result.cloudMatchedSpans[j] = i..<(i + 1)
+                if readsDifferently(i, j) {
+                    flush(&punctuationRun, caseOnly: true)
+                    run.append(position)
+                    continue
+                }
                 flush(&run, caseOnly: false)
                 if exact {
                     flush(&punctuationRun, caseOnly: true)
@@ -608,7 +630,7 @@ public enum WindowComparer {
         flush(&run, caseOnly: false)
         flush(&punctuationRun, caseOnly: true)
         normalize(&result, ops: ops, excluded: excluded, wordRuns: wordRuns, local: local, cloud: cloud,
-                  fillers: fillers)
+                  runs: (localRuns, cloudRuns), fillers: fillers)
         return result
     }
 
@@ -621,11 +643,14 @@ public enum WindowComparer {
 
     /// The normalized comparison (`NormalizedAlignment`) of an evaluated alignment: each stretch of word passages
     /// (with at most `normalizationGap` matched words between two of them) is aligned again; matched words outside
-    /// such stretches count as matches (a filler as a filler). A passage none of whose words an edit of its stretch
-    /// touches is formatting only. Echo is left out as in the raw scores.
+    /// such stretches count as matches (a filler as a filler; a word that is a filler on one side only is in a
+    /// passage). A passage none of whose words an edit of its stretch touches is formatting only. Echo is left out as
+    /// in the raw scores. `runs` are each side's spelled-number runs over all its words.
     private static func normalize(_ result: inout WindowComparison, ops: [AlignmentOp], excluded: [Bool],
                                   wordRuns: [(passage: Int, positions: [Int])], local: [EvalToken],
-                                  cloud: [EvalToken], fillers: Set<String>) {
+                                  cloud: [EvalToken],
+                                  runs: (local: EvalNormalization.SpelledRuns, cloud: EvalNormalization.SpelledRuns),
+                                  fillers: Set<String>) {
         func isGapMatch(_ position: Int) -> Bool {
             if excluded[position] { return false }
             if case .match = ops[position] { return true }
@@ -652,40 +677,25 @@ public enum WindowComparer {
             let first = wordRuns[stretch[0]].positions[0], last = wordRuns[stretch[stretch.count - 1]].positions.last!
             for position in first...last { inStretch[position] = true }
         }
-        // Each side's spelled-number runs, found once over all its words: a number at a stretch's edge is seen whole.
         let localTexts = local.map(\.text), cloudTexts = cloud.map(\.text)
-        let localRuns = EvalNormalization.SpelledRuns(localTexts, fillers: fillers)
-        let cloudRuns = EvalNormalization.SpelledRuns(cloudTexts, fillers: fillers)
+        let (localRuns, cloudRuns) = runs
         func surroundings(_ runs: EvalNormalization.SpelledRuns, _ words: [String],
                           at index: Int) -> NormalizedAlignment.Surroundings {
             .init(runs: runs, offset: index, previous: index > 0 ? words[index - 1] : nil)
         }
         for (position, op) in ops.enumerated() where !excluded[position] && !inStretch[position] {
             guard case .match(let i, let j, let exact) = op else { continue }
-            // Each side's word is a filler or not by its own context ("5 mm" is millimetres, "well mm" a filler).
-            let localFiller = EvalNormalization.fillerFlags(
-                [localTexts[i]], runs: localRuns, offset: i, previous: i > 0 ? localTexts[i - 1] : nil,
-                fillers: fillers)[0]
-            let cloudFiller = EvalNormalization.fillerFlags(
-                [cloudTexts[j]], runs: cloudRuns, offset: j, previous: j > 0 ? cloudTexts[j - 1] : nil,
-                fillers: fillers)[0]
-            // The cloud word is covered by the local one only when both sides read it the same way.
-            result.cloudEquivalent[j] = localFiller == cloudFiller
-            if localFiller == cloudFiller { result.cloudEquivalentSpans[j] = i..<(i + 1) }
-            switch (localFiller, cloudFiller) {
-            case (true, true):
+            // Both sides read the word alike ("5 mm" is millimetres, "well mm" a filler): a word that is a filler on
+            // one side only is in a passage (`readsDifferently`).
+            result.cloudEquivalent[j] = true
+            result.cloudEquivalentSpans[j] = i..<(i + 1)
+            if EvalNormalization.fillerFlags([localTexts[i]], runs: localRuns, offset: i,
+                                             previous: i > 0 ? localTexts[i - 1] : nil, fillers: fillers)[0] {
                 result.normalization.fillersLocal += 1; result.normalization.fillersCloud += 1
-            case (false, false):
+            } else {
                 result.normalized.localWords += 1; result.normalized.cloudWords += 1
                 result.normalized.matches += 1
                 if !exact { result.normalized.caseOrPunctuationOnly += 1 }
-            case (true, false):
-                // Only the local word is a filler: the cloud's word has no counterpart.
-                result.normalization.fillersLocal += 1
-                result.normalized.cloudWords += 1; result.normalized.cloudOnly += 1
-            case (false, true):
-                result.normalization.fillersCloud += 1
-                result.normalized.localWords += 1; result.normalized.localOnly += 1
             }
         }
         for stretch in stretches {
