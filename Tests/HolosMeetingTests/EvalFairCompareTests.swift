@@ -262,6 +262,21 @@ private func canonical(_ text: String) -> String? {
     #expect(!CompareReport.TrackReport(track: "mic", score: even, groups: [:], warnings: []).mostlyEcho)
 }
 
+@Test func fairEchoNeverMakesTheWordsBesideItPartOfALongerNumber() {
+    // "hundred" is echo, said well after the cloud's "1", and left out of the scores: "one" before it is still 1.
+    let times: [Double] = [0, 1, 2, 6, 7]
+    let local = zip(["we", "need", "one", "hundred", "now"], times).enumerated().map { index, pair in
+        EvalToken(text: pair.0, start: pair.1, end: pair.1 + 0.8, echo: index == 3)
+    }
+    let cloud = zip(["we", "need", "1", "now"], [0, 1, 2, 7] as [Double]).map { word, time in
+        EvalToken(text: word, start: time, end: time + 0.8)
+    }
+    let result = WindowComparer.compare(track: "mic", local: local, cloud: cloud, start: 0, end: 10)
+    #expect(result.score.echoLocalWords == 1)
+    #expect(result.normalized.edits == 0)
+    #expect(result.passages.filter { $0.group != .caseOrPunctuation }.allSatisfy { $0.formattingOnly })
+}
+
 // MARK: - Terms
 
 @Test func fairTermsCountHitsAndMissesWhereTheCloudHasThem() {

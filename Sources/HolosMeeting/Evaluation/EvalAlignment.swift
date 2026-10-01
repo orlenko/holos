@@ -551,8 +551,16 @@ public enum WindowComparer {
         }
 
         // Each side's spelled-number runs, found once over all its words: a number at a passage's edge is seen whole,
-        // and "mm" after one is millimetres.
-        let localTexts = local.map(\.text), cloudTexts = cloud.map(\.text)
+        // and "mm" after one is millimetres. Echo left out of the scores is left out here too: an echo word stands
+        // as a word that is no number nor filler, so it never makes the words beside it part of a longer number
+        // ("one" before an echo "hundred" is still 1).
+        var excludedLocal = Set<Int>(), excludedCloud = Set<Int>()
+        for (position, op) in ops.enumerated() where excluded[position] {
+            if let i = localIndex(op) { excludedLocal.insert(i) }
+            if let j = cloudIndex(op) { excludedCloud.insert(j) }
+        }
+        let localTexts = local.indices.map { excludedLocal.contains($0) ? Self.echoContext : local[$0].text }
+        let cloudTexts = cloud.indices.map { excludedCloud.contains($0) ? Self.echoContext : cloud[$0].text }
         let localRuns = EvalNormalization.SpelledRuns(localTexts, fillers: fillers)
         let cloudRuns = EvalNormalization.SpelledRuns(cloudTexts, fillers: fillers)
         /// Whether matched words `i` and `j` are a filler on one side only ("mm" after "5" is millimetres, after "um"
@@ -630,9 +638,12 @@ public enum WindowComparer {
         flush(&run, caseOnly: false)
         flush(&punctuationRun, caseOnly: true)
         normalize(&result, ops: ops, excluded: excluded, wordRuns: wordRuns, local: local, cloud: cloud,
-                  runs: (localRuns, cloudRuns), fillers: fillers)
+                  runs: (localRuns, cloudRuns), texts: (localTexts, cloudTexts), fillers: fillers)
         return result
     }
+
+    /// What an excluded (echo) word reads as in the words around a number or a filler: no number, filler, or mark.
+    static let echoContext = "\u{FFFC}"
 
     /// Matched words between two word passages that are still aligned again with them for the normalized comparison
     /// ("we test test flight" against "we test TestFlight": the raw alignment matched the second "test").
@@ -645,12 +656,12 @@ public enum WindowComparer {
     /// (with at most `normalizationGap` matched words between two of them) is aligned again; matched words outside
     /// such stretches count as matches (a filler as a filler; a word that is a filler on one side only is in a
     /// passage). A passage none of whose words an edit of its stretch touches is formatting only. Echo is left out as
-    /// in the raw scores. `runs` are each side's spelled-number runs over all its words.
+    /// in the raw scores. `runs` are each side's spelled-number runs over `texts`, its words with echo left out.
     private static func normalize(_ result: inout WindowComparison, ops: [AlignmentOp], excluded: [Bool],
                                   wordRuns: [(passage: Int, positions: [Int])], local: [EvalToken],
                                   cloud: [EvalToken],
                                   runs: (local: EvalNormalization.SpelledRuns, cloud: EvalNormalization.SpelledRuns),
-                                  fillers: Set<String>) {
+                                  texts: (local: [String], cloud: [String]), fillers: Set<String>) {
         func isGapMatch(_ position: Int) -> Bool {
             if excluded[position] { return false }
             if case .match = ops[position] { return true }
@@ -677,7 +688,7 @@ public enum WindowComparer {
             let first = wordRuns[stretch[0]].positions[0], last = wordRuns[stretch[stretch.count - 1]].positions.last!
             for position in first...last { inStretch[position] = true }
         }
-        let localTexts = local.map(\.text), cloudTexts = cloud.map(\.text)
+        let (localTexts, cloudTexts) = texts
         let (localRuns, cloudRuns) = runs
         func surroundings(_ runs: EvalNormalization.SpelledRuns, _ words: [String],
                           at index: Int) -> NormalizedAlignment.Surroundings {
