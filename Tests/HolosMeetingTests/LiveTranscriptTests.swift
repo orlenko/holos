@@ -148,7 +148,11 @@ private func texts(_ paragraphs: [LiveParagraph]) -> [String] {
         ],
         track: "mic")
     let paragraphs = LiveTranscript.paragraphs(finals: [remote, mixed], volatile: [:], echo: callEcho)
-    #expect(texts(paragraphs) == ["mic: okay sure", "system: please send the report by friday"])
+    // The words on either side of the echo stay where they were said: "okay" before the system's phrase, "sure"
+    // after it (Codex review on PR #65: they were joined and both placed at 9 s).
+    #expect(texts(paragraphs) == ["mic: okay", "system: please send the report by friday", "mic: sure"])
+    #expect(paragraphs.map(\.start) == [9.0, 10.0, 12.6])
+    #expect(paragraphs.last?.runs.first?.segmentID == "m1", "Both pieces keep their segment.")
 }
 
 @Test func shortRepeatsAreNotEcho() {

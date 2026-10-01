@@ -298,7 +298,8 @@ Microphone echo is hidden with post-processing's own rule (`LiveTranscript`, usi
 `EchoFilter.echoSpans` with `SpeakerAnalysis.alignmentParameters` of the meeting, so only
 in a call): a run of at least three microphone words that repeat the system track's words
 in order, each starting at most 1 s after (and at most 0.25 s before) its system word, is
-left out; a microphone segment with no other word is not shown. Only the words shown take
+left out; a microphone segment with no other word is not shown, and the words left on
+either side of an echo are placed at their own times (before and after the system's phrase). Only the words shown take
 part (a volatile word a final segment replaced is not heard twice); volatile words of both
 tracks do, so an echo disappears as soon as the system track has heard the same
 words. The user speaking over the call, a short reply that repeats one or two words, and

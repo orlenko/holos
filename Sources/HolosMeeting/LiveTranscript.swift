@@ -45,7 +45,8 @@ public struct LiveParagraph: Sendable, Equatable {
 ///   of at least three microphone words that repeat the system track's words in order, each starting at most
 ///   1 s after its system word. Volatile words of both tracks take part, so a microphone phrase is hidden as soon as
 ///   the system track has heard the same words, final or not. A microphone segment whose every word is echo is not
-///   shown; its other words stay (the user talking over the call). Fewer than three echoed words are never hidden,
+///   shown; its other words stay (the user talking over the call), each run of them at its own time, so words
+///   before and after an echo fall on either side of the system's phrase. Fewer than three echoed words are never hidden,
 ///   so the first one or two volatile words of an echo can show until the third arrives.
 /// - Paragraphs: words in order of their start; a new paragraph starts when the track changes or after a pause of
 ///   more than `paragraphGapSeconds`.
@@ -93,7 +94,7 @@ public enum LiveTranscript {
             }
         }
         if let echo { hideEcho(in: &items, parameters: echo) }
-        let shown = items.compactMap { $0.shown() }.enumerated().sorted { left, right in
+        let shown = items.flatMap { $0.shown() }.enumerated().sorted { left, right in
             // Finals before volatile words at the same time; otherwise as listed.
             (left.element.start, left.element.isFinal ? 0 : 1, left.offset)
                 < (right.element.start, right.element.isFinal ? 0 : 1, right.offset)
@@ -158,21 +159,35 @@ public enum LiveTranscript {
             keep = [Bool](repeating: true, count: words.count)
         }
 
-        /// What shows of it; nil when no word with a letter or digit is left.
-        func shown() -> Shown? {
-            let kept = words.indices.filter { keep[$0] }
-            guard kept.contains(where: { words[$0].text.contains(where: { $0.isLetter || $0.isNumber }) }) else {
-                return nil
+        /// What shows of it: one piece per run of consecutive kept words, so words on either side of a removed echo
+        /// are placed at their own times; a piece without a letter or digit is not shown.
+        func shown() -> [Shown] {
+            if keep.allSatisfy({ $0 }) {
+                return piece(words.indices, text: segment.text.trimmingCharacters(in: .whitespacesAndNewlines))
+                    .map { [$0] } ?? []
             }
-            let text: String
-            if kept.count == words.count {
-                text = segment.text.trimmingCharacters(in: .whitespacesAndNewlines)
-            } else {
-                text = kept.map { Self.text(of: words[$0], in: segment.text) }.filter { !$0.isEmpty }
+            var pieces: [Shown] = []
+            var index = words.startIndex
+            while index < words.endIndex {
+                guard keep[index] else {
+                    index += 1
+                    continue
+                }
+                var end = index
+                while end < words.endIndex, keep[end] { end += 1 }
+                let text = (index..<end).map { Self.text(of: words[$0], in: segment.text) }.filter { !$0.isEmpty }
                     .joined(separator: " ")
+                if let shown = piece(index..<end, text: text) { pieces.append(shown) }
+                index = end
             }
-            guard !text.isEmpty else { return nil }
-            return Shown(track: track, start: words[kept[0]].start, end: words[kept[kept.count - 1]].end,
+            return pieces
+        }
+
+        private func piece(_ range: Range<Int>, text: String) -> Shown? {
+            guard !range.isEmpty, !text.isEmpty,
+                  range.contains(where: { words[$0].text.contains(where: { $0.isLetter || $0.isNumber }) })
+            else { return nil }
+            return Shown(track: track, start: words[range.lowerBound].start, end: words[range.upperBound - 1].end,
                          text: text, isFinal: isFinal, segmentID: segment.id)
         }
 
