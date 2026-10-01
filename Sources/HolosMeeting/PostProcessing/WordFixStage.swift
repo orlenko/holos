@@ -36,8 +36,8 @@ public struct WordFixDependencies: Sendable {
                                                  model: { _ in .unavailable("No model was given.") })
 }
 
-/// Stage 1c of the post-processor, `wordFixes` (docs/design.md "Meeting word fixes"), after the languages stage and
-/// before the speakers, so speakers are labelled on the fixed text: the learned corrections are applied to every
+/// Stage 1d of the post-processor, `wordFixes` (docs/design.md "Meeting word fixes"), after languages and live text
+/// corrections and before the speakers, so speakers are labelled on the fixed text: learned corrections apply to every
 /// segment as dictation applies them (whole words and phrases, any case, a sentence's capital carried over), then each
 /// place where the word list's "often heard as" phrase of a term was written is put to Apple's on-device model
 /// (`HeardAsJudge`), which may replace exactly that place by the term and nothing else. A replaced phrase takes the
@@ -272,7 +272,9 @@ enum WordFixStage {
                     progress: (Double) -> Void = { _ in }) async throws -> Computed {
         // The corrections, everywhere.
         var working: [WordFixes.Working?] = base.segments.map { segment in
-            WordFixes.Working(segment).map { WordFixes.applying(WordFixes.corrections(in: $0, list: corrections), to: $0) }
+            WordFixes.Working(segment, preservingExistingFixes: true).map {
+                WordFixes.applying(WordFixes.corrections(in: $0, list: corrections), to: $0)
+            }
         }
         // The places where a term's "often heard as" phrase was written, outside what the corrections changed.
         struct Place {
@@ -386,7 +388,8 @@ enum WordFixStage {
             working[index].map { WordFixes.finished($0, segment: base.segments[index]) } ?? base.segments[index]
         }
         let fixed = Transcript(source: base.source, locale: base.locale, backend: base.backend, segments: segments,
-                               languages: base.languages, fixedFrom: base.id)
+                               languages: base.languages, fixedFrom: base.id,
+                               liveCorrectedFrom: base.liveCorrectedFrom)
         return Computed(transcript: fixed, counts: WordFixes.Counts(fixed), asked: asked, notes: notes,
                         unavailable: unavailable, termChecksComplete: termChecksComplete)
     }
@@ -512,14 +515,15 @@ enum WordFixStage {
 
     // MARK: - Lineage
 
-    /// The transcript `transcriptID` was fixed from, following `wordsFixed` events back to one that was not fixed;
-    /// `transcriptID` itself when it was not. Every bookkeeping that names transcripts by ID (a merge's languages, a
-    /// rebuild) asks about that one, since a fixed transcript stands for it.
+    /// The transcript `transcriptID` was corrected from, following automatic and live correction events back to one
+    /// that was not corrected; `transcriptID` itself when it was not. Every bookkeeping that names transcripts by ID
+    /// (a merge's languages, a rebuild) asks about that one, since a corrected transcript stands for it.
     static func unfixedID(_ transcriptID: String, events: [ArchiveEvent]) -> String {
         var id = transcriptID
         var seen: Set<String> = [id]
         while let base = events.last(where: {
-            $0.kind == MeetingEventKind.wordsFixed && $0.details["transcriptID"] == id
+            ($0.kind == MeetingEventKind.wordsFixed || $0.kind == MeetingEventKind.liveHintsApplied)
+                && $0.details["transcriptID"] == id
         })?.details["base"], !base.isEmpty, seen.insert(base).inserted {
             id = base
         }

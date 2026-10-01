@@ -42,7 +42,7 @@ public enum WordFixes {
 
         /// Nil when the segment's word offsets do not fit its text (they decrease, overlap, or run past it): such a
         /// segment is left as it is rather than fixed in the wrong place.
-        public init?(_ segment: TranscriptSegment) {
+        public init?(_ segment: TranscriptSegment, preservingExistingFixes: Bool = false) {
             text = segment.text
             words = segment.words
             marks = []
@@ -52,6 +52,16 @@ public enum WordFixes {
                 guard word.utf16Offset >= previousEnd, word.utf16Length >= 0,
                       word.utf16Offset + word.utf16Length <= length else { return nil }
                 previousEnd = word.utf16Offset + word.utf16Length
+            }
+            if preservingExistingFixes {
+                let effective = WordTiming.effectiveWords(of: segment)
+                for fix in segment.fixes ?? [] {
+                    guard let range = WordFixes.characterRange(of: fix, words: effective,
+                                                               textLength: segment.text.utf16.count) else {
+                        return nil
+                    }
+                    marks.append(Mark(range: range, heard: fix.heard, kind: fix.kind))
+                }
             }
         }
     }

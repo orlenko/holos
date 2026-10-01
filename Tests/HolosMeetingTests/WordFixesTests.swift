@@ -240,12 +240,14 @@ private func lineageEvents(_ list: [(String, [String: String])]) throws -> [Arch
     }
 }
 
-@Test func aFixedTranscriptStandsForTheOneItWasFixedFrom() throws {
+@Test func aCorrectedTranscriptStandsForTheOneItWasCorrectedFrom() throws {
     let events = try lineageEvents([
         (MeetingEventKind.transcriptRebuilt, ["transcriptID": "R", "transcribed": "true"]),
-        (MeetingEventKind.wordsFixed, ["transcriptID": "F1", "base": "R"]),
+        (MeetingEventKind.liveHintsApplied, ["transcriptID": "L1", "base": "R"]),
+        (MeetingEventKind.wordsFixed, ["transcriptID": "F1", "base": "L1"]),
         (MeetingEventKind.languagesDetected, ["transcriptID": "M", "base": "R", "requested": "en-CA,fr-CA"]),
-        (MeetingEventKind.wordsFixed, ["transcriptID": "F2", "base": "M"]),
+        (MeetingEventKind.liveHintsApplied, ["transcriptID": "L2", "base": "M"]),
+        (MeetingEventKind.wordsFixed, ["transcriptID": "F2", "base": "L2"]),
     ])
     #expect(WordFixStage.unfixedID("F1", events: events) == "R")
     #expect(WordFixStage.unfixedID("F2", events: events) == "M")

@@ -342,10 +342,10 @@ Hardware-facing and cross-app acceptance remain pending.
   such a word was said is one question to the on-device model, which may put the term
   exactly there and nowhere else (on 5 invented sentences: right in all 5). Unit-tested with
   a stand-in model; the card's column is built and compiled only.
-- Meeting word fixes (docs/design.md "Meeting word fixes"): post-processing stage 1c, after
-  the languages and before the speakers, applies the learned corrections to every segment
-  (as dictation does) and asks Apple's on-device model, place by place, whether a term was
-  meant where its often-heard-as word was written (only with Apple Intelligence's fix on);
+- Meeting word fixes (docs/design.md "Meeting word fixes"): post-processing stage 1d, after
+  the languages and live text corrections but before the speakers, applies the learned
+  corrections to every segment (as dictation does) and asks Apple's on-device model, place
+  by place, whether a term was meant where its often-heard-as word was written (only with Apple Intelligence's fix on);
   a replaced phrase takes the time of the words it replaced. The result is a new transcript
   revision (`fixedFrom`, `wordsFixed`; the one before is kept), fixed words are marked and
   shown with a dotted underline and a "Heard as" tooltip in the review, and `voiceislocal
@@ -623,10 +623,12 @@ Still requiring real-machine or user-data validation:
   not). `eval local` applies the same fixes to its candidate by default; `--no-word-fixes`
   keeps the recognizer's words for comparison. The model is asked one place at a time (at
   most 500 per run).
-- Live transcript: speakers and text cannot be corrected during the meeting yet. The first
-  one or two volatile words of a microphone echo can show briefly (the echo rule needs a
-  run of three words), and an echo heard before the system track's words arrive shows until
-  they do.
+- Live transcript: selecting a finalized phrase while recording can correct its text or name
+  its speaker. The app saves a timed hint, carries text into the final/replayed transcript,
+  learns safe correction pairs, and applies speaker names after diarization before export.
+  The first one or two volatile words of a microphone echo can show briefly (the echo rule
+  needs a run of three words), and an echo heard before the system track's words arrive
+  shows until they do.
 - Speaker names and edits: labels are "Speaker N" until named in the review window or
   with `voiceislocal speakers`. The review window has no redo, and its undo does not reach past
   a relabel (Find More Speakers keeps names, not turn-level changes). Find More Speakers is

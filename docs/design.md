@@ -294,6 +294,20 @@ session's still finishing after a capture restart). While the user is at the bot
 the newest words; scrolling up stops that and shows a "Jump to Live" pill at the bottom,
 which (like scrolling back down, or End) follows again (`LiveFollow`).
 
+Selecting one finalized phrase while recording enables **Correct Text…** and **Name
+Speaker…**. Text corrections appear in the live view at once; safe small mishearing pairs
+are also learned in `corrections.json` for later dictations and meetings. Both actions are
+saved atomically in the session's `live-hints.json`, independently of the recorder-owned
+event journal. Each hint carries the finalized segment ID, track, word range, words, and
+session times. After the final/replayed transcript exists, `LiveHintStage` first uses the
+ID and words, then the same-track words nearest those times, and publishes corrected text
+before ordinary word fixes and speaker alignment. The revision's `liveCorrectedFrom`
+keeps speaker mapping in the original word space even when its words have no measured
+times; automatic fixes retain both that lineage and the live-correction marks. After
+alignment, a speaker hint names the machine speaker owning those words (or overlapping
+that time) before exports. A later Review rename, including clearing a name, wins over a
+live hint on later processing runs.
+
 Microphone echo is hidden with post-processing's own rule (`LiveTranscript`, using
 `EchoFilter.echoSpans` with `SpeakerAnalysis.alignmentParameters` of the meeting, so only
 in a call): a run of at least three microphone words that repeat the system track's words
@@ -311,8 +325,8 @@ header offers what opening a finished meeting shows: **Open Review** (Return) fo
 labelled meeting, else **Open Transcript**. A meeting whose recorder stopped before it was
 saved shows "Interrupted" (orange) and points to Recover…; a failed or damaged one shows
 the catalog's state. Going to another meeting from the menu bar while a live transcript is
-open brings the list back with that meeting selected. Correcting speakers or text during the meeting
-is not built yet; each final run keeps its segment ID (`LiveRun.segmentID`) for it.
+open brings the list back with that meeting selected. Volatile words cannot be corrected;
+their finalized run supplies the durable identity and timing first.
 
 ### Reading section
 
@@ -863,7 +877,7 @@ General prose polishing can be a separate opt-in feature after correctness is me
 
 Meetings use a lot of jargon the recognizer misses, and contextual strings barely help (on a
 real meeting, term hits went from 30 of 82 to 32 of 82 with the word list). Learned
-corrections used to reach dictation only. The post-processor's stage 1c `wordFixes`
+corrections used to reach dictation only. The post-processor's stage 1d `wordFixes`
 (`WordFixStage`, after the languages stage and before the speakers, so speakers are
 labelled on the fixed text) applies them to meetings, and the word list's "often heard as"
 words with the on-device model:
@@ -912,7 +926,7 @@ words with the on-device model:
    `languagesDetected`, a rebuild's events, `recordedTranscriptID`,
    `leftAudioUntranscribed`), so the languages stage and Recover treat it as the transcript
    it was fixed from.
-5. *When it runs.* After every recording, import and recovery (stage 1c of each run), and
+5. *When it runs.* After every recording, import and recovery (stage 1d of each run), and
    on request: Label Speakers and `session diarize` (with today's corrections and terms),
    and `voiceislocal session fix-words <session> [--force]`, which records the stage even
    with nothing to fix and keeps the speaker labels when the transcript does not change.

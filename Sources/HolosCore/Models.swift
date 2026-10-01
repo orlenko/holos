@@ -68,6 +68,8 @@ public struct TranscriptWordFixKind: OpenStringCode {
     /// A fix the person explicitly reverted in Review. The mark protects those restored words from automatic
     /// word-fix passes; an explicitly requested `session fix-words` may check them again.
     public static let reviewRevert = TranscriptWordFixKind("reviewRevert")
+    /// A correction made against a finalized phrase while its meeting was still recording.
+    public static let liveCorrection = TranscriptWordFixKind("liveCorrection")
 }
 
 /// Words of a segment that the meeting word-fix stage changed (docs/design.md "Meeting word fixes"): what the
@@ -97,8 +99,8 @@ public struct TranscriptSegment: Codable, Sendable, Equatable, Identifiable {
     /// The language this segment was transcribed in ("fr-CA"), in a transcript merged from several languages
     /// (`Transcript.languages`, docs/meeting-design.md §4.14); nil in a transcript made in one language.
     public var language: String?
-    /// The words the meeting word-fix stage changed in this segment (`Transcript.fixedFrom`); nil when none, and in
-    /// every transcript the stage did not make, so those encode as before.
+    /// Words changed by the automatic word-fix or live-correction stages; nil when none, so unchanged segments encode
+    /// as before. The transcript's lineage says which stage made the revision.
     public var fixes: [TranscriptWordFix]?
 
     public init(id: String = UUID().uuidString, start: Double, end: Double, text: String,
@@ -134,13 +136,16 @@ public struct Transcript: Codable, Sendable, Equatable {
     /// For a transcript made by the meeting word-fix stage (docs/design.md "Meeting word fixes"): the revision whose
     /// words it fixed, which is kept. Nil for every other transcript.
     public var fixedFrom: String?
+    /// The original revision underlying live text corrections. Kept through automatic word-fix revisions so untimed
+    /// words and speaker edits can be mapped in the same stable word space.
+    public var liveCorrectedFrom: String?
 
     public init(id: String = UUID().uuidString, createdAt: Date = Date(), source: String,
                 locale: String, backend: SpeechBackend, segments: [TranscriptSegment] = [],
-                languages: [String]? = nil, fixedFrom: String? = nil) {
+                languages: [String]? = nil, fixedFrom: String? = nil, liveCorrectedFrom: String? = nil) {
         self.id = id; self.createdAt = createdAt; self.source = source
         self.locale = locale; self.backend = backend; self.segments = segments; self.languages = languages
-        self.fixedFrom = fixedFrom
+        self.fixedFrom = fixedFrom; self.liveCorrectedFrom = liveCorrectedFrom
     }
 
     public var text: String { segments.map(\.text).joined(separator: " ") }

@@ -137,6 +137,8 @@ public enum MeetingEventKind {
     /// transcriptID, base, corrections, terms, asked: journaled before a transcript whose misheard words were fixed is
     /// saved as current; `base` is the revision it was fixed from, which is kept (docs/design.md "Meeting word fixes")
     public static let wordsFixed = "wordsFixed"
+    /// transcriptID, base, applied, unmatched: live text hints reconciled with the finished transcript.
+    public static let liveHintsApplied = "liveHintsApplied"
 }
 
 // MARK: - Meeting setup (meeting.json, vocabulary.json)

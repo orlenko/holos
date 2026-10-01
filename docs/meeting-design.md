@@ -469,6 +469,7 @@ extension SessionArchive {
   meeting.json                             PR2a (record), PR7c (import) MeetingInfo; absent in old archives
   vocabulary.json                          PR2a (record), PR7c (import) MeetingVocabulary; absent means none
   status.json                              PR2a                         RecorderStatus; kept after exit (phase exited)
+  live-hints.json                          live transcript              atomic timed text/speaker corrections
   control/<REQUEST-UUID>.json              PR2a                         ControlRequest; deleted when handled; leftovers deleted at exit
   postprocess.json                         PR7b                         PostProcessingRecord
   audio/{mic,system}/NNNNNN.caf            AudioChunkWriter             Int16 from PR2a, system audio mono; Float32 still readable
@@ -498,6 +499,7 @@ public enum SessionPaths {
     public static func meetingInfo(_ session: URL) -> URL       // meeting.json
     public static func vocabulary(_ session: URL) -> URL        // vocabulary.json
     public static func status(_ session: URL) -> URL            // status.json
+    public static func liveHints(_ session: URL) -> URL         // live-hints.json
     public static func controlDirectory(_ session: URL) -> URL  // control/
     public static func postprocess(_ session: URL) -> URL       // postprocess.json
     public static func audioDeleted(_ session: URL) -> URL      // audio-deleted.json
@@ -2818,14 +2820,14 @@ Stages (PR7b):
 | # | Stage | Does | On failure or not applicable |
 |---|---|---|---|
 | 0 | — | refuse if `SessionArchive.isActive` ("still recording"); use the given lease or acquire one; refuse (`unavailable`) an existing `postprocess.json` written by a newer Holos, never overwriting it (a damaged one is replaced); `RecorderChannel.markDeadRecorderExited`; delete leftover `derived/`; write `postprocess.json` `{state: running}` | throw |
-| 1 | `transcript` | load the current transcript (`transcripts/current.json`, §2.4) | none → `skipped`, no exports; state `skipped` |
+| 1 | `transcript` | load the current transcript (`transcripts/current.json`, §2.4); after language merging, reconcile live text hints by segment ID or same-track time+words, then run ordinary word fixes | none → `skipped`, no exports; state `skipped` |
 | 2 | — | track policies from `meeting.json` (or `MeetingInfo.inferred`), with `options.othersInRoom` overriding: a track is `diarized` if it is `system`, or the mode is `inPerson`, or others are in the room; otherwise `channel("mic:me", "Me")`; tracks without words are `skipped` | — |
 | 3 | — | if a head run exists, was built from the current transcript, has applied edits, and `!force`: skip 4–7 with "Speaker labels were edited; relabel with --force (names carry over)". If the head was built from another transcript, relabel. | stages `skipped` |
 | 4 | `render` | skip with "Not enough disk space to label speakers. Free some space, then use Label Speakers." when `stopReason == .diskLow` or `DiskPolicy.renderCheck` fails. Otherwise `TrackRenderer.render` each diarized track to `derived/<track>-16k.caf`, compressing long gaps (below) | failed → skip 5–7 |
 | 5 | `diarize` | `nil` diarizer → `skipped`, "Speaker models are not installed. Install them from Setup, or run holos setup --speakers." Otherwise `diarizer.diarize` each rendered track, **one track at a time**, then map times to the session timeline with the render's time map. Speaker hint: `options.speakers`, else `meeting.json` `expectedSpeakers` n as `minimum: n − 1, maximum: n + 1` (or the form PR7c found best) | failed → skip 6–7 |
 | 6 | `align` | `SpeakerRunBuilder.build` (PR5a, pure) → run (no embeddings) plus in-memory voice data. Under the speaker lock: `writeRun`; `writeHead`; `writeVoiceData` only with `forceVoiceData` (evaluation; never for normal meetings); append carry-over edits (§4.9) when the previous head had names, links, or rejections. Release the lock. | failed → skip 7 |
 | 7 | `recognize` | PR10: when "Remember voices" is on and some profile has samples: `SpeakerRecognizer.recognize` on the in-memory centroids → `writeRecognition` (distances only) | failed → continue |
-| 8 | `export` | `SessionExports.regenerate` (takes the speaker lock itself; stage 6 has released it) | failed → state `failed` |
+| 8 | `export` | apply live speaker-name hints to the aligned speaker at their words/time unless a later explicit rename governs it; `SessionExports.regenerate` (takes the speaker lock itself; stage 6 has released it) | failed → state `failed` |
 | 9 | — | delete `derived/` whatever happened (unless `keepDerived`); write the final record; release the lease if `run` acquired it | — |
 
 Final state: `succeeded` if every applicable stage succeeded; `partial` if export
@@ -2838,10 +2840,11 @@ No speaker labels: speaker models are not installed. [Install…]"). An explicit
 `holos session diarize` without verified models fails early (exit 1) with the setup
 hint. `postprocess.json` writes are throttled to one per 250 ms plus every stage change.
 
-Added later, both before stage 2 and both skipped with `keepTranscript`: stage 1b
-`languages` (§4.14) and stage 1c `wordFixes` (learned corrections and the word list's "often
-heard as" terms applied to the final transcript, which becomes a new current revision;
-docs/design.md "Meeting word fixes"). A word-fix problem makes the record `partial` too.
+Added later before stage 2: stage 1b `languages` (§4.14), stage 1c live text hints, and
+stage 1d `wordFixes` (learned corrections and the word list's "often heard as" terms applied
+to the live-corrected transcript, which becomes a new current revision; docs/design.md
+"Meeting word fixes"). Text-changing stages are skipped with `keepTranscript`; speaker-name
+hints are still applied. A live-hint or word-fix problem makes the record `partial` too.
 
 **Render time map** (PR7b, in `TrackRenderer`). A meeting left paused for hours would
 otherwise render hours of silence. Gaps longer than 60 s (including before the first

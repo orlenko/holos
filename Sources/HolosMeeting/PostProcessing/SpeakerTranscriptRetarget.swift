@@ -158,7 +158,7 @@ enum SpeakerTranscriptRetarget {
             let replacementCount = fix.end - fix.first
             let originalCount: Int
             switch fix.kind {
-            case .correction, .term:
+            case .correction, .term, .liveCorrection:
                 originalCount = WordFixes.tokens(of: Array(fix.heard.utf16)).count
             case .reviewRevert:
                 originalCount = replacementCount
@@ -211,8 +211,8 @@ enum SpeakerTranscriptRetarget {
         var segments: [String: Segment]
 
         init(from old: Transcript, to new: Transcript) throws {
-            let oldBase = old.fixedFrom ?? old.id
-            let newBase = new.fixedFrom ?? new.id
+            let oldBase = old.liveCorrectedFrom ?? old.fixedFrom ?? old.id
+            let newBase = new.liveCorrectedFrom ?? new.fixedFrom ?? new.id
             let oldSegments = Dictionary(old.segments.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
             var mapped: [String: Segment] = [:]
             for segment in new.segments {

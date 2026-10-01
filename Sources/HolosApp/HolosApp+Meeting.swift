@@ -649,7 +649,8 @@ extension HolosAppDelegate: NSMenuDelegate {
             liveHeader: { [weak self] id, summary in
                 self?.liveMeetingHeader(sessionID: id, summary: summary)
                     ?? LiveMeetingHeader(name: summary?.name ?? "Meeting", phase: .saved, detail: "")
-            })
+            },
+            learnLiveText: { [weak self] heard, meant in self?.learnMeetingCorrection(heard: heard, meant: meant) })
         pane.update(running: controller.sessionsInUse)
         pane.update(meetingState: controller.state)
         meeting.meetingsPane = pane

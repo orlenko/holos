@@ -11,9 +11,19 @@ public struct LiveRun: Sendable, Equatable {
     /// The finalized segment the words come from (`transcriptFinalized`'s `segmentID`); nil for volatile words. A
     /// later correction made during the meeting attaches here.
     public var segmentID: String?
+    /// The shown words in the finalized segment, and their time. Nil for volatile text.
+    public var firstWord: Int?
+    public var endWord: Int?
+    public var start: Double?
+    public var end: Double?
+    /// A speaker name the person attached to this phrase while recording.
+    public var speakerName: String?
 
-    public init(text: String, isFinal: Bool, segmentID: String? = nil) {
+    public init(text: String, isFinal: Bool, segmentID: String? = nil, firstWord: Int? = nil, endWord: Int? = nil,
+                start: Double? = nil, end: Double? = nil, speakerName: String? = nil) {
         self.text = text; self.isFinal = isFinal; self.segmentID = segmentID
+        self.firstWord = firstWord; self.endWord = endWord; self.start = start; self.end = end
+        self.speakerName = speakerName
     }
 }
 
@@ -23,10 +33,12 @@ public struct LiveParagraph: Sendable, Equatable {
     public var track: String
     /// Session time of its first word.
     public var start: Double
+    /// The live name attached to these runs; nil still shows the track name.
+    public var speakerName: String?
     public var runs: [LiveRun]
 
-    public init(track: String, start: Double, runs: [LiveRun]) {
-        self.track = track; self.start = start; self.runs = runs
+    public init(track: String, start: Double, speakerName: String? = nil, runs: [LiveRun]) {
+        self.track = track; self.start = start; self.speakerName = speakerName; self.runs = runs
     }
 
     /// Whether every word is final.
@@ -66,7 +78,7 @@ public enum LiveTranscript {
     /// The paragraphs to show. `finals`: finalized segments with `track` set; `volatile`: volatile segments by track
     /// (`LiveTextFile.volatile`); `echo`: `echoParameters(mode:)`, nil to hide nothing.
     public static func paragraphs(finals: [TranscriptSegment], volatile: [String: [TranscriptSegment]],
-                                  echo: AlignmentParameters?) -> [LiveParagraph] {
+                                  echo: AlignmentParameters?, hints: [LiveHint] = []) -> [LiveParagraph] {
         var items: [Item] = []
         /// Each track's finalized intervals.
         var finalized: [String: [(start: Double, end: Double)]] = [:]
@@ -94,25 +106,48 @@ public enum LiveTranscript {
             }
         }
         if let echo { hideEcho(in: &items, parameters: echo) }
-        let shown = items.flatMap { $0.shown() }.enumerated().sorted { left, right in
+        var shown = items.flatMap { $0.shown() }.enumerated().sorted { left, right in
             // Finals before volatile words at the same time; otherwise as listed.
             (left.element.start, left.element.isFinal ? 0 : 1, left.offset)
                 < (right.element.start, right.element.isFinal ? 0 : 1, right.offset)
         }.map(\.element)
+        apply(hints, to: &shown)
         var paragraphs: [LiveParagraph] = []
         /// End of the current paragraph's last word.
         var paragraphEnd = -Double.infinity
         for item in shown {
-            let run = LiveRun(text: item.text, isFinal: item.isFinal, segmentID: item.isFinal ? item.segmentID : nil)
-            if let last = paragraphs.last, last.track == item.track, item.start - paragraphEnd <= paragraphGapSeconds {
+            let run = LiveRun(text: item.text, isFinal: item.isFinal, segmentID: item.isFinal ? item.segmentID : nil,
+                              firstWord: item.isFinal ? item.firstWord : nil,
+                              endWord: item.isFinal ? item.endWord : nil,
+                              start: item.isFinal ? item.start : nil, end: item.isFinal ? item.end : nil,
+                              speakerName: item.speakerName)
+            if let last = paragraphs.last, last.track == item.track, last.speakerName == item.speakerName,
+               item.start - paragraphEnd <= paragraphGapSeconds {
                 paragraphs[paragraphs.count - 1].runs.append(run)
                 paragraphEnd = max(paragraphEnd, item.end)
             } else {
-                paragraphs.append(LiveParagraph(track: item.track, start: item.start, runs: [run]))
+                paragraphs.append(LiveParagraph(track: item.track, start: item.start,
+                                                speakerName: item.speakerName, runs: [run]))
                 paragraphEnd = item.end
             }
         }
         return paragraphs
+    }
+
+    /// Applies only an exact live piece here. The post-processor has the broader time+words matcher for a replayed
+    /// final transcript; the live view must not rewrite another occurrence merely because it has the same words.
+    private static func apply(_ hints: [LiveHint], to shown: inout [Shown]) {
+        for hint in hints {
+            guard let index = shown.firstIndex(where: {
+                $0.isFinal && $0.segmentID == hint.segmentID && $0.firstWord == hint.firstWord
+                    && $0.endWord == hint.endWord
+            }) else { continue }
+            switch hint.action {
+            case .replaceText(let text): shown[index].text = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            case .nameSpeaker(let name):
+                shown[index].speakerName = SpeakerEditor.cleanName(name)
+            }
+        }
     }
 
     /// Leaves out the microphone words `EchoFilter.echoSpans` finds to be echo. It is given only the words still
@@ -188,7 +223,8 @@ public enum LiveTranscript {
                   range.contains(where: { words[$0].text.contains(where: { $0.isLetter || $0.isNumber }) })
             else { return nil }
             return Shown(track: track, start: words[range.lowerBound].start, end: words[range.upperBound - 1].end,
-                         text: text, isFinal: isFinal, segmentID: segment.id)
+                         text: text, isFinal: isFinal, segmentID: segment.id,
+                         firstWord: range.lowerBound, endWord: range.upperBound)
         }
 
         /// The word as it appears in the segment's text, else its own text; trimmed.
@@ -208,9 +244,12 @@ public enum LiveTranscript {
         let track: String
         let start: Double
         let end: Double
-        let text: String
+        var text: String
         let isFinal: Bool
         let segmentID: String
+        let firstWord: Int
+        let endWord: Int
+        var speakerName: String? = nil
     }
 }
 
@@ -258,6 +297,8 @@ public struct LiveTranscriptReader: Sendable {
     public private(set) var volatile: [String: [TranscriptSegment]] = [:]
     /// The meeting's mode from meeting.json, once read.
     public private(set) var mode: MeetingMode?
+    /// Live corrections as last read. A damaged sidecar leaves the last readable value visible.
+    public private(set) var hints: [LiveHint] = []
     private var offset: UInt64 = 0
     private var partial = Data()
 
@@ -275,6 +316,7 @@ public struct LiveTranscriptReader: Sendable {
         // live.json first: the recorder drops a volatile copy from it only after its final segment is in the journal,
         // so the journal read next has every word live.json no longer shows (`VolatileText`).
         volatile = includeVolatile ? (LiveTextFile.read(session: session)?.volatile ?? [:]) : [:]
+        if let file = try? LiveHintStore.read(session: session) { hints = file.hints }
         readJournal()
     }
 

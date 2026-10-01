@@ -1242,6 +1242,19 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
         return CorrectionsPane.LearnResult(learned: learned, declined: declined, edit: nil)
     }
 
+    /// A live meeting's exact timed text correction also teaches safe, small mishearing pairs for future speech.
+    /// Rewordings and unanchored dictionary-word swaps remain timed-only, as Corrections' Learn command treats them.
+    func learnMeetingCorrection(heard: String, meant: String) -> String? {
+        let learned = CorrectionList.learn(original: heard, corrected: meant) { word in
+            NSSpellChecker.shared.checkSpelling(of: word.lowercased(), startingAt: 0).location == NSNotFound
+        }.filter { corrections.apply(to: $0.heard) != $0.meant }
+        guard !learned.isEmpty else { return nil }
+        guard changeCorrections({ list in for correction in learned { list.add(correction) } }) else {
+            return "the corrections list is unavailable"
+        }
+        return nil
+    }
+
     /// A manual Add; one that resolves a declined swap also keeps the edit that swap came from, as Learn
     /// does, unless a newer dictation or kept edit has replaced the text it was edited from.
     private func addCorrection(_ correction: Correction, resolving edit: DeclinedCorrectionQueue.PendingEdit?)

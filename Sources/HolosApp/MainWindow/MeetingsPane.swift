@@ -42,6 +42,8 @@ final class MeetingsPane: NSViewController, NSTableViewDataSource, NSTableViewDe
     private let endUsing: (String) -> Void
     /// The live transcript's header for a meeting (the app delegate describes the meeting state).
     private let liveHeader: (String, SessionSummary?) -> LiveMeetingHeader
+    /// Learns safe phrase replacements from a live text correction.
+    private let learnLiveText: (String, String) -> String?
     /// The app's meeting state (`MeetingController.state`).
     private var meetingState: MeetingState = .idle
     /// The live transcript shown in place of the list, if any.
@@ -71,13 +73,15 @@ final class MeetingsPane: NSViewController, NSTableViewDataSource, NSTableViewDe
     init(root: URL, perform: @escaping (Action, SessionSummary) -> Void,
          openReview: @escaping (SessionSummary) -> Void,
          beginUsing: @escaping (String, String) -> Bool, endUsing: @escaping (String) -> Void,
-         liveHeader: @escaping (String, SessionSummary?) -> LiveMeetingHeader) {
+         liveHeader: @escaping (String, SessionSummary?) -> LiveMeetingHeader,
+         learnLiveText: @escaping (String, String) -> String? = { _, _ in nil }) {
         self.root = root
         self.perform = perform
         self.openReview = openReview
         self.beginUsing = beginUsing
         self.endUsing = endUsing
         self.liveHeader = liveHeader
+        self.learnLiveText = learnLiveText
         super.init(nibName: nil, bundle: nil)
 
         for column in Column.allCases {
@@ -236,7 +240,8 @@ final class MeetingsPane: NSViewController, NSTableViewDataSource, NSTableViewDe
         let controller = LiveMeetingViewController(
             sessionID: sessionID, directory: directory,
             onBack: { [weak self] in self?.showList() },
-            onOpenFinished: { [weak self] in self?.openFinished(sessionID) })
+            onOpenFinished: { [weak self] in self?.openFinished(sessionID) },
+            onLearnText: learnLiveText)
         live = controller
         addChild(controller)
         listView.isHidden = true
