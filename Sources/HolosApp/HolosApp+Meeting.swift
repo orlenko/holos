@@ -57,7 +57,6 @@ final class MeetingAppState {
     var maintenanceEnded: [String: Int] = [:]
     /// Holos is quitting: review windows close without alerts.
     var quitting = false
-    var liveTranscriptWindow: LiveTranscriptWindow?
     var savingWindow: NSWindow?
     /// `voiceislocal doctor --json` speakerModels ("verified", "notInstalled", "damaged"), "unavailable" when the voiceislocal tool
     /// cannot run, "unknown" when it ran but did not report them, nil before the first check.
@@ -146,10 +145,7 @@ extension HolosAppDelegate: NSMenuDelegate {
         } else {
             rebuildMenu()
         }
-        if let window = meeting.liveTranscriptWindow, window.isVisible, let id = state.sessionID,
-           let controller = meeting.controller {
-            window.follow(session: controller.sessionURL(id), name: controller.status?.name ?? controller.reducer.meetingName)
-        }
+        meeting.meetingsPane?.update(meetingState: state)
     }
 
     private func handleMeetingEffect(_ effect: MeetingEffect) {
@@ -559,16 +555,46 @@ extension HolosAppDelegate: NSMenuDelegate {
         controller.addMarker(label: String(field.stringValue.prefix(200)))
     }
 
+    /// "Show Live Transcript…": the main window's Meetings section with the meeting's live transcript.
     @objc func showLiveTranscript() {
         guard let controller = meeting.controller, let id = controller.state.sessionID else { return }
-        if meeting.liveTranscriptWindow == nil {
-            meeting.liveTranscriptWindow = LiveTranscriptWindow(onClose: { [weak self] in
-                self?.setDockPresence(false, for: "transcript")
-            })
+        showMainWindow(.meetings)
+        meeting.meetingsPane?.showLive(sessionID: id, directory: controller.sessionURL(id))
+    }
+
+    /// The live transcript's header for meeting `sessionID`: its name, phase, and what it is doing.
+    func liveMeetingHeader(sessionID: String, summary: SessionSummary?) -> LiveMeetingHeader {
+        let state = meeting.controller?.state ?? .idle
+        let follows = state.sessionID == sessionID
+        let status = follows ? meeting.controller?.status : nil
+        let name = status?.name ?? (follows ? meeting.controller?.reducer.meetingName : nil) ?? summary?.name ?? "Meeting"
+        let phase = LiveMeetingPhase.of(sessionID: sessionID, state: state, summary: summary)
+        let detail: String
+        switch phase {
+        case .starting:
+            detail = "Starting…"
+        case .recording, .paused:
+            var parts = [status.map { MeetingFormat.clock($0.elapsedSeconds) } ?? "Recording"]
+            if phase == .paused { parts.insert("Paused", at: 0) }
+            if let status, status.tracks.contains(where: { $0.transcription == .behind }) {
+                parts.append("transcription is behind; the rest is transcribed after stop")
+            }
+            detail = parts.joined(separator: " · ")
+        case .saving:
+            detail = Self.savingText(status, name: name)
+        case .saved:
+            detail = (summary.map(MeetingsPane.stateText) ?? "Saved")
+                + (summary.map { " · \(MeetingFormat.clock($0.savedSeconds))" } ?? "")
+        case .interrupted:
+            detail = "Interrupted before it was saved · select it in Meetings and choose Recover…"
+        case .failed:
+            if follows, case .failed(_, let message) = state {
+                detail = message
+            } else {
+                detail = summary.map(MeetingsPane.stateText) ?? "Failed"
+            }
         }
-        setDockPresence(true, for: "transcript")
-        meeting.liveTranscriptWindow?.show(session: controller.sessionURL(id),
-                                           name: controller.status?.name ?? controller.reducer.meetingName)
+        return LiveMeetingHeader(name: name, phase: phase, detail: detail)
     }
 
     @objc func showMeetings() {
@@ -619,8 +645,13 @@ extension HolosAppDelegate: NSMenuDelegate {
                 self?.openReview(sessionID: summary.id, directory: summary.directory, name: summary.name)
             },
             beginUsing: { [weak controller] id, doing in controller?.beginUsing(id, for: doing) ?? false },
-            endUsing: { [weak controller] id in controller?.endUsing(id) })
+            endUsing: { [weak controller] id in controller?.endUsing(id) },
+            liveHeader: { [weak self] id, summary in
+                self?.liveMeetingHeader(sessionID: id, summary: summary)
+                    ?? LiveMeetingHeader(name: summary?.name ?? "Meeting", phase: .saved, detail: "")
+            })
         pane.update(running: controller.sessionsInUse)
+        pane.update(meetingState: controller.state)
         meeting.meetingsPane = pane
         return pane
     }

@@ -6296,9 +6296,9 @@ readable transcript and audio, not interrupted. No
 lease-taking action while the app uses the meeting or another process holds it (liveness
 capturing, processing, maintenance).
 
-Live transcript window: read-only text view with the last 500 `transcriptFinalized`
-events from `events.jsonl`, `[01:02:03] Mic: …`, refreshed every second, scrolled to the
-end unless the user scrolled up.
+Live transcript: no longer a window; it is part of the main window's Meetings section, with
+volatile words from the recorder's `live.json` and microphone echo hidden (docs/design.md
+"Live transcript").
 
 Interrupted prompt: after `attachOnLaunch`, for each interrupted session not in
 `UserDefaults "meeting.promptedInterrupted"`: alert "Holos found an interrupted

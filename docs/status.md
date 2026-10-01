@@ -368,8 +368,18 @@ Hardware-facing and cross-app acceptance remain pending.
   "Setup…" path opens it. The menu bar menu is slimmed to the dictation status and toggle,
   the kept result's Copy items, Correct Last Dictation…, the meeting block, and the window's
   items; the language and shortcut submenus moved to Settings. The Setup Assistant, the
-  meeting start panel, the live transcript, Review, and the dictation preview stay separate
-  windows. Built and compiled only: nothing of the main window has been seen on screen yet.
+  meeting start panel, Review, and the dictation preview stay separate windows. Built and
+  compiled only: nothing of the main window has been seen on screen yet.
+- Live transcript in the main window (docs/design.md "Live transcript"): the meeting being
+  recorded is the first row of Meetings ("● Recording"), and opening it (double-click,
+  Return, Live Transcript, or the menu bar's Show Live Transcript…) shows its words in place
+  of the list as they are spoken: volatile words in a secondary colour until final (the
+  recorder writes them to `live.json` at most every 200 ms), the microphone's echo of the
+  call hidden with post-processing's echo rule, following the newest words until the user
+  scrolls up ("Jump to Live"). After the stop it shows the saving progress, then offers
+  Open Review or Open Transcript. The separate Live Transcript window is gone. Unit-tested
+  (volatile to final, echo hiding, following, what opens) and rendered offscreen in light
+  and dark; not yet seen in a real meeting.
 - Reading section (docs/design.md "Reading section"): the main window's Reading (⌘5) makes
   the `voiceislocal read` file in the app. A New reading card takes an `https://` link or a
   document (typed, pasted with ⌘V, dropped anywhere on the section, or chosen; several files
@@ -607,6 +617,10 @@ Still requiring real-machine or user-data validation:
   `session fix-words --force`, which labels its speakers again (names carry over, turn-level
   changes do not). `eval local` does not apply the fixes to its candidate yet. The model
   is asked one place at a time (at most 500 per run).
+- Live transcript: speakers and text cannot be corrected during the meeting yet. The first
+  one or two volatile words of a microphone echo can show briefly (the echo rule needs a
+  run of three words), and an echo heard before the system track's words arrive shows until
+  they do.
 - Speaker names and edits: labels are "Speaker N" until named in the review window or
   with `voiceislocal speakers`. The review window has no redo, and its undo does not reach past
   a relabel (Find More Speakers keeps names, not turn-level changes). Find More Speakers is
