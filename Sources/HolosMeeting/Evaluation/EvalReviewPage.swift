@@ -23,6 +23,9 @@ public enum EvalReviewPage {
         public var after: String
         public var cloudBefore: String
         public var cloudAfter: String
+        /// The same words under the normalized comparison (`EvalPassage.formattingOnly`): hidden unless "Show
+        /// formatting-only differences" is on.
+        public var formatting: Bool
     }
 
     public struct PageData: Codable, Sendable, Equatable {
@@ -37,7 +40,8 @@ public enum EvalReviewPage {
         public var items: [Item]
     }
 
-    /// The page's data: the report's word passages (case/punctuation-only ones are left to report.md), in time order.
+    /// The page's data: the report's word passages (case/punctuation-only ones are left to report.md), in time order,
+    /// formatting-only ones included but marked (the page hides them by default).
     public static func pageData(report: CompareReport, run: CloudRunRecord, sessionName: String) -> PageData {
         let maps = Dictionary(run.tracks.map { ($0.track, $0.timeMap) }, uniquingKeysWith: { first, _ in first })
         let items = report.passages.filter { $0.group != .caseOrPunctuation }
@@ -49,7 +53,7 @@ public enum EvalReviewPage {
                             renderEnd: EvalTimeMap.renderTime(passage.end, map: map), local: passage.local,
                             cloud: passage.cloud, group: passage.group.rawValue, groupTitle: passage.group.title,
                             before: passage.before, after: passage.after, cloudBefore: passage.cloudBefore,
-                            cloudAfter: passage.cloudAfter)
+                            cloudAfter: passage.cloudAfter, formatting: passage.formattingOnly)
             }
         return PageData(sessionID: report.sessionID, sessionName: sessionName, run: report.run, model: report.model,
                         transcriptID: report.transcriptID,
@@ -127,6 +131,8 @@ kbd { border:1px solid var(--line); border-radius:3px; padding:0 3px; font-size:
     <span id="progress"></span>
     <span id="player"></span>
     <button id="export">Export decisions</button>
+    <label id="formattingToggle" hidden><input type="checkbox" id="showFormatting">
+      Show formatting-only differences (<span id="formattingCount">0</span>)</label>
   </div>
   <div id="warning" class="warning" role="alert" hidden></div>
 </header>
@@ -338,7 +344,9 @@ kbd { border:1px solid var(--line); border-radius:3px; padding:0 3px; font-size:
     meta.appendChild(playButton);
     meta.appendChild(el("span", { "class": "badge" }, item.track));
     meta.appendChild(el("span", { "class": "badge" }, item.groupTitle));
+    if (item.formatting) meta.appendChild(el("span", { "class": "badge" }, "Formatting only"));
     card.appendChild(meta);
+    card.hidden = !!item.formatting;
     function line(label, cls, text, before, after) {
       var row = el("div", { "class": "row " + cls });
       row.appendChild(el("div", { "class": "label" }, label));
@@ -397,17 +405,57 @@ kbd { border:1px solid var(--line); border-radius:3px; padding:0 3px; font-size:
     show();
     cards.push(entry);
   });
-  if (!cards.length) list.appendChild(el("p", null, "The two transcripts agree word for word; nothing to review."));
+  var empty = el("p", null, "The two transcripts agree word for word; nothing to review.");
+  list.appendChild(empty);
+
+  // Formatting-only passages (numbers, fillers, compounds) are hidden unless shown; hidden cards are skipped by
+  // j/k and left out of the count.
+  var showFormatting = false;
+  var formattingCount = cards.filter(function (c) { return c.item.formatting; }).length;
+  var toggle = document.getElementById("formattingToggle");
+  toggle.hidden = formattingCount === 0;
+  document.getElementById("formattingCount").textContent = String(formattingCount);
+  function visible(entry) { return showFormatting || !entry.item.formatting; }
+  function visibleIndices() {
+    var out = [];
+    cards.forEach(function (c, i) { if (visible(c)) out.push(i); });
+    return out;
+  }
+  function applyVisibility() {
+    cards.forEach(function (c) { c.card.hidden = !visible(c); });
+    empty.hidden = visibleIndices().length > 0;
+    empty.textContent = formattingCount > 0 && !showFormatting
+      ? "Only formatting differs (numbers, fillers, compounds); nothing else to review."
+      : "The two transcripts agree word for word; nothing to review.";
+  }
+  document.getElementById("showFormatting").addEventListener("change", function (e) {
+    showFormatting = !!e.target.checked;
+    applyVisibility();
+    var shown = visibleIndices();
+    if (shown.length && shown.indexOf(current) < 0) select(shown[0], true);
+    progress();
+  });
+  applyVisibility();
 
   function select(index, keepScroll) {
-    if (!cards.length) return;
-    current = Math.max(0, Math.min(cards.length - 1, index));
+    var shown = visibleIndices();
+    if (!shown.length) return;
+    var target = shown[0];
+    shown.forEach(function (i) { if (i <= index) target = i; });
+    current = target;
     cards.forEach(function (c, i) { c.card.classList.toggle("current", i === current); });
     if (!keepScroll) cards[current].card.scrollIntoView({ block: "center" });
   }
+  function step(direction) {
+    var shown = visibleIndices();
+    var at = shown.indexOf(current);
+    if (at < 0) { select(shown.length ? shown[0] : 0); return; }
+    select(shown[Math.max(0, Math.min(shown.length - 1, at + direction))]);
+  }
   function progress() {
-    var done = cards.filter(function (c) { return state.decisions[c.item.id]; }).length;
-    document.getElementById("progress").textContent = done + " of " + cards.length + " passages decided · run " + data.run;
+    var shownCards = cards.filter(visible);
+    var done = shownCards.filter(function (c) { return state.decisions[c.item.id]; }).length;
+    document.getElementById("progress").textContent = done + " of " + shownCards.length + " passages decided · run " + data.run;
     var warning = document.getElementById("warning");
     warning.textContent = unsaved() ? "Not saved in this browser (storage is full or blocked): your decisions are "
       + "kept while this page stays open. Export them before closing it." : "";
@@ -471,12 +519,13 @@ kbd { border:1px solid var(--line); border-radius:3px; padding:0 3px; font-size:
       return;
     }
     // A focused button keeps its own Space and Enter (buttons in the passages give up focus when clicked).
-    if (e.target && e.target.tagName === "BUTTON" && (e.key === " " || e.key === "Enter")) return;
-    if (!cards.length) return;
+    // Buttons and form controls keep their own Space and Return (the formatting checkbox, a select).
+    if (e.target && ["BUTTON", "INPUT", "SELECT"].indexOf(e.target.tagName) >= 0 && (e.key === " " || e.key === "Enter")) return;
+    if (!visibleIndices().length) return;
     var entry = cards[current];
     switch (e.key) {
-      case "j": select(current + 1); break;
-      case "k": select(current - 1); break;
+      case "j": step(1); break;
+      case "k": step(-1); break;
       case "1": entry.choose("local"); break;
       case "2": entry.choose("cloud"); break;
       case "e": entry.area.focus(); entry.area.select(); break;

@@ -87,6 +87,8 @@ private func evalSettings(max: Double = 10, search: Double = 4) -> CloudSegmenta
     #expect(CloudModels.isValidName("gpt-4o-mini-transcribe"))
     #expect(!CloudModels.isValidName("../x"))
     #expect(!CloudModels.isValidName("a.b"))
+    // The local runs' prefix is reserved, so a cloud run ID is never read as a local one.
+    #expect(!CloudModels.isValidName("local-model") && !CloudModels.isValidName("LOCAL-x"))
 }
 
 @Test func evalPreparedEstimateCountsPendingSegmentsAndTheTimestampPass() throws {

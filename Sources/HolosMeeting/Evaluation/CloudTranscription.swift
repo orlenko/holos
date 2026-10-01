@@ -30,9 +30,10 @@ public enum CloudModels {
         pricePerMinute[model].map { $0 * seconds / 60 }
     }
 
-    /// A model name that can be part of a run ID: letters, digits, "-" and "_".
+    /// A model name that can be part of a run ID: letters, digits, "-" and "_", and not starting with the local
+    /// runs' prefix ("local-"), so a cloud run's ID is never taken for a local one.
     public static func isValidName(_ model: String) -> Bool {
-        !model.isEmpty && model.count <= 64 && model.utf8.allSatisfy {
+        !model.isEmpty && model.count <= 64 && !model.lowercased().hasPrefix(EvalLocal.idPrefix) && model.utf8.allSatisfy {
             ($0 >= 65 && $0 <= 90) || ($0 >= 97 && $0 <= 122) || ($0 >= 48 && $0 <= 57) || $0 == 45 || $0 == 95
         }
     }
