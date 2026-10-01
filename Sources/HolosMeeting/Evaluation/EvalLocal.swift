@@ -289,8 +289,16 @@ public enum EvalLocal {
         // for it, so the same command tries again. One silent track, or a language heard on only some tracks, is fine.
         let current = try? SessionFiles.currentTranscript(session: session)
         let expectsWords = current.map { LanguageStage.hasWords($0.segments) } ?? true
-        // Parts with no words wait until their language is known to have words somewhere.
+        // Parts with no words wait until their language is known to have words somewhere (a saved part, or one
+        // transcribed now), and are saved as soon as it is: a later track that fails does not lose them.
         var silent: [LocalRunPart] = []
+        func save(_ part: LocalRunPart) throws {
+            try EvalStore.write(part, to: EvalPaths.localPart(record.id, language: part.language, track: part.track,
+                                                             in: session))
+        }
+        func hasWords(_ language: String) -> Bool {
+            (parts[language] ?? [:]).values.contains { LanguageStage.hasWords($0.segments) }
+        }
         for (language, track) in missing {
             try Task.checkCancellation()
             let label = "the \(track.track) track in \(LanguageStage.name(language))"
@@ -302,20 +310,16 @@ public enum EvalLocal {
             try Task.checkCancellation()
             let part = LocalRunPart(language: language, track: track.track, segments: segments, finishedAt: Date())
             parts[language, default: [:]][track.track] = part
-            if LanguageStage.hasWords(segments) {
-                try EvalStore.write(part, to: EvalPaths.localPart(record.id, language: language, track: track.track,
-                                                                 in: session))
-            } else {
+            guard !expectsWords || hasWords(language) else {
                 silent.append(part)
+                continue
             }
+            try save(part)
+            for waiting in silent where waiting.language == language { try save(waiting) }
+            silent.removeAll { $0.language == language }
         }
-        let failed = expectsWords ? record.languages.filter { language in
-            !(parts[language] ?? [:]).values.contains { LanguageStage.hasWords($0.segments) }
-        } : []
-        for part in silent where !failed.contains(part.language) {
-            try EvalStore.write(part, to: EvalPaths.localPart(record.id, language: part.language, track: part.track,
-                                                             in: session))
-        }
+        // What still waits belongs to a language that heard nothing: it is not saved.
+        let failed = expectsWords ? record.languages.filter { !hasWords($0) } : []
         if !failed.isEmpty {
             let names = LanguageStage.names(failed)
             throw HolosError.unavailable("No words were recognized in \(names) on any track"

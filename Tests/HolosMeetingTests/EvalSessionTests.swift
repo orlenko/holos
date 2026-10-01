@@ -708,6 +708,38 @@ private func evalLocalDependencies(_ speech: FakeSpeechFactory, status: String =
     #expect(candidate.segments.map(\.text) == ["hello team"])
 }
 
+@Test func evalLocalSavesASilentTrackOnceItsLanguageHeardWordsBeforeALaterLanguageFails() async throws {
+    let temp = try TemporaryDirectory("eval")
+    defer { temp.remove() }
+    let transcript = SessionFixtures.transcript([SessionFixtures.segment(["hello", "team"], track: "mic", start: 0.5)])
+    let session = try await SessionFixtures.makeSession(in: temp.url, source: .microphoneAndSystem,
+                                                        audioSeconds: ["mic": 4, "system": 4], transcript: transcript)
+    let manifest = try SessionArchive.readManifest(at: session)
+    try AtomicFile.writeJSON(MeetingInfo(sessionID: manifest.id, mode: .call, othersInRoom: false,
+                                         languages: ["en-CA", "fr-CA"]),
+                             to: SessionPaths.meetingInfo(session))
+    let heard = SessionFixtures.segment(["hello", "team"], track: nil, start: 0.5)
+
+    // English: a silent microphone, then words on the system track; French fails on its first track.
+    let failing = FakeSpeechFactory([FakeSpeechScript(segments: []), FakeSpeechScript(segments: [heard]),
+                                     FakeSpeechScript(makeError: .unavailable("The speech service is busy."))])
+    await #expect(throws: HolosError.self) {
+        _ = try await EvalLocal.run(session: session, options: .init(), vocabulary: nil,
+                                    dependencies: evalLocalDependencies(failing),
+                                    now: Date(timeIntervalSince1970: 1_790_000_000))
+    }
+    let id = try #require(EvalLocal.runIDs(in: session).first)
+    let unfinished = try #require(try EvalLocal.record(id, in: session))
+    #expect(unfinished.languages == ["en-CA", "fr-CA"])
+    // Both English parts are kept, the silent one too: resuming transcribes French only.
+    #expect(EvalLocal.savedParts(unfinished, in: session) == 2)
+    let resuming = FakeSpeechFactory([FakeSpeechScript(segments: [heard]), FakeSpeechScript(segments: [heard])])
+    let record = try await EvalLocal.run(session: session, options: .init(), vocabulary: nil,
+                                         dependencies: evalLocalDependencies(resuming))
+    #expect(record.id == id && record.completedAt != nil)
+    #expect(resuming.calls.map(\.locale) == ["fr-CA", "fr-CA"])
+}
+
 @Test func evalRefusesASessionThatWasNotFinishedProperly() async throws {
     let temp = try TemporaryDirectory("eval")
     defer { temp.remove() }
