@@ -377,8 +377,6 @@ final class LiveMeetingViewController: NSViewController, NSTextViewDelegate {
         guard alert.runModal() == .alertFirstButtonReturn else { return }
         let corrected = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !corrected.isEmpty, corrected != target.hint.heard else { return }
-        let originalHeard = LiveHints.originalHeard(for: target.hint, among: reader.hints)
-        let learningState = LiveHints.correctionLearningState(for: target.hint, among: reader.hints)
         var hint = target.hint
         hint.id = UUID().uuidString
         hint.at = Date()
@@ -386,7 +384,9 @@ final class LiveMeetingViewController: NSViewController, NSTextViewDelegate {
         hint.learned = nil
         hint.owned = nil
         hint.displaced = nil
-        guard save(hint, success: "Text correction saved") else { return }
+        guard let savedHints = save(hint, success: "Text correction saved") else { return }
+        let originalHeard = LiveHints.originalHeard(for: target.hint, among: savedHints)
+        let learningState = LiveHints.correctionLearningState(for: target.hint, among: savedHints)
         let learning = onLearnText(learningState, originalHeard, corrected)
         var problems: [String] = []
         if let problem = learning.problem { problems.append("could not learn it: \(problem)") }
@@ -427,21 +427,21 @@ final class LiveMeetingViewController: NSViewController, NSTextViewDelegate {
     }
 
     @discardableResult
-    private func save(_ hint: LiveHint, success: String) -> Bool {
+    private func save(_ hint: LiveHint, success: String) -> [LiveHint]? {
         guard header.phase.capturing else {
             editStatus.stringValue = "The meeting is no longer recording; this change was not saved."
-            return false
+            return nil
         }
         do {
-            try LiveHintStore.append(hint, session: reader.session)
+            let saved = try LiveHintStore.append(hint, session: reader.session)
             editStatus.stringValue = success
             refresh()
-            return true
+            return saved.hints
         } catch {
             let alert = NSAlert(error: error)
             alert.messageText = "The live correction could not be saved"
             alert.runModal()
-            return false
+            return nil
         }
     }
 

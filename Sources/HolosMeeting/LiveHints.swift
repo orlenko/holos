@@ -77,11 +77,13 @@ public enum LiveHintStore {
         return file
     }
 
-    /// Adds one hint under a lock beside the sidecar, preserving a hint another app instance saved meanwhile.
-    public static func append(_ hint: LiveHint, session: URL) throws {
+    /// Adds one hint under a lock beside the sidecar, preserving a hint another app instance saved meanwhile, and
+    /// returns the exact saved snapshot so its caller need not wait for a polling reader to observe the edit.
+    @discardableResult
+    public static func append(_ hint: LiveHint, session: URL) throws -> LiveHintFile {
         try validate(hint)
         let url = SessionPaths.liveHints(session)
-        try CorrectionList.withFileLock(for: url) {
+        return try CorrectionList.withFileLock(for: url) {
             var file = try read(session: session)
             guard file.sealed != true else {
                 throw HolosError.unavailable("This meeting is no longer accepting live corrections.")
@@ -95,6 +97,7 @@ public enum LiveHintStore {
                 throw HolosError.invalidInput("This meeting already has too much live correction data.")
             }
             try AtomicFile.write(data, to: url)
+            return file
         }
     }
 

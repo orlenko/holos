@@ -417,7 +417,8 @@ private func hint(_ segment: TranscriptSegment, words: Range<Int>, action: LiveH
     first.learned = [owned]
     first.owned = [owned]
     first.displaced = [displaced]
-    try LiveHintStore.append(second, session: session)
+    let saved = try LiveHintStore.append(second, session: session)
+    #expect(saved.hints == [first, second])
     #expect(try LiveHintStore.read(session: session).hints == [first, second])
 
     let consumed = try LiveHintStore.sealAndRead(session: session)
@@ -429,6 +430,37 @@ private func hint(_ segment: TranscriptSegment, words: Range<Int>, action: LiveH
     copied.sessionID = "ANOTHER-SESSION"
     try AtomicFile.writeJSON(copied, to: SessionPaths.liveHints(session))
     #expect(throws: HolosError.self) { try LiveHintStore.read(session: session) }
+}
+
+@Test func appendingARepeatedEditReturnsItsPriorLearningWithoutAReaderRefresh() async throws {
+    let temp = try TemporaryDirectory()
+    defer { temp.remove() }
+    let session = try await SessionFixtures.makeSession(
+        in: temp.url, transcript: SessionFixtures.transcript([]))
+    let segment = SessionFixtures.segment(["wrong"], track: "mic", start: 1, id: "S1")
+    var first = hint(segment, words: 0..<1, action: .replaceText("right"), id: "H1")
+    let owned = Correction(heard: "wrong", meant: "right")
+    let displaced = Correction(heard: "wrong", meant: "write")
+    try LiveHintStore.append(first, session: session)
+    try LiveHintStore.recordLearning([owned], owned: [owned], displaced: [displaced],
+                                     for: first.id, session: session)
+    first.learned = [owned]
+    first.owned = [owned]
+    first.displaced = [displaced]
+    var second = first
+    second.id = "H2"
+    second.heard = "right"
+    second.action = .replaceText("correct")
+    second.learned = nil
+    second.owned = nil
+    second.displaced = nil
+
+    let saved = try LiveHintStore.append(second, session: session)
+
+    #expect(saved.hints == [first, second])
+    #expect(LiveHints.originalHeard(for: second, among: saved.hints) == "wrong")
+    #expect(LiveHints.correctionLearningState(for: second, among: saved.hints)
+        == .init(previous: [owned], managed: [owned], preexisting: [displaced]))
 }
 
 @Test func liveHintStoreRejectsATextReplacementWithNoWords() async throws {
