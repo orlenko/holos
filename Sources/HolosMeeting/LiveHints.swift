@@ -330,10 +330,17 @@ public enum LiveHints {
         var candidates: [(match: Match, exactID: Bool, overlap: Double, distance: Double)] = []
         for (segmentIndex, segment) in transcript.segments.enumerated() where (segment.track ?? "mic") == hint.track {
             let words = WordTiming.effectiveWords(of: segment)
-            guard words.count >= wanted.count else { continue }
-            for first in 0...(words.count - wanted.count) {
-                let range = first..<(first + wanted.count)
-                guard range.map({ normalized(words[$0].text) }) == wanted else { continue }
+            let comparable: [(word: Int, token: String)] = words.enumerated().compactMap { index, word in
+                let token = normalized(word.text)
+                return token.isEmpty ? nil : (index, token)
+            }
+            guard comparable.count >= wanted.count else { continue }
+            for first in 0...(comparable.count - wanted.count) {
+                let matched = comparable[first..<(first + wanted.count)]
+                guard matched.map(\.token) == wanted,
+                      let firstWord = matched.first?.word,
+                      let lastWord = matched.last?.word else { continue }
+                let range = firstWord..<(lastWord + 1)
                 let start = words[range.lowerBound].start
                 let end = words[range.upperBound - 1].end
                 let overlap = max(0, min(end, hint.end) - max(start, hint.start))
@@ -423,8 +430,7 @@ public enum LiveHints {
     }
 
     private static func tokens(_ text: String) -> [String] {
-        let words = text.split(whereSeparator: \.isWhitespace).map { normalized(String($0)) }
-        return words.contains(where: { !$0.isEmpty }) ? words : []
+        text.split(whereSeparator: \.isWhitespace).map { normalized(String($0)) }.filter { !$0.isEmpty }
     }
 
     private static func normalized(_ word: String) -> String {

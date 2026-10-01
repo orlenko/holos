@@ -57,6 +57,27 @@ private func hint(_ segment: TranscriptSegment, words: Range<Int>, action: LiveH
     #expect(outcome.transcript.segments[0].text == "a live Rust demo")
 }
 
+@Test func standalonePunctuationDoesNotPreventLiveTextMatchingOrIdempotence() {
+    let segment = SessionFixtures.segment(["hello", "bright", "world"], track: "mic", start: 10, id: "live")
+    let live = hint(segment, words: 0..<3, action: .replaceText("hello — world"), id: "H1")
+    let original = SessionFixtures.segment(["research", "development"], track: "mic", start: 20, id: "original")
+    let replayed = TranscriptSegment(id: "replayed", start: 20, end: 21, text: "research & development",
+                                     track: "mic")
+    let replayHint = hint(original, words: 0..<2, action: .replaceText("research and development"), id: "H2")
+
+    let first = LiveHints.applyingText([live], to: SessionFixtures.transcript([segment]))
+    let second = LiveHints.applyingText([live], to: first.transcript)
+    let replayOutcome = LiveHints.applyingText([replayHint], to: SessionFixtures.transcript([replayed]))
+
+    #expect(first.applied == 1)
+    #expect(first.transcript.segments[0].text == "hello — world")
+    #expect(second.alreadyApplied == 1)
+    #expect(second.unmatched == 0)
+    #expect(second.transcript.segments[0].text == "hello — world")
+    #expect(replayOutcome.applied == 1)
+    #expect(replayOutcome.transcript.segments[0].text == "research and development")
+}
+
 @Test func liveTextHintReplacesUntimedPunctuationOnlyOnce() {
     let segment = TranscriptSegment(
         id: "live", start: 2, end: 2.3, text: "Hello.",
