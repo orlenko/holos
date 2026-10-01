@@ -244,12 +244,30 @@ public enum EvalLocal {
             isNew = true
         }
 
+        // A language whose transcription recognized no words on any track, where the current transcript has some (or
+        // where there is none), failed rather than heard silence, as the languages stage treats it: nothing is saved
+        // for it, so the same command tries again. One silent track, or a language heard on only some tracks, is fine.
+        let current = try? SessionFiles.currentTranscript(session: session)
+        let expectsWords = current.map { LanguageStage.hasWords($0.segments) } ?? true
         var parts: [String: [String: LocalRunPart]] = [:]
         var missing: [(language: String, track: LocalRunRecord.Track)] = []
         for language in record.languages {
+            var saved: [String: LocalRunPart] = [:]
             for track in record.tracks {
-                if let saved = part(record, language: language, track: track.track, in: session) {
-                    parts[language, default: [:]][track.track] = saved
+                saved[track.track] = part(record, language: language, track: track.track, in: session)
+            }
+            // Parts saved with no words while none were expected (the transcript had none then), where some are now:
+            // the language is transcribed again, or it would fail on every resume.
+            if expectsWords, !saved.isEmpty, !saved.values.contains(where: { LanguageStage.hasWords($0.segments) }) {
+                for track in saved.keys {
+                    try? FileManager.default.removeItem(at: EvalPaths.localPart(record.id, language: language,
+                                                                                track: track, in: session))
+                }
+                saved = [:]
+            }
+            for track in record.tracks {
+                if let part = saved[track.track] {
+                    parts[language, default: [:]][track.track] = part
                 } else {
                     missing.append((language, track))
                 }
@@ -284,11 +302,6 @@ public enum EvalLocal {
         if isNew { try EvalStore.write(record, to: EvalPaths.localRecord(record.id, in: session)) }
         progress("Local run \(record.id): \(record.partCount - missing.count) of \(record.partCount) track "
             + "transcriptions saved; \(record.vocabulary.count) vocabulary strings.")
-        // A language whose transcription recognized no words on any track, where the current transcript has some (or
-        // where there is none), failed rather than heard silence, as the languages stage treats it: nothing is saved
-        // for it, so the same command tries again. One silent track, or a language heard on only some tracks, is fine.
-        let current = try? SessionFiles.currentTranscript(session: session)
-        let expectsWords = current.map { LanguageStage.hasWords($0.segments) } ?? true
         // Parts with no words wait until their language is known to have words somewhere (a saved part, or one
         // transcribed now), and are saved as soon as it is: a later track that fails does not lose them.
         var silent: [LocalRunPart] = []

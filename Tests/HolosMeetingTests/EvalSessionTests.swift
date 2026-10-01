@@ -663,6 +663,13 @@ private func evalLocalDependencies(_ speech: FakeSpeechFactory, status: String =
         _ = try EvalCompare.compare(session: session, run: older, local: .candidate(replaced), terms: terms)
     }
     #expect(changed?.localizedDescription.contains("changed since local run") == true)
+    // One without digests of its segments' samples either cannot be checked at all: refused, whatever the audio.
+    var unverifiable = older
+    for index in unverifiable.tracks[0].segments.indices { unverifiable.tracks[0].segments[index].audioSHA256 = nil }
+    let unchecked = #expect(throws: HolosError.self) {
+        _ = try EvalCompare.compare(session: session, run: unverifiable, local: .candidate(record), terms: terms)
+    }
+    #expect(unchecked?.localizedDescription.contains("make a new cloud run") == true)
     let written = try EvalCompare.write(candidate, session: session)
     #expect(written.markdown.deletingLastPathComponent().lastPathComponent == record.id)
     #expect(SessionFixtures.text(written.markdown).contains("local run \(record.id)"))
@@ -757,4 +764,38 @@ private func evalLocalDependencies(_ speech: FakeSpeechFactory, status: String =
             _ = try await EvalLocal.run(session: session, options: .init(), vocabulary: nil)
         }
     }
+}
+
+@Test func evalLocalTranscribesAgainALanguageSavedSilentBeforeTheTranscriptHadWords() async throws {
+    let temp = try TemporaryDirectory("eval")
+    defer { temp.remove() }
+    let session = try await SessionFixtures.makeSession(in: temp.url, source: .microphoneAndSystem,
+                                                        audioSeconds: ["mic": 4, "system": 4],
+                                                        transcript: SessionFixtures.transcript([]))
+    let manifest = try SessionArchive.readManifest(at: session)
+    try AtomicFile.writeJSON(MeetingInfo(sessionID: manifest.id, mode: .call, othersInRoom: false,
+                                         languages: ["en-CA", "fr-CA"]),
+                             to: SessionPaths.meetingInfo(session))
+    let heard = SessionFixtures.segment(["hello", "team"], track: nil, start: 0.5)
+
+    // The transcript has no words, so English hearing none is silence and its parts are saved; French fails.
+    let failing = FakeSpeechFactory([FakeSpeechScript(segments: []), FakeSpeechScript(segments: []),
+                                     FakeSpeechScript(makeError: .unavailable("The speech service is busy."))])
+    await #expect(throws: HolosError.self) {
+        _ = try await EvalLocal.run(session: session, options: .init(), vocabulary: nil,
+                                    dependencies: evalLocalDependencies(failing),
+                                    now: Date(timeIntervalSince1970: 1_790_000_000))
+    }
+    let id = try #require(EvalLocal.runIDs(in: session).first)
+    #expect(EvalLocal.savedParts(try #require(try EvalLocal.record(id, in: session)), in: session) == 2)
+
+    // The transcript has words now: English's silent parts would fail the run on every resume, so they are
+    // transcribed again with French.
+    try await SessionFixtures.saveTranscript(
+        SessionFixtures.transcript([SessionFixtures.segment(["hello", "team"], track: "mic", start: 0.5)]), in: session)
+    let resuming = FakeSpeechFactory(Array(repeating: FakeSpeechScript(segments: [heard]), count: 4))
+    let record = try await EvalLocal.run(session: session, options: .init(), vocabulary: nil,
+                                         dependencies: evalLocalDependencies(resuming))
+    #expect(record.id == id && record.completedAt != nil)
+    #expect(resuming.calls.map(\.locale) == ["en-CA", "en-CA", "fr-CA", "fr-CA"])
 }
