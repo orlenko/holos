@@ -1247,17 +1247,6 @@ private final class Recorder {
         try await archive.setStatus(ArchiveStatus.processing)
         await setPhase(.transcribing)
         reporter.message("Audio saved. Finishing transcription; Ctrl-C exits processing and preserves the audio archive.")
-        if options.screenWindow != nil, !Task.isCancelled {
-            reporter.message("Recognizing text in saved meeting window snapshots on this Mac…")
-            do {
-                try await MeetingScreenOCR.process(session: archive.directory, sessionID: archive.id,
-                    languages: options.languages.isEmpty ? [options.locale] : options.languages)
-            } catch {
-                // Optional visual evidence never fails audio/transcription, and raw OCR text is never logged.
-                Self.log.error("Screen OCR did not complete; saved recording is unaffected")
-            }
-        }
-
         // 2–3. Finish live speech; replay only what it missed, and merge at word level.
         var segments: [TranscriptSegment] = []
         var transcriptErrors: [String] = []
@@ -1311,6 +1300,18 @@ private final class Recorder {
         try await archive.recordEvent(kind: MeetingEventKind.captureStopped, details: [
             "transcriptionErrors": transcriptErrors.joined(separator: "; "), "reason": stopReason.rawValue,
         ])
+        // Drain speech and save its transcript before optional OCR. OCR must not prolong live speech asset
+        // ownership while the app is trying to resume dictation, or delay publication of the audio transcript.
+        if options.screenWindow != nil, !Task.isCancelled {
+            reporter.message("Recognizing text in saved meeting window snapshots on this Mac…")
+            do {
+                try await MeetingScreenOCR.process(session: archive.directory, sessionID: archive.id,
+                    languages: options.languages.isEmpty ? [options.locale] : options.languages)
+            } catch {
+                // Optional visual evidence never fails audio/transcription, and raw OCR text is never logged.
+                Self.log.error("Screen OCR did not complete; saved recording is unaffected")
+            }
+        }
         let finalStatus = options.recordOnly ? ArchiveStatus.audioOnly
             : (transcriptErrors.isEmpty ? ArchiveStatus.complete : ArchiveStatus.transcriptionIncomplete)
         if Task.isCancelled {

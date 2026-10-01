@@ -114,6 +114,40 @@ func screenWindowRequestIsOptionalAndDoesNotChangeAudioOutcome() async throws {
             "The fake audio capture never creates a real screen stream or asks for a permission.")
 }
 
+private struct ScreenOCRSequenceReporter: RecordingReporter {
+    let root: URL
+    let observed: SharedValue<Bool>
+    func phrase(_ segment: TranscriptSegment, track: String) {}
+    func message(_ text: String) {
+        guard text.hasPrefix("Recognizing text in saved meeting window snapshots") else { return }
+        if let session = sessionFolders(in: root).first {
+            observed.set((try? SessionArchive.currentTranscriptID(at: session)) != nil)
+        }
+    }
+}
+
+@Test(.timeLimit(.minutes(1))) @MainActor
+func screenOCRStartsOnlyAfterLiveSpeechHasDrainedAndTranscriptIsDurable() async throws {
+    let temp = try TemporaryDirectory("screen-ocr-sequence")
+    defer { temp.remove() }
+    let captures = threeMicFrames()
+    let speech = FakeSpeechFactory([FakeSpeechScript(segments: [
+        TranscriptSegment(start: 0, end: 0.3, text: "Invented example", track: "mic"),
+    ])])
+    var options = RecordingOptions.testing(root: temp.url)
+    options.screenWindow = .init(windowID: 12, ownerPID: 34)
+    let observed = SharedValue(false)
+    let stop = ManualStopSource()
+    let dependencies = RecordingDependencies.testing(captures: captures, speech: speech, stop: stop,
+        reporter: ScreenOCRSequenceReporter(root: temp.url, observed: observed))
+    let run = Task { try await RecordingWorkflow.run(options, dependencies: dependencies) }
+    #expect(await eventually { (captures.captures.first?.consumedFrames ?? 0) >= 3 })
+    stop.requestStop()
+    let outcome = try await run.value
+    #expect(observed.value && outcome.archiveStatus == ArchiveStatus.complete)
+    #expect(try transcript(outcome).segments.first?.text == "Invented example")
+}
+
 @Test(.timeLimit(.minutes(1))) @MainActor
 func microphoneInOtherFormatsIsSavedAs48kMono() async throws {
     // A stereo 96 kHz interface: AVAudioEngine delivers the device's format. The saved audio must be what
