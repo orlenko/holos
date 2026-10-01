@@ -349,3 +349,56 @@ func aLaterPassRepairsLiveTextWhoseSpeakerHeadWasNotPublished() async throws {
     #expect(final.segments[0].fixes?.contains { $0.kind == .liveCorrection } == true)
     #expect(final.segments[0].fixes?.contains { $0.kind == .correction } == true)
 }
+
+@Test(.timeLimit(.minutes(1))) func lateLiveHintKeepsAnAcceptedTermWhenTheModelIsUnavailable() async throws {
+    let temp = try TemporaryDirectory()
+    defer { temp.remove() }
+    let segment = SessionFixtures.segment(["send", "cloud", "now", "keep", "cloud", "later", "wrong"],
+                                          track: "mic", start: 2, id: "S1")
+    let original = SessionFixtures.transcript([segment], id: "original")
+    let session = try await SessionFixtures.makeSession(in: temp.url, mode: .inPerson, transcript: original)
+    try AtomicFile.write(Data("damaged".utf8), to: SessionPaths.liveHints(session))
+    var list = WordList()
+    list.add("Claude", at: SessionFixtures.date)
+    list.addHeardAs(["cloud"], to: "Claude")
+    let termList = list
+    let accepted = WordFixDependencies(
+        corrections: { CorrectionList() }, wordList: { termList },
+        model: { _ in .available({ _, prompt in prompt.contains("]] now") ? "Claude" : "cloud" }) })
+
+    let first = try await MeetingPostProcessor(freeSpace: FixedFreeSpace(.max), wordFixes: accepted)
+        .run(session: session, lease: nil)
+    let fixedID = try #require(try SessionArchive.currentTranscriptID(at: session))
+    let fixed = try SessionFiles.transcript(id: fixedID, session: session)
+    #expect(first.state == .partial)
+    #expect(fixed.segments[0].text == "send Claude now keep cloud later wrong")
+    #expect(fixed.segments[0].fixes?.contains { $0.kind == .term } == true)
+
+    let live = hint(segment, words: 6..<7, action: .replaceText("corrected live"), id: "late")
+    let sessionID = try SessionArchive.readManifest(at: session).id
+    try AtomicFile.writeJSON(LiveHintFile(sessionID: sessionID, hints: [live]),
+                             to: SessionPaths.liveHints(session))
+    let unavailable = WordFixDependencies(
+        corrections: { CorrectionList() }, wordList: { termList },
+        model: { _ in .unavailable("the model is still downloading") })
+    let second = try await MeetingPostProcessor(freeSpace: FixedFreeSpace(.max), wordFixes: unavailable)
+        .run(session: session, lease: nil)
+    let finalID = try #require(try SessionArchive.currentTranscriptID(at: session))
+    let final = try SessionFiles.transcript(id: finalID, session: session)
+
+    #expect(second.state == .succeeded)
+    #expect(final.id != fixed.id)
+    #expect(final.segments[0].text == "send Claude now keep cloud later corrected live")
+    #expect(final.segments[0].fixes?.contains { $0.kind == .term } == true)
+    #expect(final.segments[0].fixes?.contains { $0.kind == .liveCorrection } == true)
+
+    let recovered = WordFixDependencies(
+        corrections: { CorrectionList() }, wordList: { termList },
+        model: { _ in .available({ _, _ in "Claude" }) })
+    _ = try await MeetingPostProcessor(freeSpace: FixedFreeSpace(.max), wordFixes: recovered)
+        .run(session: session, lease: nil)
+    let recomputed = try SessionFiles.transcript(
+        id: try #require(try SessionArchive.currentTranscriptID(at: session)), session: session)
+    #expect(recomputed.id != final.id)
+    #expect(recomputed.segments[0].text == "send Claude now keep Claude later corrected live")
+}

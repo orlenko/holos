@@ -1501,6 +1501,13 @@ func recoverWithTodaysVocabularyKeepsItsRebuildOverTheLanguagesStage() async thr
     defer { temp.remove() }
     // A bilingual meeting whose last 2 s were not transcribed live; both speech models are installed.
     let session = try await languageStageDeadMeeting(in: temp.url, coveredToEnd: false)
+    let liveSegment = languageStageHeard(by: "en", prefix: "E")[0]
+    let liveWord = liveSegment.words[0]
+    try LiveHintStore.append(
+        LiveHint(id: "live", at: SessionFixtures.date, segmentID: liveSegment.id, track: "mic",
+                 firstWord: 0, endWord: 1, start: liveWord.start, end: liveWord.end,
+                 heard: liveWord.text, action: .replaceText("corrected-live-word")),
+        session: session)
     let speech = LanguageStageSpeech.standard()
     let heard = SharedValue<[[String]]>([])
     let outcome = try await SessionRecoveryCommand.run(
@@ -1516,7 +1523,11 @@ func recoverWithTodaysVocabularyKeepsItsRebuildOverTheLanguagesStage() async thr
     // The languages stage would transcribe the meeting again with vocabulary.json and replace the rebuild.
     #expect(speech.locales.isEmpty)
     #expect(outcome.postProcessing.flatMap(languageStageOutcome) == nil)
-    #expect(try languageStageCurrent(session).id == rebuiltID)
+    let corrected = try languageStageCurrent(session)
+    #expect(corrected.id != rebuiltID)
+    #expect(corrected.liveCorrectedFrom == rebuiltID)
+    #expect(corrected.segments[0].text.hasPrefix("corrected-live-word "))
+    #expect(try languageStageEvents(session, MeetingEventKind.liveHintsApplied).count == 1)
 
     // Without today's vocabulary, the same recovery goes on to merge the two languages.
     let other = try TemporaryDirectory("languages")

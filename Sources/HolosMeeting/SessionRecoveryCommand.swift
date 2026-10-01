@@ -260,7 +260,9 @@ public enum SessionRecoveryCommand {
             } else {
                 do {
                     let processor = MeetingPostProcessor(diarizer: diarizer,
-                                                         options: PostProcessingOptions(keepTranscript: keepTranscript),
+                                                         options: PostProcessingOptions(
+                                                             keepTranscript: keepTranscript,
+                                                             reconcileLiveHints: keepTranscript),
                                                          freeSpace: freeSpace, profiles: profiles,
                                                          languages: languages, wordFixes: wordFixes)
                     let result = try await processor.run(session: session, lease: lease) { progress($0.message) }

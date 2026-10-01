@@ -1,5 +1,6 @@
 import Foundation
 import HolosCore
+import HolosSpeakers
 import HolosStorage
 import os
 
@@ -71,6 +72,9 @@ enum WordFixStage {
         /// `PostProcessingOptions.force`: with `requested`, it lets the stage replace a transcript whose speaker labels
         /// were edited.
         var force: Bool
+        /// A fixed revision displaced when late live hints were rebased onto its unfixed base. Its accepted term
+        /// locations can be carried across a retry whose model is unavailable or incomplete.
+        var priorFixed: Transcript? = nil
     }
 
     struct Outcome {
@@ -165,7 +169,7 @@ enum WordFixStage {
 
         let journal = recorder.journal
         let computed = try await fix(base, title: request.manifest.name, corrections: corrections, terms: terms,
-                                     dependencies: dependencies) { fraction in
+                                     dependencies: dependencies, preservingTermsFrom: request.priorFixed) { fraction in
             journal.progress(PostProcessingProgress(stage: .wordFixes, fraction: fraction,
                                                     message: "Checking words the recognizer may have misheard…"))
         }
@@ -260,6 +264,14 @@ enum WordFixStage {
         var termChecksComplete: Bool
     }
 
+    private struct AcceptedTerm {
+        var segmentID: String
+        var heard: String
+        var visible: String
+        var midpoint: Double
+        var tolerance: Double
+    }
+
     /// Fixes `base` (a transcript none of whose words were fixed) without saving anything: the learned corrections
     /// everywhere, then each place where a phrase of `terms` (heard → term pairs) was written, outside what the
     /// corrections changed, put to the model with the passage around it (its segment, and for a short segment the ends
@@ -269,6 +281,7 @@ enum WordFixStage {
     /// candidate can use it as is.
     static func fix(_ base: Transcript, title: String, corrections: CorrectionList, terms: CorrectionList,
                     dependencies: WordFixDependencies,
+                    preservingTermsFrom priorFixed: Transcript? = nil,
                     progress: (Double) -> Void = { _ in }) async throws -> Computed {
         // The corrections, everywhere.
         var working: [WordFixes.Working?] = base.segments.map { segment in
@@ -290,6 +303,34 @@ enum WordFixStage {
                 places.append(Place(segment: index, match: match))
             }
         }
+        // A late live-hint retry starts again from the earlier fixed revision's base. Carry its accepted term
+        // decisions at the same timed locations into that new base before asking the model. A live correction that
+        // overlaps one of them leaves no matching place, so the direct edit wins.
+        var accepted: [Int: [WordFixes.Replacement]] = [:]
+        var usedPriorTerms: Set<Int> = []
+        let priorTerms = acceptedTerms(in: priorFixed)
+        places.removeAll { place in
+            guard let item = working[place.segment],
+                  let location = location(of: place.match, in: item,
+                                          segment: base.segments[place.segment]),
+                  let evidence = priorTerms.indices
+                    .filter({ index in
+                        guard !usedPriorTerms.contains(index) else { return false }
+                        let prior = priorTerms[index]
+                        return prior.segmentID == base.segments[place.segment].id
+                            && normalized(prior.heard) == normalized(place.match.heard)
+                            && prior.visible.contains(place.match.correction.meant)
+                            && abs(prior.midpoint - location.midpoint)
+                                <= max(prior.tolerance, location.tolerance)
+                    })
+                    .min(by: { abs(priorTerms[$0].midpoint - location.midpoint)
+                        < abs(priorTerms[$1].midpoint - location.midpoint) }) else { return false }
+            usedPriorTerms.insert(evidence)
+            let range = place.match.range.location..<(place.match.range.location + place.match.range.length)
+            accepted[place.segment, default: []].append(
+                WordFixes.Replacement(range: range, text: place.match.correction.meant, kind: .term))
+            return true
+        }
         var notes: [String] = []
         var asked = 0
         var unavailable: String?
@@ -304,7 +345,6 @@ enum WordFixStage {
                 models[language] = found
                 return found
             }
-            var accepted: [Int: [WordFixes.Replacement]] = [:]
             // The passage around a place: the segments before and after it in time, whatever their track.
             let order = base.segments.indices.sorted {
                 (base.segments[$0].start, base.segments[$0].track ?? "")
@@ -379,9 +419,9 @@ enum WordFixStage {
                 notes.append("Apple Intelligence could not answer for \(failed) "
                     + "\(failed == 1 ? "place" : "places"), which stay as written.")
             }
-            for (segment, replacements) in accepted {
-                working[segment] = working[segment].map { WordFixes.applying(replacements, to: $0) }
-            }
+        }
+        for (segment, replacements) in accepted {
+            working[segment] = working[segment].map { WordFixes.applying(replacements, to: $0) }
         }
         try Task.checkCancellation()
         let segments = base.segments.indices.map { index in
@@ -392,6 +432,45 @@ enum WordFixStage {
                                liveCorrectedFrom: base.liveCorrectedFrom)
         return Computed(transcript: fixed, counts: WordFixes.Counts(fixed), asked: asked, notes: notes,
                         unavailable: unavailable, termChecksComplete: termChecksComplete)
+    }
+
+    private static func acceptedTerms(in transcript: Transcript?) -> [AcceptedTerm] {
+        guard let transcript else { return [] }
+        var result: [AcceptedTerm] = []
+        for segment in transcript.segments {
+            let words = WordTiming.effectiveWords(of: segment)
+            let text = segment.text as NSString
+            for fix in segment.fixes ?? [] where fix.kind == .term {
+                guard fix.first >= 0, fix.first < fix.end, fix.end <= words.count else { continue }
+                let first = words[fix.first], last = words[fix.end - 1]
+                let range = NSRange(location: first.utf16Offset,
+                                    length: last.utf16Offset + last.utf16Length - first.utf16Offset)
+                guard range.location >= 0, range.location + range.length <= text.length else { continue }
+                let duration = max(0, last.end - first.start)
+                result.append(AcceptedTerm(segmentID: segment.id, heard: fix.heard,
+                                           visible: text.substring(with: range),
+                                           midpoint: (first.start + last.end) / 2,
+                                           tolerance: max(0.05, duration / 4)))
+            }
+        }
+        return result
+    }
+
+    private static func location(of match: CorrectionList.Match, in working: WordFixes.Working,
+                                 segment: TranscriptSegment)
+        -> (midpoint: Double, tolerance: Double)? {
+        let range = match.range.location..<(match.range.location + match.range.length)
+        let words = WordTiming.effectiveWords(of: WordFixes.finished(working, segment: segment))
+        let touched = words.filter { word in
+            (word.utf16Offset..<(word.utf16Offset + word.utf16Length)).overlaps(range)
+        }
+        guard let first = touched.first, let last = touched.last else { return nil }
+        let duration = max(0, last.end - first.start)
+        return ((first.start + last.end) / 2, max(0.05, duration / 4))
+    }
+
+    private static func normalized(_ text: String) -> String {
+        text.split(whereSeparator: \.isWhitespace).joined(separator: " ").lowercased()
     }
 
     /// "12 misheard words: 9 by corrections, 3 word-list terms"

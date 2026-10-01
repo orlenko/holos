@@ -34,6 +34,10 @@ public struct PostProcessingOptions: Sendable, Equatable {
     /// (`voiceislocal session diarize --keep-transcript`, which the review window's relabels use, so a speaker action
     /// there never transcribes the meeting again or replaces the transcript under the open review).
     public var keepTranscript: Bool
+    /// Reconcile corrections saved while recording even when `keepTranscript` suppresses language and word-fix
+    /// stages. Recovery with a one-run vocabulary uses this: its replay must stay current, but its live corrections
+    /// still belong on that replay. Ordinary relabelling leaves this false and keeps its no-text-change promise.
+    public var reconcileLiveHints: Bool
     /// The word-fix stage was asked for by name (`voiceislocal session fix-words`): it is recorded even with nothing to
     /// fix, `force` with it lets it replace a transcript whose speaker labels were edited, and when it leaves the
     /// transcript as it was the speaker labels stay as they are. `keepTranscript` skips the stage.
@@ -42,11 +46,12 @@ public struct PostProcessingOptions: Sendable, Equatable {
     public init(speakers: SpeakerCountHint? = nil, force: Bool = false, keepDerived: Bool = false,
                 othersInRoom: Bool? = nil, engineOverrides: [String: String] = [:], forceVoiceData: Bool = false,
                 stopReason: StopReason? = nil, languages: [String]? = nil, keepTranscript: Bool = false,
-                fixWords: Bool = false) {
+                reconcileLiveHints: Bool = false, fixWords: Bool = false) {
         self.speakers = speakers; self.force = force; self.keepDerived = keepDerived
         self.othersInRoom = othersInRoom; self.engineOverrides = engineOverrides
         self.forceVoiceData = forceVoiceData; self.stopReason = stopReason; self.languages = languages
-        self.keepTranscript = keepTranscript; self.fixWords = fixWords
+        self.keepTranscript = keepTranscript; self.reconcileLiveHints = reconcileLiveHints
+        self.fixWords = fixWords
     }
 }
 
@@ -222,7 +227,7 @@ public struct MeetingPostProcessor: Sendable {
         // They become the base for automatic fixes, so one provenance map never has to compose overlapping edits.
         // A relabel explicitly promising to keep the transcript does not introduce a text revision.
         let liveText: LiveHintStage.TextOutcome
-        if options.keepTranscript {
+        if options.keepTranscript && !options.reconcileLiveHints {
             do {
                 liveText = LiveHintStage.TextOutcome(
                     transcript: merged, hints: try LiveHintStore.read(session: session).hints)
@@ -241,7 +246,8 @@ public struct MeetingPostProcessor: Sendable {
             ? WordFixStage.Outcome(transcript: liveText.transcript)
             : try await WordFixStage.run(
                 WordFixStage.Request(session: session, manifest: manifest, transcript: liveText.transcript, lease: lease,
-                                     requested: options.fixWords, force: options.force),
+                                     requested: options.fixWords, force: options.force,
+                                     priorFixed: liveText.wordFixedBeforeRebase),
                 dependencies: wordFixes, recorder: recorder)
         let transcript = fixes.transcript
         if transcript.id != current?.id { journal.update { $0.transcriptID = transcript.id } }

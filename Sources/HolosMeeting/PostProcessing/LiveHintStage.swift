@@ -12,6 +12,9 @@ enum LiveHintStage {
         var problem: String? = nil
         var labelsPreserved = false
         var speakerHeadIncomplete = false
+        /// The fixed head whose unfixed base was used for a late live-hint rebase. The word-fix stage uses its term
+        /// marks as accepted evidence if the model cannot repeat those decisions during this retry.
+        var wordFixedBeforeRebase: Transcript?
     }
 
     struct SpeakerOutcome {
@@ -36,9 +39,11 @@ enum LiveHintStage {
         // before automatic fixes, so rebase them onto that pass's unfixed revision; the word-fix stage then rebuilds
         // its result from the live-corrected base instead of replacing the new correction from stale `fixedFrom`.
         let base: Transcript
+        let wordFixedBeforeRebase: Transcript?
         if let id = transcript.fixedFrom {
             do {
                 base = try SessionFiles.transcript(id: id, session: session)
+                wordFixedBeforeRebase = transcript
             } catch {
                 return TextOutcome(
                     transcript: transcript, hints: hints,
@@ -47,6 +52,7 @@ enum LiveHintStage {
             }
         } else {
             base = transcript
+            wordFixedBeforeRebase = nil
         }
         let result = LiveHints.applyingText(hints, to: base)
         guard result.applied > 0 else {
@@ -77,14 +83,16 @@ enum LiveHintStage {
                 ? "\(result.unmatched) live text \(result.unmatched == 1 ? "correction could" : "corrections could") not be matched to the final transcript."
                 : nil
             return TextOutcome(transcript: result.transcript, hints: hints, note: text, problem: problem,
-                               labelsPreserved: labelsPreserved)
+                               labelsPreserved: labelsPreserved,
+                               wordFixedBeforeRebase: wordFixedBeforeRebase)
         } catch let error where !(error is CancellationError) {
             let incomplete = error is IncompletePublication
             let message = incomplete
                 ? "Live text corrections were saved, but their speaker labels could not be published: \(error.localizedDescription)"
                 : "Live text corrections could not be saved: \(error.localizedDescription)"
             return TextOutcome(transcript: incomplete ? result.transcript : transcript, hints: hints,
-                               problem: message, speakerHeadIncomplete: incomplete)
+                               problem: message, speakerHeadIncomplete: incomplete,
+                               wordFixedBeforeRebase: incomplete ? wordFixedBeforeRebase : nil)
         }
     }
 
