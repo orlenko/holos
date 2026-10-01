@@ -116,6 +116,25 @@ private func hint(_ segment: TranscriptSegment, words: Range<Int>, action: LiveH
     #expect(LiveHints.originalHeard(for: second, among: [first]) == "send the deck")
 }
 
+@Test func repeatedLiveEditMatchesAnIntermediateReplayAndKeepsOriginalProvenance() {
+    let original = SessionFixtures.segment(["send", "the", "deck"], track: "system", start: 2, id: "live")
+    let first = hint(original, words: 0..<3, action: .replaceText("share the doc"), id: "H1")
+    var second = first
+    second.id = "H2"
+    second.heard = "share the doc"
+    second.action = .replaceText("share this document")
+    let intermediate = SessionFixtures.segment(["share", "the", "doc"], track: "system", start: 2, id: "replayed")
+
+    let outcome = LiveHints.applyingText([first, second], to: SessionFixtures.transcript([intermediate]))
+
+    #expect(outcome.applied == 1)
+    #expect(outcome.unmatched == 0)
+    #expect(outcome.transcript.segments[0].text == "share this document")
+    #expect(outcome.transcript.segments[0].fixes == [
+        TranscriptWordFix(first: 0, end: 3, heard: "send the deck", kind: .liveCorrection),
+    ])
+}
+
 @Test func revertingAnAutomaticFixBesideALongerLiveCorrectionUsesTheLiveBase() throws {
     let segment = SessionFixtures.segment(["alpha", "beta", "wrong"], track: "mic", start: 2, id: "S1")
     let original = SessionFixtures.transcript([segment], id: "original")
@@ -401,4 +420,41 @@ func aLaterPassRepairsLiveTextWhoseSpeakerHeadWasNotPublished() async throws {
         id: try #require(try SessionArchive.currentTranscriptID(at: session)), session: session)
     #expect(recomputed.id != final.id)
     #expect(recomputed.segments[0].text == "send Claude now keep Claude later corrected live")
+}
+
+@Test(.timeLimit(.minutes(1))) func lateLiveHintKeepsAReviewRevertAndOtherAutomaticFixes() async throws {
+    let temp = try TemporaryDirectory()
+    defer { temp.remove() }
+    let segment = SessionFixtures.segment(["bad", "wrong", "tail"], track: "mic", start: 2, id: "S1")
+    let original = SessionFixtures.transcript([segment], id: "original")
+    let session = try await SessionFixtures.makeSession(in: temp.url, mode: .inPerson, transcript: original)
+    try AtomicFile.write(Data("damaged".utf8), to: SessionPaths.liveHints(session))
+    let dependencies = WordFixDependencies(
+        corrections: { CorrectionList(entries: [
+            .init(heard: "bad", meant: "good"),
+            .init(heard: "wrong", meant: "right"),
+        ]) }, wordList: { WordList() }, model: { _ in .unavailable("off") })
+    let processor = MeetingPostProcessor(freeSpace: FixedFreeSpace(.max), wordFixes: dependencies)
+
+    _ = try await processor.run(session: session, lease: nil)
+    let fixed = try SessionFiles.transcript(
+        id: try #require(try SessionArchive.currentTranscriptID(at: session)), session: session)
+    let reverted = try WordFixes.reverting(WordRef(segmentID: "S1", word: 0), in: fixed, to: original)
+    try await SessionFixtures.saveTranscript(reverted, in: session)
+    #expect(reverted.segments[0].text == "bad right tail")
+    #expect(reverted.segments[0].fixes?.contains { $0.kind == .reviewRevert } == true)
+
+    let live = hint(segment, words: 2..<3, action: .replaceText("live tail"), id: "late")
+    let sessionID = try SessionArchive.readManifest(at: session).id
+    try AtomicFile.writeJSON(LiveHintFile(sessionID: sessionID, hints: [live]),
+                             to: SessionPaths.liveHints(session))
+    let record = try await processor.run(session: session, lease: nil)
+    let final = try SessionFiles.transcript(
+        id: try #require(try SessionArchive.currentTranscriptID(at: session)), session: session)
+
+    #expect(record.state == .succeeded)
+    #expect(final.segments[0].text == "bad right live tail")
+    #expect(final.segments[0].fixes?.contains { $0.kind == .reviewRevert } == true)
+    #expect(final.segments[0].fixes?.contains { $0.kind == .correction } == true)
+    #expect(final.segments[0].fixes?.contains { $0.kind == .liveCorrection } == true)
 }

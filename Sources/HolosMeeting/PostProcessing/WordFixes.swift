@@ -15,9 +15,12 @@ public enum WordFixes {
         /// What goes there.
         public var text: String
         public var kind: TranscriptWordFixKind
+        /// Provenance to record instead of the text currently in `range`. Live edit chains use this to collapse
+        /// A→B→C into one A→C mark even when recovery starts from the intermediate B.
+        public var heard: String?
 
-        public init(range: Range<Int>, text: String, kind: TranscriptWordFixKind) {
-            self.range = range; self.text = text; self.kind = kind
+        public init(range: Range<Int>, text: String, kind: TranscriptWordFixKind, heard: String? = nil) {
+            self.range = range; self.text = text; self.kind = kind; self.heard = heard
         }
     }
 
@@ -144,7 +147,7 @@ public enum WordFixes {
             let trailing = Array(utf16[replacement.range.upperBound..<region.range.upperBound])
             let new = leading + Array(replacement.text.utf16) + trailing
             text += new
-            let heard = String(decoding: utf16[replacement.range], as: UTF16.self)
+            let heard = replacement.heard ?? String(decoding: utf16[replacement.range], as: UTF16.self)
             let markStart = start + leading.count
             marks.append(Working.Mark(range: markStart..<(markStart + replacement.text.utf16.count), heard: heard,
                                       kind: replacement.kind))

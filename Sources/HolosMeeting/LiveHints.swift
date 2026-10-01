@@ -171,19 +171,26 @@ public enum LiveHints {
         var applied = 0, already = 0, unmatched = 0
         // Re-editing one live piece records what the user saw each time (A→B, then B→C). Collapse that chain to
         // A→C before making provenance, rather than stacking overlapping word-fix marks.
-        var textHints: [LiveHint] = []
+        struct TextHint {
+            var hint: LiveHint
+            /// Every state the live phrase had before its final edit, in edit order.
+            var heard: [String]
+        }
+        var textHints: [TextHint] = []
         var positions: [String: Int] = [:]
         for hint in hints {
             guard case .replaceText = hint.action else { continue }
             let key = "\(hint.segmentID):\(hint.firstWord):\(hint.endWord)"
             if let index = positions[key] {
-                textHints[index].action = hint.action
+                textHints[index].heard.append(hint.heard)
+                textHints[index].hint.action = hint.action
             } else {
                 positions[key] = textHints.count
-                textHints.append(hint)
+                textHints.append(TextHint(hint: hint, heard: [hint.heard]))
             }
         }
-        for hint in textHints {
+        for edit in textHints {
+            let hint = edit.hint
             guard case .replaceText(let replacement) = hint.action else { continue }
             if let found = match(hint, in: result, text: replacement),
                let range = characterRange(found.words, in: result.segments[found.segment]),
@@ -191,11 +198,14 @@ public enum LiveHints {
                 already += 1
                 continue
             }
-            if let found = match(hint, in: result, text: hint.heard),
+            // Recovery may already contain an intermediate state (A→B→C replayed from B). Prefer the most
+            // recent heard form, but keep the first form as the single collapsed mark's provenance.
+            let found = edit.heard.reversed().lazy.compactMap { match(hint, in: result, text: $0) }.first
+            if let found,
                let working = WordFixes.Working(result.segments[found.segment], preservingExistingFixes: true),
                let range = characterRange(found.words, in: result.segments[found.segment]) {
                 let changed = WordFixes.applying([
-                    .init(range: range, text: replacement, kind: .liveCorrection),
+                    .init(range: range, text: replacement, kind: .liveCorrection, heard: hint.heard),
                 ], to: working)
                 let segment = WordFixes.finished(changed, segment: result.segments[found.segment])
                 if segment != result.segments[found.segment] {

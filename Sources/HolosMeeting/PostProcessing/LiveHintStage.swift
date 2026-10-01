@@ -13,7 +13,7 @@ enum LiveHintStage {
         var labelsPreserved = false
         var speakerHeadIncomplete = false
         /// The fixed head whose unfixed base was used for a late live-hint rebase. The word-fix stage uses its term
-        /// marks as accepted evidence if the model cannot repeat those decisions during this retry.
+        /// and Review-revert marks as evidence when rebuilding automatic fixes during this retry.
         var wordFixedBeforeRebase: Transcript?
     }
 
