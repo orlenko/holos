@@ -325,6 +325,33 @@ func editedHeadNeedsForce() async throws {
 }
 
 @Test(.timeLimit(.minutes(1)))
+func relabellingKeepsTurnsOutOfVoiceLearning() async throws {
+    let temp = try TemporaryDirectory("postprocess")
+    defer { temp.remove() }
+    let (session, _) = try await postProcessorSession(in: temp.url)
+    _ = try await postProcessor().run(session: session, lease: nil)
+    let before = try #require(try SpeakerSessionSnapshot.load(session: session).projection)
+    let kept = try #require(before.turns.first)
+    // As an automatic merge leaves them: named, and the merged speech kept out of voice learning.
+    try SessionFixtures.appendEdits([.rename(speakerID: "mic:S1", name: "Jim"),
+                                     .excludeFromEnrollment(turnIDs: [kept.id])], session: session)
+
+    let forced = try await postProcessor(options: PostProcessingOptions(force: true)).run(session: session, lease: nil)
+    #expect(forced.state == .succeeded)
+    #expect(forced.message == "Labelled 2 speakers in 4 turns. Kept 1 name.",
+            "An exclusion is carried, so it is not reported as a change that was dropped.")
+    let after = try #require(try SpeakerSessionSnapshot.load(session: session).projection)
+    #expect(after.runID == forced.runID)
+    #expect(after.staleEdits.isEmpty)
+    let excluded = after.turns.filter(\.excludedFromEnrollment)
+    #expect(!excluded.isEmpty, "The relabelled meeting keeps that speech out of voice learning.")
+    for turn in after.turns {
+        let overlaps = turn.track == kept.track && turn.start < kept.end && kept.start < turn.end
+        #expect(turn.excludedFromEnrollment == overlaps, "\(turn.id)")
+    }
+}
+
+@Test(.timeLimit(.minutes(1)))
 func damagedHeadIsReplaced() async throws {
     let temp = try TemporaryDirectory("postprocess")
     defer { temp.remove() }

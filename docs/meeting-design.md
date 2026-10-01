@@ -3240,11 +3240,12 @@ speaker-level labels:
 ```swift
 public enum SpeakerCarryOver {
     public struct Result: Sendable, Equatable {
-        /// rename / linkProfile / rejectProfile actions on the new run's speakers.
+        /// rename / linkProfile / rejectProfile actions on the new run's speakers, then at most one
+        /// excludeFromEnrollment of the new run's turns.
         public var actions: [SpeakerEditAction]
         /// Old speakers with a name, link, or rejection that matched nothing (IDs only).
         public var unmatchedSpeakers: [String]
-        /// Turn-level edits (reassign, split, new speaker, exclude) that are not carried.
+        /// Turn-level edits (reassign, split, new speaker) and merges that are not carried.
         public var droppedTurnEdits: Int
     }
     /// Maps each old projected speaker with an explicit name, link, or rejection to the new run's speaker with
@@ -3257,7 +3258,13 @@ public enum SpeakerCarryOver {
 The actions are appended with `source: "carry"`, the new run as `baseRunID`, and one
 batch ID. The command reports "Kept 8 names; 1 name could not be matched and 12
 turn-level changes were not carried." Old edits stay in the journal under the old run
-ID. User-created speakers carry by time like any other.
+ID. User-created speakers carry by time like any other. Speech kept out of voice learning
+(`excludeFromEnrollment`, by the user or by an automatic merge nobody confirmed, §4.10)
+stays out: every new turn that shares any time with an excluded old turn on the same track
+is excluded in the carry batch (`SpeakerCarryOver.excludedTurnIDs`), whichever speaker it
+lands in, so a relabel never lets that speech reach a voice sample. Exclusions are therefore
+not counted as dropped. Test: `carryKeepsTimeOutOfVoiceLearning` (HolosSpeakers),
+`relabellingKeepsTurnsOutOfVoiceLearning` (HolosMeeting).
 
 ### 4.10 People, voice data, recognition (PR10)
 
@@ -3362,6 +3369,8 @@ public struct SpeakerProfileDatabase: Codable, Sendable, Equatable {
   distances only. `speakers/voice/<runID>.json` is written only with the hidden
   `forceVoiceData` (evaluation sessions). A voiceprint reaches disk only as a profile
   sample, and only for a speaker the user confirmed as a person with voice learning on.
+  The review window's voice pass ("Voices within one meeting" below) keeps every turn's
+  embedding in memory while the window is open and writes none.
 - **Voice sample extraction on demand.** `VoiceSampleExtractor` (protocol in HolosMeeting,
   PR10) returns turn embeddings for exactly the turns it is asked about:
 
@@ -3395,8 +3404,10 @@ public struct SpeakerProfileDatabase: Codable, Sendable, Equatable {
   one window with orthogonal vectors; the turn's embedding equals its own slot's vector),
   `extractorSkipsTurnsWithoutADominantSpeaker`. The app never links FluidAudio: its
   extractor, `SubprocessVoiceSampleExtractor` (HolosMeeting), runs the bundled hidden
-  `holos speakers embed <session> --track <t> --turns <id,id,…> --json`, which prints the
-  turn embeddings as JSON on stdout (a pipe, never a file) and writes nothing.
+  `holos speakers embed <session> --track <t> --turns <id,id,… | -> --json`, which prints the
+  turn embeddings as JSON on stdout (a pipe, never a file) and writes nothing. The app
+  passes each turn as `ID@start-end`, its exact span, one per line on stdin (`--turns -`); a bare ID is resolved against the
+  current labels.
   `VoiceProfileService` is the only code that turns embeddings into a stored sample. The
   CLI's own `link`/`me` commands inject `FluidVoiceSampleExtractor` directly. Extraction needs the
   session's audio: after Delete Audio, linking keeps the name and says "The recording's
@@ -3686,7 +3697,158 @@ public struct SpeakerProfileDatabase: Codable, Sendable, Equatable {
   `VoiceSampleExtractor`. Vector = speech-weighted mean, L2-normalized; then one outlier pass drops turns
   more than 0.5 cosine distance from that mean and recomputes (count reported in
   `droppedOutlierTurns`). `weak` if total speech < 20 s. No audio or no qualifying
-  turns → no sample. Only the confirmed speaker's turns are ever sent to the extractor.
+  turns → no sample. Only the confirmed speaker's turns are ever sent to the extractor,
+  except by the review window's voice pass below, whose vectors never leave its memory.
+- **Voices within one meeting (review window).** Naming one "Speaker N" shows which
+  other speakers and turns of the same meeting have that voice, because the diarizer
+  often splits one person into two or three speakers.
+  - *Voice pass.* When Review opens (`ReviewSession(analyseVoices: true)`), the window runs
+    the voice sample extractor once per diarized track in the background, asking about
+    every turn of 2 s or more that no split has cut (`ReviewSession.analysable`), and
+    keeps the turn embeddings in a `MeetingVoiceCache` (HolosMeeting). The footer says
+    "Comparing voices (1 of 2)…" meanwhile; a pass that fails on any track says why under
+    the footer and nothing is suggested or merged on any track (matching half the meeting
+    would leave out the failed track's matches unsaid; what the other passes stored still
+    serves voice learning). On the user's 53-minute meeting a pass took about 30 s per
+    track (debug build). The extractor is asked about each turn with its exact span
+    (`T12@723.5-731.25`), so a vector is always of the times the cache keeps it against,
+    even when a split changes the turn while the pass runs. The app passes the spans on the
+    child's stdin, one per line (`speakers embed --turns - …`), from a 0600 temporary file it
+    unlinks before the child starts: a 3-hour meeting has thousands of turns, and one argv
+    entry holding them all could pass `ARG_MAX`. The other helper commands the app runs take
+    a fixed handful of arguments (a word list goes by file, `--vocabulary-file`). The
+    child the app stops (a review closed, a newer change) deletes its render, a decoded
+    copy of the audio, on SIGTERM before it exits, instead of leaving it for the six-hour
+    stale-render sweep.
+  - *Privacy decision.* The cache is memory only and is never written, whatever Remember
+    voices says: the design keeps unconfirmed speakers' embeddings off disk ("No stored
+    voice data for unconfirmed people" above), and a per-meeting file would have joined
+    the forget machinery (tombstones, resumable scrubs) for no gain a 30-second pass
+    cannot give back. It lives while the window is open for that meeting's head run, and
+    is dropped when the window closes, the meeting is labelled again (another run's
+    turns), its audio is deleted, or a maintenance command pauses the review while the
+    pass is running. The vectors travel only through the extractor's stdout pipe, as
+    before. Matching inside one meeting compares a meeting's voices with each other, which
+    is what diarizing it already did; it stores nothing and compares with no other meeting
+    or person, so it is not gated on Remember voices. Only learning a voice (a profile
+    sample) still is.
+  - *Matching* (`MeetingVoiceMatcher`, HolosSpeakers, pure): a voice is the speech-weighted
+    mean of a group's usable turns on one track (not overlapped, not split, not excluded
+    from voice learning, 2 s or more), after enrollment's outlier pass (0.5). Anchors are
+    the people speakers are linked to (a typed name links a person; "This is me" links
+    you) who are still in People; automatic names, names without a person, and a person
+    forgotten since (the meeting keeps the link and the name) are not anchors. Nothing is
+    matched while the edit journal has a line this build cannot read, as recognition's
+    suggestions are not used then: the line may be a rejection or a reassignment the
+    matches would contradict. Candidates are
+    speakers with no name, link or automatic name, never a channel speaker. Voices are
+    compared on the same track only (room and call audio sound different). A candidate
+    gets "Maybe Jim" when Jim's voice is the nearest within `suggestMaxDistance` and no
+    other named person is within `ambiguityMargin` (0.05) of it, unless it rejected Jim.
+    A turn gets "⚠ Jim?" when it is within `turnHintMaxDistance` of Jim and at least
+    `turnHintMinMargin` (0.15) closer to Jim than to the rest of its own speaker (its
+    speaker's voice without it), its speaker is not Jim's, has not rejected Jim, and is not
+    already suggested as Jim.
+  - *Thresholds* (`MeetingVoiceThresholds.derived`): `suggestMaxDistance` is recognition's
+    `possibleMaxDistance` (calibrated when `calibratedModel` is the run's model, else
+    0.43) capped at 0.35; `mergeMaxDistance` 0.15, or the calibrated `likelyMaxDistance`
+    when lower (the diarizer's own clustering threshold is about 0.18 cosine, so it only
+    joins what the diarizer should have joined); `turnHintMaxDistance` 0.30, never above
+    the suggestion threshold. Measured on the user's meeting (53 min, mic and system
+    tracks diarized, 241 turns of 2 s or more, 189 with an embedding; aggregate numbers
+    only): the 7 system-track clusters are 0.413 apart at the closest, then 0.618 and
+    up; a turn lies within 0.055 / 0.136 / 0.330 (p10 / p50 / p90) of its own cluster and
+    0.425 / 0.545 / 0.820 of the nearest other; no machine-cluster pair is under 0.35 and
+    no turn would be flagged at 0.30 / 0.15. Among the 11 speakers after the user's edits,
+    three pairs are under 0.35 (0.054, 0.057, 0.177), each a speaker the user made by hand
+    next to the one its turns came from. The cross-recording measurement put every
+    same-person pair at 0.244 or less.
+  - *Suggestions in the window.* A voice suggestion shows exactly like recognition's
+    ("Maybe Jim" with Confirm / Not Jim, counted in Confirm All (n)) and takes precedence
+    over a recognition suggestion for the same speaker, since it compares the same
+    recording. Confirm links the person (learning the voice when the footer box is on);
+    Not Jim saves `rejectProfile`, so Jim is not suggested again, even after reopening;
+    Confirm All links every shown suggestion in one batch
+    (`VoiceProfileService.confirmAll(suggestions:)`). "⚠ Jim?" in a turn row gives that
+    turn to Jim's speaker in one click (`acceptTurnHint`). Suggestions are worked out
+    again on every change of the shown labels, so they appear as soon as the name is saved.
+  - *Automatic merge* ("Merge Matching Voices Automatically" in the Speakers menu, a
+    UserDefaults setting, off by default): after a name is given and the queue is idle,
+    every suggestion within `mergeMaxDistance` with at least 10 s of speech on both sides
+    is merged into the named speaker it matched, as one change that one undo reverts. The
+    merges are worked out again as they are queued (a speaker named or rejected meanwhile
+    is left alone) and refused under the speaker lock when the journal has an unreadable
+    line. The merged speaker's turns are first marked `excludeFromEnrollment` in the same
+    batch: nobody confirmed them, and a voice sample never comes from an automatic match.
+    Labelling the meeting again keeps that speech excluded (carry-over, §4.9).
+    A speaker whose name field has the keyboard (`speakerBeingNamed`, asked when the merges
+    are worked out) is never merged, so the name being typed still has its speaker at
+    Return.
+  - *Voice learning off the edit queue.* The window's links, "This is me", Confirm All,
+    and Assign to a person save with `deferSamples: true`: the name is saved and shown at
+    once, and `VoiceProfileService.syncSamples` runs afterwards in the background
+    (`ReviewSession.sampleDelay`, 1.5 s after the queue is idle), enrolling the people
+    linked with the footer box on. So do edits that affect a sample from this meeting.
+    A newer change cancels a sync that is waiting or running (the extractor's child is
+    stopped); it runs again once the change is saved. `pause` stops and waits for it
+    before a maintenance command starts; `close` runs one still owed and waits for it. Its
+    extractor is `CachedVoiceSampleExtractor`: the requested turns come from the voice
+    pass (waiting for a pass that is running), and a turn the pass did not cover (another
+    run, other times, another track) sends the whole request to the bundled extractor as
+    before. A sync that fails says so under the footer ("The name was saved, but the
+    voice could not be learned: …"); the name stays. The generation and forget checks of
+    `syncSamples` are unchanged, so a sample computed while the labels changed is not
+    saved. Because the voice is now learned a while after it was asked for, the window
+    records the store's `forgetEpoch` when the link is made and passes it
+    (`syncSamples(enrollEpochs:)`): a person whose voice was asked for before a forget
+    that has landed since is not enrolled ("Voices were forgotten while this one was being
+    learned…"), since the forget is the later request; the epoch read at the start of the
+    sync is also held across its attempts. The people enrolled are the ones the change
+    itself linked (`deferSamples: DeferredSamples`, filled once its lines are saved), not
+    whoever the labels name when the window rereads them. A request not run yet is kept
+    with the batch of the link that made it: undoing that link withdraws its request only
+    (another link's request for the same person stays), and linking the same person again
+    with the footer box off withdraws them all (the newest link of a person decides).
+    `pause`, `close` and a relabel from the window stop a running voice pass and wait for
+    its child to exit, so no command or second diarization runs while it still reads the
+    audio (a new pass follows a relabel); while closing, the cache is kept until the last
+    sync has used it. When quitting gives up waiting for a review (10 s), its voice work is
+    stopped (`stopBackgroundWork`) so no child outlives the app; the name stays saved.
+    A sync that fails while the window closes (nobody sees its footer), or one still owed
+    when quitting stops it, is recorded in `PendingVoiceSamples` (UserDefaults, like
+    `PendingExports`: the session ID, the people asked for with the forget epoch of their
+    request, and why it failed; no voice data). The meeting's next review runs it again and
+    says so under the footer ("When this meeting's review last closed, a voice could not be
+    learned; trying again. …") until it ends; the record is cleared once a sync ends with
+    the window open (a failure then shows in the footer) or the meeting or its audio is
+    deleted. The epochs still apply, so a forget made meanwhile wins, and a failure that is
+    a forget winning is not recorded.
+    A request made after a forget replaces the person's earlier requests rather than
+    joining them, so undoing it cannot leave a pre-forget request standing. "Not Jim" saves
+    the person the row showed, even when a voice match has replaced the suggestion since.
+  Tests: `meetingThresholdsAreCappedBelowRecognitions`,
+  `meetingThresholdsFollowTheStoreOnlyForItsModel`, `aSpeakerSplitFromANamedOneIsSuggested`,
+  `onlyVoicesWithinTheThresholdAreSuggested`, `nothingIsSuggestedBeforeAnybodyIsNamed`,
+  `notJimStopsJimBeingSuggestedAgain`, `aSpeakerBetweenTwoNamedPeopleIsLeftAlone`,
+  `namedAndOtherTrackSpeakersAreNotSuggested`, `onlyCloseVoicesOnEnoughSpeechAreMergeable`,
+  `aTurnInsideAMixedSpeakerIsHinted`, `turnsTooShortOverlappedOrOnTheirOwnAreNotHinted`,
+  `aForgottenPersonIsNoAnchor` (HolosSpeakers);
+  `theCacheServesCoveredTurnsOfTheHeadRunAndFallsBackOtherwise`, `turnSpansRoundTrip`,
+  `nothingIsSuggestedWhileTheJournalHasAnUnreadableLine`,
+  `aVoiceAskedForBeforeAForgetIsNotLearned`, `anUndoneOrNewerLinkTakesBackAVoiceNotLearnedYet`,
+  `undoingOneLinkKeepsAnotherLinksRequestToLearnTheVoice`,
+  `aDeferredLinkRecordsWhoItLinkedAndLearnsNothing`,
+  `aLateStoreOfAnEarlierPassIsIgnored`, `aLearnerWaitsForThePassOrStopsWhenCancelled`,
+  `namingASpeakerSuggestsTheSpeakersWithItsVoice`,
+  `notJimOnAVoiceSuggestionIsSavedAndConfirmAllTakesTheRest`,
+  `aTurnHintGivesTheTurnToTheNamedSpeaker`, `matchingVoicesAreMergedOnlyWhenAsked`,
+  `noVoicesAreWorkedOutUnlessAsked`, `aNameIsSavedWhileItsVoiceIsStillBeingLearned`,
+  `aNewerChangeStopsAVoiceBeingLearnedAndItIsLearnedAfter`,
+  `closingLearnsAVoiceStillWaitingForItsDelay`, `aSampleSyncThatFailsSaysSoAndKeepsTheName`,
+  `aVoiceThatFailsWhileTheReviewClosesIsLearnedWhenItOpensAgain`,
+  `aVoiceStoppedByQuittingIsTriedAgainAndAFailureThenShows`, `aPassThatFailsOnOneTrackMatchesNothing`,
+  `subprocessExtractorReadsEmbeddingsFromAPipe` (spans on stdin, 20 000 turns)
+  (HolosMeeting).
 - **`VoiceProfileService`** (HolosMeeting, PR10) is the only code that writes profiles
   and samples:
   - `link(session:speakerID:to:view:learnVoice:extractor:store:)` (async) where `to` is an existing
@@ -3695,7 +3857,9 @@ public struct SpeakerProfileDatabase: Codable, Sendable, Equatable {
     the profile is later forgotten), and, if `learnVoice` and "Remember voices" is on
     and the session's audio exists, extracts and upserts the sample for
     `(profile, session)` through `VoiceSampleExtractor`. Samples come only
-    from this call, never from automatic matches (decision 2).
+    from this call, never from automatic matches (decision 2). With `deferSamples`
+    (the review window) only the link is saved, and the caller runs `syncSamples`
+    afterwards, enrolling the person; `markSelf` and `confirmAll` take it too.
   - `confirmAll(session:view:learnVoices:store:)`: links every current suggestion in one
     batch, so one undo reverts it.
   - `markSelf(session:speakerID:view:learnVoice:extractor:store:)` (async): "This is me". Like `link`, it
@@ -6507,7 +6671,7 @@ public enum SessionAudioComposition {
 
 ```
 ┌──────────────────────────────────────────────────────────────────────────────────────────────┐
-│ [▶] 01:12:03 / 2:58:12  [Next Uncertain ⌘']  [Assign to… ▾]  [Split Turn]  [🔍 Search]  [Export ▾] │
+│ [Next Uncertain ⌘']  [Assign to… ▾]  [Split Turn]  [Speakers ▾]        [🔍 Search]  [Export ▾] │
 ├──────────────────────────────┬───────────────────────────────────────────────────────────────┤
 │ SPEAKERS  [Confirm All (3)]  │ 01:12:03  [Jim ▾]         We should move the vote to next week. │
 │ [Jim            ▾]    41:12  │ 01:12:40  [Speaker 3 ▾] ⚠ overlap  Agreed, but the budget…      │
@@ -6518,6 +6682,8 @@ public enum SessionAudioComposition {
 │   This is me · Merge into… ▾ │                                                               │
 │ Me                    15:40  │                                                               │
 ├──────────────────────────────┴───────────────────────────────────────────────────────────────┤
+│ [❚❚ Pause]  1:12:03 / 2:58:12  ━━━━━━━━━━━━━━━●━━━━━━━━━━━━━━━━━━━━━━  [1.25× ▾]  Speaker 3     │
+├──────────────────────────────────────────────────────────────────────────────────────────────┤
 │ [x] Learn voices of people I name in this meeting    11 speakers · 343 turns · 5 changes · saved 17:12 │
 └──────────────────────────────────────────────────────────────────────────────────────────────┘
 ```
@@ -6529,15 +6695,38 @@ public enum SessionAudioComposition {
   into… Speakers with no turns are hidden (except user-created ones).
 - Turn row: timestamp button (plays from there), speaker pop-up (all speakers, known
   people, "Unknown", "New Speaker…"), warning glyph for uncertain turns, text
-  (wrapping). Multi-select with ⇧/⌘.
-- Keys: Space play/pause; ↑/↓ move selection; 1–9 assign the selection to the speaker
+  (wrapping; a plain click on a word selects the turn and plays from that word, with the
+  pointing hand over the text; ⇧/⌘ clicks, double clicks, and drags only select).
+  Multi-select with ⇧/⌘.
+- Playback bar (above the footer): Play/Pause, position / length, a scrubber, the speed
+  (1×, 1.25×, 1.5×, 2×; remembered, pitch kept), and who is speaking. Playing goes on
+  through the meeting until paused (only a speaker's samples stop by themselves); Play
+  resumes where it paused, from the start once the audio ended. Once something played,
+  the turn playing has a tinted background with an accent bar and its word a tint and an
+  underline; while playing, the list keeps them in view, except for 5 seconds after the
+  reader scrolls it (Play, a word, a timestamp, or ⌘←/⌘→ follow again at once). The
+  words' times are the transcript's (estimated for old sessions). VoiceOver hears only who
+  speaks, when that changes; a turn's text offers "Play from “word”" actions. Moving
+  through the list with ↑/↓, Page Up/Down, or Home/End holds following off as a scroll does.
+- Keys: Space (or K) play/pause, ←/→ (or J/L) 5 seconds back/ahead, ⌘← previous turn (the
+  start of the playing one first), ⌘→ next turn — anywhere in the window except while
+  typing in a text field (with keyboard navigation on, Space presses a focused button
+  instead); Return in the turn list plays the selected turn; ↑/↓ move selection; 1–9 assign the selection to the speaker
   with that ordinal; ⌘' next uncertain; ⌘Z undo; ⌘F search; ⌘E export menu.
 - Menu "Speakers": Confirm All Suggestions, Find More Speakers… (explains that names
   carry over and turn-level changes do not), Label Speakers on My Microphone (call
   recordings recorded without "others in the room").
 - Export ▾: "Save As…" (NSSavePanel; Markdown, text, or JSON) and "Copy as Markdown".
 - No modal prompts for voices: the footer checkbox decides whether naming a person
-  learns their voice.
+  learns their voice. Learning runs in the background after the name is saved
+  ("Learning voices…" in the footer), never on the edit queue (§4.10, "Voices within one
+  meeting").
+- Voices within the meeting (§4.10): while the window is open it works out every turn's
+  voice once ("Comparing voices…"); after a speaker is named, other speakers with that
+  voice show "Maybe Jim" (Confirm / Not Jim, in Confirm All (n)), and a turn inside
+  another speaker that sounds like Jim shows "⚠ Jim?" in its warning column, which gives
+  it to Jim in one click. Speakers menu: "Merge Matching Voices Automatically" (off by
+  default).
 - Status line in plain words: "5 changes · 2 could not be applied (show)", "Your edited
   transcript.md was kept as edited-20260923-171200.md", "The transcript changed after
   speakers were labelled. [Label Again]", and "Audio deleted; playback is off."
@@ -6811,7 +7000,7 @@ the review changed them); R43 onward come from the review (§10).
 | R6 | How does the app find the child's session? | The app assigns it with `--session-id`. |
 | R7 | Post-processing before or after `archive.finish`? | After, with the processing lease taken before `finish` and handed to post-processing (§4.6). |
 | R8 | `withProcessingLock` "for one write" vs long processing | Two locks: `withSpeakerLock` (one write) and `ProcessingLease` (one run, or one recover → rebuild → post-process chain). |
-| R9 | Re-diarization and existing edits | Names, profile links, and rejections carry to the new run by shared speech time; turn-level edits stay in the journal under the old run and are reported as not carried. `--force` is required to replace an edited head. `--use-run` is deferred. |
+| R9 | Re-diarization and existing edits | Names, profile links, and rejections carry to the new run by shared speech time, and time kept out of voice learning stays out; other turn-level edits stay in the journal under the old run and are reported as not carried. `--force` is required to replace an edited head. `--use-run` is deferred. |
 | R10 | Are turns persisted or recomputed? | Persisted in the immutable run, so edit targets (turn IDs, word refs) never shift. |
 | R11 | Per-segment embeddings (S1 question) | FluidAudio 0.17.1's segment `embedding` is the cluster centroid; per-window embeddings come from `exposeChunkEmbeddings`; turn embeddings are averaged from those windows. They are persisted only in `speakers/voice/` while "Remember voices" is on. Superseded by the Codex review (§10.1): embeddings are never persisted by post-processing; samples are extracted on demand for confirmed people. |
 | R12 | `--portable` and privacy | No session export contains vectors; `--portable` is gone. `holos people export` includes embeddings only with `--include-voiceprints` and a warning. |

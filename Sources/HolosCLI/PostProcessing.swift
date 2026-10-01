@@ -31,7 +31,8 @@ func makeDiarizer(engineOverrides: [String: String]) -> (any SpeakerDiarizer)? {
 /// The CLI's voice sample extractor (docs/meeting-design.md §4.10): a fresh FluidAudio pass with chunk embeddings,
 /// configured like the session's head run (its recorded `exclusiveSegments` and `clusteringThreshold`), through
 /// `DiarizerVoiceSampleExtractor`. Nil when the speaker models are not verified.
-func makeVoiceSampleExtractor(session: URL) -> (any VoiceSampleExtractor)? {
+func makeVoiceSampleExtractor(session: URL, temporaryDirectory: URL = FileManager.default.temporaryDirectory)
+    -> (any VoiceSampleExtractor)? {
     var overrides: [String: String] = [:]
     do {
         // A meeting with no labels yet has no settings to match, and the defaults are right for it. One whose
@@ -50,7 +51,8 @@ func makeVoiceSampleExtractor(session: URL) -> (any VoiceSampleExtractor)? {
         return nil
     }
     return makeDiarizer(engineOverrides: overrides).map {
-        DiarizerVoiceSampleExtractor(diarizer: $0, expectedConfiguration: overrides)
+        DiarizerVoiceSampleExtractor(diarizer: $0, temporaryDirectory: temporaryDirectory,
+                                     expectedConfiguration: overrides)
     }
 }
 

@@ -175,11 +175,15 @@ func recorderWaitIgnoringCancellation(_ seconds: Double) async {
     }
 }
 
-/// A `LiveSpeechFactory` that ignores cancellation: each call returns `speech`'s next session only after `seconds`.
-func recorderLateSpeechFactory(_ speech: FakeSpeechFactory, after seconds: Double) -> LiveSpeechFactory {
+/// A `LiveSpeechFactory` that ignores cancellation: each call sets `entered`, then returns `speech`'s next session
+/// only once the test sets `released`. The test orders the late arrival itself, instead of betting a fixed delay
+/// against how soon a loaded thread pool runs the caller's timer or task.
+func recorderGatedSpeechFactory(_ speech: FakeSpeechFactory, entered: SharedValue<Bool>,
+                                released: SharedValue<Bool>) -> LiveSpeechFactory {
     let factory = speech.factory
     return { locale, backend, strings, onUpdate in
-        await recorderWaitIgnoringCancellation(seconds)
+        entered.set(true)
+        while !released.value { await recorderWaitIgnoringCancellation(0.005) }
         return try await factory(locale, backend, strings, onUpdate)
     }
 }

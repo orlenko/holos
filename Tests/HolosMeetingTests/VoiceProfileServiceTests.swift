@@ -1651,6 +1651,17 @@ func extractorRefusesAnotherEmbeddingModel() async throws {
     }
 }
 
+@Test func turnSpansRoundTrip() {
+    let turns = [TurnRef(id: "T1", start: 0, end: 3), TurnRef(id: "T2/ABC", start: 1234.5678901234, end: 1240.25),
+                 TurnRef(id: "T3", start: 1e-5, end: 2.000001)]
+    for turn in turns {
+        #expect(SubprocessVoiceSampleExtractor.parseSpan(SubprocessVoiceSampleExtractor.span(turn)) == turn)
+    }
+    for bad in ["T1", "T1@", "@1-2", "T1@3-2", "T1@-1-2", "T1@nan-2", "T1@1-inf", "T1@1_2"] {
+        #expect(SubprocessVoiceSampleExtractor.parseSpan(bad) == nil, "\(bad)")
+    }
+}
+
 /// An executable shell script in the test's folder.
 private func profileScript(_ temp: TemporaryDirectory, _ body: String) throws -> URL {
     let url = temp.url.appendingPathComponent("holos-\(UUID().uuidString).sh")
@@ -1670,7 +1681,9 @@ func subprocessExtractorReadsEmbeddingsFromAPipe() async throws {
     let json = temp.url.appendingPathComponent("out.json")
     try HolosJSON.encoder(pretty: false).encode(output).write(to: json)
     let arguments = temp.url.appendingPathComponent("arguments.txt")
-    let script = try profileScript(temp, "printf '%s\\n' \"$@\" > '\(arguments.path)'\ncat '\(json.path)'")
+    let input = temp.url.appendingPathComponent("stdin.txt")
+    let script = try profileScript(temp, "printf '%s\\n' \"$@\" > '\(arguments.path)'\ncat > '\(input.path)'\n"
+                                   + "cat '\(json.path)'")
     let extractor = SubprocessVoiceSampleExtractor(executable: script, temporaryDirectory: temp.url)
     let session = temp.url.appendingPathComponent("S.holos")
     let result = try await extractor.turnEmbeddings(session: session, track: "system",
@@ -1678,9 +1691,22 @@ func subprocessExtractorReadsEmbeddingsFromAPipe() async throws {
                                                             TurnRef(id: "T2", start: 5, end: 8)])
     #expect(result == [output.turnEmbeddings[0]], "Only requested turns are kept.")
     let passed = SessionFixtures.text(arguments).split(separator: "\n").map(String.init)
-    #expect(passed == SubprocessVoiceSampleExtractor.arguments(session: session, track: "system",
-                                                               turnIDs: ["T1", "T2"]))
-    #expect(passed == ["speakers", "embed", session.path, "--track", "system", "--turns", "T1,T2", "--json"])
+    // The turns go on stdin, so the arguments stay the same few however many turns there are.
+    #expect(passed == SubprocessVoiceSampleExtractor.arguments(session: session, track: "system"))
+    #expect(passed == ["speakers", "embed", session.path, "--track", "system", "--turns", "-", "--json"])
+    // Each turn goes with its exact span, so the child embeds that audio whatever the labels say by then.
+    #expect(SessionFixtures.text(input) == "T1@0.0-3.0\nT2@5.0-8.0\n")
+    let leftovers = (try FileManager.default.contentsOfDirectory(atPath: temp.url.path))
+        .filter { $0.hasPrefix("holos-embed-") }
+    #expect(leftovers.isEmpty, "The turn list is unlinked before the child starts.")
+
+    // A 3-hour meeting's worth of turns: the arguments do not grow, and every span reaches the child.
+    let many = (0..<20_000).map { TurnRef(id: "T\($0)", start: Double($0) * 0.5, end: Double($0) * 0.5 + 0.4) }
+    _ = try await extractor.turnEmbeddings(session: session, track: "system", turns: many)
+    #expect(SessionFixtures.text(arguments).split(separator: "\n").count == passed.count)
+    let spans = SessionFixtures.text(input).split(separator: "\n").map(String.init)
+    #expect(spans.count == many.count)
+    #expect(spans.compactMap(SubprocessVoiceSampleExtractor.parseSpan) == many)
 
     let failing = SubprocessVoiceSampleExtractor(
         executable: try profileScript(temp, "echo 'Speaker models are not installed.' >&2\nexit 1"),
