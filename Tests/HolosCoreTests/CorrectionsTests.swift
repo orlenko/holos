@@ -155,6 +155,19 @@ import Testing
     #expect(list.entries == [unrelated, newer])
 }
 
+@Test func compensatingAnUnrecordedLiveReconciliationRestoresThePriorRules() {
+    let original = Correction(heard: "send the deck", meant: "share the doc")
+    let revised = Correction(heard: "send the deck", meant: "send the slides")
+    let manual = Correction(heard: "wrong name", meant: "right name")
+    var list = CorrectionList(entries: [original, manual])
+
+    let changed = list.reconcileLearned([original], with: [revised])
+    #expect(list.entries == [manual, revised])
+    list.reconcileLearned([original] + changed.owned, preserving: changed.displaced, with: [original])
+
+    #expect(list.entries == [manual, original])
+}
+
 @Test func reviewFindingsOnMatchingAndStreaming() {
     let overlapping = CorrectionList(entries: [.init(heard: "foo", meant: "bar"), .init(heard: "foo baz", meant: "qux")])
     let streamed = overlapping.applyWithholdingPartialMatch(to: "say foo")

@@ -15,6 +15,9 @@ struct LiveTextLearning {
     var owned: [Correction]?
     var displaced: [Correction]?
     var problem: String?
+    /// Restores the correction list to its state before this learning result. Used when the sidecar cannot record
+    /// the ownership metadata that makes a later live edit able to reconcile the learned rules.
+    var rollback: (() -> Bool)?
 }
 
 /// A meeting's live transcript in the Meetings section (docs/design.md "Live transcript"): its words as they are
@@ -398,6 +401,9 @@ final class LiveMeetingViewController: NSViewController, NSTextViewDelegate {
                 refresh()
             } catch {
                 problems.append("could not record its correction rules: \(error.localizedDescription)")
+                if learning.rollback?() == false {
+                    problems.append("could not roll back its learned correction rules")
+                }
             }
         }
         if !problems.isEmpty {

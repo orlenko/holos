@@ -610,10 +610,26 @@ public enum LiveHints {
         guard match.parts.count > 1 else { return nil }
         let weights = match.parts.map(\.tokenCount)
         let replacements = divided(replacement, weights: weights)
-        let provenances = divided(provenance, weights: weights)
+        var provenances = divided(provenance, weights: weights)
         guard let ranges = characterRanges(of: match, matching: matchedText, in: transcript),
               replacements.count == match.parts.count,
               provenances.count == match.parts.count else { return nil }
+        // An empty replacement deletes a whole language piece, which has no resulting word on which to keep a fix
+        // mark. Carry that piece's provenance into the next surviving replacement (or the last one for a trailing
+        // deletion), so speaker retargeting can still see every consumed word in the combined piece family.
+        var carried: [String] = []
+        for index in replacements.indices {
+            if replacements[index].isEmpty {
+                if !provenances[index].isEmpty { carried.append(provenances[index]) }
+                provenances[index] = ""
+            } else if !carried.isEmpty {
+                provenances[index] = (carried + [provenances[index]]).filter { !$0.isEmpty }.joined(separator: " ")
+                carried = []
+            }
+        }
+        if !carried.isEmpty, let last = replacements.lastIndex(where: { !$0.isEmpty }) {
+            provenances[last] = ([provenances[last]] + carried).filter { !$0.isEmpty }.joined(separator: " ")
+        }
         var result = transcript
         for index in match.parts.indices {
             let part = match.parts[index]

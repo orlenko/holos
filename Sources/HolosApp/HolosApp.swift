@@ -1265,7 +1265,14 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
             return LiveTextLearning(problem: "the corrections list is unavailable")
         }
         return LiveTextLearning(learned: learned, owned: reconciliation.owned,
-                                displaced: reconciliation.displaced)
+                                displaced: reconciliation.displaced,
+                                rollback: { [weak self] in
+            self?.changeCorrections { list in
+                list.reconcileLearned(state.managed + reconciliation.owned,
+                                      preserving: state.preexisting + reconciliation.displaced,
+                                      with: state.other + state.previous)
+            } ?? false
+        })
     }
 
     /// A manual Add; one that resolves a declined swap also keeps the edit that swap came from, as Learn

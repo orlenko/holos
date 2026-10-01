@@ -128,6 +128,48 @@ enum SpeakerTranscriptRetarget {
         }
     }
 
+    /// Maps spans through the same provenance model used for a saved speaker run. Kept separate from file planning
+    /// so callers that already own the two revisions can validate a word change without touching session state.
+    static func retargetedSpans(_ spans: [WordSpan], from old: Transcript, to new: Transcript) throws -> [WordSpan] {
+        try Mapping(from: old, to: new).spans(spans, turnID: "transcript")
+    }
+
+    /// Every old word whose provenance a new word covers. A collapsed replacement can consume words from several
+    /// speaker turns; keeping only its single nearest owner would leave the other turns with no span to retarget.
+    private static func ownerCoverage(from oldSegment: TranscriptSegment, to newSegment: TranscriptSegment,
+                                      commonBase: Bool) throws -> [[Int]] {
+        let old = WordTiming.effectiveWords(of: oldSegment)
+        let new = WordTiming.effectiveWords(of: newSegment)
+        guard !old.isEmpty || new.isEmpty else {
+            throw HolosError.invalidInput("The fixed transcript added words to an empty segment.")
+        }
+        guard !new.isEmpty else { return [] }
+        if !old.allSatisfy(\.estimated), !new.allSatisfy(\.estimated) {
+            let primary = try owners(from: oldSegment, to: newSegment, commonBase: commonBase)
+            return new.indices.map { index in
+                let covered = old.indices.filter { oldIndex in
+                    max(0, min(old[oldIndex].end, new[index].end) - max(old[oldIndex].start, new[index].start)) > 0
+                }
+                return covered.isEmpty ? [primary[index]] : covered
+            }
+        }
+        guard commonBase else {
+            throw HolosError.invalidInput("The fixed transcript's words cannot be mapped to the speaker labels.")
+        }
+        let oldOrigins = try origins(of: oldSegment)
+        let newOrigins = try origins(of: newSegment)
+        guard oldOrigins.baseWords == newOrigins.baseWords else {
+            throw HolosError.invalidInput("The fixed transcript's words cannot be mapped to the speaker labels.")
+        }
+        return try newOrigins.words.map { word in
+            let covered = oldOrigins.words.indices.filter { overlap(oldOrigins.words[$0], word) > 0 }
+            guard !covered.isEmpty else {
+                throw HolosError.invalidInput("The fixed transcript's words cannot be mapped to the speaker labels.")
+            }
+            return covered
+        }
+    }
+
     private struct Origin {
         var start: Double
         var end: Double
@@ -204,35 +246,120 @@ enum SpeakerTranscriptRetarget {
         struct Segment {
             var old: [EffectiveWord]
             var new: [EffectiveWord]
-            /// New word index -> old word index.
-            var owner: [Int]
+            /// Each new word's old word provenance. A word that collapses a phrase may cover several old words,
+            /// possibly in adjacent language pieces.
+            var owners: [[WordRef]]
         }
 
         var segments: [String: Segment]
+        var order: [String]
 
         init(from old: Transcript, to new: Transcript) throws {
             let oldBase = old.liveCorrectedFrom ?? old.fixedFrom ?? old.id
             let newBase = new.liveCorrectedFrom ?? new.fixedFrom ?? new.id
             let oldSegments = Dictionary(old.segments.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
             var mapped: [String: Segment] = [:]
+            var groups: [[TranscriptSegment]] = []
             for segment in new.segments {
-                guard let before = oldSegments[segment.id] else {
+                if let last = groups.indices.last,
+                   Self.pieceFamily(groups[last][0].id) == Self.pieceFamily(segment.id),
+                   groups[last][0].track == segment.track {
+                    groups[last].append(segment)
+                } else {
+                    groups.append([segment])
+                }
+            }
+            for group in groups {
+                let before = try group.map { segment -> TranscriptSegment in
+                    guard let found = oldSegments[segment.id] else {
+                        throw HolosError.invalidInput(
+                            "The fixed transcript changed its segments, so speaker labels cannot be kept.")
+                    }
+                    return found
+                }
+                if try Self.mapIndividually(before: before, after: group,
+                                            commonBase: oldBase == newBase, into: &mapped) {
+                    continue
+                }
+                let oldCombined = Self.combined(before)
+                let newCombined = Self.combined(group)
+                let coverage = try SpeakerTranscriptRetarget.ownerCoverage(
+                    from: oldCombined.segment, to: newCombined.segment, commonBase: oldBase == newBase)
+                guard coverage.count == newCombined.refs.count else {
                     throw HolosError.invalidInput("The fixed transcript changed its segments, so speaker labels cannot be kept.")
                 }
-                let oldWords = WordTiming.effectiveWords(of: before)
-                let newWords = WordTiming.effectiveWords(of: segment)
-                guard oldWords.allSatisfy({ $0.start.isFinite && $0.end.isFinite }),
-                      newWords.allSatisfy({ $0.start.isFinite && $0.end.isFinite }) else {
-                    throw HolosError.invalidInput("The transcript has unusable word timing, so speaker labels cannot be kept.")
+                var offset = 0
+                for (beforeSegment, afterSegment) in zip(before, group) {
+                    let oldWords = WordTiming.effectiveWords(of: beforeSegment)
+                    let newWords = WordTiming.effectiveWords(of: afterSegment)
+                    let owners = coverage[offset..<(offset + newWords.count)].map { indices in
+                        indices.map { oldCombined.refs[$0] }
+                    }
+                    mapped[afterSegment.id] = Segment(old: oldWords, new: newWords, owners: owners)
+                    offset += newWords.count
                 }
-                let owner = try SpeakerTranscriptRetarget.owners(from: before, to: segment,
-                                                                 commonBase: oldBase == newBase)
-                mapped[segment.id] = Segment(old: oldWords, new: newWords, owner: owner)
             }
             guard Set(mapped.keys) == Set(oldSegments.keys) else {
                 throw HolosError.invalidInput("The fixed transcript changed its segments, so speaker labels cannot be kept.")
             }
             segments = mapped
+            order = new.segments.map(\.id)
+        }
+
+        /// True when every piece maps in its own word space. A cross-piece correction deliberately makes the
+        /// surviving piece's provenance larger than that piece's old word count; that falls through to the combined
+        /// language-family mapping.
+        private static func mapIndividually(before: [TranscriptSegment], after: [TranscriptSegment],
+                                            commonBase: Bool, into mapped: inout [String: Segment]) throws -> Bool {
+            var additions: [String: Segment] = [:]
+            for (oldSegment, newSegment) in zip(before, after) {
+                let oldWords = WordTiming.effectiveWords(of: oldSegment)
+                let newWords = WordTiming.effectiveWords(of: newSegment)
+                guard oldWords.allSatisfy({ $0.start.isFinite && $0.end.isFinite }),
+                      newWords.allSatisfy({ $0.start.isFinite && $0.end.isFinite }) else {
+                    throw HolosError.invalidInput(
+                        "The transcript has unusable word timing, so speaker labels cannot be kept.")
+                }
+                if before.count > 1, commonBase {
+                    let oldBase = try SpeakerTranscriptRetarget.origins(of: oldSegment).baseWords
+                    let newBase = try SpeakerTranscriptRetarget.origins(of: newSegment).baseWords
+                    if oldBase != newBase { return false }
+                }
+                let coverage = try SpeakerTranscriptRetarget.ownerCoverage(
+                    from: oldSegment, to: newSegment, commonBase: commonBase)
+                additions[newSegment.id] = Segment(
+                    old: oldWords, new: newWords,
+                    owners: coverage.map { indices in
+                        indices.map { WordRef(segmentID: oldSegment.id, word: $0) }
+                    })
+            }
+            mapped.merge(additions, uniquingKeysWith: { _, new in new })
+            return true
+        }
+
+        private static func pieceFamily(_ id: String) -> String {
+            guard let slash = id.lastIndex(of: "/"), Int(id[id.index(after: slash)...]) != nil else { return id }
+            return String(id[..<slash])
+        }
+
+        private static func combined(_ pieces: [TranscriptSegment])
+            -> (segment: TranscriptSegment, refs: [WordRef]) {
+            var refs: [WordRef] = []
+            var text: [String] = []
+            var fixes: [TranscriptWordFix] = []
+            var offset = 0
+            for piece in pieces {
+                let words = WordTiming.effectiveWords(of: piece)
+                refs += words.indices.map { WordRef(segmentID: piece.id, word: $0) }
+                text += words.map { _ in "word" }
+                fixes += (piece.fixes ?? []).map {
+                    TranscriptWordFix(first: $0.first + offset, end: $0.end + offset,
+                                      heard: $0.heard, kind: $0.kind)
+                }
+                offset += words.count
+            }
+            return (TranscriptSegment(start: 0, end: Double(max(1, refs.count)),
+                                      text: text.joined(separator: " "), fixes: fixes), refs)
         }
 
         func spans(_ spans: [WordSpan], turnID: String) throws -> [WordSpan] {
@@ -245,14 +372,20 @@ enum SpeakerTranscriptRetarget {
 
         func spansAllowingEmpty(_ spans: [WordSpan]) -> [WordSpan] {
             var result: [WordSpan] = []
-            for span in spans {
-                guard let segment = segments[span.segmentID] else { continue }
-                let indices = segment.owner.indices.filter { span.first <= segment.owner[$0] && segment.owner[$0] < span.end }
+            for segmentID in order {
+                guard let segment = segments[segmentID] else { continue }
+                let indices = segment.owners.indices.filter { index in
+                    segment.owners[index].contains { owner in
+                        spans.contains { span in
+                            span.segmentID == owner.segmentID && span.first <= owner.word && owner.word < span.end
+                        }
+                    }
+                }
                 for index in indices {
-                    if let last = result.last, last.segmentID == span.segmentID, last.end == index {
+                    if let last = result.last, last.segmentID == segmentID, last.end == index {
                         result[result.count - 1].end = index + 1
                     } else {
-                        result.append(WordSpan(segmentID: span.segmentID, first: index, end: index + 1))
+                        result.append(WordSpan(segmentID: segmentID, first: index, end: index + 1))
                     }
                 }
             }
@@ -280,15 +413,20 @@ enum SpeakerTranscriptRetarget {
         func action(_ action: SpeakerEditAction) throws -> SpeakerEditAction {
             switch action {
             case .splitTurn(let turnID, let at):
-                guard let segment = segments[at.segmentID] else {
-                    throw HolosError.invalidInput("A split speaker turn no longer refers to this transcript.")
+                let candidates = order.flatMap { segmentID -> [(WordRef, [WordRef])] in
+                    guard let segment = segments[segmentID] else { return [] }
+                    return segment.owners.indices.map {
+                        (WordRef(segmentID: segmentID, word: $0), segment.owners[$0])
+                    }
                 }
-                let index = segment.owner.firstIndex(of: at.word)
-                    ?? segment.owner.firstIndex(where: { $0 > at.word })
-                guard let index else {
+                let exact = candidates.first { $0.1.contains(at) }
+                let later = candidates.first { candidate in
+                    candidate.1.contains { $0.segmentID == at.segmentID && $0.word > at.word }
+                }
+                guard let moved = (exact ?? later)?.0 else {
                     throw HolosError.invalidInput("A split speaker turn cannot be kept across this word change.")
                 }
-                return .splitTurn(turnID: turnID, at: WordRef(segmentID: at.segmentID, word: index))
+                return .splitTurn(turnID: turnID, at: moved)
             default:
                 return action
             }

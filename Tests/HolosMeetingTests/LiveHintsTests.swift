@@ -173,6 +173,23 @@ private func hint(_ segment: TranscriptSegment, words: Range<Int>, action: LiveH
     #expect(repeated.transcript == applied.transcript)
 }
 
+@Test func aDeletedLanguagePieceRetargetsItsSpeakerSpanToTheCrossPieceReplacement() throws {
+    let live = SessionFixtures.segment(["turn", "this", "into", "summary"], track: "mic", start: 2, id: "live")
+    let first = LanguageMerge.piece(of: live, first: 0, end: 2, language: "en-CA")
+    let second = LanguageMerge.piece(of: live, first: 2, end: 4, language: "fr-CA")
+    let original = SessionFixtures.transcript([first, second], id: "original")
+    let hint = hint(live, words: 0..<4, action: .replaceText("summary"), id: "H1")
+
+    let corrected = LiveHints.applyingText([hint], to: original).transcript
+    let moved = try SpeakerTranscriptRetarget.retargetedSpans(
+        [WordSpan(segmentID: second.id, first: 0, end: 2)], from: original, to: corrected)
+
+    #expect(corrected.segments[0].fixes == [
+        TranscriptWordFix(first: 0, end: 1, heard: "turn this into summary", kind: .liveCorrection),
+    ])
+    #expect(moved == [WordSpan(segmentID: first.id, first: 0, end: 1)])
+}
+
 @Test func punctuationAtALanguageBoundaryStaysInsideTheLiveReplacement() {
     let live = TranscriptSegment(
         id: "live", start: 2, end: 3.1, text: "one two — — three",
