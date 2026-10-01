@@ -38,8 +38,8 @@ public enum EvalNormalization {
         return fillers.contains(collapsed)
     }
 
-    /// `isFiller` for each of `words`, except "mm" right after a number, which is millimetres ("5 mm", "five mm",
-    /// "one hundred mm"); `previousWords` are the words before the first, in order.
+    /// `isFiller` for each of `words`, except "mm" right after a number in the same clause, which is millimetres ("5
+    /// mm", "five mm", "one hundred mm"); `previousWords` are the words before the first, in order.
     public static func fillerFlags(_ words: [String], previousWords: [String] = [],
                                    fillers: Set<String> = allFillers) -> [Bool] {
         fillerFlags(words, runs: SpelledRuns(previousWords + words, fillers: fillers), offset: previousWords.count,
@@ -47,12 +47,14 @@ public enum EvalNormalization {
     }
 
     /// `fillerFlags` of `words`, found at `offset` in the words whose spelled-number runs are `runs`; `previous` is
-    /// the word before the first. "mm" is millimetres after a word with a digit or one that ends a run.
+    /// the word before the first. "mm" is millimetres after a word with a digit or one that ends a run, in the same
+    /// clause ("5 mm", not "version 5. Mm").
     public static func fillerFlags(_ words: [String], runs: SpelledRuns, offset: Int, previous: String?,
                                    fillers: Set<String>) -> [Bool] {
         words.indices.map { index in
             guard isFiller(words[index], fillers: fillers) else { return false }
-            guard isMillimetres(words[index]), let before = index > 0 ? words[index - 1] : previous else { return true }
+            guard isMillimetres(words[index]), let before = index > 0 ? words[index - 1] : previous,
+                  !crossesClause([before, words[index]], 0..<2) else { return true }
             return !(before.contains(where: \.isNumber) || runs.endsRun(at: offset + index - 1))
         }
     }

@@ -284,6 +284,14 @@ private func canonical(_ text: String) -> String? {
     }
 }
 
+@Test func fairMmAfterANumberThatEndsAClauseIsAFiller() {
+    #expect(EvalNormalization.fillerFlags(["version", "5", "mm"]) == [false, false, false])
+    #expect(EvalNormalization.fillerFlags(["version", "5.", "Mm,", "yes"]) == [false, false, true, false])
+    #expect(EvalNormalization.fillerFlags(["five.", "mm"]) == [false, true])
+    #expect(EvalNormalization.fillerFlags(["five", "(mm"]) == [false, true])
+    #expect(!NormalizedAlignment.align(words("version 5. Mm, yes"), words("version 5. Yes")).contains { $0.isEdit })
+}
+
 // MARK: - Terms
 
 @Test func fairTermsCountHitsAndMissesWhereTheCloudHasThem() {
