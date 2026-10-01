@@ -184,7 +184,8 @@ public enum EvalCompare {
     /// Refuses a local run that did not transcribe the very audio the cloud run sent, track by track: the same chunk
     /// list, and the same bytes (a chunk file replaced without its manifest entry keeps the list's fingerprint). A
     /// cloud run made before its bytes' digest was recorded is checked against the audio as it is now, as the review
-    /// page checks it, and so is the local run.
+    /// page checks it, and so is the local run; one that has no digest of a segment's samples either cannot be
+    /// checked, and is refused.
     static func checkSameAudio(_ record: LocalRunRecord, _ run: CloudRunRecord, session: URL,
                                manifest: SessionManifest) throws {
         let newRun = "make a new local run with voiceislocal eval local"
@@ -205,6 +206,12 @@ public enum EvalCompare {
                 }
                 continue
             }
+            let recorded = plan.segments.map(\.audioSHA256)
+            guard !recorded.contains(nil) else {
+                throw HolosError.invalidInput("Run \(run.id) is older than the check that its \(plan.track) audio is "
+                    + "the local run's and kept no digest of it, so it cannot be compared with local run "
+                    + "\(record.id); make a new cloud run, or compare the current transcript.")
+            }
             guard try !AudioDeletedRecord.isDeleted(session: session, sessionID: manifest.id) else {
                 throw HolosError.invalidInput("Run \(run.id) is older than the check that its \(plan.track) audio is "
                     + "the local run's, and this session's audio was deleted, so it cannot be checked.")
@@ -217,8 +224,7 @@ public enum EvalCompare {
                 .appendingPathComponent("compare-\(plan.track)-\(UUID().uuidString).caf")
             defer { try? FileManager.default.removeItem(at: render) }
             let rendered = try EvalAudio.render(session: session, manifest: manifest, track: plan.track, to: render)
-            let recorded = plan.segments.map(\.audioSHA256)
-            let samplesMatch = try recorded.contains(nil) || EvalAudio.segmentDigests(
+            let samplesMatch = try EvalAudio.segmentDigests(
                 of: render, ranges: plan.segments.map { ($0.startFrame, $0.endFrame) }).map(Optional.some) == recorded
             guard rendered.frameCount == plan.frameCount, rendered.timeMap.map(EvalSpan.init) == plan.timeMap,
                   samplesMatch else {
@@ -306,9 +312,11 @@ public enum EvalCompare {
         /// The track's cloud words, and per word whether and where the local transcript has it (`WindowComparison`).
         var cloud: [EvalToken]
         var window: WindowComparison
-        /// Per local word: a filler or echo, which may stand between a term's words.
-        var ignorable: [Bool]
-        /// Per cloud word: a filler, which the normalized comparison leaves out between a term's words.
+        /// Per local word: echo, which may stand between a term's words.
+        var localEcho: [Bool]
+        /// Per local word and per cloud word: a filler, which the normalized comparison leaves out between a term's
+        /// words (the raw comparison reads it as a word).
+        var localFillers: [Bool]
         var cloudFillers: [Bool]
 
         /// The track for the Terms section: by key, or under the normalized comparison.
@@ -316,7 +324,8 @@ public enum EvalCompare {
             EvalTerms.Track(track: name, words: cloud.map(\.text),
                             covered: normalized ? window.cloudEquivalent : window.cloudMatched,
                             spans: normalized ? window.cloudEquivalentSpans : window.cloudMatchedSpans,
-                            ignorable: ignorable, skipped: normalized ? cloudFillers : [])
+                            ignorable: normalized ? zip(localEcho, localFillers).map { $0 || $1 } : localEcho,
+                            skipped: normalized ? cloudFillers : [])
         }
     }
 
@@ -360,8 +369,8 @@ public enum EvalCompare {
             report: CompareReport.TrackReport(track: track, score: result.score, groups: groups, warnings: warnings,
                                               normalized: result.normalized, normalization: result.normalization),
             passages: result.passages, cloud: allCloud, window: result,
-            ignorable: zip(local, EvalNormalization.fillerFlags(local.map(\.text), fillers: fillers))
-                .map { $0.echo || $1 },
+            localEcho: local.map(\.echo),
+            localFillers: EvalNormalization.fillerFlags(local.map(\.text), fillers: fillers),
             cloudFillers: EvalNormalization.fillerFlags(allCloud.map(\.text), fillers: fillers))
     }
 
