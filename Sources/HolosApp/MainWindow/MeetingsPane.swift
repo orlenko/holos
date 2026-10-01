@@ -307,6 +307,8 @@ final class MeetingsPane: NSViewController, NSTableViewDataSource, NSTableViewDe
         // The State column shows what a running command is doing; reloading keeps the selection.
         table.reloadData()
         updateButtons()
+        // A saved live view switches between Open Review and Open Transcript as commands begin and end.
+        updateLiveHeader()
     }
 
     /// Reads the catalog off the main actor, then shows it.
