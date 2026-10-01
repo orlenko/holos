@@ -1255,16 +1255,17 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
                                            isDictionaryWord: dictionaryWord)
         let desired = state.other + learned
         guard !state.managed.isEmpty || !desired.isEmpty else {
-            return LiveTextLearning(learned: learned, owned: [])
+            return LiveTextLearning(learned: learned, owned: [], displaced: [])
         }
-        var owned: [Correction] = []
+        var reconciliation = CorrectionList.LearningReconciliation()
         guard changeCorrections({
-            owned = $0.reconcileLearned(state.managed, preserving: state.preexisting, with: desired)
+            reconciliation = $0.reconcileLearned(state.managed, preserving: state.preexisting, with: desired)
         }) else {
             // Nil metadata leaves the prior successful learning state in place for this phrase.
             return LiveTextLearning(problem: "the corrections list is unavailable")
         }
-        return LiveTextLearning(learned: learned, owned: owned)
+        return LiveTextLearning(learned: learned, owned: reconciliation.owned,
+                                displaced: reconciliation.displaced)
     }
 
     /// A manual Add; one that resolves a declined swap also keeps the edit that swap came from, as Learn

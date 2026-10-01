@@ -74,7 +74,7 @@ import Testing
     let finalRules = CorrectionList.learn(original: original, corrected: final)
     var list = CorrectionList(entries: [.init(heard: "wrong", meant: "right")])
 
-    let firstOwned = list.reconcileLearned([], with: firstRules)
+    let firstOwned = list.reconcileLearned([], with: firstRules).owned
     #expect(list.apply(to: original) == first)
     list.reconcileLearned(firstOwned, with: finalRules)
 
@@ -86,7 +86,7 @@ import Testing
     let existing = Correction(heard: "send the deck", meant: "share the doc")
     var list = CorrectionList(entries: [existing])
 
-    let owned = list.reconcileLearned([], with: [existing])
+    let owned = list.reconcileLearned([], with: [existing]).owned
     list.reconcileLearned(owned, with: [])
 
     #expect(owned.isEmpty)
@@ -96,7 +96,9 @@ import Testing
 @Test func replacingLearnedCorrectionsReturnsTheRuleAsActuallyStored() {
     var list = CorrectionList()
 
-    let owned = list.reconcileLearned([], with: [.init(heard: "  send the deck ", meant: " share the doc  ")])
+    let owned = list.reconcileLearned([], with: [
+        .init(heard: "  send the deck ", meant: " share the doc  "),
+    ]).owned
 
     #expect(owned == [.init(heard: "send the deck", meant: "share the doc")])
     #expect(list.entries == owned)
@@ -106,8 +108,8 @@ import Testing
     let shared = Correction(heard: "send the deck", meant: "share the doc")
     var list = CorrectionList()
 
-    let managed = list.reconcileLearned([], with: [shared])
-    let secondOwned = list.reconcileLearned(managed, with: [shared, shared])
+    let managed = list.reconcileLearned([], with: [shared]).owned
+    let secondOwned = list.reconcileLearned(managed, with: [shared, shared]).owned
     list.reconcileLearned(managed + secondOwned, with: [shared])
 
     #expect(managed == [shared])
@@ -123,24 +125,34 @@ import Testing
     let last = Correction(heard: "send the deck", meant: "send the document")
     var list = CorrectionList()
 
-    let owned = list.reconcileLearned([], with: [first, last])
+    let owned = list.reconcileLearned([], with: [first, last]).owned
 
     #expect(owned == [last])
     #expect(list.entries == [last])
 }
 
-@Test func reconcilingLearnedCorrectionsRestoresAPreexistingRuleWithoutOwningIt() {
+@Test func reconcilingLearnedCorrectionsRestoresAnInitiallyDisplacedRuleWithoutOwningIt() {
     let existing = Correction(heard: "send the deck", meant: "share the doc")
     let conflict = Correction(heard: "send the deck", meant: "send the document")
     var list = CorrectionList(entries: [existing])
 
-    let conflictOwned = list.reconcileLearned([], preserving: [existing], with: [existing, conflict])
-    let restoredOwned = list.reconcileLearned(conflictOwned, preserving: [existing], with: [existing])
-    list.reconcileLearned(conflictOwned + restoredOwned, preserving: [existing], with: [])
+    let introduced = list.reconcileLearned([], with: [conflict])
+    let restored = list.reconcileLearned(introduced.owned, preserving: introduced.displaced, with: [])
 
-    #expect(conflictOwned == [conflict])
-    #expect(restoredOwned.isEmpty)
+    #expect(introduced == .init(owned: [conflict], displaced: [existing]))
+    #expect(restored == .init())
     #expect(list.entries == [existing])
+}
+
+@Test func reconcilingLearnedCorrectionsRestoresTheMostRecentPreexistingConflict() {
+    let older = Correction(heard: "send the deck", meant: "share the doc")
+    let unrelated = Correction(heard: "wrong name", meant: "right name")
+    let newer = Correction(heard: "send the deck", meant: "send the slides")
+    var list = CorrectionList()
+
+    list.reconcileLearned([], preserving: [older, unrelated, newer], with: [])
+
+    #expect(list.entries == [unrelated, newer])
 }
 
 @Test func reviewFindingsOnMatchingAndStreaming() {

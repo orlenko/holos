@@ -13,6 +13,7 @@ struct LiveMeetingHeader: Equatable {
 struct LiveTextLearning {
     var learned: [Correction]?
     var owned: [Correction]?
+    var displaced: [Correction]?
     var problem: String?
 }
 
@@ -30,7 +31,7 @@ final class LiveMeetingViewController: NSViewController, NSTextViewDelegate {
     private let onBack: () -> Void
     private let onOpenFinished: () -> Void
     /// Reconciles safe correction pairs with the latest live edits. Arguments are the saved learning state, original
-    /// recognizer text, and new text. The result records what this edit confirms and newly owns.
+    /// recognizer text, and new text. The result records what this edit confirms, newly owns, and displaced.
     private let onLearnText: (LiveHints.CorrectionLearningState, String, String) -> LiveTextLearning
     private var reader: LiveTranscriptReader
     private var header = LiveMeetingHeader(name: "", phase: .starting, detail: "")
@@ -384,13 +385,16 @@ final class LiveMeetingViewController: NSViewController, NSTextViewDelegate {
         hint.action = .replaceText(corrected)
         hint.learned = nil
         hint.owned = nil
+        hint.displaced = nil
         guard save(hint, success: "Text correction saved") else { return }
         let learning = onLearnText(learningState, originalHeard, corrected)
         var problems: [String] = []
         if let problem = learning.problem { problems.append("could not learn it: \(problem)") }
-        if let learned = learning.learned, let owned = learning.owned {
+        if let learned = learning.learned, let owned = learning.owned,
+           let displaced = learning.displaced {
             do {
-                try LiveHintStore.recordLearning(learned, owned: owned, for: hint.id, session: reader.session)
+                try LiveHintStore.recordLearning(learned, owned: owned, displaced: displaced,
+                                                 for: hint.id, session: reader.session)
                 refresh()
             } catch {
                 problems.append("could not record its correction rules: \(error.localizedDescription)")

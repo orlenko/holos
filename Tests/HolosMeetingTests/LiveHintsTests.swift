@@ -331,6 +331,19 @@ private func hint(_ segment: TranscriptSegment, words: Range<Int>, action: LiveH
         == .init(previous: [conflict], other: [existing], managed: [conflict], preexisting: [existing]))
 }
 
+@Test func correctionLearningStateRemembersAnUnconfirmedRuleAConflictDisplaced() {
+    let segment = SessionFixtures.segment(["send", "the", "deck"], track: "mic", start: 2, id: "S1")
+    let managed = Correction(heard: "send the deck", meant: "share the doc")
+    let displaced = Correction(heard: "send the deck", meant: "send the slides")
+    var live = hint(segment, words: 0..<3, action: .replaceText("share the doc"), id: "H1")
+    live.learned = [managed]
+    live.owned = [managed]
+    live.displaced = [displaced]
+
+    #expect(LiveHints.correctionLearningState(for: live, among: [live])
+        == .init(previous: [managed], managed: [managed], preexisting: [displaced]))
+}
+
 @Test func repeatedLiveEditMatchesAnIntermediateReplayAndKeepsOriginalProvenance() {
     let original = SessionFixtures.segment(["send", "the", "deck"], track: "system", start: 2, id: "live")
     let first = hint(original, words: 0..<3, action: .replaceText("share the doc"), id: "H1")
@@ -382,9 +395,12 @@ private func hint(_ segment: TranscriptSegment, words: Range<Int>, action: LiveH
     let owned = Correction(heard: "hello", meant: "hullo")
 
     try LiveHintStore.append(first, session: session)
-    try LiveHintStore.recordLearning([owned], owned: [owned], for: first.id, session: session)
+    let displaced = Correction(heard: "hello", meant: "hello there")
+    try LiveHintStore.recordLearning([owned], owned: [owned], displaced: [displaced],
+                                     for: first.id, session: session)
     first.learned = [owned]
     first.owned = [owned]
+    first.displaced = [displaced]
     try LiveHintStore.append(second, session: session)
     #expect(try LiveHintStore.read(session: session).hints == [first, second])
 
