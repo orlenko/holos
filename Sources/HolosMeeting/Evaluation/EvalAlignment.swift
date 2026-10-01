@@ -468,6 +468,10 @@ public struct WindowComparison: Sendable, Equatable {
     /// for, by key (`cloudMatchedSpans`) or under the normalized comparison (a joined run for a compound or number).
     public var cloudMatchedSpans: [Range<Int>?] = []
     public var cloudEquivalentSpans: [Range<Int>?] = []
+    /// Per local word and per cloud word: a filler, read as the normalized comparison reads it (echo left out of the
+    /// words around it: "mm" after an echoed "5" is a filler).
+    public var localFillers: [Bool] = []
+    public var cloudFillers: [Bool] = []
 }
 
 public enum WindowComparer {
@@ -563,6 +567,10 @@ public enum WindowComparer {
         let cloudTexts = cloud.indices.map { excludedCloud.contains($0) ? Self.echoContext : cloud[$0].text }
         let localRuns = EvalNormalization.SpelledRuns(localTexts, fillers: fillers)
         let cloudRuns = EvalNormalization.SpelledRuns(cloudTexts, fillers: fillers)
+        result.localFillers = EvalNormalization.fillerFlags(localTexts, runs: localRuns, offset: 0, previous: nil,
+                                                            fillers: fillers)
+        result.cloudFillers = EvalNormalization.fillerFlags(cloudTexts, runs: cloudRuns, offset: 0, previous: nil,
+                                                            fillers: fillers)
         /// Whether matched words `i` and `j` are a filler on one side only ("mm" after "5" is millimetres, after "um"
         /// a filler): an edit of the normalized comparison, so it goes in a word passage, in front of the reviewer.
         func readsDifferently(_ i: Int, _ j: Int) -> Bool {

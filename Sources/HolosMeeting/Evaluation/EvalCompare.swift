@@ -370,8 +370,7 @@ public enum EvalCompare {
                                               normalized: result.normalized, normalization: result.normalization),
             passages: result.passages, cloud: allCloud, window: result,
             localEcho: local.map(\.echo),
-            localFillers: EvalNormalization.fillerFlags(local.map(\.text), fillers: fillers),
-            cloudFillers: EvalNormalization.fillerFlags(allCloud.map(\.text), fillers: fillers))
+            localFillers: result.localFillers, cloudFillers: result.cloudFillers)
     }
 
     private static func shifted(_ op: AlignmentOp, local: Int, cloud: Int) -> AlignmentOp {

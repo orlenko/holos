@@ -819,3 +819,17 @@ private func fairHits(_ term: String, in text: String) -> [String] {
     #expect(NormalizedAlignment.align(words("thirty percent"), words("30 percent"))
         == [.equal(0, 0, .number), .equal(1, 1, .same)])
 }
+
+@Test func fairTermFillersReadEchoAsTheAlignmentDoes() {
+    // The echoed "5" is left out, so "mm" after it is a filler, as in the normalized scores.
+    let cloud = CloudTrackResult(run: "r", track: "mic", model: "m", segments: [
+        .init(index: 0, sessionStart: 0, sessionEnd: 10, renderStart: 0, renderEnd: 10, overlapSeconds: 0,
+              silent: false, text: "we went New York", words: words("we went New York"), timedWords: nil),
+    ], text: "")
+    let compared = EvalCompare.compareTrack(track: "mic", local: fairTimed(words("we went New 5 mm York"), echo: [3]),
+                                            cloud: cloud)
+    #expect(compared.report.normalized?.edits == 0)
+    let terms = EvalTerms.terms(wordList: ["New York"], corrections: [])
+    #expect(EvalTerms.count(terms, tracks: [compared.termTrack("mic", normalized: true)], normalized: true)
+        .map { "\($0.hits)/\($0.cloud)" } == ["1/1"])
+}
