@@ -29,8 +29,7 @@ public struct LocalRunRecord: Codable, Sendable, Equatable {
     public var vocabularySource: String
     /// Recognition as the languages stage makes it: final results only (`AppleSpeechSession.make(accurate: true)`).
     public var accurate = true
-    /// Text steps applied after recognition, in order. A meeting applies none today (corrections, filler removal,
-    /// and spoken-code formatting are dictation steps), so neither does a candidate.
+    /// Text steps applied after recognition, in order (currently `wordFixes`, unless `--no-word-fixes`).
     public var textSteps: [String] = []
     public var tracks: [Track]
     /// Set once every track is transcribed in every language and transcript.json is written.
@@ -85,9 +84,13 @@ public enum EvalLocal {
         public var runID: String?
         /// Resuming `runID` with the vocabulary it saved: today's word list and corrections are not needed (nor read).
         public var savedVocabulary: Bool
+        /// Apply the meeting word-fix stage to the assembled candidate.
+        public var wordFixes: Bool
 
-        public init(language: String? = nil, runID: String? = nil, savedVocabulary: Bool = false) {
+        public init(language: String? = nil, runID: String? = nil, savedVocabulary: Bool = false,
+                    wordFixes: Bool = true) {
             self.language = language; self.runID = runID; self.savedVocabulary = savedVocabulary
+            self.wordFixes = wordFixes
         }
     }
 
@@ -182,6 +185,7 @@ public enum EvalLocal {
     /// installed. The caller holds the session's processing lease. Cancellation keeps what is saved.
     public static func run(session: URL, options: Options, vocabulary: [String]?,
                            dependencies: LanguageDetectionDependencies = .live, now: Date = Date(),
+                           wordFixes: WordFixDependencies = .none,
                            progress: @escaping @Sendable (String) -> Void = { _ in }) async throws -> LocalRunRecord {
         guard try !SessionArchive.isActive(at: session) else {
             throw HolosError.unavailable("This session is still recording; stop it first.")
@@ -208,6 +212,7 @@ public enum EvalLocal {
         let languages = try Self.languages(session: session, language: options.language)
         let strings = vocabulary ?? []
         let source = vocabulary == nil ? "none" : "current"
+        let textSteps = options.wordFixes ? [PostProcessingStage.wordFixes.rawValue] : []
 
         var record: LocalRunRecord
         var isNew = false
@@ -222,22 +227,25 @@ public enum EvalLocal {
                 throw HolosError.invalidInput("The audio changed since local run \(id) started; start a new run.")
             }
             guard found.languages == languages || options.language == nil,
-                  found.vocabularySource == source || (options.savedVocabulary && found.vocabularySource != "none")
+                  found.vocabularySource == source || (options.savedVocabulary && found.vocabularySource != "none"),
+                  found.textSteps == textSteps
             else {
                 throw HolosError.invalidInput("Local run \(id) was started with other options ("
                     + found.languages.joined(separator: ",")
-                    + (found.vocabularySource == "none" ? ", --no-vocabulary" : "") + "); resume it with the same.")
+                    + (found.vocabularySource == "none" ? ", --no-vocabulary" : "")
+                    + (found.textSteps.contains(PostProcessingStage.wordFixes.rawValue) ? "" : ", --no-word-fixes")
+                    + "); resume it with the same.")
             }
             // A resumed run keeps the vocabulary it started with, so its tracks are all heard alike.
             record = found
         } else if let found = latestResumable(session: session, sessionID: manifest.id, languages: languages,
                                               backend: manifest.backend, vocabulary: strings, source: source,
-                                              tracks: tracks) {
+                                              textSteps: textSteps, tracks: tracks) {
             record = found
         } else {
             record = LocalRunRecord(id: newRunID(at: now), sessionID: manifest.id, createdAt: now,
                                     languages: languages, backend: manifest.backend, vocabulary: strings,
-                                    vocabularySource: source, tracks: tracks)
+                                    vocabularySource: source, textSteps: textSteps, tracks: tracks)
             if FileManager.default.fileExists(atPath: EvalPaths.localRun(record.id, in: session).path) {
                 throw HolosError.unavailable("Local run \(record.id) already exists; try again in a second.")
             }
@@ -340,8 +348,12 @@ public enum EvalLocal {
                 + "; nothing was saved for it. Run the same command again to try again.")
         }
 
-        let transcript = try assemble(record: record, parts: parts, session: session, manifest: manifest,
+        var transcript = try assemble(record: record, parts: parts, session: session, manifest: manifest,
                                       scorer: dependencies.makeScorer())
+        if record.textSteps.contains(PostProcessingStage.wordFixes.rawValue) {
+            transcript = try await applyingWordFixes(to: transcript, title: manifest.name,
+                                                     dependencies: wordFixes, progress: progress)
+        }
         try Task.checkCancellation()
         try EvalStore.write(transcript, to: EvalPaths.localTranscript(record.id, in: session))
         record.transcriptID = transcript.id
@@ -367,18 +379,40 @@ public enum EvalLocal {
 
     /// The newest unfinished run with these settings.
     private static func latestResumable(session: URL, sessionID: String, languages: [String], backend: SpeechBackend,
-                                        vocabulary: [String], source: String,
+                                        vocabulary: [String], source: String, textSteps: [String],
                                         tracks: [LocalRunRecord.Track]) -> LocalRunRecord? {
         for id in runIDs(in: session).reversed() {
             guard let record = try? record(id, in: session, sessionID: sessionID), record.completedAt == nil else {
                 continue
             }
             if record.languages == languages, record.backend == backend, record.vocabulary == vocabulary,
-               record.vocabularySource == source, record.tracks == tracks {
+               record.vocabularySource == source, record.textSteps == textSteps, record.tracks == tracks {
                 return record
             }
         }
         return nil
+    }
+
+    /// Applies stage 1c without publishing to the meeting. With no configured fixes, or no matching words, the
+    /// recognized candidate is kept exactly as assembled; the run still records that the step was checked.
+    private static func applyingWordFixes(to transcript: Transcript, title: String,
+                                          dependencies: WordFixDependencies,
+                                          progress: @escaping @Sendable (String) -> Void) async throws -> Transcript {
+        let corrections: CorrectionList
+        let terms: CorrectionList
+        do {
+            corrections = try dependencies.corrections()
+            terms = CorrectionList(entries: try dependencies.wordList().heardAsPairs)
+        } catch {
+            throw HolosError.invalidInput("Could not read the meeting word fixes (pass --no-word-fixes to skip them): "
+                + error.localizedDescription)
+        }
+        guard !corrections.entries.isEmpty || !terms.entries.isEmpty else { return transcript }
+        progress("Fixing misheard words in the local candidate…")
+        let computed = try await WordFixStage.fix(transcript, title: title, corrections: corrections, terms: terms,
+                                                  dependencies: dependencies)
+        for note in computed.notes { progress("Note: \(note)") }
+        return computed.counts.total == 0 ? transcript : computed.transcript
     }
 
     /// One track in one language, from the saved audio, as the languages stage transcribes it (`TrackReplayer`,

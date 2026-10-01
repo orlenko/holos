@@ -615,8 +615,9 @@ Still requiring real-machine or user-data validation:
   speakers only; `session fix-words` after removing the correction or heard-as word undoes
   it in a new version). A meeting whose speaker labels were edited is fixed only with
   `session fix-words --force`, which labels its speakers again (names carry over, turn-level
-  changes do not). `eval local` does not apply the fixes to its candidate yet. The model
-  is asked one place at a time (at most 500 per run).
+  changes do not). `eval local` applies the same fixes to its candidate by default;
+  `--no-word-fixes` keeps the recognizer's words for comparison. The model is asked one
+  place at a time (at most 500 per run).
 - Live transcript: speakers and text cannot be corrected during the meeting yet. The first
   one or two volatile words of a microphone echo can show briefly (the echo rule needs a
   run of three words), and an echo heard before the system track's words arrive shows until

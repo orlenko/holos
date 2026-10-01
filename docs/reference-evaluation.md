@@ -126,7 +126,7 @@ their answers at about 2,000 output tokens (8–11 minutes of speech). The
 
 ```sh
 voiceislocal eval cloud <session> [--model gpt-transcribe] [--tracks mic,system] [--vocabulary] [--timestamps] [--yes]
-voiceislocal eval local <session> [--language xx-YY] [--no-vocabulary] [--run <local run>]
+voiceislocal eval local <session> [--language xx-YY] [--no-vocabulary] [--no-word-fixes] [--run <local run>]
 voiceislocal eval compare <session> [--run <id>] [--local current|latest|<local run>] [--raw]
 voiceislocal eval review <session> [--run <id>] [--no-open]
 voiceislocal eval apply <session> decisions.json [--add-corrections] [--add-vocabulary]
@@ -220,7 +220,7 @@ voiceislocal eval delete <session> (<run> | --all)
    segments' audio cannot be checked and is refused. Output:
    `eval/compare/<run>/report.md` and `report.json` (a candidate's in
    `eval/compare/<run>/<local run>/`); the report says which local transcript
-   and which vocabulary it compared.
+   and which vocabulary and text steps it compared.
 3. **review** writes `eval/review/<run>/review.html` with
    `review-audio/<track>.m4a` beside it and opens it. The page is
    self-contained and loads nothing from the network (its
@@ -388,9 +388,11 @@ live phrases do not cover. Nothing leaves the Mac.
   the words of your corrections for those languages, each once, at most 100
   strings; `--no-vocabulary` gives it none. The exact strings are saved in
   `run.json`.
-- **Text steps:** none. A meeting applies no text step after recognition
-  today (corrections, filler removal and spoken-code formatting are dictation
-  steps), so a candidate is what the recognizer returned.
+- **Text steps:** meeting word fixes are applied after recognition: learned
+  corrections, then the word list's often-heard-as questions, just as stage 1c
+  applies them to a meeting. `--no-word-fixes` keeps the recognizer's words so
+  the effect can be measured. The choice is saved in `run.json` and must match
+  when a run is resumed.
 - **Output:** `eval/local/<local run>/run.json` (settings, vocabulary, each
   track's audio fingerprint and the SHA-256 of its chunk files' bytes), `parts/<language>-<track>.json` (each track's
   timed words, saved as soon as it is done; a track that heard no words once
