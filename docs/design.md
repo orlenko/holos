@@ -832,13 +832,13 @@ that place: terms the recognizer should expect (names, products, jargon), kept i
   two terms counts for the last). In dictation, after Apple Intelligence's fix (which is
   never told the pairs, and whose guard still refuses a real word replaced by a term), each
   place in the chunk where such a word was said (whole words, any case; at most 3 per
-  chunk, in a separately bounded pass after the base fix is validated) is one question to
+  chunk, after the base fix is validated) is one separately bounded question to
   the model, as for meetings (`HeardAsJudge`, below, with the chunk as the passage and no
   title); only a reply that is
   exactly the term replaces exactly that place, spelled exactly as listed ("iPhone" stays
-  "iPhone" at a sentence start). A question that times out keeps the validated base fix and
-  leaves that place as written. A place that overlaps a meant phrase of a learned
-  correction is never asked about (the chunk is already corrected, so with "clawed → cloud"
+  "iPhone" at a sentence start). A question that times out keeps the validated base fix,
+  every earlier term choice, and that place as written. A place that overlaps a meant phrase
+  of a learned correction is never asked about (the chunk is already corrected, so with "clawed → cloud"
   every "cloud" stays, as the guard keeps it); meetings leave out what the corrections
   changed there. Told the pairs as candidates in the fix's own instructions instead, the
   model put "Claude" in 2 of 3 invented sentences about the cloud; asked this way it kept

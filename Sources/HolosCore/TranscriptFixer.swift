@@ -103,19 +103,17 @@ public struct TranscriptFixer: Sendable {
         case .failed: return Result(text: chunk, outcome: .failed)
         }
 
-        // Term questions get their own bounded pass after the base fix is validated. A slow question must not throw
-        // away that safe fix merely because it used the tail of the base fix's time budget.
+        // Term questions run after the base fix is validated and each gets its own bound. A slow later question must
+        // not throw away either that safe fix or term choices already completed before it.
         let swapped: String?
         if heardAs.isEmpty {
             swapped = nil
         } else {
-            switch await Self.firstOf(timeout, { [model, corrections, heardAs] in
-                try await Self.choosingTerms(in: verdict == .accept ? fixed : core, pairs: heardAs,
-                                             protecting: corrections.entries, model: model)
-            }) {
-            case .value(let value): swapped = value
-            case .timedOut: swapped = nil
-            case .failed:
+            do {
+                swapped = try await Self.choosingTerms(in: verdict == .accept ? fixed : core, pairs: heardAs,
+                                                       protecting: corrections.entries, timeout: timeout,
+                                                       model: model)
+            } catch {
                 if Task.isCancelled { return Result(text: chunk, outcome: .failed) }
                 swapped = nil
             }
@@ -153,7 +151,7 @@ public struct TranscriptFixer: Sendable {
     /// replaced by the term, spelled exactly as listed, where the model chose it (`HeardAsJudge`, the text as the
     /// passage); nil when none was. Exactly the place changes.
     static func choosingTerms(in text: String, pairs: [Correction], protecting: [Correction] = [],
-                              model: Model) async throws -> String? {
+                              timeout: Duration, model: @escaping Model) async throws -> String? {
         let places = heardAsPlaces(in: text, pairs: pairs, protecting: protecting).prefix(maximumHeardAsQuestions)
         var chosen: [CorrectionList.Match] = []
         for place in places {
@@ -164,15 +162,13 @@ public struct TranscriptFixer: Sendable {
             let term = place.correction.meant
             let question = HeardAsJudge.Question(title: nil, before: context.before, heard: place.heard,
                                                  after: context.after, term: term)
-            // A question the model fails keeps its place; it never costs the chunk its fix.
-            let reply: String
-            do {
-                reply = try await model(HeardAsJudge.instructions, HeardAsJudge.prompt(question))
-            } catch {
+            // A question that fails or times out keeps its place; completed choices and the base fix survive it.
+            switch await HeardAsJudge.ask(question, model: model, timeout: timeout) {
+            case .term: chosen.append(place)
+            case .keep, .timedOut: continue
+            case .failed:
                 try Task.checkCancellation()
-                continue
             }
-            if HeardAsJudge.choosesTerm(reply, term: term) { chosen.append(place) }
         }
         guard !chosen.isEmpty else { return nil }
         let swapped = NSMutableString(string: text)
