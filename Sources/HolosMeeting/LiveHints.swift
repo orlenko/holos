@@ -587,16 +587,16 @@ public enum LiveHints {
         guard match.parts.count > 1 else { return nil }
         let weights = match.parts.map(\.tokenCount)
         let replacements = divided(replacement, weights: weights)
-        let matchedPieces = divided(matchedText, weights: weights)
         let provenances = divided(provenance, weights: weights)
-        guard replacements.count == match.parts.count, matchedPieces.count == match.parts.count,
+        guard let ranges = characterRanges(of: match, matching: matchedText, in: transcript),
+              replacements.count == match.parts.count,
               provenances.count == match.parts.count else { return nil }
         var result = transcript
         for index in match.parts.indices {
             let part = match.parts[index]
             let segment = result.segments[part.segment]
-            guard var working = WordFixes.Working(segment, preservingExistingFixes: true),
-                  let range = characterRange(part.words, matching: matchedPieces[index], in: segment) else {
+            let range = ranges[index]
+            guard var working = WordFixes.Working(segment, preservingExistingFixes: true) else {
                 return nil
             }
             let heard = provenances[index].isEmpty ? text(in: range, of: segment) : provenances[index]
@@ -626,39 +626,103 @@ public enum LiveHints {
     /// tokens than pieces, later pieces are deleted; the complete live edit still contains at least one token.
     private static func divided(_ phrase: String, weights: [Int]) -> [String] {
         let words = phrase.split(whereSeparator: \.isWhitespace).map(String.init)
+        let spoken = words.indices.filter { !normalized(words[$0]).isEmpty }
         guard !weights.isEmpty, weights.allSatisfy({ $0 > 0 }) else { return [] }
         var result: [String] = []
         var word = 0
+        var spokenWord = 0
         var weight = 0
         let totalWeight = weights.reduce(0, +)
         for index in weights.indices {
             weight += weights[index]
             let ideal = index == weights.count - 1
-                ? words.count
-                : Int((Double(words.count * weight) / Double(totalWeight)).rounded())
-            let minimum = words.count >= weights.count ? word + 1 : word
-            let remainingMinimum = words.count >= weights.count ? weights.count - index - 1 : 0
-            let bounded = min(words.count - remainingMinimum, max(minimum, ideal))
-            result.append(words[word..<bounded].joined(separator: " "))
-            word = bounded
+                ? spoken.count
+                : Int((Double(spoken.count * weight) / Double(totalWeight)).rounded())
+            let minimum = spoken.count >= weights.count ? spokenWord + 1 : spokenWord
+            let remainingMinimum = spoken.count >= weights.count ? weights.count - index - 1 : 0
+            let bounded = min(spoken.count - remainingMinimum, max(minimum, ideal))
+            let nextWord = bounded < spoken.count ? spoken[bounded] : words.count
+            result.append(words[word..<nextWord].joined(separator: " "))
+            word = nextWord
+            spokenWord = bounded
         }
         return result
     }
 
     private static func displayedText(of match: Match, matching displayed: String,
                                       in transcript: Transcript) -> String? {
-        let displayedPieces = divided(displayed, weights: match.parts.map(\.tokenCount))
-        guard displayedPieces.count == match.parts.count else { return nil }
-        let pieces = match.parts.indices.compactMap { index in
-            let part = match.parts[index]
-            return characterRange(part.words, matching: displayedPieces[index],
-                                  in: transcript.segments[part.segment]).map {
-                text(in: $0, of: transcript.segments[part.segment])
-            }
+        guard let ranges = characterRanges(of: match, matching: displayed, in: transcript) else { return nil }
+        let pieces = match.parts.indices.map { index in
+            text(in: ranges[index], of: transcript.segments[match.parts[index].segment])
         }
-        guard pieces.count == match.parts.count else { return nil }
         return pieces.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .joined(separator: " ")
+    }
+
+    /// The actual text owned by each matched segment piece. An internal language boundary can leave untimed or
+    /// punctuation-only words after the last spoken word of one piece ("one two — — " / "three"). Those marks
+    /// belong to that piece, regardless of how many whitespace-separated tokens the original displayed phrase had.
+    private static func characterRanges(of match: Match, matching displayed: String,
+                                        in transcript: Transcript) -> [Range<Int>]? {
+        let displayed = displayed.trimmingCharacters(in: .whitespacesAndNewlines)
+        var ranges: [Range<Int>] = []
+        for index in match.parts.indices {
+            let part = match.parts[index]
+            let segment = transcript.segments[part.segment]
+            guard let base = characterRange(part.words, matching: "", in: segment) else { return nil }
+            let includeLeadingMarks = index > 0 || displayed.first.map(isBoundaryMark) == true
+            let includeTrailingMarks = index < match.parts.count - 1
+                || displayed.last.map(isBoundaryMark) == true
+            ranges.append(expandingBoundaryMarks(in: segment.text, around: base,
+                                                 leading: includeLeadingMarks,
+                                                 trailing: includeTrailingMarks))
+        }
+        return ranges
+    }
+
+    private static func expandingBoundaryMarks(in value: String, around range: Range<Int>,
+                                               leading: Bool, trailing: Bool) -> Range<Int> {
+        let utf16 = value.utf16
+        let lowerUTF16 = utf16.index(utf16.startIndex, offsetBy: range.lowerBound)
+        let upperUTF16 = utf16.index(utf16.startIndex, offsetBy: range.upperBound)
+        guard var lower = String.Index(lowerUTF16, within: value),
+              var upper = String.Index(upperUTF16, within: value) else { return range }
+        if leading {
+            var candidate = lower
+            var hasMark = false
+            while candidate > value.startIndex {
+                let previous = value.index(before: candidate)
+                let character = value[previous]
+                guard character.isWhitespace || isBoundaryMark(character) else { break }
+                hasMark = hasMark || isBoundaryMark(character)
+                candidate = previous
+            }
+            if hasMark {
+                while candidate < lower, value[candidate].isWhitespace {
+                    candidate = value.index(after: candidate)
+                }
+                lower = candidate
+            }
+        }
+        if trailing {
+            var candidate = upper
+            var hasMark = false
+            while candidate < value.endIndex {
+                let character = value[candidate]
+                guard character.isWhitespace || isBoundaryMark(character) else { break }
+                hasMark = hasMark || isBoundaryMark(character)
+                candidate = value.index(after: candidate)
+            }
+            if hasMark {
+                while candidate > upper {
+                    let previous = value.index(before: candidate)
+                    guard value[previous].isWhitespace else { break }
+                    candidate = previous
+                }
+                upper = candidate
+            }
+        }
+        return lower.utf16Offset(in: value)..<upper.utf16Offset(in: value)
     }
 
     private static func collapsedWhitespace(_ value: String) -> String {

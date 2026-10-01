@@ -173,6 +173,34 @@ private func hint(_ segment: TranscriptSegment, words: Range<Int>, action: LiveH
     #expect(repeated.transcript == applied.transcript)
 }
 
+@Test func punctuationAtALanguageBoundaryStaysInsideTheLiveReplacement() {
+    let live = TranscriptSegment(
+        id: "live", start: 2, end: 3.1, text: "one two — — three",
+        words: [
+            TimedWord(text: "one", start: 2, end: 2.3, utf16Offset: 0, utf16Length: 3),
+            TimedWord(text: "two", start: 2.4, end: 2.7, utf16Offset: 4, utf16Length: 3),
+            TimedWord(text: "three", start: 2.8, end: 3.1, utf16Offset: 12, utf16Length: 5),
+        ], track: "mic")
+    let first = LanguageMerge.piece(of: live, first: 0, end: 2, language: "en-CA")
+    let second = LanguageMerge.piece(of: live, first: 2, end: 3, language: "fr-CA")
+    let hint = LiveHint(id: "H1", at: SessionFixtures.date, segmentID: live.id, track: "mic",
+                        firstWord: 0, endWord: 3, start: live.start, end: live.end,
+                        heard: "one two — — three", action: .replaceText("alpha beta gamma"))
+
+    let applied = LiveHints.applyingText([hint], to: SessionFixtures.transcript([first, second]))
+    let repeated = LiveHints.applyingText([hint], to: applied.transcript)
+
+    #expect(applied.applied == 1)
+    #expect(applied.unmatched == 0)
+    #expect(applied.transcript.segments.map(\.text) == ["alpha beta ", "gamma"])
+    #expect(applied.transcript.segments[0].fixes == [
+        TranscriptWordFix(first: 0, end: 2, heard: "one two — —", kind: .liveCorrection),
+    ])
+    #expect(repeated.applied == 0)
+    #expect(repeated.alreadyApplied == 1)
+    #expect(repeated.transcript == applied.transcript)
+}
+
 @Test func replayedLiveTextHintMatchesOnlyTheSameWordsNearTheirRecordedTime() {
     let live = SessionFixtures.segment(["send", "the", "deck"], track: "system", start: 120, id: "live")
     let nearby = SessionFixtures.segment(["send", "the", "deck"], track: "system", start: 121.9, id: "nearby")
