@@ -58,13 +58,32 @@ public enum HeardAsJudge {
             """
     }
 
-    /// Whether `reply` chose the term: exactly the term, ignoring case, whitespace, quotes and closing marks around it.
+    /// Whether `reply` chose the term: exactly the term (any case, whitespace collapsed), or the term inside quotes or
+    /// brackets and followed by sentence marks. The term's own marks are never taken for those: ".NET" and "C#" must be
+    /// said with theirs.
     static func choosesTerm(_ reply: String, term: String) -> Bool {
-        let trimming = CharacterSet.whitespacesAndNewlines.union(.punctuationCharacters)
-        let answer = reply.trimmingCharacters(in: trimming).split(whereSeparator: \.isWhitespace).joined(separator: " ")
-        let wanted = term.split(whereSeparator: \.isWhitespace).joined(separator: " ")
-        return !answer.isEmpty && answer.compare(wanted, options: [.caseInsensitive]) == .orderedSame
+        func collapsed(_ text: Substring) -> String {
+            text.split(whereSeparator: \.isWhitespace).joined(separator: " ").lowercased()
+        }
+        let wanted = collapsed(term[...])
+        var answer = Substring(collapsed(reply[...]))
+        guard !wanted.isEmpty else { return false }
+        while true {
+            if String(answer) == wanted { return true }
+            if let first = answer.first, leadingWrappers.contains(first) {
+                answer = answer.dropFirst()
+            } else if let last = answer.last, trailingWrappers.contains(last) {
+                answer = answer.dropLast()
+            } else {
+                return false
+            }
+            answer = Substring(answer.trimmingCharacters(in: .whitespaces))
+        }
     }
+
+    private static let leadingWrappers: Set<Character> = ["\"", "'", "“", "‘", "«", "(", "[", "{", "`", "*"]
+    private static let trailingWrappers: Set<Character> = ["\"", "'", "”", "’", "»", ")", "]", "}", "`", "*", ".", ",",
+                                                           ";", ":", "!", "?", "…"]
 
     public enum Answer: Sendable, Equatable {
         /// The model chose the term.

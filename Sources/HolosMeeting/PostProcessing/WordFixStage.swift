@@ -270,7 +270,7 @@ enum WordFixStage {
                 let range = place.match.range.location..<(place.match.range.location + place.match.range.length)
                 let context = HeardAsJudge.context(of: range, in: item.text, previous: previous, next: next)
                 let question = HeardAsJudge.Question(title: title, before: context.before, heard: place.match.heard,
-                                                     after: context.after, term: place.match.meant)
+                                                     after: context.after, term: place.match.correction.meant)
                 asked += 1
                 let answer = await HeardAsJudge.ask(question, model: ask, timeout: dependencies.timeout)
                 try Task.checkCancellation()
@@ -278,7 +278,8 @@ enum WordFixStage {
                 switch answer {
                 case .term:
                     accepted[place.segment, default: []].append(
-                        WordFixes.Replacement(range: range, text: place.match.meant, kind: .term))
+                        // The term as saved ("iPhone"), never with a sentence's capital ("IPhone").
+                        WordFixes.Replacement(range: range, text: place.match.correction.meant, kind: .term))
                 case .keep, .failed:
                     break
                 case .timedOut:

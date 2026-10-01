@@ -458,6 +458,9 @@ enum LanguageStage {
             "transcriptID": current.id, "base": "",
             "languages": (canonical(current.languages) ?? [canonical(current.locale)]).joined(separator: ","),
         ]
+        // Recorded for the transcript a fixed one stands for (`WordFixStage.unfixedID`), so a later fix of its words,
+        // a new revision, still answers these languages.
+        details["transcriptID"] = WordFixStage.unfixedID(details["transcriptID"] ?? current.id, events: events)
         details["requested"] = target.joined(separator: ",")
         do {
             let archive = try SessionArchive.openForMaintenance(at: request.session, lease: request.lease)

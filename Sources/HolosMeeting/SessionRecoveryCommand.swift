@@ -379,8 +379,12 @@ public enum SessionRecoveryCommand {
         guard record.stages.contains(where: { $0.stage == .export && $0.result == .succeeded }) else { return false }
         return record.stages.allSatisfy { outcome in
             switch outcome.stage {
-            case .transcript, .languages, .wordFixes, .export:
+            case .transcript, .languages, .export:
                 return true
+            case .wordFixes:
+                // A failure (an unreadable corrections.json or words.json, say) is tried again once it may pass;
+                // a fix made, kept, or skipped over edited labels is what a new run would do again.
+                return outcome.result != .failed
             case .recognize:
                 return outcome.result != .failed
             case .render, .diarize, .align:

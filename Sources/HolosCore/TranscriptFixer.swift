@@ -98,7 +98,7 @@ public struct TranscriptFixer: Sendable {
             try Task.checkCancellation()
             // Then the word list's "often heard as" words, each place asked about on its own.
             let swapped = try await Self.choosingTerms(in: verdict == .accept ? fixed : core, pairs: heardAs,
-                                                       model: model)
+                                                       protecting: corrections.entries, model: model)
             return (fixed, verdict, swapped)
         }) {
         case .value(let value): (fixed, verdict, swapped) = value
@@ -120,19 +120,35 @@ public struct TranscriptFixer: Sendable {
     /// Most places of a chunk where "often heard as" words were said that are put to the model.
     public static let maximumHeardAsQuestions = 3
 
-    /// `text` with each place where words of `pairs` were said (whole words, any case: `CorrectionList.matches`, which
-    /// carries a sentence's capital over; the first `maximumHeardAsQuestions`) replaced by the term where the model
-    /// chose it (`HeardAsJudge`, the text as the passage); nil when none was. Exactly the place changes.
-    static func choosingTerms(in text: String, pairs: [Correction], model: Model) async throws -> String? {
-        guard !pairs.isEmpty else { return nil }
-        let places = CorrectionList(entries: pairs).matches(in: text).prefix(maximumHeardAsQuestions)
+    /// The places of `text` where words of `pairs` were said (whole words, any case: `CorrectionList.matches`), in
+    /// order, but none that overlaps a meant phrase of `protecting` (the learned corrections): the text a fix gets has
+    /// already been corrected and does not say which words a correction produced, so every occurrence of a meant phrase
+    /// is kept, as `AIFixGuard` keeps them ("clawed -> cloud" keeps every "cloud" from becoming "Claude").
+    public static func heardAsPlaces(in text: String, pairs: [Correction],
+                                     protecting: [Correction]) -> [CorrectionList.Match] {
+        guard !pairs.isEmpty else { return [] }
+        let produced = CorrectionList(entries: protecting.map { Correction(heard: $0.meant, meant: $0.heard) })
+            .matches(in: text).map(\.range)
+        return CorrectionList(entries: pairs).matches(in: text).filter { place in
+            !produced.contains { NSIntersectionRange($0, place.range).length > 0 }
+        }
+    }
+
+    /// `text` with each place where words of `pairs` were said (`heardAsPlaces`; the first `maximumHeardAsQuestions`)
+    /// replaced by the term, spelled exactly as listed, where the model chose it (`HeardAsJudge`, the text as the
+    /// passage); nil when none was. Exactly the place changes.
+    static func choosingTerms(in text: String, pairs: [Correction], protecting: [Correction] = [],
+                              model: Model) async throws -> String? {
+        let places = heardAsPlaces(in: text, pairs: pairs, protecting: protecting).prefix(maximumHeardAsQuestions)
         var chosen: [CorrectionList.Match] = []
         for place in places {
             try Task.checkCancellation()
             let range = place.range.location..<(place.range.location + place.range.length)
             let context = HeardAsJudge.context(of: range, in: text)
+            // The term as saved ("iPhone"), never with a sentence's capital ("IPhone").
+            let term = place.correction.meant
             let question = HeardAsJudge.Question(title: nil, before: context.before, heard: place.heard,
-                                                 after: context.after, term: place.meant)
+                                                 after: context.after, term: term)
             // A question the model fails keeps its place; it never costs the chunk its fix.
             let reply: String
             do {
@@ -141,11 +157,11 @@ public struct TranscriptFixer: Sendable {
                 try Task.checkCancellation()
                 continue
             }
-            if HeardAsJudge.choosesTerm(reply, term: place.meant) { chosen.append(place) }
+            if HeardAsJudge.choosesTerm(reply, term: term) { chosen.append(place) }
         }
         guard !chosen.isEmpty else { return nil }
         let swapped = NSMutableString(string: text)
-        for place in chosen.reversed() { swapped.replaceCharacters(in: place.range, with: place.meant) }
+        for place in chosen.reversed() { swapped.replaceCharacters(in: place.range, with: place.correction.meant) }
         return swapped as String
     }
 

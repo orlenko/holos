@@ -118,7 +118,42 @@ private func pairs(_ entries: [(String, String)]) -> CorrectionList {
     #expect(WordFixStage.note(WordFixes.Counts(corrections: 1)) == "Fixed 1 misheard word.")
 }
 
+// MARK: - Recovery
+
+@Test func aFailedWordFixIsNotSettled() {
+    func record(_ wordFixes: StageResult) -> PostProcessingRecord {
+        var record = PostProcessingRecord(sessionID: "S", state: .partial, pid: 1, startedAt: SessionFixtures.date,
+                                          updatedAt: SessionFixtures.date)
+        record.stages = [StageOutcome(stage: .transcript, result: .succeeded),
+                         StageOutcome(stage: .wordFixes, result: wordFixes),
+                         StageOutcome(stage: .render, result: .succeeded),
+                         StageOutcome(stage: .diarize, result: .succeeded),
+                         StageOutcome(stage: .align, result: .succeeded),
+                         StageOutcome(stage: .export, result: .succeeded)]
+        return record
+    }
+    #expect(!SessionRecoveryCommand.speakerStagesSettled(record(.failed)), "Recover tries the words again.")
+    #expect(SessionRecoveryCommand.speakerStagesSettled(record(.succeeded)))
+    #expect(SessionRecoveryCommand.speakerStagesSettled(record(.skipped)))
+}
+
 // MARK: - Asking
+
+@Test(.timeLimit(.minutes(1)))
+func aTermKeepsItsSavedSpellingInAMeeting() async throws {
+    let segment = wordFixSegment("Eye phone sales are up again")
+    let terms = SharedValue<[String]>([])
+    let dependencies = WordFixDependencies(corrections: { CorrectionList() }, wordList: { WordList() },
+                                           model: { _ in .available({ _, prompt in
+                                               terms.update { $0.append(prompt) }
+                                               return "iPhone"
+                                           }) })
+    let computed = try await WordFixStage.fix(SessionFixtures.transcript([segment]), title: "t",
+                                              corrections: CorrectionList(), terms: pairs([("eye phone", "iPhone")]),
+                                              dependencies: dependencies)
+    #expect(computed.transcript.segments[0].text == "iPhone sales are up again")
+    #expect(terms.value.first?.contains("did the speaker say \"Eye phone\" or \"iPhone\"?") == true)
+}
 
 @Test(.timeLimit(.minutes(1)))
 func aModelThatStopsAnsweringIsNotAskedAgain() async throws {

@@ -153,13 +153,8 @@ public enum EvalApply {
             guard let term = WordList.cleaned(raw), seenTerms.insert(term.lowercased()).inserted else { continue }
             terms.append(term)
         }
-        // The terms a pair may be "often heard as" words of: the word list's, then the marked ones, by their key.
-        var spelled: [String: String] = [:]
-        for term in knownTerms + terms {
-            guard let cleaned = WordList.cleaned(term) else { continue }
-            let key = termKey(cleaned)
-            if spelled[key] == nil { spelled[key] = cleaned }
-        }
+        // The terms a pair may be "often heard as" words of: the word list's, then the marked ones.
+        let spelled = termIndex(knownTerms + terms)
         var corrections: [Correction] = []
         var heardAs: [Correction] = []
         for (passage, decision) in decided {
@@ -198,31 +193,74 @@ public enum EvalApply {
         }.filter { !$0.isEmpty }
     }
 
-    /// The "often heard as" pair `pair` stands for: what is left once the words both sides share at their edges (a
-    /// correction's neighbour, "asked cloud" → "asked Claude") are dropped, when the meant side is one of `terms` (by
-    /// `termKey`) and every word of the heard side is a real word. Heard as the local words, meant as the term is
-    /// spelled in the list. Nil otherwise: a correction.
-    static func heardAsTerm(_ pair: Correction, terms: [String: String],
+    /// Listed terms by how a reviewed text may write them: exactly (any case, whitespace collapsed), else without the
+    /// quotes, brackets and sentence marks around them. A term's own marks stay part of it, so "C#", "C++" and ".NET"
+    /// are three terms, not "c", "c" and "net". The first spelling of each key is kept.
+    struct TermIndex: Sendable {
+        var exact: [String: String] = [:]
+        var loose: [String: String] = [:]
+
+        /// The listed spelling of the term `text` writes; nil when it is none.
+        func term(_ text: String) -> String? {
+            exact[EvalApply.exactKey(text)] ?? loose[EvalApply.looseKey(text)]
+        }
+    }
+
+    static func termIndex(_ terms: [String]) -> TermIndex {
+        var index = TermIndex()
+        for term in terms {
+            guard let cleaned = WordList.cleaned(term) else { continue }
+            if index.exact[exactKey(cleaned)] == nil { index.exact[exactKey(cleaned)] = cleaned }
+            let loose = looseKey(cleaned)
+            if !loose.isEmpty, index.loose[loose] == nil { index.loose[loose] = cleaned }
+        }
+        return index
+    }
+
+    static func exactKey(_ text: String) -> String {
+        text.lowercased().split(whereSeparator: \.isWhitespace).joined(separator: " ")
+    }
+
+    /// Quotes and brackets around a term, and the sentence marks after it.
+    private static let leadingWrappers: Set<Character> = ["\"", "'", "“", "‘", "«", "(", "[", "{"]
+    private static let trailingWrappers: Set<Character> = ["\"", "'", "”", "’", "»", ")", "]", "}", ".", ",", ";", ":",
+                                                           "!", "?", "…"]
+
+    static func looseKey(_ text: String) -> String {
+        var key = Substring(exactKey(text))
+        while let first = key.first, leadingWrappers.contains(first) { key = key.dropFirst() }
+        while let last = key.last, trailingWrappers.contains(last) { key = key.dropLast() }
+        return String(key)
+    }
+
+    /// The "often heard as" pair `pair` stands for. The longest run of the meant side's words that is a listed term
+    /// (`terms`) is found first; the words around it must be the same on both sides (a correction's neighbour, "asked
+    /// cloud" → "asked Claude"), and the heard words between them are the term's heard-as words, when every one of them
+    /// is a real word. Heard as the local words, meant as the term is spelled in the list. Nil otherwise: a correction.
+    static func heardAsTerm(_ pair: Correction, terms: TermIndex,
                             isDictionaryWord: (String) -> Bool) -> Correction? {
         let heardWords = pair.heard.split(whereSeparator: \.isWhitespace).map(String.init)
         let meantWords = pair.meant.split(whereSeparator: \.isWhitespace).map(String.init)
-        var lower = 0
-        while lower < heardWords.count - 1, lower < meantWords.count - 1,
-              termKey(heardWords[lower]) == termKey(meantWords[lower]) {
-            lower += 1
+        guard !heardWords.isEmpty, !meantWords.isEmpty else { return nil }
+        for length in stride(from: meantWords.count, through: 1, by: -1) {
+            for start in 0...(meantWords.count - length) {
+                guard let term = terms.term(meantWords[start..<(start + length)].joined(separator: " ")) else {
+                    continue
+                }
+                let after = meantWords.count - start - length
+                guard start + after < heardWords.count,
+                      zip(heardWords.prefix(start), meantWords.prefix(start)).allSatisfy({ termKey($0) == termKey($1) }),
+                      zip(heardWords.suffix(after), meantWords.suffix(after)).allSatisfy({ termKey($0) == termKey($1) })
+                else { continue }
+                let heard = heardWords[start..<(heardWords.count - after)].joined(separator: " ")
+                    .trimmingCharacters(in: .punctuationCharacters.union(.whitespaces))
+                let local = words(of: heard)
+                guard !heard.isEmpty, exactKey(heard) != exactKey(term), !local.isEmpty,
+                      local.allSatisfy(isDictionaryWord) else { return nil }
+                return Correction(heard: heard, meant: term)
+            }
         }
-        var heardEnd = heardWords.count, meantEnd = meantWords.count
-        while heardEnd - 1 > lower, meantEnd - 1 > lower,
-              termKey(heardWords[heardEnd - 1]) == termKey(meantWords[meantEnd - 1]) {
-            heardEnd -= 1; meantEnd -= 1
-        }
-        let heard = heardWords[lower..<heardEnd].joined(separator: " ")
-            .trimmingCharacters(in: .punctuationCharacters.union(.whitespaces))
-        let meant = meantWords[lower..<meantEnd].joined(separator: " ")
-        guard let term = terms[termKey(meant)], !heard.isEmpty, termKey(heard) != termKey(term) else { return nil }
-        let local = words(of: heard)
-        guard !local.isEmpty, local.allSatisfy(isDictionaryWord) else { return nil }
-        return Correction(heard: heard, meant: term)
+        return nil
     }
 
     /// How a gold piece joins the one before it.

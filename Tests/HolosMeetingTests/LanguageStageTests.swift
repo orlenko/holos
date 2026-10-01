@@ -274,6 +274,40 @@ func aMergeWhoseWordsWereFixedIsKeptOnTheNextRun() async throws {
 }
 
 @Test(.timeLimit(.minutes(1)))
+func languagesAskedForAFixedTranscriptOutliveANewFix() async throws {
+    let temp = try TemporaryDirectory("languages")
+    defer { temp.remove() }
+    let (session, _) = try await languageStageSession(in: temp.url)
+    let speech = LanguageStageSpeech.standard()
+    let installed = SharedValue<Set<String>>([languageStageEnglish])
+    let corrections = SharedValue(CorrectionList(entries: [Correction(heard: "en-2@en", meant: "hello")]))
+    func processor(_ options: PostProcessingOptions = .init()) -> MeetingPostProcessor {
+        MeetingPostProcessor(diarizer: FakeDiarizer(outputs: ["mic": SessionFixtures.alternatingOutput()]),
+                             options: options, freeSpace: FixedFreeSpace(.max),
+                             languages: languageStageDependencies(speech, installed: installed),
+                             wordFixes: WordFixDependencies(corrections: { corrections.value },
+                                                            wordList: { WordList() },
+                                                            model: { _ in .unavailable("unused") }))
+    }
+    // French cannot be had: the recording's English transcript stays, and its words are fixed (F1).
+    _ = try await processor().run(session: session, lease: nil)
+    let first = try languageStageCurrent(session)
+    #expect(first.fixedFrom != nil && first.languages == nil)
+    // The user asks for English alone: recorded for the transcript F1 stands for.
+    _ = try await processor(PostProcessingOptions(languages: [languageStageEnglish])).run(session: session, lease: nil)
+    // New corrections fix the words again (F2), then French becomes available.
+    corrections.update { $0.add(Correction(heard: "en-4@en", meant: "world")) }
+    _ = try await processor().run(session: session, lease: nil)
+    let second = try languageStageCurrent(session)
+    #expect(second.id != first.id && second.fixedFrom == first.fixedFrom)
+    installed.update { $0.insert(languageStageFrench) }
+    let later = try await processor().run(session: session, lease: nil)
+    #expect(languageStageOutcome(later) == nil, "English alone, as asked, still holds.")
+    #expect(!speech.locales.contains(languageStageFrench))
+    #expect(try languageStageCurrent(session).languages == nil)
+}
+
+@Test(.timeLimit(.minutes(1)))
 func aSavedPassIsReusedWhenDetectionResumes() async throws {
     let temp = try TemporaryDirectory("languages")
     defer { temp.remove() }

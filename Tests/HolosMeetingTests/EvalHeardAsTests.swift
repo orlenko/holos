@@ -11,7 +11,7 @@ import Testing
 private let evalDictionary: Set<String> = ["i", "asked", "cloud", "to", "help", "and", "the", "cloak", "login", "we"]
 
 @Test func realWordsReplacedByATermAreHeardAsWords() {
-    let terms = ["claude": "Claude", "keycloak": "Keycloak"]
+    let terms = EvalApply.termIndex(["Claude", "Keycloak"])
     let isWord: (String) -> Bool = { evalDictionary.contains($0) }
     // The neighbour a correction is learned with is dropped.
     #expect(EvalApply.heardAsTerm(Correction(heard: "asked cloud", meant: "asked Claude"), terms: terms,
@@ -25,6 +25,22 @@ private let evalDictionary: Set<String> = ["i", "asked", "cloud", "to", "help", 
                                   isDictionaryWord: isWord) == nil)
     #expect(EvalApply.heardAsTerm(Correction(heard: "Claude", meant: "claude"), terms: terms,
                                   isDictionaryWord: { _ in true }) == nil)
+}
+
+@Test func aListedTermIsFoundWholeBeforeContextIsTrimmed() {
+    let isWord: (String) -> Bool = { ["we", "use", "cloud", "code", "see", "plus", "sharp"].contains($0) }
+    // "code" is part of the listed term, not context to drop.
+    #expect(EvalApply.heardAsTerm(Correction(heard: "use cloud code", meant: "use Claude Code"),
+                                  terms: EvalApply.termIndex(["Claude Code"]), isDictionaryWord: isWord)
+        == Correction(heard: "cloud code", meant: "Claude Code"))
+    // Punctuation that belongs to a term tells terms apart.
+    let index = EvalApply.termIndex(["C#", "C++", ".NET"])
+    #expect(EvalApply.heardAsTerm(Correction(heard: "see plus plus", meant: "C++"), terms: index,
+                                  isDictionaryWord: isWord) == Correction(heard: "see plus plus", meant: "C++"))
+    #expect(EvalApply.heardAsTerm(Correction(heard: "see sharp", meant: "C#."), terms: index,
+                                  isDictionaryWord: isWord) == Correction(heard: "see sharp", meant: "C#"))
+    #expect(EvalApply.heardAsTerm(Correction(heard: "see", meant: "C"), terms: index, isDictionaryWord: isWord)
+        == nil)
 }
 
 @Test func applyProposesHeardAsWordsAndAddsThemToTheirTerms() async throws {

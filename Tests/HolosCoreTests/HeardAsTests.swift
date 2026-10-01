@@ -95,6 +95,13 @@ private let heardAsDate = Date(timeIntervalSince1970: 1_790_000_000)
         #expect(!HeardAsJudge.choosesTerm(reply, term: "Claude"), "\(reply)")
     }
     #expect(HeardAsJudge.choosesTerm("claude  code", term: "Claude Code"))
+    // A term's own marks are the term's, not wrappers to strip.
+    for (reply, term) in [(".NET", ".NET"), ("\".NET\".", ".NET"), ("C#", "C#"), ("C#.", "C#"), ("C++", "C++"),
+                          ("Inc.", "Inc."), ("(C#)", "C#")] {
+        #expect(HeardAsJudge.choosesTerm(reply, term: term), "\(reply) for \(term)")
+    }
+    #expect(!HeardAsJudge.choosesTerm("C", term: "C#"))
+    #expect(!HeardAsJudge.choosesTerm("NET", term: ".NET"))
 }
 
 @Test func theQuestionShowsThePlaceItsPassageAndTheTitle() {
@@ -205,6 +212,38 @@ private let claudePairs = ["cloud", "clot"].map { Correction(heard: $0, meant: "
     let fixer = heardAsFixer(heardAs: claudePairs, reply: "I asked Claude to fix the parser", choose: { _ in "cloud" })
     let result = await fixer.fix("I asked cloud to fix the parser", isFinal: false)
     #expect(result.outcome == .rejected && result.text == "I asked cloud to fix the parser")
+}
+
+@Test func aWordALearnedCorrectionProducedIsNeverAskedAbout() async {
+    // "clawed -> cloud" is learned, and "cloud" is also heard for "Claude": the corrected "cloud" stays.
+    let calls = HeardAsCalls()
+    var fixer = TranscriptFixer(corrections: CorrectionList(entries: [Correction(heard: "clawed", meant: "cloud")]),
+                                wordList: ["Claude"], heardAs: claudePairs, referenceBudget: 500,
+                                timeout: .seconds(30), language: "en-US") { _, prompt in
+        guard prompt.hasPrefix("Text: ") else {
+            calls.question(prompt)
+            return "Claude"
+        }
+        return "I asked cloud to fix the parser"
+    }
+    fixer.spellingBudget = .seconds(60)
+    let result = await fixer.fix("I asked cloud to fix the parser", isFinal: false)
+    #expect(result.text == "I asked cloud to fix the parser" && result.outcome == .unchanged)
+    #expect(calls.questions.isEmpty)
+    #expect(TranscriptFixer.heardAsPlaces(in: "Cloud runs and clot runs", pairs: claudePairs,
+                                          protecting: [Correction(heard: "clawed", meant: "cloud")])
+        .map(\.heard) == ["clot"])
+}
+
+@Test func aTermKeepsItsSavedSpellingAtASentenceStart() async {
+    let pairs = [Correction(heard: "eye phone", meant: "iPhone")]
+    var fixer = TranscriptFixer(corrections: CorrectionList(), wordList: ["iPhone"], heardAs: pairs,
+                                referenceBudget: 500, timeout: .seconds(30), language: "en-US") { _, prompt in
+        prompt.hasPrefix("Text: ") ? "Eye phone sales are up" : "iPhone"
+    }
+    fixer.spellingBudget = .seconds(60)
+    let result = await fixer.fix("Eye phone sales are up", isFinal: false)
+    #expect(result.text == "iPhone sales are up")
 }
 
 @Test func aFailedQuestionKeepsThePlaceAndTheFix() async {

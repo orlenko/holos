@@ -784,8 +784,11 @@ that place: terms the recognizer should expect (names, products, jargon), kept i
   place in the chunk where such a word was said (whole words, any case; at most 3 per
   chunk, within the chunk's time limit) is one question to the model, as for meetings
   (`HeardAsJudge`, below, with the chunk as the passage and no title); only a reply that is
-  exactly the term replaces exactly that place, spelled as listed (a sentence's capital
-  carried over). Told the pairs as candidates in the fix's own instructions instead, the
+  exactly the term replaces exactly that place, spelled exactly as listed ("iPhone" stays
+  "iPhone" at a sentence start). A place that overlaps a meant phrase of a learned
+  correction is never asked about (the chunk is already corrected, so with "clawed → cloud"
+  every "cloud" stays, as the guard keeps it); meetings leave out what the corrections
+  changed there. Told the pairs as candidates in the fix's own instructions instead, the
   model put "Claude" in 2 of 3 invented sentences about the cloud; asked this way it kept
   all 3 and put the term in the 2 where a coding assistant was talked to. Meetings:
   "Meeting word fixes" below.
@@ -875,7 +878,15 @@ words with the on-device model:
    real words by a term of the word list or a marked one (local "cloud", cloud "Claude"),
    the pair, without the neighbour a correction is learned with, is proposed and added as
    an often-heard-as word of that term instead of a correction; a pair with a word that is
-   not a real word stays a correction.
+   not a real word stays a correction. The longest listed term in the meant side is found
+   first ("cloud code" → "Claude Code" with only "Claude Code" listed), and a term's own
+   marks tell terms apart ("C#", "C++", ".NET"); the model's reply is compared the same way.
+8. *Recovery and journaled languages.* Recover counts a failed word-fix stage as unsettled
+   (it runs again once the files can be read). Languages asked for by name are journaled
+   for the transcript a fixed one stands for, so a later fix keeps answering them.
+9. *Known race (follow-up, shared with the languages stage).* A speaker edit saved to the
+   old head while the new transcript's speakers are being labelled is an edit of the
+   replaced labels: names carry over, turn-level changes do not (§4.14 step 6).
 
 ### Meetings
 
