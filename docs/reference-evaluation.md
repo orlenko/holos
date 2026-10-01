@@ -126,7 +126,8 @@ their answers at about 2,000 output tokens (8–11 minutes of speech). The
 
 ```sh
 voiceislocal eval cloud <session> [--model gpt-transcribe] [--tracks mic,system] [--vocabulary] [--timestamps] [--yes]
-voiceislocal eval compare <session> [--run <id>]
+voiceislocal eval local <session> [--language xx-YY] [--no-vocabulary] [--run <local run>]
+voiceislocal eval compare <session> [--run <id>] [--local current|latest|<local run>] [--raw]
 voiceislocal eval review <session> [--run <id>] [--no-open]
 voiceislocal eval apply <session> decisions.json [--add-corrections] [--add-vocabulary]
 voiceislocal eval list <session>
@@ -191,13 +192,35 @@ voiceislocal eval delete <session> (<run> | --all)
    beside them; a timed cloud word aligned with an echo word but said more
    than 1 s from it is a cloud-only word, not echo, kept in the order the
    cloud said it). Segments without a track count for the first track only. WER is
-   given against both sides, since neither is the truth yet.
+   given against both sides, since neither is the truth yet. The report leads
+   with the normalized WER (see "Fair comparison" below) and gives the raw
+   WER beside it; `--raw` makes the raw comparison the whole report (every
+   passage to review, no normalized scores).
    Differing passages are grouped as numbers, names and terms (a capital not
    at a sentence start, an acronym, letters mixed with digits), dropped or
-   added words, other word changes, and case or punctuation only. A segment
+   added words, other word changes, formatting only (the same words under the
+   normalized comparison), and case or punctuation only. A segment
    where the cloud has less than half the local words is flagged (the model may
-   have cut its answer). Output: `eval/compare/<run>/report.md` and
-   `report.json`.
+   have cut its answer), and so is a track with more echo words left out than
+   words kept ("unreliable: mostly echo": what is left of the microphone is
+   mostly what the echo filter missed, so its WER says little). The **Terms**
+   section counts, for each word-list term and each correction's meant phrase,
+   how often the cloud text has it (echo left out, also between its words;
+   in the normalized comparison fillers too: "New um York" is "New York")
+   and how often the local
+   transcript has the same words at the aligned position, as one unbroken
+   run (only echo between them, and in the normalized comparison fillers),
+   sorted by misses, with each
+   track's share (the microphone's count depends on the echo left out, which
+   differs between local transcripts): the number to follow from one
+   vocabulary to the next. Two numbers written with digits are never one
+   ("1 2" holds no "12", "phase one build 1 2" no "phase 1 build 12"). `--local` compares a
+   local candidate (`eval local`) instead of the current transcript, made
+   from the same audio bytes; a cloud run so old it kept no digest of its
+   segments' audio cannot be checked and is refused. Output:
+   `eval/compare/<run>/report.md` and `report.json` (a candidate's in
+   `eval/compare/<run>/<local run>/`); the report says which local transcript
+   and which vocabulary it compared.
 3. **review** writes `eval/review/<run>/review.html` with
    `review-audio/<track>.m4a` beside it and opens it. The page is
    self-contained and loads nothing from the network (its
@@ -214,12 +237,18 @@ voiceislocal eval delete <session> (<run> | --all)
    browser cannot store them (storage full or blocked) they stay in the page,
    are applied again on top of whatever another tab stores, and a warning
    says to export before closing (closing asks first). Case- and punctuation-only passages are left to
-   report.md. Delete Audio removes the page's audio copy. The page's audio is
+   report.md; formatting-only passages are hidden unless **Show
+   formatting-only differences** is ticked (hidden cards are skipped by
+   `j`/`k` and left out of the count). Review compares again first when the
+   comparison of the current transcript predates the normalized comparison.
+   Delete Audio removes the page's audio copy. The page's audio is
    written only when the track still renders to the samples the run sent
    (the same segment digests), so it never plays other audio than the cloud
    heard.
 4. **apply** checks that the decisions belong to this session, run, and
-   transcript revision, then writes `eval/gold/<run>.json`: each track's local
+   transcript revision (a comparison of a local candidate is refused), ignores
+   decisions on formatting-only passages (it says how many), then writes
+   `eval/gold/<run>.json`: each track's local
    words (echo left out) with every decided passage replaced by its final text,
    as timed pieces, with the transcript's spacing (where a decided text meets
    other script, or around an insertion or deletion, a space unless both
@@ -258,6 +287,132 @@ Jim. Other words: Kubernetes.` A words.json or corrections.json that cannot
 be read stops the run before anything is sent. A resumed run keeps the
 request it was planned with.
 
+### Fair comparison
+
+Many differences between the two transcripts are not recognition errors: a
+number written in digits on one side and in words on the other, a filler one
+side keeps and the other drops, a compound written as one word or as several.
+The normalized comparison (the default of `compare`) does not count them. It is
+used for the scores, the Terms section and the formatting-only mark only:
+passages, the review page and the gold keep the words as written.
+
+- **Numbers.** A run of words, however long, that spells a number is the same as that
+  number in digits, in English or French: cardinals ("three"/"3",
+  "twenty one"/"twenty-one"/"21", "a hundred"/"one hundred"/"100", "one
+  hundred and five", "fifteen hundred", "two thousand twenty six", years said
+  in halves such as "nineteen eighty four"; "vingt et un", "soixante-dix-sept",
+  "quatre-vingt-dix", "deux cents", "deux mille vingt-six"), ordinals
+  ("first"/"1st", "twenty first"/"21st"; "premier"/"1er", "deuxième"/"2e"), decimals
+  ("three point five"/"3.5"; "trois virgule cinq"/"3,5"), "plus" ("plus
+  30"/"+30") and percent ("thirty percent"/"30%", "pour cent"). Digits may
+  carry group commas ("1,000"/"1000"; "0,125" is a decimal); a minus, a currency, a time or a range
+  is compared as written. A spelled number is only the same as digits, never
+  as another spelled number, so "one" and "un", or "first" and "premier",
+  remain different words, and so do different numbers, a cardinal and an
+  ordinal ("first"/"1"), or a sign ("+30"/"30"). A spelled number is taken
+  whole: the words are first cut into maximal spelled-number runs (from the
+  left, the longest run that reads as one number, fillers inside left out,
+  never across a sentence mark such as "twenty. One"), and a spelled number
+  equals digits only as one whole run, never as its start, end or middle
+  ("twenty" in "twenty one" or in "one hundred and twenty", "one hundred" in
+  "one hundred and five"), also when the rest of the run lies just outside the
+  passage. So "twenty one" and "20 1" differ, and "one hundred and twenty" is
+  120, never 20. A run's number without the "plus" before it or the
+  "percent" after it is whole too ("thirty percent"/"30 percent"). A number
+  of several words matches one of several words on the other side too
+  ("thirty per cent"/"30 percent"), and digits with "per cent" or "pour cent"
+  are read before the spelled numbers inside them ("30 per cent" is 30%, its
+  "cent" no 100).
+- **Fillers.** um, uh, er, erm, hmm, mm, ah in an English meeting and euh,
+  heu, bah, hein in a French one (the local transcript's languages; none in
+  another language, where "er" or "um" are words), in any case, with the
+  sentence's punctuation around them, and drawn out ("ummm"), are left out on
+  both sides: they count neither as words nor as errors, and the report counts
+  them per side. A filler is never paired with a word the other side has.
+  "ben", "err", "uh-huh", "mhm" and "H&M" are words, and so is "mm" after a
+  number ("5 mm", "five mm", "one hundred and five mm": the word before ends a
+  spelled-number run).
+- **Compounds.** Two or three words whose letters and digits, joined, are the
+  one word on the other side, when that word shows the join: a capital inside
+  ("test flight"/"TestFlight", "chat GPT"/"ChatGPT"), a hyphen, dash, slash or
+  dot between letters ("follow up"/"follow-up"), letters with digits ("V
+  one"/"v1", "V twenty one"/"V21", never "V201": each run of spelled numbers
+  in digits), or capitals only against letters said one or two at a time ("A
+  P I"/"API"). A plain word shows nothing: "now here" and "nowhere", or
+  "check up" and "checkup", stay different. The joined words must hold a
+  letter ("1 5" and "15" differ), and two numbers never meet in one ("v1
+  2" and "v12" differ). Up to two fillers inside a joined number or
+  compound ("twenty um one"/"21") are left out as fillers.
+- **Case and punctuation** never count (as in the raw comparison).
+
+Each stretch of word passages of the raw alignment (runs of edits, with at
+most 2 matched words between two of them, and at most 400 steps), with the
+matched words at its edges that a number carries on from into it ("30" of
+"30 per cent" against "30 percent"; two stretches it then joins, as matched
+fillers inside "twenty um uh er one" leave them, are one), is aligned
+again this way: a minimum-edit alignment where a filler costs nothing to
+leave out and a number or compound run matches its other spelling at no cost
+(a stretch too long for that pairs its words in order). Its remaining edits
+make the normalized WER, so every normalized error is in a passage the review
+page shows (a word both sides have that is a filler on one side only, such as
+"mm" after "um" on one side and after "5" on the other, is part of a passage
+too); a passage none of whose words such an edit touches is formatting
+only (and none of a stretch's passages is when an edit falls on a matched
+word between them). Matched fillers are left out of the word counts too. In the Terms
+section, the normalized comparison also finds a term written with its numbers
+spelled the other way ("GPT four" for "GPT-4", "21" for "twenty one", "30%"
+for "thirty percent", as the numbers above), never starting or ending
+inside a spelled-number run, its "plus" and "percent" included ("V one
+hundred five" holds no "V100", "thirty percent" no "30") or a
+number written with digits and words ("version 30 percent" holds no "version
+30"), and never with a number both sides spell in other words ("version un"
+holds no "version one"; "version one" does). A number is never read across
+echo or a filler that ends a clause ("twenty", echo, "one" holds no "21").
+
+### Local candidates
+
+`voiceislocal eval local <session>` transcribes all of a session's saved audio
+again, track by track, with Apple's speech recognition as the post-processing
+languages stage does (final results only, `TrackReplayer` with the stop path's
+time limits), so a vocabulary change can be measured on the same meeting:
+`session recover --current-vocabulary` only transcribes the audio its saved
+live phrases do not cover. Nothing leaves the Mac.
+
+- **Languages:** meeting.json's languages, else the recording's locale, or
+  `--language` alone. With several, each track is transcribed in each language
+  and the transcriptions are merged as the languages stage merges them
+  (`LanguageMerge`, microphone echo of a call found in each). A language whose
+  speech model is not installed is refused before anything is saved.
+- **Vocabulary:** today's, as a meeting starting now would get it
+  (`RecognizerVocabulary.meeting`): the word list, then people's names, then
+  the words of your corrections for those languages, each once, at most 100
+  strings; `--no-vocabulary` gives it none. The exact strings are saved in
+  `run.json`.
+- **Text steps:** none. A meeting applies no text step after recognition
+  today (corrections, filler removal and spoken-code formatting are dictation
+  steps), so a candidate is what the recognizer returned.
+- **Output:** `eval/local/<local run>/run.json` (settings, vocabulary, each
+  track's audio fingerprint and the SHA-256 of its chunk files' bytes), `parts/<language>-<track>.json` (each track's
+  timed words, saved as soon as it is done; a track that heard no words once
+  its language has words on some track, since a language that recognized no
+  words on any track, while the meeting's transcript has some, fails and
+  saves nothing) and `transcript.json` once all
+  are in. The meeting's transcript, speaker labels, exports and
+  vocabulary.json are never changed.
+- **Resuming:** Ctrl-C stops; the same command resumes the newest unfinished
+  run with the same languages, vocabulary and audio, the chunk files' bytes
+  hashed again (or `--run`, which keeps the vocabulary that run started with
+  and refuses audio that changed) and transcribes only the tracks not
+  saved yet, and again a language whose saved tracks all heard no words when
+  the meeting's transcript now has some. It refuses a session that is recording or whose audio was
+  deleted.
+
+Then `voiceislocal eval compare <session> --local latest` compares it with the
+cloud run; its Terms section against the current transcript's is the before
+and after of the vocabulary. `eval list` shows local runs; `eval delete
+<session> <local run>` removes one and its comparisons. Review and apply work
+on the comparison of the current transcript only.
+
 Files, all in the session folder (`eval/` is removed with the session; Delete
 Audio removes `review-audio/`; temporary audio lives in `derived/eval-cloud/`
 and is removed when a command ends):
@@ -267,12 +422,15 @@ eval/cloud/<run>/run.json            plan, request fields (no key), progress
 eval/cloud/<run>/segments/<track>-<n>.json, raw/<track>-<n>.json
 eval/cloud/<run>/timestamps/…, raw-timestamps/…   with --timestamps
 eval/cloud/<run>/<track>.json        stitched track
+eval/local/<local run>/run.json, parts/<language>-<track>.json, transcript.json
 eval/compare/<run>/report.md, report.json
+eval/compare/<run>/<local run>/report.md, report.json
 eval/review/<run>/review.html, review-audio/<track>.m4a
 eval/gold/<run>.json
 ```
 
-Run IDs are `<model>-<UTC yyyyMMddTHHmmssZ>`.
+Run IDs are `<model>-<UTC yyyyMMddTHHmmssZ>`; local run IDs are
+`local-<UTC yyyyMMddTHHmmssZ>`.
 
 ### First check, 2026-09-29
 
