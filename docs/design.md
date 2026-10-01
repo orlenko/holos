@@ -305,7 +305,9 @@ session times. After the final/replayed transcript exists, `LiveHintStage` first
 ID and words, then the same-track words nearest those times, and publishes corrected text
 before ordinary word fixes and speaker alignment. The revision's `liveCorrectedFrom`
 keeps speaker mapping in the original word space even when its words have no measured
-times; automatic fixes retain both that lineage and the live-correction marks. After
+times; automatic fixes retain both that lineage and the live-correction marks. On a retry
+after automatic fixes already ran, the hint is first rebased onto their saved unfixed
+revision and those fixes are rebuilt on top. After
 alignment, a speaker hint names the machine speaker owning those words (or overlapping
 that time) before exports. A later Review rename, including clearing a name, wins over a
 live hint on later processing runs.

@@ -299,3 +299,37 @@ func aLaterPassRepairsLiveTextWhoseSpeakerHeadWasNotPublished() async throws {
     #expect(SessionFixtures.text(SessionPaths.export("txt", in: session)).contains("Ada"))
     #expect(try SessionArchive.readEvents(at: session).events.contains { $0.kind == MeetingEventKind.liveHintsApplied })
 }
+
+@Test(.timeLimit(.minutes(1))) func retryRebasesLiveHintsBeforeExistingAutomaticFixes() async throws {
+    let temp = try TemporaryDirectory()
+    defer { temp.remove() }
+    let segment = SessionFixtures.segment(["alpha", "beta", "wrong"], track: "mic", start: 2, id: "S1")
+    let original = SessionFixtures.transcript([segment], id: "original")
+    let session = try await SessionFixtures.makeSession(in: temp.url, mode: .inPerson, transcript: original)
+    try AtomicFile.write(Data("damaged".utf8), to: SessionPaths.liveHints(session))
+    let dependencies = WordFixDependencies(
+        corrections: { CorrectionList(entries: [.init(heard: "wrong", meant: "right")]) },
+        wordList: { WordList() }, model: { _ in .unavailable("off") })
+    let processor = MeetingPostProcessor(freeSpace: FixedFreeSpace(.max), wordFixes: dependencies)
+
+    let first = try await processor.run(session: session, lease: nil)
+    let fixedID = try #require(try SessionArchive.currentTranscriptID(at: session))
+    let fixed = try SessionFiles.transcript(id: fixedID, session: session)
+    #expect(first.state == .partial)
+    #expect(fixed.fixedFrom == original.id)
+    #expect(fixed.segments[0].text == "alpha beta right")
+
+    let live = hint(segment, words: 0..<2, action: .replaceText("one two three"), id: "late")
+    let sessionID = try SessionArchive.readManifest(at: session).id
+    try AtomicFile.writeJSON(LiveHintFile(sessionID: sessionID, hints: [live]),
+                             to: SessionPaths.liveHints(session))
+    let second = try await processor.run(session: session, lease: nil)
+    let finalID = try #require(try SessionArchive.currentTranscriptID(at: session))
+    let final = try SessionFiles.transcript(id: finalID, session: session)
+
+    #expect(second.state == .succeeded)
+    #expect(final.segments[0].text == "one two three right")
+    #expect(final.fixedFrom != fixed.id)
+    #expect(final.segments[0].fixes?.contains { $0.kind == .liveCorrection } == true)
+    #expect(final.segments[0].fixes?.contains { $0.kind == .correction } == true)
+}

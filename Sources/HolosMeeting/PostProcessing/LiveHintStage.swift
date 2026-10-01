@@ -32,7 +32,23 @@ enum LiveHintStage {
             return TextOutcome(transcript: transcript, hints: [],
                                problem: "Live corrections could not be read: \(error.localizedDescription)")
         }
-        let result = LiveHints.applyingText(hints, to: transcript)
+        // A retry may arrive after an earlier pass fixed words while the sidecar was unreadable. Live hints belong
+        // before automatic fixes, so rebase them onto that pass's unfixed revision; the word-fix stage then rebuilds
+        // its result from the live-corrected base instead of replacing the new correction from stale `fixedFrom`.
+        let base: Transcript
+        if let id = transcript.fixedFrom {
+            do {
+                base = try SessionFiles.transcript(id: id, session: session)
+            } catch {
+                return TextOutcome(
+                    transcript: transcript, hints: hints,
+                    problem: "Live corrections could not be rebased onto the transcript before word fixes: "
+                        + error.localizedDescription)
+            }
+        } else {
+            base = transcript
+        }
+        let result = LiveHints.applyingText(hints, to: base)
         guard result.applied > 0 else {
             let problem = result.unmatched > 0
                 ? "\(result.unmatched) live text \(result.unmatched == 1 ? "correction could" : "corrections could") not be matched to the final transcript."
