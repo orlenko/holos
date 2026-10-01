@@ -20,6 +20,49 @@ enum SessionWordFixRevert {
         }
     }
 
+    /// Finishes the only partial state `run` can leave: the reverted transcript is current but the preceding head
+    /// still points at `expectedTranscriptID`. The old head remains the authoritative copy of every speaker edit, so
+    /// rebuild and publish its retargeted replacement instead of adopting or relabelling the stale snapshot.
+    static func repairCurrentHead(session: URL, expectedTranscriptID: String, expectedRunID: String,
+                                  now: Date = Date()) async throws {
+        let lease = try SessionArchive.acquireProcessingLease(at: session)
+        defer { lease.release() }
+        try await lease.withUse(for: session) {
+            let archive = try SessionArchive.openForMaintenance(at: session, lease: lease)
+            do {
+                try await SessionArchive.withSpeakerLockAsync(at: session) {
+                    guard let current = try SessionFiles.currentTranscript(session: session),
+                          current.id != expectedTranscriptID,
+                          current.segments.contains(where: {
+                              ($0.fixes ?? []).contains { $0.kind == .reviewRevert }
+                          }) else {
+                        throw HolosError.invalidInput("The reverted transcript is no longer current.")
+                    }
+                    guard let head = try SpeakerAnalysis.headState(session: session, transcript: current) else {
+                        throw HolosError.invalidInput("The speaker head to repair is missing.")
+                    }
+                    if head.sameTranscript { return }
+                    guard head.runID == expectedRunID else {
+                        throw HolosError.invalidInput("The speaker labels changed while they were being repaired.")
+                    }
+                    let snapshot = try SpeakerSessionSnapshot.load(session: session)
+                    guard snapshot.transcript.id == expectedTranscriptID,
+                          let plan = try SpeakerTranscriptRetarget.plan(session: session, from: snapshot,
+                                                                       to: current, now: now) else {
+                        throw HolosError.invalidInput("The speaker labels cannot be repaired on the reverted words.")
+                    }
+                    try Task.checkCancellation()
+                    try SpeakerTranscriptRetarget.stage(plan, session: session)
+                    try SpeakerTranscriptRetarget.publishHead(plan, session: session, now: now)
+                }
+                await archive.releaseLock()
+            } catch {
+                await archive.releaseLock()
+                throw error
+            }
+        }
+    }
+
     private static func publish(session: URL, word: WordRef, expectedTranscriptID: String, expectedRunID: String,
                                 lease: ProcessingLease, now: Date) async throws {
         let archive = try SessionArchive.openForMaintenance(at: session, lease: lease)

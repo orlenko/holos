@@ -920,7 +920,7 @@ words with the on-device model:
    The review window's relabels (`--keep-transcript`) never run it. Automatic processing
    leaves a transcript with edited speaker labels alone. A named, unforced `fix-words`
    instead creates an immutable run for the new transcript, maps every machine turn by word
-   timing (or by an order-preserving word difference for an untimed segment, whose estimated
+   timing (or by each fix's original-word provenance for an untimed segment, whose estimated
    times move when its word count changes), and replays the effective edit journal (including splits, assignments, merges,
    names, links, rejections and enrollment exclusions); it does not diarize again. `--force`
    labels speakers again instead (names carry over). Without the model,
@@ -937,7 +937,10 @@ words with the on-device model:
    the current immutable speaker run to the new word positions, and replays its effective
    edit journal without diarizing; other word fixes and speaker edits stay. A hidden
    `reviewRevert` mark protects that decision from automatic word-fix passes (including Label
-   Speakers); an explicitly requested `session fix-words` checks all words again.
+   Speakers); an explicitly requested `session fix-words` checks all words again. If the
+   transcript pointer is saved but publishing its mapped speaker head fails, Review retries
+   that publication from the still-current old head; a later automatic pass does the same
+   before it may relabel or export.
 7. *Evaluation.* `eval apply --add-vocabulary`: where a reviewed passage replaced local
    real words by a term of the word list or a marked one (local "cloud", cloud "Claude"),
    the pair, without the neighbour a correction is learned with, is proposed and added as

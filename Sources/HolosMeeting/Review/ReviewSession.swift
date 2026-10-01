@@ -1094,12 +1094,19 @@ public struct ReviewWord: Sendable, Equatable {
             case .failure(let error):
                 if error is CancellationError { throw error }
                 if error is SessionWordFixRevert.IncompletePublication {
+                    let repair = await Self.detachedResult {
+                        try await SessionWordFixRevert.repairCurrentHead(
+                            session: session, expectedTranscriptID: transcriptID, expectedRunID: runID)
+                    }
                     do {
+                        try repair.get()
                         let fresh = try await loadSnapshot()
-                        guard fresh.projection != nil else {
+                        guard fresh.projection != nil, !fresh.transcriptChanged else {
                             throw HolosError.unavailable("The new speaker head is incomplete.")
                         }
                         adopt(fresh, op: nil, matching: nil, external: true)
+                        changesSaved(exportsWritten: false)
+                        return
                     } catch let reread {
                         holdUnreread(matching: nil, problem: "The word fix was reverted, but the window could not "
                                      + "reread the speaker labels: \(reread.localizedDescription)")

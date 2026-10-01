@@ -381,6 +381,47 @@ func aFailedPreservedHeadStopsBeforeRelabelling() async throws {
 }
 
 @Test(.timeLimit(.minutes(1)))
+func automaticProcessingRepairsAReviewRevertWhoseHeadWasNotPublished() async throws {
+    let temp = try TemporaryDirectory("word-fixes")
+    defer { temp.remove() }
+    let (session, _) = try await wordFixSession(in: temp.url)
+    let dependencies = wordFixDependencies(model: .available(WordFixModel().model))
+    _ = try await wordFixProcessor(dependencies).run(session: session, lease: nil)
+    let fixed = try wordFixCurrent(session)
+    let oldHead = try #require(try SessionSpeakerStore.readHead(session: session))
+    try SessionFixtures.appendEdits([.rename(speakerID: "mic:S1", name: "Alice")], session: session)
+    let segment = try #require(fixed.segments.first { segment in
+        (segment.fixes ?? []).contains { $0.kind == .correction }
+    })
+    let mark = try #require(segment.fixes?.first { $0.kind == .correction })
+
+    await #expect(throws: SessionWordFixRevert.IncompletePublication.self) {
+        try await SpeakerTranscriptRetarget.$beforePublishHead.withValue({
+            throw HolosError.io("head is read-only")
+        }) {
+            try await SessionWordFixRevert.run(
+                session: session, word: WordRef(segmentID: segment.id, word: mark.first),
+                expectedTranscriptID: fixed.id, expectedRunID: oldHead.runID)
+        }
+    }
+    let reverted = try wordFixCurrent(session)
+    #expect(reverted.segments.contains { ($0.fixes ?? []).contains { $0.kind == .reviewRevert } })
+    #expect(try SessionSpeakerStore.readHead(session: session) == oldHead)
+
+    let repaired = try await wordFixProcessor(
+        .none, diarizer: FakeDiarizer(outputs: [:], error: .unavailable("Speaker labelling must not run."))
+    ).run(session: session, lease: nil)
+    #expect(wordFixOutcome(repaired)?.result == .skipped)
+    #expect(wordFixOutcome(repaired)?.message == WordFixStage.reviewRevert)
+    #expect(repaired.stages.last { $0.stage == .export }?.result == .succeeded)
+    #expect(try SessionSpeakerStore.readHead(session: session)?.runID != oldHead.runID)
+    let view = try SessionFixtures.view(session)
+    #expect(view.transcriptID == reverted.id)
+    #expect(view.speakers.contains { $0.name == "Alice" },
+            "A later automatic pass repairs the edited head instead of relabelling.")
+}
+
+@Test(.timeLimit(.minutes(1)))
 func cancellationAfterPreservingTheHeadStillRefreshesExports() async throws {
     let temp = try TemporaryDirectory("word-fixes")
     defer { temp.remove() }

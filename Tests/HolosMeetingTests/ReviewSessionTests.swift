@@ -154,6 +154,59 @@ func reviewRevertsOneWordFixAndKeepsSpeakerEdits() async throws {
             "Automatic post-processing does not reapply a fix rejected in Review.")
 }
 
+@Test(.timeLimit(.minutes(1)))
+func aFailedReviewRevertHeadCanBeRepublishedFromTheOldEditedHead() async throws {
+    let temp = try TemporaryDirectory("review")
+    defer { temp.remove() }
+    let (session, oldRun) = try await reviewCustomSession(in: temp, turns: [
+        ReviewTurnSpec(speaker: "system:S1", start: 0, seconds: 3, words: ["ask", "cloud", "now"]),
+    ])
+    let base = try #require(try SessionFiles.currentTranscript(session: session))
+    var working = try #require(WordFixes.Working(base.segments[0]))
+    working = WordFixes.applying(
+        WordFixes.corrections(in: working,
+                              list: CorrectionList(entries: [Correction(heard: "cloud", meant: "Claude")])),
+        to: working)
+    var fixed = base
+    fixed.id = UUID().uuidString
+    fixed.fixedFrom = base.id
+    fixed.segments[0] = WordFixes.finished(working, segment: base.segments[0])
+    try await SessionFixtures.saveTranscript(fixed, in: session)
+    var fixedRun = oldRun
+    fixedRun.id = UUID().uuidString
+    fixedRun.transcriptID = fixed.id
+    try SessionArchive.withSpeakerLock(at: session) {
+        try SessionSpeakerStore.writeRun(fixedRun, session: session)
+        try SessionSpeakerStore.writeHead(SpeakerHead(runID: fixedRun.id), session: session)
+    }
+    try SessionFixtures.appendEdits([.rename(speakerID: "system:S1", name: "Alice")], session: session)
+    let mark = try #require(fixed.segments[0].fixes?.first)
+
+    await #expect(throws: SessionWordFixRevert.IncompletePublication.self) {
+        try await SpeakerTranscriptRetarget.$beforePublishHead.withValue({
+            throw HolosError.io("head is read-only")
+        }) {
+            try await SessionWordFixRevert.run(
+                session: session, word: WordRef(segmentID: fixed.segments[0].id, word: mark.first),
+                expectedTranscriptID: fixed.id, expectedRunID: fixedRun.id)
+        }
+    }
+
+    let reverted = try #require(try SessionFiles.currentTranscript(session: session))
+    #expect(reverted.id != fixed.id)
+    #expect(reverted.segments[0].fixes?.contains { $0.kind == .reviewRevert } == true)
+    #expect(try SessionSpeakerStore.readHead(session: session)?.runID == fixedRun.id,
+            "The transcript pointer moved before the injected head-write failure.")
+
+    try await SessionWordFixRevert.repairCurrentHead(
+        session: session, expectedTranscriptID: fixed.id, expectedRunID: fixedRun.id)
+    let repaired = try SpeakerSessionSnapshot.load(session: session)
+    #expect(!repaired.transcriptChanged && repaired.transcript.id == reverted.id)
+    #expect(repaired.run?.id != fixedRun.id)
+    #expect(repaired.projection?.speakers.first { $0.id == "system:S1" }?.name == "Alice",
+            "Repair replays the effective edit journal instead of dropping it.")
+}
+
 @Test(.timeLimit(.minutes(1))) @MainActor
 func nextUncertainWrapsInTimeOrder() async throws {
     let temp = try TemporaryDirectory("review")

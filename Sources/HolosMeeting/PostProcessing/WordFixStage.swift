@@ -129,8 +129,16 @@ enum WordFixStage {
         if !request.requested, current.segments.contains(where: {
             ($0.fixes ?? []).contains { $0.kind == .reviewRevert }
         }) {
-            recorder.end(.wordFixes, .skipped, reviewRevert, since: started)
-            return unchanged
+            do {
+                let repaired = try await repairPreservedHeadIfNeeded(current, request: request)
+                recorder.end(.wordFixes, .skipped, reviewRevert, since: started)
+                return Outcome(transcript: current, labelsPreserved: repaired)
+            } catch let error where !(error is CancellationError) {
+                let problem = "The reverted words were saved, but publication was incomplete: the speaker head "
+                    + "could not be published: \(error.localizedDescription)"
+                recorder.end(.wordFixes, .failed, problem, since: started)
+                return Outcome(transcript: current, problem: problem, speakerHeadIncomplete: true)
+            }
         }
 
         // Do not spend model work on a result that cannot be published. This is checked again after the work and

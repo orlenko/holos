@@ -154,10 +154,20 @@ private func pairs(_ entries: [(String, String)]) -> CorrectionList {
 }
 
 @Test func untimedRemappingKeepsUnchangedWordOwnership() throws {
-    let old = WordTiming.effectiveWords(of: TranscriptSegment(start: 0, end: 6, text: "a b c d e f"))
-    let new = WordTiming.effectiveWords(of: TranscriptSegment(start: 0, end: 6, text: "ab c d e f"))
+    let old = TranscriptSegment(start: 0, end: 6, text: "a b c d e f")
+    let new = TranscriptSegment(start: 0, end: 6, text: "ab c d e f",
+                                fixes: [TranscriptWordFix(first: 0, end: 1, heard: "a b", kind: .correction)])
 
-    #expect(try SpeakerTranscriptRetarget.owners(from: old, to: new) == [0, 2, 3, 4, 5])
+    #expect(try SpeakerTranscriptRetarget.owners(from: old, to: new, commonBase: true) == [0, 2, 3, 4, 5])
+}
+
+@Test func untimedRemappingUsesFixProvenanceBesideADuplicate() throws {
+    let old = TranscriptSegment(start: 0, end: 3, text: "one two three")
+    let new = TranscriptSegment(start: 0, end: 3, text: "two two three",
+                                fixes: [TranscriptWordFix(first: 0, end: 1, heard: "one", kind: .correction)])
+
+    #expect(try SpeakerTranscriptRetarget.owners(from: old, to: new, commonBase: true) == [0, 1, 2],
+            "The replacement belongs to the first original word, not the identical unchanged word beside it.")
 }
 
 // MARK: - Recovery

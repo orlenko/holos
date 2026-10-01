@@ -89,9 +89,12 @@ enum SpeakerTranscriptRetarget {
     }
 
     /// New-word ownership in the old word space. Recognizer timings are stable across a word fix, but estimated
-    /// timings are redistributed when the number of words changes; those use the collection difference so unchanged
-    /// words keep their identities and only each changed run is apportioned among the old words it replaced.
-    static func owners(from old: [EffectiveWord], to new: [EffectiveWord]) throws -> [Int] {
+    /// timings are redistributed when the number of words changes. Those use each fix's original-word provenance;
+    /// comparing text is ambiguous when the replacement also occurs beside it ("one two" -> "two two").
+    static func owners(from oldSegment: TranscriptSegment, to newSegment: TranscriptSegment,
+                       commonBase: Bool) throws -> [Int] {
+        let old = WordTiming.effectiveWords(of: oldSegment)
+        let new = WordTiming.effectiveWords(of: newSegment)
         guard !old.isEmpty || new.isEmpty else {
             throw HolosError.invalidInput("The fixed transcript added words to an empty segment.")
         }
@@ -105,45 +108,89 @@ enum SpeakerTranscriptRetarget {
                 } ?? 0
             }
         }
-
-        let difference = new.map(\.text).difference(from: old.map(\.text))
-        var removed = Set<Int>()
-        var inserted = Set<Int>()
-        for change in difference {
-            switch change {
-            case .remove(let offset, _, _): removed.insert(offset)
-            case .insert(let offset, _, _): inserted.insert(offset)
-            }
-        }
-        let keptOld = old.indices.filter { !removed.contains($0) }
-        let keptNew = new.indices.filter { !inserted.contains($0) }
-        guard keptOld.count == keptNew.count else {
+        guard commonBase else {
             throw HolosError.invalidInput("The fixed transcript's words cannot be mapped to the speaker labels.")
         }
-        var result = Array(repeating: -1, count: new.count)
-        for (newIndex, oldIndex) in zip(keptNew, keptOld) { result[newIndex] = oldIndex }
-        var start = 0
-        while start < result.count {
-            guard result[start] < 0 else { start += 1; continue }
-            var end = start + 1
-            while end < result.count, result[end] < 0 { end += 1 }
-            let oldStart = start > 0 ? result[start - 1] + 1 : 0
-            let oldEnd = end < result.count ? result[end] : old.count
-            if oldStart < oldEnd {
-                for index in start..<end {
-                    let offset = (index - start) * (oldEnd - oldStart) / (end - start)
-                    result[index] = oldStart + min(offset, oldEnd - oldStart - 1)
-                }
-            } else if start > 0 {
-                for index in start..<end { result[index] = result[start - 1] }
-            } else if end < result.count {
-                for index in start..<end { result[index] = result[end] }
-            } else {
+
+        let oldOrigins = try origins(of: oldSegment)
+        let newOrigins = try origins(of: newSegment)
+        guard oldOrigins.baseWords == newOrigins.baseWords else {
+            throw HolosError.invalidInput("The fixed transcript's words cannot be mapped to the speaker labels.")
+        }
+        return try newOrigins.words.map { word in
+            guard let owner = oldOrigins.words.indices.max(by: { left, right in
+                originScore(oldOrigins.words[left], for: word, index: left)
+                    < originScore(oldOrigins.words[right], for: word, index: right)
+            }), overlap(oldOrigins.words[owner], word) > 0 else {
                 throw HolosError.invalidInput("The fixed transcript's words cannot be mapped to the speaker labels.")
             }
-            start = end
+            return owner
         }
-        return result
+    }
+
+    private struct Origin {
+        var start: Double
+        var end: Double
+    }
+
+    /// Every effective word's interval in the unfixed segment's word space. Automatic marks say how many original
+    /// words their replacement consumed; a Review-revert mark already contains those original words again.
+    private static func origins(of segment: TranscriptSegment) throws -> (words: [Origin], baseWords: Int) {
+        let count = WordTiming.effectiveWords(of: segment).count
+        let fixes = (segment.fixes ?? []).sorted { ($0.first, $0.end) < ($1.first, $1.end) }
+        var result: [Origin] = []
+        var current = 0
+        var original = 0
+        func appendUnchanged(_ amount: Int) {
+            for offset in 0..<amount {
+                result.append(Origin(start: Double(original + offset), end: Double(original + offset + 1)))
+            }
+        }
+        for fix in fixes {
+            guard fix.first >= current, fix.first < fix.end, fix.end <= count else {
+                throw HolosError.invalidInput("The fixed transcript's word provenance is invalid.")
+            }
+            let unchanged = fix.first - current
+            appendUnchanged(unchanged)
+            current += unchanged
+            original += unchanged
+
+            let replacementCount = fix.end - fix.first
+            let originalCount: Int
+            switch fix.kind {
+            case .correction, .term:
+                originalCount = WordFixes.tokens(of: Array(fix.heard.utf16)).count
+            case .reviewRevert:
+                originalCount = replacementCount
+            default:
+                throw HolosError.invalidInput("The fixed transcript has unknown word-fix provenance.")
+            }
+            guard originalCount > 0 else {
+                throw HolosError.invalidInput("The fixed transcript's word provenance is invalid.")
+            }
+            for offset in 0..<replacementCount {
+                result.append(Origin(
+                    start: Double(original) + Double(offset * originalCount) / Double(replacementCount),
+                    end: Double(original) + Double((offset + 1) * originalCount) / Double(replacementCount)))
+            }
+            current = fix.end
+            original += originalCount
+        }
+        appendUnchanged(count - current)
+        original += count - current
+        guard result.count == count else {
+            throw HolosError.invalidInput("The fixed transcript's word provenance is invalid.")
+        }
+        return (result, original)
+    }
+
+    private static func overlap(_ left: Origin, _ right: Origin) -> Double {
+        max(0, min(left.end, right.end) - max(left.start, right.start))
+    }
+
+    private static func originScore(_ old: Origin, for new: Origin, index: Int) -> (Double, Double, Int) {
+        let distance = abs((old.start + old.end) / 2 - (new.start + new.end) / 2)
+        return (overlap(old, new), -distance, -index)
     }
 
     private static func score(_ old: EffectiveWord, for new: EffectiveWord, middle: Double, index: Int)
@@ -164,6 +211,8 @@ enum SpeakerTranscriptRetarget {
         var segments: [String: Segment]
 
         init(from old: Transcript, to new: Transcript) throws {
+            let oldBase = old.fixedFrom ?? old.id
+            let newBase = new.fixedFrom ?? new.id
             let oldSegments = Dictionary(old.segments.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
             var mapped: [String: Segment] = [:]
             for segment in new.segments {
@@ -176,7 +225,8 @@ enum SpeakerTranscriptRetarget {
                       newWords.allSatisfy({ $0.start.isFinite && $0.end.isFinite }) else {
                     throw HolosError.invalidInput("The transcript has unusable word timing, so speaker labels cannot be kept.")
                 }
-                let owner = try SpeakerTranscriptRetarget.owners(from: oldWords, to: newWords)
+                let owner = try SpeakerTranscriptRetarget.owners(from: before, to: segment,
+                                                                 commonBase: oldBase == newBase)
                 mapped[segment.id] = Segment(old: oldWords, new: newWords, owner: owner)
             }
             guard Set(mapped.keys) == Set(oldSegments.keys) else {
