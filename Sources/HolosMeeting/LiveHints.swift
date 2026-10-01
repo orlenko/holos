@@ -160,6 +160,10 @@ public enum LiveHintStore {
               hint.heard.utf8.count <= 16_384 else {
             throw HolosError.invalidInput("That live correction is empty or too long.")
         }
+        if case .replaceText(let text) = hint.action,
+           !text.contains(where: { $0.isLetter || $0.isNumber }) {
+            throw HolosError.invalidInput("A live text correction must contain a word or number.")
+        }
         guard let learned = hint.learned else { return }
         guard learned.count <= maximumLearnedCorrections,
               learned.allSatisfy({ correction in
@@ -174,9 +178,11 @@ public enum LiveHintStore {
     }
 }
 
-/// Reconciles live hints with the final transcript. IDs win when their recorded words still agree; otherwise the
-/// same words on the same track nearest the recorded time win, so replay and language segmentation may replace IDs.
+/// Reconciles live hints with the final transcript. IDs win when their recorded words still agree; otherwise nearby
+/// same-track words win, so replay and language segmentation may replace IDs without matching a distant occurrence.
 public enum LiveHints {
+    private static let maximumReplayMatchGap = 1.0
+
     public struct TextOutcome: Sendable, Equatable {
         public var transcript: Transcript
         public var applied: Int
@@ -332,8 +338,10 @@ public enum LiveHints {
                 let end = words[range.upperBound - 1].end
                 let overlap = max(0, min(end, hint.end) - max(start, hint.start))
                 let distance = abs((start + end) / 2 - (hint.start + hint.end) / 2)
-                candidates.append((Match(segment: segmentIndex, words: range, start: start, end: end),
-                                   segment.id == hint.segmentID && range == hint.firstWord..<hint.endWord,
+                let exactID = segment.id == hint.segmentID && range == hint.firstWord..<hint.endWord
+                let gap = max(0, max(hint.start - end, start - hint.end))
+                guard exactID || gap <= maximumReplayMatchGap else { continue }
+                candidates.append((Match(segment: segmentIndex, words: range, start: start, end: end), exactID,
                                    overlap, distance))
             }
         }

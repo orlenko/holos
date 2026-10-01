@@ -302,8 +302,9 @@ event journal. Post-processing seals the sidecar under the same lock used by wri
 a late modal save is either included in its final snapshot or refused rather than silently
 omitted. Each hint carries the finalized segment ID, track, word range, words, and
 session times. After the final/replayed transcript exists, `LiveHintStage` first uses the
-ID and words, then the same-track words nearest those times, and publishes corrected text
-before ordinary word fixes and speaker alignment. The revision's `liveCorrectedFrom`
+ID and words, then the same-track words overlapping or at most one second from those
+times, and publishes corrected text before ordinary word fixes and speaker alignment.
+The revision's `liveCorrectedFrom`
 keeps speaker mapping in the original word space even when its words have no measured
 times; automatic fixes retain both that lineage and the live-correction marks. On a retry
 after automatic fixes already ran, the hint is first rebased onto their saved unfixed

@@ -93,6 +93,21 @@ private func hint(_ segment: TranscriptSegment, words: Range<Int>, action: LiveH
     #expect(outcome.transcript.segments.map(\.text) == ["send the deck", "share the doc"])
 }
 
+@Test func replayedLiveTextHintMatchesOnlyTheSameWordsNearTheirRecordedTime() {
+    let live = SessionFixtures.segment(["send", "the", "deck"], track: "system", start: 120, id: "live")
+    let nearby = SessionFixtures.segment(["send", "the", "deck"], track: "system", start: 121.9, id: "nearby")
+    let far = SessionFixtures.segment(["send", "the", "deck"], track: "system", start: 5, id: "replayed")
+    let liveHint = hint(live, words: 0..<3, action: .replaceText("share the doc"), id: "H3")
+    let nearOutcome = LiveHints.applyingText([liveHint], to: SessionFixtures.transcript([nearby]))
+    let farOutcome = LiveHints.applyingText([liveHint], to: SessionFixtures.transcript([far]))
+
+    #expect(nearOutcome.applied == 1)
+    #expect(nearOutcome.transcript.segments[0].text == "share the doc")
+    #expect(farOutcome.applied == 0)
+    #expect(farOutcome.unmatched == 1)
+    #expect(farOutcome.transcript.segments[0].text == "send the deck")
+}
+
 @Test func alreadyVisibleLiveTextHintGetsProvenanceOnceAndBlocksAutomaticFixes() async throws {
     let live = SessionFixtures.segment(["send", "the", "deck"], track: "system", start: 2, id: "live")
     let corrected = SessionFixtures.segment(["share", "the", "doc"], track: "system", start: 2, id: "final")
@@ -225,6 +240,18 @@ private func hint(_ segment: TranscriptSegment, words: Range<Int>, action: LiveH
     copied.sessionID = "ANOTHER-SESSION"
     try AtomicFile.writeJSON(copied, to: SessionPaths.liveHints(session))
     #expect(throws: HolosError.self) { try LiveHintStore.read(session: session) }
+}
+
+@Test func liveHintStoreRejectsATextReplacementWithNoWords() async throws {
+    let temp = try TemporaryDirectory()
+    defer { temp.remove() }
+    let session = try await SessionFixtures.makeSession(in: temp.url, transcript: SessionFixtures.transcript([]))
+    let segment = SessionFixtures.segment(["aside"], track: "mic", start: 1, id: "S1")
+
+    #expect(throws: HolosError.self) {
+        try LiveHintStore.append(hint(segment, words: 0..<1, action: .replaceText("—")), session: session)
+    }
+    #expect(try LiveHintStore.read(session: session).hints.isEmpty)
 }
 
 @Test func liveParagraphShowsSavedTextAndSpeakerName() {
