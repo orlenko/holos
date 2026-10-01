@@ -76,16 +76,7 @@ public enum EvalTerms {
     }
 
     static func joinedKey(_ text: String) -> String {
-        EvalText.tokens(text).map(EvalText.key).reduce("") { joined, key in joining(joined, key) }
-    }
-
-    /// Where a digit ends one word and a digit starts the next, the words stay two numbers once joined: "1 2" is
-    /// never "12" (as `NormalizedAlignment.compoundForms` never makes "12" of "one two").
-    static let numberSeam = "\u{2}"
-
-    /// `joined` and `key` as one, with `numberSeam` between them where two digits meet.
-    static func joining(_ joined: String, _ key: String) -> String {
-        joined.last?.isNumber == true && key.first?.isNumber == true ? joined + numberSeam + key : joined + key
+        EvalText.tokens(text).map(EvalText.key).reduce("", NormalizedAlignment.joining)
     }
 
     /// Where `term` (its keys joined) is written in `keys`, as whole words: runs of words whose keys joined are the
@@ -217,7 +208,7 @@ public enum EvalTerms {
             while end < keys.count, joined.count < longestForm
                 || (hasNumber && (units < unitCap
                                   || (end > start && numbers?.run(at: end)?.contains(end - 1) == true))) {
-                joined = joining(joined, keys[end])
+                joined = NormalizedAlignment.joining(joined, keys[end])
                 // A new unit, unless this word goes on the spelled-number run of the one before.
                 if end == start || numbers?.run(at: end)?.contains(end - 1) != true { units += 1 }
                 if let numbers {

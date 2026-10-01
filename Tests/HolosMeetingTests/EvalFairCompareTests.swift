@@ -801,3 +801,10 @@ private func fairHits(_ term: String, in text: String) -> [String] {
     #expect(result.normalized.edits == 0 && result.normalization.numbers == 1)
     #expect(result.passages.allSatisfy { $0.formattingOnly })
 }
+
+@Test func fairCompoundTermsKeepTwoNumbersApart() {
+    #expect(fairHits("phase one build 1 2", in: "on phase 1 build 12").isEmpty)
+    #expect(fairHits("phase one build 12", in: "on phase 1 build 12") == ["1/1"])
+    #expect(!NormalizedAlignment.compoundForms(["v1", "2"]).contains("v12"))
+    #expect(NormalizedAlignment.align(["v1", "2"], ["v12"]).contains { $0.isEdit })
+}

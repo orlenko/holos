@@ -214,7 +214,7 @@ voiceislocal eval delete <session> (<run> | --all)
    track's share (the microphone's count depends on the echo left out, which
    differs between local transcripts): the number to follow from one
    vocabulary to the next. Two numbers written with digits are never one
-   ("1 2" holds no "12"). `--local` compares a
+   ("1 2" holds no "12", "phase one build 1 2" no "phase 1 build 12"). `--local` compares a
    local candidate (`eval local`) instead of the current transcript, made
    from the same audio bytes; a cloud run so old it kept no digest of its
    segments' audio cannot be checked and is refused. Output:
@@ -340,7 +340,8 @@ passages, the review page and the gold keep the words as written.
   in digits), or capitals only against letters said one or two at a time ("A
   P I"/"API"). A plain word shows nothing: "now here" and "nowhere", or
   "check up" and "checkup", stay different. The joined words must hold a
-  letter ("1 5" and "15" differ). Up to two fillers inside a joined number or
+  letter ("1 5" and "15" differ), and two numbers never meet in one ("v1
+  2" and "v12" differ). Up to two fillers inside a joined number or
   compound ("twenty um one"/"21") are left out as fillers.
 - **Case and punctuation** never count (as in the raw comparison).
 

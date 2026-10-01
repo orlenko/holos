@@ -693,10 +693,19 @@ public enum NormalizedAlignment {
         }
     }
 
+    /// Where a digit ends one word and a digit starts the next, the words stay two numbers once joined: "1 2" is
+    /// never "12", nor "v1 2" "v12" (as "one two" is never "12").
+    static let numberSeam = "\u{2}"
+
+    /// `joined` and `key` as one, with `numberSeam` between them where two digits meet.
+    static func joining(_ joined: String, _ key: String) -> String {
+        joined.last?.isNumber == true && key.first?.isNumber == true ? joined + numberSeam + key : joined + key
+    }
+
     /// `compoundForms` with where each form's spelled numbers are.
     static func compoundReadings(_ words: [String], numbers: Bool = true) -> [CompoundForm] {
         let keys = words.map(EvalText.key)
-        var forms = [CompoundForm(text: keys.joined())]
+        var forms = [CompoundForm(text: keys.reduce("", joining))]
         let runs = numbers ? EvalNormalization.SpelledRuns(words, fillers: []).runs : []
         if !runs.isEmpty {
             var digits = ""
@@ -706,7 +715,7 @@ public enum NormalizedAlignment {
             var runIndex = 0
             while index < words.count {
                 guard runIndex < runs.count, runs[runIndex].lowerBound == index else {
-                    digits += keys[index]; index += 1
+                    digits = joining(digits, keys[index]); index += 1
                     continue
                 }
                 let run = runs[runIndex]
