@@ -185,6 +185,12 @@ public enum LiveHints {
         }
         for hint in textHints {
             guard case .replaceText(let replacement) = hint.action else { continue }
+            if let found = match(hint, in: result, text: replacement),
+               let range = characterRange(found.words, in: result.segments[found.segment]),
+               text(in: range, of: result.segments[found.segment]) == replacement {
+                already += 1
+                continue
+            }
             if let found = match(hint, in: result, text: hint.heard),
                let working = WordFixes.Working(result.segments[found.segment], preservingExistingFixes: true),
                let range = characterRange(found.words, in: result.segments[found.segment]) {
@@ -198,8 +204,6 @@ public enum LiveHints {
                 } else {
                     unmatched += 1
                 }
-            } else if match(hint, in: result, text: replacement) != nil {
-                already += 1
             } else {
                 unmatched += 1
             }
@@ -271,6 +275,10 @@ public enum LiveHints {
         guard range.lowerBound >= 0, range.lowerBound < range.upperBound,
               range.upperBound <= segment.text.utf16.count else { return nil }
         return range
+    }
+
+    private static func text(in range: Range<Int>, of segment: TranscriptSegment) -> String {
+        String(decoding: Array(segment.text.utf16)[range], as: UTF16.self)
     }
 
     private static func turnScore(_ turn: ProjectedTurn, refs: Set<WordRef>, hint: LiveHint)

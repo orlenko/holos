@@ -82,6 +82,22 @@ private func hint(_ segment: TranscriptSegment, words: Range<Int>, action: LiveH
     #expect(outcome.transcript.id == "current")
 }
 
+@Test func normalizedEquivalentLiveHintIsAlreadyAppliedOnLaterRuns() {
+    for (index, example) in [("claude", "Claude"), ("hello", "hello!")].enumerated() {
+        let segment = SessionFixtures.segment([example.0, "again"], track: "mic", start: 2,
+                                              id: "S\(index)")
+        let live = hint(segment, words: 0..<1, action: .replaceText(example.1), id: "H\(index)")
+        let first = LiveHints.applyingText([live], to: SessionFixtures.transcript([segment]))
+        let second = LiveHints.applyingText([live], to: first.transcript)
+
+        #expect(first.applied == 1)
+        #expect(second.applied == 0)
+        #expect(second.alreadyApplied == 1)
+        #expect(second.unmatched == 0)
+        #expect(second.transcript.id == first.transcript.id)
+    }
+}
+
 @Test func repeatedEditOfOneLivePhraseKeepsTheOriginalProvenance() {
     let segment = SessionFixtures.segment(["send", "the", "deck"], track: "system", start: 2, id: "live")
     let first = hint(segment, words: 0..<3, action: .replaceText("share the doc"), id: "H1")
