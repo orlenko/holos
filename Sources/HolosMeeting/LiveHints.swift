@@ -22,16 +22,18 @@ public struct LiveHint: Codable, Sendable, Equatable, Identifiable {
     public var end: Double
     public var heard: String
     public var action: Action
-    /// Correction-list rules this live edit actually added. Nil is an older hint that did not record ownership;
-    /// treating it as none keeps an identical rule that may have predated the edit.
+    /// Correction-list rules this version of the live edit confirms.
     public var learned: [Correction]?
+    /// Rules this hint first introduced to the correction list. Historical ownership is retained so reconciliation
+    /// can remove a managed rule only after no latest live edit still confirms it.
+    public var owned: [Correction]?
 
     public init(id: String = UUID().uuidString, at: Date = Date(), segmentID: String, track: String,
                 firstWord: Int, endWord: Int, start: Double, end: Double, heard: String, action: Action,
-                learned: [Correction]? = nil) {
+                learned: [Correction]? = nil, owned: [Correction]? = nil) {
         self.id = id; self.at = at; self.segmentID = segmentID; self.track = track
         self.firstWord = firstWord; self.endWord = endWord; self.start = start; self.end = end
-        self.heard = heard; self.action = action; self.learned = learned
+        self.heard = heard; self.action = action; self.learned = learned; self.owned = owned
     }
 }
 
@@ -92,10 +94,11 @@ public enum LiveHintStore {
         }
     }
 
-    /// Records which global correction rules an already-saved hint actually added. This follows `append` because
-    /// the timed edit is useful even when learning fails. A crash between the two writes conservatively leaves nil,
-    /// so a later edit will keep rather than delete a possibly pre-existing rule.
-    public static func recordLearned(_ learned: [Correction], for hintID: String, session: URL) throws {
+    /// Records the rules an already-saved hint confirms and which of them first became live-managed. This follows
+    /// `append` because the timed edit is useful even when learning fails. A crash between the two writes leaves both
+    /// nil, conservatively claiming neither a dependency nor ownership of a possibly pre-existing rule.
+    public static func recordLearning(_ learned: [Correction], owned: [Correction],
+                                      for hintID: String, session: URL) throws {
         let url = SessionPaths.liveHints(session)
         try CorrectionList.withFileLock(for: url) {
             var file = try read(session: session)
@@ -103,6 +106,7 @@ public enum LiveHintStore {
                 throw HolosError.invalidInput("That live correction is no longer in this meeting.")
             }
             file.hints[index].learned = learned
+            file.hints[index].owned = owned
             try validate(file.hints[index])
             let data = try HolosJSON.encoder().encode(file)
             guard data.count <= maximumBytes else {
@@ -164,16 +168,17 @@ public enum LiveHintStore {
            !text.contains(where: { $0.isLetter || $0.isNumber }) {
             throw HolosError.invalidInput("A live text correction must contain a word or number.")
         }
-        guard let learned = hint.learned else { return }
-        guard learned.count <= maximumLearnedCorrections,
-              learned.allSatisfy({ correction in
-                  correction.heard.contains(where: { !$0.isWhitespace })
-                      && correction.meant.contains(where: { !$0.isWhitespace })
-                      && correction.heard != correction.meant
-                      && correction.heard.utf8.count <= 16_384
-                      && correction.meant.utf8.count <= 16_384
-              }) else {
-            throw HolosError.invalidInput("That live correction has invalid learned rules.")
+        for rules in [hint.learned, hint.owned].compactMap({ $0 }) {
+            guard rules.count <= maximumLearnedCorrections,
+                  rules.allSatisfy({ correction in
+                      correction.heard.contains(where: { !$0.isWhitespace })
+                          && correction.meant.contains(where: { !$0.isWhitespace })
+                          && correction.heard != correction.meant
+                          && correction.heard.utf8.count <= 16_384
+                          && correction.meant.utf8.count <= 16_384
+                  }) else {
+                throw HolosError.invalidInput("That live correction has invalid learned rules.")
+            }
         }
     }
 }
@@ -182,6 +187,16 @@ public enum LiveHintStore {
 /// same-track words win, so replay and language segmentation may replace IDs without matching a distant occurrence.
 public enum LiveHints {
     private static let maximumReplayMatchGap = 1.0
+
+    public struct CorrectionLearningState: Sendable, Equatable {
+        public var previous: [Correction]
+        public var other: [Correction]
+        public var managed: [Correction]
+
+        public init(previous: [Correction] = [], other: [Correction] = [], managed: [Correction] = []) {
+            self.previous = previous; self.other = other; self.managed = managed
+        }
+    }
 
     public struct TextOutcome: Sendable, Equatable {
         public var transcript: Transcript
@@ -207,14 +222,28 @@ public enum LiveHints {
         }?.heard ?? hint.heard
     }
 
-    /// Rules the last text edit of this same timed phrase actually added. Older hints did not record this field;
-    /// returning none for them avoids claiming and later deleting a rule that may have existed beforehand.
-    public static func learnedCorrections(for hint: LiveHint, among hints: [LiveHint]) -> [Correction] {
-        hints.last { candidate in
-            guard case .replaceText = candidate.action else { return false }
-            return candidate.segmentID == hint.segmentID && candidate.track == hint.track
-                && candidate.firstWord == hint.firstWord && candidate.endWord == hint.endWord
-        }?.learned ?? []
+    /// The global-learning state before another edit of `hint`: what its prior version confirmed, what every other
+    /// latest phrase still confirms, and every rule historical live edits are allowed to remove. Hints from the first
+    /// ownership build stored owned rules in `learned`; a missing `owned` field treats those rules as both facts.
+    public static func correctionLearningState(for hint: LiveHint, among hints: [LiveHint])
+        -> CorrectionLearningState {
+        struct Latest {
+            var index: Int
+            var learned: [Correction]
+        }
+        let target = phraseKey(hint)
+        var latest: [String: Latest] = [:]
+        var managed: [Correction] = []
+        for (index, candidate) in hints.enumerated() {
+            guard case .replaceText = candidate.action else { continue }
+            if let learned = candidate.learned {
+                latest[phraseKey(candidate)] = Latest(index: index, learned: learned)
+            }
+            managed += candidate.owned ?? candidate.learned ?? []
+        }
+        let previous = latest[target]?.learned ?? []
+        let other = latest.filter { $0.key != target }.values.sorted { $0.index < $1.index }.flatMap(\.learned)
+        return CorrectionLearningState(previous: previous, other: other, managed: unique(managed))
     }
 
     public static func applyingText(_ hints: [LiveHint], to transcript: Transcript,
@@ -427,6 +456,15 @@ public enum LiveHints {
         let overlap = max(0, min(turn.end, hint.end) - max(turn.start, hint.start))
         let distance = abs((turn.start + turn.end) / 2 - (hint.start + hint.end) / 2)
         return (words, overlap, -distance)
+    }
+
+    private static func phraseKey(_ hint: LiveHint) -> String {
+        "\(hint.segmentID):\(hint.track):\(hint.firstWord):\(hint.endWord)"
+    }
+
+    private static func unique(_ corrections: [Correction]) -> [Correction] {
+        var seen: Set<Correction> = []
+        return corrections.filter { seen.insert($0).inserted }
     }
 
     private static func tokens(_ text: String) -> [String] {

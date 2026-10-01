@@ -625,7 +625,8 @@ Still requiring real-machine or user-data validation:
   most 500 per run).
 - Live transcript: selecting a finalized phrase while recording can correct its text or name
   its speaker. The app saves a timed hint, carries text into the final/replayed transcript,
-  learns safe correction pairs, and applies speaker names after diarization before export.
+  learns safe correction pairs, keeps a shared pair until the last confirming live edit is
+  undone, and applies speaker names after diarization before export.
   The first one or two volatile words of a microphone echo can show briefly (the echo rule
   needs a run of three words), and an echo heard before the system track's words arrive
   shows until they do.

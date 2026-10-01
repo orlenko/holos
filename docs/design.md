@@ -296,7 +296,10 @@ which (like scrolling back down, or End) follows again (`LiveFollow`).
 
 Selecting one finalized phrase while recording enables **Correct Text…** and **Name
 Speaker…**. Text corrections appear in the live view at once; safe small mishearing pairs
-are also learned in `corrections.json` for later dictations and meetings. Both actions are
+are also learned in `corrections.json` for later dictations and meetings. Re-editing a
+phrase reconciles the rules learned by all live edits: a shared rule remains while any
+latest phrase still confirms it, and a matching rule that predated live editing is never
+claimed or removed. Both actions are
 saved atomically in the session's `live-hints.json`, independently of the recorder-owned
 event journal. Post-processing seals the sidecar under the same lock used by writers, so
 a late modal save is either included in its final snapshot or refused rather than silently

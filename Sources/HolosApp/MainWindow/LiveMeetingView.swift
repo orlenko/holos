@@ -11,7 +11,8 @@ struct LiveMeetingHeader: Equatable {
 }
 
 struct LiveTextLearning {
-    var owned: [Correction] = []
+    var learned: [Correction]?
+    var owned: [Correction]?
     var problem: String?
 }
 
@@ -28,9 +29,9 @@ final class LiveMeetingViewController: NSViewController, NSTextViewDelegate {
     let sessionID: String
     private let onBack: () -> Void
     private let onOpenFinished: () -> Void
-    /// Replaces the safe correction pairs owned by the prior edit. Arguments are those owned rules, the original
-    /// recognizer text, and the new text. The result records what this edit owns and why only the timed hint was saved.
-    private let onLearnText: ([Correction], String, String) -> LiveTextLearning
+    /// Reconciles safe correction pairs with the latest live edits. Arguments are the saved learning state, original
+    /// recognizer text, and new text. The result records what this edit confirms and newly owns.
+    private let onLearnText: (LiveHints.CorrectionLearningState, String, String) -> LiveTextLearning
     private var reader: LiveTranscriptReader
     private var header = LiveMeetingHeader(name: "", phase: .starting, detail: "")
     private var paragraphs: [LiveParagraph] = []
@@ -56,7 +57,9 @@ final class LiveMeetingViewController: NSViewController, NSTextViewDelegate {
     private let editStatus = NSTextField(labelWithString: "")
 
     init(sessionID: String, directory: URL, onBack: @escaping () -> Void, onOpenFinished: @escaping () -> Void,
-         onLearnText: @escaping ([Correction], String, String) -> LiveTextLearning = { _, _, _ in .init() }) {
+         onLearnText: @escaping (LiveHints.CorrectionLearningState, String, String) -> LiveTextLearning = {
+             _, _, _ in .init()
+         }) {
         self.sessionID = sessionID
         self.onBack = onBack
         self.onOpenFinished = onOpenFinished
@@ -374,21 +377,24 @@ final class LiveMeetingViewController: NSViewController, NSTextViewDelegate {
         let corrected = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !corrected.isEmpty, corrected != target.hint.heard else { return }
         let originalHeard = LiveHints.originalHeard(for: target.hint, among: reader.hints)
-        let previouslyLearned = LiveHints.learnedCorrections(for: target.hint, among: reader.hints)
+        let learningState = LiveHints.correctionLearningState(for: target.hint, among: reader.hints)
         var hint = target.hint
         hint.id = UUID().uuidString
         hint.at = Date()
         hint.action = .replaceText(corrected)
         hint.learned = nil
+        hint.owned = nil
         guard save(hint, success: "Text correction saved") else { return }
-        let learning = onLearnText(previouslyLearned, originalHeard, corrected)
+        let learning = onLearnText(learningState, originalHeard, corrected)
         var problems: [String] = []
         if let problem = learning.problem { problems.append("could not learn it: \(problem)") }
-        do {
-            try LiveHintStore.recordLearned(learning.owned, for: hint.id, session: reader.session)
-            refresh()
-        } catch {
-            problems.append("could not record which correction rules it owns: \(error.localizedDescription)")
+        if let learned = learning.learned, let owned = learning.owned {
+            do {
+                try LiveHintStore.recordLearning(learned, owned: owned, for: hint.id, session: reader.session)
+                refresh()
+            } catch {
+                problems.append("could not record its correction rules: \(error.localizedDescription)")
+            }
         }
         if !problems.isEmpty {
             editStatus.stringValue = "Timed correction saved; " + problems.joined(separator: "; ")

@@ -99,26 +99,29 @@ public struct CorrectionList: Codable, Sendable, Equatable {
         entries.removeAll { $0 == correction }
     }
 
-    /// Replaces the exact rules this edit owned before with the rules its current version can add. Exact removal
-    /// leaves a rule the person changed meanwhile alone; rules whose result the remaining list already supplies stay
-    /// implicit and are not returned as owned. `add` keeps the usual one-rule-per-heard-phrase behavior. In
-    /// particular, changing A→B back to A removes an A→B rule the edit added, but never an identical rule that was
-    /// already in the list before the edit.
+    /// Reconciles rules introduced by live editing with the rules its latest edits still confirm. `managed` is every
+    /// exact rule a live edit has introduced; removing those first lets the desired rules be rebuilt in edit order.
+    /// A desired rule already supplied by an unrelated, pre-existing entry stays implicit. The returned rules are
+    /// newly managed ones, excluding rules already recorded in `managed`, so later reconciliation can distinguish a
+    /// pre-existing rule from one live editing may remove when its last dependent edit is undone.
     @discardableResult
-    public mutating func replaceLearned(_ previous: [Correction], with current: [Correction]) -> [Correction] {
-        for correction in previous { remove(correction) }
-        var owned: [Correction] = []
-        for correction in current {
-            let normalized = Correction(
-                heard: correction.heard.trimmingCharacters(in: .whitespacesAndNewlines),
-                meant: correction.meant.trimmingCharacters(in: .whitespacesAndNewlines))
-            guard !normalized.heard.isEmpty, !normalized.meant.isEmpty,
-                  normalized.heard != normalized.meant,
-                  apply(to: normalized.heard) != normalized.meant else { continue }
-            add(normalized)
-            owned.append(normalized)
+    public mutating func reconcileLearned(_ managed: [Correction], with desired: [Correction]) -> [Correction] {
+        let managed = managed.compactMap(Self.storedCorrection)
+        for correction in managed { remove(correction) }
+        let alreadyManaged = Set(managed)
+        var introduced: [Correction] = []
+        for correction in desired.compactMap(Self.storedCorrection) {
+            guard apply(to: correction.heard) != correction.meant else { continue }
+            add(correction)
+            if !alreadyManaged.contains(correction) { introduced.append(correction) }
         }
-        return owned
+        return introduced.filter(entries.contains)
+    }
+
+    private static func storedCorrection(_ correction: Correction) -> Correction? {
+        let heard = correction.heard.trimmingCharacters(in: .whitespacesAndNewlines)
+        let meant = correction.meant.trimmingCharacters(in: .whitespacesAndNewlines)
+        return !heard.isEmpty && !meant.isEmpty && heard != meant ? Correction(heard: heard, meant: meant) : nil
     }
 
     /// Other entries `replace(_:with:)` would drop because they have the same heard phrase as `new`.

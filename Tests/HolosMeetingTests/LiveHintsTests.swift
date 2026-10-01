@@ -179,11 +179,13 @@ private func hint(_ segment: TranscriptSegment, words: Range<Int>, action: LiveH
     var first = hint(segment, words: 0..<3, action: .replaceText("share the doc"), id: "H1")
     let owned = Correction(heard: "send the deck", meant: "share the doc")
     first.learned = [owned]
+    first.owned = [owned]
     var second = first
     second.id = "H2"
     second.heard = "share the doc"
     second.action = .replaceText("share this document")
     second.learned = nil
+    second.owned = nil
     let transcript = SessionFixtures.transcript([segment])
     let outcome = LiveHints.applyingText([first, second], to: transcript)
 
@@ -193,7 +195,37 @@ private func hint(_ segment: TranscriptSegment, words: Range<Int>, action: LiveH
         TranscriptWordFix(first: 0, end: 3, heard: "send the deck", kind: .liveCorrection),
     ])
     #expect(LiveHints.originalHeard(for: second, among: [first]) == "send the deck")
-    #expect(LiveHints.learnedCorrections(for: second, among: [first]) == [owned])
+    #expect(LiveHints.correctionLearningState(for: second, among: [first])
+        == .init(previous: [owned], managed: [owned]))
+}
+
+@Test func correctionLearningStateKeepsSharedRulesUntilTheLastPhraseReleasesThem() {
+    let firstSegment = SessionFixtures.segment(["send", "the", "deck"], track: "mic", start: 2, id: "S1")
+    let secondSegment = SessionFixtures.segment(["send", "the", "deck"], track: "mic", start: 8, id: "S2")
+    let shared = Correction(heard: "send the deck", meant: "share the doc")
+    var first = hint(firstSegment, words: 0..<3, action: .replaceText("share the doc"), id: "H1")
+    first.learned = [shared]
+    first.owned = [shared]
+    var second = hint(secondSegment, words: 0..<3, action: .replaceText("share the doc"), id: "H2")
+    second.learned = [shared]
+    second.owned = []
+
+    #expect(LiveHints.correctionLearningState(for: first, among: [first, second])
+        == .init(previous: [shared], other: [shared], managed: [shared]))
+
+    var failedFirst = first
+    failedFirst.id = "H-failed"
+    failedFirst.learned = nil
+    failedFirst.owned = nil
+    #expect(LiveHints.correctionLearningState(for: first, among: [first, second, failedFirst])
+        == .init(previous: [shared], other: [shared], managed: [shared]))
+
+    var releasedFirst = first
+    releasedFirst.id = "H3"
+    releasedFirst.learned = []
+    releasedFirst.owned = []
+    #expect(LiveHints.correctionLearningState(for: second, among: [first, second, releasedFirst])
+        == .init(previous: [shared], managed: [shared]))
 }
 
 @Test func repeatedLiveEditMatchesAnIntermediateReplayAndKeepsOriginalProvenance() {
@@ -247,8 +279,9 @@ private func hint(_ segment: TranscriptSegment, words: Range<Int>, action: LiveH
     let owned = Correction(heard: "hello", meant: "hullo")
 
     try LiveHintStore.append(first, session: session)
-    try LiveHintStore.recordLearned([owned], for: first.id, session: session)
+    try LiveHintStore.recordLearning([owned], owned: [owned], for: first.id, session: session)
     first.learned = [owned]
+    first.owned = [owned]
     try LiveHintStore.append(second, session: session)
     #expect(try LiveHintStore.read(session: session).hints == [first, second])
 
