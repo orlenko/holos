@@ -80,7 +80,8 @@ public enum WordFixes {
 
     /// `working` with `replacements` made. A replacement must cover part of at least one word; it takes the whole
     /// words it touches (in a timed segment), whose time span its new words share evenly. One that touches no word,
-    /// overlaps an earlier replacement, or touches a fix already made is left out, as is one with nothing but spaces.
+    /// overlaps an earlier replacement, or touches a fix already made is left out. Only a live correction may be
+    /// empty: that is one piece of a nonempty correction distributed across a replay segment boundary.
     public static func applying(_ replacements: [Replacement], to working: Working) -> Working {
         let utf16 = Array(working.text.utf16)
         let timed = !working.words.isEmpty
@@ -101,7 +102,8 @@ public enum WordFixes {
         for replacement in ordered {
             let range = replacement.range
             guard range.lowerBound >= 0, range.upperBound <= utf16.count, !range.isEmpty,
-                  replacement.text.contains(where: { !$0.isWhitespace }) else { continue }
+                  replacement.kind == .liveCorrection
+                    || replacement.text.contains(where: { !$0.isWhitespace }) else { continue }
             let touched = wordRanges.indices.filter { wordRanges[$0].overlaps(range) }
             guard let first = touched.first, let last = touched.last else { continue }
             // A timed segment's replaced words are replaced whole; an untimed one's text is replaced as matched.
@@ -149,8 +151,10 @@ public enum WordFixes {
             text += new
             let heard = replacement.heard ?? String(decoding: utf16[replacement.range], as: UTF16.self)
             let markStart = start + leading.count
-            marks.append(Working.Mark(range: markStart..<(markStart + replacement.text.utf16.count), heard: heard,
-                                      kind: replacement.kind))
+            if !replacement.text.isEmpty {
+                marks.append(Working.Mark(range: markStart..<(markStart + replacement.text.utf16.count), heard: heard,
+                                          kind: replacement.kind))
+            }
             if timed {
                 let replaced = working.words[region.words]
                 let from = replaced.first?.start ?? 0

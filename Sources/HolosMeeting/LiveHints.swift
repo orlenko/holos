@@ -215,10 +215,18 @@ public enum LiveHints {
     }
 
     struct Match: Sendable, Equatable {
-        var segment: Int
-        var words: Range<Int>
+        struct Part: Sendable, Equatable {
+            var segment: Int
+            var words: Range<Int>
+            var tokenCount: Int
+        }
+
+        var parts: [Part]
         var start: Double
         var end: Double
+
+        var segment: Int { parts[0].segment }
+        var words: Range<Int> { parts[0].words }
     }
 
     private struct LocatedMatch {
@@ -294,11 +302,17 @@ public enum LiveHints {
         for edit in textHints {
             let hint = edit.hint
             guard case .replaceText(let replacement) = hint.action else { continue }
-            let replacementFound = locatedMatch(hint, in: result, text: replacement).flatMap { found in
-                characterRange(found.match.words, matching: replacement,
-                               in: result.segments[found.match.segment]).flatMap { range in
+            let replacementFound: (found: LocatedMatch, range: Range<Int>?)?
+            replacementFound = locatedMatch(hint, in: result, text: replacement).flatMap { found in
+                if found.match.parts.count > 1 {
+                    return displayedText(of: found.match, matching: replacement, in: result)
+                        == collapsedWhitespace(replacement)
+                        ? (found: found, range: nil) : nil
+                }
+                return characterRange(found.match.words, matching: replacement,
+                                      in: result.segments[found.match.segment]).flatMap { range in
                     text(in: range, of: result.segments[found.match.segment]) == replacement
-                        ? (found: found, range: range) : nil
+                        ? (found: found, range: Optional(range)) : nil
                 }
             }
             // Recovery may already contain an intermediate state (A→B→C replayed from B). Prefer the most
@@ -319,10 +333,33 @@ public enum LiveHints {
             }
             if let replacementFound, !heardIsStronger {
                 let found = replacementFound.found.match
-                let range = replacementFound.range
+                if found.parts.count > 1 {
+                    guard let marked = applyingAcrossSegments(found, replacement: replacement,
+                                                              matchedText: replacement,
+                                                              provenance: hint.heard, to: result,
+                                                              markingOnly: true) else {
+                        unmatched += 1
+                        continue
+                    }
+                    if marked != result {
+                        result = marked
+                        applied += 1
+                    } else {
+                        already += 1
+                    }
+                    continue
+                }
+                guard let range = replacementFound.range else {
+                    unmatched += 1
+                    continue
+                }
                 let segment = result.segments[found.segment]
                 guard var working = WordFixes.Working(segment, preservingExistingFixes: true) else {
                     unmatched += 1
+                    continue
+                }
+                if working.marks.contains(where: { $0.range == range && $0.kind == .liveCorrection }) {
+                    already += 1
                     continue
                 }
                 // Replay may independently produce the text the person requested. It still needs live provenance:
@@ -341,7 +378,17 @@ public enum LiveHints {
                 continue
             }
             // Keep the first heard form as the single collapsed mark's provenance.
-            if let heardFound,
+            if let heardFound, heardFound.found.match.parts.count > 1 {
+                if let changed = applyingAcrossSegments(heardFound.found.match, replacement: replacement,
+                                                        matchedText: heardFound.heard,
+                                                        provenance: hint.heard, to: result,
+                                                        markingOnly: false), changed != result {
+                    result = changed
+                    applied += 1
+                } else {
+                    unmatched += 1
+                }
+            } else if let heardFound,
                let working = WordFixes.Working(result.segments[heardFound.found.match.segment],
                                                preservingExistingFixes: true),
                let range = characterRange(heardFound.found.match.words, matching: heardFound.heard,
@@ -389,7 +436,9 @@ public enum LiveHints {
             }
             let found = match(hint, in: transcript, text: hint.heard)
             let refs: Set<WordRef> = found.map { item in
-                Set(item.words.map { WordRef(segmentID: transcript.segments[item.segment].id, word: $0) })
+                Set(item.parts.flatMap { part in
+                    part.words.map { WordRef(segmentID: transcript.segments[part.segment].id, word: $0) }
+                })
             } ?? []
             let candidates = projection.turns.filter { $0.track == hint.track && $0.speakerID != nil }
             let turn = candidates.max { left, right in
@@ -423,30 +472,57 @@ public enum LiveHints {
         let wanted = tokens(text)
         guard !wanted.isEmpty else { return nil }
         var candidates: [LocatedMatch] = []
-        for (segmentIndex, segment) in transcript.segments.enumerated() where (segment.track ?? "mic") == hint.track {
+        struct Location {
+            var segment: Int
+            var word: Int
+            var token: String
+            var start: Double
+            var end: Double
+        }
+        var locations: [Location] = []
+        for (segmentIndex, segment) in transcript.segments.enumerated()
+            where (segment.track ?? "mic") == hint.track {
             let words = WordTiming.effectiveWords(of: segment)
-            let comparable: [(word: Int, token: String)] = words.enumerated().compactMap { index, word in
+            locations += words.enumerated().compactMap { index, word in
                 let token = normalized(word.text)
-                return token.isEmpty ? nil : (index, token)
+                return token.isEmpty ? nil : Location(segment: segmentIndex, word: index, token: token,
+                                                       start: word.start, end: word.end)
             }
-            guard comparable.count >= wanted.count else { continue }
-            for first in 0...(comparable.count - wanted.count) {
-                let matched = comparable[first..<(first + wanted.count)]
-                guard matched.map(\.token) == wanted,
-                      let firstWord = matched.first?.word,
-                      let lastWord = matched.last?.word else { continue }
-                let range = firstWord..<(lastWord + 1)
-                let start = words[range.lowerBound].start
-                let end = words[range.upperBound - 1].end
-                let overlap = max(0, min(end, hint.end) - max(start, hint.start))
-                let distance = abs((start + end) / 2 - (hint.start + hint.end) / 2)
-                let exactID = segment.id == hint.segmentID && range == hint.firstWord..<hint.endWord
-                let gap = max(0, max(hint.start - end, start - hint.end))
-                guard exactID || gap <= maximumReplayMatchGap else { continue }
-                candidates.append(LocatedMatch(
-                    match: Match(segment: segmentIndex, words: range, start: start, end: end),
-                    exactID: exactID, overlap: overlap, distance: distance))
+        }
+        guard locations.count >= wanted.count else { return nil }
+        for first in 0...(locations.count - wanted.count) {
+            let matched = Array(locations[first..<(first + wanted.count)])
+            guard matched.map(\.token) == wanted else { continue }
+            var parts: [Match.Part] = []
+            var crossesDistantBoundary = false
+            var previousLocation: Location?
+            for location in matched {
+                if let last = parts.last, last.segment == location.segment {
+                    parts[parts.count - 1].words = last.words.lowerBound..<(location.word + 1)
+                    parts[parts.count - 1].tokenCount += 1
+                } else {
+                    if let previous = previousLocation, previous.segment != location.segment,
+                       max(0, location.start - previous.end) > maximumReplayMatchGap {
+                        crossesDistantBoundary = true
+                    }
+                    parts.append(.init(segment: location.segment, words: location.word..<(location.word + 1),
+                                       tokenCount: 1))
+                }
+                previousLocation = location
             }
+            guard !crossesDistantBoundary,
+                  let firstLocation = matched.first, let lastLocation = matched.last else { continue }
+            let start = firstLocation.start
+            let end = lastLocation.end
+            let overlap = max(0, min(end, hint.end) - max(start, hint.start))
+            let distance = abs((start + end) / 2 - (hint.start + hint.end) / 2)
+            let exactID = parts.count == 1
+                && transcript.segments[parts[0].segment].id == hint.segmentID
+                && parts[0].words == hint.firstWord..<hint.endWord
+            let gap = max(0, max(hint.start - end, start - hint.end))
+            guard exactID || gap <= maximumReplayMatchGap else { continue }
+            candidates.append(LocatedMatch(match: Match(parts: parts, start: start, end: end),
+                                           exactID: exactID, overlap: overlap, distance: distance))
         }
         return candidates.max { $1.isPreferred(over: $0) }
     }
@@ -502,6 +578,91 @@ public enum LiveHints {
             }
         }
         return expandedLower.utf16Offset(in: segment.text)..<expandedUpper.utf16Offset(in: segment.text)
+    }
+
+    private static func applyingAcrossSegments(_ match: Match, replacement: String, matchedText: String,
+                                               provenance: String,
+                                               to transcript: Transcript,
+                                               markingOnly: Bool) -> Transcript? {
+        guard match.parts.count > 1 else { return nil }
+        let weights = match.parts.map(\.tokenCount)
+        let replacements = divided(replacement, weights: weights)
+        let matchedPieces = divided(matchedText, weights: weights)
+        let provenances = divided(provenance, weights: weights)
+        guard replacements.count == match.parts.count, matchedPieces.count == match.parts.count,
+              provenances.count == match.parts.count else { return nil }
+        var result = transcript
+        for index in match.parts.indices {
+            let part = match.parts[index]
+            let segment = result.segments[part.segment]
+            guard var working = WordFixes.Working(segment, preservingExistingFixes: true),
+                  let range = characterRange(part.words, matching: matchedPieces[index], in: segment) else {
+                return nil
+            }
+            let heard = provenances[index].isEmpty ? text(in: range, of: segment) : provenances[index]
+            if markingOnly {
+                guard collapsedWhitespace(text(in: range, of: segment))
+                    == collapsedWhitespace(replacements[index]) else { return nil }
+                if working.marks.contains(where: { $0.range == range && $0.kind == .liveCorrection }) {
+                    continue
+                }
+                working.marks.removeAll { $0.range.overlaps(range) }
+                if !replacements[index].isEmpty {
+                    working.marks.append(.init(range: range, heard: heard, kind: .liveCorrection))
+                    working.marks.sort { $0.range.lowerBound < $1.range.lowerBound }
+                }
+            } else {
+                working.marks.removeAll { $0.range.overlaps(range) }
+                working = WordFixes.applying([
+                    .init(range: range, text: replacements[index], kind: .liveCorrection, heard: heard),
+                ], to: working)
+            }
+            result.segments[part.segment] = WordFixes.finished(working, segment: segment)
+        }
+        return result
+    }
+
+    /// Divides a phrase among the matched segment pieces without splitting a token. When the replacement has fewer
+    /// tokens than pieces, later pieces are deleted; the complete live edit still contains at least one token.
+    private static func divided(_ phrase: String, weights: [Int]) -> [String] {
+        let words = phrase.split(whereSeparator: \.isWhitespace).map(String.init)
+        guard !weights.isEmpty, weights.allSatisfy({ $0 > 0 }) else { return [] }
+        var result: [String] = []
+        var word = 0
+        var weight = 0
+        let totalWeight = weights.reduce(0, +)
+        for index in weights.indices {
+            weight += weights[index]
+            let ideal = index == weights.count - 1
+                ? words.count
+                : Int((Double(words.count * weight) / Double(totalWeight)).rounded())
+            let minimum = words.count >= weights.count ? word + 1 : word
+            let remainingMinimum = words.count >= weights.count ? weights.count - index - 1 : 0
+            let bounded = min(words.count - remainingMinimum, max(minimum, ideal))
+            result.append(words[word..<bounded].joined(separator: " "))
+            word = bounded
+        }
+        return result
+    }
+
+    private static func displayedText(of match: Match, matching displayed: String,
+                                      in transcript: Transcript) -> String? {
+        let displayedPieces = divided(displayed, weights: match.parts.map(\.tokenCount))
+        guard displayedPieces.count == match.parts.count else { return nil }
+        let pieces = match.parts.indices.compactMap { index in
+            let part = match.parts[index]
+            return characterRange(part.words, matching: displayedPieces[index],
+                                  in: transcript.segments[part.segment]).map {
+                text(in: $0, of: transcript.segments[part.segment])
+            }
+        }
+        guard pieces.count == match.parts.count else { return nil }
+        return pieces.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .joined(separator: " ")
+    }
+
+    private static func collapsedWhitespace(_ value: String) -> String {
+        value.split(whereSeparator: \.isWhitespace).joined(separator: " ")
     }
 
     private static func isBoundaryMark(_ character: Character) -> Bool {

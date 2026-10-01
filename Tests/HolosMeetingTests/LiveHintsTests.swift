@@ -129,6 +129,50 @@ private func hint(_ segment: TranscriptSegment, words: Range<Int>, action: LiveH
     ])
 }
 
+@Test func liveTextHintSurvivesALanguageBoundaryInsideItsPhrase() {
+    let live = SessionFixtures.segment(["please", "send", "the", "latest", "deck"],
+                                       track: "mic", start: 2, id: "live")
+    let first = LanguageMerge.piece(of: live, first: 0, end: 3, language: "en-CA")
+    let second = LanguageMerge.piece(of: live, first: 3, end: 5, language: "fr-CA")
+    let hint = hint(live, words: 1..<5, action: .replaceText("share this doc."), id: "H1")
+
+    let applied = LiveHints.applyingText([hint], to: SessionFixtures.transcript([first, second]))
+    let repeated = LiveHints.applyingText([hint], to: applied.transcript)
+
+    #expect(applied.applied == 1)
+    #expect(applied.unmatched == 0)
+    #expect(applied.transcript.segments.map(\.id) == ["live/0", "live/3"])
+    #expect(applied.transcript.segments.map(\.language) == ["en-CA", "fr-CA"])
+    #expect(applied.transcript.segments.map(\.text) == ["please share this ", "doc."])
+    #expect(applied.transcript.segments[0].fixes == [
+        TranscriptWordFix(first: 1, end: 3, heard: "send the", kind: .liveCorrection),
+    ])
+    #expect(applied.transcript.segments[1].fixes == [
+        TranscriptWordFix(first: 0, end: 1, heard: "latest deck", kind: .liveCorrection),
+    ])
+    #expect(repeated.applied == 0)
+    #expect(repeated.alreadyApplied == 1)
+    #expect(repeated.unmatched == 0)
+    #expect(repeated.transcript == applied.transcript)
+}
+
+@Test func shorterLiveReplacementCanConsumeAWholeLanguagePiece() {
+    let live = SessionFixtures.segment(["turn", "this", "into", "summary"], track: "mic", start: 2, id: "live")
+    let first = LanguageMerge.piece(of: live, first: 0, end: 2, language: "en-CA")
+    let second = LanguageMerge.piece(of: live, first: 2, end: 4, language: "fr-CA")
+    let hint = hint(live, words: 0..<4, action: .replaceText("summary"), id: "H1")
+
+    let applied = LiveHints.applyingText([hint], to: SessionFixtures.transcript([first, second]))
+    let repeated = LiveHints.applyingText([hint], to: applied.transcript)
+
+    #expect(applied.applied == 1)
+    #expect(applied.unmatched == 0)
+    #expect(applied.transcript.segments.map(\.text) == ["summary ", ""])
+    #expect(repeated.applied == 0)
+    #expect(repeated.alreadyApplied == 1)
+    #expect(repeated.transcript == applied.transcript)
+}
+
 @Test func replayedLiveTextHintMatchesOnlyTheSameWordsNearTheirRecordedTime() {
     let live = SessionFixtures.segment(["send", "the", "deck"], track: "system", start: 120, id: "live")
     let nearby = SessionFixtures.segment(["send", "the", "deck"], track: "system", start: 121.9, id: "nearby")
