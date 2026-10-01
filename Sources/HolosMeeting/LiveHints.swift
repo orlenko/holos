@@ -201,9 +201,12 @@ public enum LiveHints {
         public var previous: [Correction]
         public var other: [Correction]
         public var managed: [Correction]
+        public var preexisting: [Correction]
 
-        public init(previous: [Correction] = [], other: [Correction] = [], managed: [Correction] = []) {
-            self.previous = previous; self.other = other; self.managed = managed
+        public init(previous: [Correction] = [], other: [Correction] = [], managed: [Correction] = [],
+                    preexisting: [Correction] = []) {
+            self.previous = previous; self.other = other
+            self.managed = managed; self.preexisting = preexisting
         }
     }
 
@@ -263,16 +266,22 @@ public enum LiveHints {
         let target = phraseKey(hint)
         var latest: [String: Latest] = [:]
         var managed: [Correction] = []
+        var confirmed: [Correction] = []
         for (index, candidate) in hints.enumerated() {
             guard case .replaceText = candidate.action else { continue }
             if let learned = candidate.learned {
                 latest[phraseKey(candidate)] = Latest(index: index, learned: learned)
+                confirmed += learned
             }
             managed += candidate.owned ?? candidate.learned ?? []
         }
+        managed = unique(managed)
+        let managedSet = Set(managed)
+        let preexisting = unique(confirmed.filter { !managedSet.contains($0) })
         let previous = latest[target]?.learned ?? []
         let other = latest.filter { $0.key != target }.values.sorted { $0.index < $1.index }.flatMap(\.learned)
-        return CorrectionLearningState(previous: previous, other: other, managed: unique(managed))
+        return CorrectionLearningState(previous: previous, other: other,
+                                       managed: managed, preexisting: preexisting)
     }
 
     public static func applyingText(_ hints: [LiveHint], to transcript: Transcript,

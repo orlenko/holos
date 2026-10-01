@@ -1258,7 +1258,9 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
             return LiveTextLearning(learned: learned, owned: [])
         }
         var owned: [Correction] = []
-        guard changeCorrections({ owned = $0.reconcileLearned(state.managed, with: desired) }) else {
+        guard changeCorrections({
+            owned = $0.reconcileLearned(state.managed, preserving: state.preexisting, with: desired)
+        }) else {
             // Nil metadata leaves the prior successful learning state in place for this phrase.
             return LiveTextLearning(problem: "the corrections list is unavailable")
         }

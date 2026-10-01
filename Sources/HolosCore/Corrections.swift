@@ -101,19 +101,30 @@ public struct CorrectionList: Codable, Sendable, Equatable {
 
     /// Reconciles rules introduced by live editing with the rules its latest edits still confirm. `managed` is every
     /// exact rule a live edit has introduced; removing those first lets the desired rules be rebuilt in edit order.
-    /// A desired rule already supplied by an unrelated, pre-existing entry stays implicit. The returned rules are
-    /// newly managed ones, excluding rules already recorded in `managed`, so later reconciliation can distinguish a
-    /// pre-existing rule from one live editing may remove when its last dependent edit is undone.
+    /// `preexisting` remembers desired rules known to have been present before live editing, including one temporarily
+    /// displaced by a conflicting managed rule. Such a rule is restored only when no unrelated rule now owns its
+    /// heard phrase, and is never returned as newly managed. The returned rules exclude rules already recorded in
+    /// `managed`, so later reconciliation removes only rules live editing introduced.
     @discardableResult
-    public mutating func reconcileLearned(_ managed: [Correction], with desired: [Correction]) -> [Correction] {
+    public mutating func reconcileLearned(_ managed: [Correction], preserving preexisting: [Correction] = [],
+                                          with desired: [Correction]) -> [Correction] {
         let managed = managed.compactMap(Self.storedCorrection)
+        let preexisting = preexisting.compactMap(Self.storedCorrection)
         for correction in managed { remove(correction) }
         let alreadyManaged = Set(managed)
+        let knownPreexisting = Set(preexisting)
+        for correction in preexisting {
+            let key = Self.normalized(correction.heard)
+            guard !entries.contains(where: { Self.normalized($0.heard) == key }) else { continue }
+            add(correction)
+        }
         var introduced: [Correction] = []
         for correction in desired.compactMap(Self.storedCorrection) {
             guard apply(to: correction.heard) != correction.meant else { continue }
             add(correction)
-            if !alreadyManaged.contains(correction) { introduced.append(correction) }
+            if !alreadyManaged.contains(correction), !knownPreexisting.contains(correction) {
+                introduced.append(correction)
+            }
         }
         return introduced.filter(entries.contains)
     }

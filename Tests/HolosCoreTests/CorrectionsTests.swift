@@ -129,6 +129,20 @@ import Testing
     #expect(list.entries == [last])
 }
 
+@Test func reconcilingLearnedCorrectionsRestoresAPreexistingRuleWithoutOwningIt() {
+    let existing = Correction(heard: "send the deck", meant: "share the doc")
+    let conflict = Correction(heard: "send the deck", meant: "send the document")
+    var list = CorrectionList(entries: [existing])
+
+    let conflictOwned = list.reconcileLearned([], preserving: [existing], with: [existing, conflict])
+    let restoredOwned = list.reconcileLearned(conflictOwned, preserving: [existing], with: [existing])
+    list.reconcileLearned(conflictOwned + restoredOwned, preserving: [existing], with: [])
+
+    #expect(conflictOwned == [conflict])
+    #expect(restoredOwned.isEmpty)
+    #expect(list.entries == [existing])
+}
+
 @Test func reviewFindingsOnMatchingAndStreaming() {
     let overlapping = CorrectionList(entries: [.init(heard: "foo", meant: "bar"), .init(heard: "foo baz", meant: "qux")])
     let streamed = overlapping.applyWithholdingPartialMatch(to: "say foo")

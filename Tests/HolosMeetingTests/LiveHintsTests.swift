@@ -315,6 +315,22 @@ private func hint(_ segment: TranscriptSegment, words: Range<Int>, action: LiveH
         == .init(previous: [shared], managed: [shared]))
 }
 
+@Test func correctionLearningStateRemembersRulesThatPredatedLiveManagement() {
+    let firstSegment = SessionFixtures.segment(["send", "the", "deck"], track: "mic", start: 2, id: "S1")
+    let secondSegment = SessionFixtures.segment(["send", "the", "deck"], track: "mic", start: 8, id: "S2")
+    let existing = Correction(heard: "send the deck", meant: "share the doc")
+    let conflict = Correction(heard: "send the deck", meant: "send the document")
+    var first = hint(firstSegment, words: 0..<3, action: .replaceText("share the doc"), id: "H1")
+    first.learned = [existing]
+    first.owned = []
+    var second = hint(secondSegment, words: 0..<3, action: .replaceText("send the document"), id: "H2")
+    second.learned = [conflict]
+    second.owned = [conflict]
+
+    #expect(LiveHints.correctionLearningState(for: second, among: [first, second])
+        == .init(previous: [conflict], other: [existing], managed: [conflict], preexisting: [existing]))
+}
+
 @Test func repeatedLiveEditMatchesAnIntermediateReplayAndKeepsOriginalProvenance() {
     let original = SessionFixtures.segment(["send", "the", "deck"], track: "system", start: 2, id: "live")
     let first = hint(original, words: 0..<3, action: .replaceText("share the doc"), id: "H1")
