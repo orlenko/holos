@@ -183,8 +183,8 @@ struct Eval: AsyncParsableCommand {
                 languages stage does (final results only), in the meeting's languages (or --language), with \
                 today's vocabulary: your word list, then people's names, then the words of your corrections, as a \
                 meeting starting now would get it (--no-vocabulary: none). Several languages are merged as the \
-                languages stage merges them. No text step follows: meetings apply none (corrections and filler \
-                removal are dictation steps). Saves the result as eval/local/<run>/ (run.json with the exact \
+                languages stage merges them. Meeting word fixes follow unless --no-word-fixes. Saves the result as \
+                eval/local/<run>/ (run.json with the exact \
                 vocabulary and settings, each track's transcription as it is done, transcript.json); the meeting's \
                 transcript, speaker labels, exports, and vocabulary.json are never changed. Ctrl-C stops; running \
                 the same command again resumes. Then: voiceislocal eval compare <session> --local latest.
@@ -193,6 +193,7 @@ struct Eval: AsyncParsableCommand {
         @Argument(help: "Path to a .holos folder, or a session ID.") var session: String
         @Option(help: "Transcribe in this language only (like en-CA), instead of the meeting's.") var language: String?
         @Flag(help: "Transcribe without any vocabulary.") var noVocabulary = false
+        @Flag(help: "Keep the recognized words without applying meeting word fixes.") var noWordFixes = false
         @Option(name: .customLong("run"), help: "Resume this unfinished local run.") var runID: String?
 
         mutating func run() async throws {
@@ -214,11 +215,13 @@ struct Eval: AsyncParsableCommand {
             let lease = try SessionArchive.acquireProcessingLease(at: directory)
             defer { lease.release() }
             let options = EvalLocal.Options(language: language, runID: runID,
-                                            savedVocabulary: runID != nil && !noVocabulary)
+                                            savedVocabulary: runID != nil && !noVocabulary,
+                                            wordFixes: !noWordFixes)
             let strings = vocabulary
             do {
                 let record = try await EvalInterrupt.run { () async throws in
                     try await EvalLocal.run(session: directory, options: options, vocabulary: strings,
+                                            wordFixes: makeWordFixDependencies(),
                                             progress: { Console.error($0) })
                 }
                 Console.error("Local run \(record.id) is complete. Next: voiceislocal eval compare \(session) "
@@ -390,12 +393,15 @@ struct Eval: AsyncParsableCommand {
                     : "complete"
                 let vocabulary = record.vocabularySource == "none" ? "no vocabulary"
                     : "vocabulary \(record.vocabulary.count)"
+                let wordFixes = record.textSteps.contains(PostProcessingStage.wordFixes.rawValue)
+                    ? "word fixes" : "no word fixes"
                 let compared = ids.contains { cloud in
                     FileManager.default.fileExists(atPath: EvalPaths.compare(cloud, local: id, in: directory).path)
                 }
                 let minutes = String(format: "%.1f", locale: Locale(identifier: "en_US_POSIX"), record.seconds / 60)
                 Console.output("\(id)  local  \(record.languages.joined(separator: ","))  "
-                    + "\(record.tracks.map(\.track).joined(separator: ","))  \(minutes) min  \(status)  \(vocabulary)"
+                    + "\(record.tracks.map(\.track).joined(separator: ","))  \(minutes) min  \(status)  \(vocabulary)  "
+                    + wordFixes
                     + (compared ? "  compared" : ""))
             }
             for id in ids {

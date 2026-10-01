@@ -41,10 +41,13 @@ public struct CompareReport: Codable, Sendable, Equatable {
         public var vocabulary: String
         public var vocabularyCount: Int
         public var madeAt: Date?
+        /// Text steps applied to this transcript; nil in a report made before they were recorded.
+        public var textSteps: [String]?
 
-        public init(source: String, languages: [String], vocabulary: String, vocabularyCount: Int, madeAt: Date?) {
+        public init(source: String, languages: [String], vocabulary: String, vocabularyCount: Int, madeAt: Date?,
+                    textSteps: [String]? = nil) {
             self.source = source; self.languages = languages; self.vocabulary = vocabulary
-            self.vocabularyCount = vocabularyCount; self.madeAt = madeAt
+            self.vocabularyCount = vocabularyCount; self.madeAt = madeAt; self.textSteps = textSteps
         }
     }
 
@@ -253,13 +256,16 @@ public enum EvalCompare {
             let recorded = (try? TranscriptRebuilder.sessionVocabulary(session)) ?? []
             version = CompareReport.LocalVersion(source: "current", languages: current.languages ?? [current.locale],
                                                  vocabulary: "vocabulary.json", vocabularyCount: recorded.count,
-                                                 madeAt: current.createdAt)
+                                                 madeAt: current.createdAt,
+                                                 textSteps: current.fixedFrom == nil ? []
+                                                     : [PostProcessingStage.wordFixes.rawValue])
         case .candidate(let record):
             try checkSameAudio(record, run, session: session, manifest: manifest)
             transcript = try EvalLocal.transcript(of: record, in: session)
             version = CompareReport.LocalVersion(source: record.id, languages: record.languages,
                                                  vocabulary: record.vocabularySource,
-                                                 vocabularyCount: record.vocabulary.count, madeAt: record.completedAt)
+                                                 vocabularyCount: record.vocabulary.count, madeAt: record.completedAt,
+                                                 textSteps: record.textSteps)
         }
         let meeting = try? SessionFiles.meetingInfo(session: session, manifest: manifest)
         // Fillers of the languages the local transcript was made in (none for a language other than English or French).
@@ -509,10 +515,14 @@ public enum EvalCompare {
         let vocabulary = local.vocabulary == "none" ? "no vocabulary"
             : "\(local.vocabulary == "current" ? "vocabulary as of the run" : local.vocabulary): "
                 + "\(local.vocabularyCount) strings"
-        if local.source == "current" {
-            return "the current transcript \(report.transcriptID) (\(vocabulary))"
+        let steps = local.textSteps.map {
+            $0.contains(PostProcessingStage.wordFixes.rawValue) ? "word fixes" : "no word fixes"
         }
-        return "local run \(local.source) (\(local.languages.joined(separator: ", ")); \(vocabulary))"
+        let details = ([vocabulary] + [steps].compactMap { $0 }).joined(separator: "; ")
+        if local.source == "current" {
+            return "the current transcript \(report.transcriptID) (\(details))"
+        }
+        return "local run \(local.source) (\(local.languages.joined(separator: ", ")); \(details))"
     }
 
     /// Why a track's WER says little: shown next to it in the summary and the report.

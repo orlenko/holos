@@ -577,6 +577,34 @@ private func evalLocalDependencies(_ speech: FakeSpeechFactory, status: String =
     #expect(throws: HolosError.self) { _ = try EvalLocal.record("../x", in: session) }
 }
 
+@Test func evalLocalAppliesMeetingWordFixesUnlessTheyAreDisabled() async throws {
+    let temp = try TemporaryDirectory("eval")
+    defer { temp.remove() }
+    let original = SessionFixtures.transcript([SessionFixtures.segment(["old"], track: "mic", start: 0.5)])
+    let session = try await SessionFixtures.makeSession(in: temp.url, audioSeconds: ["mic": 4], transcript: original)
+    let heard = SessionFixtures.segment(["we", "run", "onobunto"], track: nil, start: 0.5)
+    let fixes = WordFixDependencies(
+        corrections: { CorrectionList(entries: [Correction(heard: "onobunto", meant: "Ubuntu")]) },
+        wordList: { WordList() }, model: { _ in .unavailable("not needed") })
+
+    let fixedSpeech = FakeSpeechFactory([FakeSpeechScript(segments: [heard])])
+    let fixed = try await EvalLocal.run(session: session, options: .init(), vocabulary: nil,
+                                        dependencies: evalLocalDependencies(fixedSpeech),
+                                        now: Date(timeIntervalSince1970: 1_790_000_000), wordFixes: fixes)
+    #expect(fixed.textSteps == [PostProcessingStage.wordFixes.rawValue])
+    let fixedTranscript = try EvalLocal.transcript(of: fixed, in: session)
+    #expect(fixedTranscript.segments.map(\.text) == ["we run Ubuntu"])
+    #expect(WordFixes.Counts(fixedTranscript).corrections == 1)
+
+    let plainSpeech = FakeSpeechFactory([FakeSpeechScript(segments: [heard])])
+    let plain = try await EvalLocal.run(session: session, options: .init(wordFixes: false), vocabulary: nil,
+                                        dependencies: evalLocalDependencies(plainSpeech),
+                                        now: Date(timeIntervalSince1970: 1_790_000_100), wordFixes: fixes)
+    #expect(plain.id != fixed.id && plain.textSteps.isEmpty)
+    #expect(try EvalLocal.transcript(of: plain, in: session).segments.map(\.text) == ["we run onobunto"])
+    #expect(try SessionArchive.currentTranscriptID(at: session) == original.id)
+}
+
 @Test func evalLocalNeverResumesOverAudioWhoseBytesChanged() async throws {
     let temp = try TemporaryDirectory("eval")
     defer { temp.remove() }
@@ -628,6 +656,7 @@ private func evalLocalDependencies(_ speech: FakeSpeechFactory, status: String =
     #expect(current.terms?.map { "\($0.term) \($0.hits)/\($0.cloud)" } == ["Kubernetes 0/1"])
     #expect(current.termsNotHeard == 1)
     #expect(current.local?.source == "current" && current.local?.vocabulary == "vocabulary.json")
+    #expect(current.local?.textSteps == [])
     let currentFiles = try EvalCompare.write(current, session: session)
 
     let heard = SessionFixtures.segment(["hello", "team", "we", "deploy", "on", "Kubernetes", "today"], track: nil,
@@ -638,6 +667,7 @@ private func evalLocalDependencies(_ speech: FakeSpeechFactory, status: String =
     let candidate = try EvalCompare.compare(session: session, run: run, local: .candidate(record), terms: terms)
     #expect(candidate.local?.source == record.id)
     #expect(candidate.local?.vocabulary == "current" && candidate.local?.vocabularyCount == 1)
+    #expect(candidate.local?.textSteps == [PostProcessingStage.wordFixes.rawValue])
     #expect(candidate.transcriptID == record.transcriptID && candidate.transcriptID != transcript.id)
     #expect(candidate.terms?.map { "\($0.term) \($0.hits)/\($0.cloud)" } == ["Kubernetes 1/1"])
     #expect(candidate.passages.filter(\.needsReview).isEmpty)
