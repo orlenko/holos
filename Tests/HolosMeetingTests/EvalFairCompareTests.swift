@@ -841,3 +841,21 @@ private func fairHits(_ term: String, in text: String) -> [String] {
     #expect(EvalTerms.count(terms, tracks: [compared.termTrack("mic", normalized: true)], normalized: true)
         .map { "\($0.hits)/\($0.cloud)" } == ["1/1"])
 }
+
+@Test func fairTermsReadNumbersApartWhereEchoOrAMarkedFillerSplitsThem() {
+    func hits(_ term: String, _ text: String, covered: [Bool?], skipped: [Bool] = []) -> [String] {
+        let track = EvalTerms.Track(track: "mic", words: words(text), covered: covered, skipped: skipped)
+        return EvalTerms.count(EvalTerms.terms(wordList: [term], corrections: []), tracks: [track], normalized: true)
+            .map { "\($0.hits)/\($0.cloud)" }
+    }
+    // An echo word between them leaves 20 and 1, as the normalized alignment reads them.
+    #expect(hits("21", "it was twenty yes one today", covered: [true, true, true, nil, true, true]).isEmpty)
+    #expect(hits("30%", "it was 30 yes percent", covered: [true, true, true, nil, true]).isEmpty)
+    // So does a filler that ends a clause; a filler alone is left out of the number.
+    #expect(hits("21", "it was twenty um, one", covered: [true, true, true, true, true],
+                 skipped: [false, false, false, true, false]).isEmpty)
+    #expect(hits("21", "it was twenty um one", covered: [true, true, true, true, true],
+                 skipped: [false, false, false, true, false]) == ["1/1"])
+    // Echo still never hides a term's other words.
+    #expect(hits("New York", "we went New yes York", covered: [true, true, true, nil, true]) == ["1/1"])
+}

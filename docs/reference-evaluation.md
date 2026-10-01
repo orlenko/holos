@@ -366,7 +366,8 @@ inside a spelled-number run, its "plus" and "percent" included ("V one
 hundred five" holds no "V100", "thirty percent" no "30") or a
 number written with digits and words ("version 30 percent" holds no "version
 30"), and never with a number both sides spell in other words ("version un"
-holds no "version one"; "version one" does).
+holds no "version one"; "version one" does). A number is never read across
+echo or a filler that ends a clause ("twenty", echo, "one" holds no "21").
 
 ### Local candidates
 

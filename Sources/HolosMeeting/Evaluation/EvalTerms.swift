@@ -279,7 +279,27 @@ public enum EvalTerms {
                 index < covered.count && covered[index] != nil && !(index < skipped.count && skipped[index])
             }
         }
+
+        /// The `kept` words as numbers are read among them: a word after a left-out echo word, or after a left-out
+        /// filler that ends or opens a clause ("twenty um, one"), starts with `numberBreak`, so no number goes on into
+        /// it, as the normalized alignment never reads one across echo or a clause mark ("twenty", echo, "one" is 20
+        /// and 1). A filler alone is left out of the number ("twenty um one" is 21).
+        func numberWords(_ kept: [Int]) -> [String] {
+            kept.enumerated().map { position, index in
+                guard position > 0 else { return words[index] }
+                let breaks = ((kept[position - 1] + 1)..<index).contains { left in
+                    let trimmed = words[left].trimmingCharacters(in: .whitespaces)
+                    return left >= covered.count || covered[left] == nil
+                        || trimmed.last.map(EvalNormalization.closingMarks.contains) == true
+                        || trimmed.first.map(EvalNormalization.openingMarks.contains) == true
+                }
+                return breaks ? EvalTerms.numberBreak + words[index] : words[index]
+            }
+        }
     }
+
+    /// A mark that opens a clause, put before a word to keep a number from going on into it (`Track.numberWords`).
+    static let numberBreak = "["
 
     /// Whether the local words standing for cloud words `indices` (in order) are one unbroken run: each next word's
     /// local words follow the one before's (or are the same joined run), with only ignorable words between.
@@ -307,8 +327,8 @@ public enum EvalTerms {
     public static func count(_ terms: [Term], tracks: [Track], normalized: Bool = false) -> [TermStat] {
         let keyed = tracks.map { track in
             let kept = track.kept
-            let words = kept.map { track.words[$0] }
-            return (kept: kept, words: words, keys: words.map(EvalText.key),
+            let words = normalized ? track.numberWords(kept) : kept.map { track.words[$0] }
+            return (kept: kept, words: words, keys: kept.map { EvalText.key(track.words[$0]) },
                     numbers: normalized ? EvalNormalization.SpelledRuns(words, fillers: []) : nil, track: track)
         }
         var stats: [TermStat] = []
