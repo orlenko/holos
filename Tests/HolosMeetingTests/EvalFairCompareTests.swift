@@ -277,6 +277,13 @@ private func canonical(_ text: String) -> String? {
     #expect(result.passages.filter { $0.group != .caseOrPunctuation }.allSatisfy { $0.formattingOnly })
 }
 
+@Test func fairCompoundsNeverJoinWordsAcrossAClauseMark() {
+    #expect(!NormalizedAlignment.align(["test", "flight"], ["TestFlight"]).contains { $0.isEdit })
+    for local in [["test.", "Flight"], ["test,", "flight"], ["test", "(flight"]] {
+        #expect(NormalizedAlignment.align(local, ["TestFlight"]).contains { $0.isEdit }, "\(local)")
+    }
+}
+
 // MARK: - Terms
 
 @Test func fairTermsCountHitsAndMissesWhereTheCloudHasThem() {

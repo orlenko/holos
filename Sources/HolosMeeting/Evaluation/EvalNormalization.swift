@@ -800,7 +800,8 @@ public enum NormalizedAlignment {
             compounds = (1...NormalizedAlignment.maxCompoundRun).map { length in
                 (0..<count).map { start in
                     guard length > 1, let indices = kept(start, length),
-                          (2...NormalizedAlignment.maxCompoundWords).contains(indices.count) else { return [] }
+                          (2...NormalizedAlignment.maxCompoundWords).contains(indices.count),
+                          !EvalNormalization.crossesClause(words, start..<(start + length)) else { return [] }
                     let whole = !runs.cuts((offset + start)..<(offset + start + length))
                     return NormalizedAlignment.compoundForms(indices.map { words[$0] }, numbers: whole)
                 }
