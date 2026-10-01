@@ -15,7 +15,7 @@ struct Eval: AsyncParsableCommand {
             consent of everyone who was recorded. Results stay in the session folder under eval/; the app and the \
             exports never read them.
             """,
-        subcommands: [Cloud.self, Compare.self, Review.self, Apply.self, List.self, Delete.self])
+        subcommands: [Cloud.self, Local.self, Compare.self, Review.self, Apply.self, List.self, Delete.self])
 
     struct Cloud: AsyncParsableCommand {
         static let configuration = CommandConfiguration(
@@ -130,24 +130,107 @@ struct Eval: AsyncParsableCommand {
         static let configuration = CommandConfiguration(
             abstract: "Compare the local transcript with a cloud run, per track and time window.",
             discussion: """
-                Writes eval/compare/<run>/report.md and report.json: word error rates against each transcript \
-                (neither is taken as the truth) and the passages where they differ, grouped as names and terms, \
-                numbers, dropped or added words, other words, and case or punctuation only. Microphone words that \
-                are echo of the system track are left out, as in the exports.
+                Writes eval/compare/<run>/report.md and report.json (for a local candidate, in \
+                eval/compare/<run>/<local run>/): word error rates against each transcript (neither is taken as \
+                the truth), normalized by default (numbers written in digits or words, fillers, and compounds are \
+                not errors; --raw counts them), how often your word-list terms and corrections' meant phrases are \
+                found where the cloud has them, and the passages where the transcripts differ, grouped as names and \
+                terms, numbers, dropped or added words, other words, formatting only, and case or punctuation only. \
+                Microphone words that are echo of the system track are left out, as in the exports.
                 """)
 
         @Argument(help: "Path to a .holos folder, or a session ID.") var session: String
         @Option(name: .customLong("run"), help: "The cloud run (default: the newest finished one).") var runID: String?
+        @Option(help: "The local transcript: current (default), latest (the newest finished eval local run), or a local run ID.")
+        var local = "current"
+        @Flag(help: "Count every word difference (numbers, fillers, compounds too) and review every passage.")
+        var raw = false
 
         mutating func run() throws {
             let directory = try SessionLocator.resolve(session)
             let lease = try SessionArchive.acquireProcessingLease(at: directory)
             defer { lease.release() }
             let record = try EvalStore.resolveRun(runID, in: directory)
-            let report = try EvalCompare.compare(session: directory, run: record)
+            let choice: EvalCompare.LocalChoice = local == "current" ? .current
+                : .candidate(try EvalLocal.resolve(local, in: directory))
+            let report = try EvalCompare.compare(session: directory, run: record, local: choice, normalize: !raw,
+                                                 terms: Eval.vocabularyTerms())
             let written = try EvalCompare.write(report, session: directory)
             for line in EvalCompare.summaryLines(report) { Console.error(line) }
             Console.output(written.markdown.path)
+        }
+    }
+
+    /// The word list's terms and the corrections' meant phrases, for the report's Terms section. One that cannot be
+    /// read is said and left out; the comparison goes on.
+    static func vocabularyTerms() -> [EvalTerms.Term] {
+        var wordList: [String] = []
+        var meant: [String] = []
+        do { wordList = try WordListStore().load().terms } catch {
+            Console.error("Note: the word list could not be read (\(error.localizedDescription)); its terms are not counted.")
+        }
+        do { meant = try CorrectionList.load(from: CorrectionList.defaultURL).entries.map(\.meant) } catch {
+            Console.error("Note: corrections.json could not be read (\(error.localizedDescription)); its phrases are not counted.")
+        }
+        return EvalTerms.terms(wordList: wordList, corrections: meant)
+    }
+
+    struct Local: AsyncParsableCommand {
+        static let configuration = CommandConfiguration(
+            abstract: "Transcribe all of a session's saved audio again, as a candidate to compare (nothing leaves this Mac).",
+            discussion: """
+                Transcribes every track of the saved audio with Apple's speech recognition as the post-processing \
+                languages stage does (final results only), in the meeting's languages (or --language), with \
+                today's vocabulary: your word list, then people's names, then the words of your corrections, as a \
+                meeting starting now would get it (--no-vocabulary: none). Several languages are merged as the \
+                languages stage merges them. No text step follows: meetings apply none (corrections and filler \
+                removal are dictation steps). Saves the result as eval/local/<run>/ (run.json with the exact \
+                vocabulary and settings, each track's transcription as it is done, transcript.json); the meeting's \
+                transcript, speaker labels, exports, and vocabulary.json are never changed. Ctrl-C stops; running \
+                the same command again resumes. Then: voiceislocal eval compare <session> --local latest.
+                """)
+
+        @Argument(help: "Path to a .holos folder, or a session ID.") var session: String
+        @Option(help: "Transcribe in this language only (like en-CA), instead of the meeting's.") var language: String?
+        @Flag(help: "Transcribe without any vocabulary.") var noVocabulary = false
+        @Option(name: .customLong("run"), help: "Resume this unfinished local run.") var runID: String?
+
+        mutating func run() async throws {
+            let directory = try SessionLocator.resolve(session)
+            let languages = try EvalLocal.languages(session: directory, language: language)
+            var vocabulary: [String]?
+            // A resumed run uses the vocabulary saved in its run.json; today's files are not read.
+            if !noVocabulary, runID == nil {
+                do {
+                    vocabulary = RecognizerVocabulary.meeting(
+                        wordList: try WordListStore().load().terms,
+                        names: VoiceProfileService.profileNames().values.sorted(),
+                        corrections: try CorrectionList.load(from: CorrectionList.defaultURL), languages: languages)
+                } catch {
+                    throw ValidationError("Could not read the vocabulary (pass --no-vocabulary to go without): "
+                        + error.localizedDescription)
+                }
+            }
+            let lease = try SessionArchive.acquireProcessingLease(at: directory)
+            defer { lease.release() }
+            let options = EvalLocal.Options(language: language, runID: runID,
+                                            savedVocabulary: runID != nil && !noVocabulary)
+            let strings = vocabulary
+            do {
+                let record = try await EvalInterrupt.run { () async throws in
+                    try await EvalLocal.run(session: directory, options: options, vocabulary: strings,
+                                            progress: { Console.error($0) })
+                }
+                Console.error("Local run \(record.id) is complete. Next: voiceislocal eval compare \(session) "
+                    + "--local \(record.id)")
+                Console.output(EvalPaths.localRun(record.id, in: directory).path)
+            } catch {
+                if error is CancellationError {
+                    Console.error("Cancelled. What is saved is kept; run the same command again to resume.")
+                    throw ExitCode(EvalInterrupt.lastExitCode)
+                }
+                throw error
+            }
         }
     }
 
@@ -172,9 +255,9 @@ struct Eval: AsyncParsableCommand {
             let record = try EvalStore.resolveRun(runID, in: directory)
             let currentID = try SessionArchive.currentTranscriptID(at: directory)
             var report = try EvalCompare.readReport(run: record.id, session: directory)
-            if report == nil || report?.transcriptID != currentID {
+            if !EvalCompare.isCurrent(report, transcriptID: currentID) {
                 Console.error("Comparing with the current transcript first…")
-                let fresh = try EvalCompare.compare(session: directory, run: record)
+                let fresh = try EvalCompare.compare(session: directory, run: record, terms: Eval.vocabularyTerms())
                 try EvalCompare.write(fresh, session: directory)
                 report = fresh
             }
@@ -183,8 +266,10 @@ struct Eval: AsyncParsableCommand {
                 try EvalReview.build(session: directory, run: record, report: report,
                                      progress: { Console.error($0) })
             }
-            let count = report.passages.filter { $0.group != .caseOrPunctuation }.count
-            Console.error("\(count) passages to review.")
+            let count = report.passages.filter(\.needsReview).count
+            let formatting = report.passages.filter(\.formattingOnly).count
+            Console.error("\(count) passages to review"
+                + (formatting > 0 ? " (\(formatting) formatting-only ones hidden; the page can show them)." : "."))
             Console.output(page.path)
             if !noOpen {
                 let open = Process()
@@ -248,6 +333,9 @@ struct Eval: AsyncParsableCommand {
             let gold = EvalPaths.gold(parsed.run, in: directory)
             try EvalStore.write(result.gold, to: gold)
             Console.error("Reference transcript: \(result.gold.reviewedPassages) reviewed passages.")
+            if result.ignoredFormatting > 0 {
+                Console.error("Ignored \(result.ignoredFormatting) decisions on formatting-only passages.")
+            }
             Console.output(gold.path)
             Console.error(result.corrections.isEmpty ? "No heard → meant pairs to propose."
                 : "Proposed corrections (heard → meant):")
@@ -290,7 +378,26 @@ struct Eval: AsyncParsableCommand {
         mutating func run() throws {
             let directory = try SessionLocator.resolve(session)
             let ids = EvalStore.runIDs(in: directory)
-            if ids.isEmpty { Console.output("No evaluation runs."); return }
+            let locals = EvalLocal.runIDs(in: directory)
+            if ids.isEmpty && locals.isEmpty { Console.output("No evaluation runs."); return }
+            for id in locals {
+                guard let record = try? EvalLocal.record(id, in: directory) else {
+                    Console.output("\(id)  (unreadable)")
+                    continue
+                }
+                let status = record.completedAt == nil
+                    ? "unfinished, \(EvalLocal.savedParts(record, in: directory)) of \(record.partCount) tracks"
+                    : "complete"
+                let vocabulary = record.vocabularySource == "none" ? "no vocabulary"
+                    : "vocabulary \(record.vocabulary.count)"
+                let compared = ids.contains { cloud in
+                    FileManager.default.fileExists(atPath: EvalPaths.compare(cloud, local: id, in: directory).path)
+                }
+                let minutes = String(format: "%.1f", locale: Locale(identifier: "en_US_POSIX"), record.seconds / 60)
+                Console.output("\(id)  local  \(record.languages.joined(separator: ","))  "
+                    + "\(record.tracks.map(\.track).joined(separator: ","))  \(minutes) min  \(status)  \(vocabulary)"
+                    + (compared ? "  compared" : ""))
+            }
             for id in ids {
                 guard let record = try? EvalStore.runRecord(id, in: directory) else {
                     Console.output("\(id)  (unreadable)")
@@ -315,7 +422,8 @@ struct Eval: AsyncParsableCommand {
 
     struct Delete: ParsableCommand {
         static let configuration = CommandConfiguration(
-            abstract: "Delete an evaluation run (its cloud results, comparison, review page, and gold), or all.")
+            abstract: "Delete an evaluation run (a cloud run's results, comparison, review page, and gold; a local run "
+                + "and its comparisons), or all.")
         @Argument(help: "Path to a .holos folder, or a session ID.") var session: String
         @Argument(help: "The run to delete.") var runID: String?
         @Flag(help: "Delete every evaluation file of the session.") var all = false

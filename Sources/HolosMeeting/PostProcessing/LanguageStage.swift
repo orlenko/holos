@@ -490,7 +490,7 @@ enum LanguageStage {
     private static func canonical(_ locales: [String]?) -> [String]? { locales.map { $0.map(canonical) } }
 
     /// Whether any segment holds a word.
-    private static func hasWords(_ segments: [TranscriptSegment]) -> Bool {
+    static func hasWords(_ segments: [TranscriptSegment]) -> Bool {
         segments.contains { !$0.words.isEmpty || !$0.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
     }
 
