@@ -36,9 +36,12 @@ public struct LiveHintFile: Codable, Sendable, Equatable {
     public var schemaVersion = 1
     public var sessionID: String
     public var hints: [LiveHint]
+    /// True once post-processing has taken the final snapshot. Optional keeps schema 1 files written by an older
+    /// build readable; nil means open.
+    public var sealed: Bool?
 
-    public init(sessionID: String, hints: [LiveHint] = []) {
-        self.sessionID = sessionID; self.hints = hints
+    public init(sessionID: String, hints: [LiveHint] = [], sealed: Bool = false) {
+        self.sessionID = sessionID; self.hints = hints; self.sealed = sealed
     }
 }
 
@@ -69,6 +72,9 @@ public enum LiveHintStore {
         let url = SessionPaths.liveHints(session)
         try CorrectionList.withFileLock(for: url) {
             var file = try read(session: session)
+            guard file.sealed != true else {
+                throw HolosError.unavailable("This meeting is no longer accepting live corrections.")
+            }
             guard file.hints.count < maximumHints else {
                 throw HolosError.invalidInput("This meeting already has too many live corrections.")
             }
@@ -78,6 +84,24 @@ public enum LiveHintStore {
                 throw HolosError.invalidInput("This meeting already has too much live correction data.")
             }
             try AtomicFile.write(data, to: url)
+        }
+    }
+
+    /// Atomically takes the final set of hints and prevents later appends. Whichever operation gets the sidecar lock
+    /// first wins: a correction is either in this returned snapshot or is refused, never reported saved but omitted.
+    public static func sealAndRead(session: URL) throws -> LiveHintFile {
+        let url = SessionPaths.liveHints(session)
+        return try CorrectionList.withFileLock(for: url) {
+            var file = try read(session: session)
+            if file.sealed != true {
+                file.sealed = true
+                let data = try HolosJSON.encoder().encode(file)
+                guard data.count <= maximumBytes else {
+                    throw HolosError.invalidInput("This meeting already has too much live correction data.")
+                }
+                try AtomicFile.write(data, to: url)
+            }
+            return file
         }
     }
 
@@ -129,6 +153,16 @@ public enum LiveHints {
         var words: Range<Int>
         var start: Double
         var end: Double
+    }
+
+    /// What a repeated edit originally corrected. The hint being saved contains the text currently on screen (so its
+    /// timed chain remains A→B→C); learning should replace the global A→B rule with A→C.
+    public static func originalHeard(for hint: LiveHint, among hints: [LiveHint]) -> String {
+        hints.first { candidate in
+            guard case .replaceText = candidate.action else { return false }
+            return candidate.segmentID == hint.segmentID && candidate.track == hint.track
+                && candidate.firstWord == hint.firstWord && candidate.endWord == hint.endWord
+        }?.heard ?? hint.heard
     }
 
     public static func applyingText(_ hints: [LiveHint], to transcript: Transcript,

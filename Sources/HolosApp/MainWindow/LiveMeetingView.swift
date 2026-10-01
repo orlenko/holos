@@ -367,12 +367,13 @@ final class LiveMeetingViewController: NSViewController, NSTextViewDelegate {
         guard alert.runModal() == .alertFirstButtonReturn else { return }
         let corrected = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !corrected.isEmpty, corrected != target.hint.heard else { return }
+        let originalHeard = LiveHints.originalHeard(for: target.hint, among: reader.hints)
         var hint = target.hint
         hint.id = UUID().uuidString
         hint.at = Date()
         hint.action = .replaceText(corrected)
         guard save(hint, success: "Text correction saved") else { return }
-        if let problem = onLearnText(target.hint.heard, corrected) {
+        if let problem = onLearnText(originalHeard, corrected) {
             editStatus.stringValue = "Timed correction saved; could not learn it: \(problem)"
         }
     }
@@ -400,6 +401,10 @@ final class LiveMeetingViewController: NSViewController, NSTextViewDelegate {
 
     @discardableResult
     private func save(_ hint: LiveHint, success: String) -> Bool {
+        guard header.phase.capturing else {
+            editStatus.stringValue = "The meeting is no longer recording; this change was not saved."
+            return false
+        }
         do {
             try LiveHintStore.append(hint, session: reader.session)
             editStatus.stringValue = success

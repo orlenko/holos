@@ -298,7 +298,9 @@ Selecting one finalized phrase while recording enables **Correct Text…** and *
 Speaker…**. Text corrections appear in the live view at once; safe small mishearing pairs
 are also learned in `corrections.json` for later dictations and meetings. Both actions are
 saved atomically in the session's `live-hints.json`, independently of the recorder-owned
-event journal. Each hint carries the finalized segment ID, track, word range, words, and
+event journal. Post-processing seals the sidecar under the same lock used by writers, so
+a late modal save is either included in its final snapshot or refused rather than silently
+omitted. Each hint carries the finalized segment ID, track, word range, words, and
 session times. After the final/replayed transcript exists, `LiveHintStage` first uses the
 ID and words, then the same-track words nearest those times, and publishes corrected text
 before ordinary word fixes and speaker alignment. The revision's `liveCorrectedFrom`

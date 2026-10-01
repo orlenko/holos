@@ -280,7 +280,11 @@ public enum WordFixes {
             }
             current += unchanged
             original += unchanged
-            let count = fix.kind == .reviewRevert ? fix.end - fix.first : tokens(of: Array(fix.heard.utf16)).count
+            // `segment` is the revision named by `fixedFrom`. It already contains live corrections, so a live mark
+            // occupies its current word span there; automatic fixes still occupy the recognizer words in `heard`.
+            let count = fix.kind == .reviewRevert || fix.kind == .liveCorrection
+                ? fix.end - fix.first
+                : tokens(of: Array(fix.heard.utf16)).count
             guard count > 0, original + count <= originalWords.count else { return [] }
             result[index] = original..<(original + count)
             current = fix.end

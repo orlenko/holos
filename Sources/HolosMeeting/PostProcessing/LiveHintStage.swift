@@ -27,7 +27,7 @@ enum LiveHintStage {
     static func applyText(session: URL, transcript: Transcript, lease: ProcessingLease) async throws -> TextOutcome {
         let hints: [LiveHint]
         do {
-            hints = try LiveHintStore.read(session: session).hints
+            hints = try LiveHintStore.sealAndRead(session: session).hints
         } catch {
             return TextOutcome(transcript: transcript, hints: [],
                                problem: "Live corrections could not be read: \(error.localizedDescription)")

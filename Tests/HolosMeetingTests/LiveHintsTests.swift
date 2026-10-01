@@ -97,6 +97,28 @@ private func hint(_ segment: TranscriptSegment, words: Range<Int>, action: LiveH
     #expect(outcome.transcript.segments[0].fixes == [
         TranscriptWordFix(first: 0, end: 3, heard: "send the deck", kind: .liveCorrection),
     ])
+    #expect(LiveHints.originalHeard(for: second, among: [first]) == "send the deck")
+}
+
+@Test func revertingAnAutomaticFixBesideALongerLiveCorrectionUsesTheLiveBase() throws {
+    let segment = SessionFixtures.segment(["alpha", "beta", "wrong"], track: "mic", start: 2, id: "S1")
+    let original = SessionFixtures.transcript([segment], id: "original")
+    let live = LiveHints.applyingText([
+        hint(segment, words: 0..<2, action: .replaceText("one two three")),
+    ], to: original).transcript
+    var working = try #require(WordFixes.Working(live.segments[0], preservingExistingFixes: true))
+    working = WordFixes.applying(WordFixes.corrections(
+        in: working, list: CorrectionList(entries: [.init(heard: "wrong", meant: "right")])),
+        to: working)
+    let fixedSegment = WordFixes.finished(working, segment: live.segments[0])
+    var fixed = SessionFixtures.transcript([fixedSegment], id: "fixed")
+    fixed.fixedFrom = live.id
+    fixed.liveCorrectedFrom = original.id
+
+    let reverted = try WordFixes.reverting(WordRef(segmentID: "S1", word: 3), in: fixed, to: live)
+
+    #expect(reverted.segments[0].text == "one two three wrong")
+    #expect(reverted.segments[0].fixes?.contains { $0.kind == .liveCorrection } == true)
 }
 
 @Test func liveHintStorePreservesHintsAndBindsThemToTheSession() async throws {
@@ -111,6 +133,11 @@ private func hint(_ segment: TranscriptSegment, words: Range<Int>, action: LiveH
     try LiveHintStore.append(first, session: session)
     try LiveHintStore.append(second, session: session)
     #expect(try LiveHintStore.read(session: session).hints == [first, second])
+
+    let consumed = try LiveHintStore.sealAndRead(session: session)
+    #expect(consumed.hints == [first, second])
+    #expect(consumed.sealed == true)
+    #expect(throws: HolosError.self) { try LiveHintStore.append(first, session: session) }
 
     var copied = try LiveHintStore.read(session: session)
     copied.sessionID = "ANOTHER-SESSION"
