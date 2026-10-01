@@ -731,3 +731,58 @@ private func fairHits(_ term: String, in text: String) -> [String] {
     // A phrase whose part in the term holds no number does not cut it.
     #expect(fairHits("Blorb plus", in: "on Blorb plus 30 today") == ["1/1"])
 }
+
+@Test func fairANumberTheRawAlignmentHalfMatchedIsAlignedWhole() {
+    // The raw alignment matches "30", so the passage is only "per cent"/"percent": the "30" joins the stretch.
+    let result = WindowComparer.compare(track: "system", local: fairTimed(words("up 30 per cent today")),
+                                        cloud: fairUntimed("up 30 percent today"), start: 0, end: 10)
+    #expect(result.normalized.edits == 0 && result.normalization.numbers == 1)
+    #expect(result.passages.allSatisfy { $0.formattingOnly })
+    #expect(result.cloudEquivalent == [true, true, true, true])
+    let spelled = WindowComparer.compare(track: "system", local: fairTimed(words("so plus 30 per cent then")),
+                                         cloud: fairUntimed("so plus thirty percent then"), start: 0, end: 10)
+    #expect(spelled.normalized.edits == 0)
+    // Words next to a passage that no number joins count as before.
+    let plain = WindowComparer.compare(track: "system", local: fairTimed(words("we ship test flight now")),
+                                       cloud: fairUntimed("we ship TestFlight now"), start: 0, end: 10)
+    #expect(plain.normalized.edits == 0 && plain.normalized.matches == 4)
+}
+
+@Test func fairTermsNeverReadTwoNumbersAsOne() {
+    #expect(fairHits("12", in: "say 1 2 now").isEmpty)
+    #expect(fairHits("1 2", in: "say 12 now").isEmpty)
+    #expect(fairHits("1 2", in: "say 1 2 now") == ["1/1"])
+    #expect(fairHits("12", in: "say 12 now") == ["1/1"])
+    #expect(fairHits("GPT 4", in: "we use GPT-4") == ["1/1"])
+    let track = EvalTerms.Track(track: "system", words: words("say 1 2 now"), covered: [true, true, true, true])
+    #expect(EvalTerms.count(EvalTerms.terms(wordList: ["12"], corrections: []), tracks: [track]).isEmpty)
+}
+
+@Test func fairTermsMatchTheSameSpelledNumber() {
+    #expect(fairHits("phase one build 2", in: "on phase one build two") == ["1/1"])
+    #expect(fairHits("phase one build 2", in: "on phase un build two").isEmpty)
+    #expect(fairHits("V one build two", in: "on V one build two") == ["1/1"])
+}
+
+@Test func fairRawTermHitsLeaveOnlyEchoBetweenAPhrasesLocalWords() {
+    let cloud = CloudTrackResult(run: "r", track: "system", model: "m", segments: [
+        .init(index: 0, sessionStart: 0, sessionEnd: 10, renderStart: 0, renderEnd: 10, overlapSeconds: 0,
+              silent: false, text: "we use machine learning", words: words("we use machine learning"),
+              timedWords: nil),
+    ], text: "")
+    let compared = EvalCompare.compareTrack(track: "system", local: fairTimed(words("we use machine um learning")),
+                                            cloud: cloud)
+    let terms = EvalTerms.terms(wordList: ["machine learning"], corrections: [])
+    func hits(normalized: Bool) -> [String] {
+        EvalTerms.count(terms, tracks: [compared.termTrack("system", normalized: normalized)], normalized: normalized)
+            .map { "\($0.hits)/\($0.cloud)" }
+    }
+    // The raw comparison reads "um" as a word between them; the normalized one leaves it out.
+    #expect(hits(normalized: false) == ["0/1"])
+    #expect(hits(normalized: true) == ["1/1"])
+    let echoed = EvalCompare.compareTrack(track: "system",
+                                          local: fairTimed(words("we use machine yes learning"), echo: [3]),
+                                          cloud: cloud)
+    #expect(EvalTerms.count(terms, tracks: [echoed.termTrack("system", normalized: false)])
+        .map { "\($0.hits)/\($0.cloud)" } == ["1/1"])
+}

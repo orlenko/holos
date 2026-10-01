@@ -652,8 +652,34 @@ public enum WindowComparer {
     /// cut there.
     static let normalizationStretch = 400
 
+    /// Whether words `index` and `index + 1` of `words` are in one number: a spelled-number run of `runs`, or a number
+    /// written with digits of at most `NormalizedAlignment.maxDigitNumberWords` words ("30 per cent", "plus 30"),
+    /// fillers inside left out, as the normalized alignment reads them.
+    static func continuesNumber(_ words: [String], runs: EvalNormalization.SpelledRuns, at index: Int,
+                                fillers: Set<String>) -> Bool {
+        guard index >= 0, index + 1 < words.count else { return false }
+        if runs.run(at: index)?.contains(index + 1) == true { return true }
+        let span = NormalizedAlignment.maxDigitNumberWords + NormalizedAlignment.maxInnerFillers
+        for lower in max(0, index + 2 - span)...index {
+            for upper in (index + 2)...min(words.count, lower + span) {
+                let kept = (lower..<upper).filter { position in
+                    !(EvalNormalization.isFiller(words[position], fillers: fillers)
+                      && !EvalNormalization.isMillimetres(words[position]))
+                }
+                guard kept.count <= NormalizedAlignment.maxDigitNumberWords, let first = kept.first,
+                      let last = kept.last, first == lower, last == upper - 1,
+                      !EvalNormalization.crossesClause(words, lower..<upper),
+                      let form = EvalNormalization.number(kept.map { words[$0] }), form.hasDigit else { continue }
+                return true
+            }
+        }
+        return false
+    }
+
     /// The normalized comparison (`NormalizedAlignment`) of an evaluated alignment: each stretch of word passages
-    /// (with at most `normalizationGap` matched words between two of them) is aligned again; matched words outside
+    /// (with at most `normalizationGap` matched words between two of them) is aligned again, with the matched words
+    /// at its edges that are part of a number reaching into it on either side ("30" of "30 per cent" against "30
+    /// percent", where the raw alignment matched the "30"); matched words outside
     /// such stretches count as matches (a filler as a filler; a word that is a filler on one side only is in a
     /// passage). A passage none of whose words an edit of its stretch touches is formatting only. Echo is left out as
     /// in the raw scores. `runs` are each side's spelled-number runs over `texts`, its words with echo left out.
@@ -684,12 +710,39 @@ public enum WindowComparer {
             }
         }
         var inStretch = [Bool](repeating: false, count: ops.count)
-        for stretch in stretches {
-            let first = wordRuns[stretch[0]].positions[0], last = wordRuns[stretch[stretch.count - 1]].positions.last!
-            for position in first...last { inStretch[position] = true }
+        var bounds = stretches.map { stretch in
+            wordRuns[stretch[0]].positions[0]...wordRuns[stretch[stretch.count - 1]].positions.last!
         }
+        for range in bounds { for position in range { inStretch[position] = true } }
         let (localTexts, cloudTexts) = texts
         let (localRuns, cloudRuns) = runs
+        // A matched word just outside a stretch joins it when a number goes on from it into the stretch's words, on
+        // either side: the number is then aligned whole.
+        func joinsNumber(_ position: Int, before: Bool, _ range: ClosedRange<Int>) -> Bool {
+            guard position >= 0, position < ops.count, !inStretch[position], !excluded[position],
+                  range.count < normalizationStretch, case .match(let i, let j, _) = ops[position] else { return false }
+            let stretchLocal = range.compactMap { localIndex(ops[$0]) }
+            let stretchCloud = range.compactMap { cloudIndex(ops[$0]) }
+            let local = before ? stretchLocal.first == i + 1 && continuesNumber(localTexts, runs: localRuns, at: i,
+                                                                                 fillers: fillers)
+                : stretchLocal.last == i - 1 && continuesNumber(localTexts, runs: localRuns, at: i - 1,
+                                                                fillers: fillers)
+            let cloud = before ? stretchCloud.first == j + 1 && continuesNumber(cloudTexts, runs: cloudRuns, at: j,
+                                                                                 fillers: fillers)
+                : stretchCloud.last == j - 1 && continuesNumber(cloudTexts, runs: cloudRuns, at: j - 1,
+                                                                fillers: fillers)
+            return local || cloud
+        }
+        for index in bounds.indices {
+            while joinsNumber(bounds[index].lowerBound - 1, before: true, bounds[index]) {
+                bounds[index] = (bounds[index].lowerBound - 1)...bounds[index].upperBound
+                inStretch[bounds[index].lowerBound] = true
+            }
+            while joinsNumber(bounds[index].upperBound + 1, before: false, bounds[index]) {
+                bounds[index] = bounds[index].lowerBound...(bounds[index].upperBound + 1)
+                inStretch[bounds[index].upperBound] = true
+            }
+        }
         func surroundings(_ runs: EvalNormalization.SpelledRuns, _ words: [String],
                           at index: Int) -> NormalizedAlignment.Surroundings {
             .init(runs: runs, offset: index, previous: index > 0 ? words[index - 1] : nil)
@@ -709,9 +762,8 @@ public enum WindowComparer {
                 if !exact { result.normalized.caseOrPunctuationOnly += 1 }
             }
         }
-        for stretch in stretches {
-            let first = wordRuns[stretch[0]].positions[0], last = wordRuns[stretch[stretch.count - 1]].positions.last!
-            let positions = Array(first...last)
+        for (stretch, range) in zip(stretches, bounds) {
+            let positions = Array(range)
             let localIndices = positions.compactMap { localIndex(ops[$0]) }
             let cloudIndices = positions.compactMap { cloudIndex(ops[$0]) }
             let a = localIndices.map { local[$0].text }, b = cloudIndices.map { cloud[$0].text }
@@ -747,7 +799,7 @@ public enum WindowComparer {
                 }
             }
             // An edit on a word the raw alignment matched between two passages ("TestFlight test" against "test
-            // flight") belongs to no passage: then none of the stretch's passages is formatting only, so the edit
+            // flight") or at a stretch's edge belongs to no passage: then none of the stretch's passages is formatting only, so the edit
             // stays in front of the reviewer.
             let passagePositions = Set(stretch.flatMap { wordRuns[$0].positions })
             let gapLocal = Set(positions.filter { !passagePositions.contains($0) }.compactMap { localIndex(ops[$0]) })

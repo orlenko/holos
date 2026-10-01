@@ -75,7 +75,18 @@ public enum EvalTerms {
         return out
     }
 
-    static func joinedKey(_ text: String) -> String { EvalText.tokens(text).map(EvalText.key).joined() }
+    static func joinedKey(_ text: String) -> String {
+        EvalText.tokens(text).map(EvalText.key).reduce("") { joined, key in joining(joined, key) }
+    }
+
+    /// Where a digit ends one word and a digit starts the next, the words stay two numbers once joined: "1 2" is
+    /// never "12" (as `NormalizedAlignment.compoundForms` never makes "12" of "one two").
+    static let numberSeam = "\u{2}"
+
+    /// `joined` and `key` as one, with `numberSeam` between them where two digits meet.
+    static func joining(_ joined: String, _ key: String) -> String {
+        joined.last?.isNumber == true && key.first?.isNumber == true ? joined + numberSeam + key : joined + key
+    }
 
     /// Where `term` (its keys joined) is written in `keys`, as whole words: runs of words whose keys joined are the
     /// term's, so "TestFlight" is found in "Test Flight" and "test flight" in "TestFlight". Runs do not overlap.
@@ -89,11 +100,14 @@ public enum EvalTerms {
     struct NumberReading: Sendable, Equatable {
         var text: String
         var numbers: [EvalNormalization.NumberForm]
+        /// Per number, its words' keys joined when it is spelled ("one"), nil when written with digits.
+        var spelled: [String?]
 
         /// The reading of `words`, whose spelled-number runs are `runs` (ranges into `words`); nil without a number.
         init?(_ words: [String], runs: [Range<Int>]) {
             var text = ""
             var numbers: [EvalNormalization.NumberForm] = []
+            var spelled: [String?] = []
             let starts = Dictionary(runs.map { ($0.lowerBound, $0) }, uniquingKeysWith: { first, _ in first })
             var index = 0
             reading: while index < words.count {
@@ -105,12 +119,13 @@ public enum EvalTerms {
                     guard !runs.contains(where: { $0.overlaps(range) && $0.clamped(to: range) != $0 }),
                           !EvalNormalization.crossesClause(words, range),
                           let form = EvalNormalization.number(Array(words[range])), form.hasDigit else { continue }
-                    text += "\u{1}" + form.canonical + "\u{1}"; numbers.append(form)
+                    text += "\u{1}" + form.canonical + "\u{1}"; numbers.append(form); spelled.append(nil)
                     index += length
                     continue reading
                 }
                 if let run = starts[index], let form = EvalNormalization.number(Array(words[run])), !form.hasDigit {
                     text += "\u{1}" + form.canonical + "\u{1}"; numbers.append(form)
+                    spelled.append(words[run].map(EvalText.key).joined())
                     index = run.upperBound
                     continue
                 }
@@ -120,13 +135,18 @@ public enum EvalTerms {
             guard !numbers.isEmpty else { return nil }
             self.text = text
             self.numbers = numbers
+            self.spelled = spelled
         }
 
         /// The same words, each number the same number with at least one of the two written with digits (as
-        /// `NormalizedAlignment.sameNumber`: "twenty one"/"21", never "twenty one"/"vingt et un").
+        /// `NormalizedAlignment.sameNumber`: "twenty one"/"21", never "twenty one"/"vingt et un"), or the same
+        /// spelled words ("one"/"one").
         func matches(_ other: NumberReading) -> Bool {
             text == other.text && numbers.count == other.numbers.count
-                && zip(numbers, other.numbers).allSatisfy { NormalizedAlignment.sameNumber($0, $1) }
+                && numbers.indices.allSatisfy { index in
+                    NormalizedAlignment.sameNumber(numbers[index], other.numbers[index])
+                        || (spelled[index] != nil && spelled[index] == other.spelled[index])
+                }
         }
     }
 
@@ -197,7 +217,7 @@ public enum EvalTerms {
             while end < keys.count, joined.count < longestForm
                 || (hasNumber && (units < unitCap
                                   || (end > start && numbers?.run(at: end)?.contains(end - 1) == true))) {
-                joined += keys[end]
+                joined = joining(joined, keys[end])
                 // A new unit, unless this word goes on the spelled-number run of the one before.
                 if end == start || numbers?.run(at: end)?.contains(end - 1) != true { units += 1 }
                 if let numbers {
@@ -209,8 +229,9 @@ public enum EvalTerms {
                 if numbers?.cuts(start..<end) == true { continue }
                 if numbers != nil, cutsDigitNumber(words, start..<end) { continue }
                 if forms.contains(joined) { match = end; break }
+                // Only a form with a spelled number in digits: the words as written are `joined`.
                 if hasSpelled, NormalizedAlignment.compoundReadings(Array(words[start..<end])).contains(where: { form in
-                    forms.contains(form.text) && pattern.compounds.contains { $0.matches(form) }
+                    !form.spelled.isEmpty && forms.contains(form.text) && pattern.compounds.contains { $0.matches(form) }
                 }) {
                     match = end
                     break
@@ -308,7 +329,8 @@ public enum EvalTerms {
             var pattern = Pattern(forms: [joinedKey(term.text)])
             if normalized {
                 let tokens = EvalText.tokens(term.text)
-                pattern.compounds = [.init(text: pattern.forms.first ?? "")] + NormalizedAlignment.compoundReadings(tokens)
+                pattern.compounds = [.init(text: pattern.forms.first ?? "")]
+                    + NormalizedAlignment.compoundReadings(tokens).filter { !$0.spelled.isEmpty }
                 pattern.forms.formUnion(pattern.compounds.map(\.text))
                 pattern.reading = NumberReading(tokens, runs: EvalNormalization.SpelledRuns(tokens, fillers: []).runs)
             }

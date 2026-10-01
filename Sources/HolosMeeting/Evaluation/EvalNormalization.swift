@@ -673,14 +673,23 @@ public enum NormalizedAlignment {
     /// One of `compoundForms`, with where its spelled numbers stand in it: "V one" is "v1", with "one" written as
     /// the "1" at characters 1..<2.
     struct CompoundForm: Sendable, Equatable {
-        var text: String
-        /// The characters of `text` that are a spelled number written in digits.
-        var spelled: [Range<Int>] = []
+        struct Spelled: Sendable, Equatable {
+            /// The characters of the form's text the number's digits are.
+            var range: Range<Int>
+            /// Its words' keys joined ("one").
+            var key: String
+        }
 
-        /// The same words, as `sameNumber` takes numbers: a number both forms spelled is never the same, even when
-        /// its digits are ("version one" and "version un" are both "version1"; only "version 1" is both).
+        var text: String
+        var spelled: [Spelled] = []
+
+        /// The same words, as `sameNumber` takes numbers: a number both forms spell is the same only in the same
+        /// words, even when its digits are ("version one" and "version un" are both "version1"; "version 1" is
+        /// both, and so is "version one").
         func matches(_ other: CompoundForm) -> Bool {
-            text == other.text && !spelled.contains { mine in other.spelled.contains { $0.overlaps(mine) } }
+            text == other.text && !spelled.contains { mine in
+                other.spelled.contains { $0.range.overlaps(mine.range) && $0 != mine }
+            }
         }
     }
 
@@ -691,7 +700,7 @@ public enum NormalizedAlignment {
         let runs = numbers ? EvalNormalization.SpelledRuns(words, fillers: []).runs : []
         if !runs.isEmpty {
             var digits = ""
-            var spelled: [Range<Int>] = []
+            var spelled: [CompoundForm.Spelled] = []
             var valid = true
             var index = 0
             var runIndex = 0
@@ -704,7 +713,8 @@ public enum NormalizedAlignment {
                 if let form = EvalNormalization.number(Array(words[run])), form.canonical.allSatisfy(\.isNumber),
                    index == 0 || keys[index - 1].last?.isNumber != true,
                    run.upperBound == words.count || keys[run.upperBound].first?.isNumber != true {
-                    spelled.append(digits.count..<(digits.count + form.canonical.count))
+                    spelled.append(.init(range: digits.count..<(digits.count + form.canonical.count),
+                                         key: words[run].map(EvalText.key).joined()))
                     digits += form.canonical
                 } else {
                     valid = false

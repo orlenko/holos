@@ -209,11 +209,15 @@ voiceislocal eval delete <session> (<run> | --all)
    in the normalized comparison fillers too: "New um York" is "New York")
    and how often the local
    transcript has the same words at the aligned position, as one unbroken
-   run (only fillers or echo between them), sorted by misses, with each
+   run (only echo between them, and in the normalized comparison fillers),
+   sorted by misses, with each
    track's share (the microphone's count depends on the echo left out, which
    differs between local transcripts): the number to follow from one
-   vocabulary to the next. `--local` compares a
-   local candidate (`eval local`) instead of the current transcript. Output:
+   vocabulary to the next. Two numbers written with digits are never one
+   ("1 2" holds no "12"). `--local` compares a
+   local candidate (`eval local`) instead of the current transcript, made
+   from the same audio bytes; a cloud run so old it kept no digest of its
+   segments' audio cannot be checked and is refused. Output:
    `eval/compare/<run>/report.md` and `report.json` (a candidate's in
    `eval/compare/<run>/<local run>/`); the report says which local transcript
    and which vocabulary it compared.
@@ -341,7 +345,9 @@ passages, the review page and the gold keep the words as written.
 - **Case and punctuation** never count (as in the raw comparison).
 
 Each stretch of word passages of the raw alignment (runs of edits, with at
-most 2 matched words between two of them, and at most 400 steps) is aligned
+most 2 matched words between two of them, and at most 400 steps), with the
+matched words at its edges that a number carries on from into it ("30" of
+"30 per cent" against "30 percent"), is aligned
 again this way: a minimum-edit alignment where a filler costs nothing to
 leave out and a number or compound run matches its other spelling at no cost
 (a stretch too long for that pairs its words in order). Its remaining edits
@@ -356,8 +362,8 @@ spelled the other way ("GPT four" for "GPT-4", "21" for "twenty one", "30%"
 for "thirty percent", as the numbers above), never starting or ending
 inside a spelled-number run ("V one hundred five" holds no "V100") or a
 number written with digits and words ("version 30 percent" holds no "version
-30"), and never with a number both sides spell ("version un" holds no
-"version one").
+30"), and never with a number both sides spell in other words ("version un"
+holds no "version one"; "version one" does).
 
 ### Local candidates
 
@@ -393,7 +399,8 @@ live phrases do not cover. Nothing leaves the Mac.
   run with the same languages, vocabulary and audio, the chunk files' bytes
   hashed again (or `--run`, which keeps the vocabulary that run started with
   and refuses audio that changed) and transcribes only the tracks not
-  saved yet. It refuses a session that is recording or whose audio was
+  saved yet, and again a language whose saved tracks all heard no words when
+  the meeting's transcript now has some. It refuses a session that is recording or whose audio was
   deleted.
 
 Then `voiceislocal eval compare <session> --local latest` compares it with the
