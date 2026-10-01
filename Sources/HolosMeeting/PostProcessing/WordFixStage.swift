@@ -273,8 +273,7 @@ enum WordFixStage {
         var segmentID: String
         var heard: String
         var visible: String
-        var midpoint: Double
-        var tolerance: Double
+        var location: FixLocation
     }
 
     private struct RevertedFix {
@@ -283,8 +282,7 @@ enum WordFixStage {
         var rejected: String
         /// The recognizer text restored in Review and expected in the new base.
         var visible: String
-        var midpoint: Double
-        var tolerance: Double
+        var location: FixLocation
     }
 
     private struct PriorFix {
@@ -292,8 +290,16 @@ enum WordFixStage {
         var heard: String
         var visible: String
         var kind: TranscriptWordFixKind
+        var location: FixLocation
+    }
+
+    private struct FixLocation {
         var midpoint: Double
         var tolerance: Double
+        /// Position in the segment's word order. Unlike estimated times, this is not redistributed when an untimed
+        /// segment gains or loses words elsewhere.
+        var wordMidpoint: Double
+        var estimated: Bool
     }
 
     /// Fixes `base` (a transcript none of whose words were fixed) without saving anything: the learned corrections
@@ -352,11 +358,10 @@ enum WordFixStage {
                         return prior.segmentID == base.segments[place.segment].id
                             && normalized(prior.heard) == normalized(place.match.heard)
                             && prior.visible.contains(place.match.correction.meant)
-                            && abs(prior.midpoint - location.midpoint)
-                                <= max(prior.tolerance, location.tolerance)
+                            && matchDistance(prior.location, location) != nil
                     })
-                    .min(by: { abs(priorTerms[$0].midpoint - location.midpoint)
-                        < abs(priorTerms[$1].midpoint - location.midpoint) }) else { return false }
+                    .min(by: { matchDistance(priorTerms[$0].location, location)!
+                        < matchDistance(priorTerms[$1].location, location)! }) else { return false }
             usedPriorTerms.insert(evidence)
             let range = place.match.range.location..<(place.match.range.location + place.match.range.length)
             accepted[place.segment, default: []].append(
@@ -491,9 +496,8 @@ enum WordFixStage {
                     let range = match.range.location..<(match.range.location + match.range.length)
                     guard !item.marks.contains(where: { $0.range.overlaps(range) }),
                           let location = location(of: match, in: item, segment: live.segments[segmentIndex]),
-                          abs(prior.midpoint - location.midpoint)
-                            <= max(prior.tolerance, location.tolerance) else { return nil }
-                    return (index, match, abs(prior.midpoint - location.midpoint))
+                          let distance = matchDistance(prior.location, location) else { return nil }
+                    return (index, match, distance)
                 }.min(by: { $0.2 < $1.2 })
             }).min(by: { $0.2 < $1.2 }) {
                 let prior = evidence[choice.0]
@@ -531,8 +535,11 @@ enum WordFixStage {
                 let duration = max(0, last.end - first.start)
                 result.append(PriorFix(segmentID: segment.id, heard: fix.heard,
                                        visible: text.substring(with: range), kind: fix.kind,
-                                       midpoint: (first.start + last.end) / 2,
-                                       tolerance: max(0.05, duration / 4)))
+                                       location: FixLocation(
+                                        midpoint: (first.start + last.end) / 2,
+                                        tolerance: max(0.05, duration / 4),
+                                        wordMidpoint: (Double(fix.first) + Double(fix.end)) / 2,
+                                        estimated: first.estimated || last.estimated)))
             }
         }
         return result
@@ -553,8 +560,11 @@ enum WordFixStage {
                 let duration = max(0, last.end - first.start)
                 result.append(AcceptedTerm(segmentID: segment.id, heard: fix.heard,
                                            visible: text.substring(with: range),
-                                           midpoint: (first.start + last.end) / 2,
-                                           tolerance: max(0.05, duration / 4)))
+                                           location: FixLocation(
+                                            midpoint: (first.start + last.end) / 2,
+                                            tolerance: max(0.05, duration / 4),
+                                            wordMidpoint: (Double(fix.first) + Double(fix.end)) / 2,
+                                            estimated: first.estimated || last.estimated)))
             }
         }
         return result
@@ -578,9 +588,8 @@ enum WordFixStage {
                     let range = match.range.location..<(match.range.location + match.range.length)
                     guard !item.marks.contains(where: { $0.range.overlaps(range) }),
                           let location = location(of: match, in: item, segment: base.segments[segmentIndex]),
-                          abs(prior.midpoint - location.midpoint)
-                            <= max(prior.tolerance, location.tolerance) else { return nil }
-                    return (index, match, abs(prior.midpoint - location.midpoint))
+                          let distance = matchDistance(prior.location, location) else { return nil }
+                    return (index, match, distance)
                 }.min(by: { $0.2 < $1.2 })
             }).min(by: { $0.2 < $1.2 }) {
                 let prior = evidence[choice.0]
@@ -607,8 +616,11 @@ enum WordFixStage {
                 let duration = max(0, last.end - first.start)
                 result.append(RevertedFix(segmentID: segment.id, rejected: fix.heard,
                                           visible: text.substring(with: range),
-                                          midpoint: (first.start + last.end) / 2,
-                                          tolerance: max(0.05, duration / 4)))
+                                          location: FixLocation(
+                                            midpoint: (first.start + last.end) / 2,
+                                            tolerance: max(0.05, duration / 4),
+                                            wordMidpoint: (Double(fix.first) + Double(fix.end)) / 2,
+                                            estimated: first.estimated || last.estimated)))
             }
         }
         return result
@@ -616,15 +628,28 @@ enum WordFixStage {
 
     private static func location(of match: CorrectionList.Match, in working: WordFixes.Working,
                                  segment: TranscriptSegment)
-        -> (midpoint: Double, tolerance: Double)? {
+        -> FixLocation? {
         let range = match.range.location..<(match.range.location + match.range.length)
         let words = WordTiming.effectiveWords(of: WordFixes.finished(working, segment: segment))
-        let touched = words.filter { word in
-            (word.utf16Offset..<(word.utf16Offset + word.utf16Length)).overlaps(range)
+        let touched = words.indices.filter { index in
+            let word = words[index]
+            return (word.utf16Offset..<(word.utf16Offset + word.utf16Length)).overlaps(range)
         }
-        guard let first = touched.first, let last = touched.last else { return nil }
+        guard let firstIndex = touched.first, let lastIndex = touched.last else { return nil }
+        let first = words[firstIndex], last = words[lastIndex]
         let duration = max(0, last.end - first.start)
-        return ((first.start + last.end) / 2, max(0.05, duration / 4))
+        return FixLocation(midpoint: (first.start + last.end) / 2,
+                           tolerance: max(0.05, duration / 4),
+                           wordMidpoint: (Double(firstIndex) + Double(lastIndex + 1)) / 2,
+                           estimated: first.estimated || last.estimated)
+    }
+
+    private static func matchDistance(_ prior: FixLocation, _ current: FixLocation) -> Double? {
+        if prior.estimated || current.estimated {
+            return abs(prior.wordMidpoint - current.wordMidpoint)
+        }
+        let distance = abs(prior.midpoint - current.midpoint)
+        return distance <= max(prior.tolerance, current.tolerance) ? distance : nil
     }
 
     private static func normalized(_ text: String) -> String {

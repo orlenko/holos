@@ -645,10 +645,10 @@ func aLaterPassRepairsLiveTextWhoseSpeakerHeadWasNotPublished() async throws {
     #expect(WordFixStage.unfixedID(final.id, events: events) == original.id)
 }
 
-@Test(.timeLimit(.minutes(1))) func lateLiveHintKeepsEarlierFixesWhenEditedLabelsBlockRecomputation() async throws {
+@Test(.timeLimit(.minutes(1))) func lateLiveHintKeepsEarlierUntimedFixesWhenEditedLabelsBlockRecomputation() async throws {
     let temp = try TemporaryDirectory()
     defer { temp.remove() }
-    let segment = SessionFixtures.segment(["alpha", "wrong", "tail"], track: "mic", start: 2, id: "S1")
+    let segment = TranscriptSegment(id: "S1", start: 0, end: 4, text: "wrong alpha beta tail", track: "mic")
     let original = SessionFixtures.transcript([segment], id: "original")
     let session = try await SessionFixtures.makeSession(in: temp.url, mode: .inPerson, transcript: original)
     try AtomicFile.write(Data("damaged".utf8), to: SessionPaths.liveHints(session))
@@ -666,7 +666,8 @@ func aLaterPassRepairsLiveTextWhoseSpeakerHeadWasNotPublished() async throws {
     let speakerID = try #require(run.turns.first?.speakerID)
     try SessionFixtures.appendEdits([.rename(speakerID: speakerID, name: "Ada")], session: session)
 
-    let live = hint(segment, words: 2..<3, action: .replaceText("live tail"), id: "late")
+    let live = hint(segment, words: 3..<4,
+                    action: .replaceText("live correction adds several extra words here"), id: "late")
     let sessionID = try SessionArchive.readManifest(at: session).id
     try AtomicFile.writeJSON(LiveHintFile(sessionID: sessionID, hints: [live]),
                              to: SessionPaths.liveHints(session))
@@ -679,10 +680,10 @@ func aLaterPassRepairsLiveTextWhoseSpeakerHeadWasNotPublished() async throws {
     let view = try SessionFixtures.view(session)
 
     #expect(second.state == .partial)
-    #expect(final.segments[0].text == "alpha right live tail")
+    #expect(final.segments[0].text == "right alpha beta live correction adds several extra words here")
     #expect(final.segments[0].fixes?.contains { $0.kind == .correction } == true)
     #expect(final.segments[0].fixes?.contains { $0.kind == .liveCorrection } == true)
-    #expect(liveBase.segments[0].text == "alpha wrong live tail")
+    #expect(liveBase.segments[0].text == "wrong alpha beta live correction adds several extra words here")
     #expect(view.transcriptID == final.id)
     #expect(view.speakers.first(where: { $0.id == speakerID })?.name == "Ada")
 }
