@@ -228,13 +228,27 @@ public struct MeetingPostProcessor: Sendable {
         let transcript = fixes.transcript
         if transcript.id != current?.id { journal.update { $0.transcriptID = transcript.id } }
 
+        // The transcript pointer moved but the staged replacement head did not. The old head is still the only copy
+        // of the person's turn edits; never relabel over it or write exports from its older transcript.
+        if fixes.speakerHeadIncomplete {
+            let problem = fixes.problem ?? "The fixed transcript's speaker labels could not be published."
+            recorder.skip([.render, .diarize, .align, .export], problem)
+            return recorder.finalRecord(state: .partial, message: problem)
+        }
+
         // Stages 2–7. Languages or word fixes asked for by name (`voiceislocal session languages`, `session
         // fix-words`) that left the transcript as it was also leave its speaker labels as they are, edited or not
         // (§4.14).
         let speakers: SpeakerResult
-        if options.languages != nil || options.fixWords, transcript.id == current?.id,
-           let kept = keptLabels(session: session, manifest: manifest, transcript: transcript, recorder: recorder) {
-            speakers = kept
+        let keepsExistingLabels = fixes.labelsPreserved
+            || ((options.languages != nil || options.fixWords) && transcript.id == current?.id)
+        if keepsExistingLabels,
+           let kept = keptLabels(session: session, manifest: manifest, transcript: transcript, recorder: recorder,
+                                 reason: fixes.labelsPreserved ? "Kept the speaker labels on the fixed words."
+                                     : SpeakerAnalysis.transcriptUnchanged) {
+            var published = kept
+            published.published = fixes.labelsPreserved
+            speakers = published
         } else {
             speakers = try await labelSpeakers(session: session, manifest: manifest, transcript: transcript,
                                                recorder: recorder)
@@ -311,14 +325,15 @@ public struct MeetingPostProcessor: Sendable {
     /// The speaker labels of `transcript` kept as they are (stages 4–6 recorded as skipped), when they were built from
     /// it and can still be shown; nil otherwise, so speakers are labelled as usual.
     private func keptLabels(session: URL, manifest: SessionManifest, transcript: Transcript,
-                            recorder: StageRecorder) -> SpeakerResult? {
+                            recorder: StageRecorder, reason: String = SpeakerAnalysis.transcriptUnchanged)
+        -> SpeakerResult? {
         guard let head = try? SpeakerAnalysis.headState(session: session, transcript: transcript),
               let runID = head.usableRunID else { return nil }
         let meeting = try? SessionFiles.meetingInfo(session: session, manifest: manifest)
         let othersInRoom = options.othersInRoom ?? meeting?.othersInRoom
         if let othersInRoom { recorder.journal.update { $0.othersInRoom = othersInRoom } }
-        recorder.skip([.render, .diarize, .align], SpeakerAnalysis.transcriptUnchanged)
-        return SpeakerResult(runID: runID, othersInRoom: othersInRoom, message: SpeakerAnalysis.transcriptUnchanged)
+        recorder.skip([.render, .diarize, .align], reason)
+        return SpeakerResult(runID: runID, othersInRoom: othersInRoom, message: reason)
     }
 
     private func labelSpeakers(session: URL, manifest: SessionManifest, transcript: Transcript,

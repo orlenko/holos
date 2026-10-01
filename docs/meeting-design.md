@@ -6735,6 +6735,12 @@ public enum SessionAudioComposition {
 - Status line in plain words: "5 changes · 2 could not be applied (show)", "Your edited
   transcript.md was kept as edited-20260923-171200.md", "The transcript changed after
   speakers were labelled. [Label Again]", and "Audio deleted; playback is off."
+- A dotted-underlined word changed by meeting word fixes has a contextual-menu and
+  VoiceOver action to restore what the recognizer heard. It publishes a new transcript and
+  immutable speaker head, carries the effective speaker edits over by timed word position
+  (an order-preserving word difference for untimed segments), clears this window's
+  speaker-undo history, and schedules fresh exports; it never diarizes. The restored words
+  stay protected from automatic fixing until `session fix-words` is explicitly requested.
 - Heavy work (snapshot load, edits, export regeneration) runs off the main actor (§1.3).
 - The footer is redrawn on every change of the player's state (loading, ready, off and
   why), so "Playback is off: …" shows as soon as a first build fails.

@@ -17,16 +17,16 @@ extension Session {
                 meant there (voiceislocal words heard-as; only with "Fix misheard words with Apple Intelligence" on \
                 in Settings). The fixed transcript becomes a new version; the one before is kept, and fixes are \
                 always made from the transcript before any fix, so running it again with the same corrections and \
-                terms changes nothing. Speakers are then labelled again on the new text (names carry over) and the \
-                transcript files rewritten. A meeting is fixed this way after every recording; run this after you \
-                add corrections or terms. Speaker labels you edited are kept, and the words are not fixed, unless \
-                --force is given. Exits 0 when done (also when the speaker models are not installed), 3 when the \
+                terms changes nothing. Existing speaker labels and edits are mapped to the new word positions, and \
+                the transcript files are rewritten without labelling again. A meeting is fixed this way after every \
+                recording; run this after you add corrections or terms. --force labels speakers again instead \
+                (names carry over). Exits 0 when done (also when the speaker models are not installed), 3 when the \
                 transcript files were written but the words could not be fixed or speaker labelling was skipped or \
                 failed (it is printed), and 1 when nothing could be done.
                 """)
 
         @Argument(help: "Path to a .holos folder, or a session ID.") var path: String
-        @Flag(help: "Fix the words even when speaker labels were edited; speakers are labelled again, names carry over.")
+        @Flag(help: "Label speakers again on the fixed words instead of keeping the current labels; names carry over.")
         var force = false
         @Flag(help: "Print the post-processing record as JSON.") var json = false
 

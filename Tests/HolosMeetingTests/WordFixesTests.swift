@@ -118,6 +118,58 @@ private func pairs(_ entries: [(String, String)]) -> CorrectionList {
     #expect(WordFixStage.note(WordFixes.Counts(corrections: 1)) == "Fixed 1 misheard word.")
 }
 
+@Test func oneFixCanBeRevertedWithoutUndoingTheOthers() throws {
+    let baseSegment = wordFixSegment("ask cloud, then a bundu now")
+    let base = SessionFixtures.transcript([baseSegment])
+    let fixedSegment = try corrected(baseSegment, pairs([("cloud", "Claude"), ("a bundu", "ubuntu")]))
+    var fixed = SessionFixtures.transcript([fixedSegment])
+    fixed.fixedFrom = base.id
+
+    let reverted = try WordFixes.reverting(WordRef(segmentID: baseSegment.id, word: 1), in: fixed, to: base,
+                                            now: SessionFixtures.date)
+    #expect(reverted.id != fixed.id && reverted.fixedFrom == base.id && reverted.createdAt == SessionFixtures.date)
+    #expect(reverted.segments[0].text == "ask cloud, then ubuntu now")
+    #expect(reverted.segments[0].words.map(\.text) == ["ask", "cloud,", "then", "ubuntu", "now"])
+    #expect(reverted.segments[0].fixes
+        == [TranscriptWordFix(first: 1, end: 2, heard: "Claude,", kind: .reviewRevert),
+            TranscriptWordFix(first: 3, end: 4, heard: "a bundu", kind: .correction)])
+    #expect(try WordFixes.reverting(WordRef(segmentID: baseSegment.id, word: 3), in: reverted, to: base)
+        .segments[0].text == baseSegment.text)
+}
+
+@Test func anUntimedRevertUsesTheFixPositionNotARepeatedSubstring() throws {
+    let segment = TranscriptSegment(id: "U", start: 0, end: 4, text: "run wsl a command", track: "system")
+    let base = SessionFixtures.transcript([segment])
+    let fixedSegment = try corrected(segment, pairs([("wsl", "Windows Subsystem for Linux"), ("a", "the")]))
+    var fixed = SessionFixtures.transcript([fixedSegment])
+    fixed.fixedFrom = base.id
+    let the = try #require(fixedSegment.fixes?.first { $0.heard == "a" })
+
+    let reverted = try WordFixes.reverting(WordRef(segmentID: "U", word: the.first), in: fixed, to: base)
+
+    #expect(reverted.segments[0].text == "run Windows Subsystem for Linux a command")
+    #expect(reverted.segments[0].fixes?.contains { $0.kind == .reviewRevert } == true)
+    #expect(WordFixes.Counts(reverted) == WordFixes.Counts(corrections: 1),
+            "A Review rejection is provenance, not a remaining automatic fix.")
+}
+
+@Test func untimedRemappingKeepsUnchangedWordOwnership() throws {
+    let old = TranscriptSegment(start: 0, end: 6, text: "a b c d e f")
+    let new = TranscriptSegment(start: 0, end: 6, text: "ab c d e f",
+                                fixes: [TranscriptWordFix(first: 0, end: 1, heard: "a b", kind: .correction)])
+
+    #expect(try SpeakerTranscriptRetarget.owners(from: old, to: new, commonBase: true) == [0, 2, 3, 4, 5])
+}
+
+@Test func untimedRemappingUsesFixProvenanceBesideADuplicate() throws {
+    let old = TranscriptSegment(start: 0, end: 3, text: "one two three")
+    let new = TranscriptSegment(start: 0, end: 3, text: "two two three",
+                                fixes: [TranscriptWordFix(first: 0, end: 1, heard: "one", kind: .correction)])
+
+    #expect(try SpeakerTranscriptRetarget.owners(from: old, to: new, commonBase: true) == [0, 1, 2],
+            "The replacement belongs to the first original word, not the identical unchanged word beside it.")
+}
+
 // MARK: - Recovery
 
 @Test func aFailedWordFixIsNotSettled() {

@@ -381,7 +381,7 @@ public struct ReviewWord: Sendable, Equatable {
             guard let segment = segments[span.segmentID] else { continue }
             let effective = WordTiming.effectiveWords(of: segment)
             guard span.first >= 0, span.first < span.end, span.end <= effective.count else { continue }
-            let fixes = segment.fixes ?? []
+            let fixes = (segment.fixes ?? []).filter { $0.kind == .correction || $0.kind == .term }
             for index in span.first..<span.end {
                 let word = effective[index]
                 words.append(ReviewWord(ref: WordRef(segmentID: span.segmentID, word: index), text: word.text,
@@ -598,6 +598,19 @@ public struct ReviewWord: Sendable, Equatable {
     /// Splits a turn before `word` (a word of the turn other than its first).
     public func split(turnID: String, at word: WordRef) async throws {
         try await apply([.splitTurn(turnID: resolvedTurnID(turnID), at: word)])
+    }
+
+    /// Changes the automatic fix covering `word` back to what the recognizer heard. The other word fixes and the
+    /// current speaker edits stay; this publishes a new transcript and speaker head, so it is not part of speaker
+    /// edit undo.
+    public func revertWordFix(_ word: WordRef) async throws {
+        try requireEditable()
+        guard let segment = segments[word.segmentID], (segment.fixes ?? []).contains(where: {
+            ($0.kind == .correction || $0.kind == .term) && $0.first <= word.word && word.word < $0.end
+        }) else {
+            throw HolosError.invalidInput("That word was not fixed automatically.")
+        }
+        try await enqueue(.revertWordFix(word), optimistic: [])
     }
 
     /// Moves every turn of `speakerID` to `target`; `speakerID` disappears. `target` keeps its name.
@@ -856,6 +869,7 @@ public struct ReviewWord: Sendable, Equatable {
             case confirmAll(learnVoices: Bool, suggestions: [String: String])
             case markSelf(speakerID: String, learnVoice: Bool)
             case undo(UndoTarget)
+            case revertWordFix(WordRef)
             case relabel([String])
             case reload
             case exports
@@ -896,7 +910,7 @@ public struct ReviewWord: Sendable, Equatable {
         var isUndoable: Bool {
             switch kind {
             case .edit, .link, .assignPerson, .confirmAll, .markSelf: true
-            case .undo, .relabel, .reload, .exports: false
+            case .undo, .revertWordFix, .relabel, .reload, .exports: false
             }
         }
 
@@ -1054,6 +1068,58 @@ public struct ReviewWord: Sendable, Equatable {
             }
             for batch in batches.reversed() {
                 try await undoBatch(batch, op: op)
+            }
+        case .revertWordFix(let word):
+            try requireBasis(op)
+            guard let runID = snapshot.run?.id else {
+                throw HolosError.invalidInput("The speaker labels cannot be kept on the reverted words.")
+            }
+            let session = self.session
+            let transcriptID = snapshot.transcript.id
+            let outcome = await Self.detachedResult {
+                try await SessionWordFixRevert.run(session: session, word: word,
+                                                   expectedTranscriptID: transcriptID, expectedRunID: runID)
+            }
+            switch outcome {
+            case .success:
+                do {
+                    adopt(try await loadSnapshot(), op: nil, matching: nil, external: true)
+                } catch {
+                    holdUnreread(matching: nil, problem: "The word fix was reverted, but the window could not "
+                                 + "reread the speaker labels: \(error.localizedDescription)")
+                    changesSaved(exportsWritten: false)
+                    throw HolosError.incomplete("The word fix was reverted, but the review could not be refreshed.")
+                }
+                changesSaved(exportsWritten: false)
+            case .failure(let error):
+                if error is CancellationError { throw error }
+                if error is SessionWordFixRevert.IncompletePublication {
+                    let repair = await Self.detachedResult {
+                        try await SessionWordFixRevert.repairCurrentHead(
+                            session: session, expectedTranscriptID: transcriptID, expectedRunID: runID)
+                    }
+                    do {
+                        try repair.get()
+                        let fresh = try await loadSnapshot()
+                        guard fresh.projection != nil, !fresh.transcriptChanged else {
+                            throw HolosError.unavailable("The new speaker head is incomplete.")
+                        }
+                        adopt(fresh, op: nil, matching: nil, external: true)
+                        changesSaved(exportsWritten: false)
+                        return
+                    } catch let reread {
+                        holdUnreread(matching: nil, problem: "The word fix was reverted, but the window could not "
+                                     + "reread the speaker labels: \(reread.localizedDescription)")
+                    }
+                    changesSaved(exportsWritten: false)
+                    throw error
+                }
+                do {
+                    adopt(try await loadSnapshot(), op: nil, matching: nil, external: true)
+                } catch {
+                    Self.log.error("Session \(self.sessionID, privacy: .public): labels not reread after a word-fix refusal (\(ProcessSpawner.logCategory(error), privacy: .public))")
+                }
+                throw error
             }
         case .relabel(let arguments):
             try await runRelabel(arguments)
@@ -1929,7 +1995,7 @@ public struct ReviewWord: Sendable, Equatable {
             // Until the earlier change is saved its effect is simply not shown (it is `undone`).
             guard earlier.finished || earlier.superseded else { return [] }
             return reverts(of: earlier.batches).map { ($0, UUID().uuidString) }
-        case .relabel, .reload, .exports:
+        case .revertWordFix, .relabel, .reload, .exports:
             return []
         case .edit, .link, .assignPerson, .confirmAll, .markSelf:
             guard !op.undone else { return [] }
@@ -2064,7 +2130,7 @@ public struct ReviewWord: Sendable, Equatable {
         case .exports: exportsPending ? "Updating the transcript files…" : nil
         case .reload: nil
         // Voices are learned afterwards, in the background (`voiceStatus`).
-        case .link, .assignPerson, .markSelf, .confirmAll, .edit, .undo: "Saving…"
+        case .link, .assignPerson, .markSelf, .confirmAll, .edit, .undo, .revertWordFix: "Saving…"
         }
     }
 
