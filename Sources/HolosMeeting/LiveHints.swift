@@ -193,23 +193,27 @@ public enum LiveHints {
             let hint = edit.hint
             guard case .replaceText(let replacement) = hint.action else { continue }
             if let found = match(hint, in: result, text: replacement),
-               let range = characterRange(found.words, in: result.segments[found.segment]),
+               let range = characterRange(found.words, matching: replacement,
+                                          in: result.segments[found.segment]),
                text(in: range, of: result.segments[found.segment]) == replacement {
                 already += 1
                 continue
             }
             // Recovery may already contain an intermediate state (A→B→C replayed from B). Prefer the most
             // recent heard form, but keep the first form as the single collapsed mark's provenance.
-            let found = edit.heard.reversed().lazy.compactMap { match(hint, in: result, text: $0) }.first
+            let found = edit.heard.reversed().lazy.compactMap { heard in
+                match(hint, in: result, text: heard).map { (match: $0, heard: heard) }
+            }.first
             if let found,
-               let working = WordFixes.Working(result.segments[found.segment], preservingExistingFixes: true),
-               let range = characterRange(found.words, in: result.segments[found.segment]) {
+               let working = WordFixes.Working(result.segments[found.match.segment], preservingExistingFixes: true),
+               let range = characterRange(found.match.words, matching: found.heard,
+                                          in: result.segments[found.match.segment]) {
                 let changed = WordFixes.applying([
                     .init(range: range, text: replacement, kind: .liveCorrection, heard: hint.heard),
                 ], to: working)
-                let segment = WordFixes.finished(changed, segment: result.segments[found.segment])
-                if segment != result.segments[found.segment] {
-                    result.segments[found.segment] = segment
+                let segment = WordFixes.finished(changed, segment: result.segments[found.match.segment])
+                if segment != result.segments[found.match.segment] {
+                    result.segments[found.match.segment] = segment
                     applied += 1
                 } else {
                     unmatched += 1
@@ -276,7 +280,12 @@ public enum LiveHints {
         }?.match
     }
 
-    private static func characterRange(_ words: Range<Int>, in segment: TranscriptSegment) -> Range<Int>? {
+    /// The word range, expanded to the exact displayed phrase when it also contains untimed punctuation. Speech can
+    /// give "Hello." a timed word range covering only "Hello"; replacing just that range with "Hi." would otherwise
+    /// leave the old period behind and produce "Hi..". Requiring the displayed phrase to contain the timed range
+    /// keeps repeated text elsewhere in the segment out of the match.
+    private static func characterRange(_ words: Range<Int>, matching displayed: String,
+                                       in segment: TranscriptSegment) -> Range<Int>? {
         let effective = WordTiming.effectiveWords(of: segment)
         guard !words.isEmpty, words.lowerBound >= 0, words.upperBound <= effective.count else { return nil }
         let first = effective[words.lowerBound]
@@ -284,6 +293,19 @@ public enum LiveHints {
         let range = first.utf16Offset..<(last.utf16Offset + last.utf16Length)
         guard range.lowerBound >= 0, range.lowerBound < range.upperBound,
               range.upperBound <= segment.text.utf16.count else { return nil }
+        let displayed = displayed.trimmingCharacters(in: .whitespacesAndNewlines)
+        let length = displayed.utf16.count
+        guard length >= range.count, length <= segment.text.utf16.count else { return range }
+        let firstStart = max(0, range.upperBound - length)
+        let lastStart = min(range.lowerBound, segment.text.utf16.count - length)
+        guard firstStart <= lastStart else { return range }
+        let source = segment.text as NSString
+        for start in firstStart...lastStart {
+            let candidate = source.substring(with: NSRange(location: start, length: length))
+            if candidate.compare(displayed, options: [.caseInsensitive]) == .orderedSame {
+                return start..<(start + length)
+            }
+        }
         return range
     }
 

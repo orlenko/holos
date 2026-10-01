@@ -57,6 +57,24 @@ private func hint(_ segment: TranscriptSegment, words: Range<Int>, action: LiveH
     #expect(outcome.transcript.segments[0].text == "a live Rust demo")
 }
 
+@Test func liveTextHintReplacesUntimedPunctuationOnlyOnce() {
+    let segment = TranscriptSegment(
+        id: "live", start: 2, end: 2.3, text: "Hello.",
+        words: [TimedWord(text: "Hello", start: 2, end: 2.3, utf16Offset: 0, utf16Length: 5)],
+        track: "mic")
+    let live = LiveHint(id: "H1", at: SessionFixtures.date, segmentID: "live", track: "mic",
+                        firstWord: 0, endWord: 1, start: 2, end: 2.3, heard: "Hello.",
+                        action: .replaceText("Hi."))
+
+    let first = LiveHints.applyingText([live], to: SessionFixtures.transcript([segment]))
+    let second = LiveHints.applyingText([live], to: first.transcript)
+
+    #expect(first.transcript.segments[0].text == "Hi.")
+    #expect(second.applied == 0)
+    #expect(second.alreadyApplied == 1)
+    #expect(second.transcript.segments[0].text == "Hi.")
+}
+
 @Test func liveTextHintUsesTimeToDisambiguateRepeatedWords() {
     let early = SessionFixtures.segment(["send", "the", "deck"], track: "system", start: 2, id: "early")
     let live = SessionFixtures.segment(["send", "the", "deck"], track: "system", start: 20, id: "live")
