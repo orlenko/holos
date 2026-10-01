@@ -303,6 +303,11 @@ enum WordFixStage {
         var estimated: Bool
     }
 
+    private struct WordOrigin {
+        var start: Double
+        var end: Double
+    }
+
     /// Fixes `base` (a transcript none of whose words were fixed) without saving anything: the learned corrections
     /// everywhere, then each place where a phrase of `terms` (heard → term pairs) was written, outside what the
     /// corrections changed, put to the model with the passage around it (its segment, and for a short segment the ends
@@ -525,6 +530,7 @@ enum WordFixStage {
         var result: [PriorFix] = []
         for segment in transcript.segments {
             let words = WordTiming.effectiveWords(of: segment)
+            guard let origins = wordOrigins(of: segment) else { continue }
             let text = segment.text as NSString
             for fix in segment.fixes ?? []
             where fix.kind == .correction || fix.kind == .term || fix.kind == .reviewRevert {
@@ -532,16 +538,12 @@ enum WordFixStage {
                 let first = words[fix.first], last = words[fix.end - 1]
                 let range = NSRange(location: first.utf16Offset,
                                     length: last.utf16Offset + last.utf16Length - first.utf16Offset)
-                guard range.location >= 0, range.location + range.length <= text.length else { continue }
-                let duration = max(0, last.end - first.start)
+                guard range.location >= 0, range.location + range.length <= text.length,
+                      let location = fixLocation(first: fix.first, end: fix.end,
+                                                 words: words, origins: origins) else { continue }
                 result.append(PriorFix(segmentID: segment.id, heard: fix.heard,
                                        visible: text.substring(with: range), kind: fix.kind,
-                                       location: FixLocation(
-                                        midpoint: (first.start + last.end) / 2,
-                                        tolerance: max(0.05, duration / 4),
-                                        wordMidpoint: (Double(fix.first) + Double(fix.end)) / 2,
-                                        wordTolerance: max(1, Double(fix.end - fix.first) / 4),
-                                        estimated: first.estimated || last.estimated)))
+                                       location: location))
             }
         }
         return result
@@ -552,22 +554,19 @@ enum WordFixStage {
         var result: [AcceptedTerm] = []
         for segment in transcript.segments {
             let words = WordTiming.effectiveWords(of: segment)
+            guard let origins = wordOrigins(of: segment) else { continue }
             let text = segment.text as NSString
             for fix in segment.fixes ?? [] where fix.kind == .term {
                 guard fix.first >= 0, fix.first < fix.end, fix.end <= words.count else { continue }
                 let first = words[fix.first], last = words[fix.end - 1]
                 let range = NSRange(location: first.utf16Offset,
                                     length: last.utf16Offset + last.utf16Length - first.utf16Offset)
-                guard range.location >= 0, range.location + range.length <= text.length else { continue }
-                let duration = max(0, last.end - first.start)
+                guard range.location >= 0, range.location + range.length <= text.length,
+                      let location = fixLocation(first: fix.first, end: fix.end,
+                                                 words: words, origins: origins) else { continue }
                 result.append(AcceptedTerm(segmentID: segment.id, heard: fix.heard,
                                            visible: text.substring(with: range),
-                                           location: FixLocation(
-                                            midpoint: (first.start + last.end) / 2,
-                                            tolerance: max(0.05, duration / 4),
-                                            wordMidpoint: (Double(fix.first) + Double(fix.end)) / 2,
-                                            wordTolerance: max(1, Double(fix.end - fix.first) / 4),
-                                            estimated: first.estimated || last.estimated)))
+                                           location: location))
             }
         }
         return result
@@ -609,22 +608,19 @@ enum WordFixStage {
         var result: [RevertedFix] = []
         for segment in transcript.segments {
             let words = WordTiming.effectiveWords(of: segment)
+            guard let origins = wordOrigins(of: segment) else { continue }
             let text = segment.text as NSString
             for fix in segment.fixes ?? [] where fix.kind == .reviewRevert {
                 guard fix.first >= 0, fix.first < fix.end, fix.end <= words.count else { continue }
                 let first = words[fix.first], last = words[fix.end - 1]
                 let range = NSRange(location: first.utf16Offset,
                                     length: last.utf16Offset + last.utf16Length - first.utf16Offset)
-                guard range.location >= 0, range.location + range.length <= text.length else { continue }
-                let duration = max(0, last.end - first.start)
+                guard range.location >= 0, range.location + range.length <= text.length,
+                      let location = fixLocation(first: fix.first, end: fix.end,
+                                                 words: words, origins: origins) else { continue }
                 result.append(RevertedFix(segmentID: segment.id, rejected: fix.heard,
                                           visible: text.substring(with: range),
-                                          location: FixLocation(
-                                            midpoint: (first.start + last.end) / 2,
-                                            tolerance: max(0.05, duration / 4),
-                                            wordMidpoint: (Double(fix.first) + Double(fix.end)) / 2,
-                                            wordTolerance: max(1, Double(fix.end - fix.first) / 4),
-                                            estimated: first.estimated || last.estimated)))
+                                          location: location))
             }
         }
         return result
@@ -634,19 +630,71 @@ enum WordFixStage {
                                  segment: TranscriptSegment)
         -> FixLocation? {
         let range = match.range.location..<(match.range.location + match.range.length)
-        let words = WordTiming.effectiveWords(of: WordFixes.finished(working, segment: segment))
+        let finished = WordFixes.finished(working, segment: segment)
+        let words = WordTiming.effectiveWords(of: finished)
+        guard let origins = wordOrigins(of: finished) else { return nil }
         let touched = words.indices.filter { index in
             let word = words[index]
             return (word.utf16Offset..<(word.utf16Offset + word.utf16Length)).overlaps(range)
         }
         guard let firstIndex = touched.first, let lastIndex = touched.last else { return nil }
-        let first = words[firstIndex], last = words[lastIndex]
-        let duration = max(0, last.end - first.start)
-        return FixLocation(midpoint: (first.start + last.end) / 2,
+        return fixLocation(first: firstIndex, end: lastIndex + 1, words: words, origins: origins)
+    }
+
+    /// Each current word's interval in the segment's pre-fix word order. Live replacements before an untimed match
+    /// can change its raw index; their `heard` provenance keeps both revisions in this common coordinate space.
+    private static func wordOrigins(of segment: TranscriptSegment) -> [WordOrigin]? {
+        let count = WordTiming.effectiveWords(of: segment).count
+        let fixes = (segment.fixes ?? []).sorted { ($0.first, $0.end) < ($1.first, $1.end) }
+        var result: [WordOrigin] = []
+        var current = 0
+        var original = 0
+        func appendUnchanged(_ amount: Int) {
+            for offset in 0..<amount {
+                result.append(WordOrigin(start: Double(original + offset), end: Double(original + offset + 1)))
+            }
+        }
+        for fix in fixes {
+            guard fix.first >= current, fix.first < fix.end, fix.end <= count else { return nil }
+            let unchanged = fix.first - current
+            appendUnchanged(unchanged)
+            current += unchanged
+            original += unchanged
+            let replacementCount = fix.end - fix.first
+            let originalCount: Int
+            switch fix.kind {
+            case .correction, .term, .liveCorrection:
+                originalCount = WordFixes.tokens(of: Array(fix.heard.utf16)).count
+            case .reviewRevert:
+                originalCount = replacementCount
+            default:
+                return nil
+            }
+            guard originalCount > 0 else { return nil }
+            for offset in 0..<replacementCount {
+                result.append(WordOrigin(
+                    start: Double(original) + Double(offset * originalCount) / Double(replacementCount),
+                    end: Double(original) + Double((offset + 1) * originalCount) / Double(replacementCount)))
+            }
+            current = fix.end
+            original += originalCount
+        }
+        appendUnchanged(count - current)
+        return result.count == count ? result : nil
+    }
+
+    private static func fixLocation(first: Int, end: Int, words: [EffectiveWord], origins: [WordOrigin])
+        -> FixLocation? {
+        guard first >= 0, first < end, end <= words.count, origins.count == words.count else { return nil }
+        let firstWord = words[first], lastWord = words[end - 1]
+        let duration = max(0, lastWord.end - firstWord.start)
+        let originStart = origins[first].start
+        let originEnd = origins[end - 1].end
+        return FixLocation(midpoint: (firstWord.start + lastWord.end) / 2,
                            tolerance: max(0.05, duration / 4),
-                           wordMidpoint: (Double(firstIndex) + Double(lastIndex + 1)) / 2,
-                           wordTolerance: max(1, Double(lastIndex + 1 - firstIndex) / 4),
-                           estimated: first.estimated || last.estimated)
+                           wordMidpoint: (originStart + originEnd) / 2,
+                           wordTolerance: max(1, (originEnd - originStart) / 4),
+                           estimated: firstWord.estimated || lastWord.estimated)
     }
 
     private static func matchDistance(_ prior: FixLocation, _ current: FixLocation) -> Double? {

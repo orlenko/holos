@@ -396,6 +396,56 @@ private func hint(_ segment: TranscriptSegment, words: Range<Int>, action: LiveH
     #expect(preserved.segments == [live])
 }
 
+@Test func anUntimedPriorFixFollowsAPrecedingLiveWordInsertion() {
+    let prior = TranscriptSegment(
+        id: "S1", start: 0, end: 2, text: "alpha right", track: "mic",
+        fixes: [.init(first: 1, end: 2, heard: "wrong", kind: .correction)])
+    let live = TranscriptSegment(
+        id: "S1", start: 0, end: 2, text: "one two three four wrong", track: "mic",
+        fixes: [.init(first: 0, end: 4, heard: "alpha", kind: .liveCorrection)])
+
+    let preserved = WordFixStage.preservingPriorFixes(
+        from: SessionFixtures.transcript([prior]), on: SessionFixtures.transcript([live]))
+
+    #expect(preserved.segments[0].text == "one two three four right")
+    #expect(preserved.segments[0].fixes == [
+        .init(first: 0, end: 4, heard: "alpha", kind: .liveCorrection),
+        .init(first: 4, end: 5, heard: "wrong", kind: .correction),
+    ])
+}
+
+@Test func anUntimedAcceptedTermFollowsAPrecedingLiveWordInsertion() {
+    let prior = TranscriptSegment(
+        id: "S1", start: 0, end: 2, text: "alpha Claude", track: "mic",
+        fixes: [.init(first: 1, end: 2, heard: "cloud", kind: .term)])
+    let live = TranscriptSegment(
+        id: "S1", start: 0, end: 2, text: "one two three four cloud", track: "mic",
+        fixes: [.init(first: 0, end: 4, heard: "alpha", kind: .liveCorrection)])
+
+    let preserved = WordFixStage.preservingPriorFixes(
+        from: SessionFixtures.transcript([prior]), on: SessionFixtures.transcript([live]))
+
+    #expect(preserved.segments[0].text == "one two three four Claude")
+    #expect(preserved.segments[0].fixes?.last ==
+        .init(first: 4, end: 5, heard: "cloud", kind: .term))
+}
+
+@Test func anUntimedReviewRevertFollowsAPrecedingLiveWordInsertion() {
+    let prior = TranscriptSegment(
+        id: "S1", start: 0, end: 2, text: "alpha wrong", track: "mic",
+        fixes: [.init(first: 1, end: 2, heard: "right", kind: .reviewRevert)])
+    let live = TranscriptSegment(
+        id: "S1", start: 0, end: 2, text: "one two three four wrong", track: "mic",
+        fixes: [.init(first: 0, end: 4, heard: "alpha", kind: .liveCorrection)])
+
+    let preserved = WordFixStage.preservingPriorFixes(
+        from: SessionFixtures.transcript([prior]), on: SessionFixtures.transcript([live]))
+
+    #expect(preserved.segments[0].text == live.text)
+    #expect(preserved.segments[0].fixes?.last ==
+        .init(first: 4, end: 5, heard: "right", kind: .reviewRevert))
+}
+
 @Test func revertingAnAutomaticFixBesideALongerLiveCorrectionUsesTheLiveBase() throws {
     let segment = SessionFixtures.segment(["alpha", "beta", "wrong"], track: "mic", start: 2, id: "S1")
     let original = SessionFixtures.transcript([segment], id: "original")
