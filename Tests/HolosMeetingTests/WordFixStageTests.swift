@@ -290,44 +290,121 @@ func aDamagedListKeepsTheTranscriptAndSaysWhy() async throws {
 // MARK: - Edited labels
 
 @Test(.timeLimit(.minutes(1)))
-func editedSpeakerLabelsKeepTheTranscriptUnlessFixWordsIsForced() async throws {
+func fixWordsKeepsEditedSpeakerLabelsWithoutLabellingAgain() async throws {
     let temp = try TemporaryDirectory("word-fixes")
     defer { temp.remove() }
     let (session, recorded) = try await wordFixSession(in: temp.url)
     _ = try await wordFixProcessor(.none).run(session: session, lease: nil)
-    try SessionFixtures.appendEdits([.rename(speakerID: "mic:S1", name: "Alice")], session: session)
+    let labelled = try SessionFixtures.view(session)
+    let splitTurn = try #require(labelled.turns.first { $0.spans.contains { $0.segmentID == "C" } })
+    let splitSpan = try #require(splitTurn.spans.first { $0.segmentID == "C" })
+    try SessionFixtures.appendEdits([
+        .rename(speakerID: "mic:S1", name: "Alice"),
+        .splitTurn(turnID: splitTurn.id, at: WordRef(segmentID: "C", word: splitSpan.first + 4)),
+    ], session: session)
     let model = WordFixModel()
     let dependencies = wordFixDependencies(model: .available(model.model))
 
-    // An automatic run (Label Speakers) and fix-words without --force keep the edited labels and the transcript.
+    // An automatic run still leaves an edited head and its transcript alone.
     let automatic = try await wordFixProcessor(dependencies).run(session: session, lease: nil)
     #expect(automatic.state == .partial)
     #expect(wordFixOutcome(automatic)?.result == .skipped)
     #expect(wordFixOutcome(automatic)?.message == WordFixStage.editedHead)
     #expect(try wordFixCurrent(session) == recorded)
     #expect(model.questions.value == 0, "An automatic run does no model work it cannot publish.")
+    let before = try SessionFixtures.view(session)
     let unforced = try await SessionWordFixesCommand.run(
-        SessionWordFixesCommand.Request(session: session), diarizer: FakeDiarizer(
-            outputs: ["mic": SessionFixtures.alternatingOutput()]), freeSpace: FixedFreeSpace(.max),
+        SessionWordFixesCommand.Request(session: session), diarizer: FakeDiarizer(outputs: [:],
+            error: .unavailable("Speaker labelling must not run.")), freeSpace: FixedFreeSpace(.max),
         wordFixes: dependencies)
-    #expect(unforced.exitCode == 3)
-    #expect(unforced.summary.hasPrefix(WordFixStage.editedHead))
-    #expect(try wordFixCurrent(session) == recorded)
-    #expect(try SessionFixtures.view(session).speakers.contains { $0.name == "Alice" })
-    #expect(model.questions.value == 0, "An unforced fix-words does no model work it cannot publish.")
+    #expect(unforced.exitCode == 0)
+    #expect(unforced.summary.hasPrefix("Fixed 3 misheard words: 1 by corrections, 2 word-list terms. "
+        + "Kept the speaker labels on the fixed words."))
+    let fixed = try wordFixCurrent(session)
+    #expect(fixed.fixedFrom == recorded.id)
+    let kept = try SessionFixtures.view(session)
+    #expect(kept.runID != before.runID && kept.transcriptID == fixed.id)
+    #expect(kept.speakers.contains { $0.name == "Alice" })
+    #expect(kept.turns.map(\.id) == before.turns.map(\.id), "The effective split edit was replayed.")
+    #expect(kept.turns.map(\.speakerID) == before.turns.map(\.speakerID))
+    #expect(model.questions.value == 3)
 
-    // With --force the words are fixed, speakers labelled again on them, and the name carries over.
+    // With --force a later word change still labels again, and the name carries over.
+    var more = wordFixCorrections
+    more.add(Correction(heard: "the parser", meant: "the lexer"))
     let forced = try await SessionWordFixesCommand.run(
         SessionWordFixesCommand.Request(session: session, force: true), diarizer: FakeDiarizer(
             outputs: ["mic": SessionFixtures.alternatingOutput()]), freeSpace: FixedFreeSpace(.max),
-        wordFixes: dependencies)
+        wordFixes: wordFixDependencies(corrections: more, model: .available(model.model)))
     #expect(forced.exitCode == 0)
-    #expect(forced.summary.hasPrefix("Fixed 3 misheard words: 1 by corrections, 2 word-list terms. Labelled "))
-    let fixed = try wordFixCurrent(session)
-    #expect(fixed.fixedFrom == recorded.id)
+    #expect(forced.summary.hasPrefix("Fixed 4 misheard words: 2 by corrections, 2 word-list terms. Labelled "))
+    let refixed = try wordFixCurrent(session)
+    #expect(refixed.fixedFrom == recorded.id && refixed.segments[0].text.contains("the lexer"))
     let view = try SessionFixtures.view(session)
-    #expect(view.transcriptID == fixed.id)
+    #expect(view.transcriptID == refixed.id)
     #expect(view.speakers.contains { $0.name == "Alice" })
+}
+
+@Test(.timeLimit(.minutes(1)))
+func aFailedPreservedHeadStopsBeforeRelabelling() async throws {
+    let temp = try TemporaryDirectory("word-fixes")
+    defer { temp.remove() }
+    let (session, recorded) = try await wordFixSession(in: temp.url)
+    _ = try await wordFixProcessor(.none).run(session: session, lease: nil)
+    let before = try #require(try SessionSpeakerStore.readHead(session: session))
+    try SessionFixtures.appendEdits([.rename(speakerID: "mic:S1", name: "Alice")], session: session)
+    let dependencies = wordFixDependencies(model: .available(WordFixModel().model))
+
+    let outcome = try await SpeakerTranscriptRetarget.$beforePublishHead.withValue({
+        throw HolosError.io("head is read-only")
+    }) {
+        try await SessionWordFixesCommand.run(
+            SessionWordFixesCommand.Request(session: session),
+            diarizer: FakeDiarizer(outputs: [:], error: .unavailable("Speaker labelling must not run.")),
+            freeSpace: FixedFreeSpace(.max), wordFixes: dependencies)
+    }
+
+    #expect(outcome.exitCode == 3)
+    #expect(try wordFixCurrent(session).id != recorded.id, "The transcript was already published.")
+    #expect(try SessionSpeakerStore.readHead(session: session) == before, "The edited old head is not replaced.")
+    #expect(outcome.record.stages.last { $0.stage == .align }?.result == .skipped)
+    #expect(outcome.record.stages.last { $0.stage == .export }?.result == .skipped)
+
+    let repaired = try await SessionWordFixesCommand.run(
+        SessionWordFixesCommand.Request(session: session),
+        diarizer: FakeDiarizer(outputs: [:], error: .unavailable("Speaker labelling must not run.")),
+        freeSpace: FixedFreeSpace(.max), wordFixes: dependencies)
+    #expect(repaired.exitCode == 0)
+    #expect(try SessionSpeakerStore.readHead(session: session)?.runID != before.runID)
+    #expect(try SessionFixtures.view(session).speakers.contains { $0.name == "Alice" },
+            "A later pass repairs the staged relationship instead of relabelling.")
+}
+
+@Test(.timeLimit(.minutes(1)))
+func cancellationAfterPreservingTheHeadStillRefreshesExports() async throws {
+    let temp = try TemporaryDirectory("word-fixes")
+    defer { temp.remove() }
+    let (session, recorded) = try await wordFixSession(in: temp.url)
+    _ = try await wordFixProcessor(.none).run(session: session, lease: nil)
+    try SessionFixtures.appendEdits([.rename(speakerID: "mic:S1", name: "Alice")], session: session)
+    let dependencies = wordFixDependencies(model: .available(WordFixModel().model))
+
+    await #expect(throws: CancellationError.self) {
+        try await SpeakerTranscriptRetarget.$afterPublishHead.withValue({
+            withUnsafeCurrentTask { $0?.cancel() }
+        }) {
+            try await SessionWordFixesCommand.run(
+                SessionWordFixesCommand.Request(session: session), diarizer: nil,
+                freeSpace: FixedFreeSpace(.max), wordFixes: dependencies)
+        }
+    }
+
+    let fixed = try wordFixCurrent(session)
+    #expect(fixed.id != recorded.id)
+    let head = try #require(try SessionSpeakerStore.readHead(session: session))
+    #expect(try SessionSpeakerStore.readRun(id: head.runID, session: session).transcriptID == fixed.id)
+    #expect(SessionFixtures.text(SessionPaths.export("md", in: session)).contains("asked Claude to refactor"),
+            "Exports catch up before cancellation is honoured.")
 }
 
 @Test(.timeLimit(.minutes(1)))

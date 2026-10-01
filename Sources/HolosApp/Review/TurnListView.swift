@@ -16,6 +16,11 @@ final class AssignChoice: NSObject {
     init(_ kind: Kind) { self.kind = kind }
 }
 
+private final class WordFixChoice: NSObject {
+    let word: WordRef
+    init(_ word: WordRef) { self.word = word }
+}
+
 /// The items of a speaker menu: the meeting's speakers, the known people without a speaker in it, "Unknown", and
 /// "New Speaker…". Menu items are made directly (never by title), so two speakers with one name stay apart.
 @MainActor
@@ -62,6 +67,8 @@ final class TurnTableView: NSTableView {
     var onDigit: ((Int) -> Void)?
     /// A word was clicked: the session time it starts at.
     var onWordClick: ((Double) -> Void)?
+    /// Revert the automatic fix under a contextual-menu word.
+    var onRevertFix: ((WordRef) -> Void)?
     /// Return or Enter: play the selected turn (the keyboard's way to what a click on its timestamp does).
     var onReturn: (() -> Void)?
 
@@ -107,6 +114,26 @@ final class TurnTableView: NSTableView {
               let start = cell.bodyText.wordStart(at: cell.bodyText.convert(point, from: self)) else { return }
         onWordClick?(start)
     }
+
+    override func menu(for event: NSEvent) -> NSMenu? {
+        let point = convert(event.locationInWindow, from: nil)
+        let row = row(at: point)
+        guard row >= 0, let cell = view(atColumn: 0, row: row, makeIfNecessary: false) as? TurnCellView,
+              cell.bodyText.canRevertFix,
+              let word = cell.bodyText.word(at: cell.bodyText.convert(point, from: self)),
+              let fix = word.fix else { return super.menu(for: event) }
+        let menu = NSMenu()
+        let item = NSMenuItem(title: "Revert to “\(fix.heard)”", action: #selector(revertFix(_:)), keyEquivalent: "")
+        item.target = self
+        item.representedObject = WordFixChoice(word.ref)
+        menu.addItem(item)
+        return menu
+    }
+
+    @objc private func revertFix(_ sender: NSMenuItem) {
+        guard let choice = sender.representedObject as? WordFixChoice else { return }
+        onRevertFix?(choice.word)
+    }
 }
 
 /// A turn's text: wrapping, neither editable nor selectable, with each word's start time for playing from it. Clicks
@@ -117,11 +144,14 @@ final class TurnTextView: NSTextView {
     private var wordRanges: [NSRange?] = []
     private var wordStarts: [Double] = []
     private var wordTexts: [String] = []
+    private var wordRefs: [WordRef] = []
     /// What the meeting's word fixes changed, per word (nil for a word as recognized).
     private var wordFixes: [TranscriptWordFix?] = []
     private var playingWord: Int?
     /// Plays from a session time: VoiceOver's "Play from …" actions, one per word (clicks go through the table).
     var onPlay: ((Double) -> Void)?
+    var onRevertFix: ((WordRef) -> Void)?
+    var canRevertFix = false
     private var textColorShown: NSColor = .labelColor
     /// The root of this view's text system (it keeps the layout manager and the container): a text view made with
     /// its own container does not own its storage.
@@ -187,6 +217,7 @@ final class TurnTextView: NSTextView {
         wordRanges = ReviewWordRanges.ranges(of: words.map(\.text), in: text)
         wordStarts = words.map(\.start)
         wordTexts = words.map(\.text)
+        wordRefs = words.map(\.ref)
         wordFixes = words.map(\.fix)
         // Words the meeting's word fixes changed: a dotted underline, and what was heard there in the tooltip.
         if let storage = textStorage {
@@ -213,6 +244,7 @@ final class TurnTextView: NSTextView {
     /// when asked for, never announced.
     override func accessibilityCustomActions() -> [NSAccessibilityCustomAction]? {
         var actions: [NSAccessibilityCustomAction] = []
+        var offeredFixes = Set<String>()
         for (index, start) in wordStarts.enumerated() {
             let word = index < wordTexts.count ? wordTexts[index].trimmingCharacters(in: .whitespacesAndNewlines) : ""
             let fix = index < wordFixes.count ? wordFixes[index].map { ", " + TurnTextView.fixDescription($0) } : nil
@@ -222,6 +254,17 @@ final class TurnTextView: NSTextView {
                 onPlay(start)
                 return true
             })
+            if canRevertFix, index < wordRefs.count, index < wordFixes.count, let fixed = wordFixes[index] {
+                let ref = wordRefs[index]
+                let key = "\(ref.segmentID)\u{1f}\(fixed.first)\u{1f}\(fixed.end)"
+                if offeredFixes.insert(key).inserted {
+                    actions.append(NSAccessibilityCustomAction(name: "Revert to “\(fixed.heard)”") { [weak self] in
+                        guard let onRevertFix = self?.onRevertFix else { return false }
+                        onRevertFix(ref)
+                        return true
+                    })
+                }
+            }
         }
         return actions.isEmpty ? nil : actions
     }
@@ -258,6 +301,19 @@ final class TurnTextView: NSTextView {
 
     /// The start time of the word under `point` (in this view), or nil when the point is not on the text.
     func wordStart(at point: NSPoint) -> Double? {
+        guard let index = wordIndex(at: point), index < wordStarts.count else { return nil }
+        return wordStarts[index]
+    }
+
+    /// The review word under `point`, for its contextual action.
+    func word(at point: NSPoint) -> ReviewWord? {
+        guard let index = wordIndex(at: point), index < wordRefs.count, index < wordTexts.count,
+              index < wordStarts.count else { return nil }
+        return ReviewWord(ref: wordRefs[index], text: wordTexts[index], start: wordStarts[index],
+                          fix: index < wordFixes.count ? wordFixes[index] : nil)
+    }
+
+    private func wordIndex(at point: NSPoint) -> Int? {
         guard let layout = layoutManager, let container = textContainer, let storage = textStorage,
               storage.length > 0 else { return nil }
         var fraction: CGFloat = 0
@@ -266,10 +322,7 @@ final class TurnTextView: NSTextView {
         let rect = layout.boundingRect(forGlyphRange: NSRange(location: glyph, length: 1), in: container)
         guard rect.insetBy(dx: -2, dy: -1).contains(point) else { return nil }
         let character = layout.characterIndexForGlyph(at: glyph)
-        guard let word = ReviewWordRanges.word(at: character, ranges: wordRanges), word < wordStarts.count else {
-            return nil
-        }
-        return wordStarts[word]
+        return ReviewWordRanges.word(at: character, ranges: wordRanges)
     }
 
     /// Where word `index` is drawn, in this view; nil when it is not in the text.
@@ -308,6 +361,7 @@ final class TurnScrollView: NSScrollView {
 final class TurnListView: NSView, NSTableViewDataSource, NSTableViewDelegate {
     /// A timestamp or a word was clicked: play from this session time.
     var onPlay: ((Double) -> Void)?
+    var onRevertFix: ((WordRef) -> Void)?
     var onAssign: (([String], ReviewAssignTarget) -> Void)?
     var onNewSpeaker: (([String]) -> Void)?
     var onSelectionChange: (() -> Void)?
@@ -373,6 +427,7 @@ final class TurnListView: NSView, NSTableViewDataSource, NSTableViewDelegate {
         scroll.onUserScroll = { [weak self] in self?.onUserScroll?() }
         table.onKeyboardScroll = { [weak self] in self?.onUserScroll?() }
         table.onWordClick = { [weak self] seconds in self?.onPlay?(seconds) }
+        table.onRevertFix = { [weak self] word in self?.onRevertFix?(word) }
     }
 
     required init?(coder: NSCoder) { nil }
@@ -473,6 +528,7 @@ final class TurnListView: NSView, NSTableViewDataSource, NSTableViewDelegate {
             cell.hintButton.target = self
             cell.hintButton.action = #selector(hintClicked(_:))
             cell.bodyText.onPlay = { [weak self] seconds in self?.onPlay?(seconds) }
+            cell.bodyText.onRevertFix = { [weak self] word in self?.onRevertFix?(word) }
             return cell
         }()
         let turn = turns[row]
@@ -693,6 +749,7 @@ final class TurnCellView: NSTableCellView {
             speakerPopUp.selectItem(at: index)
         }
         speakerPopUp.isEnabled = editable
+        bodyText.canRevertFix = editable
         warningLabel.stringValue = Self.warning(turn)
         warningLabel.toolTip = Self.warningHelp(turn)
         if let hint {

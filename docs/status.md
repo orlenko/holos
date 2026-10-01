@@ -350,15 +350,20 @@ Hardware-facing and cross-app acceptance remain pending.
   revision (`fixedFrom`, `wordsFixed`; the one before is kept), fixed words are marked and
   shown with a dotted underline and a "Heard as" tooltip in the review, and `voiceislocal
   session fix-words <session> [--force]` fixes an existing meeting again with today's
-  corrections and terms (edited speaker labels are kept unless `--force`). On invented
+  corrections and terms, mapping the current speaker labels and their effective edits to
+  the new word positions without diarizing (`--force` labels again). Review can revert one
+  dotted-underlined fix from its contextual menu or VoiceOver action while keeping the
+  other word fixes and speaker edits; automatic post-processing keeps that rejection until
+  `session fix-words` is explicitly requested. Untimed segments use word order rather than
+  their redistributed estimated times when labels are mapped. On invented
   sentences the model never put the term where it was not meant and found it in 3 of the 6
   places of an invented meeting where it was meant.
   The stage (versions, re-runs, the model off, edited labels, cancellation, the languages
   stage and recovery seeing through a fix), the timings, and the question are unit-tested
   with a scripted model; it has not run on a real meeting yet, and the review's underline
-  has not been seen on screen. `eval apply --add-vocabulary` proposes and adds
-  often-heard-as words where reviewed passages replaced real words by a term. Reverting one
-  fix from the review, and `eval local` applying the stage to its candidate, are follow-ups.
+  and revert menu have not been seen on screen. `eval apply --add-vocabulary` proposes and adds
+  often-heard-as words where reviewed passages replaced real words by a term. `eval local`
+  applies the stage to its candidate by default (`--no-word-fixes` opts out).
 - Main window (docs/design.md "Main window"): **Open Voice is Local** (⌘0) opens one
   window with a sidebar: History (⌘1), Corrections (⌘2), Meetings (⌘3), People (⌘4),
   Reading (⌘5), and Settings (⌘,), with a
@@ -611,13 +616,13 @@ Still requiring real-machine or user-data validation:
   turn's language; `session languages` redoes the whole meeting. The live transcript stays
   in the first language. Where two passages in different languages meet, a word can appear
   twice or not at all.
-- Meeting word fixes: a fix cannot be reverted one at a time in the review (it edits
-  speakers only; `session fix-words` after removing the correction or heard-as word undoes
-  it in a new version). A meeting whose speaker labels were edited is fixed only with
-  `session fix-words --force`, which labels its speakers again (names carry over, turn-level
-  changes do not). `eval local` applies the same fixes to its candidate by default;
-  `--no-word-fixes` keeps the recognizer's words for comparison. The model is asked one
-  place at a time (at most 500 per run).
+- Meeting word fixes: Review can revert one fix at a time, and `session fix-words` maps the
+  current speaker labels and effective edits to the changed word positions without
+  relabelling. A Review revert is kept by automatic processing until `session fix-words` is
+  explicitly requested. `--force` labels speakers again (names carry over, turn-level changes do
+  not). `eval local` applies the same fixes to its candidate by default; `--no-word-fixes`
+  keeps the recognizer's words for comparison. The model is asked one place at a time (at
+  most 500 per run).
 - Live transcript: speakers and text cannot be corrected during the meeting yet. The first
   one or two volatile words of a microphone echo can show briefly (the echo rule needs a
   run of three words), and an echo heard before the system track's words arrive shows until

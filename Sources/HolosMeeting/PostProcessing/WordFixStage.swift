@@ -48,11 +48,16 @@ public struct WordFixDependencies: Sendable {
 /// Fixes are always made from the unfixed transcript, so a run with the same corrections and terms keeps the current
 /// transcript ("already fixed") and a run after they changed replaces it. Nothing is recorded when there are no
 /// corrections and no "often heard as" phrases and the transcript was never fixed. Like the languages stage, it never
-/// replaces a transcript whose speaker labels were edited, unless asked for by name with `force` (`voiceislocal
-/// session fix-words --force`, names carry over when speakers are labelled again). Without the model (Apple
+/// replaces a transcript whose speaker labels were edited automatically. When asked for by name, it maps the current
+/// run and its effective edits onto the new word positions; `force` instead labels speakers again. Without the model (Apple
 /// Intelligence's fix off in Settings, or unavailable) only the corrections are applied, and a transcript whose terms
 /// the model chose before is kept as it is. Cancellation publishes nothing.
 enum WordFixStage {
+    private struct IncompletePublication: LocalizedError {
+        var message: String
+        var errorDescription: String? { message }
+    }
+
     private static let log = Logger(subsystem: "ca.orlenko.holos.app", category: "postprocess")
 
     struct Request {
@@ -75,10 +80,17 @@ enum WordFixStage {
         var note: String?
         /// Why the stage did not do what it would have; makes the post-processing partial.
         var problem: String?
+        /// The current speaker labels were mapped onto this new transcript, so later stages need not label again.
+        var labelsPreserved = false
+        /// The transcript became current but its staged speaker head did not. Later stages must not relabel over the
+        /// old head, which is still the only published copy of the person's turn edits.
+        var speakerHeadIncomplete = false
     }
 
     static let editedHead = "Speaker labels were edited, so misheard words were not fixed again. To fix them and "
         + "label speakers again (names carry over), run voiceislocal session fix-words with --force."
+    static let reviewRevert = "Words changed back in Review were kept. Run voiceislocal session fix-words to check "
+        + "them again."
     /// At most this many places are put to the model in one run; the rest stay as written.
     static let maximumQuestions = 500
     /// After this many questions in a row without an answer in time, no more are asked in that run.
@@ -112,9 +124,18 @@ enum WordFixStage {
         let started = recorder.begin(.wordFixes, message: "Fixing misheard words…")
         try Task.checkCancellation()
 
+        // Review reverts are explicit rejections of automatic replacements. Ordinary post-processing (including
+        // Label Speakers) keeps them; the named command is the deliberate way to check all words again.
+        if !request.requested, current.segments.contains(where: {
+            ($0.fixes ?? []).contains { $0.kind == .reviewRevert }
+        }) {
+            recorder.end(.wordFixes, .skipped, reviewRevert, since: started)
+            return unchanged
+        }
+
         // Do not spend model work on a result that cannot be published. This is checked again after the work and
         // under the publication locks because the labels can still be edited while the model is running.
-        if let problem = editedHeadProblem(request) {
+        if let problem = editedHeadProblem(request), !request.requested {
             recorder.end(.wordFixes, .skipped, problem, since: started)
             return Outcome(transcript: current, problem: problem)
         }
@@ -170,11 +191,21 @@ enum WordFixStage {
         }
         if current.fixedFrom == base.id, current.segments == segments {
             let message = "The words were already fixed (\(summary(counts)))."
-            recorder.end(.wordFixes, .succeeded, [message, detail].compactMap { $0 }.joined(separator: " "),
-                         since: started)
-            return Outcome(transcript: current, note: counts.total == 0 ? nil : note(counts))
+            do {
+                let repaired = request.force ? false
+                    : try await repairPreservedHeadIfNeeded(current, request: request)
+                recorder.end(.wordFixes, .succeeded, [message, detail].compactMap { $0 }.joined(separator: " "),
+                             since: started)
+                return Outcome(transcript: current, note: counts.total == 0 ? nil : note(counts),
+                               labelsPreserved: repaired)
+            } catch let error where !(error is CancellationError) {
+                let problem = "The fixed words were saved, but publication was incomplete: the speaker head "
+                    + "could not be published: \(error.localizedDescription)"
+                recorder.end(.wordFixes, .failed, problem, since: started)
+                return Outcome(transcript: current, problem: problem, speakerHeadIncomplete: true)
+            }
         }
-        if let problem = editedHeadProblem(request) {
+        if let problem = editedHeadProblem(request), !request.requested {
             recorder.end(.wordFixes, .skipped, problem, since: started)
             return Outcome(transcript: current, problem: problem)
         }
@@ -182,23 +213,27 @@ enum WordFixStage {
             "transcriptID": fixed.id, "base": base.id, "corrections": String(counts.corrections),
             "terms": String(counts.terms), "asked": String(asked),
         ]
+        let message = counts.total == 0 ? "No misheard words to fix; the earlier fixes were undone."
+            : "Fixed \(summary(counts))."
         do {
-            if let problem = try await publish(fixed, details: details, request: request) {
+            let publication = try await publish(fixed, details: details, request: request)
+            if let problem = publication.problem {
                 recorder.end(.wordFixes, .skipped, problem, since: started)
                 return Outcome(transcript: current, problem: problem)
             }
+            recorder.end(.wordFixes, .succeeded, [message, detail].compactMap { $0 }.joined(separator: " "),
+                         since: started)
+            log.notice("Session \(request.manifest.id, privacy: .public): fixed \(counts.corrections, privacy: .public) corrections and \(counts.terms, privacy: .public) terms (\(asked, privacy: .public) asked)")
+            return Outcome(transcript: fixed, note: counts.total == 0 ? nil : note(counts),
+                           labelsPreserved: publication.labelsPreserved)
         } catch let error where !(error is CancellationError) {
-            let message = "Kept the transcript as it was: the fixed transcript could not be saved: "
-                + error.localizedDescription
+            let incomplete = error is IncompletePublication
+            let message = (incomplete ? "The fixed words were saved, but publication was incomplete: "
+                : "Kept the transcript as it was: the fixed transcript could not be saved: ") + error.localizedDescription
             recorder.end(.wordFixes, .failed, message, since: started)
-            return Outcome(transcript: current, problem: message)
+            return Outcome(transcript: incomplete ? fixed : current, problem: message,
+                           speakerHeadIncomplete: incomplete)
         }
-        log.notice("Session \(request.manifest.id, privacy: .public): fixed \(counts.corrections, privacy: .public) corrections and \(counts.terms, privacy: .public) terms (\(asked, privacy: .public) asked)")
-        let message = counts.total == 0 ? "No misheard words to fix; the earlier fixes were undone."
-            : "Fixed \(summary(counts))."
-        recorder.end(.wordFixes, .succeeded, [message, detail].compactMap { $0 }.joined(separator: " "),
-                     since: started)
-        return Outcome(transcript: fixed, note: counts.total == 0 ? nil : note(counts))
     }
 
     /// What `fix` made of a transcript.
@@ -378,23 +413,89 @@ enum WordFixStage {
         }
     }
 
-    /// Under the writer lock and then the speaker lock (as the languages stage publishes), checks once more that the
-    /// speaker labels were not edited, then journals `wordsFixed` (before the save, so a fixed current transcript is
-    /// always explained) and makes the fixed transcript current. A cancellation seen with both locks held publishes
-    /// nothing.
-    private static func publish(_ fixed: Transcript, details: [String: String], request: Request) async throws -> String? {
+    private struct Publication {
+        var problem: String?
+        var labelsPreserved = false
+    }
+
+    /// Under the writer lock and then the speaker lock (as the languages stage publishes), checks once more what the
+    /// head is. A named, unforced `fix-words` maps a usable head and its effective edits to the new word positions;
+    /// automatic processing still leaves edited labels and the transcript alone, while `--force` relabels as before.
+    /// The event precedes the transcript pointer, and a preserved head follows it. A cancellation seen with both
+    /// locks held publishes nothing.
+    private static func publish(_ fixed: Transcript, details: [String: String], request: Request) async throws
+        -> Publication {
         let archive = try SessionArchive.openForMaintenance(at: request.session, lease: request.lease)
         do {
-            let problem = try await SessionArchive.withSpeakerLockAsync(at: request.session) { () async throws -> String? in
-                if let problem = editedHeadProblem(request) { return problem }
+            let publication = try await SessionArchive.withSpeakerLockAsync(at: request.session) {
+                () async throws -> Publication in
+                let head = try SpeakerAnalysis.headState(session: request.session, transcript: request.transcript)
+                let edited = head?.needsForce(false) == true
+                if edited, !request.requested { return Publication(problem: editedHead) }
+                var plan: SpeakerTranscriptRetarget.Plan?
+                if request.requested, !request.force, head?.usableRunID != nil {
+                    let snapshot = try SpeakerSessionSnapshot.load(session: request.session)
+                    plan = try SpeakerTranscriptRetarget.plan(session: request.session, from: snapshot, to: fixed)
+                    if edited, plan == nil {
+                        return Publication(problem: "The speaker labels could not be kept, so the transcript was not changed.")
+                    }
+                }
                 whilePublishing?()
                 try Task.checkCancellation()
+                if let plan { try SpeakerTranscriptRetarget.stage(plan, session: request.session) }
                 try await archive.recordEvent(kind: MeetingEventKind.wordsFixed, details: details)
                 try await archive.saveTranscript(fixed, writeLegacyExports: false)
-                return nil
+                if let plan {
+                    do {
+                        try SpeakerTranscriptRetarget.publishHead(plan, session: request.session)
+                    } catch {
+                        throw IncompletePublication(message: "The fixed transcript was saved, but the speaker head "
+                                                    + "could not be published: \(error.localizedDescription)")
+                    }
+                }
+                return Publication(problem: nil, labelsPreserved: plan != nil)
             }
             await archive.releaseLock()
-            return problem
+            return publication
+        } catch {
+            await archive.releaseLock()
+            throw error
+        }
+    }
+
+    /// Repairs the only incomplete state `publish` can leave: the fixed transcript is current while the preceding
+    /// head is still published. The old head remains a complete snapshot, so rebuild the same retarget plan from it.
+    /// Returns true only when it published a replacement head; no head, or a head already on `transcript`, needs the
+    /// ordinary later-stage decision.
+    private static func repairPreservedHeadIfNeeded(_ transcript: Transcript, request: Request) async throws -> Bool {
+        let initial = try SpeakerAnalysis.headState(session: request.session, transcript: transcript)
+        guard let initial, !initial.sameTranscript, initial.run != nil else { return false }
+        let archive = try SessionArchive.openForMaintenance(at: request.session, lease: request.lease)
+        do {
+            let repaired = try await SessionArchive.withSpeakerLockAsync(at: request.session) { () async throws -> Bool in
+                guard try SessionFiles.currentTranscript(session: request.session)?.id == transcript.id else {
+                    throw HolosError.invalidInput("The transcript changed while its speaker labels were being repaired.")
+                }
+                guard let head = try SpeakerAnalysis.headState(session: request.session, transcript: transcript),
+                      head.runID == initial.runID else {
+                    throw HolosError.invalidInput("The speaker labels changed while they were being repaired.")
+                }
+                if head.sameTranscript { return false }
+                let snapshot = try SpeakerSessionSnapshot.load(session: request.session)
+                guard let plan = try SpeakerTranscriptRetarget.plan(session: request.session, from: snapshot,
+                                                                   to: transcript) else {
+                    if head.hasEdits {
+                        throw HolosError.invalidInput("The edited speaker labels cannot be mapped to the fixed words.")
+                    }
+                    return false
+                }
+                try Task.checkCancellation()
+                try SpeakerTranscriptRetarget.stage(plan, session: request.session)
+                try SpeakerTranscriptRetarget.publishHead(plan, session: request.session)
+                return true
+            }
+            await archive.releaseLock()
+            return repaired
         } catch {
             await archive.releaseLock()
             throw error

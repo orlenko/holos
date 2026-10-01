@@ -917,19 +917,27 @@ words with the on-device model:
    and `voiceislocal session fix-words <session> [--force]`, which records the stage even
    with nothing to fix and keeps the speaker labels when the transcript does not change.
    Nothing is recorded without corrections, terms with heard-as words, or an earlier fix.
-   The review window's relabels (`--keep-transcript`) never run it. Speaker labels the user
-   edited are never touched: like the languages stage it then keeps the transcript
-   ("Speaker labels were edited, so misheard words were not fixed again…"), unless asked by
-   name with `--force` (speakers are labelled again, names carry over). Without the model,
+   The review window's relabels (`--keep-transcript`) never run it. Automatic processing
+   leaves a transcript with edited speaker labels alone. A named, unforced `fix-words`
+   instead creates an immutable run for the new transcript, maps every machine turn by word
+   timing (or by an order-preserving word difference for an untimed segment, whose estimated
+   times move when its word count changes), and replays the effective edit journal (including splits, assignments, merges,
+   names, links, rejections and enrollment exclusions); it does not diarize again. `--force`
+   labels speakers again instead (names carry over). Without the model,
    a transcript whose terms the model chose before is kept rather than undone. The same is
    true when any term question fails, times out, is skipped after three consecutive timeouts,
    or lies past the 500-question limit: an incomplete rerun publishes no replacement. A
-   cancellation publishes nothing. A corrections.json or words.json that cannot be read
-   keeps the transcript and makes the record partial.
+   cancellation before publication publishes nothing; once the mapped head is published,
+   exports catch up before cancellation is honoured. A corrections.json or words.json that
+   cannot be read keeps the transcript and makes the record partial.
 6. *Review.* Each fixed word is underlined with dots in the review window; its tooltip and
-   its VoiceOver action say what was heard and whether a correction or a word-list term
-   made it. Reverting one fix there is a follow-up (the review edits speakers only; a text
-   change would be a new revision and a relabel).
+   its VoiceOver actions say what was heard and whether a correction or a word-list term
+   made it. Its contextual menu and VoiceOver offer **Revert to “…”**. Reverting makes a new
+   transcript revision with only that visible mark removed and its original words restored, maps
+   the current immutable speaker run to the new word positions, and replays its effective
+   edit journal without diarizing; other word fixes and speaker edits stay. A hidden
+   `reviewRevert` mark protects that decision from automatic word-fix passes (including Label
+   Speakers); an explicitly requested `session fix-words` checks all words again.
 7. *Evaluation.* `eval apply --add-vocabulary`: where a reviewed passage replaced local
    real words by a term of the word list or a marked one (local "cloud", cloud "Claude"),
    the pair, without the neighbour a correction is learned with, is proposed and added as
@@ -940,9 +948,9 @@ words with the on-device model:
 8. *Recovery and journaled languages.* Recover counts a failed word-fix stage as unsettled
    (it runs again once the files can be read). Languages asked for by name are journaled
    for the transcript a fixed one stands for, so a later fix keeps answering them.
-9. *Known race (follow-up, shared with the languages stage).* A speaker edit saved to the
-   old head while the new transcript's speakers are being labelled is an edit of the
-   replaced labels: names carry over, turn-level changes do not (§4.14 step 6).
+9. *Known race (shared with the languages stage and `fix-words --force`).* A speaker edit
+   saved to the old head while the new transcript's speakers are being labelled is an edit
+   of the replaced labels: names carry over, turn-level changes do not (§4.14 step 6).
 
 ### Meetings
 

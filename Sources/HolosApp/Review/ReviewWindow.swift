@@ -376,6 +376,9 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate {
             self?.perform { review in try await review.acceptTurnHint(turnID) }
         }
         turnList.onPlay = { [weak self] seconds in self?.play(from: seconds) }
+        turnList.onRevertFix = { [weak self] word in
+            self?.perform { review in try await review.revertWordFix(word) }
+        }
         turnList.onUserScroll = { [weak self] in
             self?.follow.userScrolled(at: ProcessInfo.processInfo.systemUptime)
         }

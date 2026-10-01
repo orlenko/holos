@@ -65,6 +65,9 @@ public struct TranscriptWordFixKind: OpenStringCode {
     public static let correction = TranscriptWordFixKind("correction")
     /// A word-list term the on-device model chose where one of its "often heard as" phrases was written.
     public static let term = TranscriptWordFixKind("term")
+    /// A fix the person explicitly reverted in Review. The mark protects those restored words from automatic
+    /// word-fix passes; an explicitly requested `session fix-words` may check them again.
+    public static let reviewRevert = TranscriptWordFixKind("reviewRevert")
 }
 
 /// Words of a segment that the meeting word-fix stage changed (docs/design.md "Meeting word fixes"): what the
@@ -74,7 +77,7 @@ public struct TranscriptWordFix: Codable, Sendable, Equatable {
     /// of speaker turns).
     public var first: Int
     public var end: Int
-    /// The text the recognizer wrote there.
+    /// The text the recognizer wrote there. For `reviewRevert`, the automatic replacement the person rejected.
     public var heard: String
     public var kind: TranscriptWordFixKind
 

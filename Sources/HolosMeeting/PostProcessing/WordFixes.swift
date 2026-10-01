@@ -182,6 +182,108 @@ public enum WordFixes {
         return fixed
     }
 
+    /// A new revision of `transcript` with the fix covering `word` changed back to the recognizer's words from
+    /// `base`. Other fixes and their marks stay. Both revisions must have the same segments; this is deliberately a
+    /// word-fix operation, not a general transcript editor.
+    public static func reverting(_ word: WordRef, in transcript: Transcript, to base: Transcript,
+                                 now: Date = Date()) throws -> Transcript {
+        guard transcript.fixedFrom == base.id,
+              let segmentIndex = transcript.segments.firstIndex(where: { $0.id == word.segmentID }),
+              let baseSegment = base.segments.first(where: { $0.id == word.segmentID }) else {
+            throw HolosError.invalidInput("That word fix no longer belongs to the current transcript.")
+        }
+        let segment = transcript.segments[segmentIndex]
+        let fixes = segment.fixes ?? []
+        guard let targetIndex = fixes.firstIndex(where: {
+            ($0.kind == .correction || $0.kind == .term) && $0.first <= word.word && word.word < $0.end
+        }) else {
+            throw HolosError.invalidInput("That word was not fixed automatically.")
+        }
+        let target = fixes[targetIndex]
+        let currentWords = WordTiming.effectiveWords(of: segment)
+        guard let currentRange = characterRange(of: target, words: currentWords, textLength: segment.text.utf16.count),
+              let originalRange = originalRange(of: targetIndex, fixes: fixes, currentWords: currentWords,
+                                                segment: baseSegment) else {
+            throw HolosError.invalidInput("That word fix cannot be matched to the original transcript.")
+        }
+        let original = Array(baseSegment.text.utf16)
+        let heard = String(decoding: original[originalRange], as: UTF16.self)
+        guard var working = Working(segment) else {
+            throw HolosError.invalidInput("That segment's word positions cannot be edited safely.")
+        }
+        working.marks = fixes.enumerated().compactMap { index, fix in
+            guard index != targetIndex,
+                  let range = characterRange(of: fix, words: currentWords,
+                                             textLength: segment.text.utf16.count) else { return nil }
+            return Working.Mark(range: range, heard: fix.heard, kind: fix.kind)
+        }
+        working = applying([Replacement(range: currentRange, text: heard, kind: .reviewRevert)], to: working)
+
+        var result = transcript
+        result.id = UUID().uuidString
+        result.createdAt = now
+        result.segments[segmentIndex] = finished(working, segment: segment)
+        return result
+    }
+
+    private static func characterRange(of fix: TranscriptWordFix, words: [EffectiveWord], textLength: Int)
+        -> Range<Int>? {
+        guard fix.first >= 0, fix.first < fix.end, fix.end <= words.count else { return nil }
+        let first = words[fix.first]
+        let last = words[fix.end - 1]
+        let lower = first.utf16Offset
+        let upper = last.utf16Offset + last.utf16Length
+        guard lower >= 0, lower < upper, upper <= textLength else { return nil }
+        return lower..<upper
+    }
+
+    /// The whole original words around `fix.heard`. Repeated heard text is disambiguated by the fixed words' time.
+    private static func originalRange(of target: Int, fixes: [TranscriptWordFix], currentWords: [EffectiveWord],
+                                      segment: TranscriptSegment) -> Range<Int>? {
+        guard fixes.indices.contains(target) else { return nil }
+        let fix = fixes[target]
+        guard fix.first >= 0, fix.first < fix.end, fix.end <= currentWords.count else { return nil }
+        let words = WordTiming.effectiveWords(of: segment)
+        let ranges = originalWordRanges(fixes: fixes, currentWords: currentWords, originalWords: words)
+        guard ranges.indices.contains(target), let wordRange = ranges[target],
+              let first = wordRange.first, let last = wordRange.last else { return nil }
+        return characterRange(of: TranscriptWordFix(first: first, end: last + 1, heard: fix.heard, kind: fix.kind),
+                              words: words, textLength: segment.text.utf16.count)
+    }
+
+    /// Original word ranges for every mark, reconstructed in text order. A word fix changes only the words its mark
+    /// covers; all words between marks are unchanged. That makes the correspondence stable even when an untimed
+    /// segment redistributes its estimated times, and avoids guessing among repeated substrings.
+    private static func originalWordRanges(fixes: [TranscriptWordFix], currentWords: [EffectiveWord],
+                                           originalWords: [EffectiveWord]) -> [Range<Int>?] {
+        let ordered = fixes.indices.sorted { (fixes[$0].first, fixes[$0].end) < (fixes[$1].first, fixes[$1].end) }
+        var result = Array<Range<Int>?>(repeating: nil, count: fixes.count)
+        var current = 0
+        var original = 0
+        for index in ordered {
+            let fix = fixes[index]
+            guard fix.first >= current, fix.first < fix.end, fix.end <= currentWords.count else { return [] }
+            let unchanged = fix.first - current
+            guard original + unchanged <= originalWords.count else { return [] }
+            for offset in 0..<unchanged where currentWords[current + offset].text != originalWords[original + offset].text {
+                return []
+            }
+            current += unchanged
+            original += unchanged
+            let count = fix.kind == .reviewRevert ? fix.end - fix.first : tokens(of: Array(fix.heard.utf16)).count
+            guard count > 0, original + count <= originalWords.count else { return [] }
+            result[index] = original..<(original + count)
+            current = fix.end
+            original += count
+        }
+        guard currentWords.count - current == originalWords.count - original else { return [] }
+        for offset in 0..<(currentWords.count - current)
+            where currentWords[current + offset].text != originalWords[original + offset].text {
+            return []
+        }
+        return result
+    }
+
     /// Runs of non-whitespace UTF-16 units, as `WordTiming` splits an untimed segment's text.
     static func tokens(of utf16: [UInt16]) -> [Range<Int>] {
         let text = String(decoding: utf16, as: UTF16.self)
@@ -213,7 +315,8 @@ public enum WordFixes {
         /// The fixes of `transcript`'s segments, by kind.
         public init(_ transcript: Transcript) {
             for fix in transcript.segments.flatMap({ $0.fixes ?? [] }) {
-                if fix.kind == .term { terms += 1 } else { corrections += 1 }
+                if fix.kind == .term { terms += 1 }
+                if fix.kind == .correction { corrections += 1 }
             }
         }
     }

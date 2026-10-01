@@ -99,6 +99,62 @@ private func reviewName(_ review: ReviewSession, _ speakerID: String) -> String?
 // MARK: - Reading
 
 @Test(.timeLimit(.minutes(1))) @MainActor
+func reviewRevertsOneWordFixAndKeepsSpeakerEdits() async throws {
+    let temp = try TemporaryDirectory("review")
+    defer { temp.remove() }
+    let (session, oldRun) = try await reviewCustomSession(in: temp, turns: [
+        ReviewTurnSpec(speaker: "system:S1", start: 0, seconds: 3, words: ["ask", "cloud", "now"]),
+    ])
+    let base = try #require(try SessionFiles.currentTranscript(session: session))
+    var working = try #require(WordFixes.Working(base.segments[0]))
+    let corrections = CorrectionList(entries: [Correction(heard: "cloud", meant: "Claude")])
+    working = WordFixes.applying(WordFixes.corrections(in: working, list: corrections), to: working)
+    var fixed = base
+    fixed.id = UUID().uuidString
+    fixed.fixedFrom = base.id
+    fixed.segments[0] = WordFixes.finished(working, segment: base.segments[0])
+    try await SessionFixtures.saveTranscript(fixed, in: session)
+    var fixedRun = oldRun
+    fixedRun.id = UUID().uuidString
+    fixedRun.transcriptID = fixed.id
+    try SessionArchive.withSpeakerLock(at: session) {
+        try SessionSpeakerStore.writeRun(fixedRun, session: session)
+        try SessionSpeakerStore.writeHead(SpeakerHead(runID: fixedRun.id), session: session)
+    }
+
+    let review = try await reviewOpen(session)
+    try await review.apply([.rename(speakerID: "system:S1", name: "Alice")])
+    let fixedWord = try #require(review.words(of: "T1").first { $0.fix != nil })
+    try await review.revertWordFix(fixedWord.ref)
+
+    let reverted = try #require(try SessionFiles.currentTranscript(session: session))
+    #expect(reverted.id != fixed.id && reverted.fixedFrom == base.id)
+    #expect(reverted.segments[0].text == base.segments[0].text)
+    #expect(reverted.segments[0].fixes
+        == [TranscriptWordFix(first: 1, end: 2, heard: "Claude", kind: .reviewRevert)])
+    #expect(review.words(of: "T1").allSatisfy { $0.fix == nil }, "A reverted fix is no longer offered in Review.")
+    #expect(review.projection.runID != fixedRun.id)
+    #expect(review.projection.speakers.first { $0.id == "system:S1" }?.name == "Alice")
+    #expect(review.projection.turns.map(\.id) == ["T1"])
+    #expect(!review.canUndo, "A transcript revision starts a new speaker-head undo history.")
+    let currentRun = review.projection.runID
+    #expect(try reviewJournal(session).contains {
+        $0.baseRunID == currentRun && $0.source == "carry"
+            && $0.action == .rename(speakerID: "system:S1", name: "Alice")
+    })
+    await review.close()
+
+    let dependencies = WordFixDependencies(corrections: { corrections }, wordList: { WordList() },
+                                           model: { _ in .unavailable("unused") })
+    let record = try await MeetingPostProcessor(diarizer: nil, freeSpace: FixedFreeSpace(.max),
+                                                wordFixes: dependencies).run(session: session, lease: nil)
+    #expect(record.stages.last { $0.stage == .wordFixes }?.message == WordFixStage.reviewRevert)
+    #expect(try SessionFiles.currentTranscript(session: session)?.id == reverted.id)
+    #expect(try SessionFiles.currentTranscript(session: session)?.segments[0].text == base.segments[0].text,
+            "Automatic post-processing does not reapply a fix rejected in Review.")
+}
+
+@Test(.timeLimit(.minutes(1))) @MainActor
 func nextUncertainWrapsInTimeOrder() async throws {
     let temp = try TemporaryDirectory("review")
     defer { temp.remove() }
