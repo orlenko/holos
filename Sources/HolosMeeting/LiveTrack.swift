@@ -461,7 +461,8 @@ final class LiveTrack: Sendable {
         let (sessions, running) = state.withLock { state -> ([any LiveSpeechSession], Bool) in
             let wasCancelled = state.cancelled
             state.cancelled = true
-            if state.volatile.removeAll() { publishVolatile(state) }
+            // Words whose final segment waits for the journal stay until it is written (`journaled`).
+            if state.volatile.removeOpen() { publishVolatile(state) }
             return (state.sessions.values.compactMap(\.session), wasCancelled)
         }
         guard !running else { return }
@@ -529,7 +530,8 @@ final class LiveTrack: Sendable {
             guard !state.cancelled else { return false }
             if let current = state.behindFrom, current <= from { return false }
             state.behindFrom = from
-            if state.volatile.removeAll() { publishVolatile(state) }
+            // Words whose final segment waits for the journal stay until it is written (`journaled`).
+            if state.volatile.removeOpen() { publishVolatile(state) }
             return true
         }
         guard record else { return }

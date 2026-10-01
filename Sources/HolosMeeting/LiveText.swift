@@ -91,13 +91,12 @@ struct VolatileText: Sendable, Equatable {
         return entries.count != count
     }
 
+    /// Live speech stopped (behind or cancelled): no open hypothesis will be confirmed. Confirmed ones stay until
+    /// their final segment is journaled (`journaled`), as everywhere else, so the words are never in neither place.
     @discardableResult
-    mutating func removeAll() -> Bool {
-        defer {
-            entries.removeAll()
-            confirmed.removeAll()
-        }
-        return !entries.isEmpty || !confirmed.isEmpty
+    mutating func removeOpen() -> Bool {
+        defer { entries.removeAll() }
+        return !entries.isEmpty
     }
 
     private mutating func removeOverlapping(_ segment: TranscriptSegment) {

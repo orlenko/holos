@@ -356,6 +356,62 @@ private final class HeldJournal: Sendable {
     #expect(log.all.last == [], "Gone once the journal has the final segment.")
 }
 
+/// A track whose speech reports "Call to" (volatile) then "Call to order" (final, once 0.3 s was fed), with
+/// `script` changes, fed four 0.1 s frames.
+private func trackWithQueuedFinal(_ journal: HeldJournal, _ log: VolatileLog,
+                                  appendErrorAfter: Double? = nil) async throws -> (LiveTrack, FakeSpeechFactory) {
+    let heard = TranscriptSegment(start: 0, end: 0.2, text: "Call to")
+    let final = TranscriptSegment(start: 0, end: 0.3, text: "Call to order")
+    let speech = FakeSpeechFactory([FakeSpeechScript(
+        segments: [final], appendError: appendErrorAfter.map { _ in HolosError.io("Speech stopped.") },
+        appendErrorAfter: appendErrorAfter, volatile: [heard])])
+    let track = LiveTrack(track: "mic", locale: "en-CA", backend: .speech, contextualStrings: [],
+                          makeSpeech: speech.factory, events: journal.sink, reporter: CollectingReporter(),
+                          onVolatile: log.sink)
+    try await track.prepareSession(epoch: 0, epochStart: 0)
+    for index in 0..<4 {
+        track.push(try PCMFrame(samples: [Float](repeating: 0.1, count: 1_600), sampleRate: 16_000, channels: 1,
+                                startTime: Double(index) / 10), epoch: 0)
+    }
+    return (track, speech)
+}
+
+@Test(.timeLimit(.minutes(1))) func fallingBehindKeepsWordsWaitingForTheJournal() async throws {
+    // Codex review on PR #65: falling behind cleared the volatile copy of a final segment still waiting for the
+    // journal, so the words were briefly in neither live.json nor events.jsonl.
+    let journal = HeldJournal()
+    let log = VolatileLog()
+    // Speech fails on the frame after the final result: the track falls behind.
+    let (track, _) = try await trackWithQueuedFinal(journal, log, appendErrorAfter: 0.3)
+    let behind = await eventually { track.transcription == .behind }
+    #expect(behind)
+    #expect(journal.written.isEmpty)
+    #expect(log.all.last == ["Call to"], "Still waiting for the journal: still shown.")
+    journal.release()
+    let result = await track.finish()
+    #expect(result.segments.map(\.text) == ["Call to order"])
+    #expect(journal.written == ["Call to order"])
+    #expect(log.all.last == [], "Gone once journaled.")
+}
+
+@Test(.timeLimit(.minutes(1))) func cancellingKeepsWordsWaitingForTheJournal() async throws {
+    let journal = HeldJournal()
+    let log = VolatileLog()
+    let (track, speech) = try await trackWithQueuedFinal(journal, log)
+    var budget = PollBudget(timeout: .seconds(30))
+    while (await speech.sessions.first?.fedSeconds ?? 0) < 0.35, !budget.isSpent { await budget.poll() }
+    let cancelling = Task { await track.cancel() }
+    // The speech session is cancelled from the same step that cleared the volatile words.
+    budget = PollBudget(timeout: .seconds(30))
+    while await !(speech.sessions.first?.cancelled ?? false), !budget.isSpent { await budget.poll() }
+    #expect(journal.written.isEmpty)
+    #expect(log.all.last == ["Call to"], "Still waiting for the journal: still shown.")
+    journal.release()
+    await cancelling.value
+    #expect(journal.written == ["Call to order"])
+    #expect(log.all.last == [], "Gone once journaled.")
+}
+
 @Test(.timeLimit(.minutes(1))) func publisherWritesLiveTextAndRemovesItAtClose() async throws {
     let folder = FileManager.default.temporaryDirectory.appendingPathComponent("live-\(UUID().uuidString)")
     try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
