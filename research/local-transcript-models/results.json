@@ -1,0 +1,536 @@
+{
+  "scope": "Invented examples only; not real-meeting accuracy or a model ranking",
+  "hardware": {
+    "chip": "Apple M5",
+    "memory_bytes": 17179869184
+  },
+  "runs": [
+    {
+      "label": "4b-homophones",
+      "loaded": {
+        "event": "loaded",
+        "seconds": 21.56044141598977,
+        "mlx_lm": "0.32.0",
+        "mlx": "0.32.3",
+        "model_directory": "Qwen3.5-4B-4bit",
+        "max_tokens": 64,
+        "temperature": 0,
+        "thinking_requested": false,
+        "kv_tokens_requested": 4096,
+        "prefill_step_size": 256,
+        "suite": "homophones",
+        "prompt_protocol": "span-decision-v2-conservative-ambiguous",
+        "cache_note": "Qwen3.5 model-specific hybrid cache ignores max_kv_size; input length is explicitly bounded",
+        "max_prompt_tokens": 2048,
+        "system_prompt_sha256": "6c0372ca49264cbb443666ef3d1593666100c6d402915806004f2f4ae8219028",
+        "allocator_guideline_bytes": 7516192768,
+        "allocator_cache_bytes": 134217728
+      },
+      "completion": {
+        "event": "after",
+        "exit_code": 0,
+        "stop_reason": null,
+        "seconds": 211.0856779171154,
+        "free_percent": 54,
+        "swap_used_mb": 4413.62,
+        "child_rss_bytes": 0,
+        "child_cpu_percent": null
+      },
+      "running_or_interrupted": false,
+      "modes": {
+        "short": {
+          "completed": 8,
+          "correct_toy_labels": 6,
+          "invalid": 0,
+          "false_replacements": 2,
+          "keep_expected_cases": 8,
+          "wall_median_seconds": 2.991937583545223,
+          "wall_min_seconds": 2.167674125172198,
+          "wall_max_seconds": 4.800366333220154,
+          "ttft_median_seconds": 1.5151647710008547,
+          "prompt_tokens_range": [
+            136,
+            139
+          ]
+        },
+        "wide": {
+          "completed": 8,
+          "correct_toy_labels": 8,
+          "invalid": 0,
+          "false_replacements": 0,
+          "keep_expected_cases": 4,
+          "wall_median_seconds": 6.390302666113712,
+          "wall_min_seconds": 4.1448327919933945,
+          "wall_max_seconds": 8.50979991699569,
+          "ttft_median_seconds": 5.19958493753802,
+          "prompt_tokens_range": [
+            867,
+            881
+          ]
+        },
+        "wide-ocr": {
+          "completed": 8,
+          "correct_toy_labels": 8,
+          "invalid": 0,
+          "false_replacements": 0,
+          "keep_expected_cases": 4,
+          "wall_median_seconds": 5.771758520975709,
+          "wall_min_seconds": 3.793720875168219,
+          "wall_max_seconds": 8.318808499956504,
+          "ttft_median_seconds": 3.9870976665988564,
+          "prompt_tokens_range": [
+            886,
+            900
+          ]
+        }
+      },
+      "guard_config": null,
+      "max_swap_growth_mb": 138.9300000000003,
+      "end_swap_growth_mb": 138.9300000000003,
+      "kernel_pressure_dispatch_values": [],
+      "max_probe_seconds": null,
+      "post_60s_max_swapout_mib_s": null,
+      "post_60s_median_swapout_mib_s": null,
+      "min_free_percent": 31,
+      "max_sampled_rss_bytes": 553992192,
+      "peak_mlx_gb": 3.004915398,
+      "peak_process_rss_bytes": 1296105472
+    },
+    {
+      "label": "4b-toy-retry",
+      "loaded": {
+        "event": "loaded",
+        "seconds": 34.13324945792556,
+        "mlx_lm": "0.32.0",
+        "mlx": "0.32.3",
+        "model_directory": "Qwen3.5-4B-4bit",
+        "max_tokens": 64,
+        "temperature": 0,
+        "thinking_requested": false,
+        "kv_tokens_requested": 4096,
+        "prefill_step_size": 256,
+        "suite": "toy",
+        "prompt_protocol": "span-decision-v2-conservative-ambiguous",
+        "cache_note": "Qwen3.5 model-specific hybrid cache ignores max_kv_size; input length is explicitly bounded",
+        "max_prompt_tokens": 2048,
+        "system_prompt_sha256": "6c0372ca49264cbb443666ef3d1593666100c6d402915806004f2f4ae8219028",
+        "allocator_guideline_bytes": 7516192768,
+        "allocator_cache_bytes": 134217728
+      },
+      "completion": {
+        "event": "after",
+        "exit_code": 0,
+        "stop_reason": null,
+        "seconds": 119.92943966691382,
+        "free_percent": 51,
+        "swap_used_mb": 4274.69,
+        "child_rss_bytes": 0,
+        "child_cpu_percent": null
+      },
+      "running_or_interrupted": false,
+      "modes": {
+        "short": {
+          "completed": 2,
+          "correct_toy_labels": 2,
+          "invalid": 0,
+          "false_replacements": 0,
+          "keep_expected_cases": 1,
+          "wall_median_seconds": 15.5511770414887,
+          "wall_min_seconds": 1.7446044171229005,
+          "wall_max_seconds": 29.3577496658545,
+          "ttft_median_seconds": 14.241394270560704,
+          "prompt_tokens_range": [
+            142,
+            148
+          ]
+        },
+        "wide": {
+          "completed": 2,
+          "correct_toy_labels": 2,
+          "invalid": 0,
+          "false_replacements": 0,
+          "keep_expected_cases": 1,
+          "wall_median_seconds": 8.820775312487967,
+          "wall_min_seconds": 5.218771124957129,
+          "wall_max_seconds": 12.422779500018805,
+          "ttft_median_seconds": 7.644968499545939,
+          "prompt_tokens_range": [
+            859,
+            861
+          ]
+        },
+        "wide-ocr": {
+          "completed": 2,
+          "correct_toy_labels": 2,
+          "invalid": 0,
+          "false_replacements": 0,
+          "keep_expected_cases": 1,
+          "wall_median_seconds": 6.093843749957159,
+          "wall_min_seconds": 4.263683541910723,
+          "wall_max_seconds": 7.9240039580035955,
+          "ttft_median_seconds": 4.284957708441652,
+          "prompt_tokens_range": [
+            877,
+            879
+          ]
+        }
+      },
+      "guard_config": null,
+      "max_swap_growth_mb": 0.0,
+      "end_swap_growth_mb": 0.0,
+      "kernel_pressure_dispatch_values": [],
+      "max_probe_seconds": null,
+      "post_60s_max_swapout_mib_s": null,
+      "post_60s_median_swapout_mib_s": null,
+      "min_free_percent": 33,
+      "max_sampled_rss_bytes": 978403328,
+      "peak_mlx_gb": 2.98715517,
+      "peak_process_rss_bytes": 1458864128
+    },
+    {
+      "label": "4b-toy-smoke",
+      "loaded": {
+        "event": "loaded",
+        "seconds": 11.91319612483494,
+        "mlx_lm": "0.32.0",
+        "mlx": "0.32.3",
+        "model_directory": "Qwen3.5-4B-4bit",
+        "max_tokens": 64,
+        "temperature": 0,
+        "thinking_requested": false,
+        "kv_tokens_requested": 4096,
+        "prefill_step_size": 256,
+        "suite": "toy",
+        "cache_note": "Qwen3.5 model-specific hybrid cache ignores max_kv_size; input length is explicitly bounded",
+        "max_prompt_tokens": 2048,
+        "system_prompt_sha256": "7bdf1c0960e79e2d9520b78fce0ede7f003572be37738e1ec6517c396dc46402",
+        "allocator_guideline_bytes": 7516192768,
+        "allocator_cache_bytes": 134217728
+      },
+      "completion": {
+        "event": "after",
+        "exit_code": -15,
+        "stop_reason": "system swap increased by more than 512 MiB (not necessarily caused by benchmark)",
+        "seconds": 60.531253083841875,
+        "free_percent": 48,
+        "swap_used_mb": 4274.69,
+        "child_rss_bytes": 0
+      },
+      "running_or_interrupted": false,
+      "modes": {},
+      "guard_config": null,
+      "max_swap_growth_mb": 512.8799999999997,
+      "end_swap_growth_mb": 512.8799999999997,
+      "kernel_pressure_dispatch_values": [],
+      "max_probe_seconds": null,
+      "post_60s_max_swapout_mib_s": null,
+      "post_60s_median_swapout_mib_s": null,
+      "min_free_percent": 32,
+      "max_sampled_rss_bytes": 969293824,
+      "peak_mlx_gb": null,
+      "peak_process_rss_bytes": null
+    },
+    {
+      "label": "9b-push-homophones",
+      "loaded": {
+        "event": "loaded",
+        "seconds": 39.39033216610551,
+        "mlx_lm": "0.32.0",
+        "mlx": "0.32.3",
+        "model_directory": "Qwen3.5-9B-MLX-4bit",
+        "max_tokens": 64,
+        "temperature": 0,
+        "thinking_requested": false,
+        "kv_tokens_requested": 4096,
+        "prefill_step_size": 256,
+        "suite": "homophones",
+        "prompt_protocol": "span-decision-v2-conservative-ambiguous",
+        "cache_note": "Qwen3.5 model-specific hybrid cache ignores max_kv_size; input length is explicitly bounded",
+        "max_prompt_tokens": 2048,
+        "system_prompt_sha256": "6c0372ca49264cbb443666ef3d1593666100c6d402915806004f2f4ae8219028",
+        "allocator_guideline_bytes": 7516192768,
+        "allocator_cache_bytes": 134217728
+      },
+      "completion": {
+        "event": "after",
+        "exit_code": 0,
+        "stop_reason": null,
+        "seconds": 267.6533529169392,
+        "free_percent": 71,
+        "swap_used_mb": 7343.75,
+        "child_rss_bytes": 0,
+        "child_cpu_percent": null,
+        "kernel_pressure_dispatch": 1,
+        "swapin_bytes_cumulative": 14438809600,
+        "swapout_bytes_cumulative": 24929812480,
+        "probe_seconds": 0.06067212508060038
+      },
+      "running_or_interrupted": false,
+      "modes": {
+        "short": {
+          "completed": 8,
+          "correct_toy_labels": 6,
+          "invalid": 0,
+          "false_replacements": 2,
+          "keep_expected_cases": 8,
+          "wall_median_seconds": 3.9592155625578016,
+          "wall_min_seconds": 1.516155291814357,
+          "wall_max_seconds": 5.396361459046602,
+          "ttft_median_seconds": 1.926049125031568,
+          "prompt_tokens_range": [
+            136,
+            139
+          ]
+        },
+        "wide": {
+          "completed": 8,
+          "correct_toy_labels": 7,
+          "invalid": 0,
+          "false_replacements": 0,
+          "keep_expected_cases": 4,
+          "wall_median_seconds": 7.929798813071102,
+          "wall_min_seconds": 4.360092875082046,
+          "wall_max_seconds": 10.072960584191605,
+          "ttft_median_seconds": 5.60039516701363,
+          "prompt_tokens_range": [
+            867,
+            881
+          ]
+        },
+        "wide-ocr": {
+          "completed": 8,
+          "correct_toy_labels": 4,
+          "invalid": 0,
+          "false_replacements": 0,
+          "keep_expected_cases": 4,
+          "wall_median_seconds": 8.084434687509201,
+          "wall_min_seconds": 7.3218950419686735,
+          "wall_max_seconds": 9.079342874931172,
+          "ttft_median_seconds": 6.045509333489463,
+          "prompt_tokens_range": [
+            886,
+            900
+          ]
+        }
+      },
+      "guard_config": {
+        "event": "guard_config",
+        "model_path": "/tmp/holos-local-model-eval.3RIS8v/weights/Qwen3.5-9B-MLX-4bit",
+        "case_limit": 12,
+        "label": "9b-push-homophones",
+        "suite": "homophones",
+        "timeout": 600,
+        "swap_growth_limit_mb": 4096.0,
+        "rss_limit_gib": 10.0,
+        "min_free_percent": 10,
+        "sample_seconds": 2.0,
+        "warning_seconds": 120.0,
+        "swap_rate_limit_mib_s": 128,
+        "swap_rate_seconds": 15,
+        "startup_grace_seconds": 60
+      },
+      "max_swap_growth_mb": 0.0,
+      "end_swap_growth_mb": -216.0,
+      "kernel_pressure_dispatch_values": [
+        1,
+        2
+      ],
+      "max_probe_seconds": 0.09442262491211295,
+      "post_60s_max_swapout_mib_s": 0.0,
+      "post_60s_median_swapout_mib_s": 0.0,
+      "min_free_percent": 33,
+      "max_sampled_rss_bytes": 1714847744,
+      "peak_mlx_gb": 5.609446022,
+      "peak_process_rss_bytes": 2267971584
+    },
+    {
+      "label": "9b-push-smoke",
+      "loaded": null,
+      "completion": {
+        "event": "after",
+        "exit_code": -15,
+        "stop_reason": "sustained kernel warning pressure",
+        "seconds": 33.08848616690375,
+        "free_percent": 65,
+        "swap_used_mb": 6870.62,
+        "child_rss_bytes": 0,
+        "child_cpu_percent": null,
+        "kernel_pressure_dispatch": 1,
+        "swapin_bytes_cumulative": 13565034496,
+        "swapout_bytes_cumulative": 23569612800,
+        "probe_seconds": 0.02144200005568564
+      },
+      "running_or_interrupted": false,
+      "modes": {},
+      "guard_config": {
+        "event": "guard_config",
+        "model_path": "/tmp/holos-local-model-eval.3RIS8v/weights/Qwen3.5-9B-MLX-4bit",
+        "case_limit": 2,
+        "label": "9b-push-smoke",
+        "suite": "toy",
+        "timeout": 300,
+        "swap_growth_limit_mb": 4096.0,
+        "rss_limit_gib": 10.0,
+        "min_free_percent": 10,
+        "sample_seconds": 2.0,
+        "warning_seconds": 20,
+        "swap_rate_limit_mib_s": 128,
+        "swap_rate_seconds": 15,
+        "startup_grace_seconds": 60
+      },
+      "max_swap_growth_mb": 233.1199999999999,
+      "end_swap_growth_mb": 217.1199999999999,
+      "kernel_pressure_dispatch_values": [
+        1,
+        2
+      ],
+      "max_probe_seconds": 0.07883566594682634,
+      "post_60s_max_swapout_mib_s": null,
+      "post_60s_median_swapout_mib_s": null,
+      "min_free_percent": 33,
+      "max_sampled_rss_bytes": 681410560,
+      "peak_mlx_gb": null,
+      "peak_process_rss_bytes": null
+    },
+    {
+      "label": "9b-push-startup",
+      "loaded": {
+        "event": "loaded",
+        "seconds": 35.09978191694245,
+        "mlx_lm": "0.32.0",
+        "mlx": "0.32.3",
+        "model_directory": "Qwen3.5-9B-MLX-4bit",
+        "max_tokens": 64,
+        "temperature": 0,
+        "thinking_requested": false,
+        "kv_tokens_requested": 4096,
+        "prefill_step_size": 256,
+        "suite": "toy",
+        "prompt_protocol": "span-decision-v2-conservative-ambiguous",
+        "cache_note": "Qwen3.5 model-specific hybrid cache ignores max_kv_size; input length is explicitly bounded",
+        "max_prompt_tokens": 2048,
+        "system_prompt_sha256": "6c0372ca49264cbb443666ef3d1593666100c6d402915806004f2f4ae8219028",
+        "allocator_guideline_bytes": 7516192768,
+        "allocator_cache_bytes": 134217728
+      },
+      "completion": {
+        "event": "after",
+        "exit_code": 0,
+        "stop_reason": null,
+        "seconds": 105.38396420818754,
+        "free_percent": 70,
+        "swap_used_mb": 7679.81,
+        "child_rss_bytes": 0,
+        "child_cpu_percent": null,
+        "kernel_pressure_dispatch": 1,
+        "swapin_bytes_cumulative": 14077132800,
+        "swapout_bytes_cumulative": 24929812480,
+        "probe_seconds": 0.060432499973103404
+      },
+      "running_or_interrupted": false,
+      "modes": {
+        "short": {
+          "completed": 2,
+          "correct_toy_labels": 1,
+          "invalid": 0,
+          "false_replacements": 1,
+          "keep_expected_cases": 1,
+          "wall_median_seconds": 4.265398041345179,
+          "wall_min_seconds": 2.429845874896273,
+          "wall_max_seconds": 6.100950207794085,
+          "ttft_median_seconds": 2.940937603940256,
+          "prompt_tokens_range": [
+            142,
+            148
+          ]
+        },
+        "wide": {
+          "completed": 2,
+          "correct_toy_labels": 2,
+          "invalid": 0,
+          "false_replacements": 0,
+          "keep_expected_cases": 1,
+          "wall_median_seconds": 6.38267102104146,
+          "wall_min_seconds": 6.296317375032231,
+          "wall_max_seconds": 6.4690246670506895,
+          "ttft_median_seconds": 4.830195000045933,
+          "prompt_tokens_range": [
+            859,
+            861
+          ]
+        },
+        "wide-ocr": {
+          "completed": 2,
+          "correct_toy_labels": 1,
+          "invalid": 0,
+          "false_replacements": 0,
+          "keep_expected_cases": 1,
+          "wall_median_seconds": 5.812380292103626,
+          "wall_min_seconds": 5.654827625025064,
+          "wall_max_seconds": 5.969932959182188,
+          "ttft_median_seconds": 4.26538389606867,
+          "prompt_tokens_range": [
+            877,
+            879
+          ]
+        }
+      },
+      "guard_config": {
+        "event": "guard_config",
+        "model_path": "/tmp/holos-local-model-eval.3RIS8v/weights/Qwen3.5-9B-MLX-4bit",
+        "case_limit": 2,
+        "label": "9b-push-startup",
+        "suite": "toy",
+        "timeout": 300,
+        "swap_growth_limit_mb": 4096.0,
+        "rss_limit_gib": 10.0,
+        "min_free_percent": 10,
+        "sample_seconds": 2.0,
+        "warning_seconds": 120.0,
+        "swap_rate_limit_mib_s": 128,
+        "swap_rate_seconds": 15,
+        "startup_grace_seconds": 60
+      },
+      "max_swap_growth_mb": 1105.1900000000005,
+      "end_swap_growth_mb": 1065.1900000000005,
+      "kernel_pressure_dispatch_values": [
+        1,
+        2
+      ],
+      "max_probe_seconds": 0.11656129197217524,
+      "post_60s_max_swapout_mib_s": 238.03975087355488,
+      "post_60s_median_swapout_mib_s": 0.0,
+      "min_free_percent": 31,
+      "max_sampled_rss_bytes": 1088077824,
+      "peak_mlx_gb": 5.609413254,
+      "peak_process_rss_bytes": 1199947776
+    },
+    {
+      "label": "9b-toy-smoke",
+      "loaded": null,
+      "completion": {
+        "event": "after",
+        "exit_code": -15,
+        "stop_reason": "system swap increased by more than 512 MiB (not necessarily caused by benchmark)",
+        "seconds": 25.416929374914616,
+        "free_percent": 64,
+        "swap_used_mb": 7045.56,
+        "child_rss_bytes": 0,
+        "child_cpu_percent": null
+      },
+      "running_or_interrupted": false,
+      "modes": {},
+      "guard_config": null,
+      "max_swap_growth_mb": 2631.9400000000005,
+      "end_swap_growth_mb": 2631.9400000000005,
+      "kernel_pressure_dispatch_values": [],
+      "max_probe_seconds": null,
+      "post_60s_max_swapout_mib_s": null,
+      "post_60s_median_swapout_mib_s": null,
+      "min_free_percent": 35,
+      "max_sampled_rss_bytes": 657817600,
+      "peak_mlx_gb": null,
+      "peak_process_rss_bytes": null
+    }
+  ]
+}

@@ -1,0 +1,9 @@
+{
+  "verification": "Local SHA-256 digests matched Hugging Face LFS metadata for the pinned revisions",
+  "date": "2026-10-02",
+  "files": [
+    {"model": "Qwen3.5-4B-4bit", "file": "model.safetensors", "sha256": "5fb9acd0246866381cf8c5c354c6db1019f6498eec4ccb4f5edcc71ffeacb2db"},
+    {"model": "Qwen3.5-9B-MLX-4bit", "file": "model-00001-of-00002.safetensors", "sha256": "a68b87558c6ef43f74c2bd63ce7e9092ceddc3101f3def0030774bae5f42aadd"},
+    {"model": "Qwen3.5-9B-MLX-4bit", "file": "model-00002-of-00002.safetensors", "sha256": "b0a770bf8469c7f3f18756a0e0283f1c1174344a83e059a4e483f6af4907352d"}
+  ]
+}

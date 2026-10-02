@@ -1,0 +1,401 @@
+{
+  "date": "2026-10-02",
+  "authorization": "User explicitly requested pushing the 9B test farther on the existing 16 GiB machine",
+  "supersedes": "Initial 9B load-abort assessment in outcome.json; those aborted attempts remain recorded",
+  "conclusion": "9B completed offline synthetic decisions on Koza within the expanded safety envelope; not proof of non-intrusiveness during normal developer work",
+  "scope": "Same pinned public 4-bit weights, same isolated runtime, invented examples only; no extra models or private meetings",
+  "comparability": "All 24 homophone prompt hashes and expected labels matched between 4B and 9B",
+  "nine_b": {
+    "completed_decisions": 30,
+    "valid_json_decisions": 30,
+    "smoke_correct": 4,
+    "smoke_total": 6,
+    "homophone_run": {
+      "label": "9b-push-homophones",
+      "loaded": {
+        "event": "loaded",
+        "seconds": 39.39033216610551,
+        "mlx_lm": "0.32.0",
+        "mlx": "0.32.3",
+        "model_directory": "Qwen3.5-9B-MLX-4bit",
+        "max_tokens": 64,
+        "temperature": 0,
+        "thinking_requested": false,
+        "kv_tokens_requested": 4096,
+        "prefill_step_size": 256,
+        "suite": "homophones",
+        "prompt_protocol": "span-decision-v2-conservative-ambiguous",
+        "cache_note": "Qwen3.5 model-specific hybrid cache ignores max_kv_size; input length is explicitly bounded",
+        "max_prompt_tokens": 2048,
+        "system_prompt_sha256": "6c0372ca49264cbb443666ef3d1593666100c6d402915806004f2f4ae8219028",
+        "allocator_guideline_bytes": 7516192768,
+        "allocator_cache_bytes": 134217728
+      },
+      "completion": {
+        "event": "after",
+        "exit_code": 0,
+        "stop_reason": null,
+        "seconds": 267.6533529169392,
+        "free_percent": 71,
+        "swap_used_mb": 7343.75,
+        "child_rss_bytes": 0,
+        "child_cpu_percent": null,
+        "kernel_pressure_dispatch": 1,
+        "swapin_bytes_cumulative": 14438809600,
+        "swapout_bytes_cumulative": 24929812480,
+        "probe_seconds": 0.06067212508060038
+      },
+      "running_or_interrupted": false,
+      "modes": {
+        "short": {
+          "completed": 8,
+          "correct_toy_labels": 6,
+          "invalid": 0,
+          "false_replacements": 2,
+          "keep_expected_cases": 8,
+          "wall_median_seconds": 3.9592155625578016,
+          "wall_min_seconds": 1.516155291814357,
+          "wall_max_seconds": 5.396361459046602,
+          "ttft_median_seconds": 1.926049125031568,
+          "prompt_tokens_range": [
+            136,
+            139
+          ]
+        },
+        "wide": {
+          "completed": 8,
+          "correct_toy_labels": 7,
+          "invalid": 0,
+          "false_replacements": 0,
+          "keep_expected_cases": 4,
+          "wall_median_seconds": 7.929798813071102,
+          "wall_min_seconds": 4.360092875082046,
+          "wall_max_seconds": 10.072960584191605,
+          "ttft_median_seconds": 5.60039516701363,
+          "prompt_tokens_range": [
+            867,
+            881
+          ]
+        },
+        "wide-ocr": {
+          "completed": 8,
+          "correct_toy_labels": 4,
+          "invalid": 0,
+          "false_replacements": 0,
+          "keep_expected_cases": 4,
+          "wall_median_seconds": 8.084434687509201,
+          "wall_min_seconds": 7.3218950419686735,
+          "wall_max_seconds": 9.079342874931172,
+          "ttft_median_seconds": 6.045509333489463,
+          "prompt_tokens_range": [
+            886,
+            900
+          ]
+        }
+      },
+      "guard_config": {
+        "event": "guard_config",
+        "model_path": "/tmp/holos-local-model-eval.3RIS8v/weights/Qwen3.5-9B-MLX-4bit",
+        "case_limit": 12,
+        "label": "9b-push-homophones",
+        "suite": "homophones",
+        "timeout": 600,
+        "swap_growth_limit_mb": 4096.0,
+        "rss_limit_gib": 10.0,
+        "min_free_percent": 10,
+        "sample_seconds": 2.0,
+        "warning_seconds": 120.0,
+        "swap_rate_limit_mib_s": 128,
+        "swap_rate_seconds": 15,
+        "startup_grace_seconds": 60
+      },
+      "max_swap_growth_mb": 0.0,
+      "end_swap_growth_mb": -216.0,
+      "kernel_pressure_dispatch_values": [
+        1,
+        2
+      ],
+      "max_probe_seconds": 0.09442262491211295,
+      "post_60s_max_swapout_mib_s": 0.0,
+      "post_60s_median_swapout_mib_s": 0.0,
+      "min_free_percent": 33,
+      "max_sampled_rss_bytes": 1714847744,
+      "peak_mlx_gb": 5.609446022,
+      "peak_process_rss_bytes": 2267971584
+    },
+    "smoke_run": {
+      "label": "9b-push-startup",
+      "loaded": {
+        "event": "loaded",
+        "seconds": 35.09978191694245,
+        "mlx_lm": "0.32.0",
+        "mlx": "0.32.3",
+        "model_directory": "Qwen3.5-9B-MLX-4bit",
+        "max_tokens": 64,
+        "temperature": 0,
+        "thinking_requested": false,
+        "kv_tokens_requested": 4096,
+        "prefill_step_size": 256,
+        "suite": "toy",
+        "prompt_protocol": "span-decision-v2-conservative-ambiguous",
+        "cache_note": "Qwen3.5 model-specific hybrid cache ignores max_kv_size; input length is explicitly bounded",
+        "max_prompt_tokens": 2048,
+        "system_prompt_sha256": "6c0372ca49264cbb443666ef3d1593666100c6d402915806004f2f4ae8219028",
+        "allocator_guideline_bytes": 7516192768,
+        "allocator_cache_bytes": 134217728
+      },
+      "completion": {
+        "event": "after",
+        "exit_code": 0,
+        "stop_reason": null,
+        "seconds": 105.38396420818754,
+        "free_percent": 70,
+        "swap_used_mb": 7679.81,
+        "child_rss_bytes": 0,
+        "child_cpu_percent": null,
+        "kernel_pressure_dispatch": 1,
+        "swapin_bytes_cumulative": 14077132800,
+        "swapout_bytes_cumulative": 24929812480,
+        "probe_seconds": 0.060432499973103404
+      },
+      "running_or_interrupted": false,
+      "modes": {
+        "short": {
+          "completed": 2,
+          "correct_toy_labels": 1,
+          "invalid": 0,
+          "false_replacements": 1,
+          "keep_expected_cases": 1,
+          "wall_median_seconds": 4.265398041345179,
+          "wall_min_seconds": 2.429845874896273,
+          "wall_max_seconds": 6.100950207794085,
+          "ttft_median_seconds": 2.940937603940256,
+          "prompt_tokens_range": [
+            142,
+            148
+          ]
+        },
+        "wide": {
+          "completed": 2,
+          "correct_toy_labels": 2,
+          "invalid": 0,
+          "false_replacements": 0,
+          "keep_expected_cases": 1,
+          "wall_median_seconds": 6.38267102104146,
+          "wall_min_seconds": 6.296317375032231,
+          "wall_max_seconds": 6.4690246670506895,
+          "ttft_median_seconds": 4.830195000045933,
+          "prompt_tokens_range": [
+            859,
+            861
+          ]
+        },
+        "wide-ocr": {
+          "completed": 2,
+          "correct_toy_labels": 1,
+          "invalid": 0,
+          "false_replacements": 0,
+          "keep_expected_cases": 1,
+          "wall_median_seconds": 5.812380292103626,
+          "wall_min_seconds": 5.654827625025064,
+          "wall_max_seconds": 5.969932959182188,
+          "ttft_median_seconds": 4.26538389606867,
+          "prompt_tokens_range": [
+            877,
+            879
+          ]
+        }
+      },
+      "guard_config": {
+        "event": "guard_config",
+        "model_path": "/tmp/holos-local-model-eval.3RIS8v/weights/Qwen3.5-9B-MLX-4bit",
+        "case_limit": 2,
+        "label": "9b-push-startup",
+        "suite": "toy",
+        "timeout": 300,
+        "swap_growth_limit_mb": 4096.0,
+        "rss_limit_gib": 10.0,
+        "min_free_percent": 10,
+        "sample_seconds": 2.0,
+        "warning_seconds": 120.0,
+        "swap_rate_limit_mib_s": 128,
+        "swap_rate_seconds": 15,
+        "startup_grace_seconds": 60
+      },
+      "max_swap_growth_mb": 1105.1900000000005,
+      "end_swap_growth_mb": 1065.1900000000005,
+      "kernel_pressure_dispatch_values": [
+        1,
+        2
+      ],
+      "max_probe_seconds": 0.11656129197217524,
+      "post_60s_max_swapout_mib_s": 238.03975087355488,
+      "post_60s_median_swapout_mib_s": 0.0,
+      "min_free_percent": 31,
+      "max_sampled_rss_bytes": 1088077824,
+      "peak_mlx_gb": 5.609413254,
+      "peak_process_rss_bytes": 1199947776
+    },
+    "physical_footprint_sample": "5.3G current / 5.8G peak as reported by sample; not a continuous footprint measurement",
+    "full_homophone_run_new_swapout_bytes": 0,
+    "homophone_misses": [
+      {
+        "case": "h0-1",
+        "mode": "wide",
+        "choice": "keep",
+        "expected": "replace"
+      },
+      {
+        "case": "h0-1",
+        "mode": "wide-ocr",
+        "choice": "keep",
+        "expected": "replace"
+      },
+      {
+        "case": "h1-1",
+        "mode": "short",
+        "choice": "replace",
+        "expected": "keep"
+      },
+      {
+        "case": "h1-1",
+        "mode": "wide-ocr",
+        "choice": "keep",
+        "expected": "replace"
+      },
+      {
+        "case": "h1-0",
+        "mode": "short",
+        "choice": "replace",
+        "expected": "keep"
+      },
+      {
+        "case": "h2-1",
+        "mode": "wide-ocr",
+        "choice": "keep",
+        "expected": "replace"
+      },
+      {
+        "case": "h3-1",
+        "mode": "wide-ocr",
+        "choice": "keep",
+        "expected": "replace"
+      }
+    ]
+  },
+  "four_b_comparator": {
+    "label": "4b-homophones",
+    "loaded": {
+      "event": "loaded",
+      "seconds": 21.56044141598977,
+      "mlx_lm": "0.32.0",
+      "mlx": "0.32.3",
+      "model_directory": "Qwen3.5-4B-4bit",
+      "max_tokens": 64,
+      "temperature": 0,
+      "thinking_requested": false,
+      "kv_tokens_requested": 4096,
+      "prefill_step_size": 256,
+      "suite": "homophones",
+      "prompt_protocol": "span-decision-v2-conservative-ambiguous",
+      "cache_note": "Qwen3.5 model-specific hybrid cache ignores max_kv_size; input length is explicitly bounded",
+      "max_prompt_tokens": 2048,
+      "system_prompt_sha256": "6c0372ca49264cbb443666ef3d1593666100c6d402915806004f2f4ae8219028",
+      "allocator_guideline_bytes": 7516192768,
+      "allocator_cache_bytes": 134217728
+    },
+    "completion": {
+      "event": "after",
+      "exit_code": 0,
+      "stop_reason": null,
+      "seconds": 211.0856779171154,
+      "free_percent": 54,
+      "swap_used_mb": 4413.62,
+      "child_rss_bytes": 0,
+      "child_cpu_percent": null
+    },
+    "running_or_interrupted": false,
+    "modes": {
+      "short": {
+        "completed": 8,
+        "correct_toy_labels": 6,
+        "invalid": 0,
+        "false_replacements": 2,
+        "keep_expected_cases": 8,
+        "wall_median_seconds": 2.991937583545223,
+        "wall_min_seconds": 2.167674125172198,
+        "wall_max_seconds": 4.800366333220154,
+        "ttft_median_seconds": 1.5151647710008547,
+        "prompt_tokens_range": [
+          136,
+          139
+        ]
+      },
+      "wide": {
+        "completed": 8,
+        "correct_toy_labels": 8,
+        "invalid": 0,
+        "false_replacements": 0,
+        "keep_expected_cases": 4,
+        "wall_median_seconds": 6.390302666113712,
+        "wall_min_seconds": 4.1448327919933945,
+        "wall_max_seconds": 8.50979991699569,
+        "ttft_median_seconds": 5.19958493753802,
+        "prompt_tokens_range": [
+          867,
+          881
+        ]
+      },
+      "wide-ocr": {
+        "completed": 8,
+        "correct_toy_labels": 8,
+        "invalid": 0,
+        "false_replacements": 0,
+        "keep_expected_cases": 4,
+        "wall_median_seconds": 5.771758520975709,
+        "wall_min_seconds": 3.793720875168219,
+        "wall_max_seconds": 8.318808499956504,
+        "ttft_median_seconds": 3.9870976665988564,
+        "prompt_tokens_range": [
+          886,
+          900
+        ]
+      }
+    },
+    "guard_config": null,
+    "max_swap_growth_mb": 138.9300000000003,
+    "end_swap_growth_mb": 138.9300000000003,
+    "kernel_pressure_dispatch_values": [],
+    "max_probe_seconds": null,
+    "post_60s_max_swapout_mib_s": null,
+    "post_60s_median_swapout_mib_s": null,
+    "min_free_percent": 31,
+    "max_sampled_rss_bytes": 553992192,
+    "peak_mlx_gb": 3.004915398,
+    "peak_process_rss_bytes": 1296105472
+  },
+  "safety": {
+    "extra_swap_allowance_mb": 4096,
+    "rss_allowance_gib": 10,
+    "sample_seconds": 2,
+    "warning_pressure_stop_seconds": 120,
+    "critical_pressure": "Immediate stop at next sample",
+    "heavy_swapping_stop": "Combined swap-in/out over 128 MiB/s sustained for 15 seconds after 60-second startup grace",
+    "responsiveness_proxy_stop": "Two system probe batches each taking over two seconds",
+    "system_wired_limit_or_other_global_settings_changed": false,
+    "these_are_experiment_stop_conditions_not_universal_usability_thresholds": true
+  },
+  "limitations": [
+    "No fixed swap-GB threshold determines usability; pressure and active swapping matter",
+    "System swap and page rates include unrelated processes",
+    "Command probes are not a foreground UI, editor, VM or Docker responsiveness test",
+    "Only about 650 context words and six generated JSON tokens; not full-meeting rewriting",
+    "Tiny invented examples with explicit contextual clues and repeated padding; not an accuracy estimate or general model ranking",
+    "The 9B quantized conversion and non-thinking greedy prompt combination is what was tested",
+    "Two identical short requests per homophone pair are not independent samples",
+    "GPU duty cycle and long-duration thermal/battery performance were not measured",
+    "Earlier initial 2.6 GB swap increase and safety aborts must not be erased from the assessment"
+  ],
+  "running_app_or_repository_modified": false,
+  "recommendation": "Memory feasibility is established for this bounded 9B workload. Keep 4B as the leading candidate until a human-scored private-corpus test establishes a larger-model quality benefit."
+}

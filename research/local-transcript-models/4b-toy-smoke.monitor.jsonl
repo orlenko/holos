@@ -1,0 +1,14 @@
+{"event": "before", "free_percent": 46, "swap_used_mb": 3761.81, "child_rss_bytes": 0}
+{"event": "memory", "seconds": 5.00048483395949, "free_percent": 46, "swap_used_mb": 3761.81, "child_rss_bytes": 82214912}
+{"event": "memory", "seconds": 10.017831791890785, "free_percent": 45, "swap_used_mb": 3761.81, "child_rss_bytes": 84738048}
+{"event": "memory", "seconds": 15.057041374966502, "free_percent": 44, "swap_used_mb": 3761.81, "child_rss_bytes": 94961664}
+{"event": "memory", "seconds": 20.106659583980218, "free_percent": 39, "swap_used_mb": 3761.81, "child_rss_bytes": 969293824}
+{"event": "memory", "seconds": 25.137038624845445, "free_percent": 34, "swap_used_mb": 4046.19, "child_rss_bytes": 888733696}
+{"event": "memory", "seconds": 30.16132454201579, "free_percent": 32, "swap_used_mb": 4243.44, "child_rss_bytes": 407912448}
+{"event": "memory", "seconds": 35.182917083846405, "free_percent": 46, "swap_used_mb": 4243.44, "child_rss_bytes": 365887488}
+{"event": "memory", "seconds": 40.23488587490283, "free_percent": 37, "swap_used_mb": 4243.44, "child_rss_bytes": 334856192}
+{"event": "memory", "seconds": 45.27998712495901, "free_percent": 37, "swap_used_mb": 4243.44, "child_rss_bytes": 334315520}
+{"event": "memory", "seconds": 50.333684583893046, "free_percent": 35, "swap_used_mb": 4243.44, "child_rss_bytes": 330383360}
+{"event": "memory", "seconds": 55.383336583850905, "free_percent": 34, "swap_used_mb": 4243.44, "child_rss_bytes": 328794112}
+{"event": "memory", "seconds": 60.43977737496607, "free_percent": 48, "swap_used_mb": 4274.69, "child_rss_bytes": 328794112}
+{"event": "after", "exit_code": -15, "stop_reason": "system swap increased by more than 512 MiB (not necessarily caused by benchmark)", "seconds": 60.531253083841875, "free_percent": 48, "swap_used_mb": 4274.69, "child_rss_bytes": 0}

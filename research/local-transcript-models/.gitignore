@@ -1,0 +1,7 @@
+weights/
+runtime/
+python/
+uv-cache/
+hf-cache/
+foundation-baseline
+__pycache__/

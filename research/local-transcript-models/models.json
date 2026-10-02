@@ -1,0 +1,12 @@
+{
+  "download_approval": "User explicitly approved 2026-10-02: isolated MLX runtime and the two 4-bit Qwen3.5 models only",
+  "hardware": {"chip": "Apple M5", "ram_bytes": 17179869184},
+  "models": [
+    {"repo": "mlx-community/Qwen3.5-4B-4bit", "revision": "0e7ffd5c629ef7719d4cbc04069232580bfa9d9c", "weight_bytes": 3034300695, "approved": true},
+    {"repo": "mlx-community/Qwen3.5-9B-MLX-4bit", "revision": "938d8919941c6e7efd3c7150eff7fe9d12afa631", "weight_bytes": 5950221072, "approved": true},
+    {"repo": "mlx-community/Qwen3.5-9B-MLX-8bit", "revision": "84f7c2deea248d8df56240f88102def51c7ed5d6", "weight_bytes": 10426592423, "approved": false},
+    {"repo": "Qwen/Qwen3-14B-MLX-4bit", "revision": "ba63a5141812f9870287df53341123a71ba41433", "weight_bytes": 7846402136, "approved": false}
+  ],
+  "scope": "Invented examples only; offline inference from explicitly downloaded local directories; one model per process; never touch the running app",
+  "limitations": ["Both approved 4-bit models completed synthetic inference; see outcome.json and push-outcome.json", "CPU niceness does not throttle GPU bursts", "No real-meeting accuracy claim", "Heavy configurations may be skipped under unsafe memory pressure", "9B 8-bit and 14B downloads are not approved"]
+}

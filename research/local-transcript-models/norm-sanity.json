@@ -1,0 +1,49 @@
+{
+  "purpose": "Limited conversion sanity check, not verification against original full-precision weights",
+  "norms": [
+    {
+      "model": "Qwen3.5-4B-4bit",
+      "key": "language_model.model.layers.0.input_layernorm.weight",
+      "dtype": "BF16",
+      "shape": [
+        2560
+      ],
+      "min": 0.984375,
+      "max": 2.65625,
+      "mean": 1.13857421875
+    },
+    {
+      "model": "Qwen3.5-4B-4bit",
+      "key": "language_model.model.norm.weight",
+      "dtype": "BF16",
+      "shape": [
+        2560
+      ],
+      "min": 0.7109375,
+      "max": 4.6875,
+      "mean": 3.1953033447265624
+    },
+    {
+      "model": "Qwen3.5-9B-MLX-4bit",
+      "key": "language_model.model.layers.0.input_layernorm.weight",
+      "dtype": "BF16",
+      "shape": [
+        4096
+      ],
+      "min": 0.9375,
+      "max": 1.3046875,
+      "mean": 1.0330991744995117
+    },
+    {
+      "model": "Qwen3.5-9B-MLX-4bit",
+      "key": "language_model.model.norm.weight",
+      "dtype": "BF16",
+      "shape": [
+        4096
+      ],
+      "min": 0.77734375,
+      "max": 3.0,
+      "mean": 2.1398143768310547
+    }
+  ]
+}

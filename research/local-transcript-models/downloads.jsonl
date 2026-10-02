@@ -1,0 +1,2 @@
+{"event": "download_complete", "repo": "mlx-community/Qwen3.5-4B-4bit", "revision": "0e7ffd5c629ef7719d4cbc04069232580bfa9d9c", "directory": "/private/tmp/holos-local-model-eval.3RIS8v/weights/Qwen3.5-4B-4bit", "weight_bytes": 3034300695, "seconds": 261.48244474991225}
+{"event": "download_complete", "repo": "mlx-community/Qwen3.5-9B-MLX-4bit", "revision": "938d8919941c6e7efd3c7150eff7fe9d12afa631", "directory": "/private/tmp/holos-local-model-eval.3RIS8v/weights/Qwen3.5-9B-MLX-4bit", "weight_bytes": 5950221072, "seconds": 539.1928896249738}

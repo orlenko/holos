@@ -1,0 +1,78 @@
+{
+  "date": "2026-10-02",
+  "superseded_by": "push-outcome.json",
+  "superseded_reason": "User subsequently authorized a larger safety envelope; 9B completed offline synthetic tests",
+  "authorization": "Two pinned 4-bit models and an isolated MLX runtime on Koza; synthetic examples only",
+  "downloads_complete_and_sha256_verified": true,
+  "production_integration": false,
+  "app_launched_rebuilt_or_signalled": false,
+  "private_meetings_read_transferred_or_uploaded": false,
+  "models_retained_under": "/tmp/holos-local-model-eval.3RIS8v/weights",
+  "runtime": {"python": "3.13.15", "mlx": "0.32.3", "mlx_lm": "0.32.0", "freeze": "runtime-freeze.txt"},
+  "four_b": {
+    "completed_decisions": 30,
+    "json_valid_decisions": 30,
+    "smoke": {"distinct_examples": 2, "modes": 3, "correct": 6, "total": 6},
+    "homophones": {
+      "distinct_pairs": 4,
+      "contextual_examples": 8,
+      "contextual_correct_without_ocr": 8,
+      "contextual_correct_with_adversarial_ocr": 8,
+      "short_conservative_correct": 6,
+      "short_requests": 8,
+      "short_false_replacements": 2,
+      "short_false_replacement_note": "Same ambiguous sight/site prompt repeated twice; these are not independent failures",
+      "median_contextual_seconds_without_ocr": 6.390302666113712,
+      "median_contextual_seconds_with_ocr": 5.771758520975709,
+      "peak_mlx_allocation_gb_decimal": 3.004915398,
+      "whole_run_seconds_including_load_and_pauses": 211.0856779171154,
+      "system_swap_growth_mb": 138.93
+    },
+    "first_attempt_aborted_swap_growth_mb": 512.88,
+    "first_successful_retry_load_seconds": 34.13324945792556,
+    "first_successful_retry_first_decision_seconds": 29.3577496658545
+  },
+  "nine_b": {
+    "status": "Safety-aborted during load; no completed decisions",
+    "attempt_seconds": 25.416929374914616,
+    "system_swap_growth_mb": 2631.94,
+    "quality_and_latency": "Not measured",
+    "retry_on_currently_loaded_16_gib_machine": false
+  },
+  "background_settings": {
+    "cpu_niceness": 15,
+    "qos_clamp": "utility",
+    "pause_between_decisions_seconds": 2,
+    "hard_gpu_throttle": false,
+    "input_token_bound": 2048,
+    "observed_contextual_prompt_tokens": [867, 900],
+    "max_output_tokens": 64,
+    "temperature": 0,
+    "thinking": false,
+    "process_allocator_guideline_bytes": 7516192768,
+    "allocator_cache_limit_bytes": 134217728,
+    "watch_sample_interval_seconds": 5,
+    "watch_swap_growth_stop_mb": 512,
+    "watch_free_percent_stop_below": 15,
+    "watch_rss_stop_bytes": 8589934592
+  },
+  "limitations": [
+    "Tiny invented corpus with unusually explicit context; not real-meeting accuracy, security certification or model ranking",
+    "Wider prompts contain repeated neutral padding; not evidence of long-meeting context retention",
+    "Known alternatives were supplied; unknown error discovery and transcript rewriting were not tested",
+    "Only about 650 spoken-context words, not a full meeting or the advertised maximum context length",
+    "JSON was parsed and validated, not grammar-constrained during generation",
+    "Native Foundation baseline used a different prompt and is incomplete; no fair native/local superiority claim",
+    "MLX allocator setting is a guideline, not a hard cap; model-specific cache ignores max_kv_size",
+    "Process RSS and CPU omit some GPU/Metal compiler service costs; MLX peak is not whole-system memory",
+    "System swap is global; coincident growth cannot be exclusively attributed to inference",
+    "Five-second sampling allowed transient swap growth beyond the stop threshold",
+    "GPU load, thermal steady state, foreground responsiveness and battery impact were not measured",
+    "Weights and artifacts are in a temporary directory and may not survive automatic OS cleanup"
+  ],
+  "recommendation": {
+    "candidate": "4B for further human-scored private-corpus evaluation; not automatic production corrections",
+    "execution": "Opt-in, after transcription and preferably when idle; one worker and longer pauses/resource gates as needed",
+    "next_evidence_needed": "Human-labelled ambiguous positives and negatives on Volodobook, with original text preserved and no new cloud upload assumed"
+  }
+}

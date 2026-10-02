@@ -1,0 +1,25 @@
+{"event": "before", "free_percent": 52, "swap_used_mb": 4274.69, "child_rss_bytes": 0, "child_cpu_percent": null}
+{"event": "memory", "seconds": 5.000747625017539, "free_percent": 53, "swap_used_mb": 4274.69, "child_rss_bytes": 82558976, "child_cpu_percent": 4.9}
+{"event": "memory", "seconds": 10.045491209020838, "free_percent": 53, "swap_used_mb": 4274.69, "child_rss_bytes": 98713600, "child_cpu_percent": 5.0}
+{"event": "memory", "seconds": 15.075645458884537, "free_percent": 39, "swap_used_mb": 4274.69, "child_rss_bytes": 978403328, "child_cpu_percent": 5.3}
+{"event": "memory", "seconds": 20.13006183388643, "free_percent": 38, "swap_used_mb": 4274.69, "child_rss_bytes": 718454784, "child_cpu_percent": 3.5}
+{"event": "memory", "seconds": 25.18579141702503, "free_percent": 37, "swap_used_mb": 4274.69, "child_rss_bytes": 568868864, "child_cpu_percent": 0.7}
+{"event": "memory", "seconds": 30.241923792054877, "free_percent": 37, "swap_used_mb": 4274.69, "child_rss_bytes": 581009408, "child_cpu_percent": 3.4}
+{"event": "memory", "seconds": 35.29555941699073, "free_percent": 37, "swap_used_mb": 4274.69, "child_rss_bytes": 653770752, "child_cpu_percent": 3.1}
+{"event": "memory", "seconds": 40.346540374914184, "free_percent": 37, "swap_used_mb": 4274.69, "child_rss_bytes": 705363968, "child_cpu_percent": 11.8}
+{"event": "memory", "seconds": 45.39311462501064, "free_percent": 36, "swap_used_mb": 4274.69, "child_rss_bytes": 646692864, "child_cpu_percent": 4.3}
+{"event": "memory", "seconds": 50.44011504203081, "free_percent": 52, "swap_used_mb": 4274.69, "child_rss_bytes": 646266880, "child_cpu_percent": 0.0}
+{"event": "memory", "seconds": 55.48867916688323, "free_percent": 52, "swap_used_mb": 4274.69, "child_rss_bytes": 646266880, "child_cpu_percent": 0.0}
+{"event": "memory", "seconds": 60.54516937490553, "free_percent": 37, "swap_used_mb": 4274.69, "child_rss_bytes": 646430720, "child_cpu_percent": 3.8}
+{"event": "memory", "seconds": 65.5676480839029, "free_percent": 36, "swap_used_mb": 4274.69, "child_rss_bytes": 649314304, "child_cpu_percent": 2.6}
+{"event": "memory", "seconds": 70.62022633384913, "free_percent": 36, "swap_used_mb": 4274.69, "child_rss_bytes": 650297344, "child_cpu_percent": 0.1}
+{"event": "memory", "seconds": 75.67668666690588, "free_percent": 53, "swap_used_mb": 4274.69, "child_rss_bytes": 649674752, "child_cpu_percent": 0.0}
+{"event": "memory", "seconds": 80.73234045901336, "free_percent": 51, "swap_used_mb": 4274.69, "child_rss_bytes": 623804416, "child_cpu_percent": 0.0}
+{"event": "memory", "seconds": 85.77045062487014, "free_percent": 35, "swap_used_mb": 4274.69, "child_rss_bytes": 588021760, "child_cpu_percent": 1.2}
+{"event": "memory", "seconds": 90.82704524998553, "free_percent": 33, "swap_used_mb": 4274.69, "child_rss_bytes": 588431360, "child_cpu_percent": 6.9}
+{"event": "memory", "seconds": 95.88065229193307, "free_percent": 35, "swap_used_mb": 4274.69, "child_rss_bytes": 588365824, "child_cpu_percent": 2.4}
+{"event": "memory", "seconds": 100.92699154186994, "free_percent": 36, "swap_used_mb": 4274.69, "child_rss_bytes": 588185600, "child_cpu_percent": 8.6}
+{"event": "memory", "seconds": 105.98058691690676, "free_percent": 35, "swap_used_mb": 4274.69, "child_rss_bytes": 587792384, "child_cpu_percent": 2.5}
+{"event": "memory", "seconds": 111.02895729197189, "free_percent": 51, "swap_used_mb": 4274.69, "child_rss_bytes": 588496896, "child_cpu_percent": 0.0}
+{"event": "memory", "seconds": 116.07856524991803, "free_percent": 36, "swap_used_mb": 4274.69, "child_rss_bytes": 588660736, "child_cpu_percent": 0.9}
+{"event": "after", "exit_code": 0, "stop_reason": null, "seconds": 119.92943966691382, "free_percent": 51, "swap_used_mb": 4274.69, "child_rss_bytes": 0, "child_cpu_percent": null}

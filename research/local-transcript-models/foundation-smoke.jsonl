@@ -1,0 +1,13 @@
+{"event":"fixture_ready","items":6}
+{"event":"checking_availability"}
+{"context_size":8192,"event":"baseline","max_response_tokens":64,"model":"Apple Foundation Models","sampling":"greedy"}
+{"case":"0-1","event":"begin","mode":"short"}
+{"case":"0-1","choice":"keep","correct":false,"cpu_seconds":0.015330999999999997,"event":"decision","false_replacement":false,"mode":"short","peak_rss_bytes_macos":18661376,"seconds":27.289555499999999}
+{"case":"0-1","event":"begin","mode":"wide"}
+{"case":"0-1","choice":"keep","correct":false,"cpu_seconds":0.0096359999999999987,"event":"decision","false_replacement":false,"mode":"wide","peak_rss_bytes_macos":18907136,"seconds":28.23342225}
+{"case":"0-1","event":"begin","mode":"wide-ocr"}
+{"case":"0-1","choice":"keep","correct":false,"cpu_seconds":0.010371999999999999,"event":"decision","false_replacement":false,"mode":"wide-ocr","peak_rss_bytes_macos":18907136,"seconds":25.758966292}
+{"case":"0-0","event":"begin","mode":"short"}
+{"case":"0-0","choice":"keep","correct":true,"cpu_seconds":0.0076380000000000059,"event":"decision","false_replacement":false,"mode":"short","peak_rss_bytes_macos":18907136,"seconds":14.263158167}
+{"case":"0-0","event":"begin","mode":"wide"}
+{"event":"hard_timeout","seconds":120}
