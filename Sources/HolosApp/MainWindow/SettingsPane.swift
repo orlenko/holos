@@ -15,6 +15,7 @@ struct SetupState {
     var systemAudio = false
     /// Meetings record the computer's audio (UserDefaults "meetingRecordSystemAudio", on by default).
     var recordSystemAudio = true
+    /// Meetings capture the screen (`MeetingScreenPreference`, off by default).
     var screenCaptureDefault = false
     /// nil while the asset check is still running.
     var assets: String?
@@ -148,8 +149,7 @@ final class SettingsPane: NSViewController, MainSectionContent {
     private let opacityValue = NSTextField(labelWithString: "")
     private let recordSystemAudioToggle = NSButton(
         checkboxWithTitle: "Record the computer's audio (system sound) in meetings", target: nil, action: nil)
-    private let screenCaptureToggle = NSButton(
-        checkboxWithTitle: "Offer meeting-window snapshots by default (choose a window each time)", target: nil, action: nil)
+    private let screenCaptureToggle = NSButton(checkboxWithTitle: MeetingScreenText.settingTitle, target: nil, action: nil)
     private let deepTranscriptionToggle = NSButton(
         checkboxWithTitle: "Deep transcription after meetings: transcribe them again with Whisper on this Mac",
         target: nil, action: nil)
@@ -313,9 +313,7 @@ final class SettingsPane: NSViewController, MainSectionContent {
         screenCaptureToggle.target = self
         screenCaptureToggle.action = #selector(buttonPressed(_:))
         screenCaptureToggle.tag = SetupAction.toggleMeetingScreenCapture.rawValue
-        let screenDetail = Self.note("Snapshots are off by default. Only the chosen window is captured, never the whole display. "
-            + "On-device OCR runs after recording; images and text are deleted with meeting audio. "
-            + "No language-model corrections run during recording.")
+        let screenDetail = Self.note(MeetingScreenText.settingCaption)
         let detail = Self.note("""
             On: meetings record your microphone and everything the Mac plays, and speakers are labelled on both. \
             Off: meetings record the microphone only.
@@ -617,14 +615,16 @@ final class SettingsPane: NSViewController, MainSectionContent {
         // Never marked as a problem: without it meetings record the microphone alone.
         if state.systemAudio {
             set(.systemAudio, .done, state.recordSystemAudio
-                ? "Granted — meetings record the computer's audio"
-                : state.screenCaptureDefault ? "Granted — available for selected-window snapshots"
+                ? (state.screenCaptureDefault ? "Granted — meetings record the computer's audio and capture the screen"
+                    : "Granted — meetings record the computer's audio")
+                : state.screenCaptureDefault ? "Granted — meetings capture the screen"
                     : "Granted — recording the computer's audio is off under Meetings", button: nil)
         } else if state.recordSystemAudio || state.screenCaptureDefault {
             setPermission(.systemAudio, settings: .systemAudioSettings, granted: false, .pending,
-                          "Meetings record the computer's audio (the other side of a call, a video). Click Allow…, "
-                          + "turn on Voice is Local under Screen & System Audio Recording, then quit and reopen Voice "
-                          + "is Local. Until then meetings record the microphone only and snapshots are unavailable.")
+                          "Meetings record the computer's audio (the other side of a call, a video) and can capture "
+                          + "the screen. Click Allow…, turn on Voice is Local under Screen & System Audio Recording, "
+                          + "then quit and reopen Voice is Local. Until then meetings record the microphone only, "
+                          + "without the screen.")
         } else {
             setPermission(.systemAudio, settings: .systemAudioSettings, granted: false, .pending,
                           "Not needed — recording the computer's audio is off under Meetings")

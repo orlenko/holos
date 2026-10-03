@@ -18,15 +18,16 @@ public struct CaptureRequest: Sendable, Equatable {
     /// part of the session timeline and of the gap before its first frame. Nil for epoch 0: the timeline starts when
     /// its capture has started.
     public var offsetHostTime: Double?
-    public var screenWindow: ScreenWindowSelection?
+    /// The optional screen capture (docs/meeting-design.md §4.15), saved into `sessionDirectory`.
+    public var screen: ScreenCaptureTarget?
     public var sessionDirectory: URL?
 
     public init(source: AudioSource, applicationBundleID: String? = nil, timelineOffset: Double = 0,
                 microphone: MicrophoneSelection = .systemDefault, offsetHostTime: Double? = nil,
-                screenWindow: ScreenWindowSelection? = nil, sessionDirectory: URL? = nil) {
+                screen: ScreenCaptureTarget? = nil, sessionDirectory: URL? = nil) {
         self.source = source; self.applicationBundleID = applicationBundleID; self.timelineOffset = timelineOffset
         self.microphone = microphone; self.offsetHostTime = offsetHostTime
-        self.screenWindow = screenWindow; self.sessionDirectory = sessionDirectory
+        self.screen = screen; self.sessionDirectory = sessionDirectory
     }
 }
 
@@ -68,10 +69,10 @@ extension MeetingCapture {
         try await capture.start(source: request.source, applicationBundleID: request.applicationBundleID,
                                 timelineOffset: request.timelineOffset, microphone: request.microphone,
                                 timelineOffsetHostTime: request.offsetHostTime)
-        if let selection = request.screenWindow, let session = request.sessionDirectory {
+        if let target = request.screen, let session = request.sessionDirectory {
             let screen = MeetingScreenCapture()
             self.screen = screen
-            screen.start(selection: selection, session: session, origin: capture.hostTimeOrigin)
+            screen.start(target, session: session, origin: capture.hostTimeOrigin)
         }
     }
 

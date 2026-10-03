@@ -177,8 +177,9 @@ func screenOCRRejectsMissingOrOversizedImages(oversized: Bool) async throws {
     let frame = ScreenKeyframe(start: 1, end: 2)
     try ScreenContextStore.write(ScreenContextRecord(sessionID: archive.id, frames: [frame]), session: archive.directory)
     if oversized {
-        let context = try #require(CGContext(data: nil, width: 2000, height: 2, bitsPerComponent: 8,
-            bytesPerRow: 2000, space: CGColorSpaceCreateDeviceGray(), bitmapInfo: 0))
+        let width = ScreenContextStore.maximumImageDimension + 1
+        let context = try #require(CGContext(data: nil, width: width, height: 2, bitsPerComponent: 8,
+            bytesPerRow: width, space: CGColorSpaceCreateDeviceGray(), bitmapInfo: 0))
         let image = try #require(context.makeImage())
         let bytes = NSMutableData()
         let destination = try #require(CGImageDestinationCreateWithData(bytes, UTType.jpeg.identifier as CFString, 1, nil))

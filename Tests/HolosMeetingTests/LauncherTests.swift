@@ -55,17 +55,52 @@ private func launcherMode(_ url: URL) -> mode_t? {
     #expect(!arguments.contains("--name"))
 }
 
-@Test func screenWindowOptInIsPassedToChildAndLegacySettingsStayOff() throws {
-    let selection = ScreenWindowSelection(windowID: 123, ownerPID: 456)
-    let settings = MeetingStartSettings(name: "Synthetic", source: .microphone, screenWindow: selection)
-    let args = ChildProcessLauncher.arguments(settings, sessionID: "id", root: URL(fileURLWithPath: "/tmp/test"),
-                                              vocabularyFile: nil)
-    #expect(args.contains("--screen-window") && args.contains("123"))
-    #expect(args.contains("--screen-owner") && args.contains("456"))
+@Test func screenCaptureIsPassedToChildAndLegacySettingsStayOff() throws {
+    let settings = MeetingStartSettings(name: "Synthetic", source: .microphone, screen: .display)
+    let root = URL(fileURLWithPath: "/tmp/test")
+    let args = ChildProcessLauncher.arguments(settings, sessionID: "id", root: root, vocabularyFile: nil)
+    let index = try #require(args.firstIndex(of: "--screen"))
+    #expect(args[index + 1] == "display")
+    #expect(!args.contains("--screen-window") && !args.contains("--screen-owner"))
+    let off = MeetingStartSettings(name: "Synthetic", source: .microphone)
+    #expect(!ChildProcessLauncher.arguments(off, sessionID: "id", root: root, vocabularyFile: nil).contains("--screen"))
     #expect(try HolosJSON.decoder().decode(MeetingStartSettings.self,
-        from: HolosJSON.encoder().encode(settings)).screenWindow == selection)
+        from: HolosJSON.encoder().encode(settings)).screen == .display)
     let legacy = Data("{\"name\":\"Synthetic\",\"source\":\"mic\",\"othersInRoom\":false}".utf8)
-    #expect(try HolosJSON.decoder().decode(MeetingStartSettings.self, from: legacy).screenWindow == nil)
+    #expect(try HolosJSON.decoder().decode(MeetingStartSettings.self, from: legacy).screen == nil)
+    // A window chosen before the whole display was captured, or a target this version does not know: no capture,
+    // and the rest of the saved settings still load.
+    let window = Data("""
+        {"name":"Synthetic","source":"mic","othersInRoom":false,"screenWindow":{"windowID":1,"ownerPID":2}}
+        """.utf8)
+    #expect(try HolosJSON.decoder().decode(MeetingStartSettings.self, from: window).screen == nil)
+    let unknown = Data("{\"name\":\"Synthetic\",\"source\":\"mic\",\"othersInRoom\":false,\"screen\":\"wall\"}".utf8)
+    #expect(try HolosJSON.decoder().decode(MeetingStartSettings.self, from: unknown).name == "Synthetic")
+}
+
+@Test func screenSettingIsOffForNewInstallsAndOnForTheOldWindowOffer() throws {
+    func defaults() throws -> (UserDefaults, String) {
+        let suite = "holos-screen-preference-\(UUID().uuidString)"
+        return (try #require(UserDefaults(suiteName: suite)), suite)
+    }
+    let (fresh, freshSuite) = try defaults()
+    defer { fresh.removePersistentDomain(forName: freshSuite) }
+    #expect(!MeetingScreenPreference.enabled(in: fresh))
+
+    let (upgraded, upgradedSuite) = try defaults()
+    defer { upgraded.removePersistentDomain(forName: upgradedSuite) }
+    upgraded.set(true, forKey: MeetingScreenPreference.legacyKey)
+    #expect(MeetingScreenPreference.enabled(in: upgraded))
+    MeetingScreenPreference.set(false, in: upgraded)
+    #expect(!MeetingScreenPreference.enabled(in: upgraded))
+    #expect(upgraded.object(forKey: MeetingScreenPreference.legacyKey) == nil)
+    MeetingScreenPreference.set(true, in: upgraded)
+    #expect(MeetingScreenPreference.enabled(in: upgraded))
+
+    let (declined, declinedSuite) = try defaults()
+    defer { declined.removePersistentDomain(forName: declinedSuite) }
+    declined.set(false, forKey: MeetingScreenPreference.legacyKey)
+    #expect(!MeetingScreenPreference.enabled(in: declined))
 }
 
 @Test @MainActor func childWatcherRetriesWhenTheExitEventComesBeforeTheChildIsWaitable() async throws {

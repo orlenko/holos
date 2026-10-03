@@ -38,21 +38,23 @@ public struct RecordingOptions: Sendable, Equatable {
     /// with more than one, meeting.json records them and post-processing transcribes the audio again in each and
     /// merges the transcript. Empty: `locale` only.
     public var languages: [String]
-    public var screenWindow: ScreenWindowSelection?
+    /// Capture the screen while recording, for on-device OCR after the recording (docs/meeting-design.md §4.15);
+    /// nil: no screen capture.
+    public var screen: ScreenCaptureTarget?
 
     /// `microphone` nil chooses it from `source`: `.builtIn` for `mic`, `.systemDefault` otherwise.
     public init(name: String, source: AudioSource, locale: String, backend: SpeechBackend, root: URL,
                 duration: Double? = nil, recordOnly: Bool = false, applicationBundleID: String? = nil,
                 vocabulary: [String] = [], sessionID: String? = nil, othersInRoom: Bool = false,
                 expectedSpeakers: Int? = nil, liveText: Bool = true, microphone: MicrophoneSelection? = nil,
-                languages: [String] = [], screenWindow: ScreenWindowSelection? = nil) {
+                languages: [String] = [], screen: ScreenCaptureTarget? = nil) {
         self.name = name; self.source = source; self.locale = locale; self.backend = backend; self.root = root
         self.duration = duration; self.recordOnly = recordOnly; self.applicationBundleID = applicationBundleID
         self.vocabulary = vocabulary; self.sessionID = sessionID; self.othersInRoom = othersInRoom
         self.expectedSpeakers = expectedSpeakers; self.liveText = liveText
         self.microphone = microphone ?? Self.microphone(for: source)
         self.languages = languages
-        self.screenWindow = screenWindow
+        self.screen = screen
     }
 
     /// Decision 9: in person records the built-in microphone; a call records the system default input.
@@ -295,9 +297,6 @@ public enum RecordingWorkflow {
         }
         if let expected = options.expectedSpeakers, !(1...20).contains(expected) {
             throw HolosError.invalidInput("The expected number of speakers must be between 1 and 20.")
-        }
-        if let screen = options.screenWindow, screen.windowID == 0 || screen.ownerPID <= 0 {
-            throw HolosError.invalidInput("Screen snapshots require an explicitly selected window and its owner.")
         }
         if !options.languages.isEmpty {
             if let problem = DictationLanguage.meetingLanguagesProblem(options.languages) {
@@ -564,8 +563,8 @@ private final class Recorder {
             try await capture.start(CaptureRequest(source: plan.source,
                                                    applicationBundleID: options.applicationBundleID,
                                                    timelineOffset: 0, microphone: options.microphone,
-                                                   screenWindow: options.screenWindow,
-                                                   sessionDirectory: options.screenWindow == nil ? nil : archive.directory))
+                                                   screen: options.screen,
+                                                   sessionDirectory: options.screen == nil ? nil : archive.directory))
         } catch {
             dependencies.stop.restoreDefaultHandlers()
             for feed in live.values { await feed.cancel() }
@@ -947,8 +946,8 @@ private final class Recorder {
         monitor.begin(epoch: epoch)
         let request = CaptureRequest(source: plan.source, applicationBundleID: options.applicationBundleID,
                                      timelineOffset: offset, microphone: options.microphone,
-                                     offsetHostTime: offsetHostTime, screenWindow: options.screenWindow,
-                                     sessionDirectory: options.screenWindow == nil ? nil : archive.directory)
+                                     offsetHostTime: offsetHostTime, screen: options.screen,
+                                     sessionDirectory: options.screen == nil ? nil : archive.directory)
         let starting = Task { @MainActor in try await capture.start(request) }
         let startedAt: Double
         switch await awaitWithTimeout(limit, { try await starting.value }) {
@@ -1161,20 +1160,20 @@ private final class Recorder {
         let phrase = latest?.lastPhrase
         let recorded = seen.values.map(\.seconds).max() ?? 0
         let screenSnapshotStatus: String?
-        if options.screenWindow != nil {
+        if options.screen != nil {
             let session = archive.directory, id = archive.id
             let screen = await Task.detached(priority: .utility) {
                 try? ScreenContextStore.read(session: session, sessionID: id)
             }.value
             if let failure = screen?.failure {
-                screenSnapshotStatus = failure == "storageLimit" ? "Screen snapshots stopped: storage limit"
-                    : "Screen snapshots unavailable; audio continues"
+                screenSnapshotStatus = failure == "storageLimit" ? "Screen capture stopped: storage limit"
+                    : "Screen capture unavailable; audio continues"
             } else if phase == .recording, screen?.captureID != nil {
-                screenSnapshotStatus = "Window snapshots on · \(screen?.frames.count ?? 0) saved · OCR after stop"
+                screenSnapshotStatus = "Capturing screen · \(screen?.frames.count ?? 0) saved · OCR after stop"
             } else if phase == .recording {
-                screenSnapshotStatus = "Window snapshots requested · \(screen?.frames.count ?? 0) saved"
+                screenSnapshotStatus = "Screen capture starting · \(screen?.frames.count ?? 0) saved"
             } else {
-                screenSnapshotStatus = "Window snapshots paused"
+                screenSnapshotStatus = "Screen capture paused"
             }
         } else { screenSnapshotStatus = nil }
         await updateStatus { status in
@@ -1302,8 +1301,8 @@ private final class Recorder {
         ])
         // Drain speech and save its transcript before optional OCR. OCR must not prolong live speech asset
         // ownership while the app is trying to resume dictation, or delay publication of the audio transcript.
-        if options.screenWindow != nil, !Task.isCancelled {
-            reporter.message("Recognizing text in saved meeting window snapshots on this Mac…")
+        if options.screen != nil, !Task.isCancelled {
+            reporter.message("Recognizing text in saved screen snapshots on this Mac…")
             do {
                 let complete = try await MeetingScreenOCR.processBounded(session: archive.directory, sessionID: archive.id,
                     languages: options.languages.isEmpty ? [options.locale] : options.languages)

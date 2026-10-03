@@ -22,25 +22,27 @@ public struct MeetingStartSettings: Codable, Sendable, Equatable {
     /// by passage, the language that fits (docs/meeting-design.md §4.14). The start panel's Language pop-up chooses
     /// the first, "Also detect" up to two more. Empty leaves the choice to the recorder's own default.
     public var locales: [String]
-    public var screenWindow: ScreenWindowSelection?
+    /// The start panel's "Capture screen" (docs/meeting-design.md §4.15); nil: no screen capture.
+    public var screen: ScreenCaptureTarget?
 
     /// The language the recorder transcribes in, or nil for the recorder's default.
     public var locale: String? { locales.first }
 
     public init(name: String, source: AudioSource, applicationBundleID: String? = nil, othersInRoom: Bool = false,
                 expectedSpeakers: Int? = nil, microphone: MicrophoneSelection? = nil, locales: [String] = [],
-                screenWindow: ScreenWindowSelection? = nil) {
+                screen: ScreenCaptureTarget? = nil) {
         self.name = name; self.source = source; self.applicationBundleID = applicationBundleID
         self.othersInRoom = othersInRoom; self.expectedSpeakers = expectedSpeakers; self.microphone = microphone
         self.locales = locales
-        self.screenWindow = screenWindow
+        self.screen = screen
     }
 
     private enum CodingKeys: String, CodingKey {
-        case name, source, applicationBundleID, othersInRoom, expectedSpeakers, microphone, locales, screenWindow
+        case name, source, applicationBundleID, othersInRoom, expectedSpeakers, microphone, locales, screen
     }
 
-    /// Settings saved before meetings had a language (or a microphone choice) decode with none.
+    /// Settings saved before meetings had a language (or a microphone choice) decode with none. A window chosen
+    /// for capture before the whole display was (the `screenWindow` key) is ignored: no screen capture.
     public init(from decoder: any Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         self.init(name: try container.decode(String.self, forKey: .name),
@@ -50,7 +52,7 @@ public struct MeetingStartSettings: Codable, Sendable, Equatable {
                   expectedSpeakers: try container.decodeIfPresent(Int.self, forKey: .expectedSpeakers),
                   microphone: try container.decodeIfPresent(MicrophoneSelection.self, forKey: .microphone),
                   locales: try container.decodeIfPresent([String].self, forKey: .locales) ?? [],
-                  screenWindow: try container.decodeIfPresent(ScreenWindowSelection.self, forKey: .screenWindow))
+                  screen: (try? container.decodeIfPresent(ScreenCaptureTarget.self, forKey: .screen)) ?? nil)
     }
 
     /// "Meeting 2026-09-23 14:00" in `timeZone`.

@@ -2,7 +2,6 @@ import AppKit
 import HolosAudio
 import HolosCore
 import HolosMeeting
-import ScreenCaptureKit
 
 /// "New Meeting Recording" (docs/meeting-design.md §5.8): name, what will be recorded (the system default input and
 /// the computer's audio, `MeetingStartSettings.app`), the disk estimate, the speaker models, the meeting language, up
@@ -26,6 +25,7 @@ final class MeetingStartPanel: NSObject, NSWindowDelegate {
         var recordSystemAudio = true
         /// `CGPreflightScreenCaptureAccess()`: without it the meeting records the microphone alone.
         var systemAudioAllowed = false
+        /// Settings › Meetings › "Capture the screen during meetings…": the initial state of "Capture screen".
         var screenCaptureDefault = false
         /// The meeting languages to offer (`DictationLanguage.groups`, as for dictation); empty until loaded.
         var languages: [[String]] = []
@@ -52,7 +52,6 @@ final class MeetingStartPanel: NSObject, NSWindowDelegate {
 
     private let nameField = NSTextField()
     private let screenChoice = MeetingScreenChoiceView()
-    private var screenWindowTask: Task<Void, Never>?
     private let sourcesLabel = NSTextField(wrappingLabelWithString: "")
     private let microphoneLabel = NSTextField(wrappingLabelWithString: "")
     private let diskLabel = NSTextField(wrappingLabelWithString: "")
@@ -95,7 +94,6 @@ final class MeetingStartPanel: NSObject, NSWindowDelegate {
         window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 460, height: 380), styleMask: [.titled, .closable],
                           backing: .buffered, defer: true)
         super.init()
-        screenChoice.onReload = { [weak self] in self?.loadScreenWindows() }
         screenChoice.onChange = { [weak self] in self?.refresh() }
         window.title = "New Meeting Recording"
         window.isReleasedWhenClosed = false
@@ -204,7 +202,8 @@ final class MeetingStartPanel: NSObject, NSWindowDelegate {
             consentRow?.isHidden = consentDismissed
             errorLabel.stringValue = ""
             errorLabel.isHidden = true
-            screenChoice.reset(enabled: environment().screenCaptureDefault)
+            let current = environment()
+            screenChoice.reset(enabled: current.screenCaptureDefault, allowed: current.systemAudioAllowed)
         }
         refresh()
         // The panel is not resizable, so its size is always the one its rows need: fit it on every show, and
@@ -318,7 +317,8 @@ final class MeetingStartPanel: NSObject, NSWindowDelegate {
         if positioned, speechLine != (speechLabel.stringValue, speechInstallButton.isHidden) {
             window.setContentSize(window.contentView?.fittingSize ?? window.frame.size)
         }
-        if screenChoice.enabled && screenChoice.selection == nil { allowed = false }
+        // Without the permission the meeting records without the screen; the box says why.
+        screenChoice.update(allowed: current.systemAudioAllowed)
         startButton.isEnabled = allowed
     }
 
@@ -495,10 +495,7 @@ final class MeetingStartPanel: NSObject, NSWindowDelegate {
     @objc private func start() {
         // The permission as it is now, never a prompt: without it the meeting records the microphone alone.
         var settings = Self.settings(name: nameField.stringValue, environment(), locales: chosenLocales)
-        if screenChoice.enabled {
-            guard let window = screenChoice.selection else { return }
-            settings.screenWindow = ScreenWindowSelection(windowID: window.id, ownerPID: window.owner)
-        }
+        if screenChoice.enabled { settings.screen = .display }
         if let error = onStart(settings, consentCheckbox.state == .on) {
             errorLabel.stringValue = error
             errorLabel.isHidden = false
@@ -513,34 +510,8 @@ final class MeetingStartPanel: NSObject, NSWindowDelegate {
     }
 
     func windowWillClose(_ notification: Notification) {
-        screenWindowTask?.cancel()
-        screenWindowTask = nil
         refreshTask?.cancel()
         refreshTask = nil
         onClose()
-    }
-
-    private func loadScreenWindows() {
-        screenWindowTask?.cancel()
-        guard environment().systemAudioAllowed else {
-            screenChoice.setWindows([], error: "Grant Screen Recording in Settings, or turn snapshots off")
-            return
-        }
-        screenWindowTask = Task { [weak self] in
-            do {
-                let content = try await SCShareableContent.excludingDesktopWindows(true, onScreenWindowsOnly: true)
-                guard let self, !Task.isCancelled else { return }
-                let entries = content.windows.compactMap { window -> MeetingScreenChoiceView.Window? in
-                    guard let app = window.owningApplication, app.processID != ProcessInfo.processInfo.processIdentifier,
-                          window.windowLayer == 0, window.frame.width > 100, window.frame.height > 100 else { return nil }
-                    return .init(id: window.windowID, owner: app.processID,
-                                 title: "\(app.applicationName) — \(window.title ?? "Untitled window")")
-                }.sorted { $0.title.localizedStandardCompare($1.title) == .orderedAscending }
-                self.screenChoice.setWindows(entries, error: entries.isEmpty ? "No windows available; refresh or turn snapshots off" : nil)
-            } catch {
-                guard let self, !Task.isCancelled else { return }
-                self.screenChoice.setWindows([], error: "Could not list windows; refresh or turn snapshots off")
-            }
-        }
     }
 }

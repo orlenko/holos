@@ -28,7 +28,8 @@ struct Record: AsyncParsableCommand {
 
                 Meetings started from Voice is Local record the system default input and system audio with \
                 --others-in-room (--source mic --microphone default when system audio is off in Settings › Meetings \
-                or not allowed). The defaults here are unchanged for scripts. With mic+system, speaker \
+                or not allowed), and with --screen display when "Capture screen" is checked in the start panel. \
+                The defaults here are unchanged for scripts. With mic+system, speaker \
                 labelling leaves the microphone's echo of the system audio out of the labelled transcript.
                 """)
         @Option(help: "Session display name.") var name = "Meeting"
@@ -56,10 +57,13 @@ struct Record: AsyncParsableCommand {
         @Option(help: "How many people are expected to speak (1-20), a hint for speaker labelling.") var expectedSpeakers: Int?
         @Option(help: "A JSON file of names and terms to recognize ({\"schemaVersion\": 1, \"strings\": [...]}); it is deleted once read.")
         var vocabularyFile: String?
-        @Option(help: "Opt-in: capture only this explicitly selected window ID for slide OCR after recording.")
-        var screenWindow: UInt32?
-        @Option(help: "Owner process ID of --screen-window; must match (never fall back to another window or display).")
-        var screenOwner: Int32?
+        enum Screen: String, ExpressibleByArgument, CaseIterable { case off, display }
+        @Option(help: """
+            Capture the screen for on-device OCR after the recording (slides, shared screens): display (the main \
+            display, without Voice is Local's own windows; needs Screen Recording permission) or off. Changed \
+            frames only, at most one every two seconds; deleted with the meeting audio.
+            """)
+        var screen: Screen = .off
 
         mutating func validate() throws {
             if let duration, !duration.isFinite || duration <= 0 { throw ValidationError("Duration must be positive and finite.") }
@@ -80,9 +84,6 @@ struct Record: AsyncParsableCommand {
                 throw ValidationError("--expected-speakers must be between 1 and 20.")
             }
             try meetingLanguages.validate(with: recognition)
-            if (screenWindow == nil) != (screenOwner == nil) || screenWindow == 0 || (screenOwner ?? 1) <= 0 {
-                throw ValidationError("--screen-window and --screen-owner must both identify a window and its owner.")
-            }
         }
 
         @MainActor mutating func run() async throws {
@@ -100,9 +101,7 @@ struct Record: AsyncParsableCommand {
                                            microphone: microphone.flatMap(MicrophoneSelection.init(argument:))
                                                ?? RecordingOptions.microphone(for: source),
                                            languages: languages,
-                                           screenWindow: screenWindow.flatMap { id in screenOwner.map {
-                                               ScreenWindowSelection(windowID: id, ownerPID: $0)
-                                           } })
+                                           screen: screen == .display ? .display : nil)
             let dependencies = RecordingDependencies.live(stop: SignalStopController(), reporter: ConsoleReporter(),
                 postProcess: noPostprocess || recordOnly ? nil : recordingPostProcessHook())
             let outcome = try await RecordingWorkflow.run(options, dependencies: dependencies)
