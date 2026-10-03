@@ -34,7 +34,7 @@ public enum SessionDeepTranscribeCommand {
     /// Why the pass cannot run on `session` at all, thrown before anything is changed (the command exits 1): a
     /// recording that was not finished properly, deleted or missing audio, a meeting in several languages, or the
     /// model not installed. A run that has nothing to do (the current transcript is this model's, and not `force`)
-    /// needs no model: it keeps the transcript.
+    /// needs neither the model nor the audio (it may have been deleted since): it keeps the transcript.
     public static func precheck(session: URL, dependencies: DeepTranscriptionDependencies,
                                 force: Bool = false) throws {
         let manifest = try SessionArchive.readManifest(at: session)
@@ -47,10 +47,6 @@ public enum SessionDeepTranscribeCommand {
             throw HolosError.unavailable("This session was not finished properly; run voiceislocal session recover "
                 + "\(manifest.id) first, so all of its saved audio is transcribed.")
         }
-        if try SessionFiles.audioDeleted(session: session, sessionID: manifest.id) {
-            throw HolosError.invalidInput(DeepTranscriptionStage.audioDeleted)
-        }
-        guard !manifest.chunks.isEmpty else { throw HolosError.invalidInput("This session has no saved audio.") }
         let meeting = try SessionFiles.meetingInfo(session: session, manifest: manifest)
         // A transcript made in one language named with `session languages` has `languages` too; only several count.
         let mergedLanguages = (try? SessionFiles.currentTranscript(session: session))??.languages ?? []
@@ -64,6 +60,11 @@ public enum SessionDeepTranscribeCommand {
             == dependencies.engine {
             return
         }
+        // Only a pass that transcribes needs the audio.
+        if try SessionFiles.audioDeleted(session: session, sessionID: manifest.id) {
+            throw HolosError.invalidInput(DeepTranscriptionStage.audioDeleted)
+        }
+        guard !manifest.chunks.isEmpty else { throw HolosError.invalidInput("This session has no saved audio.") }
         switch dependencies.modelStatus() {
         case .installed: break
         case .downloading:

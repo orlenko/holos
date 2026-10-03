@@ -824,6 +824,29 @@ func aRunWithNothingToDoNeedsNoModel() async throws {
 }
 
 @Test(.timeLimit(.minutes(1)))
+func aRunWithNothingToDoNeedsNoAudio() async throws {
+    let temp = try TemporaryDirectory("deep")
+    defer { temp.remove() }
+    let (session, _) = try await deepSession(in: temp.url)
+    let transcriber = ScriptedTranscriber(script: scriptedHearing)
+    _ = try await deepRun(session, deepDependencies(transcriber))
+    let deep = try currentTranscript(session)
+    // The audio was deleted since (Delete Audio): the transcript the model made is kept without it.
+    let manifest = try SessionArchive.readManifest(at: session)
+    try AtomicFile.writeJSON(AudioDeletedRecord(sessionID: manifest.id, chunkCount: manifest.chunks.count,
+                                                seconds: 20), to: SessionPaths.audioDeleted(session))
+    let again = try await deepRun(session, deepDependencies(transcriber), diarizer: nil)
+    #expect(deepStage(again.record)?.message == "The meeting was already transcribed with Whisper large-v3 turbo.")
+    #expect(again.exitCode != 1, "\(again.summary)")
+    #expect(try currentTranscript(session).id == deep.id && transcriber.calls.value == 1)
+    // Forced, it needs the audio.
+    let forced = await #expect(throws: HolosError.self) {
+        _ = try await deepRun(session, deepDependencies(transcriber), force: true, diarizer: nil)
+    }
+    #expect(forced?.localizedDescription == DeepTranscriptionStage.audioDeleted)
+}
+
+@Test(.timeLimit(.minutes(1)))
 func aSessionLeftProcessingMustBeRecoveredFirst() async throws {
     let temp = try TemporaryDirectory("deep")
     defer { temp.remove() }

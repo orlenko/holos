@@ -4767,8 +4767,8 @@ carried over.
 (`SessionDeepTranscribeCommand`): a precheck first (unfinished recording, deleted or missing
 audio, several languages, model not installed or still downloading) exits 1 with nothing
 changed (a session left `processing` by a recorder that died while saving counts as unfinished:
-Recover first); a run with nothing to do (the transcript is this model's, no `--force`) needs no
-model; then the post-processor with `deepTranscribe`: exit 0 done, 3 partial (exports
+Recover first); a run with nothing to do (the transcript is this model's, no `--force`) needs
+neither the model nor the audio (deleted since, it is not an error); then the post-processor with `deepTranscribe`: exit 0 done, 3 partial (exports
 written, but the pass was skipped or failed, or speaker labelling was), 1 failed.
 `voiceislocal eval local <session> --backend whisper [--language …]` makes a local candidate
 in the current transcript's language (as the pass chooses it) with the same rendering, prompt (recorded in run.json as `prompt`, the candidates as
