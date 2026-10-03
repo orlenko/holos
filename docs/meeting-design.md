@@ -4700,7 +4700,11 @@ skips it.
    transcribed. Read in pieces of at most 600 s, each ending at the quietest 100 ms of its
    last 30 s, so a long meeting is never in memory whole and no word is cut. Segment and word
    times map back to session time through the render's time map (`RenderTimeMap.
-   sessionTime`: linear inside a span, snapped to the nearest edge inside inserted silence).
+   sessionTime`, linear inside a span). Output over the silence the render inserted for a
+   shortened gap (outside every span) is discarded rather than snapped to a span edge, where it
+   would stretch across the whole gap and escape the silence guard: a word there is dropped (by
+   its middle), a segment with words in two spans becomes two, an untimed segment keeps its part
+   in one span, and an empty stretch keeps its parts in spans.
 5. *Guards* (`DeepTranscriptGuards`, pure). Per track: a segment whose audio is below
    −50 dBFS RMS and where the recorded transcript has no word within 0.5 s is dropped
    (`droppedSilent`); then each repeat past the first of 3 or more consecutive segments with

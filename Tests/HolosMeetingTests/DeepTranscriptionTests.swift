@@ -186,10 +186,32 @@ private func deepStage(_ record: PostProcessingRecord) -> StageOutcome? {
     #expect(mapped[0].levelDB == DeepAudio.silenceDB, "Its audio, 2–3.2 s into the piece, is silent.")
     #expect(mapped[1].levelDB > -25, "Its audio, 5–6.2 s into the piece, holds the tone.")
     #expect(mapped[2].words.isEmpty && abs(mapped[2].start - 403) < 1e-9)
-    // Times inside the shortened gap snap to the nearest edge.
-    let snapped = DeepAudio.sessionSegments([heard("in the gap", at: 1)], piece: piece, pieceStart: 11,
-                                            track: "mic", timeMap: map)
-    #expect(snapped[0].start == 110)
+}
+
+@Test func outputOverInsertedGapSilenceIsDiscarded() {
+    // 10 s of session audio at 100 s, a shortened gap (render 10–15 s is inserted silence), then audio from 400 s.
+    let map = [RenderSpan(renderStart: 0, sessionStart: 100, duration: 10),
+               RenderSpan(renderStart: 15, sessionStart: 400, duration: 30)]
+    let piece = [Float](repeating: 0, count: 16_000 * 30)
+    // A passage the model wrote over the inserted silence (render 11–12.2 s): never snapped to 110–400 s.
+    #expect(DeepAudio.sessionSegments([heard("in the gap", at: 11)], piece: piece, pieceStart: 0, track: "mic",
+                                      timeMap: map).isEmpty)
+    // A passage straddling the gap: its words before it and after it become two passages; the word inside it goes.
+    let straddling = DeepTranscribedSegment(text: " one two gap three", start: 9, end: 15.8, words: [
+        DeepTranscribedWord(text: " one", start: 9.0, end: 9.3), DeepTranscribedWord(text: " two", start: 9.4, end: 9.8),
+        DeepTranscribedWord(text: " gap", start: 12, end: 12.4), DeepTranscribedWord(text: " three", start: 15.2, end: 15.6),
+    ])
+    let split = DeepAudio.sessionSegments([straddling], piece: piece, pieceStart: 0, track: "mic", timeMap: map)
+    #expect(split.map(\.text) == [" one two", " three"])
+    #expect(abs(split[0].start - 109) < 1e-9 && abs(split[0].end - 109.8) < 1e-9)
+    #expect(abs(split[1].start - 400.2) < 1e-9 && abs(split[1].end - 400.6) < 1e-9)
+    // An untimed passage and an empty stretch keep only their part inside session audio.
+    let untimed = DeepAudio.sessionSegments([DeepTranscribedSegment(text: "Untimed.", start: 8, end: 13)],
+                                            piece: piece, pieceStart: 0, track: "mic", timeMap: map)
+    #expect(untimed.count == 1 && abs(untimed[0].start - 108) < 1e-9 && abs(untimed[0].end - 110) < 1e-9)
+    let empty = DeepAudio.sessionSegments([DeepTranscribedSegment(text: "", start: 11, end: 14, unheard: true)],
+                                          piece: piece, pieceStart: 0, track: "mic", timeMap: map)
+    #expect(empty.isEmpty, "Inserted silence is not audio the model left empty.")
 }
 
 @Test func transcriptSegmentsKeepWordTimingsAndOffsets() throws {

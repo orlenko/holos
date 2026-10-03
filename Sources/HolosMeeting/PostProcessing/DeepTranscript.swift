@@ -185,33 +185,81 @@ public enum DeepAudio {
 
     /// The deep transcriber's segments of one piece (times from the piece's start, which is `pieceStart` seconds into
     /// the render of `track`) in session time, through the render's time map (`RenderTimeMap.sessionTime`), with the
-    /// level of each segment's audio. Segments without text are left out.
+    /// level of each segment's audio. Segments without text are left out. Only what lies in session audio is kept:
+    /// silence the render inserted for a shortened gap (outside every `RenderSpan`) holds no speech, so a word there is
+    /// dropped (by its middle), a segment whose words fall in several spans becomes one segment per span, one with no
+    /// word left is dropped, and an untimed segment or an empty (`unheard`) stretch keeps its part in one span (an
+    /// empty stretch, each part). Snapped to a span edge instead, a passage written over that silence would stretch
+    /// across the whole gap in session time and escape the silence guard.
     public static func sessionSegments(_ segments: [DeepTranscribedSegment], piece: [Float], pieceStart: Double,
                                        track: String, timeMap: [RenderSpan]) -> [DeepHeardSegment] {
         func session(_ time: Double) -> Double { RenderTimeMap.sessionTime(pieceStart + time, map: timeMap) }
-        return segments.compactMap { segment in
+        /// The span holding piece time `time` (0 for an empty map, which keeps everything).
+        func span(at time: Double) -> Int? {
+            guard !timeMap.isEmpty else { return 0 }
+            let render = pieceStart + time
+            return timeMap.firstIndex { render >= $0.renderStart && render <= $0.renderStart + $0.duration }
+        }
+        /// The parts of piece interval [start, end) inside each span, in piece time.
+        func parts(_ start: Double, _ end: Double) -> [(start: Double, end: Double)] {
+            guard !timeMap.isEmpty else { return end >= start ? [(start, end)] : [] }
+            return timeMap.compactMap { span in
+                let lower = max(start, span.renderStart - pieceStart)
+                let upper = min(end, span.renderStart + span.duration - pieceStart)
+                return upper > lower ? (lower, upper) : nil
+            }
+        }
+        var out: [DeepHeardSegment] = []
+        for segment in segments {
+            guard segment.start.isFinite, segment.end.isFinite else { continue }
             if segment.unheard {
-                guard segment.start.isFinite, segment.end.isFinite else { return nil }
-                let start = session(segment.start)
-                return DeepHeardSegment(track: track, start: start, end: max(start, session(segment.end)), text: "",
-                                        levelDB: levelDB(piece, from: segment.start, to: segment.end), unheard: true)
+                for part in parts(segment.start, max(segment.start, segment.end)) {
+                    let start = session(part.start)
+                    out.append(DeepHeardSegment(track: track, start: start, end: max(start, session(part.end)),
+                                                text: "", levelDB: levelDB(piece, from: part.start, to: part.end),
+                                                unheard: true))
+                }
+                continue
             }
             let words = segment.words.filter { $0.start.isFinite && $0.end.isFinite }
-            let hasText = !segment.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                || words.contains { !$0.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
-            guard hasText, segment.start.isFinite, segment.end.isFinite else { return nil }
-            let start = words.first.map { min($0.start, segment.start) } ?? segment.start
-            let end = words.last.map { max($0.end, segment.end) } ?? segment.end
-            let mapped = words.map { word in
-                DeepTranscribedWord(text: word.text, start: session(word.start), end: max(session(word.start),
-                                                                                         session(word.end)),
-                                    probability: word.probability)
+            if words.isEmpty {
+                guard !segment.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                      let part = parts(segment.start, max(segment.start, segment.end))
+                          .max(by: { $0.end - $0.start < $1.end - $1.start }) else { continue }
+                let start = session(part.start)
+                out.append(DeepHeardSegment(track: track, start: start, end: max(start, session(part.end)),
+                                            text: segment.text, levelDB: levelDB(piece, from: part.start, to: part.end)))
+                continue
             }
-            let sessionStart = session(start)
-            return DeepHeardSegment(track: track, start: sessionStart, end: max(sessionStart, session(end)),
-                                    text: segment.text, words: mapped,
-                                    levelDB: levelDB(piece, from: start, to: end))
+            // Words grouped by the span their middle lies in, in order; words in inserted silence are dropped.
+            var groups: [(span: Int, words: [DeepTranscribedWord])] = []
+            for word in words {
+                guard let index = span(at: (word.start + word.end) / 2) else { continue }
+                if let last = groups.last, last.span == index {
+                    groups[groups.count - 1].words.append(word)
+                } else {
+                    groups.append((index, [word]))
+                }
+            }
+            for group in groups {
+                guard group.words.contains(where: { !$0.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty })
+                else { continue }
+                // A segment kept whole keeps its own bounds and text; a part of a split one, its words'.
+                let whole = groups.count == 1 && group.words.count == words.count
+                let start = whole ? min(group.words[0].start, segment.start) : group.words[0].start
+                let end = whole ? max(group.words[group.words.count - 1].end, segment.end)
+                    : group.words[group.words.count - 1].end
+                let mapped = group.words.map { word in
+                    DeepTranscribedWord(text: word.text, start: session(word.start),
+                                        end: max(session(word.start), session(word.end)), probability: word.probability)
+                }
+                let sessionStart = session(start)
+                out.append(DeepHeardSegment(track: track, start: sessionStart, end: max(sessionStart, session(end)),
+                                            text: whole ? segment.text : group.words.map(\.text).joined(),
+                                            words: mapped, levelDB: levelDB(piece, from: start, to: end)))
+            }
         }
+        return out
     }
 
     /// A transcript segment for `heard`: its words' texts joined as the model spaced them (punctuation the model
