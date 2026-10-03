@@ -1,14 +1,12 @@
 import Testing
 @testable import HolosCore
 
-@Test func openSettingsDoesOneThingPerClick() {
-    // Not granted: ask macOS (this also re-adds a removed entry).
-    #expect(PermissionRequest.asks(granted: false))
-    // Its prompt took the focus: the prompt leads to the page, so the page is not opened as well.
-    #expect(!PermissionRequest.opensSettings(granted: false, stillActiveAfterAsking: false))
-    // No prompt came (macOS shows it once per entry): open the page.
-    #expect(PermissionRequest.opensSettings(granted: false, stillActiveAfterAsking: true))
-    // Granted: nothing to ask; open the page to change it.
-    #expect(!PermissionRequest.asks(granted: true))
-    #expect(PermissionRequest.opensSettings(granted: true, stillActiveAfterAsking: true))
+@Test func openSettingsDoesOneThingOnTheFirstClick() {
+    // First click for a permission not granted: only ask (macOS's prompt leads to the page; asking adds the entry).
+    #expect(PermissionRequest.forClick(granted: false, clicksBefore: 0) == .init(asks: true, opensSettings: false))
+    // A later click: ask again (re-adds a removed entry silently) and open the page.
+    #expect(PermissionRequest.forClick(granted: false, clicksBefore: 1) == .init(asks: true, opensSettings: true))
+    #expect(PermissionRequest.forClick(granted: false, clicksBefore: 5) == .init(asks: true, opensSettings: true))
+    // Granted: nothing to ask; open the page.
+    #expect(PermissionRequest.forClick(granted: true, clicksBefore: 0) == .init(asks: false, opensSettings: true))
 }

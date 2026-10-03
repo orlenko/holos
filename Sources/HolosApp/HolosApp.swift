@@ -163,6 +163,8 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
     var assistantWindow: SetupAssistantWindow?
     var assistantRefreshTask: Task<Void, Never>?
     var assistantFlow = SetupAssistantFlow()
+    /// Open Settings clicks per permission since launch (`PermissionRequest`).
+    var permissionClicks: [PrivacyPermission: Int] = [:]
     /// The assistant shows the one-page check after it reopened Voice is Local.
     var assistantVerifying = false
     /// The assistant finished or was skipped this run; the menu's Setup Assistant… starts it again from Welcome.
@@ -1605,27 +1607,15 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    /// One step per click (`PermissionRequest`): a permission not granted is asked for (which adds Voice is Local
-    /// to the list, again after its entry was removed); the page opens only when Voice is Local never lost the focus
-    /// during the prompt window, which a system prompt (even a late or quickly dismissed one) would take.
+    /// One step on the first click (`PermissionRequest`): a permission not granted is asked for, which adds Voice
+    /// is Local to the list (again after its entry was removed) and lets macOS show its prompt; a later click in
+    /// this run asks again and opens the page as well.
     private func requestPermission(_ permission: PrivacyPermission, granted: Bool, anchor: String,
                                    ask: () -> Void) {
-        guard PermissionRequest.asks(granted: granted) else {
-            openPrivacySettings(anchor)
-            return
-        }
-        let lostFocus = LostFocusFlag()
-        let observer = NotificationCenter.default.addObserver(
-            forName: NSApplication.didResignActiveNotification, object: nil, queue: .main) { _ in lostFocus.set() }
-        ask()
-        Task { @MainActor [weak self] in
-            try? await Task.sleep(for: PermissionRequest.promptWait)
-            NotificationCenter.default.removeObserver(observer)
-            if PermissionRequest.opensSettings(granted: false,
-                                               stillActiveAfterAsking: !lostFocus.value && NSApp.isActive) {
-                self?.openPrivacySettings(anchor)
-            }
-        }
+        let request = PermissionRequest.forClick(granted: granted, clicksBefore: permissionClicks[permission, default: 0])
+        permissionClicks[permission, default: 0] += 1
+        if request.asks { ask() }
+        if request.opensSettings { openPrivacySettings(anchor) }
     }
 
     private func openPrivacySettings(_ anchor: String) {
@@ -1679,12 +1669,4 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func quit() { NSApplication.shared.terminate(nil) }
-}
-
-/// Set once the app resigned active while a permission prompt could appear.
-private final class LostFocusFlag: @unchecked Sendable {
-    private let lock = NSLock()
-    private var lost = false
-    func set() { lock.withLock { lost = true } }
-    var value: Bool { lock.withLock { lost } }
 }
