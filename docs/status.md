@@ -400,6 +400,23 @@ timeline and larger local-model benchmark are follow-ups, not completed features
   reference (system track, `eval local --backend whisper`): 14.6 % WER (339 deletions) and 63 of
   82 word-list terms, against Apple's 20.9 % and 31 of 82, after WhisperKit's first-token check,
   which emptied whole chunks (725 deletions), was turned off.
+- Meeting titles and summaries (docs/meeting-design.md §4.17): `voiceislocal session summarize
+  <session> [--force] [--json]` has Apple's on-device model write a title (at most 8 words), a
+  one- or two-sentence summary, key points and action items from the current transcript with
+  speaker names, by map and reduce over parts that fit the model's context; they go to
+  `summary.json` and into the Markdown and JSON transcript files. meeting.json records whether
+  the user named the meeting (`nameSource`); older meetings count a "Meeting YYYY-MM-DD HH:MM"
+  name as default, so a generated title never replaces a name the user gave. In the app, a
+  meeting is summarized in the background once its transcript is final and again after a final
+  transcript, one at a time, never while a meeting records or saves (Settings › Meetings, on by
+  default; off without Apple Intelligence). Unit-tested with a scripted model. Manual validation
+  on copies of three real meetings (52–80 min; numbers only): 6, 6 and 9 model calls, 32–53 s
+  each, no failures; the titles and summaries named the meetings' topics and their facts were in
+  the transcripts, with recognition errors in names and jargon carried over.
+- Meetings list (docs/design.md "Meetings list"): rich rows grouped by Today, Yesterday, This
+  Week and month, with the title, start, length, people, the summary, and badges instead of
+  columns; a search field filters by title, summary and people; the row's menu has every action.
+  Rendered offscreen with invented meetings in light and dark; not yet seen in the running app.
 - Main window (docs/design.md "Main window"): **Open Voice is Local** (⌘0) opens one
   window with a sidebar: History (⌘1), Corrections (⌘2), Meetings (⌘3), People (⌘4),
   Reading (⌘5), and Settings (⌘,), with a

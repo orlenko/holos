@@ -91,6 +91,22 @@ public struct SessionSummary: Codable, Sendable, Equatable, Identifiable {
     public var audioDeleted: Bool
     /// A meeting in several languages whose current transcript misses one of them (`LanguageWork`); nil otherwise.
     public var languageWork: LanguageWork?
+    /// Where `name` came from (`MeetingNaming.source`: meeting.json's, else inferred from the name).
+    public var nameSource: MeetingNameSource
+    /// summary.json, when it can be read: possibly of an earlier transcript (`summaryIsCurrent` says), which is
+    /// still shown until the new one is made.
+    public var generatedSummary: MeetingSummaryRecord?
+
+    /// The title the Meetings list shows (`MeetingNaming.displayTitle`): the user's name, else the generated title,
+    /// else the name.
+    public var displayTitle: String {
+        MeetingNaming.displayTitle(name: name, source: nameSource, generatedTitle: generatedSummary?.title)
+    }
+
+    /// The summary was made from the current transcript.
+    public var summaryIsCurrent: Bool {
+        MeetingSummaryStore.current(generatedSummary, transcriptID: transcriptID) != nil
+    }
 
     public init(id: String, directory: URL, name: String, createdAt: Date, source: AudioSource,
                 origin: MeetingOrigin = .recorded, state: SessionState, manifestStatus: String,
@@ -100,7 +116,8 @@ public struct SessionSummary: Codable, Sendable, Equatable, Identifiable {
                 labelsReadyAt: Date? = nil,
                 hasSpeakerEdits: Bool = false, phase: RecorderPhase? = nil, pid: Int32? = nil,
                 liveness: RecorderLiveness, bytes: Int64 = 0, derivedBytes: Int64 = 0, audioDeleted: Bool = false,
-                languageWork: LanguageWork? = nil) {
+                languageWork: LanguageWork? = nil, nameSource: MeetingNameSource? = nil,
+                generatedSummary: MeetingSummaryRecord? = nil) {
         self.id = id; self.directory = directory; self.name = name; self.createdAt = createdAt
         self.source = source; self.origin = origin; self.state = state; self.manifestStatus = manifestStatus
         self.savedSeconds = savedSeconds; self.chunkCount = chunkCount; self.transcriptID = transcriptID
@@ -110,6 +127,8 @@ public struct SessionSummary: Codable, Sendable, Equatable, Identifiable {
         self.hasSpeakerEdits = hasSpeakerEdits; self.phase = phase; self.pid = pid; self.liveness = liveness
         self.bytes = bytes; self.derivedBytes = derivedBytes; self.audioDeleted = audioDeleted
         self.languageWork = languageWork
+        self.nameSource = MeetingNaming.source(stored: nameSource, name: name)
+        self.generatedSummary = generatedSummary
     }
 }
 
@@ -154,7 +173,8 @@ public enum SessionCatalog {
                 manifestStatus: "", phase: phase, pid: pid, liveness: liveness, bytes: sizes.bytes,
                 derivedBytes: sizes.derived, audioDeleted: audioDeleted(session, sessionID: nil))
         }
-        let origin = (try? SessionFiles.meetingInfo(session: session, manifest: manifest))?.origin ?? .recorded
+        let meeting = try? SessionFiles.meetingInfo(session: session, manifest: manifest)
+        let origin = meeting?.origin ?? .recorded
         let speakers = speakerLabels(session, liveness: liveness)
         // The revision is read, not only found, so a damaged, truncated, mislabelled, or newer one is never listed
         // as the session's transcript.
@@ -183,7 +203,9 @@ public enum SessionCatalog {
             runID: speakers.runID, labelsReadyAt: speakers.readyAt,
             hasSpeakerEdits: hasSpeakerEdits(session), phase: phase, pid: pid, liveness: liveness,
             bytes: sizes.bytes, derivedBytes: sizes.derived,
-            audioDeleted: audioDeleted(session, sessionID: manifest.id), languageWork: languageWork)
+            audioDeleted: audioDeleted(session, sessionID: manifest.id), languageWork: languageWork,
+            nameSource: meeting?.nameSource,
+            generatedSummary: MeetingSummaryStore.readIfUsable(session: session, sessionID: manifest.id))
     }
 
     /// `summaries` with `LanguageWork.ready` set where a run would detect a language now

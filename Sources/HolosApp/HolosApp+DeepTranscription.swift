@@ -151,7 +151,7 @@ extension HolosAppDelegate {
     /// Whether the meeting state leaves no room for a pass: a meeting starting, recording, or saving, one that
     /// failed while its recorder may still be capturing or post-processing, or a recorder the app launched that has
     /// not exited, even without a session folder (`MeetingController.recorderMayStillRun`, as a start checks it).
-    private func meetingIsBusy(_ state: MeetingState) -> Bool {
+    func meetingIsBusy(_ state: MeetingState) -> Bool {
         if meeting.controller?.recorderMayStillRun() == true { return true }
         switch state {
         case .idle: return false
@@ -400,6 +400,8 @@ extension HolosAppDelegate {
         meeting.meetingsPane?.refresh()
         updateDeepStates()
         scheduleDeepTranscription()
+        // The final transcript is a new transcript: its summary follows (§4.17).
+        scheduleMeetingSummaries()
         // Review asked for while the pass worked on the meeting.
         if let review = meeting.deep.reviewAfterPass.removeValue(forKey: sessionID) {
             openReview(sessionID: sessionID, directory: review.directory, name: review.name)

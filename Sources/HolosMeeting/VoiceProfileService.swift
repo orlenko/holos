@@ -568,6 +568,13 @@ public enum VoiceProfileService {
         }
     }
 
+    /// What a meeting summary calls the unnamed channel speaker ("Me"): the person who is you in People, else the
+    /// account's full name, else "Me".
+    public static func ownName(store: SpeakerProfileStore = SpeakerProfileStore()) -> String {
+        if let profile = (try? store.load())?.profiles.first(where: \.isSelf) { return profile.displayName }
+        return selfName
+    }
+
     /// `profileNames(store:)` of a database already read, so several views of the people agree.
     public static func profileNames(in database: SpeakerProfileDatabase) -> [String: String] {
         Dictionary(database.profiles.map { ($0.id, $0.displayName) }, uniquingKeysWith: { first, _ in first })

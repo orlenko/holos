@@ -77,7 +77,7 @@ public enum SessionImporter {
     /// `importAudio`, returning the processing lease with the session.
     static func importSession(from file: URL, name: String, root: URL, locale: String, backend: SpeechBackend,
                               vocabulary: [String], transcribe: Bool, makeSpeech: LiveSpeechFactory?,
-                              timeouts: StopTimeouts, languages: [String] = [],
+                              timeouts: StopTimeouts, languages: [String] = [], nameSource: MeetingNameSource? = nil,
                               progress: @escaping @Sendable (Double) -> Void) async throws -> ImportedSession {
         let name = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !name.isEmpty else { throw HolosError.invalidInput("The imported meeting needs a name.") }
@@ -107,7 +107,8 @@ public enum SessionImporter {
         do {
             let info = MeetingInfo(sessionID: archive.id, mode: .inPerson, othersInRoom: false, origin: .imported,
                                    importedFileName: file.lastPathComponent,
-                                   languages: languages.count > 1 ? languages : nil)
+                                   languages: languages.count > 1 ? languages : nil,
+                                   nameSource: nameSource ?? MeetingNaming.sourceForNewMeeting(name: name))
             try AtomicFile.create(try HolosJSON.encoder().encode(info), at: SessionPaths.meetingInfo(directory))
             if !vocabulary.isEmpty {
                 try AtomicFile.create(try HolosJSON.encoder().encode(MeetingVocabulary(strings: vocabulary)),

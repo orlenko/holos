@@ -34,11 +34,16 @@ import HolosCore
 /// Markdown escaped (`\` `` ` `` `*` `_` `[` `]` `!` `<` `>` `&` `~` `|`), so no emphasis, code span, link, image,
 /// HTML, entity, strikethrough, or table changes them; a block's text is one paragraph with its leading block syntax
 /// ("# ", "- ", "1. ", "[x]: ", …) escaped too, so it renders literally as a visible paragraph.
+///
+/// A meeting summarized for this transcript (docs/meeting-design.md §4.17) gets "## Summary" after the header (the
+/// summary, **Key points** and **Action items** lists, and where it came from) and "## Transcript" before the turns;
+/// its title is the heading when the user did not name the meeting (`ExportSummary.titleIsHeading`).
 enum MarkdownExport {
     static func render(_ content: ExportContent) -> Data {
         let metadata = content.document.metadata
         let (date, time) = localDateAndTime(metadata.createdAt, in: metadata.timeZone)
-        var text = "# \(title(metadata.name))\n\n"
+        let heading = content.summary.flatMap { $0.titleIsHeading ? $0.title : nil } ?? metadata.name
+        var text = "# \(title(heading))\n\n"
         text += "- Date: \(date)\n"
         text += "- Started: \(time)\n"
         text += "- Duration: \(TimeFormat.duration(metadata.durationSeconds))\n"
@@ -48,10 +53,28 @@ enum MarkdownExport {
         if let participants = participants(content.projection) {
             text += "- Participants: \(participants)\n"
         }
+        if let summary = content.summary {
+            text += summarySection(summary)
+            text += "\n## Transcript\n"
+        }
         for paragraph in paragraphs(content) {
             text += "\n\(paragraph)\n"
         }
         return Data(text.utf8)
+    }
+
+    /// "## Summary", the summary paragraph, the key points and action items as lists, and where it came from; every
+    /// line escaped as the transcript's text is, so nothing the model wrote turns into Markdown.
+    static func summarySection(_ summary: ExportSummary) -> String {
+        var text = "\n## Summary\n\n\(paragraph(summary.summary))\n"
+        for (heading, items) in [("Key points", summary.points), ("Action items", summary.actions)] {
+            let lines = items.map { escapeInline(ExportText.singleLine($0)) }.filter { !$0.isEmpty }
+            guard !lines.isEmpty else { continue }
+            text += "\n**\(heading)**\n\n" + lines.map { "- \($0)\n" }.joined()
+        }
+        text += "\n_Written on this Mac by \(escapeInline(ExportText.singleLine(summary.model))) from the transcript; "
+            + "it can be wrong._\n"
+        return text
     }
 
     // MARK: Body

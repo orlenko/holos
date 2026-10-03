@@ -86,6 +86,8 @@ final class MeetingAppState {
     var windowsInDock: Set<String> = []
     /// Deep transcription after meetings (docs/meeting-design.md §4.16, "App").
     let deep = DeepTranscriptionAppState()
+    /// Meeting titles and summaries (docs/meeting-design.md §4.17).
+    let summaries = MeetingSummaryAppState()
 }
 
 extension HolosAppDelegate: NSMenuDelegate {
@@ -115,8 +117,9 @@ extension HolosAppDelegate: NSMenuDelegate {
         controller.onSessionsInUseChanged = { [weak self, weak controller] in
             guard let controller else { return }
             self?.meeting.meetingsPane?.update(running: controller.sessionsInUse)
-            // A meeting another command let go of may be the next deep transcription's.
+            // A meeting another command let go of may be the next deep transcription's, or the next summary's.
             self?.scheduleDeepTranscription()
+            self?.scheduleMeetingSummaries()
         }
         // Reviews open, opening, or still saving after they closed: the automatic relabel leaves those meetings alone.
         controller.sessionsUnderReview = { [weak self] in
@@ -132,6 +135,7 @@ extension HolosAppDelegate: NSMenuDelegate {
         controller.attachOnLaunch()
         refreshSpeakerModels()
         setUpDeepTranscription()
+        setUpMeetingSummaries()
         Task { [weak self] in await self?.promptAboutInterruptedRecordings() }
     }
 
@@ -156,8 +160,9 @@ extension HolosAppDelegate: NSMenuDelegate {
             rebuildMenu()
         }
         meeting.meetingsPane?.update(meetingState: state)
-        // A meeting needs the Mac: a final transcript in progress is stopped and runs again afterwards.
+        // A meeting needs the Mac: a final transcript or a summary in progress is stopped and runs again afterwards.
         deepTranscriptionMeetingStateChanged()
+        meetingSummaryMeetingStateChanged()
     }
 
     private func handleMeetingEffect(_ effect: MeetingEffect) {
@@ -170,8 +175,10 @@ extension HolosAppDelegate: NSMenuDelegate {
             meeting.lastSummary = (sessionID, summary)
             meeting.notice = nil
             meeting.meetingsPane?.refresh()
-            // The meeting's own post-processing ran in the recorder: the final transcript can follow (§4.16).
+            // The meeting's own post-processing ran in the recorder: the final transcript can follow (§4.16), and its
+            // title and summary (§4.17).
             queueDeepTranscriptionAfterMeeting(sessionID: sessionID)
+            scheduleMeetingSummaries()
         case .offerNaming, .clearNamingOffer:
             // `MeetingController.namingOffer` changed; the menu and the status item show it.
             break
@@ -674,6 +681,8 @@ extension HolosAppDelegate: NSMenuDelegate {
         pane.onDeepTranscription = { [weak self] runNow, summary in
             if runNow { self?.runDeepTranscriptionNow(summary) } else { self?.cancelDeepTranscription(summary.id) }
         }
+        pane.onSummarize = { [weak self] summary in self?.summarizeMeetingAgain(summary) }
+        pane.update(summarizing: meeting.summaries.running?.sessionID)
         pane.update(meetingState: controller.state)
         meeting.meetingsPane = pane
         updateDeepStates()

@@ -93,12 +93,24 @@ public enum SessionExports {
     /// never disappears from them.
     static func exportDocument(_ snapshot: SpeakerSessionSnapshot) throws -> ExportDocument {
         var document = snapshot.exportDocument()
-        guard snapshot.transcriptChanged,
-              let current = try SessionFiles.currentTranscript(session: snapshot.session) else { return document }
-        document.transcript = current
-        document.run = nil
-        document.projection = nil
+        if snapshot.transcriptChanged, let current = try SessionFiles.currentTranscript(session: snapshot.session) {
+            document.transcript = current
+            document.run = nil
+            document.projection = nil
+        }
+        document.summary = exportSummary(snapshot)
         return document
+    }
+
+    /// summary.json for the exports (docs/meeting-design.md §4.17), when one can be read; the exporter uses it only
+    /// for the transcript it was made from. Its title heads the Markdown export unless the user named the meeting.
+    static func exportSummary(_ snapshot: SpeakerSessionSnapshot) -> ExportSummary? {
+        guard let record = MeetingSummaryStore.readIfUsable(session: snapshot.session,
+                                                            sessionID: snapshot.manifest.id) else { return nil }
+        let source = MeetingNaming.source(stored: snapshot.meeting.nameSource, name: snapshot.manifest.name)
+        return ExportSummary(transcriptID: record.transcriptID, title: record.title, summary: record.summary,
+                             points: record.points, actions: record.actions,
+                             model: MeetingSummaryModel.displayName(record.model), titleIsHeading: !source.isUser)
     }
 
     /// Every format, in the order they are written.

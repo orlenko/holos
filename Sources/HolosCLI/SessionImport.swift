@@ -50,7 +50,8 @@ extension Session {
                 file: file, name: name ?? (fallbackName.isEmpty ? "Imported meeting" : fallbackName),
                 root: directory.map(fileURL) ?? HolosPaths.sessions, locale: locale,
                 backend: recognition.backend, vocabulary: try readVocabulary(), transcribe: !noTranscribe,
-                postprocess: !noTranscribe && !noPostprocess, languages: languages)
+                postprocess: !noTranscribe && !noPostprocess, languages: languages,
+                nameSource: name == nil ? .default : .user)
             // Ctrl-C (or SIGTERM) cancels the work, so a partial import is removed; a second one ends the process.
             // The handling is installed before the work starts, so a signal in between cancels it too.
             let work = CancellableStart<Int32>()
