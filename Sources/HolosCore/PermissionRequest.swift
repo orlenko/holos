@@ -5,30 +5,21 @@ public enum PrivacyPermission: String, CaseIterable, Sendable {
     case accessibility, inputMonitoring, screenAndSystemAudio
 }
 
-/// What one "Open Settings" click does for a permission that is not granted yet. macOS shows its own prompt (with
-/// its own "Open System Settings" button) only the first time an app asks; asking is also what adds the app to the
-/// list in System Settings. So the first click only asks, and later clicks only open System Settings: never both,
-/// which showed the system prompt on top of an already open System Settings page.
-public enum PermissionRequest: Equatable, Sendable {
-    /// Ask macOS (its prompt leads to the right System Settings page).
-    case askSystem
-    /// Open the permission's System Settings page.
-    case openSettings
+/// What one "Open Settings" click does. A permission not granted yet is asked for first: asking is what adds Voice
+/// is Local to the list in System Settings (again, after its entry was removed), and macOS then shows its own prompt,
+/// whose "Open System Settings" button leads to the page. macOS shows that prompt only once per entry, so when Voice
+/// is Local is still the active app a moment after asking, no prompt came and the page is opened directly. One
+/// click never shows both the prompt and the page.
+public enum PermissionRequest {
+    /// How long after asking a prompt has to take the focus.
+    public static let promptWait: Duration = .milliseconds(800)
 
-    public static func next(for permission: PrivacyPermission, asked: Set<String>) -> PermissionRequest {
-        asked.contains(permission.rawValue) ? .openSettings : .askSystem
-    }
+    /// Whether to ask macOS first.
+    public static func asks(granted: Bool) -> Bool { !granted }
 
-    /// The permissions already asked for, as saved in `defaults`.
-    public static let defaultsKey = "privacyPermissionsAsked"
-
-    public static func asked(in defaults: UserDefaults) -> Set<String> {
-        Set(defaults.stringArray(forKey: defaultsKey) ?? [])
-    }
-
-    public static func recordAsked(_ permission: PrivacyPermission, in defaults: UserDefaults) {
-        var asked = asked(in: defaults)
-        asked.insert(permission.rawValue)
-        defaults.set(asked.sorted(), forKey: defaultsKey)
+    /// Whether to open the System Settings page: always for a granted permission (to change it), and after asking
+    /// only when no system prompt took the focus.
+    public static func opensSettings(granted: Bool, stillActiveAfterAsking: Bool) -> Bool {
+        granted || stillActiveAfterAsking
     }
 }

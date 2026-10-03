@@ -1,20 +1,14 @@
-import Foundation
 import Testing
 @testable import HolosCore
 
-@Test func aPermissionIsAskedOnceThenOpensSettings() throws {
-    let suite = "permission-request-\(UUID().uuidString)"
-    let defaults = try #require(UserDefaults(suiteName: suite))
-    defer { defaults.removePersistentDomain(forName: suite) }
-    for permission in PrivacyPermission.allCases {
-        #expect(PermissionRequest.next(for: permission, asked: PermissionRequest.asked(in: defaults)) == .askSystem)
-    }
-    PermissionRequest.recordAsked(.accessibility, in: defaults)
-    PermissionRequest.recordAsked(.accessibility, in: defaults)
-    let asked = PermissionRequest.asked(in: defaults)
-    #expect(asked == ["accessibility"])
-    #expect(PermissionRequest.next(for: .accessibility, asked: asked) == .openSettings)
-    // Each permission has its own first ask.
-    #expect(PermissionRequest.next(for: .screenAndSystemAudio, asked: asked) == .askSystem)
-    #expect(PermissionRequest.next(for: .inputMonitoring, asked: asked) == .askSystem)
+@Test func openSettingsDoesOneThingPerClick() {
+    // Not granted: ask macOS (this also re-adds a removed entry).
+    #expect(PermissionRequest.asks(granted: false))
+    // Its prompt took the focus: the prompt leads to the page, so the page is not opened as well.
+    #expect(!PermissionRequest.opensSettings(granted: false, stillActiveAfterAsking: false))
+    // No prompt came (macOS shows it once per entry): open the page.
+    #expect(PermissionRequest.opensSettings(granted: false, stillActiveAfterAsking: true))
+    // Granted: nothing to ask; open the page to change it.
+    #expect(!PermissionRequest.asks(granted: true))
+    #expect(PermissionRequest.opensSettings(granted: true, stillActiveAfterAsking: true))
 }

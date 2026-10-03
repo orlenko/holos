@@ -1605,16 +1605,21 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    /// One step per click (`PermissionRequest`): the first click for a permission asks macOS, whose own prompt
-    /// leads to System Settings; later clicks, or a granted permission, open System Settings directly.
+    /// One step per click (`PermissionRequest`): a permission not granted is asked for (which adds Voice is Local
+    /// to the list, again after its entry was removed); the page opens only when macOS showed no prompt, judged by
+    /// Voice is Local still being the active app a moment later, or when the permission is granted.
     private func requestPermission(_ permission: PrivacyPermission, granted: Bool, anchor: String,
                                    ask: () -> Void) {
-        let defaults = UserDefaults.standard
-        if !granted, PermissionRequest.next(for: permission, asked: PermissionRequest.asked(in: defaults)) == .askSystem {
-            PermissionRequest.recordAsked(permission, in: defaults)
-            ask()
-        } else {
+        guard PermissionRequest.asks(granted: granted) else {
             openPrivacySettings(anchor)
+            return
+        }
+        ask()
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(for: PermissionRequest.promptWait)
+            if PermissionRequest.opensSettings(granted: false, stillActiveAfterAsking: NSApp.isActive) {
+                self?.openPrivacySettings(anchor)
+            }
         }
     }
 
