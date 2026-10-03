@@ -36,9 +36,12 @@ public struct DeepTranscribedSegment: Sendable, Equatable {
     public var end: Double
     /// Empty when the model gave no word timings for it.
     public var words: [DeepTranscribedWord]
+    /// Audible audio the model gave no words for, even decoded again in parts (`text` empty): the pass fails when the
+    /// recorded transcript has words there, and accepts it where it has none (music, noise).
+    public var unheard: Bool
 
-    public init(text: String, start: Double, end: Double, words: [DeepTranscribedWord] = []) {
-        self.text = text; self.start = start; self.end = end; self.words = words
+    public init(text: String, start: Double, end: Double, words: [DeepTranscribedWord] = [], unheard: Bool = false) {
+        self.text = text; self.start = start; self.end = end; self.words = words; self.unheard = unheard
     }
 }
 
@@ -113,12 +116,30 @@ public enum DeepTranscriptionModel {
         root.appendingPathComponent(model, isDirectory: true)
     }
 
-    /// The Whisper language code of a locale: "en" for "en-CA", "fr" for "fr_CA"; nil when there is none.
+    /// The Whisper language token of a locale: "en" for "en-CA", "fr" for "fr_CA", and Whisper's own spelling
+    /// where it differs from the locale's ("no" for Norwegian Bokmål "nb", "tl" for Filipino "fil", "jw" for
+    /// Javanese "jv", "he" for an old "iw"). Nil for a language Whisper does not know, which is then detected:
+    /// WhisperKit would otherwise put the English token in place of a token it cannot find.
     public static func whisperLanguage(_ locale: String) -> String? {
         let identifier = locale.replacingOccurrences(of: "_", with: "-")
-        guard let code = Locale(identifier: identifier).language.languageCode?.identifier, !code.isEmpty else {
-            return nil
-        }
-        return code.lowercased()
+        guard let code = Locale(identifier: identifier).language.languageCode?.identifier.lowercased(),
+              !code.isEmpty else { return nil }
+        let token = whisperAliases[code] ?? code
+        return whisperLanguages.contains(token) ? token : nil
     }
+
+    /// Locale language codes Whisper spells otherwise.
+    static let whisperAliases = ["nb": "no", "fil": "tl", "jv": "jw", "iw": "he", "in": "id", "ji": "yi",
+                                 "zh-hant": "zh", "cmn": "zh"]
+
+    /// Whisper's language tokens (WhisperKit 1.1.0's `Constants.languages`).
+    static let whisperLanguages: Set<String> = [
+        "af", "am", "ar", "as", "az", "ba", "be", "bg", "bn", "bo", "br", "bs", "ca", "cs", "cy", "da", "de",
+        "el", "en", "es", "et", "eu", "fa", "fi", "fo", "fr", "gl", "gu", "ha", "haw", "he", "hi", "hr",
+        "ht", "hu", "hy", "id", "is", "it", "ja", "jw", "ka", "kk", "km", "kn", "ko", "la", "lb", "ln",
+        "lo", "lt", "lv", "mg", "mi", "mk", "ml", "mn", "mr", "ms", "mt", "my", "ne", "nl", "nn", "no",
+        "oc", "pa", "pl", "ps", "pt", "ro", "ru", "sa", "sd", "si", "sk", "sl", "sn", "so", "sq", "sr",
+        "su", "sv", "sw", "ta", "te", "tg", "th", "tk", "tl", "tr", "tt", "uk", "ur", "uz", "vi", "yi",
+        "yo", "yue", "zh",
+    ]
 }

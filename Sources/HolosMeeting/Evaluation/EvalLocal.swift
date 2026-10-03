@@ -41,9 +41,87 @@ public struct LocalRunRecord: Codable, Sendable, Equatable {
     public var engine: String? = nil
     /// The prompt the deep transcription model was given on every chunk (`DeepTranscriptionPrompt`).
     public var prompt: String? = nil
+    /// The recorded transcript the deep transcription guards compared every track with (a revision kept in the
+    /// session): a resumed run uses it again, so all of its tracks are guarded alike.
+    public var referenceTranscriptID: String? = nil
 
     public var seconds: Double { tracks.reduce(0) { $0 + $1.seconds } }
     public var partCount: Int { languages.count * tracks.count }
+
+    /// The schema of a run transcribed by the deep transcription model; its `backend` is written as "whisper", which a
+    /// version of Voice is Local from before it cannot read, so it never resumes such a run with Apple's recognizer.
+    static let whisperSchemaVersion = 2
+    static let whisperBackend = "whisper"
+
+    private enum CodingKeys: String, CodingKey {
+        case schemaVersion, id, sessionID, createdAt, languages, backend, vocabulary, vocabularySource, accurate,
+             textSteps, tracks, completedAt, transcriptID, engine, prompt, referenceTranscriptID
+    }
+
+    init(id: String, sessionID: String, createdAt: Date, languages: [String], backend: SpeechBackend,
+         vocabulary: [String], vocabularySource: String, textSteps: [String], tracks: [Track],
+         engine: String? = nil) {
+        self.id = id; self.sessionID = sessionID; self.createdAt = createdAt; self.languages = languages
+        self.backend = backend; self.vocabulary = vocabulary; self.vocabularySource = vocabularySource
+        self.textSteps = textSteps; self.tracks = tracks; self.engine = engine
+        if engine != nil { schemaVersion = Self.whisperSchemaVersion }
+    }
+
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        schemaVersion = try container.decode(Int.self, forKey: .schemaVersion)
+        guard schemaVersion <= Self.whisperSchemaVersion else {
+            throw HolosError.unavailable("This local run was made by a newer version of Voice is Local.")
+        }
+        id = try container.decode(String.self, forKey: .id)
+        sessionID = try container.decode(String.self, forKey: .sessionID)
+        createdAt = try container.decode(Date.self, forKey: .createdAt)
+        languages = try container.decode([String].self, forKey: .languages)
+        engine = try container.decodeIfPresent(String.self, forKey: .engine)
+        let backendName = try container.decode(String.self, forKey: .backend)
+        if backendName == Self.whisperBackend {
+            guard engine != nil else {
+                throw DecodingError.dataCorruptedError(forKey: .engine, in: container,
+                                                       debugDescription: "A Whisper run names no engine.")
+            }
+            backend = .speech
+        } else {
+            guard let known = SpeechBackend(rawValue: backendName) else {
+                throw DecodingError.dataCorruptedError(forKey: .backend, in: container,
+                                                       debugDescription: "Unknown backend \(backendName).")
+            }
+            backend = known
+        }
+        vocabulary = try container.decode([String].self, forKey: .vocabulary)
+        vocabularySource = try container.decode(String.self, forKey: .vocabularySource)
+        accurate = try container.decodeIfPresent(Bool.self, forKey: .accurate) ?? true
+        textSteps = try container.decodeIfPresent([String].self, forKey: .textSteps) ?? []
+        tracks = try container.decode([Track].self, forKey: .tracks)
+        completedAt = try container.decodeIfPresent(Date.self, forKey: .completedAt)
+        transcriptID = try container.decodeIfPresent(String.self, forKey: .transcriptID)
+        prompt = try container.decodeIfPresent(String.self, forKey: .prompt)
+        referenceTranscriptID = try container.decodeIfPresent(String.self, forKey: .referenceTranscriptID)
+    }
+
+    public func encode(to encoder: any Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(schemaVersion, forKey: .schemaVersion)
+        try container.encode(id, forKey: .id)
+        try container.encode(sessionID, forKey: .sessionID)
+        try container.encode(createdAt, forKey: .createdAt)
+        try container.encode(languages, forKey: .languages)
+        try container.encode(engine == nil ? backend.rawValue : Self.whisperBackend, forKey: .backend)
+        try container.encode(vocabulary, forKey: .vocabulary)
+        try container.encode(vocabularySource, forKey: .vocabularySource)
+        try container.encode(accurate, forKey: .accurate)
+        try container.encode(textSteps, forKey: .textSteps)
+        try container.encode(tracks, forKey: .tracks)
+        try container.encodeIfPresent(completedAt, forKey: .completedAt)
+        try container.encodeIfPresent(transcriptID, forKey: .transcriptID)
+        try container.encodeIfPresent(engine, forKey: .engine)
+        try container.encodeIfPresent(prompt, forKey: .prompt)
+        try container.encodeIfPresent(referenceTranscriptID, forKey: .referenceTranscriptID)
+    }
 }
 
 /// eval/local/<id>/parts/<language>-<track>.json: one track transcribed in one language, saved as soon as it is done.
@@ -343,10 +421,25 @@ public enum EvalLocal {
                     + "\(built.tokens) tokens.")
                 if !isNew { try EvalStore.write(record, to: EvalPaths.localRecord(record.id, in: session)) }
             }
-            let reference = current.flatMap { current in
-                (try? SessionArchive.readEvents(at: session).events).map {
-                    DeepTranscriptionStage.recordedBase(of: current, events: $0, session: session).reference
-                } ?? current
+            // The guards' reference: the one this run began with when it is resumed, so every track is guarded alike.
+            let reference: Transcript?
+            if let id = record.referenceTranscriptID {
+                do {
+                    reference = try SessionFiles.transcript(id: id, session: session)
+                } catch {
+                    throw HolosError.incomplete("The transcript local run \(record.id) was checked against cannot be "
+                        + "read (\(error.localizedDescription)); start a new run.")
+                }
+            } else {
+                reference = current.flatMap { current in
+                    (try? SessionArchive.readEvents(at: session).events).map {
+                        DeepTranscriptionStage.recordedBase(of: current, events: $0, session: session).reference
+                    } ?? current
+                }
+                if let reference, record.referenceTranscriptID == nil {
+                    record.referenceTranscriptID = reference.id
+                    if !isNew { try EvalStore.write(record, to: EvalPaths.localRecord(record.id, in: session)) }
+                }
             }
             whisper = (transcriber, reference)
         }
@@ -552,6 +645,9 @@ public enum EvalLocal {
                     if let next { progress(next * 10) }
                 }
             let built = DeepTranscriptionStage.segments(heard, reference: reference)
+            if !built.lost.isEmpty {
+                throw HolosError.incomplete(DeepTranscriptionStage.lostMessage(built.lost))
+            }
             note("  \(track.track): \(built.segments.count) passages; left out \(built.guards.droppedSilent) over "
                 + "silence and \(built.guards.droppedRepeats) repeats.")
             return built.segments

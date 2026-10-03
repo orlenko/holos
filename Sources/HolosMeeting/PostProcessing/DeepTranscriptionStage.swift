@@ -181,7 +181,9 @@ enum DeepTranscriptionStage {
         }
 
         // Without a recorded transcript, the silence guard has no words to look for: the audio level alone decides.
-        let (segments, guarded) = Self.segments(pass.segments, reference: base?.reference)
+        let (segments, guarded, lostSpeech) = Self.segments(pass.segments, reference: base?.reference)
+        // Speech the model left out even decoded again in parts: never published as a complete transcript.
+        guard lostSpeech.isEmpty else { return fail("\(keptText) \(Self.lostMessage(lostSpeech))") }
         guard LanguageStage.hasWords(segments) || !(current.map { LanguageStage.hasWords($0.segments) } ?? true) else {
             return fail("\(keptText) No words were recognized when the meeting was transcribed again.")
         }
@@ -366,11 +368,35 @@ enum DeepTranscriptionStage {
     /// The transcript segments of a pass: the guards applied against `reference` (the recorded transcript; nil when
     /// there is none), then each kept segment built with its word timings, in time order.
     static func segments(_ heard: [DeepHeardSegment], reference: Transcript?)
-        -> (segments: [TranscriptSegment], guards: DeepTranscriptGuards.Result) {
-        let guarded = DeepTranscriptGuards.apply(heard, reference: reference?.segments)
+        -> (segments: [TranscriptSegment], guards: DeepTranscriptGuards.Result, lost: [DeepHeardSegment]) {
+        let guarded = DeepTranscriptGuards.apply(heard.filter { !$0.unheard }, reference: reference?.segments)
         let segments = guarded.kept.compactMap(DeepAudio.transcriptSegment)
             .sorted { ($0.start, $0.track ?? "") < ($1.start, $1.track ?? "") }
-        return (segments, guarded)
+        return (segments, guarded, lost(heard.filter(\.unheard), reference: reference))
+    }
+
+    /// At least this many words of the recorded transcript in an audible stretch the model left empty make it lost
+    /// speech; fewer (or no recorded transcript) is taken for music or noise, which Whisper rightly writes nothing for.
+    static let lostSpeechWords = 3
+
+    /// The audible stretches the model left empty (`unheard`, after its retries) where the recorded transcript has at
+    /// least `lostSpeechWords` words on the same track: speech the pass would leave out.
+    static func lost(_ unheard: [DeepHeardSegment], reference: Transcript?) -> [DeepHeardSegment] {
+        guard let reference else { return [] }
+        return unheard.filter { span in
+            let words = reference.segments.filter { ($0.track ?? span.track) == span.track }
+                .flatMap { WordTiming.effectiveWords(of: $0) }
+                .filter { $0.start >= span.start && $0.start < span.end }
+            return words.count >= lostSpeechWords
+        }
+    }
+
+    /// "2 stretches of audible audio where the recorded transcript has words came back without words from the model
+    /// (from 312 s, 1,204 s)."
+    static func lostMessage(_ lost: [DeepHeardSegment]) -> String {
+        let what = lost.count == 1 ? "1 stretch of audible audio" : "\(lost.count) stretches of audible audio"
+        let starts = lost.prefix(5).map { "\(Int($0.start.rounded())) s" }.joined(separator: ", ")
+        return "\(what) where the recorded transcript has words came back without words from the model (from \(starts))."
     }
 
     /// `count` mono samples of `file` from frame `start`.

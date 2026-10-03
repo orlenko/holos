@@ -2,7 +2,7 @@ import CoreML
 import Foundation
 import Synchronization
 import Testing
-import HolosCore
+@testable import HolosCore
 @testable import HolosWhisper
 
 /// Model status and install with a fake download and load check: no network, no model.
@@ -186,6 +186,10 @@ import HolosCore
         for index in 70_000..<71_600 { samples[index] = 0 }
         #expect(abs(WhisperKitTranscriber.quietestCut(samples) - 70_800) <= 1_600, "Halved in the pause.")
         #expect(WhisperKitTranscriber.levelDB(samples) > -12 && WhisperKitTranscriber.levelDB([0, 0]) == -120)
+    }
+
+    @Test func theLanguageTableMatchesWhisperKits() {
+        #expect(DeepTranscriptionModel.whisperLanguages == WhisperKitTranscriber.supportedLanguages)
     }
 
     @Test func localesMapToWhisperLanguages() {

@@ -98,11 +98,13 @@ public struct DeepHeardSegment: Sendable, Equatable {
     public var words: [DeepTranscribedWord]
     /// RMS level of the segment's audio in dBFS (`DeepAudio.silenceDB` for digital silence).
     public var levelDB: Double
+    /// Audible audio the model gave no words for (`DeepTranscribedSegment.unheard`).
+    public var unheard: Bool
 
     public init(track: String, start: Double, end: Double, text: String, words: [DeepTranscribedWord] = [],
-                levelDB: Double) {
+                levelDB: Double, unheard: Bool = false) {
         self.track = track; self.start = start; self.end = end; self.text = text; self.words = words
-        self.levelDB = levelDB
+        self.levelDB = levelDB; self.unheard = unheard
     }
 }
 
@@ -168,6 +170,12 @@ public enum DeepAudio {
                                        track: String, timeMap: [RenderSpan]) -> [DeepHeardSegment] {
         func session(_ time: Double) -> Double { RenderTimeMap.sessionTime(pieceStart + time, map: timeMap) }
         return segments.compactMap { segment in
+            if segment.unheard {
+                guard segment.start.isFinite, segment.end.isFinite else { return nil }
+                let start = session(segment.start)
+                return DeepHeardSegment(track: track, start: start, end: max(start, session(segment.end)), text: "",
+                                        levelDB: levelDB(piece, from: segment.start, to: segment.end), unheard: true)
+            }
             let words = segment.words.filter { $0.start.isFinite && $0.end.isFinite }
             let hasText = !segment.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                 || words.contains { !$0.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }

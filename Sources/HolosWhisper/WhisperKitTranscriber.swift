@@ -54,7 +54,9 @@ public final class WhisperKitTranscriber: DeepTranscriber, @unchecked Sendable {
         try Task.checkCancellation()
         guard !request.samples.isEmpty else { return [] }
         let tokens = request.prompt.isEmpty ? nil : try promptTokens(request.prompt)
-        let options = Self.decodingOptions(language: request.language, promptTokens: tokens)
+        // A language WhisperKit has no token for would be replaced by English: detected instead.
+        let language = request.language.flatMap { Self.supportedLanguages.contains($0) ? $0 : nil }
+        let options = Self.decodingOptions(language: language, promptTokens: tokens)
         // WhisperKit's own VAD path drops a chunk whose decoding fails without a trace; chunked here instead (at most
         // `maxChunkSeconds` each), each chunk's result is seen, and a failed one is decoded again on its own.
         let chunks = try await VADAudioChunker().chunkAll(audioArray: request.samples,
@@ -68,6 +70,12 @@ public final class WhisperKitTranscriber: DeepTranscriber, @unchecked Sendable {
         let decoded = try await decodeChosen(chunks.map { Span(offset: $0.seekOffsetIndex, samples: $0.audioSamples) },
                                              options: options, plain: plainOptions, depth: 0)
         chunkCount += chunks.count
+        // Audible stretches the model gave no words for, even in halves: reported, for the pass to judge against the
+        // recorded transcript (speech it would leave out, or music and noise).
+        var segments: [DeepTranscribedSegment] = decoded.filter(\.unheard).map { span in
+            DeepTranscribedSegment(text: "", start: Double(span.offset) / 16_000,
+                                   end: Double(span.offset + span.count) / 16_000, unheard: true)
+        }
         let results: [TranscriptionResult] = decoded.flatMap { span -> [TranscriptionResult] in
             let seconds = Float(span.offset) / Float(WhisperKit.sampleRate)
             for result in span.results {
@@ -79,7 +87,6 @@ public final class WhisperKitTranscriber: DeepTranscriber, @unchecked Sendable {
         }
         guard let tokenizer = kit.tokenizer else { throw HolosError.unavailable("The model's tokenizer is not loaded.") }
         let special = tokenizer.specialTokens.specialTokenBegin
-        var segments: [DeepTranscribedSegment] = []
         for result in results {
             for segment in result.segments {
                 let words = (segment.words ?? []).compactMap { word -> DeepTranscribedWord? in
@@ -158,6 +165,18 @@ public final class WhisperKitTranscriber: DeepTranscriber, @unchecked Sendable {
             chunkingStrategy: .vad)
     }
 
+    /// WhisperKit's language tokens.
+    static var supportedLanguages: Set<String> { Constants.languageCodes }
+
+    /// A stretch decoded: where it starts and how long it is (in samples), what was kept, and whether it is audible
+    /// audio that gave no words.
+    private struct Decoded {
+        var offset: Int
+        var count: Int
+        var results: [TranscriptionResult]
+        var unheard: Bool
+    }
+
     /// A stretch of the request's samples, `offset` samples from its start.
     private struct Span {
         var offset: Int
@@ -167,14 +186,14 @@ public final class WhisperKitTranscriber: DeepTranscriber, @unchecked Sendable {
     /// `spans` decoded with the prompt and (with `plain`) without it, the better kept per span (`keepsPlain`); a span
     /// that gave no words in either though its audio is not near-silent (`needsSplit`) is decoded again in halves.
     private func decodeChosen(_ spans: [Span], options: DecodingOptions, plain: DecodingOptions?,
-                              depth: Int) async throws -> [(offset: Int, results: [TranscriptionResult])] {
+                              depth: Int) async throws -> [Decoded] {
         guard !spans.isEmpty else { return [] }
         var chosen = try await decode(spans.map(\.samples), offsets: spans.map(\.offset), options: options)
         var plainResults: [[TranscriptionResult]]?
         if let plain {
             plainResults = try await decode(spans.map(\.samples), offsets: spans.map(\.offset), options: plain)
         }
-        var out: [(offset: Int, results: [TranscriptionResult])] = []
+        var out: [Decoded] = []
         for index in spans.indices {
             if let plainResults {
                 let promptedWords = Self.wordCount(chosen[index]), plainWords = Self.wordCount(plainResults[index])
@@ -189,15 +208,18 @@ public final class WhisperKitTranscriber: DeepTranscriber, @unchecked Sendable {
                 }
             }
             let span = spans[index]
-            if Self.needsSplit(words: Self.wordCount(chosen[index]), seconds: Double(span.samples.count) / 16_000,
-                               levelDB: Self.levelDB(span.samples), depth: depth) {
+            let words = Self.wordCount(chosen[index])
+            let level = Self.levelDB(span.samples)
+            if Self.needsSplit(words: words, seconds: Double(span.samples.count) / 16_000, levelDB: level,
+                               depth: depth) {
                 splits += 1
                 let cut = Self.quietestCut(span.samples)
                 let halves = [Span(offset: span.offset, samples: Array(span.samples[..<cut])),
                               Span(offset: span.offset + cut, samples: Array(span.samples[cut...]))]
                 out += try await decodeChosen(halves, options: options, plain: plain, depth: depth + 1)
             } else {
-                out.append((span.offset, chosen[index]))
+                out.append(Decoded(offset: span.offset, count: span.samples.count, results: chosen[index],
+                                   unheard: words == 0 && level > Self.silenceDB))
             }
         }
         if depth == 0 {

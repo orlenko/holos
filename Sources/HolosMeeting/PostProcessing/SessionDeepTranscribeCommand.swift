@@ -33,10 +33,17 @@ public enum SessionDeepTranscribeCommand {
 
     /// Why the pass cannot run on `session` at all, thrown before anything is changed (the command exits 1): a
     /// recording that was not finished properly, deleted or missing audio, a meeting in several languages, or the
-    /// model not installed.
-    public static func precheck(session: URL, dependencies: DeepTranscriptionDependencies) throws {
+    /// model not installed. A run that has nothing to do (the current transcript is this model's, and not `force`)
+    /// needs no model: it keeps the transcript.
+    public static func precheck(session: URL, dependencies: DeepTranscriptionDependencies,
+                                force: Bool = false) throws {
         let manifest = try SessionArchive.readManifest(at: session)
-        if [ArchiveStatus.recording, ArchiveStatus.interrupted].contains(manifest.status) {
+        // `processing` with no writer is a recorder that died while saving: recovery finishes it.
+        if [ArchiveStatus.recording, ArchiveStatus.interrupted, ArchiveStatus.processing].contains(manifest.status) {
+            if try SessionArchive.isActive(at: session) {
+                throw HolosError.unavailable("This meeting is still recording or being saved; try again once it is "
+                    + "saved.")
+            }
             throw HolosError.unavailable("This session was not finished properly; run voiceislocal session recover "
                 + "\(manifest.id) first, so all of its saved audio is transcribed.")
         }
@@ -50,6 +57,12 @@ public enum SessionDeepTranscribeCommand {
         let merged = DictationLanguage.meetingLanguages(mergedLanguages).count > 1
         if DictationLanguage.meetingLanguages(meeting.languages ?? []).count > 1 || merged {
             throw HolosError.invalidInput(DeepTranscriptionStage.severalLanguages)
+        }
+        if !force, let current = try? SessionFiles.currentTranscript(session: session),
+           let events = try? SessionArchive.readEvents(at: session).events,
+           DeepTranscriptionStage.recordedBase(of: current, events: events, session: session).unfixed.engine
+            == dependencies.engine {
+            return
         }
         switch dependencies.modelStatus() {
         case .installed: break
@@ -71,7 +84,7 @@ public enum SessionDeepTranscribeCommand {
                            deepTranscription: DeepTranscriptionDependencies,
                            progress: @escaping @Sendable (PostProcessingProgress) -> Void = { _ in })
         async throws -> Outcome {
-        try precheck(session: request.session, dependencies: deepTranscription)
+        try precheck(session: request.session, dependencies: deepTranscription, force: request.force)
         let options = PostProcessingOptions(force: request.force, deepTranscribe: true)
         let processor = MeetingPostProcessor(diarizer: diarizer, options: options, freeSpace: freeSpace,
                                              profiles: profiles, languages: languages, wordFixes: wordFixes,

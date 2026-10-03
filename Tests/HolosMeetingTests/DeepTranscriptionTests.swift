@@ -592,6 +592,114 @@ func evalLocalWithWhisperUsesTheCurrentTranscriptsLanguage() async throws {
     #expect(transcriber.requests.value.first?.language == "fr")
 }
 
+@Test(.timeLimit(.minutes(1)))
+func aResumedWhisperEvalKeepsItsGuardReference() async throws {
+    let temp = try TemporaryDirectory("deep")
+    defer { temp.remove() }
+    let recorded = SessionFixtures.transcript([
+        SessionFixtures.segment(["hello", "there"], track: "mic", start: 1),
+        SessionFixtures.segment(["general", "kenobi"], track: "system", start: 3),
+    ])
+    let session = try await SessionFixtures.makeSession(in: temp.url, source: .microphoneAndSystem,
+                                                        audioSeconds: ["mic": 10, "system": 10], mode: .call,
+                                                        transcript: recorded)
+    let calls = SharedValue(0)
+    let failing = ScriptedTranscriber { _ in
+        calls.update { $0 += 1 }
+        // The microphone is transcribed, then the system track fails: the run stops with one part saved.
+        if calls.value > 1 { throw HolosError.io("Interrupted.") }
+        return [heard("Hello there.", at: 1)]
+    }
+    let options = EvalLocal.Options(wordFixes: false, backend: .whisper)
+    let first = try SessionArchive.acquireProcessingLease(at: session)
+    await #expect(throws: HolosError.self) {
+        _ = try await EvalLocal.run(session: session, options: options, vocabulary: [], dependencies: noSpeech,
+                                    deepTranscription: deepDependencies(failing))
+    }
+    first.release()
+    // The meeting's transcript changes before the run is resumed.
+    var changed = recorded
+    changed.id = UUID().uuidString
+    try await SessionFixtures.saveTranscript(changed, in: session)
+    let lease = try SessionArchive.acquireProcessingLease(at: session)
+    defer { lease.release() }
+    let record = try await EvalLocal.run(session: session, options: options, vocabulary: [], dependencies: noSpeech,
+                                         deepTranscription: deepDependencies(ScriptedTranscriber(script: scriptedHearing)))
+    #expect(record.referenceTranscriptID == recorded.id, "Both tracks are guarded against the transcript it began with.")
+    #expect(record.schemaVersion == 2)
+    // A run an older Voice is Local would read as Apple's: its backend is not one that version knows.
+    let raw = try JSONSerialization.jsonObject(with: Data(contentsOf: EvalPaths.localRecord(record.id, in: session)))
+        as? [String: Any]
+    #expect(raw?["backend"] as? String == "whisper")
+    let read = try #require(try EvalLocal.record(record.id, in: session))
+    #expect(read.engine == record.engine && read.backend == .speech && read.schemaVersion == 2
+        && read.referenceTranscriptID == recorded.id && read.prompt == record.prompt)
+}
+
+@Test(.timeLimit(.minutes(1)))
+func aRunWithNothingToDoNeedsNoModel() async throws {
+    let temp = try TemporaryDirectory("deep")
+    defer { temp.remove() }
+    let (session, _) = try await deepSession(in: temp.url)
+    let transcriber = ScriptedTranscriber(script: scriptedHearing)
+    _ = try await deepRun(session, deepDependencies(transcriber))
+    // The model was removed since: the transcript it made is kept without it.
+    let again = try await deepRun(session, deepDependencies(transcriber, status: .notInstalled))
+    #expect(again.exitCode == 0)
+    #expect(deepStage(again.record)?.message == "The meeting was already transcribed with Whisper large-v3 turbo.")
+    // Forced, it needs the model.
+    await #expect(throws: HolosError.self) {
+        _ = try await deepRun(session, deepDependencies(transcriber, status: .notInstalled), force: true)
+    }
+}
+
+@Test(.timeLimit(.minutes(1)))
+func aSessionLeftProcessingMustBeRecoveredFirst() async throws {
+    let temp = try TemporaryDirectory("deep")
+    defer { temp.remove() }
+    let (session, _) = try await deepSession(in: temp.url)
+    var manifest = try SessionArchive.readManifest(at: session)
+    manifest.status = ArchiveStatus.processing
+    try AtomicFile.writeJSON(manifest, to: SessionPaths.manifest(session))
+    let error = await #expect(throws: HolosError.self) {
+        _ = try await deepRun(session, deepDependencies(ScriptedTranscriber(script: scriptedHearing)))
+    }
+    #expect(error?.localizedDescription.contains("session recover") == true)
+}
+
+@Test(.timeLimit(.minutes(1)))
+func audibleStretchesTheModelLeftEmptyFailThePassWhereWordsWereHeard() async throws {
+    let temp = try TemporaryDirectory("deep")
+    defer { temp.remove() }
+    let (session, recorded) = try await deepSession(in: temp.url)
+    // The model hears the first two passages, and nothing in an audible stretch where the recorder heard words.
+    let missing = ScriptedTranscriber { _ in
+        [heard("Yesterday I asked Claude to refactor the parser.", at: 0.5),
+         DeepTranscribedSegment(text: "", start: 5, end: 10, unheard: true)]
+    }
+    let outcome = try await deepRun(session, deepDependencies(missing))
+    #expect(outcome.exitCode == 3)
+    #expect(deepStage(outcome.record)?.message?.contains("came back without words") == true)
+    #expect(try currentTranscript(session).id == recorded.id)
+    // Where the recorder heard nothing (music, noise), an empty stretch is fine.
+    let quiet = ScriptedTranscriber { _ in
+        scriptedHearing(DeepTranscriptionRequest(samples: [], language: nil, prompt: ""))
+            + [DeepTranscribedSegment(text: "", start: 18, end: 19.8, unheard: true)]
+    }
+    let fine = try await deepRun(session, deepDependencies(quiet))
+    #expect(fine.exitCode == 0)
+}
+
+@Test func localesMapToWhisperLanguageTokens() {
+    #expect(DeepTranscriptionModel.whisperLanguage("nb-NO") == "no")
+    #expect(DeepTranscriptionModel.whisperLanguage("fil-PH") == "tl")
+    #expect(DeepTranscriptionModel.whisperLanguage("he-IL") == "he")
+    #expect(DeepTranscriptionModel.whisperLanguage("zh-TW") == "zh")
+    #expect(DeepTranscriptionModel.whisperLanguage("jv-ID") == "jw")
+    #expect(DeepTranscriptionModel.whisperLanguage("en-CA") == "en")
+    #expect(DeepTranscriptionModel.whisperLanguage("xx-YY") == nil, "Unknown to Whisper: detected instead.")
+}
+
 @Test func aCancellationSaysWhetherTheTranscriptChanged() {
     #expect(SessionDeepTranscribeCommand.cancellationMessage(before: "A", after: "A")
         == "Cancelled. The transcript was kept as it was.")

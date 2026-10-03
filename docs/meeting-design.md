@@ -4579,7 +4579,10 @@ target `HolosWhisper`, which only the command-line tool links; the app runs the 
 `argmaxinc/whisperkit-coreml` (about 1.6 GB). `DeepTranscriber` (HolosCore) is the seam:
 `engine` ("whisper:<model>"), `promptTokenCount`, `transcribe(samples, language, prompt)`;
 tests use scripted fakes and never download or load a model. `WhisperKitTranscriber` decodes
-with the meeting's language (Whisper's code, "en" for "en-CA"), the prompt's tokens on every
+with the meeting's language (Whisper's token: "en" for "en-CA", and Whisper's own spelling where
+it differs, "no" for Bokmål "nb", "tl" for Filipino "fil", "jw" for Javanese "jv"; a language
+Whisper does not know is detected instead, since WhisperKit would put the English token in its
+place), the prompt's tokens on every
 chunk, `chunkingStrategy .vad`, word timestamps, and WhisperKit's default temperature fallback
 and compression-ratio, log-probability and no-speech thresholds; it loads from the install
 folder only (`download: false`).
@@ -4631,7 +4634,12 @@ fallbacks stay). Chunks are also at most 20 s (a 110-token prompt leaves about 1
 WhisperKit's 224 for the words, which 30 s of fast speech can exceed), and a chunk that still
 gives no words over audio above −50 dBFS is decoded again in two halves split at its quietest
 100 ms (twice at most, down to 4 s halves). A decode's words count its text when it has no word
-timings, so the plain-or-prompted choice never takes text for silence.
+timings, so the plain-or-prompted choice never takes text for silence. A stretch above −50 dBFS
+that is still empty after the halvings is reported (`DeepTranscribedSegment.unheard`), and the
+pass fails (transcript kept, record partial) when the recorded transcript has at least 3 words
+there: speech it would leave out. Where the recorded transcript has fewer (music, noise, a
+quiet room's hum), the empty stretch is accepted: the live recognizer's words are the speech
+evidence, rather than an energy-based voice detector that cannot tell music from speech.
 
 **Model files** (`WhisperModels`). `<supportRoot>/Models/whisperkit/<model>/` (or
 `$HOLOS_WHISPER_MODELS_DIR/<model>/`), as WhisperKit's Hugging Face download lays it out,
@@ -4744,12 +4752,17 @@ carried over.
 **CLI.** `voiceislocal session deep-transcribe <session> [--force] [--json]`
 (`SessionDeepTranscribeCommand`): a precheck first (unfinished recording, deleted or missing
 audio, several languages, model not installed or still downloading) exits 1 with nothing
-changed; then the post-processor with `deepTranscribe`: exit 0 done, 3 partial (exports
+changed (a session left `processing` by a recorder that died while saving counts as unfinished:
+Recover first); a run with nothing to do (the transcript is this model's, no `--force`) needs no
+model; then the post-processor with `deepTranscribe`: exit 0 done, 3 partial (exports
 written, but the pass was skipped or failed, or speaker labelling was), 1 failed.
 `voiceislocal eval local <session> --backend whisper [--language …]` makes a local candidate
 in the current transcript's language (as the pass chooses it) with the same rendering, prompt (recorded in run.json as `prompt`, the candidates as
 `vocabulary`, `engine` set) and guards, so `eval compare --local latest` scores it against a
-cloud run.
+cloud run. Its run.json records the transcript the guards compared with
+(`referenceTranscriptID`), which a resumed run reads again, and is schema 2 with `backend`
+"whisper", which an older Voice is Local cannot read, so it never resumes the run with Apple's
+recognizer.
 
 **Tests.** `DeepTranscriptionTests` (prompt order and cap; quietest cut; time mapping through
 a shortened gap; word offsets and punctuation; the silence guard needing both conditions,
