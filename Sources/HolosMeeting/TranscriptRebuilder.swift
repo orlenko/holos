@@ -295,7 +295,7 @@ public enum TranscriptRebuilder {
     /// meeting's languages (docs/meeting-design.md §4.14; its `languagesDetected` event names it), the recorded
     /// transcript it was merged from (`base`), which the merge replaced as current without undoing the rebuild; for a
     /// deep transcript (§4.16, or one fixed from it), the recorded transcript it replaced (its `deepTranscribed`
-    /// event's `base`); else
+    /// event's `base`), each followed back again through any further merges and deep transcripts; else
     /// `transcriptID` itself, or for a transcript whose words were fixed (`WordFixStage`) the one it was fixed from.
     static func recordedTranscriptID(_ transcriptID: String, events: [ArchiveEvent]) -> String {
         recordedTranscriptID(transcriptID, events: events, seen: [])
@@ -304,15 +304,13 @@ public enum TranscriptRebuilder {
     private static func recordedTranscriptID(_ transcriptID: String, events: [ArchiveEvent],
                                              seen: Set<String>) -> String {
         let unfixed = WordFixStage.unfixedID(transcriptID, events: events)
-        // A deep transcript (§4.16) stands for the transcript it replaced, which may itself be a merge (a `session
-        // languages` revision of a rebuild): followed back the same way, never around a loop.
-        if let base = DeepTranscriptionStage.deepEvent(of: unfixed, events: events)?.details["base"], !base.isEmpty,
-           !seen.contains(base) {
-            return recordedTranscriptID(base, events: events, seen: seen.union([unfixed, transcriptID]))
-        }
-        guard let base = LanguageStage.mergeEvent(of: transcriptID, events: events)?.details["base"], !base.isEmpty
-        else { return unfixed }
-        return WordFixStage.unfixedID(base, events: events)
+        let seen = seen.union([unfixed, transcriptID])
+        // A deep transcript (§4.16) and a merge (a `session languages` revision) each stand for the transcript they
+        // replaced, which may itself be either, in any order: followed back the same way, never around a loop.
+        let base = DeepTranscriptionStage.deepEvent(of: unfixed, events: events)?.details["base"]
+            ?? LanguageStage.mergeEvent(of: transcriptID, events: events)?.details["base"]
+        guard let base, !base.isEmpty, !seen.contains(base) else { return unfixed }
+        return recordedTranscriptID(base, events: events, seen: seen)
     }
 
     /// Whether `transcriptID` is a transcript merged from the meeting's languages (docs/meeting-design.md §4.14) that

@@ -196,16 +196,26 @@ public enum EvalLocal {
 
     /// The language a `--backend whisper` run without `--language` transcribes in: the current transcript's (the one
     /// a deep transcript or word fixes were made from), as `DeepTranscriptionStage` chooses it; nil without a current
-    /// transcript. Throws for a transcript merged from several languages, which the pass does not transcribe.
-    static func whisperLanguages(session: URL) throws -> [String]? {
+    /// transcript. Throws for a meeting whose meeting.json lists several languages, or a transcript merged from
+    /// several, which the pass does not transcribe.
+    static func whisperLanguages(session: URL, manifest: SessionManifest) throws -> [String]? {
+        let meeting = try SessionFiles.meetingInfo(session: session, manifest: manifest)
+        if DictationLanguage.meetingLanguages(meeting.languages ?? []).count > 1 {
+            throw HolosError.invalidInput(severalLanguages)
+        }
         guard let current = try SessionFiles.currentTranscript(session: session) else { return nil }
         let events = try SessionArchive.readEvents(at: session).events
         let base = DeepTranscriptionStage.recordedBase(of: current, events: events, session: session).unfixed
         if DictationLanguage.meetingLanguages(base.languages ?? []).count > 1 {
-            throw HolosError.invalidInput(DeepTranscriptionStage.severalLanguages)
+            throw HolosError.invalidInput(severalLanguages)
         }
         return [DictationLanguage.identifier(base.locale)]
     }
+
+    /// Why a `--backend whisper` run without `--language` refuses a meeting in several languages (meeting.json's, or
+    /// the current transcript's merge), as the deep transcription pass does.
+    static let severalLanguages = "This meeting is in several languages; deep transcription handles meetings in one "
+        + "language for now. Pass --language with one of them to evaluate it in that language."
 
     /// The prompt candidates of a `--backend whisper` run, as the deep transcription pass orders them: the meeting's
     /// vocabulary.json first, then the rest of `wordList`, then `names`.
@@ -330,11 +340,24 @@ public enum EvalLocal {
                                  contentSHA256: try contentDigest(session: session, manifest: manifest, track: track),
                                  seconds: manifest.audioSeconds(track: track))
         }
+        // A run resumed by name keeps the languages it began with, whatever the meeting's are now.
+        let resumed = try options.runID.map { id in
+            guard let found = try Self.record(id, in: session, sessionID: manifest.id) else {
+                throw HolosError.invalidInput("There is no local run \(id) in this session (see voiceislocal eval list).")
+            }
+            return found
+        }
         // Whisper transcribes in the current transcript's language, as the deep transcription pass does.
-        let languages = try (options.backend == .whisper && options.language == nil
-            ? whisperLanguages(session: session) : nil) ?? Self.languages(session: session, language: options.language)
+        let languages: [String]
+        if let resumed, options.language == nil {
+            languages = resumed.languages
+        } else {
+            languages = try (options.backend == .whisper && options.language == nil
+                ? whisperLanguages(session: session, manifest: manifest) : nil)
+                ?? Self.languages(session: session, language: options.language)
+        }
         let engine = options.backend == .whisper ? deepTranscription.engine : nil
-        if engine != nil, languages.count > 1 {
+        if engine != nil, resumed == nil, languages.count > 1 {
             throw HolosError.invalidInput("Deep transcription handles one language; pass --language with one of "
                 + languages.joined(separator: ", ") + ".")
         }
@@ -350,10 +373,8 @@ public enum EvalLocal {
 
         var record: LocalRunRecord
         var isNew = false
-        if let id = options.runID {
-            guard let found = try Self.record(id, in: session, sessionID: manifest.id) else {
-                throw HolosError.invalidInput("There is no local run \(id) in this session (see voiceislocal eval list).")
-            }
+        if let found = resumed {
+            let id = found.id
             guard found.completedAt == nil else {
                 throw HolosError.invalidInput("Local run \(id) is complete; there is nothing to resume.")
             }
@@ -445,10 +466,18 @@ public enum EvalLocal {
                         + "read (\(error.localizedDescription)); start a new run.")
                 }
             } else {
-                reference = current.flatMap { current in
-                    (try? SessionArchive.readEvents(at: session).events).map {
-                        DeepTranscriptionStage.recordedBase(of: current, events: $0, session: session).reference
-                    } ?? current
+                // Only a session with no current transcript runs unguarded: one that cannot be read is an error.
+                let readable: Transcript?
+                let events: [ArchiveEvent]
+                do {
+                    readable = try SessionFiles.currentTranscript(session: session)
+                    events = try SessionArchive.readEvents(at: session).events
+                } catch {
+                    throw HolosError.incomplete("The meeting's transcript cannot be read (\(error.localizedDescription)"
+                        + "), so the run could not be checked against it.")
+                }
+                reference = readable.flatMap {
+                    DeepTranscriptionStage.recordedBase(of: $0, events: events, session: session).reference
                 }
                 if record.referenceTranscriptID == nil {
                     record.referenceTranscriptID = reference?.id ?? LocalRunRecord.noReference
@@ -649,7 +678,7 @@ public enum EvalLocal {
                 track.track, session: session, manifest: manifest,
                 renderTo: EvalPaths.localRun(record.id, in: session).appendingPathComponent("deep-\(track.track)-16k.caf"),
                 transcriber: transcriber, language: DeepTranscriptionModel.whisperLanguage(language),
-                prompt: record.prompt ?? "") { seconds in
+                prompt: record.prompt ?? "", reference: reference) { seconds in
                     let next = step.withLock { value -> Int? in
                         let reached = Int(min(1, seconds / total) * 10)
                         guard reached > value, reached < 10 else { return nil }

@@ -4641,6 +4641,18 @@ there: speech it would leave out. Where the recorded transcript has fewer (music
 quiet room's hum), the empty stretch is accepted: the live recognizer's words are the speech
 evidence, rather than an energy-based voice detector that cannot tell music from speech.
 
+*Audio the chunking leaves out* (`WhisperKitTranscriber.plan`). WhisperKit's chunker only picks
+where to cut (the middle of the longest silence in the second half of each 20 s window), so its
+chunks follow one another, except that it stops when less than a second is left: that tail
+is joined to the last chunk (any stretch under a second between chunks is joined to the chunk
+before it). Each request also carries the starts of the recorded transcript's words in its
+samples (`DeepTranscriptionRequest.recordedWords`, mapped from session time through the
+render's time map), so audio a chunker leaves out where the recorded transcript has at least 3
+words is decoded too (in pieces of at most 20 s, those with a recorded word), and a stretch with
+recorded words that comes back empty is reported as unheard even when it is quieter than −50
+dBFS, for the same lost-speech rule. A chunking that hears nothing of the recorded speech
+therefore cannot make the pass publish without it.
+
 **Model files** (`WhisperModels`). `<supportRoot>/Models/whisperkit/<model>/` (or
 `$HOLOS_WHISPER_MODELS_DIR/<model>/`), as WhisperKit's Hugging Face download lays it out,
 with the large-v3 tokenizer (`models/openai/whisper-large-v3/tokenizer.json`, fetched by the
@@ -4712,8 +4724,9 @@ skips it.
    speakers (relabelled because the transcript changed; names carry over), recognition and
    exports run as after a recording. Microphone echo of a call is found by `EchoFilter` on
    the new words exactly as on Apple's. Recovery treats a deep transcript as standing for the
-   recorded one (`TranscriptRebuilder.recordedTranscriptID`, followed back through a language
-   merge it was made from: rebuild R, `session languages` revision M, deep D stands for R) and
+   recorded one (`TranscriptRebuilder.recordedTranscriptID`, followed back through language
+   merges and deep transcripts in any order, never around a loop: rebuild R, `session
+   languages` revision M, deep D stands for R, as does a revision M of a deep D of R) and
    as holding all of the saved audio (`mergeHoldsAllAudio`), as it does a merge. A cancellation
    after the publication leaves the new transcript current with the later stages maybe
    unfinished; the command says so (and to run `session diarize`) instead of claiming the
@@ -4763,7 +4776,11 @@ cloud run. Its run.json records the transcript the guards compared with
 (`referenceTranscriptID`, empty for a run begun without a transcript, which stays unguarded),
 which a resumed run reads again, and is schema 2 with `backend` "whisper" (the meeting's own in
 `meetingBackend`), which an older Voice is Local cannot read, so it never resumes the run with
-Apple's recognizer. An explicit `--language` Whisper has no token for is refused.
+Apple's recognizer. A run resumed with `--run` keeps the language it began with, whatever the
+current transcript's is now. Without `--language`, a meeting whose meeting.json or current
+transcript names several languages is refused, as the pass refuses it (`--language` evaluates
+one of them). A current transcript that cannot be read is an error, never a run without a
+reference. An explicit `--language` Whisper has no token for is refused.
 
 **Tests.** `DeepTranscriptionTests` (prompt order and cap; quietest cut; time mapping through
 a shortened gap; word offsets and punctuation; the silence guard needing both conditions,

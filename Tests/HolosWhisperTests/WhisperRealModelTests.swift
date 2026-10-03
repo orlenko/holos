@@ -7,6 +7,7 @@ import HolosStorage
 import HolosSynthesis
 import Testing
 @testable import HolosWhisper
+@preconcurrency import WhisperKit
 
 // Opt-in (HOLOS_WHISPER_MODEL_TESTS=1): the installed deep transcription model, never downloaded here. Point
 // HOLOS_WHISPER_MODELS_DIR at a folder `voiceislocal setup --whisper` installed into (scripts/test.sh moves the default
@@ -83,6 +84,42 @@ func wordTimesFollowTheSpeechWithAndWithoutAPrompt() async throws {
             + "\(String(format: "%.2f", words.last?.end ?? 0)) s of \(String(format: "%.2f", 3 + Double(speech.count) / 16_000))")
         #expect((words.first?.start ?? 0) >= onset - 0.75, "The first word starts with the speech.")
     }
+}
+
+/// A voice-activity chunking that hears only the first `seconds` of the audio.
+private struct DeafChunker: AudioChunking {
+    var seconds: Double
+
+    func chunkAll(audioArray: [Float], maxChunkLength: Int, decodeOptions: DecodingOptions?) async throws
+        -> [AudioChunk] {
+        let end = min(audioArray.count, Int(seconds * 16_000))
+        return [AudioChunk(seekOffsetIndex: 0, audioSamples: Array(audioArray[..<end]))]
+    }
+}
+
+@Test(.enabled(if: modelTestsEnabled), .timeLimit(.minutes(30)))
+func speechTheChunkingMissesIsTranscribedWhereTheRecordedTranscriptHeardIt() async throws {
+    try #require(WhisperModels.status() == .installed)
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent("holos-whisper-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let speech = try samples16k(try await renderedSpeech(
+        "The garden committee will meet on Thursday to plan the spring planting.", in: root, start: 0))
+    // 5 s of silence, then the speech: the fake chunking hears only the silence.
+    let audio = [Float](repeating: 0, count: 5 * 16_000) + speech + [Float](repeating: 0, count: 16_000)
+    let transcriber = try await WhisperKitTranscriber.load()
+    transcriber.chunker = DeafChunker(seconds: 5)
+    let missed = try await transcriber.transcribe(
+        DeepTranscriptionRequest(samples: audio, language: "en", prompt: ""), progress: { _ in })
+    #expect(missed.flatMap(\.words).isEmpty, "Without recorded words, what the chunking left out stays out.")
+    let recorded = (0..<6).map { 5.5 + Double($0) * 0.5 }
+    let segments = try await transcriber.transcribe(
+        DeepTranscriptionRequest(samples: audio, language: "en", prompt: "", recordedWords: recorded),
+        progress: { _ in })
+    let text = segments.map(\.text).joined(separator: " ").lowercased()
+    print("whisper missed by the chunking: \(segments.flatMap(\.words).count) words")
+    #expect(text.contains("garden") && text.contains("thursday"))
+    #expect((segments.flatMap(\.words).first?.start ?? 0) >= 4.5, "Timed from the request's start.")
 }
 
 @Test(.enabled(if: modelTestsEnabled), .timeLimit(.minutes(30)))

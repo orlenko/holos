@@ -71,6 +71,7 @@ let package = Package(
         ]),
         .testTarget(name: "HolosWhisperTests", dependencies: [
             "HolosWhisper", "HolosMeeting", "HolosCore", "HolosSynthesis", "HolosAudio", "HolosStorage",
+            .product(name: "WhisperKit", package: "WhisperKit"),
         ]),
         .testTarget(name: "HolosDiarizationTests", dependencies: [
             "HolosDiarization", "HolosSpeakers", "HolosSynthesis", "HolosAudio", "HolosCore",

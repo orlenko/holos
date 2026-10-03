@@ -9,9 +9,17 @@ public struct DeepTranscriptionRequest: Sendable {
     public var language: String?
     /// The conditioning prompt (`DeepTranscriptionPrompt`); empty for none.
     public var prompt: String
+    /// Where the recorded transcript has words in these samples: each word's start, in seconds from the samples'
+    /// start (empty without a recorded transcript). Audio the transcriber's voice-activity chunking would leave out
+    /// is decoded anyway where it has at least `recordedSpeechWords` of them.
+    public var recordedWords: [Double]
 
-    public init(samples: [Float], language: String?, prompt: String) {
-        self.samples = samples; self.language = language; self.prompt = prompt
+    /// At least this many recorded words in a stretch make it speech: one the model leaves empty is lost speech, and
+    /// one voice-activity chunking leaves out is decoded anyway.
+    public static let recordedSpeechWords = 3
+
+    public init(samples: [Float], language: String?, prompt: String, recordedWords: [Double] = []) {
+        self.samples = samples; self.language = language; self.prompt = prompt; self.recordedWords = recordedWords
     }
 }
 

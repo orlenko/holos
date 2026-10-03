@@ -163,6 +163,26 @@ public enum DeepAudio {
         return levelDB(samples[first..<last])
     }
 
+    /// The starts of `reference`'s words on `track` (a segment without a track counts for every track) inside one
+    /// piece of the track's render (`pieceSeconds` long, from `pieceStart` seconds into it), in seconds from the
+    /// piece's start (`DeepTranscriptionRequest.recordedWords`): session time mapped through the render's time map,
+    /// the inverse of `RenderTimeMap.sessionTime`. A word in a gap the render shortened has no place in it and is
+    /// left out.
+    public static func recordedWords(_ reference: Transcript?, track: String, timeMap: [RenderSpan],
+                                     pieceStart: Double, pieceSeconds: Double) -> [Double] {
+        guard let reference else { return [] }
+        func renderTime(_ time: Double) -> Double? {
+            guard !timeMap.isEmpty else { return time }
+            let span = timeMap.first { time >= $0.sessionStart && time < $0.sessionStart + $0.duration }
+            return span.map { $0.renderStart + (time - $0.sessionStart) }
+        }
+        return reference.segments.filter { ($0.track ?? track) == track }
+            .flatMap { WordTiming.effectiveWords(of: $0) }
+            .compactMap { word in renderTime(word.start).map { $0 - pieceStart } }
+            .filter { $0 >= 0 && $0 < pieceSeconds }
+            .sorted()
+    }
+
     /// The deep transcriber's segments of one piece (times from the piece's start, which is `pieceStart` seconds into
     /// the render of `track`) in session time, through the render's time map (`RenderTimeMap.sessionTime`), with the
     /// level of each segment's audio. Segments without text are left out.

@@ -15,6 +15,8 @@ public final class WhisperKitTranscriber: DeepTranscriber, @unchecked Sendable {
 
     public let engine: String
     private let kit: WhisperKit
+    /// Where the audio is cut into chunks: WhisperKit's voice-activity chunker (a fake one in the opt-in tests).
+    var chunker: any AudioChunking = VADAudioChunker()
 
     private init(kit: WhisperKit, model: String) {
         self.kit = kit
@@ -59,17 +61,24 @@ public final class WhisperKitTranscriber: DeepTranscriber, @unchecked Sendable {
         let options = Self.decodingOptions(language: language, promptTokens: tokens)
         // WhisperKit's own VAD path drops a chunk whose decoding fails without a trace; chunked here instead (at most
         // `maxChunkSeconds` each), each chunk's result is seen, and a failed one is decoded again on its own.
-        let chunks = try await VADAudioChunker().chunkAll(audioArray: request.samples,
-                                                          maxChunkLength: Int(maxChunkSeconds * 16_000),
-                                                          decodeOptions: options)
+        let maxSamples = Int(maxChunkSeconds * 16_000)
+        let chunks = try await chunker.chunkAll(audioArray: request.samples, maxChunkLength: maxSamples,
+                                                decodeOptions: options)
+        // Audio the chunking left out is decoded too where the recorded transcript heard speech in it.
+        let ranges = Self.plan(chunks: chunks.map { $0.seekOffsetIndex..<($0.seekOffsetIndex + $0.audioSamples.count) },
+                               total: request.samples.count, recordedWords: request.recordedWords,
+                               maxSamples: maxSamples)
         var plainOptions: DecodingOptions?
         if tokens != nil {
             plainOptions = options
             plainOptions?.promptTokens = nil
         }
-        let decoded = try await decodeChosen(chunks.map { Span(offset: $0.seekOffsetIndex, samples: $0.audioSamples) },
-                                             options: options, plain: plainOptions, depth: 0)
-        chunkCount += chunks.count
+        let recordedSamples = request.recordedWords.map { Int(($0 * 16_000).rounded(.down)) }
+        let decoded = try await decodeChosen(ranges.map { range in
+            Span(offset: range.lowerBound, samples: Array(request.samples[range]),
+                 recordedWords: recordedSamples.filter { range.contains($0) }.count)
+        }, options: options, plain: plainOptions, depth: 0, recordedSamples: recordedSamples)
+        chunkCount += ranges.count
         // Audible stretches the model gave no words for, even in halves: reported, for the pass to judge against the
         // recorded transcript (speech it would leave out, or music and noise).
         var segments: [DeepTranscribedSegment] = decoded.filter(\.unheard).map { span in
@@ -177,16 +186,69 @@ public final class WhisperKitTranscriber: DeepTranscriber, @unchecked Sendable {
         var unheard: Bool
     }
 
-    /// A stretch of the request's samples, `offset` samples from its start.
+    /// A stretch of the request's samples, `offset` samples from its start, with how many recorded words start in it.
     private struct Span {
         var offset: Int
         var samples: [Float]
+        var recordedWords = 0
+    }
+
+    /// The stretches of a request's `total` samples to decode: the chunker's `chunks`, each stretch they leave out
+    /// that is shorter than a second joined to the chunk before it (else after it), and each longer one where the
+    /// recorded transcript has at least `DeepTranscriptionRequest.recordedSpeechWords` words (`recordedWords`, in
+    /// seconds) decoded too, in pieces of at most `maxSamples`, those with a recorded word kept: speech the chunking
+    /// would leave out without a trace (WhisperKit's chunker stops a second before the end, and another could skip
+    /// what its voice-activity detection takes for silence). The rest of what it leaves out has no recorded speech.
+    static func plan(chunks: [Range<Int>], total: Int, recordedWords: [Double], maxSamples: Int) -> [Range<Int>] {
+        let sorted = chunks.map { $0.clamped(to: 0..<max(0, total)) }.filter { !$0.isEmpty }
+            .sorted { $0.lowerBound < $1.lowerBound }
+        guard total > 0 else { return [] }
+        let starts = recordedWords.map { Int(($0 * 16_000).rounded(.down)) }
+        let joinSamples = 16_000
+        var out: [Range<Int>] = []
+        var position = 0
+        func uncovered(_ gap: Range<Int>, before next: Range<Int>?) -> Range<Int>? {
+            guard !gap.isEmpty else { return nil }
+            if gap.count < joinSamples {
+                if let last = out.last, last.upperBound == gap.lowerBound {
+                    out[out.count - 1] = last.lowerBound..<gap.upperBound
+                    return nil
+                }
+                if let next, next.lowerBound == gap.upperBound { return gap.lowerBound..<next.upperBound }
+            }
+            let inside = starts.filter { gap.contains($0) }
+            if inside.count >= DeepTranscriptionRequest.recordedSpeechWords {
+                let pieces = (gap.count + max(1, maxSamples) - 1) / max(1, maxSamples)
+                let length = (gap.count + pieces - 1) / pieces
+                var start = gap.lowerBound
+                while start < gap.upperBound {
+                    let piece = start..<min(gap.upperBound, start + length)
+                    if inside.contains(where: { piece.contains($0) }) { out.append(piece) }
+                    start = piece.upperBound
+                }
+            }
+            return nil
+        }
+        for chunk in sorted where chunk.upperBound > position {
+            let chunk = max(chunk.lowerBound, position)..<chunk.upperBound
+            let joined = uncovered(position..<chunk.lowerBound, before: chunk)
+            out.append(joined ?? chunk)
+            position = chunk.upperBound
+        }
+        _ = uncovered(position..<total, before: nil)
+        return out
+    }
+
+    /// Whether a decoded stretch is audible audio the model gave no words for: no words, and its audio is not
+    /// near-silent or the recorded transcript has a word in it.
+    static func isUnheard(words: Int, levelDB: Double, recordedWords: Int) -> Bool {
+        words == 0 && (levelDB > silenceDB || recordedWords > 0)
     }
 
     /// `spans` decoded with the prompt and (with `plain`) without it, the better kept per span (`keepsPlain`); a span
     /// that gave no words in either though its audio is not near-silent (`needsSplit`) is decoded again in halves.
     private func decodeChosen(_ spans: [Span], options: DecodingOptions, plain: DecodingOptions?,
-                              depth: Int) async throws -> [Decoded] {
+                              depth: Int, recordedSamples: [Int]) async throws -> [Decoded] {
         guard !spans.isEmpty else { return [] }
         var chosen = try await decode(spans.map(\.samples), offsets: spans.map(\.offset), options: options)
         var plainResults: [[TranscriptionResult]]?
@@ -211,15 +273,21 @@ public final class WhisperKitTranscriber: DeepTranscriber, @unchecked Sendable {
             let words = Self.wordCount(chosen[index])
             let level = Self.levelDB(span.samples)
             if Self.needsSplit(words: words, seconds: Double(span.samples.count) / 16_000, levelDB: level,
-                               depth: depth) {
+                               depth: depth, recordedWords: span.recordedWords) {
                 splits += 1
                 let cut = Self.quietestCut(span.samples)
-                let halves = [Span(offset: span.offset, samples: Array(span.samples[..<cut])),
-                              Span(offset: span.offset + cut, samples: Array(span.samples[cut...]))]
-                out += try await decodeChosen(halves, options: options, plain: plain, depth: depth + 1)
+                let halves = [span.offset..<(span.offset + cut), (span.offset + cut)..<(span.offset + span.samples.count)]
+                    .map { range in
+                        Span(offset: range.lowerBound, samples: Array(span.samples[(range.lowerBound - span.offset)...]
+                                .prefix(range.count)),
+                             recordedWords: recordedSamples.filter { range.contains($0) }.count)
+                    }
+                out += try await decodeChosen(halves, options: options, plain: plain, depth: depth + 1,
+                                              recordedSamples: recordedSamples)
             } else {
                 out.append(Decoded(offset: span.offset, count: span.samples.count, results: chosen[index],
-                                   unheard: words == 0 && level > Self.silenceDB))
+                                   unheard: Self.isUnheard(words: words, levelDB: level,
+                                                           recordedWords: span.recordedWords)))
             }
         }
         if depth == 0 {
@@ -228,10 +296,11 @@ public final class WhisperKitTranscriber: DeepTranscriber, @unchecked Sendable {
         return out
     }
 
-    /// Whether a chunk is decoded again in halves: it gave no words, its audio is not near-silent, it is long enough to
-    /// halve, and it was not halved too often already.
-    static func needsSplit(words: Int, seconds: Double, levelDB: Double, depth: Int) -> Bool {
-        words == 0 && levelDB > silenceDB && seconds >= 2 * minimumSplitSeconds && depth < maximumSplitDepth
+    /// Whether a chunk is decoded again in halves: it gave no words, its audio is not near-silent or the recorded
+    /// transcript has a word in it, it is long enough to halve, and it was not halved too often already.
+    static func needsSplit(words: Int, seconds: Double, levelDB: Double, depth: Int, recordedWords: Int = 0) -> Bool {
+        isUnheard(words: words, levelDB: levelDB, recordedWords: recordedWords) && seconds >= 2 * minimumSplitSeconds
+            && depth < maximumSplitDepth
     }
 
     /// RMS level of `samples` in dBFS (-120 for silence).

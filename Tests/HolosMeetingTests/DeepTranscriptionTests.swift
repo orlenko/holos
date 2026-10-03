@@ -16,6 +16,7 @@ private final class ScriptedTranscriber: DeepTranscriber, Sendable {
     let engine: String
     let calls = SharedValue(0)
     let requests = SharedValue<[(language: String?, prompt: String, seconds: Double)]>([])
+    let recordedWords = SharedValue<[[Double]]>([])
     let script: @Sendable (DeepTranscriptionRequest) throws -> [DeepTranscribedSegment]
 
     init(engine: String = "whisper:test", script: @escaping @Sendable (DeepTranscriptionRequest) throws
@@ -30,6 +31,7 @@ private final class ScriptedTranscriber: DeepTranscriber, Sendable {
                     progress: @escaping @Sendable (Double) -> Void) async throws -> [DeepTranscribedSegment] {
         calls.update { $0 += 1 }
         requests.update { $0.append((request.language, request.prompt, Double(request.samples.count) / 16_000)) }
+        recordedWords.update { $0.append(request.recordedWords) }
         progress(1)
         return try script(request)
     }
@@ -637,6 +639,88 @@ func aResumedWhisperEvalKeepsItsGuardReference() async throws {
 }
 
 @Test(.timeLimit(.minutes(1)))
+func aResumedWhisperEvalKeepsItsLanguage() async throws {
+    let temp = try TemporaryDirectory("deep")
+    defer { temp.remove() }
+    let recorded = SessionFixtures.transcript([
+        SessionFixtures.segment(["hello", "there"], track: "mic", start: 1),
+        SessionFixtures.segment(["general", "kenobi"], track: "system", start: 3),
+    ])
+    let session = try await SessionFixtures.makeSession(in: temp.url, source: .microphoneAndSystem,
+                                                        audioSeconds: ["mic": 10, "system": 10], mode: .call,
+                                                        transcript: recorded)
+    let calls = SharedValue(0)
+    let failing = ScriptedTranscriber { _ in
+        calls.update { $0 += 1 }
+        if calls.value > 1 { throw HolosError.io("Interrupted.") }
+        return [heard("Hello there.", at: 1)]
+    }
+    let first = try SessionArchive.acquireProcessingLease(at: session)
+    await #expect(throws: HolosError.self) {
+        _ = try await EvalLocal.run(session: session, options: EvalLocal.Options(wordFixes: false, backend: .whisper),
+                                    vocabulary: [], dependencies: noSpeech, deepTranscription: deepDependencies(failing))
+    }
+    first.release()
+    let runID = try #require(EvalLocal.runIDs(in: session).last)
+    // `session languages` then makes the current transcript a merge of two languages.
+    var merged = recorded
+    merged.id = UUID().uuidString
+    merged.languages = ["en-CA", "fr-CA"]
+    try await SessionFixtures.saveTranscript(merged, in: session)
+    let lease = try SessionArchive.acquireProcessingLease(at: session)
+    defer { lease.release() }
+    let transcriber = ScriptedTranscriber(script: scriptedHearing)
+    let record = try await EvalLocal.run(
+        session: session, options: EvalLocal.Options(runID: runID, wordFixes: false, backend: .whisper),
+        vocabulary: [], dependencies: noSpeech, deepTranscription: deepDependencies(transcriber))
+    #expect(record.id == runID && record.completedAt != nil)
+    #expect(record.languages == ["en-CA"] && record.referenceTranscriptID == recorded.id)
+    #expect(transcriber.calls.value == 1, "Only the track still missing is transcribed.")
+}
+
+@Test(.timeLimit(.minutes(1)))
+func aWhisperEvalOfAMeetingInSeveralLanguagesNeedsALanguage() async throws {
+    let temp = try TemporaryDirectory("deep")
+    defer { temp.remove() }
+    // meeting.json lists two languages; the live transcript is still in one.
+    let (session, _) = try await deepSession(in: temp.url, languages: ["en-CA", "fr-CA"])
+    let transcriber = ScriptedTranscriber(script: scriptedHearing)
+    let lease = try SessionArchive.acquireProcessingLease(at: session)
+    defer { lease.release() }
+    let error = await #expect(throws: HolosError.self) {
+        _ = try await EvalLocal.run(session: session, options: EvalLocal.Options(wordFixes: false, backend: .whisper),
+                                    vocabulary: [], dependencies: noSpeech, deepTranscription: deepDependencies(transcriber))
+    }
+    #expect(error?.localizedDescription == EvalLocal.severalLanguages)
+    #expect(transcriber.calls.value == 0 && EvalLocal.runIDs(in: session).isEmpty)
+    // Named, one of them is evaluated.
+    let record = try await EvalLocal.run(
+        session: session, options: EvalLocal.Options(language: "fr-CA", wordFixes: false, backend: .whisper),
+        vocabulary: [], dependencies: noSpeech, deepTranscription: deepDependencies(transcriber))
+    #expect(record.languages == ["fr-CA"] && record.completedAt != nil)
+}
+
+@Test(.timeLimit(.minutes(1)))
+func aWhisperEvalRefusesAnUnreadableTranscript() async throws {
+    let temp = try TemporaryDirectory("deep")
+    defer { temp.remove() }
+    let (session, recorded) = try await deepSession(in: temp.url)
+    try Data("{ not a transcript".utf8).write(to: SessionPaths.transcript(recorded.id, in: session))
+    let transcriber = ScriptedTranscriber(script: scriptedHearing)
+    let lease = try SessionArchive.acquireProcessingLease(at: session)
+    defer { lease.release() }
+    await #expect(throws: (any Error).self) {
+        _ = try await EvalLocal.run(
+            session: session, options: EvalLocal.Options(language: "en-CA", wordFixes: false, backend: .whisper),
+            vocabulary: [], dependencies: noSpeech, deepTranscription: deepDependencies(transcriber))
+    }
+    #expect(transcriber.calls.value == 0, "Never run without the recorded-word guard it should have.")
+    for id in EvalLocal.runIDs(in: session) {
+        #expect(try EvalLocal.record(id, in: session)?.referenceTranscriptID != LocalRunRecord.noReference)
+    }
+}
+
+@Test(.timeLimit(.minutes(1)))
 func aWhisperEvalBegunWithoutATranscriptStaysUnguarded() async throws {
     let temp = try TemporaryDirectory("deep")
     defer { temp.remove() }
@@ -801,6 +885,38 @@ private func archiveEvent(_ sequence: Int, _ kind: String, _ details: [String: S
     return try HolosJSON.decoder().decode(ArchiveEvent.self, from: HolosJSON.encoder().encode(line))
 }
 
+@Test(.timeLimit(.minutes(1)))
+func theTranscriberIsToldWhereTheRecordedTranscriptHeardWords() async throws {
+    let temp = try TemporaryDirectory("deep")
+    defer { temp.remove() }
+    let (session, recorded) = try await deepSession(in: temp.url)
+    let transcriber = ScriptedTranscriber(script: scriptedHearing)
+    let outcome = try await deepRun(session, deepDependencies(transcriber))
+    #expect(outcome.exitCode == 0, "\(outcome.summary)")
+    // The recording starts at session time 0, so the render's time is the session's: every recorded word's start.
+    let expected = recorded.segments.flatMap { WordTiming.effectiveWords(of: $0) }.map(\.start).sorted()
+    let told = try #require(transcriber.recordedWords.value.first)
+    #expect(told.count == expected.count && told.count == 26)
+    #expect(zip(told, expected).allSatisfy { abs($0 - $1) < 1e-6 })
+}
+
+@Test func recordedWordsFollowTheRendersTimeMap() {
+    let reference = SessionFixtures.transcript([
+        SessionFixtures.segment(["one", "two"], track: "mic", start: 100, wordSeconds: 1),
+        SessionFixtures.segment(["three", "four"], track: "system", start: 101, wordSeconds: 1),
+        SessionFixtures.segment(["five", "six"], track: "mic", start: 400, wordSeconds: 1),
+    ])
+    // 100–200 s of the session is rendered at 0–100 s; after a long gap, 400–500 s at 105–205 s.
+    let map = [RenderSpan(renderStart: 0, sessionStart: 100, duration: 100),
+               RenderSpan(renderStart: 105, sessionStart: 400, duration: 100)]
+    #expect(DeepAudio.recordedWords(reference, track: "mic", timeMap: map, pieceStart: 0, pieceSeconds: 600)
+        == [0, 1, 105, 106])
+    // A piece from 100 s of the render: the later words only, from its start.
+    #expect(DeepAudio.recordedWords(reference, track: "mic", timeMap: map, pieceStart: 100, pieceSeconds: 600)
+        == [5, 6])
+    #expect(DeepAudio.recordedWords(nil, track: "mic", timeMap: map, pieceStart: 0, pieceSeconds: 600).isEmpty)
+}
+
 @Test func aDeepTranscriptStandsForTheRecordedOneInRecovery() throws {
     let events = [
         try archiveEvent(1, MeetingEventKind.transcriptRebuilt, ["transcriptID": "R"]),
@@ -817,6 +933,33 @@ private func archiveEvent(_ sequence: Int, _ kind: String, _ details: [String: S
         try archiveEvent(3, MeetingEventKind.deepTranscribed, ["transcriptID": "D", "base": "M"]),
     ]
     #expect(TranscriptRebuilder.recordedTranscriptID("D", events: throughMerge) == "R")
+    // The other order: a deep transcript D of R, then a `session languages` revision M of D (word-fixed to F).
+    let mergeOfDeep = [
+        try archiveEvent(1, MeetingEventKind.transcriptRebuilt, ["transcriptID": "R"]),
+        try archiveEvent(2, MeetingEventKind.deepTranscribed, ["transcriptID": "D", "base": "R"]),
+        try archiveEvent(3, MeetingEventKind.languagesDetected, ["transcriptID": "M", "base": "D",
+                                                                  "languages": "fr-CA", "requested": "fr-CA"]),
+        try archiveEvent(4, MeetingEventKind.wordsFixed, ["transcriptID": "F", "base": "M"]),
+    ]
+    #expect(TranscriptRebuilder.recordedTranscriptID("M", events: mergeOfDeep) == "R")
+    #expect(TranscriptRebuilder.recordedTranscriptID("F", events: mergeOfDeep) == "R")
+    // Deep and language revisions stacked several times still lead back to the recording, and a loop ends.
+    let stacked = [
+        try archiveEvent(1, MeetingEventKind.deepTranscribed, ["transcriptID": "D1", "base": "R"]),
+        try archiveEvent(2, MeetingEventKind.languagesDetected, ["transcriptID": "M1", "base": "D1",
+                                                                  "languages": "fr-CA", "requested": "fr-CA"]),
+        try archiveEvent(3, MeetingEventKind.deepTranscribed, ["transcriptID": "D2", "base": "M1"]),
+        try archiveEvent(4, MeetingEventKind.languagesDetected, ["transcriptID": "M2", "base": "D2",
+                                                                  "languages": "fr-CA", "requested": "fr-CA"]),
+    ]
+    #expect(TranscriptRebuilder.recordedTranscriptID("M2", events: stacked) == "R")
+    let loop = [
+        try archiveEvent(1, MeetingEventKind.deepTranscribed, ["transcriptID": "A", "base": "B"]),
+        try archiveEvent(2, MeetingEventKind.languagesDetected, ["transcriptID": "B", "base": "A",
+                                                                  "languages": "fr-CA", "requested": "fr-CA"]),
+    ]
+    let ended = TranscriptRebuilder.recordedTranscriptID("A", events: loop)
+    #expect(ended == "A" || ended == "B")
     #expect(TranscriptRebuilder.mergeHoldsAllAudio("F", events: events))
     #expect(!TranscriptRebuilder.mergeHoldsAllAudio("R", events: events))
 }

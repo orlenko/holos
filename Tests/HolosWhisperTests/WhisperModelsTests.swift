@@ -4,6 +4,7 @@ import Synchronization
 import Testing
 @testable import HolosCore
 @testable import HolosWhisper
+@preconcurrency import WhisperKit
 
 /// Model status and install with a fake download and load check: no network, no model.
 @Suite struct WhisperModelsTests {
@@ -186,6 +187,56 @@ import Testing
         for index in 70_000..<71_600 { samples[index] = 0 }
         #expect(abs(WhisperKitTranscriber.quietestCut(samples) - 70_800) <= 1_600, "Halved in the pause.")
         #expect(WhisperKitTranscriber.levelDB(samples) > -12 && WhisperKitTranscriber.levelDB([0, 0]) == -120)
+    }
+
+    @Test func speechTheChunkingLeavesOutIsDecodedWhereTheRecordedTranscriptHeardIt() {
+        let second = 16_000
+        let max = 20 * second
+        // A fake voice-activity chunking that found speech in 0–10 s and 40–50 s of 60 s, and nothing else.
+        let vad = [0..<(10 * second), (40 * second)..<(50 * second)]
+        // No recorded words outside them: only the chunks are decoded.
+        #expect(WhisperKitTranscriber.plan(chunks: vad, total: 60 * second, recordedWords: [1, 2, 3, 41],
+                                           maxSamples: max) == vad)
+        // Three recorded words in 12–15 s: that stretch is decoded too, in pieces of at most 20 s, those with a word.
+        let planned = WhisperKitTranscriber.plan(chunks: vad, total: 60 * second, recordedWords: [12, 13.5, 14.9, 52],
+                                                 maxSamples: max)
+        #expect(planned == [0..<(10 * second), (10 * second)..<(25 * second), (40 * second)..<(50 * second)])
+        // Fewer than three there (music, or a word or two of noise): left out, as the chunking chose.
+        #expect(WhisperKitTranscriber.plan(chunks: vad, total: 60 * second, recordedWords: [12, 13.5],
+                                           maxSamples: max) == vad)
+        // Three words in the 10 s after the last chunk: decoded.
+        #expect(WhisperKitTranscriber.plan(chunks: vad, total: 60 * second, recordedWords: [51, 53, 55],
+                                           maxSamples: max).last == (50 * second)..<(60 * second))
+        // No chunk at all (the chunking heard nothing) with recorded speech: decoded in pieces.
+        #expect(WhisperKitTranscriber.plan(chunks: [], total: 45 * second, recordedWords: [1, 2, 3, 44],
+                                           maxSamples: max) == [0..<(15 * second), (30 * second)..<(45 * second)])
+        // A stretch shorter than a second is joined to the chunk before it (or the one after it, at the start).
+        #expect(WhisperKitTranscriber.plan(chunks: [(second / 2)..<(20 * second), (20 * second)..<(39 * second)],
+                                           total: 39 * second + second / 2, recordedWords: [],
+                                           maxSamples: max)
+            == [0..<(20 * second), (20 * second)..<(39 * second + second / 2)])
+    }
+
+    @Test func whisperKitsChunkingLeavesNoAudioOutOfThePlan() async throws {
+        // WhisperKit's chunker stops less than a second before the end: that tail is decoded with the last chunk.
+        let samples = (0..<(40 * 16_000 + 8_000)).map { Float(sin(Double($0) * 0.05)) * 0.2 }
+        let chunks = try await VADAudioChunker().chunkAll(audioArray: samples, maxChunkLength: 20 * 16_000,
+                                                          decodeOptions: nil)
+        let ranges = chunks.map { $0.seekOffsetIndex..<($0.seekOffsetIndex + $0.audioSamples.count) }
+        #expect(ranges.last?.upperBound ?? 0 < samples.count, "The chunker leaves the tail out.")
+        let planned = WhisperKitTranscriber.plan(chunks: ranges, total: samples.count, recordedWords: [],
+                                                 maxSamples: 20 * 16_000)
+        #expect(planned.first?.lowerBound == 0 && planned.last?.upperBound == samples.count)
+        #expect(zip(planned, planned.dropFirst()).allSatisfy { $0.upperBound == $1.lowerBound })
+    }
+
+    @Test func aQuietStretchWithRecordedWordsThatComesBackEmptyIsUnheard() {
+        #expect(WhisperKitTranscriber.isUnheard(words: 0, levelDB: -25, recordedWords: 0))
+        #expect(!WhisperKitTranscriber.isUnheard(words: 0, levelDB: -70, recordedWords: 0), "Silence.")
+        #expect(WhisperKitTranscriber.isUnheard(words: 0, levelDB: -70, recordedWords: 3),
+                "Quiet speech the recorded transcript heard is reported, for the pass to fail on.")
+        #expect(!WhisperKitTranscriber.isUnheard(words: 4, levelDB: -70, recordedWords: 3))
+        #expect(WhisperKitTranscriber.needsSplit(words: 0, seconds: 20, levelDB: -70, depth: 0, recordedWords: 3))
     }
 
     @Test func theLanguageTableMatchesWhisperKits() {

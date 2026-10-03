@@ -171,6 +171,7 @@ enum DeepTranscriptionStage {
         let pass: Pass
         do {
             pass = try await transcribe(tracks: tracks, request: request, transcriber: transcriber,
+                                        reference: base?.reference,
                                         language: DeepTranscriptionModel.whisperLanguage(locale),
                                         prompt: prompt.text, recorder: recorder)
         } catch let failure as StageFailure {
@@ -271,7 +272,7 @@ enum DeepTranscriptionStage {
     /// pieces of at most `DeepAudio.pieceSeconds` ending at a quiet moment, each piece transcribed and mapped back to
     /// session time.
     private static func transcribe(tracks: [String], request: Request, transcriber: any DeepTranscriber,
-                                   language: String?, prompt: String, recorder: StageRecorder) async throws -> Pass {
+                                   reference: Transcript?, language: String?, prompt: String, recorder: StageRecorder) async throws -> Pass {
         let manifest = request.manifest
         let total = max(1e-9, tracks.reduce(0) { $0 + TrackRenderer.renderedSeconds(manifest: manifest, track: $1) })
         let journal = recorder.journal
@@ -299,7 +300,8 @@ enum DeepTranscriptionStage {
                 segments += try await transcribeTrack(
                     track, session: request.session, manifest: manifest,
                     renderTo: SessionPaths.derived(request.session).appendingPathComponent("deep-\(track)-16k.caf"),
-                    transcriber: transcriber, language: language, prompt: prompt) { trackSeconds in
+                    transcriber: transcriber, language: language, prompt: prompt,
+                    reference: reference) { trackSeconds in
                         journal.progress(PostProcessingProgress(stage: .deepTranscription, track: track,
                                                                 fraction: min(1, (base + trackSeconds) / total),
                                                                 message: message))
@@ -324,6 +326,7 @@ enum DeepTranscriptionStage {
     /// gets the seconds of the render done. A render that fails throws `RenderFailure`.
     static func transcribeTrack(_ track: String, session: URL, manifest: SessionManifest, renderTo output: URL,
                                 transcriber: any DeepTranscriber, language: String?, prompt: String,
+                                reference: Transcript?,
                                 progress: @escaping @Sendable (Double) -> Void) async throws -> [DeepHeardSegment] {
         let rendered: RenderedTrack
         do {
@@ -350,8 +353,11 @@ enum DeepTranscriptionStage {
             guard !samples.isEmpty else { break }
             let pieceStart = Double(position) / Double(DeepAudio.sampleRate)
             let pieceSeconds = Double(samples.count) / Double(DeepAudio.sampleRate)
+            let recordedWords = DeepAudio.recordedWords(reference, track: track, timeMap: rendered.timeMap,
+                                                        pieceStart: pieceStart, pieceSeconds: pieceSeconds)
             let heard = try await transcriber.transcribe(
-                DeepTranscriptionRequest(samples: samples, language: language, prompt: prompt),
+                DeepTranscriptionRequest(samples: samples, language: language, prompt: prompt,
+                                         recordedWords: recordedWords),
                 progress: { fraction in
                     let value = fraction.isFinite ? min(1, max(0, fraction)) : 0
                     progress(pieceStart + value * pieceSeconds)
@@ -377,7 +383,7 @@ enum DeepTranscriptionStage {
 
     /// At least this many words of the recorded transcript in an audible stretch the model left empty make it lost
     /// speech; fewer (or no recorded transcript) is taken for music or noise, which Whisper rightly writes nothing for.
-    static let lostSpeechWords = 3
+    static let lostSpeechWords = DeepTranscriptionRequest.recordedSpeechWords
 
     /// The audible stretches the model left empty (`unheard`, after its retries) where the recorded transcript has at
     /// least `lostSpeechWords` words on the same track: speech the pass would leave out.
