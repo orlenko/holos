@@ -163,8 +163,6 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
     var assistantWindow: SetupAssistantWindow?
     var assistantRefreshTask: Task<Void, Never>?
     var assistantFlow = SetupAssistantFlow()
-    /// Open Settings clicks per permission since launch (`PermissionRequest`).
-    var permissionClicks: [PrivacyPermission: Int] = [:]
     /// The assistant shows the one-page check after it reopened Voice is Local.
     var assistantVerifying = false
     /// The assistant finished or was skipped this run; the menu's Setup Assistant… starts it again from Welcome.
@@ -1547,15 +1545,17 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
         case .microphone:
             if AudioCapture.microphonePermission == "notDetermined" { requestMicrophone() }
             else { openPrivacySettings("Privacy_Microphone") }
+        // Allow… and System Settings… (`PermissionButtons`) each do one thing: asking adds Voice is Local to the
+        // list (again after its entry was removed), and macOS shows its own prompt only while it still will.
         case .accessibility:
-            requestPermission(.accessibility, granted: AXIsProcessTrusted(), anchor: "Privacy_Accessibility") {
-                // Asking adds Holos to the Accessibility list; macOS shows its own prompt only once.
-                let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
-                _ = AXIsProcessTrustedWithOptions(options)
-            }
+            let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
+            _ = AXIsProcessTrustedWithOptions(options)
+        case .accessibilitySettings:
+            openPrivacySettings("Privacy_Accessibility")
         case .inputMonitoring:
-            requestPermission(.inputMonitoring, granted: CGPreflightListenEventAccess(),
-                              anchor: "Privacy_ListenEvent") { _ = CGRequestListenEventAccess() }
+            _ = CGRequestListenEventAccess()
+        case .inputMonitoringSettings:
+            openPrivacySettings("Privacy_ListenEvent")
         case .assets: installAssets()
         case .dictation: toggleEnabled()
         case .toggleFillers:
@@ -1592,10 +1592,10 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
         case .toggleDeepTranscription:
             toggleDeepTranscription()
         case .systemAudio:
-            // Asking adds Holos to the Screen & System Audio Recording list; macOS shows its own prompt only once,
-            // and the permission takes effect after Holos is reopened.
-            requestPermission(.screenAndSystemAudio, granted: CGPreflightScreenCaptureAccess(),
-                              anchor: "Privacy_ScreenCapture") { _ = CGRequestScreenCaptureAccess() }
+            // Screen & System Audio Recording takes effect after Voice is Local is reopened.
+            _ = CGRequestScreenCaptureAccess()
+        case .systemAudioSettings:
+            openPrivacySettings("Privacy_ScreenCapture")
         case .people:
             showMainWindow(.people)
         case .clearHistory:
@@ -1605,17 +1605,6 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
         case .setupAssistant:
             showSetupAssistant(verify: false)
         }
-    }
-
-    /// One step on the first click (`PermissionRequest`): a permission not granted is asked for, which adds Voice
-    /// is Local to the list (again after its entry was removed) and lets macOS show its prompt; a later click in
-    /// this run asks again and opens the page as well.
-    private func requestPermission(_ permission: PrivacyPermission, granted: Bool, anchor: String,
-                                   ask: () -> Void) {
-        let request = PermissionRequest.forClick(granted: granted, clicksBefore: permissionClicks[permission, default: 0])
-        permissionClicks[permission, default: 0] += 1
-        if request.asks { ask() }
-        if request.opensSettings { openPrivacySettings(anchor) }
     }
 
     private func openPrivacySettings(_ anchor: String) {

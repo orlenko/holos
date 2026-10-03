@@ -24,6 +24,9 @@ enum SetupAssistantAction: Int {
     case finish
     /// The check after reopening: open Settings in the main window, or close.
     case openSetup, done
+    /// A permission's System Settings… link: only opens the page, while `accessibility`, `systemAudio`, and
+    /// `inputMonitoring` (Allow…) only ask macOS (`PermissionButtons`).
+    case accessibilitySettings, systemAudioSettings, inputMonitoringSettings
 }
 
 /// The first-launch Setup Assistant: one page at a time, in `SetupAssistantFlow`'s order. A regular titled window
@@ -40,6 +43,9 @@ final class SetupAssistantWindow: NSObject, NSWindowDelegate {
             var detail: String
             var button: String? = nil
             var action: SetupAssistantAction? = nil
+            /// A link under the button (System Settings…).
+            var link: String? = nil
+            var linkAction: SetupAssistantAction? = nil
         }
 
         struct Button: Equatable {
@@ -172,13 +178,12 @@ final class SetupAssistantWindow: NSObject, NSWindowDelegate {
                     + "other apps. It works as soon as you switch it on; nothing needs to reopen.")
             page.rows = [facts.accessibility
                 ? Page.Row(mark: .done, title: "Accessibility", detail: "Allowed")
-                : Page.Row(mark: .problem, title: "Accessibility",
-                           detail: "Not allowed yet. This page checks every second.",
-                           button: "Open Settings", action: .accessibility)]
+                : missingPermissionRow(.problem, "Accessibility", "Not allowed yet. This page checks every second.",
+                                       ask: .accessibility, settings: .accessibilitySettings)]
             var note = """
-                Click Open Settings. In Accessibility, switch on Voice is Local. If Voice is Local (or Holos, its old \
-                name) is already listed and switched on but this step stays unchecked, select it, remove it with –, \
-                and click Open Settings again to add it back.
+                Click Allow…; if macOS shows no prompt, click the System Settings… link. In Accessibility, \
+                switch on Voice is Local. If Voice is Local (or Holos, its old name) is already listed and switched \
+                on but this step stays unchecked, select it, remove it with –, and click Allow… again to add it back.
                 """
             if flow.offersContinueWithout(facts) {
                 note += "\n\nContinue Without skips it: dictation then cannot notice the key or type text."
@@ -197,30 +202,28 @@ final class SetupAssistantWindow: NSObject, NSWindowDelegate {
             if flow.offersSystemAudio(facts) {
                 page.rows.append(facts.systemAudio
                     ? Page.Row(mark: .done, title: "Screen & System Audio Recording", detail: "Allowed")
-                    : flow.requestedSystemAudio
-                    ? Page.Row(mark: .pending, title: "Screen & System Audio Recording",
-                               detail: "Takes effect when Voice is Local reopens at the end.",
-                               button: "Open Settings", action: .systemAudio)
-                    : Page.Row(mark: .pending, title: "Screen & System Audio Recording",
-                               detail: "Meetings record the computer's audio (the other side of a call, a video). "
-                                   + "Without it, meetings record the microphone only. Optional.",
-                               button: "Open Settings", action: .systemAudio))
+                    : missingPermissionRow(.pending, "Screen & System Audio Recording", flow.requestedSystemAudio
+                        ? "Takes effect when Voice is Local reopens at the end."
+                        : "Meetings record the computer's audio (the other side of a call, a video). Without it, "
+                            + "meetings record the microphone only. Optional.",
+                        ask: .systemAudio, settings: .systemAudioSettings))
             }
             if flow.offersInputMonitoring(facts) {
                 page.rows.append(facts.inputMonitoring
                     ? Page.Row(mark: .done, title: "Input Monitoring", detail: "Allowed")
                     : flow.requestedInputMonitoring
-                    ? Page.Row(mark: .pending, title: "Input Monitoring",
-                               detail: "Takes effect when Voice is Local reopens at the end.",
-                               button: "Open Settings", action: .inputMonitoring)
-                    : Page.Row(mark: .problem, title: "Input Monitoring",
-                               detail: "macOS refused the hold-to-talk key although Accessibility is on. On this Mac "
-                                   + "the key also needs Input Monitoring.",
-                               button: "Open Settings", action: .inputMonitoring))
+                    ? missingPermissionRow(.pending, "Input Monitoring",
+                                           "Takes effect when Voice is Local reopens at the end.",
+                                           ask: .inputMonitoring, settings: .inputMonitoringSettings)
+                    : missingPermissionRow(.problem, "Input Monitoring",
+                                           "macOS refused the hold-to-talk key although Accessibility is on. On "
+                                               + "this Mac the key also needs Input Monitoring.",
+                                           ask: .inputMonitoring, settings: .inputMonitoringSettings))
             }
             page.note = """
-                Click Open Settings and switch on Voice is Local. macOS will offer to Quit & Reopen — choose Later. \
-                Voice is Local reopens once, at the end of this setup.
+                Click Allow…; if macOS shows no prompt, click the System Settings… link. Switch on Voice is \
+                Local; macOS will offer to Quit & Reopen — choose Later. Voice is Local reopens once, at the end of \
+                this setup.
                 """
             page.footer = downloads(state)
             page.leading = [Page.Button(title: "Back", action: .back)]
@@ -280,6 +283,17 @@ final class SetupAssistantWindow: NSObject, NSWindowDelegate {
         case .systemAudio: "System audio"
         case .dictation: "Dictation"
         }
+    }
+
+    /// A permission not allowed yet (`PermissionButtons`): Allow… only asks macOS, the System Settings… link only
+    /// opens the page.
+    private static func missingPermissionRow(_ mark: Mark, _ title: String, _ detail: String,
+                                             ask: SetupAssistantAction, settings: SetupAssistantAction) -> Page.Row {
+        let buttons = PermissionButtons.forPermission(granted: false)
+        func sends(_ button: PermissionButtons.Button) -> SetupAssistantAction { button.step == .ask ? ask : settings }
+        return Page.Row(mark: mark, title: title, detail: detail, button: buttons.primary.title,
+                        action: sends(buttons.primary), link: buttons.secondary?.title,
+                        linkAction: buttons.secondary.map(sends))
     }
 
     private static func microphoneRow(_ facts: SetupAssistantFacts) -> Page.Row {
@@ -414,7 +428,23 @@ final class SetupAssistantWindow: NSObject, NSWindowDelegate {
                 let control = NSButton(title: button, target: self, action: #selector(buttonPressed(_:)))
                 control.bezelStyle = .push
                 control.tag = action.rawValue
-                cells.append(control)
+                control.setAccessibilityLabel("\(button) — \(row.title)")
+                if let link = row.link, let linkAction = row.linkAction {
+                    let linkButton = NSButton(title: link, target: self, action: #selector(buttonPressed(_:)))
+                    linkButton.isBordered = false
+                    linkButton.attributedTitle = NSAttributedString(string: link, attributes: [
+                        .font: NSFont.systemFont(ofSize: 12), .foregroundColor: NSColor.linkColor,
+                    ])
+                    linkButton.tag = linkAction.rawValue
+                    linkButton.setAccessibilityLabel("\(link) — \(row.title)")
+                    let buttons = NSStackView(views: [control, linkButton])
+                    buttons.orientation = .vertical
+                    buttons.alignment = .trailing
+                    buttons.spacing = 2
+                    cells.append(buttons)
+                } else {
+                    cells.append(control)
+                }
             } else {
                 cells.append(NSGridCell.emptyContentView)
             }

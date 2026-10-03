@@ -95,6 +95,9 @@ enum SetupAction: Int, CaseIterable {
     case toggleMeetingScreenCapture
     /// Settings › Meetings › Final transcript: download the model, and turn the pass after meetings on or off.
     case deepTranscriptionModel, toggleDeepTranscription
+    /// A permission row's System Settings… link (or its Open Settings once granted): only opens the page, while
+    /// `accessibility`, `inputMonitoring`, and `systemAudio` only ask macOS (`PermissionButtons`).
+    case accessibilitySettings, inputMonitoringSettings, systemAudioSettings
 }
 
 /// The main window's Settings section (it replaces the Setup window): cards for General, Permissions, Dictation,
@@ -109,6 +112,8 @@ final class SettingsPane: NSViewController, MainSectionContent {
         let title: NSTextField
         let detail: NSTextField
         let button: NSButton
+        /// A link under the button; only permission rows show it (System Settings…).
+        let link: NSButton
         let grid: NSGridView
     }
 
@@ -241,8 +246,9 @@ final class SettingsPane: NSViewController, MainSectionContent {
         let note = Self.note("""
             This updates on its own while you change System Settings. After rebuilding Voice is Local, macOS can \
             keep an old entry that looks switched on but no longer matches the app: select Voice is Local in that \
-            list, remove it with –, then click Open Settings here to add it again. An entry named Holos is this app \
-            from before it was renamed; remove it the same way.
+            list, remove it with –, then click Allow… here to add it again. An entry named Holos is this app from \
+            before it was renamed; remove it the same way. Allow… only asks macOS (its prompt appears once); \
+            System Settings… only opens the page.
             """)
         return card("Permissions", [grid, note], widths: [grid, note])
     }
@@ -499,7 +505,7 @@ final class SettingsPane: NSViewController, MainSectionContent {
         grid.row(at: grid.numberOfRows - 1).yPlacement = .center
     }
 
-    /// A status row: icon, bold title over a detail line, and a button (`set`).
+    /// A status row: icon, bold title over a detail line, and a button with an optional link under it (`set`).
     private func addRow(_ action: SetupAction, _ title: String, to grid: NSGridView) {
         let icon = NSImageView()
         icon.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 17, weight: .regular)
@@ -507,9 +513,16 @@ final class SettingsPane: NSViewController, MainSectionContent {
         let button = NSButton(title: "", target: self, action: #selector(buttonPressed(_:)))
         button.bezelStyle = .push
         button.tag = action.rawValue
-        grid.addRow(with: [icon, text, button])
+        let link = NSButton(title: "", target: self, action: #selector(buttonPressed(_:)))
+        link.isBordered = false
+        link.isHidden = true
+        let buttons = NSStackView(views: [button, link])
+        buttons.orientation = .vertical
+        buttons.alignment = .trailing
+        buttons.spacing = 2
+        grid.addRow(with: [icon, text, buttons])
         finishRow(in: grid)
-        rows[action] = Row(icon: icon, title: titleLabel, detail: detail, button: button, grid: grid)
+        rows[action] = Row(icon: icon, title: titleLabel, detail: detail, button: button, link: link, grid: grid)
     }
 
     /// A row whose control is a pop-up menu.
@@ -583,17 +596,18 @@ final class SettingsPane: NSViewController, MainSectionContent {
         default:
             set(.microphone, .problem, "Denied — turn on Voice is Local in System Settings", button: "Open Settings")
         }
-        set(.accessibility, state.accessibility ? .done : .problem,
-            state.accessibility ? "Granted — used to insert text into the focused field"
-                                : "Not granted — turn on Voice is Local in System Settings",
-            button: "Open Settings")
+        setPermission(.accessibility, settings: .accessibilitySettings, granted: state.accessibility,
+                      state.accessibility ? .done : .problem,
+                      state.accessibility ? "Granted — used to insert text into the focused field"
+                                          : "Not granted — click Allow…, then turn on Voice is Local")
         // Accessibility is what the hotkey tap needs; this row appears only after macOS refused the tap anyway.
         setRowHidden(.inputMonitoring, !state.inputMonitoringNeeded)
-        set(.inputMonitoring, state.inputMonitoring ? .done : .problem,
-            state.inputMonitoring ? "Granted — quit and reopen Voice is Local if the shortcut still does not work"
-                                  : "macOS refused the hold-to-talk shortcut with Accessibility on. Turn on Voice is "
-                                    + "Local under Input Monitoring, then quit and reopen Voice is Local.",
-            button: "Open Settings")
+        setPermission(.inputMonitoring, settings: .inputMonitoringSettings, granted: state.inputMonitoring,
+                      state.inputMonitoring ? .done : .problem,
+                      state.inputMonitoring
+                          ? "Granted — quit and reopen Voice is Local if the shortcut still does not work"
+                          : "macOS refused the hold-to-talk shortcut with Accessibility on. Click Allow…, turn on "
+                            + "Voice is Local under Input Monitoring, then quit and reopen Voice is Local.")
         recordSystemAudioToggle.state = state.recordSystemAudio ? .on : .off
         screenCaptureToggle.state = state.screenCaptureDefault ? .on : .off
         deepTranscriptionToggle.state = state.deepTranscriptionEnabled ? .on : .off
@@ -607,12 +621,13 @@ final class SettingsPane: NSViewController, MainSectionContent {
                 : state.screenCaptureDefault ? "Granted — available for selected-window snapshots"
                     : "Granted — recording the computer's audio is off under Meetings", button: nil)
         } else if state.recordSystemAudio || state.screenCaptureDefault {
-            set(.systemAudio, .pending, "Meetings record the computer's audio (the other side of a call, a video). "
-                + "Turn on Voice is Local under Screen & System Audio Recording, then quit and reopen Voice is Local. "
-                + "Until then meetings record the microphone only and snapshots are unavailable.", button: "Open Settings")
+            setPermission(.systemAudio, settings: .systemAudioSettings, granted: false, .pending,
+                          "Meetings record the computer's audio (the other side of a call, a video). Click Allow…, "
+                          + "turn on Voice is Local under Screen & System Audio Recording, then quit and reopen Voice "
+                          + "is Local. Until then meetings record the microphone only and snapshots are unavailable.")
         } else {
-            set(.systemAudio, .pending, "Not needed — recording the computer's audio is off under Meetings",
-                button: "Open Settings")
+            setPermission(.systemAudio, settings: .systemAudioSettings, granted: false, .pending,
+                          "Not needed — recording the computer's audio is off under Meetings")
         }
 
         rows[.assets]?.title.stringValue = "Speech model: \(language)"
@@ -742,7 +757,19 @@ final class SettingsPane: NSViewController, MainSectionContent {
         gridRow.isHidden = hidden
     }
 
-    private func set(_ action: SetupAction, _ mark: Mark, _ detail: String, button title: String?, enabled: Bool = true) {
+    /// A permission row (`PermissionButtons`): not granted, Allow… sends `action` (ask macOS) and the System
+    /// Settings… link sends `settings` (open the page); granted, Open Settings sends `settings`.
+    private func setPermission(_ action: SetupAction, settings: SetupAction, granted: Bool, _ mark: Mark,
+                               _ detail: String) {
+        let buttons = PermissionButtons.forPermission(granted: granted)
+        func send(_ button: PermissionButtons.Button) -> SetupAction { button.step == .ask ? action : settings }
+        set(action, mark, detail, button: buttons.primary.title, sends: send(buttons.primary),
+            link: buttons.secondary.map { ($0.title, send($0)) })
+    }
+
+    /// `sends`: the action the button reports (the row's own by default); `link`: the link under it, if any.
+    private func set(_ action: SetupAction, _ mark: Mark, _ detail: String, button title: String?, enabled: Bool = true,
+                     sends: SetupAction? = nil, link: (title: String, sends: SetupAction)? = nil) {
         guard let row = rows[action] else { return }
         let (symbol, color): (String, NSColor) = switch mark {
         case .done: ("checkmark.circle.fill", .systemGreen)
@@ -761,8 +788,19 @@ final class SettingsPane: NSViewController, MainSectionContent {
         let rowHidden = row.grid.cell(for: row.icon)?.row?.isHidden ?? false
         row.button.isHidden = title == nil || rowHidden
         row.button.title = title ?? ""
+        row.button.tag = (sends ?? action).rawValue
         row.button.isEnabled = enabled
         row.button.setAccessibilityLabel(title.map { "\($0) — \(row.title.stringValue)" })
+        row.link.isHidden = link == nil || rowHidden
+        if let link {
+            if row.link.title != link.title {
+                row.link.attributedTitle = NSAttributedString(string: link.title, attributes: [
+                    .font: NSFont.systemFont(ofSize: 12), .foregroundColor: NSColor.linkColor,
+                ])
+            }
+            row.link.tag = link.sends.rawValue
+            row.link.setAccessibilityLabel("\(link.title) — \(row.title.stringValue)")
+        }
     }
 
     // MARK: - Actions

@@ -151,7 +151,7 @@ public struct SetupAssistantFlow: Equatable, Sendable {
     /// The user left Basics or Accessibility without the permission ("Continue Without").
     public private(set) var continuedWithoutMicrophone = false
     public private(set) var continuedWithoutAccessibility = false
-    /// Open Settings was clicked this run for a permission that takes effect after a reopen.
+    /// Allow… or System Settings… was clicked this run for a permission that takes effect after a reopen.
     public private(set) var requestedSystemAudio = false
     public private(set) var requestedInputMonitoring = false
     /// Basics was left once, so the speech model install was started.
@@ -273,7 +273,7 @@ public struct SetupAssistantFlow: Equatable, Sendable {
         }
     }
 
-    /// Open Settings on the Reopen page.
+    /// Allow… or System Settings… on the Reopen page.
     public mutating func requestedSystemAudioSettings() { requestedSystemAudio = true }
     public mutating func requestedInputMonitoringSettings() { requestedInputMonitoring = true }
 
