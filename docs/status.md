@@ -373,6 +373,28 @@ timeline and larger local-model benchmark are follow-ups, not completed features
   and revert menu have not been seen on screen. `eval apply --add-vocabulary` proposes and adds
   often-heard-as words where reviewed passages replaced real words by a term. `eval local`
   applies the stage to its candidate by default (`--no-word-fixes` opts out).
+- Deep transcription after meetings (docs/meeting-design.md §4.16, CLI only so far): `voiceislocal
+  setup --whisper` downloads Whisper large-v3 turbo for WhisperKit (about 1.6 GB, resumable,
+  loaded once before it counts as installed; `doctor` reports it), and `voiceislocal session
+  deep-transcribe <session> [--force]` transcribes a finished meeting's saved audio again on
+  this Mac, prompted with the meeting's name, the word list and people's names, and publishes it
+  as a new transcript revision (`engine` "whisper:…", `deepTranscribed`), followed by live
+  corrections, word fixes, speaker labels and exports. Passages over near-silence where the
+  recorded transcript has no words and repetition loops are left out. Three WhisperKit 1.1.0
+  problems with prompts are worked around (word times read from the wrong decoder rows, timestamp
+  rules switched off, speech left out of a chunk; each chunk is also decoded without the prompt
+  and keeps the plain result when the prompted one lost words). `eval local --backend whisper`
+  makes the same transcription as a candidate. Unit-tested with a scripted transcriber; an opt-in
+  test runs the real model on invented speech.
+  Manual validation on a copy of a real 53-minute call (both tracks, release build, M4 Pro,
+  numbers only): 1,163 s for the pass (6,348 s of audio over two tracks), 772 MB peak, 1,208
+  passages and 15,786 words (the recorded transcript had 17,193), 14 passages over silence
+  and 2 repeats left out; word starts agreed with the recorded transcript's within 0.13 s at
+  the median (98 % within 1 s); recorded words with no deep word within 3 s fell from about
+  500 s of speech per track before the prompt workarounds to about 65 s. Against a cloud
+  reference (system track, `eval local --backend whisper`): 14.6 % WER (339 deletions) and 63 of
+  82 word-list terms, against Apple's 20.9 % and 31 of 82, after WhisperKit's first-token check,
+  which emptied whole chunks (725 deletions), was turned off.
 - Main window (docs/design.md "Main window"): **Open Voice is Local** (⌘0) opens one
   window with a sidebar: History (⌘1), Corrections (⌘2), Meetings (⌘3), People (⌘4),
   Reading (⌘5), and Settings (⌘,), with a
@@ -632,6 +654,8 @@ Still requiring real-machine or user-data validation:
   not). `eval local` applies the same fixes to its candidate by default; `--no-word-fixes`
   keeps the recognizer's words for comparison. The model is asked one place at a time (at
   most 500 per run).
+- Deep transcription: meetings in several languages are not transcribed again yet; the app does
+  not queue or run the pass on its own yet (a follow-up PR); accuracy was measured on one meeting.
 - Live transcript: selecting a finalized phrase while recording can correct its text or name
   its speaker. The app saves a timed hint, carries text into the final/replayed transcript,
   learns safe correction pairs, keeps a shared pair until the last confirming live edit is

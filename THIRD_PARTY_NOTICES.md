@@ -1,8 +1,9 @@
 # Third-party notices
 
-The `voiceislocal` command-line tool includes FluidAudio and Mozilla Readability, and `voiceislocal setup --speakers`
-downloads the speaker diarization models it runs. Their licenses and credits follow. The Voice is Local app does not
-link FluidAudio or include the models; it runs speaker labelling through the `voiceislocal` tool.
+The `voiceislocal` command-line tool includes FluidAudio, Mozilla Readability, and WhisperKit; `voiceislocal setup
+--speakers` downloads the speaker diarization models it runs, and `voiceislocal setup --whisper` the Whisper model of
+deep transcription. Their licenses and credits follow. The Voice is Local app does not link FluidAudio or WhisperKit
+or include the models; it runs speaker labelling and deep transcription through the `voiceislocal` tool.
 
 ## 1. FluidAudio 0.17.1
 
@@ -932,3 +933,51 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 ````
+
+## 4. WhisperKit 1.1.0
+
+- Source: https://github.com/argmaxinc/WhisperKit (package `argmax-oss-swift`), tag v1.1.0, commit
+  `1e2a163736dfa5a198e637ae44c114e1c6d5cc2d`.
+- License: MIT; the checkout's `LICENSE` follows. Its `Sources/ArgmaxCore/External` files are derived from
+  Hugging Face's swift-transformers (Copyright 2022 Hugging Face SAS), modified by Argmax, Inc., and licensed under
+  the Apache License 2.0, whose full text is the FluidAudio `LICENSE` in section 1 (WhisperKit's `NOTICES` file says
+  so).
+- `voiceislocal session deep-transcribe` and `voiceislocal eval local --backend whisper` use it to run the Whisper
+  model on this Mac; `voiceislocal setup --whisper` uses its Hugging Face downloader.
+
+### WhisperKit `LICENSE`
+
+````text
+MIT License
+
+Copyright (c) 2024 argmax, inc.
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+````
+
+## 5. Whisper model
+
+Deep transcription uses `openai_whisper-large-v3-v20240930_turbo` from
+https://huggingface.co/argmaxinc/whisperkit-coreml (MIT), Argmax's Core ML conversion of OpenAI's Whisper
+large-v3-turbo (https://github.com/openai/whisper, MIT, Copyright (c) 2022 OpenAI), with the tokenizer of
+https://huggingface.co/openai/whisper-large-v3 (Apache 2.0). They are downloaded by `voiceislocal setup --whisper`
+and not included in the app.
+
+Citation: Alec Radford, Jong Wook Kim, Tao Xu, Greg Brockman, Christine McLeavey, and Ilya Sutskever. "Robust Speech
+Recognition via Large-Scale Weak Supervision." ICML 2023.

@@ -8,6 +8,7 @@ import HolosCore
 import HolosDiarization
 import HolosSpeech
 import HolosSynthesis
+import HolosWhisper
 import Synchronization
 
 struct Doctor: AsyncParsableCommand {
@@ -24,6 +25,7 @@ struct Doctor: AsyncParsableCommand {
         let model = SystemLanguageModel.default
         // Files only: checking the speaker models never touches the network.
         let speakerModels = FluidModels.status()
+        let whisperModel = WhisperModels.status()
         let report = DoctorReport(os: ProcessInfo.processInfo.operatingSystemVersionString,
             microphone: AudioCapture.microphonePermission,
             systemAudioPermission: CGPreflightScreenCaptureAccess(),
@@ -34,7 +36,7 @@ struct Doctor: AsyncParsableCommand {
             speechAssetStatus: (try? await AppleSpeechEngine.assetStatus(locale: locale, backend: .speech)) ?? "unsupported",
             dictationAssetStatus: (try? await AppleSpeechEngine.assetStatus(locale: locale, backend: .dictation)) ?? "unsupported",
             sessionsDirectory: HolosPaths.sessions.path,
-            speakerModels: speakerModels)
+            speakerModels: speakerModels, deepTranscriptionModel: whisperModel)
         if json { try Console.json(report); return }
         Console.output("Voice is Local — local capability report")
         Console.output("macOS: \(report.os)")
@@ -50,8 +52,12 @@ struct Doctor: AsyncParsableCommand {
         Console.output("\(report.locale) configured assets: speech=\(report.speechAssetStatus), dictation=\(report.dictationAssetStatus)")
         Console.output("Sessions: \(report.sessionsDirectory)")
         Console.output("Speaker models: \(speakerModels.summary)")
+        Console.output("Deep transcription model (\(DeepTranscriptionModel.displayName)): \(whisperModel.summary)")
         Console.output("Install transcription assets with: voiceislocal setup --locale \(locale)")
         if speakerModels != .verified { Console.output("Install speaker models with: voiceislocal setup --speakers") }
+        if whisperModel == .notInstalled {
+            Console.output("Install the deep transcription model with: voiceislocal setup --whisper (about 1.6 GB)")
+        }
     }
 }
 
@@ -73,29 +79,41 @@ private struct DoctorReport: Encodable {
     var sessionsDirectory: String
     /// Encodes as "verified", "notInstalled", or "damaged" (`ModelInstallStatus.doctorValue`).
     var speakerModels: ModelInstallStatus
+    /// "installed", "downloading", or "notInstalled" (docs/meeting-design.md §4.16).
+    var deepTranscriptionModel: DeepModelStatus
 }
 
 struct Setup: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
-        abstract: "Install Apple's on-device transcription assets for a locale, or the speaker models.",
+        abstract: "Install Apple's on-device transcription assets for a locale, the speaker models, or the deep transcription model.",
         discussion: """
             --speakers downloads the speaker-labelling models (about 21 MB, pinned and checked by SHA-256) \
             into Voice is Local's Application Support folder instead of installing transcription assets. Installed models \
             that are verified and load on this Mac are kept; models that fail either check are downloaded again. \
-            --force downloads them again in any case.
+            --whisper downloads the deep transcription model (Whisper large-v3 turbo for WhisperKit, about 1.6 GB, \
+            from Hugging Face) into the same folder and loads it once, so voiceislocal session deep-transcribe can \
+            transcribe meetings again after they end; an interrupted download resumes. An installed model is kept. \
+            --force downloads either again in any case.
             """)
     @OptionGroup var recognition: RecognitionOptions
     @Flag(help: "Download and verify the speaker models used to label speakers (network).") var speakers = false
-    @Flag(help: "With --speakers: download and install the speaker models again even when they are verified.")
+    @Flag(help: "Download and check the deep transcription model used after meetings (network, about 1.6 GB).")
+    var whisper = false
+    @Flag(help: "With --speakers or --whisper: download and install the models again even when they are installed.")
     var force = false
 
     func validate() throws {
-        if force && !speakers { throw ValidationError("--force applies only with --speakers.") }
+        if force && !speakers && !whisper { throw ValidationError("--force applies only with --speakers or --whisper.") }
+        if speakers && whisper { throw ValidationError("Choose --speakers or --whisper, not both.") }
     }
 
     mutating func run() async throws {
         if speakers {
             try await SpeakerModelSetup.run(force: force)
+            return
+        }
+        if whisper {
+            try await WhisperModelSetup.run(force: force)
             return
         }
         let locale = await recognition.resolvedLocale()
@@ -126,9 +144,22 @@ enum SpeakerModelSetup {
     }
 }
 
-/// Prints "Speaker models: N%" to stderr at each new 10 % step; progress may arrive from any thread.
+/// `voiceislocal setup --whisper` (docs/meeting-design.md §4.16).
+enum WhisperModelSetup {
+    static func run(force: Bool) async throws {
+        let progress = ProgressPrinter(label: "Deep transcription model")
+        try await WhisperModels.setUp(force: force, notice: { Console.error($0) }, progress: progress.report)
+        Console.output(WhisperModels.readyMessage)
+        Console.output(WhisperModels.creditsLine)
+    }
+}
+
+/// Prints "<label>: N%" to stderr at each new 10 % step; progress may arrive from any thread.
 private final class ProgressPrinter: Sendable {
     private let lastStep = Mutex(-1)
+    private let label: String
+
+    init(label: String = "Speaker models") { self.label = label }
 
     var report: @Sendable (Double) -> Void {
         { [self] fraction in
@@ -139,7 +170,7 @@ private final class ProgressPrinter: Sendable {
                 last = step
                 return true
             }
-            if isNew { Console.error("Speaker models: \(step * 10)%") }
+            if isNew { Console.error("\(label): \(step * 10)%") }
         }
     }
 }

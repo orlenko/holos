@@ -187,7 +187,11 @@ struct Eval: AsyncParsableCommand {
                 eval/local/<run>/ (run.json with the exact \
                 vocabulary and settings, each track's transcription as it is done, transcript.json); the meeting's \
                 transcript, speaker labels, exports, and vocabulary.json are never changed. Ctrl-C stops; running \
-                the same command again resumes. Then: voiceislocal eval compare <session> --local latest.
+                the same command again resumes. Then: voiceislocal eval compare <session> --local latest. \
+                --backend whisper transcribes with the deep transcription model instead (voiceislocal setup \
+                --whisper), exactly as voiceislocal session deep-transcribe does: one language, prompted with the \
+                meeting's name, the word list, and people's names (the meeting's vocabulary.json first), with \
+                passages over silence and repetition loops left out.
                 """)
 
         @Argument(help: "Path to a .holos folder, or a session ID.") var session: String
@@ -195,6 +199,8 @@ struct Eval: AsyncParsableCommand {
         @Flag(help: "Transcribe without any vocabulary.") var noVocabulary = false
         @Flag(help: "Keep the recognized words without applying meeting word fixes.") var noWordFixes = false
         @Option(name: .customLong("run"), help: "Resume this unfinished local run.") var runID: String?
+        @Option(help: "What transcribes: apple (Apple's speech recognition) or whisper (the deep transcription model).")
+        var backend: EvalLocal.Backend = .apple
 
         mutating func run() async throws {
             let directory = try SessionLocator.resolve(session)
@@ -203,10 +209,14 @@ struct Eval: AsyncParsableCommand {
             // A resumed run uses the vocabulary saved in its run.json; today's files are not read.
             if !noVocabulary, runID == nil {
                 do {
-                    vocabulary = RecognizerVocabulary.meeting(
-                        wordList: try WordListStore().load().terms,
-                        names: VoiceProfileService.profileNames().values.sorted(),
-                        corrections: try CorrectionList.load(from: CorrectionList.defaultURL), languages: languages)
+                    let names = VoiceProfileService.profileNames().values.sorted()
+                    vocabulary = backend == .whisper
+                        ? try EvalLocal.whisperVocabulary(session: directory, wordList: try WordListStore().load().terms,
+                                                          names: names)
+                        : RecognizerVocabulary.meeting(
+                            wordList: try WordListStore().load().terms, names: names,
+                            corrections: try CorrectionList.load(from: CorrectionList.defaultURL),
+                            languages: languages)
                 } catch {
                     throw ValidationError("Could not read the vocabulary (pass --no-vocabulary to go without): "
                         + error.localizedDescription)
@@ -216,12 +226,13 @@ struct Eval: AsyncParsableCommand {
             defer { lease.release() }
             let options = EvalLocal.Options(language: language, runID: runID,
                                             savedVocabulary: runID != nil && !noVocabulary,
-                                            wordFixes: !noWordFixes)
+                                            wordFixes: !noWordFixes, backend: backend)
             let strings = vocabulary
             do {
                 let record = try await EvalInterrupt.run { () async throws in
                     try await EvalLocal.run(session: directory, options: options, vocabulary: strings,
                                             wordFixes: makeWordFixDependencies(),
+                                            deepTranscription: makeDeepTranscriptionDependencies(),
                                             progress: { Console.error($0) })
                 }
                 Console.error("Local run \(record.id) is complete. Next: voiceislocal eval compare \(session) "
@@ -470,3 +481,5 @@ enum EvalInterrupt {
         }
     }
 }
+
+extension EvalLocal.Backend: ExpressibleByArgument {}
