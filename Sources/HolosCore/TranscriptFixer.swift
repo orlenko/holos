@@ -201,13 +201,13 @@ public struct TranscriptFixer: Sendable {
     /// Framed as a labelled field so the model treats a dictated question or command as text to fix.
     public static func prompt(for text: String) -> String { "Text: \(text)" }
 
-    enum Race<Value: Sendable>: Sendable {
+    public enum Race<Value: Sendable>: Sendable {
         case value(Value), timedOut, failed
     }
 
     /// Runs `operation` for at most `limit`. On a timeout it stops waiting at once and cancels the operation, even
     /// one that ignores cancellation.
-    static func firstOf<Value: Sendable>(_ limit: Duration,
+    public static func firstOf<Value: Sendable>(_ limit: Duration,
                                          _ operation: @escaping @Sendable () async throws -> Value) async
         -> Race<Value> {
         let gate = RaceGate<Value>()

@@ -479,7 +479,8 @@ private final class Recorder {
         let info = MeetingInfo(sessionID: archive.id, mode: options.source == .microphone ? .inPerson : .call,
                                othersInRoom: options.othersInRoom, applicationBundleID: options.applicationBundleID,
                                expectedSpeakers: options.expectedSpeakers,
-                               languages: options.languages.count > 1 ? options.languages : nil)
+                               languages: options.languages.count > 1 ? options.languages : nil,
+                               nameSource: MeetingNaming.sourceForNewMeeting(name: options.name))
         try AtomicFile.create(try HolosJSON.encoder().encode(info), at: SessionPaths.meetingInfo(directory))
         if !options.vocabulary.isEmpty {
             try AtomicFile.create(try HolosJSON.encoder().encode(MeetingVocabulary(strings: options.vocabulary)),

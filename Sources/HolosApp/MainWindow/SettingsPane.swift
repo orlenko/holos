@@ -49,6 +49,9 @@ struct SetupState {
     var deepTranscriptionDetail: String?
     /// "Deep transcription after meetings" is on.
     var deepTranscriptionEnabled = false
+    /// "Title and summarize meetings with Apple Intelligence" is on, and why it cannot run here (nil when it can).
+    var meetingSummaries = true
+    var meetingSummariesUnavailable: String?
     /// Fix misheard words with Apple's on-device model before they are written.
     var aiFix = false
     /// Why the on-device model cannot be used; nil when it can.
@@ -95,6 +98,8 @@ enum SetupAction: Int, CaseIterable {
     case toggleMeetingScreenCapture
     /// Settings › Meetings › Final transcript: download the model, and turn the pass after meetings on or off.
     case deepTranscriptionModel, toggleDeepTranscription
+    /// Settings › Meetings › Title and summarize meetings with Apple Intelligence.
+    case toggleMeetingSummaries
 }
 
 /// The main window's Settings section (it replaces the Setup window): cards for General, Permissions, Dictation,
@@ -148,6 +153,8 @@ final class SettingsPane: NSViewController, MainSectionContent {
     private let deepTranscriptionToggle = NSButton(
         checkboxWithTitle: "Deep transcription after meetings: transcribe them again with Whisper on this Mac",
         target: nil, action: nil)
+    private static let meetingSummariesTitle = "Title and summarize meetings with Apple Intelligence (on-device)"
+    private let meetingSummariesToggle = NSButton(checkboxWithTitle: meetingSummariesTitle, target: nil, action: nil)
     private let readingVoicePopup = NSPopUpButton(frame: .zero, pullsDown: false)
     private let readingSpeedSlider = NSSlider(value: ReadingSpeed.standard, minValue: ReadingSpeed.range.lowerBound,
                                               maxValue: ReadingSpeed.range.upperBound, target: nil, action: nil)
@@ -323,6 +330,14 @@ final class SettingsPane: NSViewController, MainSectionContent {
             power, one meeting at a time; on battery it waits for the power adapter. Right-click a meeting for Make \
             Final Transcript Now or Cancel. Meetings in several languages keep their transcript.
             """)
+        meetingSummariesToggle.target = self
+        meetingSummariesToggle.action = #selector(buttonPressed(_:))
+        meetingSummariesToggle.tag = SetupAction.toggleMeetingSummaries.rawValue
+        let summariesDetail = Self.note("""
+            Once a meeting's transcript is final, Apple's on-device model writes a short title and a summary for the \
+            Meetings list, with key points and action items in the transcript files. Nothing leaves this Mac. A name \
+            you give a meeting is never replaced. Right-click a meeting for Summarize Again.
+            """)
         let grid = makeGrid()
         addRow(.speakerModels, "Speaker labels", to: grid)
         addRow(.deepTranscriptionModel, "Final transcript", to: grid)
@@ -332,8 +347,8 @@ final class SettingsPane: NSViewController, MainSectionContent {
         rows[.people]?.icon.image = NSImage(systemSymbolName: "person.2", accessibilityDescription: nil)
         rows[.people]?.icon.contentTintColor = .secondaryLabelColor
         return card("Meetings", [recordSystemAudioToggle, detail, screenCaptureToggle, screenDetail,
-                                 deepTranscriptionToggle, deepDetail, grid],
-                    widths: [detail, screenDetail, deepDetail, grid])
+                                 deepTranscriptionToggle, deepDetail, meetingSummariesToggle, summariesDetail, grid],
+                    widths: [detail, screenDetail, deepDetail, summariesDetail, grid])
     }
 
     /// Settings › Reading: what new readings in the Reading section start with, and where their files go.
@@ -600,6 +615,11 @@ final class SettingsPane: NSViewController, MainSectionContent {
         // Off until the model is installed; turning it on is offered through the model's Download button.
         deepTranscriptionToggle.isEnabled = state.deepTranscriptionModel == "installed"
             || state.deepTranscriptionEnabled
+        meetingSummariesToggle.isEnabled = state.meetingSummariesUnavailable == nil
+        meetingSummariesToggle.state = state.meetingSummaries && state.meetingSummariesUnavailable == nil ? .on : .off
+        meetingSummariesToggle.title = state.meetingSummariesUnavailable.map {
+            "\(Self.meetingSummariesTitle) — unavailable: \($0)"
+        } ?? Self.meetingSummariesTitle
         // Never marked as a problem: without it meetings record the microphone alone.
         if state.systemAudio {
             set(.systemAudio, .done, state.recordSystemAudio

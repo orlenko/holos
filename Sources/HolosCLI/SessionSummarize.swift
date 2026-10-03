@@ -1,0 +1,124 @@
+import ArgumentParser
+import Foundation
+import FoundationModels
+import HolosCore
+import HolosDictation
+import HolosMeeting
+
+extension Session {
+    /// `voiceislocal session summarize` (docs/meeting-design.md §4.17).
+    struct Summarize: AsyncParsableCommand {
+        static let configuration = CommandConfiguration(
+            abstract: "Write a finished session's title, summary, key points and action items with Apple Intelligence.",
+            discussion: """
+                Apple's on-device model reads the current transcript, with speaker names, part by part, and writes a \
+                short title (at most 8 words), a one- or two-sentence summary, key points and action items into the \
+                session's summary.json; the transcript files (Markdown and JSON) are rewritten with them. Nothing \
+                leaves this Mac. The Meetings list shows the title unless you named the meeting yourself. A summary \
+                of the current transcript is kept unless --force; Voice is Local makes one after each meeting, and \
+                again when a final transcript replaces the recorded one. Needs Apple Intelligence turned on. Exits \
+                0 when the summary was written or is up to date, 3 when it was written but the transcript files \
+                could not be rewritten, and 1 otherwise (the reason is printed).
+                """)
+
+        @Argument(help: "Path to a .holos folder, or a session ID.") var path: String
+        @Flag(help: "Summarize again even when the summary is of the current transcript.") var force = false
+        @Flag(help: "Print the result as JSON (with the summary).") var json = false
+
+        mutating func run() async throws {
+            let session = try SessionLocator.resolve(path)
+            let request = SessionSummarizeCommand.Request(
+                session: session, force: force, selfName: VoiceProfileService.ownName(),
+                profileNames: VoiceProfileService.profileNames(),
+                applyRecognition: VoiceProfileService.recognitionAllowed())
+            let outcome = await SessionSummarizeCommand.run(request) { OnDeviceSummary.model(language: $0) }
+            if json {
+                try Console.json(outcome)
+                if outcome.exitCode != 0 { Console.error(outcome.message) }
+            } else if let summary = outcome.summary, outcome.exitCode != 1 {
+                Console.output(summary.title)
+                Console.output("")
+                Console.output(summary.summary)
+                for (heading, items) in [("Key points", summary.points), ("Action items", summary.actions)]
+                where !items.isEmpty {
+                    Console.output("")
+                    Console.output("\(heading):")
+                    for item in items { Console.output("- \(item)") }
+                }
+                if outcome.exitCode != 0 { Console.error(outcome.message) }
+            } else if outcome.exitCode == 0 {
+                Console.output(outcome.message)
+            } else {
+                Console.error(outcome.message)
+            }
+            if outcome.exitCode != 0 { throw ExitCode(outcome.exitCode) }
+        }
+    }
+}
+
+/// Apple's on-device model for meeting summaries: the dictation fix's model and guardrails (summarizing the speakers'
+/// own words is a content transformation), structured output (`@Generable`), greedy sampling, a fresh session per call.
+enum OnDeviceSummary {
+    @Generable(description: "Notes on one part of a meeting")
+    struct PartNotes {
+        @Guide(description: "Two to five short notes, one sentence each", .maximumCount(6))
+        var notes: [String]
+    }
+
+    @Generable(description: "A meeting's title and summary")
+    struct Summary {
+        @Guide(description: "At most 8 words naming what was discussed; no date, does not begin with Meeting")
+        var title: String
+        @Guide(description: "One or two sentences on what the meeting was about and what came out of it")
+        var summary: String
+        @Guide(description: "Up to 5 main points or decisions, one short sentence each", .maximumCount(5))
+        var keyPoints: [String]
+        @Guide(description: "Up to 5 tasks someone agreed to do, with the person; empty when none", .maximumCount(5))
+        var actionItems: [String]
+    }
+
+    /// The model for a meeting mostly in `language`, or why it cannot be used.
+    static func model(language: String) -> SessionSummarizeCommand.ModelChoice {
+        if let reason = OnDeviceFix.unavailableReason { return .unavailable(reason) }
+        let model = SystemLanguageModel(guardrails: .permissiveContentTransformations)
+        guard model.supportsLocale(Locale(identifier: language)) else {
+            return .unavailable("Apple Intelligence does not support \(DictationLanguage.name(of: language))")
+        }
+        return .available(MeetingSummaryModel(
+            name: MeetingSummaryModel.appleOnDevice, contextTokens: model.contextSize,
+            notes: { instructions, prompt in
+                let session = LanguageModelSession(model: model, instructions: instructions)
+                do {
+                    return try await session.respond(
+                        to: prompt, generating: PartNotes.self,
+                        options: GenerationOptions(samplingMode: .greedy, maximumResponseTokens: 400)).content.notes
+                } catch {
+                    throw mapped(error)
+                }
+            },
+            summary: { instructions, prompt in
+                let session = LanguageModelSession(model: model, instructions: instructions)
+                do {
+                    let answer = try await session.respond(
+                        to: prompt, generating: Summary.self,
+                        options: GenerationOptions(samplingMode: .greedy, maximumResponseTokens: 600)).content
+                    return MeetingSummaryDraft(title: answer.title, summary: answer.summary, points: answer.keyPoints,
+                                               actions: answer.actionItems)
+                } catch {
+                    throw mapped(error)
+                }
+            }))
+    }
+
+    /// The model's errors the summarizer acts on: a prompt too long for the context (the part is split), a refusal
+    /// or guardrail (the part is left out), and a busy system (tried again later).
+    static func mapped(_ error: any Error) -> any Error {
+        guard let error = error as? LanguageModelError else { return error }
+        switch error {
+        case .contextSizeExceeded: return MeetingSummaryModelError.contextExceeded
+        case .guardrailViolation, .refusal: return MeetingSummaryModelError.refused
+        case .rateLimited: return MeetingSummaryModelError.busy
+        default: return error
+        }
+    }
+}

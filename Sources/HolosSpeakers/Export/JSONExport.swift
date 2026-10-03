@@ -36,6 +36,9 @@ import HolosCore
 /// A transcript merged from several languages (docs/meeting-design.md §4.14) adds two keys, left out otherwise:
 /// top-level `languages` (the languages it chose from, the preferred one first) and each turn's `languages` (those of
 /// its words, in the order they first appear).
+///
+/// A meeting summarized for this transcript (docs/meeting-design.md §4.17) adds a top-level `summary` object (`title`,
+/// `summary`, `points`, `actions`, `model`), left out otherwise.
 enum JSONExport {
     static func render(_ content: ExportContent) throws -> Data {
         let encoder = HolosJSON.encoder()
@@ -71,12 +74,14 @@ private struct TranscriptFile: Encodable {
     let markers: [TimelineMarker]
     let edits: EditCounts
     let languages: [String]?
+    let summary: SummaryEntry?
 
     init(_ content: ExportContent) {
         let document = content.document
         session = SessionEntry(document.metadata)
         transcriptID = document.transcript.id
         languages = document.transcript.mergedLanguages
+        summary = content.summary.map(SummaryEntry.init)
         runID = content.run?.id
         engine = content.run?.engine
         alignment = content.run?.alignment
@@ -91,7 +96,7 @@ private struct TranscriptFile: Encodable {
 
     enum CodingKeys: String, CodingKey {
         case schemaVersion, format, session, transcriptID, runID, engine, alignment, speakers, turns, gaps, markers
-        case edits, languages
+        case edits, languages, summary
     }
 
     func encode(to encoder: any Encoder) throws {
@@ -101,6 +106,7 @@ private struct TranscriptFile: Encodable {
         try container.encode(session, forKey: .session)
         try container.encode(transcriptID, forKey: .transcriptID)
         try container.encodeIfPresent(languages, forKey: .languages)
+        try container.encodeIfPresent(summary, forKey: .summary)
         try container.encodeOrNull(runID, forKey: .runID)
         try container.encodeOrNull(engine, forKey: .engine)
         try container.encodeOrNull(alignment, forKey: .alignment)
@@ -109,6 +115,20 @@ private struct TranscriptFile: Encodable {
         try container.encode(gaps, forKey: .gaps)
         try container.encode(markers, forKey: .markers)
         try container.encode(edits, forKey: .edits)
+    }
+}
+
+/// The generated summary (docs/meeting-design.md §4.17), left out when there is none for this transcript.
+private struct SummaryEntry: Encodable {
+    let title: String
+    let summary: String
+    let points: [String]
+    let actions: [String]
+    let model: String
+
+    init(_ summary: ExportSummary) {
+        title = summary.title; self.summary = summary.summary; points = summary.points; actions = summary.actions
+        model = summary.model
     }
 }
 
