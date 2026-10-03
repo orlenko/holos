@@ -85,8 +85,9 @@ public final class DictationController {
     public var frameTap: (@MainActor (UUID, PCMFrame) -> Void)?
 
     private let backend: SpeechBackend
-    private let maximumDuration: TimeInterval
+    private let startupTimeout: TimeInterval
     private let finalizationTimeout: TimeInterval
+    private let sleep: @MainActor (Duration) async throws -> Void
     private let onUpdate: @MainActor (DictationStatus) -> Void
     private let dependencies: DictationDependencies
 
@@ -102,29 +103,32 @@ public final class DictationController {
     private var stopTask: Task<Void, Error>?
     private var finalizationTask: Task<Void, Never>?
     private var cleanupTask: Task<Void, Never>?
-    private var watchdogTask: Task<Void, Never>?
+    private var startupWatchdogTask: Task<Void, Never>?
     private var finalizationWatchdogTask: Task<Void, Never>?
-    private var timeoutMessage: String?
 
+    /// Listening has no duration cutoff. Only startup and post-release finalization are timed out.
     public init(locale: String = DictationLanguage.standard, backend: SpeechBackend = .speech,
-                maximumDuration: TimeInterval = 120,
+                startupTimeout: TimeInterval = 120,
                 onUpdate: @escaping @MainActor (DictationStatus) -> Void) {
         self.locale = locale
         self.backend = backend
-        self.maximumDuration = maximumDuration.isFinite && maximumDuration > 0 ? maximumDuration : 120
+        self.startupTimeout = startupTimeout.isFinite && startupTimeout > 0 ? startupTimeout : 120
         self.finalizationTimeout = 30
+        self.sleep = { try await Task.sleep(for: $0) }
         self.onUpdate = onUpdate
         self.dependencies = .live
     }
 
     init(locale: String = DictationLanguage.standard, backend: SpeechBackend = .speech,
-         maximumDuration: TimeInterval = 120, finalizationTimeout: TimeInterval = 30,
+         startupTimeout: TimeInterval = 120, finalizationTimeout: TimeInterval = 30,
+         sleep: @escaping @MainActor (Duration) async throws -> Void = { try await Task.sleep(for: $0) },
          dependencies: DictationDependencies,
          onUpdate: @escaping @MainActor (DictationStatus) -> Void) {
         self.locale = locale
         self.backend = backend
-        self.maximumDuration = maximumDuration.isFinite && maximumDuration > 0 ? maximumDuration : 120
+        self.startupTimeout = startupTimeout.isFinite && startupTimeout > 0 ? startupTimeout : 120
         self.finalizationTimeout = finalizationTimeout.isFinite && finalizationTimeout > 0 ? finalizationTimeout : 30
+        self.sleep = sleep
         self.onUpdate = onUpdate
         self.dependencies = dependencies
     }
@@ -146,7 +150,6 @@ public final class DictationController {
         stopTask = nil
         finalizationTask = nil
         finalizationWatchdogTask = nil
-        timeoutMessage = nil
         publish(.init(phase: .preparing, utteranceID: id))
         guard generation == id else { return true }
 
@@ -157,11 +160,11 @@ public final class DictationController {
                           message: Self.permissionMessage(permission)))
             return true
         }
-        watchdogTask = Task { [weak self] in
-            guard let self else { return }
-            try? await Task.sleep(for: .seconds(self.maximumDuration))
+        let sleep = sleep, startupTimeout = startupTimeout
+        startupWatchdogTask = Task { [weak self] in
+            try? await sleep(.seconds(startupTimeout))
             guard !Task.isCancelled else { return }
-            self.watchdogFired(id)
+            self?.startupTimedOut(id)
         }
         let locale = locale, vocabulary = contextualStrings
         prepareTask = Task { [weak self] in await self?.prepare(id, locale: locale, vocabulary: vocabulary) }
@@ -173,16 +176,16 @@ public final class DictationController {
         switch status.phase {
         case .preparing:
             releaseRequested = true
-            watchdogTask?.cancel()
+            startupWatchdogTask?.cancel()
             publish(.init(phase: .finalizing, utteranceID: id,
                           message: "Finishing startup after key release."))
             guard generation == id else { return }
             startFinalizationWatchdog(id)
             prepareTask?.cancel()
         case .listening:
-            watchdogTask?.cancel()
+            startupWatchdogTask?.cancel()
             publish(.init(phase: .finalizing, utteranceID: id, text: status.text,
-                          committedText: status.committedText, message: timeoutMessage))
+                          committedText: status.committedText))
             guard generation == id else { return }
             startFinalizationWatchdog(id)
             finalizationTask = Task { [weak self] in await self?.finalize(id) }
@@ -246,6 +249,9 @@ public final class DictationController {
                 finishReleasedBeforeReady(id)
                 return
             }
+            // The startup watchdog protects preparation only, never active dictation.
+            startupWatchdogTask?.cancel()
+            startupWatchdogTask = nil
             publish(.init(phase: .listening, utteranceID: id))
             feedTask = Task { [weak self] in
                 guard let self else { return }
@@ -289,11 +295,11 @@ public final class DictationController {
             generation = nil
             releaseRequested = false
             reducer = TranscriptReducer()
-            watchdogTask?.cancel()
+            startupWatchdogTask?.cancel()
             finalizationWatchdogTask?.cancel()
             capture = nil
             speech = nil
-            publish(.init(phase: .result, utteranceID: id, text: text, message: timeoutMessage))
+            publish(.init(phase: .result, utteranceID: id, text: text))
         } catch {
             fail(id, error: error)
         }
@@ -314,7 +320,7 @@ public final class DictationController {
     private func finishReleasedBeforeReady(_ id: UUID) {
         guard generation == id else { return }
         generation = nil
-        watchdogTask?.cancel()
+        startupWatchdogTask?.cancel()
         finalizationWatchdogTask?.cancel()
         capture = nil
         speech = nil
@@ -332,7 +338,7 @@ public final class DictationController {
         generation = nil
         releaseRequested = false
         reducer = TranscriptReducer()
-        watchdogTask?.cancel()
+        startupWatchdogTask?.cancel()
         finalizationWatchdogTask?.cancel()
         prepareTask?.cancel()
         feedTask?.cancel()
@@ -360,15 +366,10 @@ public final class DictationController {
         return task
     }
 
-    private func watchdogFired(_ id: UUID) {
-        guard generation == id else { return }
-        if status.phase == .listening {
-            timeoutMessage = "Stopped after the maximum dictation duration."
-            end()
-        } else if status.phase == .preparing || status.phase == .finalizing {
-            discardCurrent(publishing: .init(phase: .failed, utteranceID: id,
-                                             message: "Dictation startup timed out. Try again."))
-        }
+    private func startupTimedOut(_ id: UUID) {
+        guard generation == id, status.phase == .preparing else { return }
+        discardCurrent(publishing: .init(phase: .failed, utteranceID: id,
+                                         message: "Dictation startup timed out. Try again."))
     }
 
     private func finalizationTimedOut(_ id: UUID) {
@@ -379,11 +380,11 @@ public final class DictationController {
 
     private func startFinalizationWatchdog(_ id: UUID) {
         finalizationWatchdogTask?.cancel()
+        let sleep = sleep, finalizationTimeout = finalizationTimeout
         finalizationWatchdogTask = Task { [weak self] in
-            guard let self else { return }
-            try? await Task.sleep(for: .seconds(self.finalizationTimeout))
+            try? await sleep(.seconds(finalizationTimeout))
             guard !Task.isCancelled else { return }
-            self.finalizationTimedOut(id)
+            self?.finalizationTimedOut(id)
         }
     }
 

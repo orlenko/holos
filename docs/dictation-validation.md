@@ -308,9 +308,16 @@ support is target-app dependent and has not been broadly established. If inserti
 is reported as unverified, inspect the field before copying to avoid duplicating
 text.
 
-The maximum utterance is 120 seconds; finalization after listening has a
-30-second limit. When the maximum duration forces a stop, anything already
-streamed stays and the remainder is kept for Copy Result rather than being auto-inserted. The overlay hides eight seconds after a result, but its text remains
+Listening has no fixed duration limit: keep holding the shortcut while speaking,
+then release it to finish. Escape or **Cancel Dictation** in the menu cancels it;
+sleep/session changes and a disabled hotkey event tap also cancel it. Startup
+still has a 120-second timeout, and finalization after release has a 30-second
+timeout, so a hung recognizer or microphone cannot leave those phases waiting
+indefinitely. Audio capture and recognition use bounded queues, and optional
+History audio is encoded to disk as it arrives; transcript text and History audio
+still grow with the dictation. Removing the cutoff does not guarantee recovery
+from every missed key-release event: use Escape or Cancel Dictation if needed.
+The overlay hides eight seconds after a result, but its text remains
 in app memory and the menu's Copy/Discard actions for up to ten minutes (unless
 replaced, discarded, or the app quits). Only a later dictation that produces a
 result replaces it: recognized text, or text left unwritten. A press that is
@@ -421,7 +428,7 @@ behavior, and permission owner for each row.
 | Esc during listening and again during finalizing | Stop and suppress late results/insertion; already-streamed text stays. |
 | Rapid repeat presses and unrelated typing while holding | One utterance at a time; no stuck mic or duplicate insertion. |
 | Missing/denied permissions or assets | Clear setup status; no implicit asset download or microphone prompt on shortcut press. |
-| Maximum duration and delayed finalization | Stop at 120 seconds; the unwritten part of a forced result is kept for Copy Result, not inserted, and post-listening finalization does not hang past 30 seconds. |
+| Long dictation and delayed finalization | Hold and speak beyond three minutes: Listening continues and finalized words keep streaming. Release to finish normally with the unwritten remainder handled as usual. Escape/Cancel Dictation still cancel. Startup does not hang past 120 seconds, and post-release finalization does not hang past 30 seconds. |
 | Unwritable target after a streamed prefix | The clipboard is unchanged; Copy Result holds only the unwritten tail, with its leading space, so pasting it after the prefix gives correctly spaced text. |
 | Sleep/lock and wake | Capture stops; shortcut stays paused until manually re-enabled. |
 
