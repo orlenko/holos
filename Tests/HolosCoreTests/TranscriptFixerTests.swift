@@ -1182,16 +1182,16 @@ private func fixer(corrections: CorrectionList = CorrectionList(), timeout: Dura
     #expect(calls.withLock { $0 } == 0)
 }
 
-@Test func fixerGivesUpOnASlowModel() async {
+@Test(.timeLimit(.minutes(1))) func fixerGivesUpOnASlowModel() async {
+    // Ignores cancellation, like a hung platform call: the timeout must not wait for it. The call is released only
+    // after `fix` returns, so a timeout that waited for it would never return (and the time limit would fail).
+    let hung = Mutex<CheckedContinuation<Void, Never>?>(nil)
     let fix = fixer(timeout: .milliseconds(50)) { _, _ in
-        // Ignores cancellation, like a hung platform call: the timeout must not wait for it.
-        await withCheckedContinuation { continuation in
-            DispatchQueue.global().asyncAfter(deadline: .now() + 1) { continuation.resume() }
-        }
+        await withCheckedContinuation { continuation in hung.withLock { $0 = continuation } }
         return "too late"
     }
-    let started = ContinuousClock.now
     let result = await fix.fix("a slow one", isFinal: false)
     #expect(result == .init(text: "a slow one", outcome: .timedOut))
-    #expect(started.duration(to: .now) < .milliseconds(900))
+    while hung.withLock({ $0 == nil }) { await Task.yield() }
+    hung.withLock { $0?.resume(); $0 = nil }
 }

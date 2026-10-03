@@ -260,13 +260,14 @@ private let claudePairs = ["cloud", "clot"].map { Correction(heard: $0, meant: "
 
 @Test func aTimedOutQuestionKeepsThePlaceAndTheFix() async {
     var fixer = TranscriptFixer(corrections: CorrectionList(), wordList: ["Claude"], heardAs: claudePairs,
-                                referenceBudget: 500, timeout: .milliseconds(50), language: "en-US") { _, prompt in
+                                referenceBudget: 500, timeout: .seconds(30), language: "en-US") { _, prompt in
         guard prompt.hasPrefix("Text: ") else {
             try await Task.sleep(for: .seconds(3600))
             return "Claude"
         }
         return "Then cloud fixed the parser."
     }
+    fixer.questionTimeout = .milliseconds(50)
     fixer.spellingBudget = .seconds(60)
     let result = await fixer.fix("Then cloud fixed the parcer.", isFinal: true)
     #expect(result.outcome == .fixed && result.text == "Then cloud fixed the parser.")
@@ -274,12 +275,13 @@ private let claudePairs = ["cloud", "clot"].map { Correction(heard: $0, meant: "
 
 @Test func aLaterTimedOutQuestionKeepsAnEarlierTermChoice() async {
     var fixer = TranscriptFixer(corrections: CorrectionList(), wordList: ["Claude"], heardAs: claudePairs,
-                                referenceBudget: 500, timeout: .milliseconds(50), language: "en-US") { _, prompt in
+                                referenceBudget: 500, timeout: .seconds(30), language: "en-US") { _, prompt in
         if prompt.hasPrefix("Text: ") { return "Then cloud and clot fixed the parser." }
         if prompt.contains("[[cloud]]") { return "Claude" }
         try await Task.sleep(for: .seconds(3600))
         return "Claude"
     }
+    fixer.questionTimeout = .milliseconds(50)
     fixer.spellingBudget = .seconds(60)
     let result = await fixer.fix("Then cloud and clot fixed the parcer.", isFinal: true)
     #expect(result.outcome == .fixed && result.text == "Then Claude and clot fixed the parser.")
