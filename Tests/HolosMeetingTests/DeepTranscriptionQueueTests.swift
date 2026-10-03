@@ -156,3 +156,22 @@ private func queue(_ ids: [String], runNow: Set<String> = []) -> DeepTranscripti
     reread.clearStarted("A")
     #expect(reread.items.first?.pid == nil)
 }
+
+@Test func turningTheSettingOffKeepsTheRunningPassUntilItEnds() {
+    var items = queue(["A", "B", "C"], runNow: ["C"])
+    items.markStarted("A", pid: 7, start: 8)
+    items.removeAutomatic(keeping: "A")
+    #expect(items.items.map(\.sessionID) == ["A", "C"])
+    #expect(items.items.first?.pid == 7, "The running pass's process record stays.")
+}
+
+@Test func anAdoptedRunNowPassIsOnlyCheckedAfterItEnds() {
+    var items = queue(["A"], runNow: ["A"])
+    #expect(DeepTranscriptionSchedule.forces(items.items[0]))
+    items.markVerifyOnly("A")
+    #expect(!DeepTranscriptionSchedule.forces(items.items[0]), "Not made again with --force.")
+    #expect(DeepTranscriptionQueue.decode(items.encoded()).items[0].verifyOnly == true)
+    // A queue saved before this field reads as before.
+    let old = Data(#"{"schemaVersion":1,"items":[{"sessionID":"A","path":"/m/A.holos","queuedAt":"2027-01-15T08:00:00Z","runNow":true}]}"#.utf8)
+    #expect(DeepTranscriptionQueue.decode(old).items.first.map(DeepTranscriptionSchedule.forces) == true)
+}

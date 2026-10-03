@@ -4802,7 +4802,10 @@ carried over.
   (`ProcessSpawner.startTime`) with its meeting, so at launch a process with the same pid and
   start time is adopted as the running pass (it holds its meeting, nothing else starts, not even
   Run Now, Cancel can signal it, and the 30 s timer notices when it ends; its meeting stays
-  queued, and the next run keeps the transcript it made or makes it). A pid reused by another
+  queued, and the next run keeps the transcript it made or makes it; a Run Now item that ran
+  this way is only checked next, without `--force`). Turning the setting off keeps the running
+  pass's item (and its process record) until it ends; launch-time results are checked against
+  the queue and the meetings considered right before each is queued. A pid reused by another
   process has another start time and is not adopted. As a further guard, a command refused by
   the processing lease (exit 1, "… processing this session") keeps its meeting queued and only it
   is tried, every minute, until it can be had (`waitingFor`, cleared whenever its meeting leaves

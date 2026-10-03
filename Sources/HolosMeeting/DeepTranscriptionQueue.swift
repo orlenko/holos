@@ -16,6 +16,9 @@ public struct DeepTranscriptionQueue: Codable, Sendable, Equatable {
         /// app can tell the pass still running (detached) from a reused pid, wait for it, and cancel it.
         public var pid: Int32?
         public var pidStart: UInt64?
+        /// A Run Now pass that ran (it survived a relaunch and ended unseen): the next run only checks its result, without
+        /// `--force`, so it keeps the transcript made rather than making it again.
+        public var verifyOnly: Bool?
 
         public init(sessionID: String, path: String, queuedAt: Date, runNow: Bool = false) {
             self.sessionID = sessionID; self.path = path; self.queuedAt = queuedAt; self.runNow = runNow
@@ -41,9 +44,16 @@ public struct DeepTranscriptionQueue: Codable, Sendable, Equatable {
         items.removeAll { $0.sessionID == sessionID }
     }
 
-    /// Drops every item not asked for from the menu (the setting was turned off).
-    public mutating func removeAutomatic() {
-        items.removeAll { !$0.runNow }
+    /// Drops every item not asked for from the menu (the setting was turned off), except `keeping`: the pass running
+    /// now, whose process record must stay until it ends.
+    public mutating func removeAutomatic(keeping: String? = nil) {
+        items.removeAll { !$0.runNow && $0.sessionID != keeping }
+    }
+
+    /// Marks `sessionID` to be checked rather than made again (`verifyOnly`).
+    public mutating func markVerifyOnly(_ sessionID: String) {
+        guard let index = items.firstIndex(where: { $0.sessionID == sessionID }) else { return }
+        items[index].verifyOnly = true
     }
 
     public func contains(_ sessionID: String) -> Bool { items.contains { $0.sessionID == sessionID } }
@@ -188,6 +198,12 @@ public enum DeepTranscriptionSchedule {
                 && candidate.createdAt >= enabledSince && !considered.contains(candidate.sessionID)
                 && !queue.contains(candidate.sessionID)
         }
+    }
+
+    /// Whether `item`'s command gets `--force`: a Run Now request (made again, over edited labels), unless it already
+    /// ran and is only checked now (`verifyOnly`).
+    public static func forces(_ item: DeepTranscriptionQueue.Item) -> Bool {
+        item.runNow && item.verifyOnly != true
     }
 
     /// Whether a meeting that just finished saving is queued: the setting is on, the model installed, and the meeting

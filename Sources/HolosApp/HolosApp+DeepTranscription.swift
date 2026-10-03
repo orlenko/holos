@@ -146,7 +146,17 @@ extension HolosAppDelegate {
         // Still running (also after Cancel, until the signal ends it).
         if Self.isAlive(running.pid, start: start) { return }
         meeting.deep.queue.clearStarted(running.sessionID)
-        if meeting.deep.preempted == running.sessionID { meeting.deep.preempted = nil }
+        if meeting.deep.preempted == running.sessionID {
+            meeting.deep.preempted = nil
+        } else if let item = meeting.deep.queue.items.first(where: { $0.sessionID == running.sessionID }) {
+            if item.runNow {
+                // It ran: the next run checks the result instead of forcing another full pass.
+                meeting.deep.queue.markVerifyOnly(running.sessionID)
+            } else if !DeepTranscriptionAppState.enabled {
+                // Kept only while it ran; the setting is off.
+                meeting.deep.queue.remove(running.sessionID)
+            }
+        }
         meeting.deep.running = nil
         meeting.deep.runningDetached = false
         meeting.controller?.endUsing(running.sessionID)
@@ -230,6 +240,10 @@ extension HolosAppDelegate {
             guard let self, !found.isEmpty, DeepTranscriptionAppState.enabled,
                   DeepTranscriptionAppState.enabledSince == since else { return }
             for candidate in found {
+                // Checked again against the queue and the meetings considered now: the user may have run, cancelled,
+                // or queued one while the folder was read.
+                guard !self.meeting.deep.queue.contains(candidate.sessionID),
+                      !self.meeting.deep.considered.contains(candidate.sessionID) else { continue }
                 self.meeting.deep.queue.enqueue(sessionID: candidate.sessionID, path: candidate.path, at: Date())
                 self.meeting.deep.consider(candidate.sessionID)
             }
@@ -320,7 +334,8 @@ extension HolosAppDelegate {
         let output = Self.temporaryFile("deep")
         let errors = Self.temporaryFile("deep-err")
         // Asked for from the meeting's menu: made again even when made before, and over edited labels.
-        let arguments = ["session", "deep-transcribe", item.path, "--json"] + (item.runNow ? ["--force"] : [])
+        let arguments = ["session", "deep-transcribe", item.path, "--json"]
+            + (DeepTranscriptionSchedule.forces(item) ? ["--force"] : [])
         do {
             let pid = try maintenance.run(arguments, standardOutput: output, standardError: errors) { [weak self] code in
                 self?.deepTranscriptionEnded(sessionID, code: code, output: output, errors: errors)
@@ -350,8 +365,13 @@ extension HolosAppDelegate {
         meeting.deep.queue.clearStarted(sessionID)
         let lateCancel = errorText.split(separator: "\n").first { $0.hasPrefix("Cancelled after the new transcript") }
         if meeting.deep.preempted == sessionID {
-            // Stopped for a meeting: stays queued, and runs again from the start once the meeting is saved.
+            // Stopped for a meeting: stays queued, and runs again from the start once the meeting is saved (an
+            // automatic one only while the setting is on).
             meeting.deep.preempted = nil
+            if !DeepTranscriptionAppState.enabled,
+               meeting.deep.queue.items.first(where: { $0.sessionID == sessionID })?.runNow == false {
+                meeting.deep.queue.remove(sessionID)
+            }
         } else if code == 1, DeepTranscriptionSchedule.isLeaseConflict(errorText) {
             // A pass from before a relaunch still holds the meeting: it stays queued, and nothing else starts until it
             // can be had again (then the queued one finds the transcript made, or makes it).
@@ -445,7 +465,8 @@ extension HolosAppDelegate {
         if on {
             DeepTranscriptionAppState.enabledSince = Date()
         } else {
-            meeting.deep.queue.removeAutomatic()
+            // The pass running now keeps its item (and process record) until it ends.
+            meeting.deep.queue.removeAutomatic(keeping: meeting.deep.running?.sessionID)
             if let waiting = meeting.deep.waitingFor, !meeting.deep.queue.contains(waiting) {
                 meeting.deep.waitingFor = nil
             }
